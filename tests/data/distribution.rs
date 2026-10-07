@@ -3,7 +3,7 @@ use datui::statistics::{ComputeOptions, DistributionType, compute_statistics_wit
 use polars::prelude::*;
 use std::path::Path;
 
-mod common;
+use crate::common;
 
 /// Test distribution detection using the large dataset parquet file
 /// Each test loads a specific distribution column and verifies the detection

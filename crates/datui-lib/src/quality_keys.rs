@@ -48,15 +48,13 @@ impl App {
             }
             return ControlFlow::Break(None);
         }
-        // The export dialog owns every key while it is open, `?` included
-        // when the path types.
+        // The export dialog owns every key while open, `?` too when the path types.
         if self.analysis_modal.quality.export.is_some()
             && (event.code != KeyCode::Char('?') || self.analysis_modal.export_typing())
         {
             return ControlFlow::Break(self.quality_export_key(event));
         }
-        // The intent form owns every key while it is open, `?` included
-        // when it types.
+        // The intent form owns every key while open, `?` too when it types.
         if self.analysis_modal.quality.intent_form.is_some()
             && (event.code != KeyCode::Char('?') || self.analysis_modal.intent_typing())
         {
@@ -146,17 +144,15 @@ impl App {
             }
             return ControlFlow::Break(None);
         }
-        // Setup is edited where it stands: ↑↓ or Tab the row, ←→ a short
-        // list's choice, Space the row's editor, Enter runs from any row, and
-        // Esc discards every staged edit.
+        // Setup is edited in place: ↑↓ or Tab the row, ←→ a short list's choice, Space the
+        // row's editor, Enter runs from any row, Esc discards staged edits.
         if self.analysis_modal.quality.page == QualityPage::Setup
             && self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main
             && !self.analysis_modal.quality.show_access
         {
             use analysis_modal::SetupRow;
-            // Setup can hold the cursor without having been opened: after Esc
-            // handed it to the tools and Tab brought it back, or after a run
-            // that failed. Whatever is edited now is still a draft.
+            // Setup can hold the cursor without being opened (Esc to the tools then Tab back,
+            // or after a failed run): edits are still a draft.
             if self.analysis_modal.quality.setup_before.is_none() {
                 self.open_quality_setup();
             }
@@ -215,8 +211,7 @@ impl App {
                 self.analysis_modal.quality.show_access = false;
                 return ControlFlow::Break(None);
             }
-            // A staged read of a finding's rows: Enter reads, Esc goes back to
-            // the finding having read nothing.
+            // A staged read of a finding's rows: Enter reads, Esc returns having read nothing.
             KeyCode::Esc if self.analysis_modal.quality.evidence_read.is_some() => {
                 self.analysis_modal.quality.evidence_read = None;
                 return ControlFlow::Break(None);
@@ -233,8 +228,7 @@ impl App {
                 return ControlFlow::Break(None);
             }
             KeyCode::Enter if self.analysis_modal.quality.observation_detail => {
-                // The clean entry has no rows to open; Enter shows every
-                // check it passed, and again the most important few.
+                // The clean entry has no rows: Enter toggles every passed check versus the top few.
                 if self.analysis_modal.quality_selected_is_clean() {
                     self.analysis_modal.quality.checks_expanded =
                         !self.analysis_modal.quality.checks_expanded;
@@ -242,9 +236,8 @@ impl App {
                     return ControlFlow::Break(None);
                 }
                 let event = self.open_quality_evidence();
-                // Rows on their way, or a read waiting for Enter, keep the
-                // finding open: Esc from the rows comes back to it. Enter on
-                // a finding with no rows closes it.
+                // Rows on their way, or a read awaiting Enter, keep the finding open (Esc from the
+                // rows returns to it); Enter on a finding with no rows closes it.
                 if self.overlay == crate::Overlay::Analysis
                     && !self.error_modal.active
                     && self.analysis_modal.quality.evidence_read.is_none()
@@ -286,8 +279,8 @@ impl App {
                 self.open_quality_setup();
                 return ControlFlow::Break(None);
             }
-            // The report's tabs; Setup is left with Enter or Esc, so a draft is
-            // never left staged behind a report page.
+            // The report's tabs; Setup is left with Enter or Esc, so no draft hides behind a
+            // report page.
             KeyCode::Char(digit @ '1'..='5') if !self.analysis_modal.quality.page.is_setup() => {
                 let tab = digit as usize - '1' as usize;
                 self.analysis_modal.show_quality_tab(QualityPage::TABS[tab]);
@@ -334,8 +327,7 @@ impl App {
                 if self.analysis_modal.quality.page == QualityPage::Segments
                     && self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main =>
             {
-                // The segment under the cursor, looked up while the results
-                // still order the list.
+                // The segment under the cursor, looked up while the results still order the list.
                 let selected = self.analysis_modal.selected_segment();
                 if let Some(mut results) = self.analysis_modal.quality.results.take() {
                     if let Some(label) = selected
@@ -360,8 +352,8 @@ impl App {
                 self.analysis_modal.toggle_segment_order();
                 return ControlFlow::Break(None);
             }
-            // Overview's findings, narrowed and ordered from the report on
-            // screen: nothing is measured again.
+            // Overview's findings narrowed and ordered from the report on screen; nothing is
+            // remeasured.
             KeyCode::Char(key @ ('c' | 't' | 'o'))
                 if self.analysis_modal.quality.page == QualityPage::Overview
                     && self.analysis_modal.quality.results.is_some()
@@ -383,8 +375,7 @@ impl App {
                 self.analysis_modal.clear_findings_narrowing();
                 return ControlFlow::Break(None);
             }
-            // Write the report on screen to a file: what was measured, never a
-            // draft, and nothing read to do it.
+            // Write the on-screen report: what was measured, never a draft; nothing read.
             KeyCode::Char('x')
                 if !self.analysis_modal.quality.page.is_setup()
                     && self.analysis_modal.quality.results.is_some() =>
@@ -392,9 +383,8 @@ impl App {
                 self.open_quality_export();
                 return ControlFlow::Break(None);
             }
-            // Another sample, run at once: a new seed for every tool. On a sampled
-            // report only, as on every tool, never over a draft, and not beside
-            // a cancelled read.
+            // Another sample at once, a new seed for every tool: on a sampled report only,
+            // never over a draft or beside a cancelled read.
             KeyCode::Char('r')
                 if !self.analysis_modal.quality.page.is_setup()
                     && self.analysis_modal.quality.results.is_some()
@@ -408,8 +398,7 @@ impl App {
                 let before = self.analysis_modal.quality.plan.clone();
                 self.analysis_modal.quality.plan.sample_seed = sample_modal::new_seed();
                 let event = self.run_quality_setup(false);
-                // Refused, with the reason on Setup's line: the plan stays the
-                // one the report was run with, and the reason is said here.
+                // Refused, reason on Setup's line: the plan stays the report's.
                 if let Some(note) = self.analysis_modal.quality.setup_note.take() {
                     self.analysis_modal.quality.plan = before;
                     self.flash_note(note);

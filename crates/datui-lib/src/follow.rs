@@ -217,6 +217,7 @@ pub(crate) fn bound_to_complete(
     }
     tail.path = path.to_path_buf();
     let mut file = File::open(path)?;
+    tail.identity = identity_of(&file);
     let len = file.metadata()?.len();
     tail.read_on(&mut file, len, false)?;
     bound(&mut lf, path, tail.rows());
@@ -314,6 +315,9 @@ struct NewMarks {
 pub struct Tail {
     /// The file counted.
     path: PathBuf,
+    /// Which file was counted, so one put in its place before the watcher opens the
+    /// path is read again rather than read on.
+    identity: Option<Identity>,
     layout: Layout,
     /// Each column's kind, by position for delimited text and by name for NDJSON.
     columns: Vec<(String, Fits)>,
@@ -418,6 +422,7 @@ impl Tail {
             .collect();
         Tail {
             path: PathBuf::new(),
+            identity: None,
             layout,
             columns,
             complete: 0,
@@ -1718,7 +1723,9 @@ impl Watcher {
                 return;
             }
         };
-        let mut known = identity_of(&file);
+        // The file the open counted, not the one opened here: a file put in its place
+        // meanwhile is a replacement, and the next look reads it from the start.
+        let mut known = self.tail.identity.or_else(|| identity_of(&file));
         let mut sent = (self.tail.rows(), 0usize);
         #[cfg(target_os = "linux")]
         let notify = notify::Notify::new(&self.path);
@@ -2427,6 +2434,39 @@ mod tests {
         };
         assert!(matches!(news.change, Change::Grew { rows: 2.., .. }));
         drop(follow);
+    }
+
+    /// A file put in place of the one the open counted, before the watcher has opened
+    /// the path, is read from its start: the watcher opens the new file, and a size
+    /// as big or bigger would otherwise pass for growth. Replacing it before the
+    /// follow starts is the watcher's thread starting late.
+    #[test]
+    fn a_file_replaced_before_the_watcher_opens_it_is_read_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rotated.csv");
+        std::fs::write(&path, "t\n1\n2\n").unwrap();
+        let scan = LazyCsvReader::new(PlRefPath::try_from_path(&path).unwrap())
+            .finish()
+            .unwrap();
+        let (_, tail) =
+            bound_to_complete(scan, &path, FileFormat::Csv, &OpenOptions::default()).unwrap();
+        let next = dir.path().join("next.csv");
+        std::fs::write(&next, "t\n7\n8\n9\n").unwrap();
+        std::fs::rename(&next, &path).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let follow = Follow::start(tail, Duration::from_secs(3_600), tx, None);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let news = loop {
+            assert!(Instant::now() < deadline, "the watcher never reported");
+            follow.check_now();
+            if let Ok(AppEvent::Followed(news)) = rx.recv_timeout(Duration::from_millis(50)) {
+                break news;
+            }
+        };
+        assert!(
+            matches!(news.change, Change::Restarted { rows: 3, .. }),
+            "read on, not again"
+        );
     }
 
     /// The bytes that arrive later are read from where the count stopped, a partial

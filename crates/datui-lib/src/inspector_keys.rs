@@ -10,9 +10,9 @@ use crate::{
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 impl App {
-    /// Whether Enter at the table opens the inspector, as Space does: there is a table,
-    /// and it is not one whose rows drill into groups (a `by` view, a SQL GROUP BY).
-    /// Inside a drill-down there is nothing further to drill into either.
+    /// Whether Enter at the table opens the inspector, as Space does: a table whose rows
+    /// do not drill into groups (a `by` view, a SQL GROUP BY), and not inside a
+    /// drill-down.
     pub fn enter_inspects(&self) -> bool {
         self.at_table()
             && self
@@ -40,8 +40,8 @@ impl App {
         self.close_overlay();
     }
 
-    /// The inspector's list as the row shown has it: Filled, Compare and the find
-    /// text depend on the row's values, which a key may have moved.
+    /// Rebuild the inspector's list for the row shown: Filled, Compare and the find
+    /// depend on its values.
     fn refresh_inspector_list(&mut self) {
         if let Some(state) = self.data_table_state.as_ref() {
             let row = state.inspect_row();
@@ -49,9 +49,8 @@ impl App {
         }
     }
 
-    /// The pane for the focused value: as last drawn while that is still the
-    /// focused value, else built for the key (without the table's preview, which
-    /// only a frame knows).
+    /// The focused value's pane: as last drawn if still focused, else built for the key
+    /// (without the table's preview, which only a frame knows).
     fn inspector_pane(&self) -> Option<crate::widgets::inspector::Pane> {
         let modal = &self.inspector_modal;
         if modal.drill.is_some() {
@@ -82,8 +81,8 @@ impl App {
         ))
     }
 
-    /// The inspector's keys. Moving between rows moves the table's cursor, so the
-    /// table is where the inspector left it on close.
+    /// The inspector's keys. Row moves move the table's cursor, so the table is where
+    /// the inspector left it.
     pub(crate) fn inspector_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         if !event.is_press() {
             return None;
@@ -103,8 +102,8 @@ impl App {
                 KeyCode::Char(c) => modal.find_key(c, event.modifiers),
                 _ => {}
             }
-            // The focus follows the narrowing now, not at the next frame: a key
-            // replayed before it acts on the field the find left focused.
+            // Refocus now, not at the next frame: a replayed key must act on the field the find
+            // left focused.
             self.refresh_inspector_list();
             return None;
         }
@@ -131,8 +130,7 @@ impl App {
             return None;
         }
         match event.code {
-            // Esc backs out one level at a time: the find, then Compare, then the
-            // inspector.
+            // Esc backs out one level: the find, then Compare, then the inspector.
             KeyCode::Esc if !modal.filter.is_empty() => modal.clear_find(),
             KeyCode::Esc if modal.compare => {
                 modal.compare = false;
@@ -236,8 +234,8 @@ impl App {
         None
     }
 
-    /// A key typed into the value's find line. Enter finds every place and goes
-    /// to the first at or after the pane's top.
+    /// A key in the value's find line. Enter finds every place and goes to the first at
+    /// or after the pane's top.
     fn value_find_key(&mut self, event: &KeyEvent) {
         let pane = self.inspector_pane();
         let modal = &mut self.inspector_modal;
@@ -299,8 +297,8 @@ impl App {
         modal.reader.jump(&pane.content, h, pos);
     }
 
-    /// The inspector's keys inside a level drilled into: the same moves as at the
-    /// row, but `→` and Enter open the focused item and `←` and Esc step back up.
+    /// Keys inside a drilled level: the row's moves, but `→` and Enter open the focused
+    /// item and `←` and Esc step up.
     fn drill_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         let modal = &mut self.inspector_modal;
         if let Some(step) = ListMove::from_key(event) {
@@ -338,8 +336,8 @@ impl App {
         None
     }
 
-    /// `e` in the inspector: the focused value's next view, where it has more than
-    /// one. A number never has, so it never changes how a text field is then shown.
+    /// `e` in the inspector: the focused value's next view, if it has several. A number
+    /// has one, so a text field's view is unchanged.
     fn inspector_view(&mut self) {
         if let Some(view) = self.inspector_pane().and_then(|pane| pane.next_view()) {
             self.inspector_modal.choose_view(view);
@@ -379,8 +377,8 @@ impl App {
         }
     }
 
-    /// Enter in the inspector: on a group's row, its rows, as at the table; else
-    /// open a nested value, or read the row's fields the buffer does not hold.
+    /// Enter in the inspector: a group row's rows, as at the table; else open a nested
+    /// value, or read fields the buffer lacks.
     fn inspector_enter(&mut self) -> Option<AppEvent> {
         let state = self.data_table_state.as_ref()?;
         if state.can_drill_down() {
@@ -425,8 +423,8 @@ impl App {
         None
     }
 
-    /// Read the focused row's hidden and binary fields, waited on; from then on the
-    /// rows moved to are read too while the focus stays on this field.
+    /// Read the focused row's hidden and binary fields, waited on; rows moved to are
+    /// then read too while focus stays on this field.
     fn read_focused_field(&mut self) {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
@@ -452,10 +450,9 @@ impl App {
         }
     }
 
-    /// What the inspector needs after a pass: the row moved to read while a read
-    /// follows the rows, long JSON indented for its JSON view, and compressed
-    /// bytes decompressed for their Text view. None holds the keys: moving on
-    /// drops what is no longer wanted.
+    /// What the inspector needs after a pass: the row moved to (while following), long
+    /// JSON indented, compressed bytes decompressed. None holds keys; moving on drops
+    /// the unwanted.
     pub(crate) fn inspector_needs(&mut self) {
         if self.overlay != Overlay::Inspect {
             return;
@@ -481,8 +478,7 @@ impl App {
             self.read_inspected_fields(&row, false);
             return;
         }
-        // Long JSON text asked for the JSON view and not yet indented, or
-        // compressed bytes asked for the Text view and not yet decompressed.
+        // Long JSON awaiting its JSON view, or compressed bytes awaiting their Text view.
         let pane = modal.pane_for(row.frame, row.row, &field.name);
         let place = (row.frame, row.row, field.name.clone());
         let indent = pane.is_some_and(|pane| pane.indent)
@@ -536,11 +532,10 @@ impl App {
         });
     }
 
-    /// `y` in the inspector: the focused value as its view shows it — the stored
-    /// value exact, indented JSON in the JSON view, the text bytes hold in their
-    /// Text view, bytes otherwise as base64 — through the same clipboard path as
-    /// the copy dialog. One over a capped destination's limit is refused
-    /// unformatted; a large one is written off this thread.
+    /// `y` in the inspector: the focused value as its view shows it (exact stored value,
+    /// indented JSON, decoded text, or base64 bytes), through the copy dialog's
+    /// clipboard path. Over a capped destination's limit it is refused unformatted; a
+    /// large one is written off this thread.
     fn copy_inspected_field(&mut self) {
         use copy_modal::thousands;
         let Some(state) = self.data_table_state.as_ref() else {
@@ -580,8 +575,8 @@ impl App {
         }
     }
 
-    /// `Y` in the inspector: the whole row as one JSON object, exact, without
-    /// leaving. Fields not read are left out, and the flash counts them.
+    /// `Y` in the inspector: the whole row as one exact JSON object. Unread fields are
+    /// left out, and the flash counts them.
     fn copy_inspected_row(&mut self) {
         use copy_modal::thousands;
         let Some(state) = self.data_table_state.as_ref() else {
@@ -639,8 +634,8 @@ impl App {
         });
     }
 
-    /// `o` in the inspector: the value written to a file of its own, in the view
-    /// it is shown in, for another program to open; see [`external_open`].
+    /// `o` in the inspector: the value written to its own file, in its shown view, for
+    /// another program; see [`external_open`].
     fn open_inspected_value(&mut self) {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
@@ -735,9 +730,9 @@ impl App {
         });
     }
 
-    /// Open `node` as a level under the one shown: a list or struct at once, text as
-    /// the JSON it holds, parsed here when short and on a worker when long. `path`
-    /// is the text's place, remembered when it does not parse.
+    /// Open `node` as a level below: a list or struct at once, text as its JSON, parsed
+    /// here when short and on a worker when long. `path` is remembered if it does not
+    /// parse.
     fn inspector_open(
         &mut self,
         frame: u64,
@@ -776,8 +771,8 @@ impl App {
             return;
         }
         let token = self.inspector_modal.wait_for_json(frame, row, label, path);
-        // The worker reads the text where it is: the node is a one-row slice or a
-        // shared document, so nothing up to the 4 MiB cap is copied to hand it over.
+        // The worker reads the text in place (a one-row slice or shared document), so
+        // nothing up to the 4 MiB cap is copied.
         self.spawn_job(
             Job::InspectJson { token },
             Some(Self::READING_JSON),
@@ -788,8 +783,8 @@ impl App {
         );
     }
 
-    /// `y` inside a drill: the focused item's whole value, exact, as `y` copies a
-    /// field; a JSON object or array as indented JSON.
+    /// `y` inside a drill: the focused item's exact value, objects and arrays as
+    /// indented JSON.
     fn copy_drilled_item(&mut self) {
         use inspector_drill::Node;
         let Some(drill) = self.inspector_modal.drill.as_ref() else {
@@ -852,11 +847,10 @@ impl App {
         }
     }
 
-    /// Read, off this thread, the fields of `row` the buffer does not hold — the
-    /// hidden columns and the binary ones — with the shown columns beside them, so a
-    /// sort that orders ties differently on a second read cannot pass another row's
-    /// fields off as this one's. `wait`: the user waits on it, as on Enter; a read
-    /// that follows the rows does not hold the keys.
+    /// Read off-thread the fields of `row` the buffer lacks (hidden and binary columns),
+    /// with the shown columns beside them so a sort ordering ties differently cannot
+    /// swap in another row's fields. `wait`: the user waits, as on Enter; a read
+    /// following the rows holds no keys.
     fn read_inspected_fields(&mut self, row: &crate::table::InspectRow, wait: bool) {
         let Some(state) = self.data_table_state.as_ref() else {
             return;

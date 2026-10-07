@@ -25,8 +25,7 @@ impl App {
         self.count_values(false);
     }
 
-    /// Whether the Value Counts screen is up: on its own, or under the export
-    /// dialog writing its counts.
+    /// Whether Value Counts is up, alone or under the export dialog writing its counts.
     pub(crate) fn value_counts_shown(&self) -> bool {
         self.overlay.shows(&Overlay::ValueCounts)
     }
@@ -36,9 +35,8 @@ impl App {
         self.overlay == Overlay::ValueCounts && self.value_counts.computing.is_some()
     }
 
-    /// Count the column on the Value Counts screen, unless its counts are already
-    /// held: quickly, or every row when `exact`. Off the UI thread, without holding
-    /// the keys, so stepping to another column or Esc stops it.
+    /// Count the column on Value Counts unless already held: quickly, or every row with
+    /// `exact`. Off the UI thread and holding no keys, so another column or Esc stops it.
     fn count_values(&mut self, exact: bool) {
         let Some(column) = self.value_counts.column().map(str::to_string) else {
             return;
@@ -90,8 +88,8 @@ impl App {
         });
     }
 
-    /// Stop the count in flight, if one is: its read stops at its next batch and its
-    /// answer is dropped.
+    /// Stop the count in flight: its read stops at the next batch and its answer is
+    /// dropped.
     pub(crate) fn stop_value_count(&mut self) {
         if let Some(computing) = self.value_counts.computing.take() {
             computing.watch.stop();
@@ -117,8 +115,8 @@ impl App {
             return None;
         }
         match event.code {
-            // A count still reading stops; with nothing to show for the column, Esc
-            // goes on back to the table.
+            // A count still reading stops; with nothing shown for the column, Esc goes back to
+            // the table.
             KeyCode::Esc => {
                 let counting = self.value_counts.counting();
                 self.stop_value_count();
@@ -205,8 +203,8 @@ impl App {
         match state.deferred(|s| s.drill_into_value(&column, value)) {
             Ok(()) => {
                 self.stop_value_count();
-                // Inside a group already, Esc goes back past this view to the one
-                // the group came from, so there are no counts to come back to.
+                // Inside a group already, Esc goes past this view to the group's origin: no counts
+                // to return to.
                 self.value_counts.drill_return = !nested;
                 self.close_overlay();
                 self.sync_sort_filter_modal();

@@ -10,9 +10,9 @@ use polars::prelude::AnyValue;
 use std::path::PathBuf;
 use std::sync::mpsc;
 
-mod common;
+use crate::common;
 
-use common::{drain_events, ensure_sample_data, pump_open_until_loaded};
+use crate::common::{drain_events, ensure_sample_data, pump_open_until_loaded};
 
 fn load_file(app: &mut App, rx: &std::sync::mpsc::Receiver<AppEvent>, path: PathBuf) {
     pump_open_until_loaded(app, rx, vec![path], OpenOptions::default());

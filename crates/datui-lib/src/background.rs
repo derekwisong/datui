@@ -10,28 +10,20 @@ use polars::prelude::LazyFrame;
 use crate::table::DataTableState;
 use crate::{AppEvent, logging};
 
-/// The buffer collect in flight: what it will fill, and for which data.
-///
-/// The first frame after a load sets `visible_rows` and asks for a recollect while the
-/// pre-frame collect is still running; on an object store that restarted the same
-/// row-group download. A collect that already covers the view is left to land instead,
-/// provided nothing has moved underneath it: its job must still be current, and the
-/// data the one it was spawned for (`len_generation` changes with every change to
-/// `lf`, so a filter applied while it runs plans a fresh collect).
-///
-/// The payload of [`Job::Rows`]. Whether anyone waits on it is the job's keys: a
-/// load-ahead starts with nobody waiting, and a scroll that finds its rows already on
-/// the way waits on it from then.
+/// The buffer collect in flight, the payload of [`Job::Rows`]. A collect already
+/// covering the view is left to land rather than restarted (the first frame's
+/// recollect would redo a row-group download), provided its job is current and the
+/// data unchanged (`len_generation` moves with every change to `lf`). Whether
+/// anyone waits on it is the job's keys: a load-ahead starts unwaited, and a scroll
+/// that finds its rows coming waits on it.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct InflightCollect {
-    /// When the request went out, and how many of the dataset's files it will read, for
-    /// the Last page measurement. `files` is `None` where Polars was handed the whole
-    /// scan and reads what it decides to.
+    /// When the request went out and how many files it reads, for the Last page
+    /// measurement; `files` is `None` when Polars scans the whole frame.
     pub(crate) began: std::time::Instant,
     pub(crate) files: Option<usize>,
     pub(crate) dataset: u64,
-    /// The columns it reads ([`Self::columns_of`]). A new column order is the same
-    /// frame read through another projection, so these rows do not serve it.
+    /// The columns it reads ([`Self::columns_of`]); another projection needs other rows.
     pub(crate) columns: u64,
     pub(crate) start: usize,
     pub(crate) end: usize,
@@ -77,10 +69,9 @@ impl InflightCollect {
     }
 }
 
-/// The exact row count of a frame, to run off the UI thread: the footer sum for a
-/// pristine local Parquet hive directory or remote dataset of many files, otherwise
-/// `len()`. Carries the `len_generation` it was spawned under, so a result for data since
-/// changed is dropped.
+/// A frame's exact row count, run off the UI thread: the footer sum for a pristine
+/// local Parquet hive or a remote multi-file dataset, else `len()`. Results for a
+/// changed `len_generation` are dropped.
 pub(crate) struct LenCount {
     pub(crate) len_generation: u64,
     pub(crate) count_dir: Option<PathBuf>,
@@ -89,11 +80,10 @@ pub(crate) struct LenCount {
     pub(crate) counter: Option<crate::pushdown::Counter>,
     pub(crate) lf: LazyFrame,
     pub(crate) streaming: bool,
-    /// The open's meter. Counting a local directory re-reads every footer, which costs
-    /// what the open's own pass cost and is tallied with it.
+    /// The open's meter: a local directory's count re-reads every footer, tallied with
+    /// the open's pass.
     pub(crate) meter: Arc<crate::measurements::Meter>,
-    /// What a count of footers has read of how many, for the footer's progress line;
-    /// cancelled, the count stops (Esc).
+    /// Footers read of how many, for the progress line; cancelling stops the count (Esc).
     pub(crate) progress: Arc<crate::schema_union::FooterProgress>,
 }
 
@@ -122,8 +112,8 @@ impl LenCount {
             meter: state.measurements().clone(),
             lf: state.lf_clone(),
             streaming: state.polars_streaming_enabled(),
-            // A store's footers are round trips, many waited on at once; a disk's are
-            // read, a wave at a time.
+            // Store footers are round trips, many awaited at once; disk footers go a wave at a
+            // time.
             progress: Arc::new(if state.is_remote_source() {
                 crate::schema_union::FooterProgress::counting()
             } else {
@@ -132,8 +122,7 @@ impl LenCount {
         }
     }
 
-    /// Whether this count reads only footers, and so can run beside a buffer read
-    /// rather than waiting for it.
+    /// Whether this count reads only footers, so it can run beside a buffer read.
     pub(crate) fn reads_footers(&self) -> bool {
         self.files.is_some() || self.count_dir.is_some()
     }
@@ -172,8 +161,8 @@ impl LenCount {
                 .map(Counted::from)
                 .map_err(|e| log::warn!(target: "datui", "row count failed: {e}"));
         }
-        // A dataset's footers, many at once. Should one not read, the scan counts itself;
-        // a count that was stopped does not.
+        // A dataset's footers, many at once. If one fails, the scan counts itself; a stopped
+        // count does not.
         if let Some(count) = &self.files {
             match count(&self.progress) {
                 Ok(groups) => {
@@ -213,11 +202,10 @@ impl LenCount {
         }
     }
 
-    /// The count once a buffer collect of `requested` rows from `start` has returned
-    /// `returned` of them. A short read that began inside the data — at its top, or
-    /// finding at least a row — ran off its end, which names the total without a pass
-    /// over it. A full read, or a slice deep in a frame that found nothing and may lie
-    /// past the data entirely, leaves the count to `run`.
+    /// The count once a collect of `requested` rows from `start` returned `returned`. A
+    /// short read that began inside the data (at the top, or finding a row) ran off its
+    /// end, giving the total. A full read, or a deep empty slice that may lie past the
+    /// data, leaves the count to `run`.
     pub(crate) fn after_collect(
         &self,
         start: usize,
@@ -231,8 +219,8 @@ impl LenCount {
         }
     }
 
-    /// Report the count. A failure leaves the total provisional and allows a retry on a
-    /// later interaction; the buffer paint is unaffected either way.
+    /// Report the count. A failure leaves the total provisional and retried on a later
+    /// interaction.
     fn send(&self, counted: Result<Counted, ()>, tx: &Sender<AppEvent>) {
         let _ = tx.send(match counted {
             Ok(counted) => AppEvent::BackgroundLenReady {
@@ -247,12 +235,9 @@ impl LenCount {
     }
 }
 
-/// A count that has been started, and so owes `len_count_inflight` an answer.
-///
-/// Answered however its worker ends. A count that panics, or a collect it rides in that
-/// fails or panics before reaching it, reports itself failed: unanswered, the marker
-/// would stand for the session, with a spinner where the row count goes and `End`
-/// waiting on nothing.
+/// A started count, owing `len_count_inflight` an answer however its worker ends: a
+/// panic, or a failure of the collect it rides in, reports failed. Unanswered, the
+/// marker would stand for the session, spinning, with `End` waiting on nothing.
 pub(crate) struct OwedCount {
     job: Option<LenCount>,
     tx: Sender<AppEvent>,
@@ -280,14 +265,10 @@ impl Drop for OwedCount {
     }
 }
 
-/// The answer a home-screen worker owes whatever marks it in flight, sent in its place
-/// if the worker panics before sending its own. Unanswered, the marker stands for the
-/// session: a listing that says "Looking..." over nothing, a search that never ends,
-/// a root never probed again.
-///
-/// Not a [`jobs::Jobs`] job: these are keyed by place and `home_generation`, take no
-/// lease and hold no keys. The panic itself is left to the hook, which logs it and has
-/// `flash_background_panic` say so.
+/// The answer a home worker owes its in-flight marker, sent instead if it panics
+/// first; unanswered, the marker stands for the session. Not a [`jobs::Jobs`] job:
+/// keyed by place and `home_generation`, no lease, no keys. The panic hook logs and
+/// flashes the panic itself.
 pub(crate) struct OwedAnswer {
     pub(crate) tx: Sender<AppEvent>,
     pub(crate) instead: Option<AppEvent>,
@@ -315,18 +296,15 @@ impl Drop for OwedAnswer {
     }
 }
 
-/// What an open writes to the cache for home to read back (the recent, the shape):
-/// written off the UI thread with nothing waiting on it, and counted here so the home
-/// listing reads after it.
-///
-/// Without the count a `q` straight after an open could list the cache before the
-/// recent was in it, and nothing lists it again until the user moves.
+/// Cache writes an open makes for home (the recent, the shape): off the UI thread,
+/// counted so the home listing waits for them, else a quick `q` could list the
+/// cache before the recent is in.
 #[derive(Clone, Default)]
 pub(crate) struct CacheWrites(Arc<(std::sync::Mutex<usize>, std::sync::Condvar)>);
 
 impl CacheWrites {
-    /// The longest a listing waits: past the history lock's own timeout, so a write
-    /// that gives up has done so first.
+    /// The longest a listing waits: past the history lock's timeout, so a giving-up
+    /// write has given up.
     const SETTLE: std::time::Duration = std::time::Duration::from_secs(5);
 
     /// Write on a thread of its own, counted until it ends, panic or not.

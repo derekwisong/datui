@@ -19,7 +19,7 @@ pub struct Pickers {
 
 impl App {
     /// `g` at the table: pick a shown column by name, bring it on screen and put the
-    /// column cursor on it. Starts on the cursor's column, so ↑↓ move from there.
+    /// cursor on it, starting from the cursor's column.
     pub(crate) fn open_go_to_column(&mut self) {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
@@ -62,8 +62,8 @@ impl App {
         }
     }
 
-    /// `b` at a table read through a format spec: the specs that could read it, the
-    /// ones that matched first, to read it again with another.
+    /// `b` at a table read through a format spec: the specs that could read it, to
+    /// reread with another.
     pub(crate) fn open_format_picker(&mut self) {
         let Some(read) = self
             .data_table_state
@@ -88,8 +88,8 @@ impl App {
         self.open_overlay(Overlay::PickFormat);
     }
 
-    /// The format picker owns the keys: type to narrow, ↑↓ move, Enter reads the file
-    /// again with the spec chosen, Esc closes.
+    /// The format picker's keys: type to narrow, ↑↓ move, Enter rereads with the chosen
+    /// spec, Esc closes.
     pub(crate) fn format_picker_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         match event.code {
             KeyCode::Esc => self.close_overlay(),
@@ -145,8 +145,8 @@ impl App {
         }
     }
 
-    /// `T` at the table: the source's tables, the one on screen marked, to open
-    /// another. A source of one says so.
+    /// `T` at the table: the source's tables, the current one marked. A source of one
+    /// says so.
     pub(crate) fn open_table_picker(&mut self) {
         let Some(tables) = self.sibling_tables().filter(table_switch::Tables::several) else {
             self.flash_note("Only one table here".to_string());
@@ -186,8 +186,8 @@ impl App {
     }
 
     /// Open `table` of the file on screen in its place (`None`: the whole file), as
-    /// `--table` or home's row for it would: the query, filters and sort go with the
-    /// table they were on, recents record it, and a view for it applies.
+    /// `--table` would: query, filters and sort stay with their table, recents record
+    /// it, and a matching view applies.
     pub(crate) fn switch_table(&mut self, table: Option<String>) -> Option<AppEvent> {
         let (paths, options) = self.source.opened.clone()?;
         let shown = match &table {
@@ -196,8 +196,7 @@ impl App {
         };
         let options = OpenOptions {
             table,
-            // `--view` was for the first open; a view for this table applies as on
-            // any open.
+            // `--view` was for the first open; a matching view applies as on any open.
             view: None,
             prepared: None,
             ..options

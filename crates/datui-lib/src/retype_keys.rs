@@ -35,8 +35,7 @@ impl App {
         }
     }
 
-    /// The type picker for `column`, over what is on screen; Esc or Enter come back
-    /// to it.
+    /// The type picker for `column` over what is on screen; Esc or Enter return to it.
     pub(crate) fn open_retype(&mut self, column: &str) {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
@@ -104,8 +103,8 @@ impl App {
         None
     }
 
-    /// `column` as `ty`, or as read with `None`; the values that did not fit are
-    /// counted behind it, for the Notes.
+    /// Retype `column` as `ty` (`None`: as read); values that did not fit are counted
+    /// behind it for the Notes.
     pub(crate) fn retype_column(
         &mut self,
         column: &str,

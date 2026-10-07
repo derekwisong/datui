@@ -166,8 +166,7 @@ mod sample_keys;
 pub mod sample_modal;
 pub mod sampling;
 pub mod table_sample;
-// Public so the fuzz targets in `fuzz/` can reach `parse_query`. The parser is
-// hand-written and runs on whatever the user types, so it is fuzzed directly.
+// Public for the fuzz targets in `fuzz/`.
 pub mod query;
 pub mod readers;
 mod render;
@@ -184,8 +183,7 @@ pub mod source;
 pub(crate) mod spec_union;
 mod sql_assist;
 pub mod sqlite;
-// Public so the fuzz target `sql_group_plan` can reach `plan`, which reads every SQL
-// statement the prompt runs.
+// Public for the `sql_group_plan` fuzz target.
 #[cfg(feature = "sql")]
 pub mod sql_group;
 #[cfg(feature = "sql")]
@@ -253,14 +251,13 @@ use widgets::debug::DebugState;
 use widgets::text_input::TextInput;
 use widgets::view_modal::{FormFocus, ViewModal, ViewModalMode};
 
-/// Application name used for cache directory and other app-specific paths
+/// Application name, used for cache and config paths.
 pub const APP_NAME: &str = "datui";
 
 /// What a file no reader takes, and no hex view can show, is told.
 pub(crate) const UNSUPPORTED: &str =
     "Unsupported file type. --format names the format to read it as.";
 
-/// Re-export compression format and file format from CLI module
 pub use cli::{CompressionFormat, FileFormat, ReadMode, RemoteRead, Stored, Summary};
 
 #[cfg(test)]
@@ -312,36 +309,27 @@ impl Scroll {
 
 pub enum AppEvent {
     Key(KeyEvent),
-    /// A key to take as if typed: what Enter on a help line presses. The event pump
-    /// offers it as the next typed key, through `classify`, so it is held, converted or
-    /// dropped as a typed key would be; outside the pump it is a `Key`.
+    /// A key taken as if typed (Enter on a help line). The pump runs it through
+    /// `classify` like a typed key; outside the pump it is a `Key`.
     Press(KeyEvent),
-    /// Read from the terminal by [`terminal_input::TerminalInput`]: a key press or a
-    /// resize. [`event_pump::EventPump`] takes it off the channel and decides what a
-    /// key does while the app is busy; the app itself only ever sees `Key`/`Resize`.
+    /// Read from the terminal by [`terminal_input::TerminalInput`]. The
+    /// [`event_pump::EventPump`] turns it into `Key`/`Resize`.
     Terminal(crossterm::event::Event),
     /// Something polled rather than sent changed (a background panic, a Polars
-    /// warning): the loop should look. Handled as nothing.
+    /// warning): wakes the loop. Handled as nothing.
     Wake,
-    /// The terminal said what its background is (an OSC 11 reply, taken off the input
-    /// stream by [`terminal_input`]). Under `theme.mode = "auto"` the palette follows.
+    /// The terminal's background (an OSC 11 reply); `theme.mode = "auto"` follows it.
     TerminalBackground(ThemeMode),
-    /// The terminal window came back into focus: under `auto` the background is asked
-    /// again, since the scheme may have changed while it was away.
+    /// The terminal regained focus: under `auto` the background is asked again.
     TerminalFocused,
-    /// The settings `run` reads on a worker before it can build the app. Never reaches
-    /// the app: `run` waits for it before there is one.
+    /// Settings `run` reads on a worker before building the app; never reaches the app.
     SettingsRead(Box<Result<startup::Settings>>),
-    /// The paths named on the command line or by the Python binding: whether each is
-    /// there and whether one is a directory is asked on a worker
-    /// ([`JobKind::OpenNamed`]), a local-looking path being no promise of a fast
-    /// mount.
+    /// Paths from the command line or the Python binding, checked on a worker
+    /// ([`JobKind::OpenNamed`]): a local-looking path may be a slow mount.
     OpenNamed(Vec<PathBuf>, OpenOptions),
-    /// A path named on the command line is not there: the session ends as a missing
-    /// file always has. The continuation of the look's answer.
+    /// A path named on the command line is not there: the session ends.
     NamedPathMissing(PathBuf),
-    /// Open these paths. Its phases are the loading controller's: each worker's answer
-    /// starts the next, and the dataset is installed when its schema is read.
+    /// Open these paths, through the loading controller's phases.
     Open(Vec<PathBuf>, OpenOptions),
     /// Open with an existing LazyFrame (e.g. from Python binding); no file load.
     OpenLazyFrame(Box<LazyFrame>, OpenOptions),
@@ -358,8 +346,7 @@ pub enum AppEvent {
         /// The saved folds, when entering the home screen asked for them.
         folds: Option<std::collections::HashMap<String, bool>>,
     },
-    /// The worker building a home listing panicked, so no listing is coming. The panic
-    /// is flashed like any other raw worker's.
+    /// The home listing worker panicked; the panic is flashed.
     HomeListingFailed,
     /// The directory the `~` prompt is typing, read off-thread.
     HomePathListed {
@@ -368,14 +355,13 @@ pub enum AppEvent {
     /// A completed path, worked out off-thread.
     HomePathCompleted {
         generation: u64,
-        /// What was typed when completion was asked for; a later keystroke makes the
-        /// answer stale.
+        /// What was typed when completion was asked; a later keystroke makes it stale.
         typed: String,
         completed: String,
         candidates: usize,
     },
-    /// The first rows of the highlighted file, read off-thread the way its open reads
-    /// them, and the dataset that read built, for the open to install.
+    /// The highlighted file's first rows, read as its open reads them, and the
+    /// dataset that read built, for the open to install.
     HomePreviewReady {
         path: PathBuf,
         /// The row's stamp when it was asked for: what the rows are kept under.
@@ -391,13 +377,9 @@ pub enum AppEvent {
         path: PathBuf,
         preview: Option<crate::discover::SchemaPreview>,
     },
-    /// Measurements for rows the home screen asked about, sent as each row is read so
-    /// a slow row does not hold back the ones before it. `done` marks the end of the
-    /// batch and frees the slot for the next one.
-    ///
-    /// No generation, unlike its neighbors: what a look found is keyed by path and
-    /// true of that path whichever listing asked, so an answer that outlives its
-    /// listing is still the answer.
+    /// Measurements for home rows, sent per row so a slow one holds back no other.
+    /// `done` ends the batch. No generation: a measurement is keyed by path and
+    /// stays true whichever listing asked.
     HomeMeasured {
         measured: Vec<(PathBuf, crate::home::Measured)>,
         done: bool,
@@ -412,16 +394,13 @@ pub enum AppEvent {
         path: PathBuf,
         gone: crate::error_display::HttpGone,
     },
-    /// What the rows on screen turned out to be. The same payload as
-    /// [`AppEvent::HomeMeasured`] and folded in the same way: a kind is one of the
-    /// things a look into a row produces.
+    /// What the rows on screen turned out to be; folded like
+    /// [`AppEvent::HomeMeasured`].
     HomeClassified {
         measured: Vec<(PathBuf, crate::home::Measured)>,
         done: bool,
     },
-    /// A batch of datasets found by the background search below the working
-    /// directory. Sent repeatedly while the walk runs, so a cold tree fills in
-    /// rather than arriving all at once at the end.
+    /// A batch of datasets from the background search, sent repeatedly while it walks.
     HomeSearchBatch {
         generation: u64,
         root: PathBuf,
@@ -434,22 +413,20 @@ pub enum AppEvent {
         /// `None` from a worker that died.
         matches: Option<Box<crate::search::Matches>>,
     },
-    /// The background search has stopped, with `limited` saying why if it stopped
-    /// short of walking everything.
+    /// The background search stopped; `limited` says why if it stopped short.
     HomeSearchDone {
         generation: u64,
         root: PathBuf,
         scanned: usize,
         limited: Option<String>,
     },
-    /// The cloud sources on this machine, with whatever was listed on an earlier run.
-    /// Sent before anything is fetched, so the rows are there on the first frame.
+    /// The cloud sources on this machine with what an earlier run listed, sent before
+    /// anything is fetched.
     #[cfg(feature = "cloud")]
     HomeCloudSources {
         sources: Vec<crate::home::CloudSource>,
     },
-    /// One source's buckets have been listed, or could not be. Each source reports on
-    /// its own, so a slow endpoint holds up nobody else's row.
+    /// One source's buckets listed, or not. Each source reports on its own.
     #[cfg(feature = "cloud")]
     HomeCloudListed {
         id: String,
@@ -467,29 +444,26 @@ pub enum AppEvent {
         /// The listing stopped at [`crate::discover::MAX_ENTRIES_PER_DIR`].
         cut_short: bool,
     },
-    /// Rows of a network directory read since its last batch, while its listing goes
-    /// on.
+    /// Rows of a network directory read since its last batch.
     HomeProbeProgress {
         root: PathBuf,
         rows: Vec<crate::discover::Entry>,
     },
-    /// What peeking inside some directories of a cloud listing found: the ones that are
-    /// partitioned or Parquet datasets.
+    /// Cloud directories that peeking found to be partitioned or Parquet datasets.
     HomeCloudKinds {
         kinds: Vec<(
             PathBuf,
             (crate::discover::EntryKind, crate::discover::Holds),
         )>,
-        /// Directories whose peek failed or was lost: not answered, so not labelled as
-        /// if they were.
+        /// Directories whose peek failed or was lost, so left unlabeled.
         failed: Vec<PathBuf>,
     },
-    /// A cloud listing stopped because its place was left. Nothing is known about the
-    /// place, so it is listed again when it is entered again.
+    /// A cloud listing stopped because its place was left; it is listed again on
+    /// return.
     HomeProbeCancelled {
         root: PathBuf,
     },
-    /// The names under `prefix` in a cloud directory cut short, asked for by a filter;
+    /// Names under `prefix` in a cut-short cloud directory, asked for by a filter;
     /// `None` when the listing failed or was stopped.
     HomeNarrowed {
         dir: PathBuf,
@@ -501,8 +475,7 @@ pub enum AppEvent {
         root: PathBuf,
         message: String,
     },
-    /// Run the export, from plan to committed file, once the UI has drawn its
-    /// progress.
+    /// Run the export once the UI has drawn its progress.
     DoExport(ExportRequest),
     /// A followed file's watcher found more rows, or that the file went.
     Followed(crate::follow::News),
@@ -531,8 +504,7 @@ pub enum AppEvent {
         header: bool,
     },
     ChartExport(ChartExportRequest),
-    /// A documentation link the user confirmed, checked by `link_open::checked_url`:
-    /// start the browser on it.
+    /// A confirmed documentation link, checked by `link_open::checked_url`.
     OpenLink(String),
     /// Deferred: run the chart export once its phase is drawn.
     DoChartExport(ChartExportRequest),
@@ -545,59 +517,44 @@ pub enum AppEvent {
     GoToLine(usize), // Deferred: jump to line number (when collect needed)
     /// Run an analysis tool off the UI thread; deferred so its progress shows first.
     AnalysisCompute(analysis_modal::AnalysisTool),
-    /// A Data Quality run that stopped short had already read its sample: kept, so
-    /// the read it paid for is not thrown away.
+    /// The sample a stopped Data Quality run had read, kept for the next run.
     BackgroundQualitySampleKept {
         kept: KeptQualitySample,
     },
-    /// A full scan finished copying a remote dataset's objects locally: kept for the
-    /// dataset it was fetched for, whatever becomes of the run. `None` when the copy
-    /// did not read as the source, so later runs read the source and say why.
+    /// A full scan's local copy of a remote dataset, kept for that dataset. `None`
+    /// when the copy did not read as the source.
     BackgroundQualityCopyKept {
         dataset_generation: u64,
         copy: Option<Arc<crate::local_copy::LocalCopy>>,
     },
-    /// Background task completed: exact row count for the current LazyFrame. Applied to
-    /// `data_table_state` only if `len_generation` still matches (the data is unchanged).
-    /// Runs concurrently with — and independently of — the first buffer paint, so the
-    /// count fills in the scrollbar/total without ever blocking the initial render.
+    /// The exact row count for the current LazyFrame, applied only if
+    /// `len_generation` still matches. Runs alongside the first paint, never
+    /// blocking it.
     BackgroundLenReady {
         len_generation: u64,
         num_rows: usize,
-        /// For a remote dataset of many files, the rows in each row group of each file,
-        /// from their footers.
+        /// For a remote multi-file dataset, each file's row-group sizes from its footer.
         file_row_groups: Option<Vec<Vec<usize>>>,
     },
-    /// Background row count failed. Clears the in-flight marker; the total stays
-    /// provisional and is shown as unknown. Scrolling does not count again; End does.
+    /// The row count failed: the total stays unknown. Scrolling does not count
+    /// again; End does.
     BackgroundLenFailed {
         len_generation: u64,
     },
-    /// A frame was painted. The run loop calls [`App::frame_painted`] itself; a harness
-    /// that paints nothing sends this when [`App::count_waits_for_a_frame`].
+    /// A frame was painted. The run loop calls [`App::frame_painted`]; a harness
+    /// sends this when [`App::count_waits_for_a_frame`].
     FramePainted,
-    /// Write the Data Quality report on screen to a file, in a form. From the
-    /// results in memory: nothing is read.
+    /// Write the on-screen Data Quality report from memory; nothing is read.
     QualityReportExport(PathBuf, crate::quality_export::ReportFormat, Overwrite),
-    /// A directory named on the command line: look at it on a worker, then do with it
-    /// whatever `Enter` on its row would do.
-    ///
-    /// The look reads footers, or the front of a spread of files, which for a directory
-    /// of large Parquet is seconds. It is an event rather than a call so the first frame
-    /// is drawn before it starts, and the wait has the directory's name on it, a spinner
-    /// and a way out.
+    /// A directory named on the command line: look at it on a worker, then do what
+    /// `Enter` on its row would. An event so the first frame, with a spinner and a
+    /// way out, is drawn before a look that can take seconds.
     LookThenOpenDirectory(PathBuf, OpenOptions),
-    /// Look at a path off the interface thread, then do with it whatever it turns out to
-    /// need — browse into it, say it is a lake table, or open it.
-    ///
-    /// `exists`, `is_dir` and `classify_directory` are all filesystem calls, and the home
-    /// screen is full of paths on mounts that may not answer. Doing them where the keys
-    /// are read is an uninterruptible freeze with Ctrl+C on the same thread.
+    /// Look at a path off the UI thread, then browse into it, report a lake table, or
+    /// open it. The filesystem calls can hang on a slow mount.
     ClassifyThenOpen {
         path: PathBuf,
-        /// A jump — a path typed at `~` — rather than a row that was already listed. Esc
-        /// then comes back from there to the listing, not up through wherever the path
-        /// happens to sit.
+        /// A path typed at `~` rather than a listed row: Esc returns to the listing.
         jump: bool,
     },
     /// A background job's outcome is in its record: [`jobs::Jobs::end`] takes it.
@@ -610,8 +567,8 @@ pub enum AppEvent {
 }
 
 impl AppEvent {
-    /// A report from work still going, sent many times while it runs: the run loop may
-    /// fold several into one frame. Anything else is drawn as soon as it is handled.
+    /// A report sent many times while work runs: the loop may fold several into one
+    /// frame.
     pub fn is_progress(&self) -> bool {
         matches!(
             self,
@@ -640,24 +597,13 @@ type FileFactsReader = Arc<
         + Sync,
 >;
 
-/// What [`App::handle`] did with an event: `Ok` carries the follow-up event to send,
-/// if any; `Err` returns a key that arrived while the app was busy. Nothing was done
-/// with that key and it was not dropped: the caller keeps it and offers it again once
-/// the app is idle.
+/// What [`App::handle`] did: `Ok` carries a follow-up event; `Err` returns a key
+/// that arrived while busy, untouched, for the caller to offer again when idle.
 pub type EventOutcome = Result<Option<AppEvent>, KeyEvent>;
 
-/// What <kbd>Enter</kbd> will do on the highlighted row.
-///
-/// Written so the footer and the details pane can say it before it happens.
-/// Every directory has two doors and the labels no longer decide access, which is only
-/// worth anything if the screen says which key is which — a bar reading `Enter Open` on
-/// a row where `Enter` goes inside teaches the wrong thing on the first try, and the
-/// first try is the one that forms the impression.
-///
-/// A prediction, so it can drift from [`App::home_open_selected`], which is the thing
-/// that actually decides. `test_the_bar_says_what_enter_will_really_do` pumps `Enter`
-/// on one row of every shape and asserts the two agreed; that test is the reason this
-/// is safe to read from the renderer.
+/// What <kbd>Enter</kbd> will do on the highlighted row, for the footer and the
+/// details pane. A prediction of [`App::home_open_selected`];
+/// `test_the_bar_says_what_enter_will_really_do` keeps the two in agreement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WhatEnter {
     /// Load the file on the row.
@@ -690,9 +636,7 @@ impl App {
     /// See [`WhatEnter`].
     pub fn what_enter_does(&self) -> WhatEnter {
         let entry = match self.home.selected_row() {
-            // A place row browses into the place, which is what `→` does on it too, so
-            // it is labelled the same and offered once. An HTTP place has no listing to
-            // browse and says so instead.
+            // A place browses as `→` does; an HTTP place has no listing and says so.
             Some(home::Row::Place { path, .. }) => {
                 return if home::place_is_browsable(&path) {
                     WhatEnter::GoesInside
@@ -704,10 +648,8 @@ impl App {
             Some(home::Row::More { .. }) => return WhatEnter::ShowsMore,
             Some(home::Row::Up { .. }) => return WhatEnter::GoesUp,
             Some(home::Row::Hidden { .. }) => return WhatEnter::ShowsHidden,
-            // "No match.": nothing to open and nothing to say about it.
             None => return WhatEnter::Nothing,
-            // The door reads the directory it names whatever that directory is labelled —
-            // the lake tables included, which is the one row that reads them at all.
+            // The door reads its directory whatever its label, lake tables included.
             Some(home::Row::Door { .. }) => return WhatEnter::OpensDirectory,
             Some(home::Row::Entry { entry, .. }) => entry,
         };
@@ -740,23 +682,21 @@ impl App {
 }
 
 impl App {
-    /// Whether a dataset held `download` because it came from a remote `path` (the
-    /// URL it is shown by): a local stream's conversion and standard input's spool are
-    /// held the same way.
+    /// Whether `download` is held because the dataset came from a remote `path`;
+    /// local stream conversions and stdin spools are held the same way.
     fn was_fetched(download: Option<&crate::download::TempDownload>, path: Option<&Path>) -> bool {
         download.is_some() && path.is_some_and(source::is_remote_url)
     }
 }
 
-/// Input for the shared run loop: open from file paths or from an existing LazyFrame (e.g. Python binding).
+/// Input for the shared run loop.
 #[derive(Clone)]
 pub enum RunInput {
-    /// The command line as parsed. The configuration is read, and the flags applied
-    /// over it, behind the first frame ([`startup`]).
+    /// The command line as parsed; config is read behind the first frame
+    /// ([`startup`]).
     Cli(Box<Args>),
-    /// A host program's options, as the command line would give them, with a frame
-    /// to show instead of its paths when there is one. Read as the command line is,
-    /// `-c` included, but standard input is the host's, never data.
+    /// A host program's options, read as the command line's (`-c` included), with a
+    /// frame to show instead of its paths. Stdin is the host's, never data.
     Host(Box<Args>, Option<Box<LazyFrame>>),
     Paths(Vec<PathBuf>, OpenOptions),
     LazyFrame(Box<LazyFrame>, OpenOptions),
@@ -767,9 +707,7 @@ pub enum RunInput {
 pub enum InputMode {
     #[default]
     Normal,
-    /// The home screen: pick a dataset to open. Reachable at startup with no
-    /// arguments, and from inside a session, which is what makes datui a place you
-    /// stay rather than a command you re-run.
+    /// The home screen: pick a dataset to open, at startup or from a session.
     Home,
     /// The command line or the find line.
     Editing,
@@ -782,18 +720,16 @@ pub enum InputType {
     Find,
 }
 
-/// A query whose first rows are being read. It planned, but can still fail on the
-/// data — a value that will not cast — and until the rows are in, the view it
-/// replaced is kept to go back to.
+/// A query whose first rows are being read. It can still fail on the data (a
+/// value that will not cast); until the rows are in, the replaced view is kept.
 struct QueryRun {
     origin: RunOrigin,
-    /// The `len_generation` of the frame the query installed. Once that frame is gone
-    /// (a sort, a filter, another dataset) the rollback no longer applies.
+    /// The `len_generation` of the query's frame; once that frame is gone the
+    /// rollback no longer applies.
     frame: u64,
     rollback: crate::table::ViewRollback,
-    /// The count markers as they were, for the frame the rollback restores. A count
-    /// of that frame still running when the query began lands while the query's frame
-    /// is installed; its answer goes into `rollback`.
+    /// The count markers for the frame the rollback restores. A count of it still
+    /// running lands into `rollback`.
     counts: counting::CountMarkers,
     /// Rows `df` holds, when known, so a failure can say "of N".
     rows: Option<usize>,
@@ -801,22 +737,19 @@ struct QueryRun {
 
 /// Where a running query came from, which decides where its failure is said.
 enum RunOrigin {
-    /// The query prompt, or its event sent directly: inline under the prompt while
-    /// it is open in this mode, else a dialog.
+    /// The query prompt: inline under it while open in this mode, else a dialog.
     Query(QueryMode),
-    /// A view applied. Its failure is a dialog, and the view marked applied before
-    /// it is marked again. Applied for a match rather than picked, `matched` says
-    /// why once its rows are in.
+    /// A view applied: a dialog on failure, and the previous view marked applied
+    /// again. `matched` says why it was applied for a match.
     View {
         previous: Option<String>,
         matched: Option<(String, view::MatchReason)>,
     },
 }
 
-/// What the bar says of a recording (`--tee`): `rec` with its size and rate while it
-/// goes on, `saved` with its size, length and file once it ended (`sent` and no file
-/// for `--tee -`), or `stopped` and why, in the warning color, when it ended in an
-/// error. The second value is that last.
+/// The bar's recording label (`--tee`): `rec` with size and rate, `saved` with
+/// size, length and file (`sent` for `--tee -`), or `stopped` and why. The bool
+/// is true for that last (warning color).
 fn recording_label(spool: &crate::follow::Spool) -> (String, bool) {
     let dot = crate::glyphs::get().middot;
     let size = crate::numfmt::bytes(spool.bytes());
@@ -854,8 +787,7 @@ pub(crate) enum Leaving {
     Home,
 }
 
-/// An export under way, for the footer: the file, its phase, and the bytes
-/// written once writing has started.
+/// An export under way, for the footer.
 #[derive(Clone, Debug)]
 pub struct ExportProgress {
     pub file_path: PathBuf,
@@ -874,8 +806,7 @@ impl ExportProgress {
     }
 }
 
-/// The correlation matrix of the sample's numeric columns. Only those are read: nothing
-/// else is correlated, and on a wide table the rest is most of what a full read holds.
+/// The correlation matrix of the sample's numeric columns, reading only those.
 fn correlations_of_sample(
     lf: &LazyFrame,
     sample: &sampling::Sample,
@@ -900,8 +831,8 @@ fn correlations_of_sample(
     })
 }
 
-/// At most one query type can be active. Returns (query, sql_query, fuzzy_query) with only the
-/// active one set (SQL takes precedence over fuzzy over DSL query). Used when saving view settings.
+/// Returns (query, sql_query, fuzzy_query) with only the active one set: SQL over
+/// fuzzy over DSL. A saved view keeps one.
 fn active_query_settings(
     dsl_query: &str,
     sql_query: &str,
@@ -921,8 +852,7 @@ fn active_query_settings(
     }
 }
 
-/// The steps `state` shows, as a saved view keeps them: the query, filters, sort,
-/// columns and reshape.
+/// The steps `state` shows, as a saved view keeps them.
 pub(crate) fn view_settings_of(state: &DataTableState) -> view::ViewSettings {
     let (query, sql_query, fuzzy_query) = active_query_settings(
         state.get_active_query(),
@@ -948,12 +878,11 @@ pub(crate) fn view_settings_of(state: &DataTableState) -> view::ViewSettings {
     }
 }
 
-/// The sample `state` is, as a view keeps it: with the query and filters it was
-/// drawn through, when it was drawn from the view's rows.
+/// The sample `state` is, as a view keeps it, with the query and filters it was
+/// drawn through when drawn from the view's rows.
 fn saved_sample_of(state: &DataTableState) -> Option<view::SavedSample> {
     let sampled = state.sampled()?;
-    // The whole view it was drawn through: column types, a reshape and a sort pick
-    // its rows as much as a query does.
+    // Column types, a reshape and a sort pick its rows as much as a query does.
     let through = sampled.through().then(|| view::ViewSettings {
         sample: None,
         chart: None,
@@ -970,21 +899,19 @@ fn saved_sample_of(state: &DataTableState) -> Option<view::SavedSample> {
 pub(crate) enum Replayed {
     /// Every step is planned; the view's rows are still to be read.
     Planned,
-    /// Stopped at the pivot, which has to be read before the steps after it can be
-    /// planned.
+    /// Stopped at the pivot, which must be read before later steps can be planned.
     Pivot(Box<crate::table::PivotJob>),
 }
 
-/// Why Data Quality's Run did not start: a cancelled run has not exited yet. Said
-/// on Setup's line until it has.
+/// Why Data Quality's Run did not start: a cancelled run has not exited yet.
 const QUALITY_RUN_WAITS: &str = "Run waits: the cancelled run is still stopping";
 
-/// Why another read of the source did not start: a cancelled analysis has not
-/// exited yet, and a second read beside it is how memory runs out.
+/// Why another source read did not start: a second read beside a cancelled one
+/// can run memory out.
 const ANALYSIS_READ_WAITS: &str = "A cancelled run is still finishing; try again shortly";
 
-/// How long a cancelled run that stops within a batch may take before the screen
-/// says it is still going: time for a batch to finish, and no longer.
+/// How long a cancelled run may take to finish its batch before the screen says
+/// it is still going.
 const CANCEL_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub struct App {
@@ -993,8 +920,7 @@ pub struct App {
     counting: counting::Counting,
     /// The home screen's work in flight, and what it keeps for the session.
     pub home_app: home_app::HomeApp,
-    /// Home screen state. Rebuilt from the filesystem whenever home is entered;
-    /// nothing here is persisted beyond the recents list.
+    /// Home screen state, rebuilt whenever home is entered.
     pub home: home::HomeState,
     /// Where the dataset on screen came from, and how it was opened.
     source: open_scan::OpenedSource,
@@ -1056,37 +982,29 @@ pub struct App {
     /// How the table is drawn this session: from the config, with the session's own toggles.
     display: render::context::DisplaySettings,
     runtime: tokio::runtime::Handle, // Tokio runtime handle for background tasks
-    /// Every general background operation, and the generation their answers are judged
-    /// by. See [`jobs`].
+    /// Background jobs and the generation their answers are judged by. See [`jobs`].
     jobs: Jobs,
-    /// The open in flight, from the request to its first rows: its phase, what the
-    /// loading screen says, and what it holds. See [`loading`]. Going home abandons it;
-    /// an answer from an open it no longer holds is dropped.
+    /// The open in flight, from request to first rows. See [`loading`].
     loading: loading::Loader,
-    /// Bumped once per dataset put on screen, which the jobs' generation is not: a collect
-    /// bumps that, and the pass reading the rest of a dataset's footers outlives
-    /// several. It is what says whether the columns arriving belong to the dataset the
-    /// user is looking at.
+    /// Bumped once per dataset put on screen; the jobs' generation also moves per
+    /// collect, and a footer pass outlives several. Says whether arriving columns
+    /// belong to the dataset on screen.
     dataset_generation: u64,
-    /// Reads the open file's facts in place of [`FileFacts::read`], for tests of a
-    /// read that is slow or fails.
+    /// Replaces [`FileFacts::read`] in tests of a slow or failing read.
     #[cfg(test)]
     file_facts_reader: Option<FileFactsReader>,
-    /// When true, show the throbber and defer keys (see [`App::handle`]); the main loop
-    /// holds them until this clears.
+    /// Show the throbber and hold keys (see [`App::handle`]).
     busy: bool,
-    /// Bumped whenever the screen the user was typing at is replaced without a key of
-    /// theirs asking for it: going home, abandoning a load. Keys held while busy carry
-    /// the value they were typed under and are dropped if it has moved on.
+    /// Bumped when the screen is replaced without the user asking (going home, an
+    /// abandoned load). Held keys carry the value they were typed under and are
+    /// dropped once it moves.
     screen_generation: u64,
-    /// Set by the main loop when it had to drop a key typed while busy, shown beside a
-    /// status message while work is running. Cleared once the held keys have been
-    /// replayed.
+    /// The main loop dropped a key typed while busy; cleared once held keys replay.
     input_dropped: bool,
     /// The spinner's frame, counting up; each spinner takes it modulo its own frames.
     throbber_frame: u8,
-    /// Status text for the footer, at the table view. Shown whether or not the app
-    /// is busy: an End waiting on a remote row count parks without setting `busy`.
+    /// Footer status at the table view, shown even when not busy: an End waiting on a
+    /// remote count parks without setting `busy`.
     status_message: Option<String>,
     app_config: AppConfig,
     /// The format specs on the search path, read when the app was built.
@@ -1094,14 +1012,13 @@ pub struct App {
 }
 
 impl App {
-    /// Whether keys wait: a job the user is waiting on is running or owed, an errand
-    /// is between its phases, or an open is on its way to its dataset.
+    /// Whether keys wait: a job the user waits on runs or is owed, an errand is
+    /// between phases, or an open is on its way.
     pub fn is_busy(&self) -> bool {
         self.busy || self.jobs.holds_keys() || self.loading.waits()
     }
 
-    /// The generation background answers are judged by. Advanced each time work starts
-    /// that replaces what is in flight.
+    /// The generation background answers are judged by.
     pub fn task_generation(&self) -> u64 {
         self.jobs.generation()
     }
@@ -1111,27 +1028,24 @@ impl App {
         self.jobs.is_current(ticket)
     }
 
-    /// Keep recents, histories and measurements in `cache` from now on. For a test that
-    /// reads its store back: every test in a process shares one, and fifty opens
-    /// elsewhere push its entries out of the capped recents list.
+    /// Use `cache` from now on. For tests that read their store back: a shared one
+    /// loses entries to other tests' opens.
     pub fn use_cache(&mut self, cache: CacheManager) {
         self.cache = cache;
     }
 
-    /// Read `catalog.toml` from `dir`, and write it there, from now on. For a test whose
-    /// Ctrl+D must not write into the config directory every test in a process shares.
+    /// Read and write `catalog.toml` in `dir`, so a test's Ctrl+D stays out of the
+    /// shared config directory.
     pub fn use_catalog_dir(&mut self, dir: &Path) -> Result<()> {
         self.app_config.read_catalog_files(Some(dir))
     }
 
-    /// Path of the dataset currently installed, if any. Exposed for tests that need to
-    /// assert an abandoned load did not swap a dataset in after the fact.
+    /// Path of the installed dataset, if any.
     pub fn open_path(&self) -> Option<&Path> {
         self.path.as_deref()
     }
 
-    /// Whether the dataset on screen was piped in: named `stdin`, with no file behind
-    /// that name.
+    /// Whether the dataset on screen was piped in.
     fn reads_stdin(&self) -> bool {
         self.source
             .opened
@@ -1139,9 +1053,8 @@ impl App {
             .is_some_and(|(paths, _)| matches!(paths.as_slice(), [path] if stdin::is_stdin(path)))
     }
 
-    /// What views are matched against: the dataset's path and the table of its file it
-    /// is. What was piped in, or a frame handed over (`datui.view(frame)`), is `-`,
-    /// which no path criterion fits, so it matches by its columns alone.
+    /// What views are matched against: the path and table. Piped input or a handed
+    /// frame is `-`, matching by columns alone.
     fn view_dataset(&self) -> Option<view::Dataset<'_>> {
         self.data_table_state.as_ref()?;
         let path = match self.path.as_deref() {
@@ -1154,17 +1067,14 @@ impl App {
         })
     }
 
-    /// The table of a file of tables the dataset on screen is: the one named by
-    /// `--table`, or by a path inside the file (`shop.db/orders`), which opens as the
-    /// file with `--table`.
+    /// The table within a file of tables: from `--table` or a path inside the file
+    /// (`shop.db/orders`).
     fn view_table(&self) -> Option<&str> {
         let (_, options) = self.source.opened.as_ref()?;
         options.table.as_deref()
     }
 
-    /// Whether any leased background work, current or abandoned, has yet to report
-    /// back. Exposed for tests that wait for abandoned work to finish rather than
-    /// guessing how long it takes.
+    /// Whether any leased background work, current or abandoned, has yet to report.
     pub fn background_work_in_flight(&self) -> bool {
         self.jobs.in_flight()
     }
@@ -1196,7 +1106,7 @@ impl App {
     }
 
     /// The newest cancelled analysis or sample read still running, and whether it was
-    /// cancelled during a read nothing can stop.
+    /// cancelled during an unstoppable read.
     fn cancelled_analysis(&self) -> Option<(std::time::Instant, bool)> {
         let (since, job) = self.jobs.cancelled_running(Self::is_analysis_read)?;
         let runs_out = match job {
@@ -1211,9 +1121,8 @@ impl App {
         matches!(job, Job::Analysis(_) | Job::SampleRows)
     }
 
-    /// A cancelled run still going that the screen should say is: at once when the
-    /// cancel came during a read nothing can stop, and otherwise only once it has
-    /// outlasted the batch it was to stop after.
+    /// A cancelled run the screen should show as still going: at once when cancelled
+    /// during an unstoppable read, else once it outlasts its batch.
     pub(crate) fn cancelled_run_shown(&self) -> Option<crate::widgets::data_quality::Cancelling> {
         let (since, read_runs_out) = self.cancelled_analysis()?;
         (read_runs_out || since.elapsed() >= CANCEL_GRACE).then_some(
@@ -1283,8 +1192,7 @@ impl App {
             self.busy = false;
             return None;
         };
-        // Binary columns are stubbed by the source: their blobs are never read for
-        // analysis (multi-GB blobs across partitions can exhaust memory).
+        // Binary columns are stubbed by the source: multi-GB blobs could exhaust memory.
         let (source, known_total) = self.sample_source(state);
         let streaming = match tool {
             AnalysisTool::CorrelationMatrix => state.polars_streaming(),
@@ -1331,17 +1239,12 @@ impl App {
         Some(AppEvent::AnalysisCompute(tool))
     }
 
-    /// Stop waiting for the analysis in flight.
-    ///
-    /// The worker's answer is dropped: the bump makes it stale, and its lease no longer
-    /// holds the table up. A Data Quality run stops at its next batch or stage; a
-    /// collect nothing watches runs to its end. The tool is put back unchosen, so its
-    /// view does not sit on a spinner for a run that is not coming; Enter on it runs
-    /// it again.
+    /// Stop waiting for the analysis in flight. The bump makes its answer stale; a
+    /// Data Quality run stops at its next batch or stage, a plain collect runs out.
+    /// The tool is put back unchosen so its view does not wait on a spinner.
     fn cancel_analysis(&mut self) {
-        // The run's record says it is still running until its worker ends, superseded
-        // below. Only a Data Quality run has a watch to stop it by, and only its stages
-        // say whether they stop partway.
+        // The record stays running until the worker ends. Only Data Quality has a watch
+        // to stop it and stages that say whether they stop partway.
         let reads_out = self
             .analysis_modal
             .computing
@@ -1363,8 +1266,7 @@ impl App {
             .is_some();
         self.jobs.cancel(Self::is_analysis_read);
         self.jobs.advance();
-        // Keys typed while it ran were typed at the run, which is gone: an impatient
-        // second Enter replayed now would start it again behind the Esc.
+        // Keys typed at the run are stale: a replayed second Enter would restart it.
         self.screen_generation = self.screen_generation.wrapping_add(1);
         self.analysis_modal.computing = None;
         self.busy = false;
@@ -1374,10 +1276,9 @@ impl App {
             self.flash_note("Row view cancelled".to_string());
             return;
         }
-        // Data Quality keeps its last report and goes back to Setup, where the plan
-        // can be edited while the run winds down. A read that runs to its end is
-        // state the header and Setup hold until the worker exits, which a flash could
-        // not; a run that stops at its next batch is done, and a flash says so.
+        // Data Quality keeps its last report and returns to Setup. A read that runs to
+        // its end is shown by the header and Setup until the worker exits; one that
+        // stops at its next batch is done, and a flash says so.
         if self.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality) {
             self.open_quality_setup();
             if !read_runs_out {
@@ -1396,8 +1297,8 @@ impl App {
             && self.jobs.current(|job| matches!(job, Job::Pivot)).is_some()
     }
 
-    /// Stop waiting for the pivot in flight. As with an analysis, the worker runs to
-    /// the end and the bump drops its answer. The form stays open with its spec.
+    /// Stop waiting for the pivot in flight: the bump drops its answer; the form keeps
+    /// its spec.
     fn cancel_pivot(&mut self) {
         self.jobs.advance();
         self.screen_generation = self.screen_generation.wrapping_add(1);
@@ -1406,9 +1307,8 @@ impl App {
         self.flash_note("Pivot cancelled".to_string());
     }
 
-    /// Drill into the group on row `group_index` of the table, whose values are `row`,
-    /// and fetch its rows off the UI thread. A drill that fails says why on the control
-    /// bar and leaves the grouped view as it was.
+    /// Drill into the group on row `group_index` (values `row`), fetching its rows off
+    /// the UI thread. A failure is said on the bar and leaves the grouped view.
     fn drill_into(&mut self, group_index: usize, row: &DataFrame) {
         let Some(state) = self.data_table_state.as_mut() else {
             return;
@@ -1432,8 +1332,7 @@ impl App {
         self.pipes.stdin_reader = Some(Box::new(reader));
     }
 
-    /// Pass the stream on to `out` for `--tee -`: standard output as the process got
-    /// it, or a test's pipe.
+    /// Pass the stream on to `out` for `--tee -` (stdout, or a test's pipe).
     #[doc(hidden)]
     pub fn pass_stdout_to(&mut self, out: impl std::io::Write + Send + 'static) {
         self.pipes.stdout_pass = Some(Box::new(out));
@@ -1444,9 +1343,8 @@ impl App {
         self.data_table_state.as_ref()?.follow()
     }
 
-    /// Whether the follow's rows are on hand: none read in the background is still out,
-    /// and the view has taken what was counted. A refresh holds no keys, so a test waits
-    /// on this rather than on `is_busy`.
+    /// Whether the follow's rows are on hand: no background read out and the view has
+    /// taken what was counted. Refreshes hold no keys, so tests wait on this.
     #[doc(hidden)]
     pub fn follow_settled(&self) -> bool {
         self.rows_in_flight().is_none() && !self.follow().is_some_and(|f| f.behind())
@@ -1460,8 +1358,7 @@ impl App {
         }
     }
 
-    /// A followed file's watcher reported: what it counted waits for the view to take
-    /// it, and what the user has to know is flashed.
+    /// A watcher report: counted rows wait for the view; news for the user is flashed.
     fn followed(&mut self, news: &crate::follow::News) {
         let Some(state) = self.data_table_state.as_mut() else {
             return;
@@ -1485,9 +1382,8 @@ impl App {
         self.describe_ended_journal();
     }
 
-    /// Read a piped journal's Info tab again once it has ended, over every entry: the
-    /// one the open read describes the entries that had arrived then. Nobody waits on
-    /// it; the table works meanwhile.
+    /// Re-describe a piped journal's Info tab over every entry once it has ended.
+    /// Nobody waits on it.
     fn describe_ended_journal(&mut self) {
         let Some(lf) = self
             .data_table_state
@@ -1504,9 +1400,8 @@ impl App {
         });
     }
 
-    /// Join the fields a followed pipe brought after the open, if the dataset can
-    /// take them now, and read the rows on screen through the wider frame. Tried again
-    /// after every event while they wait, as footers are.
+    /// Join fields a followed pipe brought after the open, if the dataset can take them
+    /// now, and re-read the rows on screen. Retried after every event while waiting.
     fn join_followed_fields(&mut self) {
         let Some((generation, _)) = self.counting.followed_fields_held.as_ref() else {
             return;
@@ -1537,10 +1432,9 @@ impl App {
         }
     }
 
-    /// Show the rows a follow counted, when the table is on screen with nothing
-    /// running: a query, a sidebar, a takeover or a read in progress keeps the view it
-    /// has until it is done. The cursor on the last row stays on the last row; anywhere
-    /// else it stays put, and the rows below it are counted for the bar.
+    /// Show the rows a follow counted, when the table is on screen with nothing running.
+    /// A cursor on the last row stays there; elsewhere it stays put and the rows
+    /// below are counted for the bar.
     fn catch_up_follow(&mut self) {
         if !self.in_normal_table_view()
             || self.is_busy()
@@ -1552,8 +1446,7 @@ impl App {
         self.take_follow_rows(true);
     }
 
-    /// Give the view's frames the rows the follow counted. With `read`, the rows on
-    /// screen are read too; without, the table reads them once it is back on screen.
+    /// Give the view the rows the follow counted, reading those on screen with `read`.
     /// Returns whether there were rows to take.
     fn take_follow_rows(&mut self, read: bool) -> bool {
         let Some(state) = self.data_table_state.as_mut() else {
@@ -1565,9 +1458,8 @@ impl App {
         let Some(follow) = state.follow_mut() else {
             return false;
         };
-        // The cursor goes to the last row once the rows that put it there are on hand:
-        // moved before, the frame drawn meanwhile has fewer rows than the cursor's
-        // place, and the table puts the cursor back on the last row it has.
+        // Move to the last row only once its rows are on hand; earlier, a frame drawn
+        // meanwhile is shorter and the table clamps the cursor back.
         let settle = read && drawn && std::mem::take(&mut follow.settle_at_end);
         let to_end = settle || (read && counted && std::mem::take(&mut follow.end_pending));
         let stale = read && std::mem::take(&mut follow.stale_view);
@@ -1605,14 +1497,13 @@ impl App {
         true
     }
 
-    /// `t` over a surface that keeps the rows it was opened on (Value Counts, Analysis,
-    /// a chart): whether the follow has rows for it to take.
+    /// `t` over a surface that keeps its opening rows (Value Counts, Analysis, a chart):
+    /// whether the follow has rows for it.
     fn follow_rows_waiting(&self) -> bool {
         self.follow().is_some_and(|f| f.behind()) && !self.loading.awaiting_dataset()
     }
 
-    /// Standard input being recorded to the file `--tee` named, for the dataset on
-    /// screen.
+    /// Standard input being recorded to the `--tee` file, for the dataset on screen.
     pub fn recording(&self) -> Option<&Arc<crate::follow::Spool>> {
         self.data_table_state.as_ref()?;
         self.source
@@ -1668,8 +1559,7 @@ impl App {
         );
     }
 
-    /// Leave as asked: the recording stopped and its file finished, or kept going
-    /// until its stream ends, while datui goes home or quits.
+    /// Leave as asked, stopping the recording or keeping it until its stream ends.
     fn leave_recording(&mut self, leaving: Leaving, stop: bool) -> Option<AppEvent> {
         let handle = self
             .source
@@ -1693,8 +1583,7 @@ impl App {
         }
     }
 
-    /// The recording to wait for once the terminal is handed back: kept going when
-    /// the user quit, until its stream ends.
+    /// The recording to wait for after the terminal is handed back.
     pub fn recording_after_exit(
         &mut self,
     ) -> Option<(crate::follow::Tee, Arc<crate::follow::SpoolHandle>)> {
@@ -1704,8 +1593,8 @@ impl App {
         spool.live().then_some((tee, handle))
     }
 
-    /// Say once that the recording ended: saved, or stopped by an error, which the
-    /// error dialog says too. Returns true when the frame must redraw.
+    /// Say once that the recording ended, saved or stopped by an error. True when the
+    /// frame must redraw.
     fn notice_recording_end(&mut self) -> bool {
         let Some(spool) = self.recording().cloned() else {
             return false;
@@ -1751,8 +1640,8 @@ impl App {
             .then_some(self.error_modal.message.as_str())
     }
 
-    /// When the screen next changes on its own, with no event to say so: the flash
-    /// expiring. The run loop sleeps until then at most.
+    /// When the screen next changes with no event (a flash expiring): the loop sleeps
+    /// until then at most.
     pub fn next_deadline(&self) -> Option<std::time::Instant> {
         let flash = self.flash.as_ref().map(|f| f.expires);
         let clock = self
@@ -1760,8 +1649,7 @@ impl App {
             .filter(|f| f.standing == crate::follow::Standing::Following)
             .and_then(|f| f.last_append)
             .map(crate::follow::next_tick);
-        // A recording's size and rate move every second until it ends, and its end is
-        // noticed on that tick.
+        // A recording's size and rate change every second until it ends.
         let recording = self
             .recording()
             .filter(|spool| spool.live())
@@ -1839,8 +1727,8 @@ impl App {
             ),
         };
         let misfits = follow.misfits();
-        // What `t` does on this screen: pause or resume at the table; over a surface
-        // that keeps the rows it was opened on, read the new ones.
+        // What `t` does here: pause or resume at the table; over a surface that keeps its
+        // rows, read the new ones.
         let refreshes = self.overlay == Overlay::ValueCounts
             || (self.overlay == Overlay::Chart && self.chart.modal.picker.is_none())
             || (self.overlay == Overlay::Analysis
@@ -1871,8 +1759,8 @@ impl App {
         })
     }
 
-    /// `t` at the table: pause or resume the follow, or follow the file, reading it
-    /// again as `H` does.
+    /// `t` at the table: pause or resume the follow, or start following (re-reading as
+    /// `H` does).
     fn toggle_follow(&mut self) -> Option<AppEvent> {
         use crate::follow::Standing;
         if let Some(follow) = self.data_table_state.as_mut().and_then(|s| s.follow_mut()) {
@@ -1913,8 +1801,8 @@ impl App {
         false
     }
 
-    /// Show the next Polars user warning on the footer, once per session, when the
-    /// bar is free. Returns true when the frame must redraw.
+    /// Flash the next Polars user warning once per session when the bar is free. True
+    /// when the frame must redraw.
     pub fn flash_polars_warning(&mut self) -> bool {
         if !self.bar_is_free() {
             return false;
@@ -1928,9 +1816,8 @@ impl App {
         }
     }
 
-    /// Say that a background thread panicked when nothing else did; a job's panic ends
-    /// the job instead, the way its error would. Returns true when the frame must
-    /// redraw.
+    /// Flash a background thread panic nothing else reported (a job's panic ends the
+    /// job). True when the frame must redraw.
     pub fn flash_background_panic(&mut self) -> bool {
         if !self.bar_is_free() {
             return false;
@@ -1944,8 +1831,7 @@ impl App {
         }
     }
 
-    /// Whether a flash would be seen: a busy message outranks it, and a modal would
-    /// hide it until it expired.
+    /// Whether a flash would be seen: not under a busy message or a modal.
     fn bar_is_free(&self) -> bool {
         !self.is_busy()
             && self.flash.is_none()
@@ -1958,11 +1844,9 @@ impl App {
         self.input_dropped = dropped;
     }
 
-    /// The escapes that act at once while busy and jump ahead of anything queued: Ctrl-Q
-    /// and Ctrl-C quit, Ctrl-O goes home, so a slow load never
-    /// traps the user; a confirmation modal keeps its keys so it can be answered; and the
-    /// home screen is never busy on its own account (only work left running behind it sets
-    /// `busy`), so it keeps every key.
+    /// Escapes that act at once while busy and jump the queue: Ctrl-Q and Ctrl-C quit,
+    /// Ctrl-O goes home, confirmation modals keep their keys, and the home screen
+    /// (never busy on its own account) keeps every key.
     pub fn hard_escape_while_busy(&self, key: &KeyEvent) -> bool {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let quit = ctrl && matches!(key.code, KeyCode::Char('q' | 'c'));
@@ -1992,9 +1876,8 @@ impl App {
             || self.input_mode == InputMode::Home
     }
 
-    /// The table's column cursor keys: `h` `l` (←→) a column, `[` `]` (or Shift+←→)
-    /// a page of columns, `{` `}` the first and last. Never with Ctrl or Alt: Ctrl+[
-    /// is Esc on a terminal.
+    /// The column cursor keys: `h` `l` (←→), `[` `]` (Shift+←→) a page, `{` `}` first
+    /// and last. Never with Ctrl or Alt: Ctrl+[ is Esc on a terminal.
     fn column_cursor_key(key: &KeyEvent) -> Option<crate::widgets::column_paging::CursorMove> {
         use crate::widgets::column_paging::CursorMove;
         if key
@@ -2015,20 +1898,12 @@ impl App {
         }
     }
 
-    /// Whether a key may act while the app is busy. `App::handle` gates on this; the main
-    /// loop applies the extra "nothing queued" condition for the second group.
-    ///
-    /// The hard escapes always qualify. Beyond them, in the plain Normal-mode table view
-    /// (no text field, no modal), the harmless view keys act — quit, the column cursor
-    /// and help — because the first key held in that view cannot be part of a typed
-    /// `/query`. Harmless means reads nothing: the column cursor re-slices the buffer
-    /// it already holds through `rescroll_columns`, never `collect`, which counts the rows
-    /// when the count has not landed. Admitting a key that can count would put a
-    /// metadata read per object of a cloud hive on this very thread —
-    /// `a_key_that_acts_while_busy_reads_nothing` holds the line. Everything else,
-    /// letters included, is type-ahead and waits; a bare Enter or Esc there confirms
-    /// nothing and is dropped by the caller. Nothing is classified by keycode alone:
-    /// the `h` in a typed `/hello` never scrolls.
+    /// Whether a key may act while busy; the main loop adds "nothing queued" for the
+    /// second group. The hard escapes always qualify. At the plain table view, keys
+    /// that read nothing act too: quit, help, and the column cursor (which re-slices
+    /// the held buffer, never collects; a count here would read cloud metadata on this
+    /// thread, see `a_key_that_acts_while_busy_reads_nothing`). Everything else is
+    /// type-ahead and waits. Never by keycode alone: the `h` in `/hello` never scrolls.
     pub fn key_acts_while_busy(&self, key: &KeyEvent) -> bool {
         if self.hard_escape_while_busy(key) || self.menu_takes(key) {
             return true;
@@ -2039,8 +1914,8 @@ impl App {
         if !self.in_normal_table_view() {
             return false;
         }
-        // One row up or down inside the rows held, while all that is awaited is more
-        // rows (#646): the table on screen is the one they are for.
+        // One row up or down inside the held rows while only more rows are awaited: the
+        // table on screen is the one they are for.
         let step = match key.code {
             KeyCode::Down | KeyCode::Char('j') => Some(1),
             KeyCode::Up | KeyCode::Char('k') => Some(-1),
@@ -2061,8 +1936,7 @@ impl App {
             key.code,
             KeyCode::Char('q')
                     | KeyCode::Char('Q')
-                    // Drawn from what the table holds: row numbers, digit grouping, the
-                    // type row (#646), a column's width (#647).
+                    // Drawn from what the table holds.
                     | KeyCode::Char('#')
                     | KeyCode::Char('<')
                     | KeyCode::Char('>')
@@ -2081,8 +1955,7 @@ impl App {
         )
     }
 
-    /// The plain table view: Normal mode with no help overlay, modal, or in-view modal
-    /// (view, analysis) or context menu drawn over it.
+    /// The plain table view: Normal mode with nothing drawn over it.
     pub fn in_normal_table_view(&self) -> bool {
         self.at_table()
             && !self.help.is_open()
@@ -2091,8 +1964,8 @@ impl App {
             && self.context_menu.is_none()
     }
 
-    /// While a header is dragged over another column, a rule on the header where it
-    /// would land: after that column when it moves right, before it when left.
+    /// While a header is dragged over another column, a rule where it would land:
+    /// after that column moving right, before it moving left.
     fn render_drop_mark(&self, buf: &mut Buffer, ctx: &crate::render::context::RenderContext) {
         let Some(pointer::Drag::Move { column, over }) = self.pointer.drag() else {
             return;
@@ -2144,8 +2017,8 @@ impl App {
             && !self.confirmation_modal.active
     }
 
-    /// Whether `key` is one the open menu answers itself (moving, choosing, closing),
-    /// which reads nothing and so acts while busy.
+    /// Whether the open menu answers `key` itself; that reads nothing, so it acts
+    /// while busy.
     pub(crate) fn menu_takes(&self, key: &KeyEvent) -> bool {
         self.menu_showing()
             && key.modifiers.is_empty()
@@ -2184,8 +2057,7 @@ impl App {
         self.context_menu = None;
     }
 
-    /// The line `i` of the open menu, chosen: the menu closes and its key is
-    /// pressed, offered as typed.
+    /// Choose line `i` of the open menu: it closes and its key is offered as typed.
     pub fn choose_from_menu(&mut self, i: usize) -> Option<AppEvent> {
         let menu = self.context_menu.take()?;
         match menu.chosen(i)? {
@@ -2198,9 +2070,8 @@ impl App {
         }
     }
 
-    /// A header dropped on another column: the order with `column` moved to where
-    /// `onto` is, as `H` / `L` would leave it pressed that many times. A frozen column
-    /// moves among the frozen ones only, and a scrolling one among the scrolling.
+    /// A header dropped on another column: `column` moves to `onto`, as repeated `H` /
+    /// `L` would. Frozen columns move among the frozen, scrolling among the scrolling.
     pub fn drop_column(&mut self, column: &str, onto: &str) -> Option<AppEvent> {
         let state = self.data_table_state.as_ref()?;
         let mut order = state.headers();
@@ -2214,9 +2085,8 @@ impl App {
         self.data_table_state.as_mut()?.set_current_column(column);
         let moving = order.remove(from);
         order.insert(to, moving);
-        // The sidebar places hidden columns by the order it last applied; the column
-        // moves there too, so the shown order agrees with the table (a hidden one may
-        // sit otherwise than repeated H / L would leave it).
+        // The sidebar orders hidden columns by its last applied order; move the column
+        // there too so the shown order agrees with the table.
         let applied = &mut self.sort_filter_modal.sort.applied_order;
         if let (Some(i), Some(j)) = (
             applied.iter().position(|c| c == column),
@@ -2228,8 +2098,8 @@ impl App {
         Some(AppEvent::ColumnOrder(order, locked))
     }
 
-    /// Whether a text field currently owns typed characters, so the wheel and `?` leave
-    /// it alone. The home filter is deliberately excluded.
+    /// Whether a text field owns typed characters, so the wheel and `?` leave it alone.
+    /// The home filter is excluded on purpose.
     pub fn text_field_focused(&self) -> bool {
         match self.overlay {
             Overlay::None => match self.input_mode {
@@ -2259,11 +2129,8 @@ impl App {
                 self.export_modal.focus,
                 ExportFocus::PathInput | ExportFocus::CsvDelimiter
             ),
-            // The Picker narrows by typing, so it types.
             Overlay::Copy => self.copy_modal.picker.is_some(),
-            // The find line types.
             Overlay::Inspect => self.inspector_modal.finding,
-            // The Picker narrows by typing, so it types.
             Overlay::GoToColumn => true,
             Overlay::PickFormat | Overlay::Retype { .. } => true,
             Overlay::Combine { .. } => {
@@ -2277,21 +2144,18 @@ impl App {
                 .form
                 .as_ref()
                 .is_some_and(|form| form.field.is_text()),
-            // The whole inline editor types (pickers narrow, the value edits), as
-            // do the add-sort Picker and the Columns tab's find.
+            // The inline editor, the add-sort Picker and the Columns tab's find type.
             Overlay::SortFilter => self.sort_filter_modal.typing(),
             Overlay::PivotMelt => {
-                // The Picker narrows by typing, so it types too.
                 self.pivot_melt_modal.picker.is_some()
                     || self
                         .pivot_melt_modal
                         .is_text_row(self.pivot_melt_modal.focus)
             }
             Overlay::ChartExport => self.chart.export_modal.focus.is_text(),
-            // The open column Picker narrows by typing, so it types.
             Overlay::Chart => self.chart.modal.picker.is_some(),
             Overlay::Info | Overlay::ValueCounts => false,
-            // The prompt types, and so does the spec picker's filter.
+            // The prompt and the spec picker's filter type.
             Overlay::Hex => self
                 .hex
                 .view
@@ -2319,11 +2183,8 @@ impl App {
                     || !self.home.peeking.is_empty()))
     }
 
-    /// Take the numbers the whole frame will be drawn from.
-    ///
-    /// Only one so far: the footer count. It is read here rather than where it is
-    /// shown because two parts of the screen show it, they are painted at different
-    /// moments, and a background thread is moving it between them.
+    /// Take the numbers the whole frame is drawn from: the footer count, read once
+    /// because two parts of the screen show it while a thread moves it.
     fn begin_frame(&mut self) {
         // Back from home to the table whose lines were being indexed.
         if self.counting.indexing_paused && self.input_mode != InputMode::Home {
@@ -2338,20 +2199,16 @@ impl App {
         }
     }
 
-    /// The footer counter the screen reads: the open's own while one is on its way to
-    /// a dataset, else the dataset on screen's. Each open counts on its own, so one
-    /// replaced half way through cannot count under the name of the file that replaced
-    /// it.
+    /// The footer counter: the open's while one is on its way, else the dataset's. Each
+    /// open counts on its own, so a replaced one cannot count under another's name.
     pub fn footer_progress(&self) -> &Arc<crate::schema_union::FooterProgress> {
         self.loading
             .progress()
             .unwrap_or(&self.counting.footer_progress)
     }
 
-    /// Hold past the app: dropped after it, it removes the temp files the app's opens
-    /// were still writing, giving their workers up to a second to stop first. Without
-    /// it, a quit mid-download or mid-decompression can end the process before the
-    /// worker removes its partial file.
+    /// Held past the app: when dropped it removes temp files the app's opens were still
+    /// writing, giving workers up to a second to stop.
     pub fn exit_sweep(&self) -> ExitSweep {
         ExitSweep(self.loading.unfinished().clone())
     }
@@ -2359,17 +2216,16 @@ impl App {
     /// What the status line says while `:N` waits for the lines to be indexed.
     const INDEXING_FOR_ROW: &'static str = "Reading lines to find the row...";
 
-    /// What the status line says while an End is waiting on a row count. Named so the
-    /// paths that retire such an End can take the message back down without reaching
-    /// for a literal, and without clearing a message that belongs to something else.
+    /// What the status line says while an End waits on a row count; named so only
+    /// this message is taken down when the End is retired.
     const COUNTING_FOR_END: &'static str = "Counting rows to find the end...";
 
-    /// What the footer says while a path is being looked at. Named so the answer can
-    /// take down its own line without clearing one that belongs to something else.
+    /// What the footer says while a path is looked at; named so the answer takes down
+    /// only its own line.
     const LOOKING: &'static str = "Looking...";
 
-    /// The wait while a directory named on the command line is looked at: which files it
-    /// holds, and whether they are one table. Seconds, for a directory of large Parquet.
+    /// The wait while a directory named on the command line is looked at (seconds for
+    /// large Parquet).
     pub const LOOKING_AT_A_DIRECTORY: &'static str = "Looking at the directory";
 
     /// The wait while the rows for the view are fetched.
@@ -2384,8 +2240,7 @@ impl App {
     /// The wait while the inspector reads a row's hidden and binary fields.
     const READING_FIELDS: &'static str = "Reading fields...";
 
-    /// Above this a field is copied off the UI thread: a long list's JSON can take
-    /// a moment to write.
+    /// Above this a field is copied off the UI thread: a long list's JSON is slow.
     const FIELD_COPY_INLINE_BYTES: usize = 1024 * 1024;
     /// The most JSON a copy of a JSON value writes where the clipboard sets no cap.
     const JSON_COPY_MAX_BYTES: usize = 64 * 1024 * 1024;
@@ -2395,21 +2250,15 @@ impl App {
     /// The wait while a pivot reads the view.
     const COMPUTING_PIVOT: &'static str = "Computing pivot...";
 
-    /// How long a fetch goes unmentioned. A local page lands well inside it, and the key
-    /// chips staying put is the difference between paging and a bar that blinks a
-    /// sentence on every screen.
+    /// How long a fetch goes unmentioned, so local paging does not blink a message.
     const A_FETCH_WORTH_SAYING: std::time::Duration = std::time::Duration::from_millis(300);
 
-    /// Grow the buffer before the view reaches its end, rather than once it has.
-    ///
-    /// Nothing waits on it: no `busy`, no message, and keys go on paging through the
-    /// rows on hand. One at a time — a scroll that outruns it either waits on it, when it
-    /// is bringing the rows asked for, or supersedes it by the generation, as any newer
-    /// collect does. Never when a bump would strand other work.
+    /// Grow the buffer before the view reaches its end. Nothing waits on it: no `busy`,
+    /// no message. One at a time; a scroll that outruns it waits on it or supersedes it
+    /// by generation. Never when a bump would strand other work.
     fn load_ahead(&mut self) {
-        // The generation is asked about before the position is marked asked. Held while
-        // the app is idle (a download waiting on the user), a frame would otherwise
-        // spend the position on that refusal and never ask again (#490).
+        // Check the generation before marking the position asked: otherwise a frame while
+        // the generation is held spends the position on the refusal and never asks again.
         if self.is_busy()
             || self.jobs.owed(Self::owed_rows).is_some()
             || self.rows_in_flight().is_some()
@@ -2420,9 +2269,8 @@ impl App {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
         };
-        // Asked of each position once. Planning can give back the buffer on hand — a
-        // row group too large to add under the caps — and asking again every frame
-        // would plan it again every frame.
+        // Ask once per position: planning can return the buffer on hand (a row group too
+        // large for the caps), and replanning every frame would be wasted.
         let position = state.buffer_position();
         if !state.wants_to_load_ahead() || self.counting.loaded_ahead_from == Some(position) {
             return;
@@ -2436,24 +2284,16 @@ impl App {
         self.flash_note(format!("View \"{name}\" applied: {}", why.as_str()));
     }
 
-    /// Ensures file path has an extension when user did not provide one; only adds
-    /// compression suffix (e.g. .gz) when compression is selected. If the user
-    /// provided a path with an extension (e.g. foo.feather), that extension is kept.
-    /// Spawn an async buffer collect if needed. Returns true if a background task was spawned.
-    /// Increments task_generation to invalidate any in-flight collect from a prior call.
-    ///
-    /// When the LazyFrame's row count is unknown (e.g. fresh load, or just after a
-    /// filter/sort/pivot/melt that invalidates the cache), the exact `len()` is computed
-    /// in the background and applied later via `BackgroundLenReady` — it never gates the
-    /// buffer paint. `prepare_async_collect` plans a top-of-data window when the count is
-    /// still unknown, so the first screen renders immediately. For large/partitioned/remote
-    /// datasets the count can take a long time; it runs silently and concurrently.
+    /// Spawn a buffer collect if needed; true if a job was spawned. Advances the
+    /// generation, invalidating any prior collect. An unknown row count is computed
+    /// in the background (`BackgroundLenReady`) and never gates the paint: the plan
+    /// is then a top-of-data window.
     pub fn spawn_async_collect(&mut self, status: &str) -> bool {
         self.spawn_collect(Some(status))
     }
 
-    /// As [`Self::spawn_async_collect`]; with no `status`, a load-ahead that nothing
-    /// waits on: its job holds no keys. See [`InflightCollect`].
+    /// As [`Self::spawn_async_collect`]; with no `status`, a load-ahead whose job holds
+    /// no keys. See [`InflightCollect`].
     fn spawn_collect(&mut self, status: Option<&str>) -> bool {
         let held = self
             .data_table_state
@@ -2463,24 +2303,17 @@ impl App {
             return false;
         };
 
-        // The exact row count, when it isn't known and none is already coming for this
-        // data version. Independent of `task_generation` (a scroll must not restart it)
-        // and does not set `busy`. A count that reads only footers runs now: it reads no
-        // data. On an object store a data count rides in the collect spawned below,
-        // which answers it outright when the read comes back short and otherwise gets
-        // the row groups to itself first. On a local frame it waits until the page is
-        // painted (`count_after_paint`), and is not needed at all when that page came
-        // back short.
+        // The exact row count, if unknown and none is coming for this data version.
+        // Independent of the generation (a scroll must not restart it); not busy. A
+        // footer-only count runs now. On an object store a data count rides in the
+        // collect below (answered outright by a short read). On a local frame it waits
+        // for the paint (`count_after_paint`), and a short page makes it unnecessary.
         let mut count = None;
         let generation = state.len_generation();
         if !state.is_num_rows_valid()
             && self.counting.len_count_inflight != Some(generation)
-            // Marked as running only once it is going to run. A dataset still reading
-            // its own footers declines this count, because that pass is bringing it —
-            // and the marker is cleared by a count coming back, so setting it for one
-            // that was never started leaves it set for the rest of the session: a
-            // spinner where the row count goes, a redraw on its account every frame,
-            // and `End` waiting on nothing.
+            // Mark running only if it will run: a dataset still reading its footers counts
+            // itself, and a marker set for a count never started stays set for the session.
             && !state.counts_itself_later()
             // A count that failed is not tried again on every scroll. End asks again.
             && self.counting.len_count_failed != Some(generation)
@@ -2502,14 +2335,13 @@ impl App {
         let a_bump_would_strand = self.work_a_bump_would_strand();
         let inflight = self.rows_in_flight();
 
-        // Plan and spawn the buffer collect. With the count unknown this is a top-of-data
-        // window (`slice(0, N)`) that touches only the first file(s) of a partitioned set.
+        // With the count unknown this plans `slice(0, N)`, touching only the first files of
+        // a partitioned set.
         let Some(state) = self.data_table_state.as_mut() else {
             return false;
         };
         let covered = inflight.is_some_and(|inflight| inflight.covers(state));
-        // The rows asked for are already on the way in a load-ahead: wait on that one
-        // rather than fetch them twice. The keys are its now.
+        // The rows are already coming in a load-ahead: wait on it (it takes the keys).
         if covered
             && let Some(status) = status
             && !self.jobs.waited_on(Self::reading_rows)
@@ -2526,23 +2358,13 @@ impl App {
             }
             return covered;
         };
-        // Everything past here advances the generation, so everything that holds it has
-        // to be done first. The collect the user asked for is queued rather than
-        // refused: the throbber that was already turning goes on turning, and it is
-        // tried again after every event until the work in front of it finishes.
-        //
-        // This is the door #238 was about. `BackgroundLenReady` answers a count by
-        // jumping to the end, which reaches here with no key pressed and minutes after
-        // the one that was — long enough for a dataset to have been opened meanwhile.
-        // The bump cancelled that open's phase in flight, whose answer was then thrown
-        // away with the open still waiting on it, and the file never opened, silently,
-        // for the rest of the session.
+        // Everything past here advances the generation. If that would strand work (an
+        // open's phase, say), queue the collect: the throbber keeps turning and it is
+        // retried after every event. A count landing minutes later jumps to the end
+        // through here with no key pressed (#238).
         if a_bump_would_strand {
-            // The count that was going to ride in this collect is put down rather than
-            // run on its own. On an object store it answers itself out of the short read
-            // the collect comes back with; spawned standalone it is a full remote
-            // `len()`, which is the expensive thing the riding exists to avoid. Putting
-            // the marker down with it is what lets the retry ask again.
+            // Drop the count that would ride this collect rather than run it alone: alone it
+            // is a full remote `len()`. Clearing the marker lets the retry ask again.
             if count.is_some() {
                 self.counting.len_count_inflight = None;
             }
@@ -2574,31 +2396,26 @@ impl App {
             start: request.buffer_start,
             end: request.buffer_end,
         };
-        // Owed from here, so a worker that dies before it reaches the count still
-        // answers it.
+        // Owed from here, so a worker that dies first still answers the count.
         let count = count.map(|job| OwedCount::new(job, self.events.clone()));
         self.spawn_job(Job::Rows(inflight), status, move |_| {
             let plan = request.plan;
-            // The count is answered once the page has gone out: it may need a pass of
-            // its own, which must not hold the page back.
+            // The count is answered after the page goes out: it may need its own pass.
             Ok(
                 match crate::statistics::collect_lazy(request.lf, request.polars_streaming) {
                     Ok(df) => {
                         let returned = df.height();
                         let requested = request.buffer_end - request.buffer_start;
                         let start = request.buffer_start;
-                        // Stitched and cut here rather than where it lands: a cut may
-                        // copy up to the byte budget, which the UI thread would stall on
-                        // (#483).
+                        // Stitched and cut on the worker: a cut may copy up to the byte budget.
                         Answer::Rows(plan.fit(df)).then(move || {
                             if let Some(count) = count {
                                 count.answer(|job| job.after_collect(start, returned, requested));
                             }
                         })
                     }
-                    // A pass over a frame that just failed to collect would fail too: the
-                    // count goes unanswered and so reports itself failed, leaving the
-                    // retry to a later interaction (see `len_count_failed`).
+                    // A pass over a frame that just failed would fail too: the count goes unanswered,
+                    // reports itself failed, and waits for a later interaction.
                     Err(e) => Answer::RowsFailed {
                         message: crate::error_display::user_message_from_polars(&e),
                         conversion: crate::error_display::conversion_failure(&e).map(Box::new),
@@ -2610,13 +2427,10 @@ impl App {
         true
     }
 
-    /// Start `job` on a worker. With a `status` the app is busy with it: the control
-    /// bar says so and keys wait. The worker returns its answer, or `Err` with a
-    /// message for the user; that, or a panic, is the job's one outcome, which
-    /// [`AppEvent::JobEnded`] hands to [`App::job_ended`].
-    ///
-    /// Does not advance the generation. A caller replacing work in flight advances it
-    /// first.
+    /// Start `job` on a worker. With a `status` the app is busy with it: the bar says
+    /// so and keys wait. Its answer, `Err`, or panic arrives via
+    /// [`AppEvent::JobEnded`] at [`App::job_ended`]. Does not advance the generation:
+    /// a caller replacing work in flight advances it first.
     fn spawn_job<F, R>(&mut self, job: Job, status: Option<&str>, work: F) -> Ticket
     where
         F: FnOnce(&jobs::Worker) -> std::result::Result<R, String> + Send + 'static,
@@ -2628,12 +2442,11 @@ impl App {
         ticket
     }
 
-    /// As [`Self::spawn_job`], for a caller that needs the ticket before the work is
-    /// built: it runs the job with [`jobs::Started::run`].
+    /// As [`Self::spawn_job`], with the ticket before the work: run it with
+    /// [`jobs::Started::run`].
     fn start_job(&mut self, job: Job, status: Option<&str>) -> jobs::Started {
         if let Some(status) = status {
-            // The errand that led here, if one did, is this job's now: its record holds
-            // the keys until it ends.
+            // Any errand that led here passes its keys to this job's record.
             self.busy = false;
             self.status_message = Some(status.to_string());
         }
@@ -2648,8 +2461,7 @@ impl App {
         matches!(job, Job::Rows(_))
     }
 
-    /// The read of the table's rows in flight, if one is and is still wanted: what it
-    /// will fill, and whether anyone waits on it.
+    /// The wanted read of the table's rows in flight, if any.
     fn rows_in_flight(&self) -> Option<InflightCollect> {
         match self.jobs.current(Self::reading_rows) {
             Some((_, Job::Rows(inflight))) => Some(*inflight),
@@ -2662,8 +2474,8 @@ impl App {
         self.jobs.waited_on(Self::reading_rows)
     }
 
-    /// The rows being read, or owed, are not for the table on screen any more: a view
-    /// has been put in its place. Their answer is dropped when it comes.
+    /// The rows read or owed are no longer for the table on screen: drop them on
+    /// arrival.
     fn forget_the_rows_read(&mut self) {
         self.jobs
             .supersede(|job| Self::reading_rows(job) || Self::owed_rows(job));
@@ -2675,8 +2487,7 @@ impl App {
         self.jobs.hold()
     }
 
-    /// A job in flight with no worker, started as `spawn_job` starts one, for tests
-    /// that decide how it ends.
+    /// A job with no worker, started as `spawn_job` does, for tests that end it.
     #[cfg(test)]
     pub(crate) fn job_for_tests(&mut self, job: Job, status: Option<&str>) -> jobs::Started {
         self.start_job(job, status)
@@ -2688,8 +2499,8 @@ impl App {
         self.loading.current().is_none() && self.export_progress.is_none()
     }
 
-    /// An open on the loading screen, saying `phase` about `path` of `size` bytes, with
-    /// nothing running: for tests of what the screen says.
+    /// An open on the loading screen saying `phase` about `path` of `size` bytes, with
+    /// nothing running.
     #[cfg(test)]
     pub(crate) fn loading_for_tests(
         &mut self,
@@ -2705,8 +2516,8 @@ impl App {
         self.loading.size_for_tests(size);
     }
 
-    /// An open of `path` begun and scanning, with no worker: for tests that decide how
-    /// its phases answer. Its jobs are [`Job::Load`] with the id returned.
+    /// An open of `path` begun and scanning with no worker. Its jobs are [`Job::Load`]
+    /// with the id returned.
     #[cfg(test)]
     pub(crate) fn open_for_tests(&mut self, path: &str) -> loading::LoadId {
         self.put_down_load_in_flight();
@@ -2721,9 +2532,8 @@ impl App {
         self.loading.id().expect("an open was begun")
     }
 
-    /// Install `state` as the dataset on screen, the way an open of a frame does: through
-    /// the loader, so what the load hands over (its footer counter) is handed over for
-    /// real. Its first rows are not read; the open is done once it is installed.
+    /// Install `state` through the loader as an open of a frame does, without reading
+    /// its first rows.
     #[cfg(test)]
     pub(crate) fn install_for_tests(
         &mut self,
@@ -2755,8 +2565,7 @@ impl App {
         view
     }
 
-    /// A page owed to the dataset on screen, as one asked for while the generation was
-    /// held is.
+    /// A page owed to the dataset on screen, as when the generation was held.
     #[cfg(test)]
     pub(crate) fn owe_rows_for_tests(&mut self, status: &str) {
         let owed = Job::OwedRows {
@@ -2772,8 +2581,7 @@ impl App {
         self.jobs.owed(Self::owed_rows).is_some()
     }
 
-    /// A current `job` answers `answer` at once, and the app handles it: for tests of
-    /// what an answer does.
+    /// A current `job` answers `answer` at once and the app handles it.
     #[cfg(test)]
     pub(crate) fn answer_for_tests(&mut self, job: Job, answer: Answer) -> Option<AppEvent> {
         let started = self.jobs.start(job, None);
@@ -2782,15 +2590,14 @@ impl App {
         self.job_ended(ticket)
     }
 
-    /// Whether anything is waiting on the current generation, so that advancing it
-    /// would throw away an answer nothing will ask for again. See
-    /// [`Jobs::would_strand`].
+    /// Whether advancing the generation would throw away an answer nothing will ask for
+    /// again. See [`Jobs::would_strand`].
     fn work_a_bump_would_strand(&self) -> bool {
         self.jobs.would_strand()
     }
 
-    /// A move through the rows: made now when the buffer holds where it lands, or
-    /// deferred a frame, busy, while the rows are read.
+    /// A move through the rows: now if the buffer holds its landing, else deferred a
+    /// frame while the rows are read.
     fn scroll_key(&mut self, scroll: Scroll) -> Option<AppEvent> {
         let state = self.data_table_state.as_mut()?;
         if state.scroll_would_trigger_collect(scroll.delta(state)) {
@@ -2801,25 +2608,14 @@ impl App {
         None
     }
 
-    /// Home, End and G. A jump may need a fill, so it is deferred behind a frame that
-    /// shows the throbber — setting `start_row` alone used to leave the old buffer on
-    /// screen, drawn from its first row — unless the view is already there, in which
-    /// case only the selection settles and no frame or key is spent.
+    /// Home, End and G. A jump needing a fill is deferred behind a throbber frame;
+    /// if the view is already there only the selection settles.
     fn jump_key(&mut self, jump: Scroll) -> Option<AppEvent> {
-        // The end of a remote dataset is not known until its rows are counted, and a
-        // jump to a guess reads every file up to it. Wait for the count instead; keys
-        // keep working meanwhile.
-        // A dataset still reading its own footers is already getting a count, and its
-        // end is known as soon as that lands. Starting one here would read every footer
-        // a second time — and the join takes a fresh `len_generation` on its way past,
-        // so the count that came back would be answering a question nobody could match
-        // it to and the jump would never happen. Wait for the pass instead.
-        // `scan_is_the_root`, not `counts_itself_later`: the question here is whether a
-        // join is going to land underneath this frame and take a fresh `len_generation`
-        // with it, which is what would leave a count answering a question nothing could
-        // match it to. A filter and a sort are rebuilt over the joined scan, so they are
-        // on this side of it even though they are not pristine.
-        // Lines still being indexed: the end is where the indexing ends.
+        // End on a remote dataset waits for the row count rather than reading every file
+        // up to a guess. A dataset still joining its footers gets its count from that
+        // pass; a second count would answer a `len_generation` the join replaces, and
+        // the jump would never happen (`scan_is_the_root`: filters and sorts are rebuilt
+        // over the joined scan). Lines still being indexed end where the indexing ends.
         if jump == Scroll::End
             && let Some(state) = self.data_table_state.as_ref()
             && state.indexing().is_some()
@@ -2838,9 +2634,8 @@ impl App {
             self.status_message = Some(Self::COUNTING_FOR_END.to_string());
             return None;
         }
-        // Any other frame whose end is not known yet waits for its count too, rather than
-        // jumping to the end of the rows read so far. A count waiting on a paint starts
-        // now; one already running or riding in a collect is waited on.
+        // Any other frame of unknown length waits for its count too. A count waiting on a
+        // paint starts now; one running or riding a collect is waited on.
         if jump == Scroll::End
             && let Some(state) = self.data_table_state.as_ref()
             && !state.is_num_rows_valid()
@@ -2871,10 +2666,8 @@ impl App {
         Some(AppEvent::Scroll(jump))
     }
 
-    /// Run a scroll on `data_table_state` and resolve the busy/spawn cycle.
-    /// `scroll` returns true when its movement leaves the buffered window (caller must collect).
-    /// We clear `busy` ourselves when no collect is needed or the spawn no-ops, otherwise
-    /// the busy flag set by the key handler would gate further input forever.
+    /// Run a scroll; `scroll` returns true when it leaves the buffer. Clears `busy`
+    /// when no collect is spawned, else the key handler's flag would hold input.
     fn handle_scroll<F>(&mut self, scroll: F) -> Option<AppEvent>
     where
         F: FnOnce(&mut crate::table::DataTableState) -> bool,
@@ -2888,12 +2681,8 @@ impl App {
     }
 
     pub fn new(events: Sender<AppEvent>, runtime: tokio::runtime::Handle) -> App {
-        // Create default theme for backward compatibility
-        let theme = Theme::from_config(&AppConfig::default().theme).unwrap_or_else(|_| {
-            // Create a minimal fallback theme
-            Theme {
-                colors: std::collections::HashMap::new(),
-            }
+        let theme = Theme::from_config(&AppConfig::default().theme).unwrap_or_else(|_| Theme {
+            colors: std::collections::HashMap::new(),
         });
 
         Self::new_with_config(events, runtime, theme, AppConfig::default())
@@ -3043,9 +2832,8 @@ impl App {
                     .display
                     .number_format
                     .resolve(app_config.display.right_align_numbers)
-                    // AppConfig::load validates this, but App can be built from an
-                    // unvalidated config (e.g. the Python API): fall back to no
-                    // formatting while still honouring the alignment setting.
+                    // App can be built from an unvalidated config (the Python API): fall back to no
+                    // formatting, keeping the alignment setting.
                     .unwrap_or_else(|_| NumberFormatSettings {
                         align_numeric_right: app_config.display.right_align_numbers,
                         ..Default::default()
@@ -3073,8 +2861,7 @@ impl App {
         app
     }
 
-    /// Use `registry` as the format specs on the search path, for hosts and tests that
-    /// have their specs in hand.
+    /// Use `registry` as the format specs on the search path.
     pub fn set_formats(&mut self, registry: crate::formats::Registry) {
         let registry = Arc::new(registry);
         self.home.formats = registry.clone();
@@ -3087,12 +2874,8 @@ impl App {
 
     // ---- Home screen -----------------------------------------------------
 
-    /// Ask for what the frame just drawn needs and did not have: counts for the rows
-    /// on screen that have none, and kinds for the rows nothing has looked into.
-    ///
-    /// After the frame, never during it. Scrolling is what brings new rows into view,
-    /// and the reading is a worker's job — this thread only decides what is worth
-    /// asking about.
+    /// After a frame, ask for what it lacked: counts for the rows on screen with none,
+    /// and kinds for rows nothing has looked into. Workers read; this thread decides.
     pub fn request_what_the_frame_needs(&mut self) {
         if self.at_table() {
             self.load_ahead();
@@ -3107,8 +2890,8 @@ impl App {
         }
         #[cfg(feature = "http")]
         self.size_selected_web_file();
-        // The rows on screen as the frame left them: each pass asks for those still
-        // unknown, a batch at a time. Not under the path prompt, which hides the list.
+        // Each pass asks for the rows still unknown, a batch at a time; not under the
+        // path prompt, which hides the list.
         if !self.home.path_input_active {
             self.request_home_measurements();
             self.request_home_classifications();
@@ -3129,8 +2912,7 @@ impl App {
         self.help.context()
     }
 
-    /// Open the help overlay on the keys of the screen it is opened at. No-op if it is
-    /// already up.
+    /// Open the help overlay on the keys of the current screen, unless already up.
     pub(crate) fn open_help_overlay(&mut self) {
         // A question or an error under the help would take its keys unseen.
         if self.help.is_open() || self.confirmation_modal.active || self.error_modal.active {
@@ -3145,10 +2927,9 @@ impl App {
         self.help.open(context, typing);
     }
 
-    /// Close the help when the screen under it changed on its own (a query that
-    /// finished, a load that failed): its keys are for a screen that is gone, and
-    /// Enter would press one of them on another. A question or an error that arrived
-    /// under it takes the keys, so it closes for those too.
+    /// Close the help when the screen under it changed on its own (a query finished, a
+    /// load failed): its keys are for a screen that is gone. A question or error
+    /// that arrived under it closes it too.
     fn close_help_left_behind(&mut self) {
         let left = self
             .help
@@ -3202,12 +2983,9 @@ impl App {
         }
     }
 
-    /// True while the confirmation modal is asking whether to download a remote file,
-    /// or to read a large one whole into memory.
-    ///
-    /// Those are the confirmations the user has to be able to walk away from: the
-    /// size probe behind a download can take fifteen seconds, and the answer to
-    /// "actually, never mind" is the home screen, not the exit.
+    /// True while the confirmation modal asks whether to download a remote file or read
+    /// a large one whole. These can be walked away from (to home, not exit): the
+    /// size probe behind them can take seconds.
     pub fn awaiting_open_confirmation(&self) -> bool {
         self.confirmation_modal.active
             && matches!(self.confirmation_modal.asking, Some(Confirm::Download))
@@ -3219,8 +2997,7 @@ impl App {
         match self.confirmation_modal.take()? {
             Confirm::Leave(leaving) => self.leave_recording(leaving, stop),
             Confirm::ReadAll => {
-                // Every row is a sample method like the others: it shows in the strip,
-                // and `s` changes it back.
+                // Every row is a sample method like the others: shown in the strip, `s` changes it.
                 let sample = sampling::Sample {
                     method: sampling::SampleMethod::EveryRow,
                     ..self.analysis_modal.sample.clone()
@@ -3254,8 +3031,7 @@ impl App {
                 self.home.status = None;
                 None
             }
-            // The overwrite was agreed to: each export may now replace the file it
-            // asked about, and only through that answer.
+            // The overwrite was agreed to, for this export only.
             Confirm::QualityExport(path, format) => Some(AppEvent::QualityReportExport(
                 path,
                 format,
@@ -3271,24 +3047,21 @@ impl App {
             })),
             Confirm::Copy(format, header) => Some(AppEvent::CopyTable { format, header }),
             Confirm::Download => {
-                // The loader lets go of its hold on the generation as the download or
-                // the read starts, and its job takes it before anything else can look.
+                // The loader releases the generation as the download or read starts, and its job
+                // takes it at once.
                 let step = self.loading.confirmed();
                 self.run_load_step(step)
             }
         }
     }
 
-    /// No or Esc on the confirmation: nothing it asked about happens. A declined
-    /// overwrite returns to the filled form, so the typed path, format and options
-    /// survive; the report's dialog and a declined full scan's draft stay where they
-    /// were.
+    /// No or Esc on the confirmation: nothing asked about happens. A declined overwrite
+    /// returns to the filled form; other dialogs stay as they were.
     fn declined(&mut self) -> Option<AppEvent> {
         match self.confirmation_modal.take() {
             Some(Confirm::ChartExport(_)) => self.open_overlay(Overlay::ChartExport),
             Some(Confirm::Export(_)) => self.open_over(|returns_to| Overlay::Export { returns_to }),
-            // Backing out of a download, or a large read, goes home: `enter_home` puts
-            // the open down.
+            // Backing out of a download or a large read goes home, which puts the open down.
             Some(Confirm::Download) => self.enter_home(),
             _ => {}
         }
@@ -3298,28 +3071,24 @@ impl App {
     fn key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         self.debug.on_key(event);
 
-        // A completion flash lives until the next key: whatever this key does,
-        // the bar's line about the last action is stale now.
+        // A completion flash lasts until the next key.
         self.flash = None;
         // A key puts back a header being carried, so a release later moves nothing.
         self.cancel_drag();
 
         let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
-        // Ctrl-Q quits from anywhere, before any mode gets a say — including a mode
-        // with no CONTROL arm of its own (the chart view) that would otherwise swallow
-        // it while busy.
+        // Ctrl-Q quits from anywhere, before any mode (the chart view has no CONTROL arm
+        // and would swallow it while busy).
         if ctrl && event.code == KeyCode::Char('q') {
             return Some(AppEvent::Exit);
         }
-        // Ctrl-C too, a text field included: a terminal user's reflex for leaving, and
-        // the field copies with Alt+W instead.
+        // Ctrl-C too, even in a text field (which copies with Alt+W instead).
         if ctrl && event.code == KeyCode::Char('c') {
             return Some(AppEvent::Exit);
         }
 
-        // The context menu takes its keys first. A line chosen closes it and presses
-        // its key, offered as typed (as Enter on a help line is); any other key closes
-        // it and then acts as it would have. A menu something else has covered since
+        // The context menu takes keys first. A chosen line closes it and presses its key,
+        // offered as typed; any other key closes it and then acts. A menu covered since
         // (an error, a load's screen) is gone.
         if !self.menu_showing() {
             self.context_menu = None;
@@ -3344,8 +3113,7 @@ impl App {
             }
         }
 
-        // Acts at once (see `hard_escape_while_busy`), ahead of the keys held behind
-        // the view.
+        // Acts at once (see `hard_escape_while_busy`), ahead of keys held behind the view.
         if event.code == KeyCode::Esc && self.view_applying() {
             self.cancel_view();
             return None;
@@ -3374,8 +3142,7 @@ impl App {
             return None;
         }
 
-        // F1 opens help first so no other branch (e.g. Editing) can consume it; again,
-        // it closes it.
+        // F1 toggles help before any other branch (e.g. Editing) can consume it.
         if event.code == KeyCode::F(1) {
             if self.help.is_open() {
                 self.help.close();
@@ -3385,10 +3152,8 @@ impl App {
             return None;
         }
 
-        // Home owns the whole screen and every key while it is up — except under a
-        // modal or the help overlay. Both render over home unconditionally, so if
-        // home also ate their keys they would be undismissable, and Esc would try
-        // to leave home instead.
+        // Home owns every key, except under a modal or the help overlay: both render over
+        // home, and if home ate their keys they could not be dismissed.
         if self.input_mode == InputMode::Home
             && !self.confirmation_modal.active
             && !self.error_modal.active
@@ -3397,9 +3162,7 @@ impl App {
             return self.home_key(event);
         }
 
-        // Ctrl+O goes home from anywhere, including mid-load. That is what makes
-        // browsing cheap: opening the wrong 300 MB file costs one keystroke to leave,
-        // not a wait for it to finish.
+        // Ctrl+O goes home from anywhere, mid-load included.
         if event.code == KeyCode::Char('o')
             && event.modifiers.contains(KeyModifiers::CONTROL)
             && (!self.confirmation_modal.active || self.awaiting_open_confirmation())
@@ -3409,7 +3172,6 @@ impl App {
             return None;
         }
 
-        // The confirmation modal (for an overwrite).
         if self.confirmation_modal.active {
             match event.code {
                 KeyCode::Left | KeyCode::Char('h') => {
@@ -3421,8 +3183,7 @@ impl App {
                 KeyCode::Tab => {
                     self.confirmation_modal.focus_yes = !self.confirmation_modal.focus_yes;
                 }
-                // ←→ carry the choice, so ↑↓ (k/j) scroll a long question; the
-                // render clamps the offset.
+                // ←→ carry the choice, so ↑↓ (k/j) scroll a long question; the render clamps.
                 KeyCode::Up | KeyCode::Char('k') => {
                     self.confirmation_modal.scroll =
                         self.confirmation_modal.scroll.saturating_sub(1);
@@ -3453,7 +3214,6 @@ impl App {
             }
             return None;
         }
-        // Error modal
         if self.error_modal.active {
             match event.code {
                 // A long diagnostic scrolls; the render clamps the offset.
@@ -3475,10 +3235,8 @@ impl App {
                 }
                 KeyCode::Esc | KeyCode::Enter => {
                     self.error_modal.hide();
-                    // With nothing loaded, dismissing the error would otherwise leave
-                    // an empty table and no indication of what to do. Go back to the
-                    // list the dataset was chosen from, carrying the reason, so the
-                    // next choice is one keystroke away.
+                    // With nothing loaded, go back to the list the dataset was chosen from, with the
+                    // reason, rather than leave an empty table.
                     if self.data_table_state.is_none() {
                         let reason = self.home_app.last_load_error.take();
                         self.enter_home();
@@ -3490,13 +3248,10 @@ impl App {
             return None;
         }
 
-        // Main table: the column cursor keys (before help/mode blocks so they always work
-        // in Normal). No is_press()/is_release() check: some terminals do not report key
-        // kind correctly. Exclude view/analysis modals so they can handle Left/Right
-        // themselves.
+        // The column cursor keys at the main table, before the help and mode blocks. No
+        // is_press() check: some terminals misreport key kind.
         let in_main_table = self.at_table() && !self.help.is_open();
-        // The footer offers the column's keys once the column cursor moves, until a
-        // key that is not about the column.
+        // The footer offers the column's keys once the cursor moves, until another key.
         if in_main_table && event.is_press() {
             self.prompt.column_hints = Self::column_cursor_key(event).is_some()
                 || (self.prompt.column_hints
@@ -3516,9 +3271,8 @@ impl App {
             return None;
         }
 
-        // The help owns the keys while it is up. Enter on a line closes it and presses
-        // that line's key: handed back as this key's follow-up, it reaches the screen
-        // under the help the way a typed key does, held while the app is busy.
+        // The help owns the keys while up. Enter on a line closes it and returns that key
+        // as the follow-up, reaching the screen under it as a typed key would.
         self.close_help_left_behind();
         if self.help.is_open() {
             return match self.help.key(event) {
@@ -3531,7 +3285,7 @@ impl App {
             let ctrl_help = event.modifiers.contains(KeyModifiers::CONTROL);
             // The home screen always accepts characters, into its filter or path input.
             let in_text_input = self.text_field_focused() || self.input_mode == InputMode::Home;
-            // Ctrl-? always opens help; bare ? only when not in a text field
+            // Ctrl-? always opens help; bare ? only outside a text field.
             if ctrl_help || !in_text_input {
                 self.open_help_overlay();
                 return None;
@@ -3574,11 +3328,8 @@ impl App {
 
         const UP_KEYS: [KeyCode; 2] = [KeyCode::Up, KeyCode::Char('k')];
 
-        // The letter arms below are unmodified keys. Without this guard the
-        // bare-`Char` matches also fired with Ctrl or Alt held, so Ctrl+E
-        // opened Export and Ctrl+R reversed — bindings nobody declared.
-        // Paging (Ctrl+F/B/D/U) is the only modified set this match owns;
-        // the global escapes were handled before reaching here.
+        // The letter arms below are unmodified keys only (else Ctrl+E would open Export).
+        // Paging (Ctrl+F/B/D/U) is the only modified set here; global escapes came first.
         if event
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
@@ -3588,9 +3339,8 @@ impl App {
         }
 
         match event.code {
-            // q pops the context: opened from the home screen, it returns
-            // there; launched straight onto a file, it quits as it always
-            // has. Q and Ctrl+Q stay unconditional.
+            // q pops the context: back home if opened from there, else quit. Q and Ctrl+Q
+            // always quit.
             KeyCode::Char('q') => {
                 if self.source.opened_from_home {
                     self.enter_home();
@@ -3617,15 +3367,15 @@ impl App {
                 }
                 None
             }
-            // The column cursor's width, applied as typed so its effect shows (#647).
+            // The column's width, applied as typed.
             KeyCode::Char('<' | '>' | '=' | 'w')
                 if event.is_press() && !event.modifiers.contains(KeyModifiers::CONTROL) =>
             {
                 if let Some(state) = self.data_table_state.as_mut()
                     && let Some(name) = state.current_column().map(str::to_string)
                 {
-                    // From the width on screen: `>` on a column filling the right edge
-                    // widens what is seen.
+                    // From the width on screen: `>` on a column clipped at the right edge widens what
+                    // is seen.
                     let (choice, shown) = (state.width_choice(&name), state.on_screen_width(&name));
                     let width = match event.code {
                         KeyCode::Char('<') => choice.narrower(shown),
@@ -3656,8 +3406,7 @@ impl App {
                 None
             }
             KeyCode::Char('D') => {
-                // The type row is drawn from the schema the table already has, so
-                // this is a render-time flip like `,`. Session-only.
+                // Drawn from the schema at render time, like `,`. Session-only.
                 self.display.dtype_row = !self.display.dtype_row;
                 let on = if self.display.dtype_row { "on" } else { "off" };
                 self.debug.action(|| format!("toggle_dtype_row({on})"));
@@ -3668,9 +3417,7 @@ impl App {
                 None
             }
             KeyCode::Char(',') => {
-                // Formatting is applied at render time, so this takes effect on
-                // the next frame with no re-collect. Session-only: the config
-                // file stays the source of truth at launch.
+                // Applied at render time, so no re-collect. Session-only.
                 self.display.number_format.enabled = !self.display.number_format.enabled;
                 let on = if self.display.number_format.enabled {
                     "on"
@@ -3706,8 +3453,7 @@ impl App {
                 if drilled_up {
                     self.sync_sort_filter_modal();
                 }
-                // Out of a drill from Value Counts, back to the counts it came from:
-                // the view is the one they were read of.
+                // Out of a drill from Value Counts, back to the counts of this view.
                 if from_counts
                     && std::mem::take(&mut self.value_counts.drill_return)
                     && let Some(state) = self.data_table_state.as_ref()
@@ -3780,18 +3526,16 @@ impl App {
             }
             KeyCode::Char('i') if event.is_press() => {
                 if let Some(state) = self.data_table_state.as_mut() {
-                    // Unread notes put the panel's Notes tab in front — that is
-                    // what the accented `i` chip was promising. Read before the
-                    // mark, which is what retires the accent.
+                    // Unread notes open the Notes tab (the accented `i` chip's promise). Read before
+                    // the mark, which retires the accent.
                     let unseen = state.notes_unseen();
                     state.mark_notes_seen();
                     if unseen {
                         self.info_modal
                             .open_on(crate::widgets::info::InfoTab::Notes);
                     } else if state.format_detail().is_some_and(|d| d.first) {
-                        // A table whose columns are the same for every file (a model's
-                        // tensors, an audio file's frames, a VCD dump's changes): what
-                        // is particular to it is its own tab.
+                        // A table whose columns are the same for every file (model tensors, audio frames,
+                        // VCD changes) opens on its format's own tab.
                         self.info_modal
                             .open_on(crate::widgets::info::InfoTab::Format);
                     } else {
@@ -3816,9 +3560,8 @@ impl App {
                 None
             }
             KeyCode::Char('V') => {
-                // Apply the best view whose criteria match this dataset. When none
-                // does, the answer is not silence and not the best-scored stranger: the
-                // list opens, so the user sees what exists and picks — or saves one.
+                // Apply the best view whose criteria match. When none does, open the list so the
+                // user picks or saves one.
                 if let Some(ref state) = self.data_table_state
                     && let Some(dataset) = self.view_dataset()
                 {
@@ -3849,9 +3592,8 @@ impl App {
             }
             KeyCode::Char('s') => {
                 if self.data_table_state.is_some() {
-                    // Rebuilt from the table's applied state, never from what the modal
-                    // held last time: an edit staged and then canceled must not arrive
-                    // pre-staged, one Apply away from committing silently.
+                    // Rebuilt from the table's applied state, never the modal's last contents: a
+                    // canceled edit must not come back staged.
                     self.sync_sort_filter_modal();
                     let current = self
                         .data_table_state
@@ -3875,7 +3617,7 @@ impl App {
                 None
             }
             KeyCode::Char('a') => {
-                // Open analysis modal; no computation until user selects a tool from the sidebar (Enter)
+                // Nothing computes until a tool is chosen.
                 if self.data_table_state.is_some()
                     && self.at_table()
                     && self.quality.evidence_return.is_none()
@@ -3884,8 +3626,8 @@ impl App {
                     let view = self.data_table_state.as_ref().map(|s| s.len_generation());
                     self.analysis_modal.open(view);
                     self.open_overlay(Overlay::Analysis);
-                    // The sample outlives a close, but its scope names this
-                    // dataset's rows: another dataset starts from its current view.
+                    // The sample outlives a close, but its scope names this dataset's rows: another
+                    // dataset starts from its current view.
                     if self.analysis_modal.sample_dataset != Some(self.dataset_generation) {
                         self.analysis_modal.sample.scope = data_quality::QualityScope::CurrentView;
                         self.analysis_modal.sample_dataset = Some(self.dataset_generation);
@@ -4050,10 +3792,10 @@ impl App {
         }
     }
 
-    /// Handle one event. A key that arrives while the app is busy is not acted on and
-    /// not dropped either: it comes back as `Err(key)` for the caller to hold until the
-    /// app is idle. The main loop ([`event_pump::EventPump`]) does exactly that;
-    /// [`App::event`] is the same call for callers that have nowhere to hold a key.
+    /// Handle one event. A key arriving while busy is neither acted on nor dropped: it
+    /// returns as `Err(key)` for the caller to hold until idle, as
+    /// [`event_pump::EventPump`] does. [`App::event`] is for callers with nowhere to
+    /// hold a key.
     pub fn handle(&mut self, event: AppEvent) -> EventOutcome {
         let started = std::time::Instant::now();
         let outcome = self.handle_event(event);
@@ -4073,12 +3815,9 @@ impl App {
             return Err(key);
         }
         let out = self.dispatch_event(event);
-        // Not while this handler is returning a continuation. A follow-up is the rest of
-        // the event just handled — the analysis sets `computing` and returns
-        // `AnalysisCompute`, and the job that will run has not spawned — so
-        // nothing holds the generation yet, and the errands would advance it out from
-        // under the errand that is halfway through. They run after every event and are
-        // built to wait; one more event is nothing to them.
+        // Not while returning a continuation: the follow-up is the rest of this event
+        // (e.g. `AnalysisCompute` before its job spawns), nothing holds the generation
+        // yet, and an errand would advance it underneath. Errands wait for the next event.
         if out.is_none() {
             self.let_waiting_errands_in();
         }
@@ -4089,19 +3828,17 @@ impl App {
         Ok(out)
     }
 
-    /// The errands that wait for the generation to be free, given their turn: after
-    /// every event, and when a continuation's hold is let go.
+    /// Give the errands waiting for a free generation their turn: after every event,
+    /// and when a continuation's hold is released.
     pub(crate) fn let_waiting_errands_in(&mut self) {
-        // Columns a dataset's footers found while the user was inside a query are held
-        // rather than dropped; this is where they get in, on the first event after the
-        // view comes back to the data.
+        // Columns footers found while the user was inside a query are held; they join on
+        // the first event after the view returns to the data.
         if self.join_held_footers() {
             self.reread_after_the_footers_joined();
         }
         self.join_followed_fields();
         self.describe_ended_journal();
-        // And the same turn for a re-read owed to a dataset whose footers could not be
-        // read: it waits on the same work, and gets in the same way.
+        // Likewise a re-read owed to a dataset whose footers could not be read.
         self.reread_when_the_work_allows();
         self.collect_when_the_work_allows();
     }
@@ -4129,13 +3866,12 @@ impl App {
                 if paths.is_empty() {
                     return Some(AppEvent::Crash("No paths provided".to_string()));
                 }
-                // Home is now in the stack, so q pops back to it. Never unset:
-                // a reread from the table (H) is not a new place.
+                // Home is now in the stack, so q pops back to it. Never unset: a reread (H) is not
+                // a new place.
                 if self.input_mode == InputMode::Home {
                     self.source.opened_from_home = true;
                 }
-                // `az://container/path` and its kin name no account; where they were
-                // typed, or the config, does.
+                // `az://container/path` names no account; where it was typed, or the config, does.
                 #[cfg(feature = "cloud")]
                 let expanded = match paths
                     .iter()
@@ -4155,8 +3891,8 @@ impl App {
                 if expanded != paths {
                     return Some(AppEvent::Open(expanded, options));
                 }
-                // Asks the filesystem for the size the loading screen shows, and whether
-                // the path is there to be a recent.
+                // Asks the filesystem for the loading screen's size and whether the path exists to
+                // be a recent.
                 let mut request = loading::OpenRequest::named(paths, options, &self.formats);
                 request.warn_in_memory_above = self.app_config.read.memory_warning();
                 self.begin_new_dataset();
@@ -4192,8 +3928,7 @@ impl App {
                 self.home_event(event)
             }
             AppEvent::Resize(_cols, _rows) => {
-                // No work here: the next render sets visible_rows and flips needs_recollect,
-                // which the main loop turns into an async collect against the correct size.
+                // The next render sets visible_rows and needs_recollect; the main loop collects.
                 None
             }
             AppEvent::Collect => {
@@ -4238,8 +3973,8 @@ impl App {
                 }
                 let (paths, options) = (paths, options);
                 let formats = self.formats.clone();
-                // The open's first phase. Unleased, as the look is: an answer for an open
-                // the user has left (Ctrl+O) is thrown away by the loader, not waited for.
+                // The open's first phase. Unleased: an answer for an open the user left is thrown
+                // away by the loader, not waited for.
                 self.put_down_load_in_flight();
                 let load = self.loading.look_at_paths();
                 self.spawn_job(Job::OpenNamed(load), Some("Scanning input..."), move |_| {
@@ -4263,10 +3998,8 @@ impl App {
                 None
             }
             AppEvent::LookThenOpenDirectory(dir, options) => {
-                // The name on the wait, so the first frame says which directory is being
-                // looked at rather than sitting blank. `spawn_job` puts the throbber up
-                // and the keys that survive it — Ctrl+C, Ctrl+O — keep working, which
-                // is the whole of what doing this on the event thread cost.
+                // Named on the wait so the first frame says which directory is being looked at;
+                // Ctrl+C and Ctrl+O keep working during it.
                 let looking = dir;
                 let options = options;
                 self.put_down_load_in_flight();
@@ -4274,16 +4007,9 @@ impl App {
                 // A newer look replaces an older one.
                 self.jobs
                     .supersede(|job| matches!(job, Job::LookAtDirectory { .. }));
-                // The same words the loading screen shows, so the footer and the
-                // screen above it do not name the wait two different ways.
-                // Unleased. A lease exists to make a bump wait for an answer that
-                // would otherwise be stranded — and this answer is *meant* to be
-                // thrown away when the user moves on, which is the whole of the guard
-                // below. Leased, it made everything else wait instead: Ctrl+O out of a
-                // seventeen-second look and open a small CSV, and its buffer collect
-                // was owed until the abandoned look finally returned.
-                // Advertising Ctrl+O as the way out of the wait and then holding the
-                // next dataset behind it is the wait again, wearing a different hat.
+                // The loading screen's words, so the footer agrees with it. Unleased: the answer
+                // is meant to be dropped when the user moves on, and a lease would make the
+                // next open's collect wait for the abandoned look.
                 #[cfg(feature = "cloud")]
                 let (cloud, runtime) = (self.app_config.cloud.clone(), self.runtime.clone());
                 let job = Job::LookAtDirectory {
@@ -4308,14 +4034,9 @@ impl App {
                             options: Box::new(options),
                         });
                     }
-                    // A panic here used to unwind through `run()` and report a crash,
-                    // because the look was made on the way to the first frame. On a
-                    // worker it is swallowed with the dropped handle instead, and nothing
-                    // would ever be sent: the spinner would stay up and the directory
-                    // unopened for as long as the user waited. Caught, so the answer is
-                    // "a directory" and the home screen opens on it. Read the way this
-                    // open will read them, so the rule judges the directory the user is
-                    // about to see rather than one nobody will open.
+                    // Caught: on a worker a panic would be swallowed and the spinner stay up forever,
+                    // so the answer becomes "a directory" and home opens on it. Read as this open
+                    // will read, so the rule judges the directory the user is about to see.
                     let as_read = Self::read_as(&options);
                     let looked = logging::catch_panic(|| {
                         let mut entry = discover::Entry::directory(&looking);
@@ -4335,11 +4056,8 @@ impl App {
                 None
             }
             AppEvent::ClassifyThenOpen { path, jump } => {
-                // A second Enter replaces the first rather than being refused. Every key
-                // acts on the home screen even while `busy`, so a second one is
-                // reachable, and the newer look is the one the user is waiting for — and
-                // refusing meant a look at a share that never answers killed the feature
-                // for the rest of the session, silently.
+                // A second Enter supersedes the first (home keys act while busy): the newer look
+                // is the one waited for, and refusing would let a dead share block every look.
                 let looking = path;
                 self.jobs.supersede(|job| matches!(job, Job::Classify(_)));
                 let look = Job::Classify(jobs::Classify {
@@ -4354,8 +4072,7 @@ impl App {
                 // The home screen's own line, because the footer's is the table's.
                 self.home.status = Some(format!("Looking at {name}..."));
                 self.spawn_job(look, Some(Self::LOOKING), move |_| {
-                    // Every one of these can sit forever on a share that has gone away,
-                    // which is the whole reason they are here and not where keys are read.
+                    // Each of these can hang on a share that went away; hence off the key thread.
                     let found = if !looking.exists() {
                         None
                     } else if looking.is_dir() {
@@ -4444,8 +4161,8 @@ impl App {
                 None
             }
             AppEvent::Pivot(spec) => {
-                // The modal stays up until the result is in, so a pivot that fails
-                // leaves the spec there to fix.
+                // The modal stays up until the result is in, so a failed pivot leaves the spec to
+                // fix.
                 let job = self.data_table_state.as_ref()?.plan_pivot(&spec);
                 self.spawn_job(Job::Pivot, Some(Self::COMPUTING_PIVOT), move |_| {
                     let pivoted = job
@@ -4478,8 +4195,8 @@ impl App {
                 }
             }
             AppEvent::QualityReportExport(path, format, overwrite) => {
-                // The report on screen and the plan it was measured with, cloned into
-                // the writer: the file is built from memory and nothing is read.
+                // The report and the plan it was measured with, cloned to the writer: built from
+                // memory, nothing read.
                 let results = self.analysis_modal.quality.results.clone()?;
                 let plan = self.analysis_modal.quality_result_plan().clone();
                 let (path, format, overwrite) = (path, format, overwrite);
@@ -4524,8 +4241,8 @@ impl App {
                     None => state.export_frame(request.options.source_file),
                 };
                 let streaming = state.polars_streaming();
-                // One job from plan to commit: it holds the generation throughout,
-                // and the rows it collects, if it collects, die with it.
+                // One job from plan to commit: it holds the generation throughout, and any rows
+                // it collects die with it.
                 let phase = match request.route(streaming) {
                     crate::export::Route::Streamed => Self::export_write_phase(&request),
                     crate::export::Route::Collected => "Collecting data",
@@ -4552,8 +4269,7 @@ impl App {
                 None
             }
             AppEvent::OpenLink(url) => {
-                // Started, not waited on; a browser that will not start is a line,
-                // not an error to acknowledge.
+                // Not waited on; a browser that will not start gets a flash, not an error.
                 if link_open::open(&url).is_err() {
                     self.flash_note("Couldn't open the link; y copies it".to_string());
                 }
@@ -4573,8 +4289,8 @@ impl App {
                     let streaming = state.polars_streaming();
                     let (format, header) = (format, header);
                     self.spawn_job(Job::Copy, Some("Collecting data for copy..."), move |_| {
-                        // A capped destination's copy is read in batches and given
-                        // up at the cap; any other is collected and built whole.
+                        // A capped destination's copy is read in batches and abandoned at the cap; others
+                        // are collected whole.
                         let (payload, rows) = match accepts.base64_limit {
                             Some(limit) => crate::clipboard::bounded_table_text(
                                 lf, format, header, limit,
@@ -4616,9 +4332,8 @@ impl App {
                 self.display.background_query |= self.app_config.theme.follow;
                 None
             }
-            // Taken before they reach here: a press becomes a key in `handle_event`;
-            // the terminal, a wake, an exit, a crash and a missing named path in the event
-            // pump; the settings in `run`. An update asks for a frame and nothing else.
+            // Taken before here: a press becomes a key in `handle_event`; terminal, wake, exit,
+            // crash and missing-path events in the pump; settings in `run`.
             AppEvent::Press(_)
             | AppEvent::Terminal(_)
             | AppEvent::Wake
@@ -4630,8 +4345,8 @@ impl App {
         }
     }
 
-    /// Why one of the sidebar's filters cannot apply: its value does not read as its
-    /// column's type. The first such, said for the user.
+    /// The first sidebar filter whose value does not read as its column's type, said
+    /// for the user.
     fn filter_problem(&self) -> Option<String> {
         let schema = self.data_table_state.as_ref()?.schema();
         self.sort_filter_modal
@@ -4641,8 +4356,8 @@ impl App {
             .find_map(|f| crate::python_script::SidebarFilter::problem(f, schema.get(&f.column)))
     }
 
-    /// Whether the dataset on screen is delimited text, whose first row `H` on the
-    /// Info panel's Schema tab reads the other way.
+    /// Whether the dataset is delimited text, whose header `H` on Info's Schema tab
+    /// toggles.
     pub fn header_toggle_offered(&self) -> bool {
         self.source
             .opened
@@ -4652,9 +4367,8 @@ impl App {
             .is_some()
     }
 
-    /// Read the dataset again with its first row the other way: as column names, or
-    /// as data under `column_1`, `column_2`, …. Only delimited text has a header to
-    /// turn off; anything else carries its own names, and this does nothing there.
+    /// Read the dataset again with its first row the other way: as names, or as data
+    /// under `column_1`, …. Only delimited text; elsewhere a no-op.
     pub(crate) fn toggle_header(&mut self) -> Option<AppEvent> {
         if !self.header_toggle_offered() {
             return None;
@@ -4669,10 +4383,9 @@ impl App {
         Some(AppEvent::Open(paths, options))
     }
 
-    /// `H` / `L`: the column cursor's column one place left or right in the column
-    /// order the sidebar's `+` / `-` set, the cursor with it. A frozen column moves
-    /// among the frozen ones and a scrolling one among the scrolling ones; at an end,
-    /// nothing moves.
+    /// `H` / `L`: move the cursor's column one place in the sidebar's order, the
+    /// cursor with it. Frozen among frozen, scrolling among scrolling; nothing at an
+    /// end.
     fn move_cursor_column(&mut self, right: bool) -> Option<AppEvent> {
         let state = self.data_table_state.as_ref()?;
         let at = state.current_column_index()?;
@@ -4686,8 +4399,8 @@ impl App {
         let moving = order[at].clone();
         self.data_table_state.as_mut()?.set_current_column(&moving);
         order.swap(at, to);
-        // The sidebar places hidden columns by the order it last applied; the two
-        // trade places there too, so that order still agrees with the table.
+        // The sidebar orders hidden columns by its last applied order; swap them there
+        // too so it agrees with the table.
         let applied = &mut self.sort_filter_modal.sort.applied_order;
         if let (Some(i), Some(j)) = (
             applied.iter().position(|c| *c == order[at]),
@@ -4698,21 +4411,16 @@ impl App {
         Some(AppEvent::ColumnOrder(order, locked))
     }
 
-    /// `+` / `-`: a filter on the cursor's cell, added to the sidebar's Filters list
-    /// and applied, so it shows there, joins the others with "and", and `R` clears
-    /// it. `+` keeps the rows with the cell's value and `-` drops them; a null cell
-    /// is "is null" or "not null". The value is the cell's exactly as stored.
-    /// `[` / `]` at the table: sort by the cursor's column, ascending or descending,
-    /// in place of the sort in effect. The same key again on a view sorted that way
-    /// by that column alone takes the sort away.
+    /// `[` / `]` at the table: sort by the cursor's column, replacing the sort in
+    /// effect. The same key again on that sort alone removes it.
     fn sort_by_cursor_column(&mut self, descending: bool) -> Option<AppEvent> {
         let state = self.data_table_state.as_ref()?;
         let column = state.current_column()?.to_string();
         let already = state.view_sort_columns() == std::slice::from_ref(&column)
             && state.view_sort_descending() == [descending];
         if already {
-            // Back to the natural order: `sort` with no columns resets the direction
-            // `]` left behind, which would otherwise read as a reversal.
+            // Back to natural order: `sort` with no columns also resets the direction `]` left,
+            // which would read as a reversal.
             if let Some(state) = self.data_table_state.as_mut() {
                 state.deferred(|s| s.sort(Vec::new(), true));
             }
@@ -4724,6 +4432,9 @@ impl App {
 }
 
 impl App {
+    /// `+` / `-`: add a sidebar filter keeping (or dropping) rows with the cursor's
+    /// cell value exactly as stored, and apply it. A null cell is "is null" / "not
+    /// null"; `R` clears it.
     fn quick_filter(&mut self, keep: bool) -> Option<AppEvent> {
         let state = self.data_table_state.as_ref()?;
         let column = state.current_column()?.to_string();
@@ -4745,8 +4456,8 @@ impl App {
             } else {
                 FilterOperator::NotEq
             };
-            // Text that reads back to this very value: a float exactly as stored,
-            // a date and time to its last digit, in its zone.
+            // Text that reads back to exactly this value: a float as stored, a datetime to its
+            // last digit, in its zone.
             let text = crate::typed_value::text_of(&value, &dtype);
             let Some(text) = text else {
                 let kind = match dtype {
@@ -4776,12 +4487,10 @@ impl App {
         Some(AppEvent::Filter(statements))
     }
 
-    /// Bring the Sort & Filter sidebar in line with the state actually applied to the
-    /// frame on screen: the real column order and hidden set, the applied sort, the
-    /// active filters. Called on open, so an edit staged in the modal and then
-    /// canceled dies with it rather than arriving pre-staged next time — and after a
-    /// drill-down swap, where a sidebar still showing the grouped view's filters
-    /// would re-send one against a List column.
+    /// Bring the sidebar in line with what is applied to the frame on screen (column
+    /// order, hidden set, sort, filters). Called on open, so a canceled edit never
+    /// returns staged, and after a drill-down, where stale filters would hit a List
+    /// column.
     fn sync_sort_filter_modal(&mut self) {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
@@ -4810,10 +4519,10 @@ impl App {
         // The cursor starts on the add row; the editor never survives a resync.
         modal.filter.cursor = modal.filter.statements.len();
         modal.filter.editor = None;
-        // A schema column the applied order leaves out is hidden; it is listed where
-        // it stood when hidden, so showing it again puts it back there. The order the
-        // sidebar last applied says where only while the table still shows it; once a
-        // view, query or reshape has set the order, the schema places them.
+        // A schema column the applied order leaves out is hidden, and listed where it stood
+        // so showing it restores its place. The sidebar's last applied order decides that
+        // only while the table still shows it; after a view, query or reshape set the
+        // order, the schema does.
         let shown: std::collections::HashSet<&str> = order.iter().map(String::as_str).collect();
         let applied = &modal.sort.applied_order;
         let current = applied
@@ -4828,8 +4537,8 @@ impl App {
             .map(|(i, name)| (name.as_str(), i))
             .collect();
         let place = |name: &String| places.get(name.as_str()).copied();
-        // Everything up to the last frozen column stays frozen, hidden ones included.
-        // A hidden column that ended the frozen span is known only to the applied order.
+        // Everything up to the last frozen column stays frozen, hidden ones included; only
+        // the applied order knows a hidden column that ended the frozen span.
         let last_locked = applied
             .get(..modal.sort.applied_locked)
             .filter(|span| {
@@ -4848,8 +4557,7 @@ impl App {
                 let display_order = places[name.as_str()];
                 SortColumn {
                     name: name.clone(),
-                    // 1-based: what toggling a column in the modal assigns and what
-                    // the sidebar prints.
+                    // 1-based, as the modal assigns and the sidebar prints.
                     sort_order: sort_columns.iter().position(|c| c == name).map(|o| o + 1),
                     sort_descending: sort_columns
                         .iter()
@@ -4868,9 +4576,7 @@ impl App {
         modal.sort.has_unapplied_changes = false;
     }
 
-    /// Apply everything the sidebar stages — column order and locks, the sort with
-    /// its per-column directions, the filters — and close it. Enter and Ctrl+Enter,
-    /// from anywhere in the sidebar.
+    /// Apply everything the sidebar stages and close it (Enter or Ctrl+Enter).
     fn apply_sort_filter(&mut self) -> Option<AppEvent> {
         // A row still under edit is committed, never silently dropped.
         if self.sort_filter_modal.filter.editor.is_some() {
@@ -4888,10 +4594,8 @@ impl App {
             self.sort_filter_modal.sort.get_full_column_order();
         self.sort_filter_modal.sort.applied_locked = self.sort_filter_modal.sort.get_locked_span();
         let statements = self.sort_filter_modal.filter.statements.clone();
-        // Widths read nothing, so they apply here; a fit measures the rows on screen
-        // when the table is next drawn. With nothing else changed the view stays
-        // where it is, on the page the fit was asked for: applying the order, filters
-        // and sort again would read the rows afresh from the top.
+        // Widths read nothing, so they apply here. With nothing else changed the view
+        // stays on its page: re-applying order, filters and sort would read from the top.
         let view_unchanged = self.data_table_state.as_mut().is_some_and(|state| {
             state.set_width_choices(self.sort_filter_modal.sort.width_choices());
             state.headers() == column_order
@@ -4917,8 +4621,8 @@ impl App {
         ))
     }
 
-    /// The facts read for the dataset on screen, if its file has one: one file, stored
-    /// as its format says (a stream or a compressed copy has no footer).
+    /// Facts read for the dataset's single file stored as its format says (a stream or
+    /// compressed copy has no footer).
     fn facts_of_open(&self) -> Option<(FileFormat, crate::readers::Facts)> {
         let hive = self
             .source
@@ -4936,9 +4640,8 @@ impl App {
         (!hive && plain && one_file).then_some((format, facts))
     }
 
-    /// What the footer says while a query's first rows are read over the frame on
-    /// screen, from the read's job record. The rows drawn meanwhile are the view it
-    /// replaces, under columns it may have changed.
+    /// The footer's line while a query's first rows are read; the rows drawn meanwhile
+    /// are the replaced view's.
     pub(crate) fn query_reading(&self) -> Option<&str> {
         let run = self.prompt.query_running.as_ref()?;
         let frame = self.data_table_state.as_ref()?.len_generation();
@@ -4949,14 +4652,10 @@ impl App {
             .waiting_status(|job| Self::reading_rows(job) || Self::owed_rows(job))
     }
 
-    /// A job's outcome is in: take it, and the job's record with it, from [`Jobs`], and
-    /// act on it. The record goes in this step, so the job holds the generation and
-    /// the keys until its answer is handled and not after: whatever the answer starts
-    /// next holds them before anything else can look.
-    ///
-    /// What the job held is put down here, for every job alike: a job the user waited
-    /// on gives the keys back, and its line on the footer goes with it, unless the
-    /// answer goes on to a continuation, which keeps the wait up across the gap.
+    /// A job's outcome is in: take it and its record from [`Jobs`] and act on it. The
+    /// job holds the generation and keys until its answer is handled, so whatever the
+    /// answer starts next holds them first. A waited-on job gives back the keys and
+    /// its footer line here, unless the answer continues, keeping the wait up.
     fn job_ended(&mut self, ticket: Ticket) -> Option<AppEvent> {
         let jobs::Ended {
             job,
@@ -4979,8 +4678,8 @@ impl App {
                 self.busy = true;
             } else {
                 self.busy = false;
-                // Unless a job that is still running says the same: the read of a
-                // view's rows that its pivot's answer started.
+                // Unless a job still running shows the same line (a view's rows read after its
+                // pivot).
                 if self.status_message.as_deref() == Some(status.as_str())
                     && !self.jobs.shows(&status)
                 {
@@ -4988,8 +4687,7 @@ impl App {
                 }
             }
         }
-        // A cancelled analysis's worker has exited: its read is over, and once no other
-        // is still going, Run can run again and Setup no longer says it waits.
+        // A cancelled analysis's worker exited: once no other is going, Run is free again.
         if cancelled_analysis
             && self.cancelled_analysis().is_none()
             && self.analysis_modal.quality.setup_note.as_deref() == Some(QUALITY_RUN_WAITS)
@@ -5025,9 +4723,8 @@ impl App {
         }
     }
 
-    /// `job` answered. `current` says whether its answer is still the one waited for:
-    /// a stale one changes nothing on screen, and whatever it carries is dropped here.
-    /// `waited` says the user was waiting on it.
+    /// `job` answered. `current`: still the answer waited for; a stale one changes
+    /// nothing and its payload is dropped here. `waited`: the user waited on it.
     fn answered(
         &mut self,
         job: Job,
@@ -5052,10 +4749,8 @@ impl App {
                 self.footers_joined(dataset, found.map(|found| *found))
             }
             (Job::Load(load), Answer::Load(answer)) => {
-                // The open's to judge, by its own identity rather than the generation: an
-                // answer for an open given up or replaced, or for a phase it has left,
-                // changes nothing on screen, and what it carries — a download's file, a
-                // dataset — is dropped with it.
+                // The loader judges by load identity, not generation: an answer for a replaced or
+                // abandoned open, or a phase it left, is dropped with what it carries.
                 let step = self.loading.answered(
                     load,
                     *answer,
@@ -5072,8 +4767,7 @@ impl App {
                     directory,
                 },
             ) => {
-                // The user left the open while its paths were looked at, or another took
-                // its place.
+                // The user left the open while its paths were looked at, or another replaced it.
                 if !self.loading.looking_at_paths(load) {
                     return None;
                 }
@@ -5101,10 +4795,7 @@ impl App {
                     options,
                 },
             ) => {
-                // The user pressed Ctrl+O and went to the home screen, a newer look
-                // replaced this one, or another open took its place while this was
-                // reading. Their choice is the one on screen, and this is the answer to a
-                // question nobody is waiting for.
+                // Ctrl+O, a newer look or another open replaced this one: nobody waits for it.
                 if !self.loading.looking_at_directory(load) {
                     return None;
                 }
@@ -5112,17 +4803,14 @@ impl App {
                 self.open_the_directory_looked_at(path, kind, holds.as_deref(), *options)
             }
             (Job::Classify(asked), Answer::Kind(found)) => {
-                // Superseded: a newer look, a trip away from home, or something that took
-                // the screen over owns the wait, so this one touches nothing.
+                // Superseded: whatever replaced it owns the wait.
                 if !current {
                     return None;
                 }
                 self.home.status = None;
 
-                // A key pressed on the home screen answers on the home screen. If they
-                // went back to the data, opening now would arrive from nowhere; if the
-                // browse has moved, the answer is about somewhere they navigated away
-                // from, and acting on it would take them back into it.
+                // A home key answers on home: if the user went back to the data, or browsed
+                // elsewhere, acting now would pull them back.
                 if self.input_mode != InputMode::Home || self.home.browsing != asked.browsing {
                     return None;
                 }
@@ -5145,9 +4833,8 @@ impl App {
                 if !current {
                     return None;
                 }
-                // Timed to here rather than to the next paint: this is the moment the
-                // rows exist to be drawn, and the frame that draws them costs the same
-                // whatever the page cost to fetch.
+                // Timed here, when the rows exist to be drawn; the paint costs the same whatever
+                // the fetch did.
                 if let Some(state) = self.data_table_state.as_ref() {
                     let took = inflight.began.elapsed();
                     log::debug!(
@@ -5211,8 +4898,7 @@ impl App {
                     plan,
                 },
             ) => {
-                // Kept whatever became of the run's results: the rows are the rows the
-                // key names, and a read is not to be thrown away.
+                // Kept whatever became of the results: a read is not to be thrown away.
                 if let Some(kept) = kept {
                     self.retain_quality_sample(&kept);
                 }
@@ -5221,8 +4907,7 @@ impl App {
                     && self.analysis_modal.selected_tool
                         == Some(analysis_modal::AnalysisTool::DataQuality)
                 {
-                    // Labeled with the plan it was dispatched with, whatever has been
-                    // staged since.
+                    // Labeled with the plan it ran with, whatever has been staged since.
                     self.cache_quality_result(&results, (*plan).clone());
                     self.analysis_modal.quality.last_plan = Some(*plan);
                     self.analysis_modal.quality.results = Some(*results);
@@ -5270,15 +4955,14 @@ impl App {
                 None
             }
             (Job::ViewPivot(pivot), Answer::ViewPivoted(pivoted)) => {
-                // Superseded means the view was cancelled or something replaced it, which
-                // owns the wait.
+                // Superseded: cancelled or replaced, and the replacement owns the wait.
                 let (view, why) = *pivot;
                 if !current {
                     return None;
                 }
                 let planned = self.data_table_state.as_mut().map(|state| {
-                    // Nothing changed while the pivot was read, so the steps before
-                    // it plan as they did; this time the pivot is in hand.
+                    // Nothing changed while the pivot was read, so earlier steps plan as before, now
+                    // with the pivot in hand.
                     state
                         .try_transition(|s| Self::replay_view(s, &view.settings, Some(pivoted)))
                         .map(|(_, rollback)| rollback)
@@ -5392,8 +5076,8 @@ impl App {
                 None
             }
             (Job::ChartExport { path, format }, Answer::ChartExported) => {
-                // Leaving the chart's dataset supersedes the write: one that finishes
-                // after Ctrl-O must not reopen its modal over the home screen.
+                // Leaving the chart's dataset supersedes the write, so a late finish does not
+                // reopen its modal over home.
                 if current {
                     self.finish_chart_export(&path, format, Ok(()));
                 }
@@ -5442,8 +5126,7 @@ impl App {
                 None
             }
             (_, Answer::ValueCounts(counts)) => {
-                // Superseded means the screen moved on: another column, a cancel, a
-                // trip away.
+                // Superseded: another column, a cancel, or a trip away.
                 if current {
                     self.value_counts.computing = None;
                     self.value_counts.hold(*counts);
@@ -5486,12 +5169,9 @@ impl App {
         }
     }
 
-    /// Put down what a failed background operation started, and say why.
-    ///
-    /// The keys and the line it held are put down by [`Self::job_ended`]. Each arm
-    /// clears only what the job itself started, and only when the job is current: a
-    /// load-ahead that dies leaves the analysis beside it running, and an older look at
-    /// a path leaves the newer one waiting. One that is not current is dropped.
+    /// Put down what a failed job started, and say why. [`Self::job_ended`] already
+    /// released its keys and line. Each arm clears only what that job started, and
+    /// only when it is current; a stale failure is dropped.
     fn background_failed(
         &mut self,
         job: &Job,
@@ -5500,10 +5180,9 @@ impl App {
         message: &str,
         panicked: bool,
     ) {
-        // The jobs judged by something of their own rather than by being current.
+        // Jobs judged by something of their own rather than by being current.
         match job {
-            // Judged by the open, as its answers are: one put down or replaced is not the
-            // open the user is waiting on.
+            // Judged by the open: one put down or replaced is not the one waited on.
             Job::Load(load) | Job::OpenNamed(load) | Job::LookAtDirectory { load, .. } => {
                 if let loading::Step::Failed(failed) = self.loading.failed(*load, message) {
                     self.load_failed(failed);
@@ -5608,8 +5287,7 @@ impl App {
         if !current {
             return;
         }
-        // Where there is one line for the reason, a panic's message (an internal error
-        // with the log's path under it) gives way to the log.
+        // With one line for the reason, a panic's message gives way to the log.
         let could_not = |what: &str| {
             if panicked {
                 format!("Could not {what}; see the log")
@@ -5664,8 +5342,7 @@ impl App {
                     });
                 }
             }
-            // The form comes back as it was, the reason on its status line, to fix
-            // the path and press Enter again.
+            // The form comes back with the reason on its status line.
             Job::Export => {
                 self.export_progress = None;
                 self.export_modal.path_error = Some(message.to_string());
@@ -5709,13 +5386,10 @@ impl App {
         }
     }
 
-    /// Ask a worker for the open file's size and footer, unless this dataset has
-    /// already asked. A source with no file on this machine has none to ask for.
-    ///
-    /// No lease and no busy state. The answer is judged by `dataset_generation`, which
-    /// a bump does not change, so a bump cannot strand it; leased, a slow stat would
-    /// hold the next buffer collect behind it. And busy would hold the keys typed at
-    /// the panel, Esc included, behind a read the panel already says it is waiting on.
+    /// Ask a worker for the open file's size and footer, once per dataset; a source
+    /// with no local file has none. Unleased and not busy: judged by
+    /// `dataset_generation`, which bumps leave alone, so it neither strands nor holds
+    /// collects or the panel's keys.
     fn read_file_facts(&mut self) {
         let dataset = self.dataset_generation;
         if self.data_table_state.is_none()
@@ -5728,8 +5402,8 @@ impl App {
         {
             return;
         }
-        // One file on this machine, or nothing: a glob is no file to stat, and several
-        // files are not the first one's size.
+        // One local file only: a glob has nothing to stat, and several files are not the
+        // first one's size.
         let several = self
             .source
             .opened
@@ -5765,17 +5439,15 @@ impl App {
             .is_some()
     }
 
-    /// The file facts read for `dataset`, kept if that is still the dataset on screen.
-    /// An answer for one replaced since is about a file no longer there.
+    /// Keep the facts read for `dataset` if it is still on screen.
     fn file_facts_landed(&mut self, dataset: u64, facts: FileFacts) {
         if dataset == self.dataset_generation {
             self.info.file_facts = Some((dataset, facts));
         }
     }
 
-    /// What the Info panel knows about the open file: `None` until it is asked, and
-    /// for a source with no file on this machine. Installing a dataset clears it, so
-    /// what is here is the open dataset's.
+    /// What the Info panel knows about the open file: `None` until asked, and for a
+    /// source with no local file. Cleared on install.
     pub fn file_facts(&self) -> Option<&FileFacts> {
         Self::facts_shown(
             &self.info.file_facts,
@@ -5784,8 +5456,7 @@ impl App {
         )
     }
 
-    /// [`Self::file_facts`], from the fields it reads, for a caller holding the rest
-    /// of the app.
+    /// [`Self::file_facts`] from its fields, for a caller borrowing the rest of the app.
     pub(crate) fn facts_shown(
         read: &Option<(u64, FileFacts)>,
         dataset: u64,
@@ -5798,8 +5469,7 @@ impl App {
         }
     }
 
-    /// An open found a database of several tables: the home screen lists them, as it
-    /// lists a directory of separate tables.
+    /// An open found a database of several tables: the home screen lists them.
     fn land_on_tables(&mut self, tables: loading::Tables) {
         let loading::Tables {
             database,
@@ -5815,17 +5485,14 @@ impl App {
         }
     }
 
-    /// An open failed before its first rows; the loader has put it down. The dataset
-    /// already up is the current one again, or the home screen is, when that is where
-    /// the open was chosen.
+    /// An open failed before its first rows; the loader has put it down. The previous
+    /// dataset, or home if the open came from there, is current again.
     fn load_failed(&mut self, failed: loading::Failed) {
         let loading::Failed { message, from_home } = failed;
         self.status_message = None;
         self.busy = false;
-        // Kept so the home screen can say why, if dismissing the error lands the user
-        // there from a command line that named the file. Chosen at home, the dialog
-        // has said it, and the prompt's line saying it again was the same failure
-        // reported twice (#547 D8).
+        // Kept so home can say why when dismissing the error lands there from a command
+        // line. Chosen at home, the dialog already said it.
         if from_home {
             self.home_app.last_load_error = None;
             self.enter_home();
@@ -5835,9 +5502,9 @@ impl App {
         self.error_modal.show(message);
     }
 
-    /// The table's rows could not be read. A query or view waiting on them is not
-    /// applied (#400, #432); a page the table waited on ends the wait with the reason;
-    /// a load-ahead's failure is left for the page that needs those rows.
+    /// The table's rows could not be read. A waiting query or view is not applied; a
+    /// waited-on page ends its wait with the reason; a load-ahead's failure is left for
+    /// the page that needs those rows.
     fn rows_failed(
         &mut self,
         current: bool,
@@ -5856,8 +5523,8 @@ impl App {
         if !waited {
             return;
         }
-        // A count waiting for this page to paint would read the frame that just
-        // failed to: it fails with it, the way a count riding in the collect does.
+        // A count waiting on this paint would read the frame that just failed: it fails
+        // too, as a count riding the collect does.
         if let Some(generation) = self.counting.count_after_paint.take() {
             if self.counting.len_count_inflight == Some(generation) {
                 self.counting.len_count_inflight = None;
@@ -5874,8 +5541,8 @@ impl App {
         self.error_modal.show(message.to_string());
     }
 
-    /// `message` with the temporary files the dataset on screen reads (a download, a
-    /// decompressed copy) called by what the user opened.
+    /// `message` with the dataset's temp files (a download, a decompressed copy) named
+    /// by what the user opened.
     fn named_by_source(&self, message: &str) -> String {
         let (Some(state), Some(source)) = (self.data_table_state.as_ref(), self.path.as_deref())
         else {
@@ -5889,15 +5556,15 @@ impl App {
             })
     }
 
-    /// Above this estimated size a table copy asks first: most paste targets
-    /// choke long before it, and the clipboard holds the whole thing at once.
+    /// Above this estimated size a table copy asks first: most paste targets choke
+    /// sooner, and the clipboard holds it all.
     const COPY_CONFIRM_BYTES: usize = 10 * 1024 * 1024;
-    /// Above this a table copy is refused outright; a file is the medium for
-    /// data this size, and export writes one without holding it all in text.
+    /// Above this a table copy is refused; export writes files this size without
+    /// holding them as text.
     const COPY_REFUSE_BYTES: usize = 200 * 1024 * 1024;
 
-    /// Enter on a row of a grouped view: its group's rows, read off this thread
-    /// when the buffer does not hold the row.
+    /// Enter on a grouped row: its group's rows, read off-thread when the buffer lacks
+    /// the row.
     fn drill_selected_row(&mut self) {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
@@ -5922,9 +5589,9 @@ impl App {
         }
     }
 
-    /// Under `theme.mode = "auto"`, switch to the theme for the terminal's background
-    /// (`theme.dark` or `theme.light`), keeping the configured `theme.colors` over it as at startup. An
-    /// explicit mode ignores the terminal.
+    /// Under `theme.mode = "auto"`, switch to `theme.dark` or `theme.light` for the
+    /// terminal's background, with `theme.colors` over it. An explicit mode ignores
+    /// the terminal.
     pub fn follow_terminal_background(&mut self, mode: ThemeMode) {
         let theme = &self.app_config.theme;
         if !theme.follow || theme.mode == Some(mode) {
@@ -5941,8 +5608,8 @@ impl App {
                 self.theme = built;
                 self.chart.modal.series_cap = Some(self.theme.series_colors().len());
                 self.app_config.theme = next;
-                // The prompts live as long as the app and keep the colors they were
-                // given; a dialog's fields take the theme each time it opens.
+                // The prompts live as long as the app and keep their colors; dialogs take the
+                // theme each time they open.
                 for input in [
                     &mut self.prompt.query_input,
                     &mut self.prompt.sql_input,
@@ -5951,14 +5618,13 @@ impl App {
                     *input = std::mem::take(input).with_theme(&self.theme);
                 }
             }
-            // The configured colors parsed at startup, so this is not expected; the
-            // palette in use stays.
+            // The colors parsed at startup, so unexpected; keep the current palette.
             Err(e) => log::warn!("cannot switch to the {mode:?} palette: {e}"),
         }
     }
 
-    /// The terminal said what its background is: follow it under `auto`, and remember
-    /// it for the next start's first frame.
+    /// The terminal's background: follow it under `auto`, and remember it for the next
+    /// start's first frame.
     fn terminal_answered(&mut self, mode: ThemeMode) {
         if self.app_config.theme.follow {
             self.cache
@@ -5967,9 +5633,8 @@ impl App {
         self.follow_terminal_background(mode);
     }
 
-    /// Settle the palette of the first frame under `auto`, without waiting for the
-    /// terminal: its answer when `answered` has it, else what this terminal answered
-    /// last time. An answer that comes later switches palettes if it differs.
+    /// Settle the first frame's palette under `auto` without waiting: `answered` if
+    /// given, else this terminal's last answer. A later answer switches if it differs.
     pub fn settle_first_palette(&mut self, answered: Option<ThemeMode>) {
         if let Some(mode) = answered {
             self.terminal_answered(mode);
@@ -5980,8 +5645,8 @@ impl App {
         }
     }
 
-    /// Whether the run loop should ask the terminal for its background, once. Asked by
-    /// [`AppEvent::TerminalFocused`] under `auto`.
+    /// Whether the run loop should ask the terminal's background, once (set by
+    /// [`AppEvent::TerminalFocused`] under `auto`).
     pub fn take_background_query(&mut self) -> bool {
         std::mem::take(&mut self.display.background_query)
     }
@@ -6001,14 +5666,14 @@ impl App {
         self.external.open.take()
     }
 
-    /// Whether the session reports the mouse, to take it again after a program
-    /// had the terminal.
+    /// Whether the session reports the mouse, to retake it after a program had the
+    /// terminal.
     pub fn mouse_enabled(&self) -> bool {
         self.app_config.display.mouse
     }
 
-    /// The run loop opened `open`: a program that waited is done with its file;
-    /// a failure is said on the bar.
+    /// The run loop opened `open`: a waiting program is done with its file; a failure
+    /// goes on the bar.
     pub fn external_opened(&mut self, open: &external_open::ExternalOpen, failed: Option<String>) {
         let program = external_open::program_for(open.document, |name| std::env::var(name).ok());
         if matches!(program, external_open::Program::Wait(_)) {
@@ -6060,8 +5725,8 @@ impl App {
             .style(Style::default().bg(background_color))
             .render(area, buf);
 
-        // The footer grows, taking rows from the bottom of the view, only for a prompt
-        // being typed or a job with progress.
+        // The footer grows into the view only for a prompt being typed or a job with
+        // progress.
         let progress = self.footer_progress_line(main_view_content);
         let prompt_room = crate::render::footer::MAX_LINES - 1;
         let prompt_rows = if main_view_content == MainViewContent::Datatable {
@@ -6074,8 +5739,7 @@ impl App {
         // The inspector is framed; its border sets it off from the footer.
         let rule = self.overlay != Overlay::Inspect;
         let app_layout = app_layout(area, self.debug.enabled, footer_lines, rule);
-        // A terminal too short for all of it keeps the status line first, then the
-        // prompt, then the progress.
+        // A short terminal keeps the status line first, then the prompt, then progress.
         let room = app_layout.footer.height.saturating_sub(1);
         let prompt_rows = prompt_rows.min(room);
         let progress_rows = progress_rows.min(room - prompt_rows);
@@ -6105,8 +5769,7 @@ impl App {
         }
         self.close_help_left_behind();
         if self.help.is_open() {
-            // Over the view, never the footer: its rule, and the lines it grows by
-            // for a prompt or progress, are drawn after and would cut the frame.
+            // Over the view, never the footer, whose rule and extra lines are drawn after.
             crate::render::help::render_help(app_layout.main_view, buf, &mut self.help, &ctx);
         }
 
@@ -6152,31 +5815,20 @@ impl App {
         }
         self.pointer.drawn();
 
-        // Last line of defence, and deliberately the last statement here.
-        //
-        // Everything above draws untrusted text: cell values, column names,
-        // filenames, parser messages. ratatui strips control characters in
-        // `Buffer::set_stringn` but not in `Span`/`Line` rendering, which is
-        // what these widgets use, and the crossterm backend then prints each
-        // cell symbol unfiltered. Without this sweep a cell containing
-        // `\x1b]52;c;...\x07` writes to the user's clipboard.
-        //
-        // Doing it here rather than at each of the ~200 `Span` construction
-        // sites means a new widget cannot forget to. See `crate::sanitize`.
+        // Last, deliberately. Widgets draw untrusted text (cells, names, filenames,
+        // parser messages); ratatui strips control characters in `set_stringn` but not in
+        // `Span`/`Line`, and crossterm prints cells unfiltered, so a cell holding
+        // `\x1b]52;c;...\x07` would write the clipboard. One sweep here covers every
+        // widget. See `crate::sanitize`.
         crate::sanitize::sanitize_buffer(buf);
     }
 }
 
 impl App {
-    /// The view a caller that asked for one gets back when the app exits
-    /// (`datui.view(..., capture=True)`): the active table's committed frame with
-    /// datui's internal columns dropped. `None` when no dataset is open. Text still
-    /// sitting in an editor was never applied, so it is not here either.
-    ///
-    /// Refused when the frame would scan a temporary file, because those are removed
-    /// on exit and a plan over deleted paths fails later and worse: a remote download,
-    /// a decompressed archive, or a converted stream or GPS log. The in-TUI export (`e`) writes
-    /// real rows and is the way out for those datasets.
+    /// The view returned on exit to a caller that asked (`datui.view(...,
+    /// capture=True)`): the committed frame without internal columns; `None` with no
+    /// dataset. Refused when the frame scans a temp file (download, decompressed or
+    /// converted copy), which is removed on exit; export (`e`) is the way out.
     pub fn capture_view(&self) -> Result<Option<LazyFrame>> {
         let Some(state) = &self.data_table_state else {
             return Ok(None);
@@ -6201,15 +5853,12 @@ impl App {
 
 impl Drop for App {
     fn drop(&mut self) {
-        // The dataset's footer pass stops issuing reads. The open in flight is the
-        // loader's, which stops it as it drops: a download still running stops at its
-        // next chunk and removes its partial file, and a finished one is removed as
-        // whatever holds it drops. Drop rather than the end of `run`, because it covers
-        // every exit: a normal quit, an error return, an unwind from a panic, and the
-        // Python binding calling `run` again in the same process.
+        // Stop the footer pass. The loader stops the open in flight as it drops (a running
+        // download removes its partial file). In Drop to cover every exit: quit, error,
+        // panic unwind, and the Python binding running again in-process.
         self.counting.footer_progress.cancel();
-        // The indexing stops, and the reads waiting on it give up, so nothing holds
-        // the file once the app is gone (the Python binding runs on in the process).
+        // Stop indexing so nothing holds the file once the app is gone (the Python
+        // binding runs on).
         self.counting
             .indexing_stop
             .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -6219,15 +5868,10 @@ impl Drop for App {
     }
 }
 
-/// Run a future on the app's runtime from a thread outside it, and wait for the answer.
-///
-/// Every background thread that needs the network goes through this rather than
-/// `Handle::block_on`. That polls the future on the calling thread, and quitting shuts
-/// the runtime down without waiting for those threads: the next timer or socket an
-/// in-flight request touches then panics with "A Tokio 1.x context was found, but it is
-/// being shutdown", across the terminal the user just got back. A task spawned onto the
-/// runtime is dropped by the shutdown instead of polled, so the wait ends with `None`
-/// and the abandoned request goes quietly.
+/// Run a future on the app's runtime from an outside thread and wait for it. Not
+/// `Handle::block_on`: that polls on the calling thread, and after quit's runtime
+/// shutdown the next timer or socket panics ("Tokio 1.x context ... being
+/// shutdown"). A spawned task is dropped instead, and the wait ends with `None`.
 #[cfg(feature = "cloud")]
 pub(crate) fn wait_on_runtime<F>(runtime: &tokio::runtime::Handle, future: F) -> Option<F::Output>
 where

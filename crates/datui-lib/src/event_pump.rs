@@ -1,14 +1,11 @@
 //! The main loop, minus the terminal.
 //!
-//! `run()` sets the terminal up and hands [`EventPump::run`] a way to draw a frame;
-//! keys reach the pump through the same channel as worker results
-//! ([`crate::terminal_input`]), so the loop sleeps until either arrives or a deadline
-//! passes ([`Pacer`]). Everything between, including what happens to a key typed
-//! while the app is busy, lives here so it can be driven without a terminal. Keys
-//! typed while busy are held, in order, and replayed one per
-//! loop iteration once the app is idle, each through the same path a fresh key takes.
-//! Any follow-up event a replayed key produces is drained before the next held key is
-//! offered, so a queued Enter finishes its search before the key typed after it acts.
+//! `run()` sets up the terminal and hands [`EventPump::run`] a way to draw. Keys
+//! arrive on the same channel as worker results ([`crate::terminal_input`]), so the
+//! loop sleeps until either arrives or a deadline passes ([`Pacer`]). Keys typed
+//! while busy are held in order and replayed one per iteration once idle, through
+//! the path a fresh key takes; a replayed key's follow-ups drain before the next is
+//! offered, so a queued Enter finishes its search first.
 
 use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
@@ -21,28 +18,26 @@ use crate::jobs::Hold;
 use crate::pointer::Pointer;
 use crate::{App, AppEvent};
 
-/// Keys held while busy. Beyond this the newest is dropped, and the user told: the
-/// oldest may be the `/` that puts the rest into the query bar, and without it the
-/// tail of a typed query would replay as hotkeys.
+/// Keys held while busy. Beyond this the newest is dropped and the user told: the
+/// oldest may be the `/` that makes the rest a query rather than hotkeys.
 pub const MAX_HELD_KEYS: usize = 32;
 
-/// What a fresh key from the terminal should do while the app cannot take it directly.
+/// What a fresh key should do while the app cannot take it directly.
 enum Act {
     /// Handle it now.
     Now,
     /// Hold it for replay once the app is idle.
     Hold,
-    /// Hold this key in its place: what it means where it was typed.
+    /// Hold this key instead: what the typed key means where it was typed.
     HoldAs(KeyEvent),
     /// Discard it: a bare Enter/Esc at a busy table confirms nothing.
     Drop,
-    /// Handle it now, and drop the `n` and `N` held behind it: Esc stopping a find
-    /// stops the finds typed after it too, or each would need an Esc of its own.
+    /// Handle it now and drop the `n`/`N` held behind it: one Esc stops every queued
+    /// find.
     StopFind,
 }
 
-/// Something read from the terminal for the app: a key or the mouse. Kept in the
-/// order it arrived.
+/// A key or mouse event read from the terminal, kept in arrival order.
 #[derive(Debug, Clone, Copy)]
 enum Input {
     Key(KeyEvent),
@@ -52,9 +47,9 @@ enum Input {
 /// What a pass over the channel found.
 #[derive(Debug)]
 pub enum Drained {
-    /// Keep going; `updated` says whether anything was handled and a frame is due,
-    /// and `progress_only` that everything handled was a report from work still
-    /// running ([`AppEvent::is_progress`]), whose frame may wait for the next.
+    /// Keep going. `updated`: something was handled and a frame is due.
+    /// `progress_only`: all of it was progress reports ([`AppEvent::is_progress`]),
+    /// whose frame may wait.
     Continue {
         updated: bool,
         progress_only: bool,
@@ -65,10 +60,9 @@ pub enum Drained {
     NotFound(std::path::PathBuf),
 }
 
-/// The screen the held keys were typed at. A change means they were meant for
-/// something that is no longer there: the modal that ended the work and has not been
-/// seen yet, the dataset left for the home screen, or a statement's failure put
-/// under it in the query prompt.
+/// The screen the held keys were typed at. A change means their target is gone: a
+/// modal that ended the work, the dataset left for home, or a statement's failure
+/// under the query prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Screen {
     generation: u64,
@@ -83,32 +77,23 @@ pub struct EventPump {
     rx: Receiver<AppEvent>,
     held: VecDeque<KeyEvent>,
     held_for: Screen,
-    /// Continuations a handler returned, each holding the generation.
-    ///
-    /// Ahead of the channel rather than appended to it. A follow-up is the rest of the
-    /// event just handled, so it belongs before results that arrived while that handler
-    /// ran.
-    ///
-    /// The hold covers the gap the break leaves. A frame is drawn before the
-    /// continuation runs, and a key replayed then must not find the generation free.
+    /// Continuations a handler returned, each holding the generation. Ahead of the
+    /// channel: a follow-up is the rest of the event just handled. The hold covers the
+    /// frame drawn before it runs, so a replayed key cannot find the generation free.
     next_up: VecDeque<(AppEvent, Hold)>,
-    /// Events that arrived before there was an app to take them, while `run` read the
-    /// settings, then the startup open: handled first, in that order. The keys typed
-    /// meanwhile are in [`Self::typed`].
+    /// Events that arrived before the app existed (while `run` read the settings, then
+    /// the startup open), handled first in order. Keys typed meanwhile are in
+    /// [`Self::typed`].
     backlog: VecDeque<AppEvent>,
-    /// Keys read from the terminal and not yet offered to the app, oldest first. Each
-    /// waits for what has arrived on the channel behind it, as it did when the loop
-    /// read the terminal itself: taken in channel order, a held-down `j` put the
-    /// load-ahead's answer behind every repeat, scrolled off the buffer and folded the
-    /// rest into one press.
+    /// Keys read and not yet offered, oldest first. Each waits for what arrived on the
+    /// channel behind it, so a held-down `j` does not starve the load-ahead's answer.
     typed: VecDeque<Input>,
-    /// Events handled since a key was last offered. Bounded by [`RESULTS_PER_KEY`], so
-    /// a worker reporting faster than it is handled cannot starve the keyboard.
+    /// Events handled since a key was last offered, bounded by [`RESULTS_PER_KEY`] so a
+    /// fast worker cannot starve the keyboard.
     since_key: usize,
-    /// How many of the keys at the front of [`Self::typed`] came from the backlog.
-    /// Typed before anything on the channel was sent, they wait on none of it: a
-    /// Ctrl+O typed while the settings were read lost to the startup open whenever
-    /// that open answered before the channel was ever found empty.
+    /// How many keys at the front of [`Self::typed`] came from the backlog. Typed
+    /// before anything was sent on the channel, they wait on none of it (a Ctrl+O
+    /// typed during startup must beat the startup open).
     early: usize,
 }
 
@@ -132,9 +117,9 @@ impl EventPump {
         }
     }
 
-    /// Handle `events` before anything on the channel: they arrived first, or are the
-    /// startup open those keys were typed at. Keys among them are offered, in order,
-    /// after the other events and ahead of the channel.
+    /// Handle `events` before the channel: they arrived first, or are the startup open
+    /// those keys were typed at. Keys among them are offered after the other events,
+    /// ahead of the channel.
     pub fn handle_first(&mut self, events: impl IntoIterator<Item = AppEvent>) {
         for event in events {
             match event {
@@ -161,17 +146,14 @@ impl EventPump {
         self.held.iter()
     }
 
-    /// True while held keys are waiting on an idle app: the loop should not wait on
-    /// the terminal, since each iteration replays one.
+    /// Held keys wait on an idle app: the loop should not wait on the terminal, since
+    /// each iteration replays one.
     pub fn replaying(&self) -> bool {
         !self.held.is_empty() && !self.app.is_busy()
     }
 
-    /// A key read from the terminal. Handled now if it is a hard escape, or the app is
-    /// idle with nothing queued ahead of it, or it is one of the view keys that act at a
-    /// busy table; Enter with nothing to drill into waits as Space; a bare Enter/Esc at a
-    /// busy table is dropped; otherwise it waits behind whatever was typed before it.
-    /// Returns whether the app changed.
+    /// A key from the terminal, classified by `classify`: handled now, held behind
+    /// earlier keys, held as another key, or dropped. Returns whether the app changed.
     pub fn terminal_key(&mut self, key: KeyEvent) -> Result<bool> {
         self.discard_stale();
         match self.classify(&key) {
@@ -196,19 +178,12 @@ impl EventPump {
         }
     }
 
-    /// A mouse event read from the terminal, which means what it lands on in the last
-    /// frame ([`App::pointer`]). It is never held: aimed at what is on screen now, it
-    /// would land on something else later. The wheel's arrows and a chip's key act
-    /// where a typed key would act at once and are dropped where it would wait, so the
-    /// wheel across moves the column cursor at a busy table, as ←→ do, and the wheel
-    /// down waits for nothing. A click moves the cursor where ↓ would act at once: at
-    /// an idle table with nothing held, and on the home screen, which keeps its keys.
-    /// Returns whether the app changed.
-    ///
-    /// The rest stand for keys and act where those keys would: focusing a form's field
-    /// where ↓ would, a dragged width where `>` would, a dropped header where `L`
-    /// would, opening the context menu where ↓ would at the table, and a menu line or
-    /// a tool pressing its key as typed.
+    /// A mouse event, meaning what it lands on in the last frame ([`App::pointer`]).
+    /// Never held: aimed at the screen now, it would land elsewhere later. Each acts
+    /// where the key it stands for would act at once, and is dropped where that key
+    /// would wait: the wheel as arrows, a click as ↓, a chip or menu line or tool as
+    /// its key, a dragged width as `>`, a dropped header as `L`. Returns whether the app
+    /// changed.
     pub fn terminal_mouse(&mut self, mouse: MouseEvent) -> Result<bool> {
         self.discard_stale();
         let acts = |p: &Self, code: KeyCode| {
@@ -281,8 +256,8 @@ impl EventPump {
                 if !acts(self, KeyCode::Down) {
                     return Ok(false);
                 }
-                // Only on the cell the cursor landed on: rows that moved since they
-                // were drawn are not the ones clicked.
+                // Only on the cell the cursor landed on: rows that moved since drawing were not
+                // the ones clicked.
                 if self.app.point_for_menu(&hit) {
                     self.app.open_context_menu(at);
                 }
@@ -318,38 +293,36 @@ impl EventPump {
     }
 
     fn classify(&self, key: &KeyEvent) -> Act {
-        // Escapes jump ahead of anything queued, busy or idle: Ctrl-Q/Ctrl-C quit,
-        // Ctrl-O goes home, a confirmation modal is answered. Checked first so a
-        // Ctrl-C typed during replay is not appended behind the held keys, where a
-        // modal opening could discard it.
+        // Escapes jump the queue, busy or idle (Ctrl-Q/Ctrl-C quit, Ctrl-O home, a
+        // confirmation answered). First, so a Ctrl-C during replay is not queued where a
+        // modal could discard it.
         if self.app.hard_escape_while_busy(key) {
             if key.code == KeyCode::Esc && self.app.finding() {
                 return Act::StopFind;
             }
             return Act::Now;
         }
-        // The open menu reads nothing: its own keys act at once. A line chosen
-        // presses its key as typed, and that key waits as typed.
+        // The open menu's keys read nothing and act at once; a chosen line presses its key
+        // as typed.
         if self.app.menu_takes(key) {
             return Act::Now;
         }
         let queued = !self.held.is_empty();
-        // Idle with nothing ahead: ordinary front-of-line handling.
+        // Idle with nothing ahead: handle now.
         if !self.app.is_busy() && !queued {
             return Act::Now;
         }
-        // The loading screen has nothing to type ahead into, so nothing is
-        // held there: the allowed keys act, everything else is dropped. Held
-        // once, a stray key would queue `q` behind it for the whole load.
+        // The loading screen has nothing to type into: allowed keys act, the rest drop
+        // (one held stray would queue `q` behind it for the whole load).
         if self.app.is_busy() && self.app.awaiting_dataset() {
             if self.app.key_acts_while_busy(key) {
                 return Act::Now;
             }
             return Act::Drop;
         }
-        // Enter with nothing to drill into is Space, and waits as Space does. Held as
-        // Space, so a result that can be drilled by the time it replays is not drilled
-        // into. Only while what is held moves the cursor: after a `/` it is text's Enter.
+        // Enter with nothing to drill into is Space, held as Space so a result drillable
+        // by replay time is not drilled. Only while held keys move the cursor: after `/`
+        // it is text's Enter.
         if self.app.is_busy()
             && key.code == KeyCode::Enter
             && self.app.in_normal_table_view()
@@ -358,16 +331,14 @@ impl EventPump {
         {
             return Act::HoldAs(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
         }
-        // A sample being drawn holds only what needs every row: moving, finding and
-        // inspecting the rows on hand act at once, the find line and inspector too.
+        // A sample draw holds only what needs every row: moving, finding and inspecting
+        // the rows on hand act at once.
         if self.app.is_busy() && !queued && self.app.key_acts_while_sampling(key) {
             return Act::Now;
         }
-        // Busy, nothing queued yet, at the plain table view: the harmless view keys act
-        // (quit, the column cursor, help); a bare Enter that would drill, or Esc, confirms
-        // nothing and is dropped; everything else is type-ahead and waits. Once anything
-        // is queued, or the view is a text field or modal, every key waits to keep the
-        // typed order.
+        // Busy at the plain table with nothing queued: harmless view keys act; a bare Enter
+        // or Esc confirms nothing and drops; everything else waits. Once anything is
+        // queued, or in a text field or modal, every key waits to keep typed order.
         if self.app.is_busy() && !queued && self.app.in_normal_table_view() {
             if self.app.key_acts_while_busy(key) {
                 return Act::Now;
@@ -395,9 +366,8 @@ impl EventPump {
         Ok(true)
     }
 
-    /// The next event to handle: a continuation first, then the backlog, then the
-    /// channel. `Empty` once a typed key has waited long enough, or came from the
-    /// backlog, so it is offered.
+    /// The next event: a continuation, then the backlog, then the channel. `Empty` once
+    /// a typed key has waited long enough, or came from the backlog, so it is offered.
     fn take_next(&mut self) -> Result<(AppEvent, Option<Hold>), TryRecvError> {
         if let Some((event, lease)) = self.next_up.pop_front() {
             return Ok((event, Some(lease)));
@@ -418,12 +388,9 @@ impl EventPump {
     }
 
     /// Wait up to `timeout` for the next event, then handle it and everything behind
-    /// it. The run loop's only wait: keys, worker results and continuations all arrive
-    /// here, so whichever comes first ends it. `Duration::MAX` waits as long as it
-    /// takes.
+    /// it. The run loop's only wait. `Duration::MAX` waits indefinitely.
     pub fn wait_and_drain(&mut self, timeout: Duration) -> Result<Drained> {
-        // A continuation is already here; waiting on the channel would sit on it for the
-        // whole timeout while the errand it belongs to is halfway through.
+        // A continuation is waiting: do not sit on it for the whole timeout.
         if !self.next_up.is_empty() || !self.backlog.is_empty() || !self.typed.is_empty() {
             let first = self.take_next();
             return self.drain_from(first);
@@ -449,16 +416,14 @@ impl EventPump {
             match next {
                 Ok((AppEvent::Exit, _)) => return Ok(Drained::Exit),
                 Ok((AppEvent::Crash(msg), _)) => return Ok(Drained::Crash(msg)),
-                // A path named at startup is not there: the session ends as it always
-                // has, with the file named. The look's answer says so only while it is
-                // current, so a user who has moved on meanwhile stays.
+                // A path named at startup is not there: the session ends naming it. The look only
+                // says so while current, so a user who moved on stays.
                 Ok((AppEvent::NamedPathMissing(path), _)) => {
                     return Ok(Drained::NotFound(path));
                 }
-                // Offered once what arrived behind it is handled ([`Self::typed`]).
-                // A key the app pressed for the user (Enter on a help line): offered
-                // next, as typed, so `classify` holds, converts or drops it as it
-                // would the key itself.
+                // Offered once what arrived behind it is handled ([`Self::typed`]). A key pressed
+                // for the user (Enter on a help line) is offered next as typed, so `classify`
+                // treats it like the key itself.
                 Ok((AppEvent::Press(key), hold)) => {
                     if hold.is_some() {
                         drop(hold);
@@ -503,30 +468,24 @@ impl EventPump {
                     };
                     self.discard_stale();
                     if let Some(follow_up) = follow_up {
-                        // A handler that returns a follow-up event is deferring work so
-                        // the UI can show the current phase first — the `Do*` events all
-                        // rely on this. Draining the follow-up in the same pass defeats
-                        // that: the phase label never renders and the throbber never
-                        // moves. Break so a frame is drawn and keys are polled first.
-                        //
-                        // Its hold is taken before this event's is let go, so the
-                        // generation is never free between the two phases.
+                        // A follow-up defers work so the UI can show the current phase first (the `Do*`
+                        // events rely on it). Break so a frame is drawn and keys are polled before it
+                        // runs. Its hold is taken before this event's is released, so the generation is
+                        // never free between phases.
                         self.queue_continuation(follow_up);
                         drop(continuation);
                         break;
                     }
-                    // After the handler, never before: whatever phase this event started
-                    // holds the generation by now. Then what waited on the hold gets its
-                    // turn, as it would after any other event.
+                    // After the handler: whatever phase this event started holds the generation now.
+                    // Then errands waiting on the hold get their turn.
                     if let Some(hold) = continuation.take() {
                         drop(hold);
                         self.app.let_waiting_errands_in();
                     }
                 }
                 Err(TryRecvError::Empty) => {
-                    // The pointer was aimed at the frame on screen. When something has
-                    // been handled since (a resize, a list that arrived, rows read), it
-                    // waits for the frame that shows it, which this asks for now.
+                    // The pointer was aimed at the frame on screen; after changes it waits for the
+                    // frame showing them, requested now.
                     if matches!(self.typed.front(), Some(Input::Mouse(_)))
                         && !self.app.pointer.on_screen()
                     {
@@ -537,8 +496,7 @@ impl EventPump {
                     let Some(mut input) = self.typed.pop_front() else {
                         break;
                     };
-                    // A drag reports every cell the pointer crosses; only where it is
-                    // now matters, so the moves waiting behind it are one.
+                    // A drag reports every cell crossed; only the latest position matters.
                     while let (Input::Mouse(now), Some(Input::Mouse(next))) =
                         (input, self.typed.front())
                         && is_drag(&now)
@@ -550,9 +508,8 @@ impl EventPump {
                     }
                     self.since_key = 0;
                     self.early = self.early.saturating_sub(1);
-                    // One key per frame, as when the loop read the terminal itself: a
-                    // key that acted is drawn before the next is offered, and a
-                    // continuation it queued gets its frame first.
+                    // One key per frame: a key that acted is drawn before the next, and its
+                    // continuation gets its frame first.
                     let acted = match input {
                         Input::Key(key) => self.terminal_key(key)?,
                         Input::Mouse(mouse) => self.terminal_mouse(mouse)?,
@@ -573,14 +530,10 @@ impl EventPump {
         })
     }
 
-    /// The run loop, given a way to draw a frame: draw the first one, then replay one
-    /// held key, handle what has arrived, sleep until something arrives or a deadline
-    /// passes, and redraw, until the app exits.
-    ///
-    /// Keys ([`AppEvent::Terminal`]), worker results and the app's own news all come
-    /// through the one channel, so whichever is first ends the sleep; nothing waits out
-    /// a poll interval. Whatever was handled is drawn before the loop sleeps, and a
-    /// continuation queued by it runs right after that frame.
+    /// The run loop: draw the first frame, then replay one held key, handle what has
+    /// arrived, sleep until something arrives or a deadline passes, and redraw, until
+    /// exit. Everything comes through one channel, so nothing waits out a poll
+    /// interval; a queued continuation runs right after the frame showing its phase.
     pub fn run(&mut self, mut draw: impl FnMut(&mut App) -> Result<()>) -> Result<Ended> {
         let mut pacer = Pacer::default();
         let mut first_rows = crate::first_rows_trace::FirstRowsTrace::from_env();
@@ -590,8 +543,8 @@ impl EventPump {
         pacer.drew(Instant::now());
         loop {
             let mut pass = Pass::default();
-            // A replayed key may have queued a follow-up (a Search, an Export); it is
-            // handled in this drain, before anything typed since can overtake it.
+            // A replayed key's follow-up (a Search, an Export) is handled in this drain,
+            // before anything typed since can overtake it.
             pass.updated = self.replay_one()?;
             pass.progress_only = !pass.updated;
             if let Some(end) = pass.add(self.drain()?) {
@@ -608,8 +561,8 @@ impl EventPump {
             let app = &mut self.app;
             let now = Instant::now();
             let mut redraw = pacer.handled(pass.updated, pass.progress_only, now);
-            // The throbber turns while busy, and while a background row count or
-            // anything else with a spinner of its own is still out.
+            // The throbber turns while busy, or while a count or anything else with a spinner
+            // is out.
             pacer.spinning(app.something_is_spinning(), app.is_busy(), now);
             if pacer.turn_spinner(now) {
                 app.throbber_frame = app.throbber_frame.wrapping_add(1);
@@ -624,13 +577,11 @@ impl EventPump {
 
             if redraw {
                 draw(app)?;
-                // The rows the frame found it needs are read, and a count waiting for
-                // them to be on screen starts.
+                // Read the rows the frame needed, and start a count waiting on their paint.
                 app.frame_painted();
                 first_rows.painted(app);
                 pacer.drew(now);
-                // And it marks the rows it drew without knowing them. Asked now, not
-                // on the next pass: with nothing else arriving there may not be one.
+                // Ask now for what the frame drew without knowing: there may be no next pass.
                 app.request_what_the_frame_needs();
             }
         }
@@ -642,8 +593,8 @@ impl EventPump {
         self.next_up.push_back((follow_up, hold));
     }
 
-    /// Offer one key to the app, the way the channel drain does, then reconcile the
-    /// keys queued behind it with the screen it left.
+    /// Offer one key to the app as the channel drain does, then reconcile the held keys
+    /// with the screen it left.
     fn dispatch(&mut self, key: KeyEvent) -> Result<()> {
         // The key may change the screen: a click waits for the frame that shows it.
         self.app.pointer.changed();
@@ -651,35 +602,30 @@ impl EventPump {
         match self.app.handle(AppEvent::Key(key)) {
             Ok(Some(follow_up)) => self.queue_continuation(follow_up),
             Ok(None) => {}
-            // Only reachable if the app went busy between the check and the call, which
-            // nothing on this thread does; the key keeps its place either way.
+            // Only if the app went busy between check and call, which nothing on this thread
+            // does; the key keeps its place either way.
             Err(deferred) => self.held.push_front(deferred),
         }
         if self.app.screen_generation() != gen_before {
-            // This key abandoned the view — home, or a declined download. The keys
-            // queued behind it were typed for the screen that is now gone.
+            // This key left the view (home, a declined download): held keys were for that
+            // screen.
             self.held.clear();
             self.app.set_input_dropped(false);
         } else {
-            // A modal this key opened — an overwrite prompt, an error it surfaced — is
-            // one the queued keys are the answer to, unlike a modal that arrives on its
-            // own from a background result (handled in `drain_from`). Keep them and
-            // re-baseline the stamp so `discard_stale` does not then drop them.
+            // A modal this key opened (an overwrite prompt, an error) is one the held keys
+            // answer, unlike one a background result brings: keep them and re-baseline so
+            // `discard_stale` does not drop them.
             self.held_for = Self::screen_of(&self.app);
         }
         Ok(())
     }
 
-    /// Hold a key for later. A held navigation key repeats fast and would replay as a
-    /// burst, each step chaining another collect, so consecutive repeats become one
-    /// press — but only at the plain table view and only while every key already held is
-    /// itself a navigation key. Once `/` or any other key is held the run is text, so
-    /// nothing after it coalesces and a typed `/bookkeeper` keeps both `k`s. A column
-    /// cursor key reads nothing, so each one is kept: `l` `l` `F` counts the column two
-    /// along, as it would idle. So is each `n` and `N`: five typed move five matches.
-    /// At the cap
-    /// the newest key is dropped and the user told; never the oldest, which may be the
-    /// `/` the rest were typed into.
+    /// Hold a key. At the plain table, while every held key is navigation, repeats of
+    /// one key coalesce into a press (each would chain a collect). Once `/` or any
+    /// other key is held the run is text, so `/bookkeeper` keeps both `k`s. Column
+    /// cursor keys and `n`/`N` are each kept: they read nothing or move one match each.
+    /// At the cap the newest is dropped and the user told; never the oldest, which may
+    /// be the `/`.
     fn hold(&mut self, key: KeyEvent) {
         if self.held.is_empty() {
             self.held_for = Self::screen_of(&self.app);
@@ -699,8 +645,8 @@ impl EventPump {
         self.held.push_back(key);
     }
 
-    /// Drop the `n` and `N` held at the front, among the keys that move the cursor.
-    /// Past any other key they are text, or meant for what that key opens.
+    /// Drop the `n`/`N` held at the front among cursor moves; past any other key they
+    /// are text or meant for what it opens.
     fn drop_held_finds(&mut self) {
         let run = self.held.iter().take_while(|k| is_navigation(k)).count();
         let rest = self.held.split_off(run);
@@ -712,10 +658,9 @@ impl EventPump {
         }
     }
 
-    /// Drop the held keys if the screen they were typed at has gone: the view was
-    /// abandoned (a bumped generation), or a modal appeared that they were not answers
-    /// to. A modal that a held key opens itself is re-baselined in `dispatch`, so this
-    /// only fires for a change the keys did not cause — a background result, above all.
+    /// Drop the held keys if their screen is gone: the view abandoned, or a modal they
+    /// were not answers to. A modal a held key opened is re-baselined in `dispatch`, so
+    /// this fires for changes the keys did not cause.
     fn discard_stale(&mut self) {
         if self.held.is_empty() {
             return;
@@ -776,25 +721,20 @@ impl Pass {
     }
 }
 
-/// How often a spinner turns while the user waits on it: about 30 frames a second,
-/// plenty for a throbber.
+/// How often a spinner turns while the user waits: about 30 frames a second.
 pub const SPINNER_FRAME: Duration = Duration::from_millis(33);
 
-/// How often it turns for work nobody waits on (a row count, a read ahead): ten
-/// frames a second still reads as moving, and the screen is redrawn a third as often.
+/// How often it turns for unwaited work (a count, a read-ahead): ten frames a
+/// second, redrawing a third as often.
 pub const SPINNER_IDLE_FRAME: Duration = Duration::from_millis(100);
 
-/// The least time between two frames drawn for progress reports alone. A worker
-/// reporting a thousand times a second is drawn thirty times; a key or a result is
-/// drawn at once.
+/// The least time between frames drawn for progress reports alone; keys and
+/// results draw at once.
 pub const PROGRESS_FRAME: Duration = Duration::from_millis(33);
 
-/// When the run loop draws, and how long it may sleep.
-///
-/// The loop sleeps until something arrives or a deadline passes, never on a fixed
-/// tick: idle, it does not wake at all. The deadlines are the spinner's next frame
-/// while one is on screen, a progress frame owed, and whatever the app says will
-/// change on its own (a flash expiring).
+/// When the run loop draws and how long it may sleep: never on a fixed tick, only
+/// until the spinner's next frame, an owed progress frame, or the app's own
+/// deadline (a flash expiring).
 #[derive(Debug, Default)]
 pub struct Pacer {
     last_draw: Option<Instant>,
@@ -807,8 +747,8 @@ pub struct Pacer {
 }
 
 impl Pacer {
-    /// Say whether a spinner is on screen, and whether the user waits on what it
-    /// stands for. One that starts turns a frame later.
+    /// Say whether a spinner is on screen and whether the user waits on it; a new one
+    /// turns a frame later.
     pub fn spinning(&mut self, on: bool, waited_on: bool, now: Instant) {
         self.spin_every = if waited_on {
             SPINNER_FRAME
@@ -834,8 +774,8 @@ impl Pacer {
         }
     }
 
-    /// What a pass handled, and whether to draw for it now. A pass of progress
-    /// reports alone, close behind the last frame, is owed a frame instead.
+    /// Whether to draw for a pass now. Progress-only passes close behind the last frame
+    /// are owed one instead.
     pub fn handled(&mut self, updated: bool, progress_only: bool, now: Instant) -> bool {
         let progress_due = self
             .last_draw
@@ -855,8 +795,7 @@ impl Pacer {
         self.owed = false;
     }
 
-    /// How long the loop may sleep: until the earliest deadline, or for as long as
-    /// it takes when there is none.
+    /// How long the loop may sleep: until the earliest deadline, or indefinitely.
     pub fn timeout(&self, app_deadline: Option<Instant>, now: Instant) -> Duration {
         let owed = self
             .owed
@@ -870,9 +809,8 @@ impl Pacer {
     }
 }
 
-/// Navigation keys a held run keeps every press of: the column cursor's (`h` `l`
-/// `{` `}` and the arrows across, Shift for a page), which read nothing, and a find's
-/// next and previous, each its own match.
+/// Navigation keys a held run keeps every press of: the column cursor's, which read
+/// nothing, and a find's next and previous, each its own match.
 fn replays_each_press(key: &KeyEvent) -> bool {
     matches!(
         key.code,
@@ -891,8 +829,8 @@ fn is_drag(mouse: &MouseEvent) -> bool {
     matches!(mouse.kind, crossterm::event::MouseEventKind::Drag(_))
 }
 
-/// Keys that move the view and are commonly held down. The column cursor's keys
-/// (Left/Right/h/l, `{ }`) are included, so Enter behind them still inspects.
+/// Keys that move the view and are often held down; column cursor keys included,
+/// so Enter behind them still inspects.
 fn is_navigation(key: &KeyEvent) -> bool {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {

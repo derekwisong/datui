@@ -1,48 +1,33 @@
 //! Background operations, and their one owner.
 //!
-//! [`Jobs`] starts every general background operation the app runs and keeps one
-//! record for each until its outcome has been handled: which operation it is
-//! ([`Job`], with whatever the app needs of it), the [`Ticket`] that names it,
-//! whether a bump of the generation would strand it, whether the user waits on it,
-//! and whether its answer is still wanted. The app keeps no marker of its own for a
-//! job: it asks the record.
+//! [`Jobs`] starts every general background operation and keeps one record per job
+//! until its outcome is handled: the [`Job`], its [`Ticket`], whether a generation
+//! bump would strand it, whether the user waits on it, and whether its answer is
+//! still wanted. The app keeps no job markers of its own.
 //!
-//! - **One outcome.** A worker returns its [`Answer`] or an error; a panic is caught.
-//!   The outcome goes into the record, then [`AppEvent::JobEnded`] says so. A worker
-//!   cannot answer twice or forget to, and a [`Started`] job dropped without running
-//!   ends as failed.
-//! - **Acceptance and release in one step.** [`Jobs::end`] hands the outcome over
-//!   with the record, saying whether the job is still current, and the record goes in
-//!   the same call. Whatever the app starts while handling the answer holds the
-//!   generation before anything else can look at it, so the generation never reads
-//!   free between two phases of one errand (#221). Nor does a job hold it after its
-//!   answer is handled: there is no release left to arrive behind the answer, and no
-//!   frame in which an idle app finds a finished job still holding it (#490).
-//! - **Supersession.** Advancing the generation supersedes the jobs it scopes, and
+//! - **One outcome.** A worker returns its [`Answer`] or an error; a panic is
+//!   caught. The outcome goes into the record and [`AppEvent::JobEnded`] says so. A
+//!   [`Started`] job dropped without running ends as failed.
+//! - **Acceptance and release in one step.** [`Jobs::end`] hands over the outcome
+//!   and removes the record in one call, so whatever the app starts while handling
+//!   the answer takes the generation before anything else looks: it never reads
+//!   free between two phases of one errand, and no finished job still holds it.
+//! - **Supersession.** Advancing the generation supersedes the jobs it scopes;
 //!   [`Jobs::supersede`] cancels others. A superseded job stops holding the
-//!   generation at once; its worker runs on, and its outcome still arrives, stale, so
-//!   whatever it carries is dropped then.
-//! - **Keys.** A job the user waits on holds the keys, with the line the footer
-//!   says meanwhile, until it ends or is superseded; [`Jobs::quiet`] lets them go and
-//!   [`Jobs::wait_on`] takes them for a job already running. A page asked for while
-//!   the generation is held is owed ([`Jobs::owe`]): it holds the keys, and no
-//!   generation, until the app takes it back to run.
-//! - **Holds.** Work that is not a running job also holds the generation: a
-//!   continuation the event pump has not dispatched, and a download waiting on the
-//!   user ([`Hold`]).
+//!   generation at once; its worker runs on and its stale outcome is dropped.
+//! - **Keys.** A waited-on job holds the keys and its footer line until it ends or
+//!   is superseded; [`Jobs::quiet`] releases them and [`Jobs::wait_on`] takes them
+//!   for a running job. A page asked for while the generation is held is owed
+//!   ([`Jobs::owe`]): it holds the keys, not the generation, until run.
+//! - **Holds.** A continuation the pump has not dispatched, or a download waiting
+//!   on the user, also holds the generation ([`Hold`]).
 //!
-//! Not owned here: the row count (`OwedCount`) and the home screen's workers. Each
-//! is keyed by something other than the generation and answers what its own
-//! marker waits for.
+//! Not owned here: the row count (`OwedCount`) and the home screen's workers, each
+//! keyed by its own marker. `reread_after_the_footers_joined` sends its jump straight
+//! to the channel, safe only because its callers checked nothing would be stranded.
 //!
-//! One handoff goes around the holds: `reread_after_the_footers_joined` sends its
-//! jump straight to the channel, which is safe only because both its callers have
-//! already checked that nothing would be stranded. Another handoff added that way
-//! would not be.
-//!
-//! A worker that never returns at all (a `hard` NFS mount, a wedged object-store
-//! read) never ends its job. Its keys and its lease stay with it until it is
-//! superseded; cancelling a stalled syscall is out of reach.
+//! A worker that never returns (a `hard` NFS mount, a wedged object-store read)
+//! keeps its keys and lease until superseded.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -111,18 +96,15 @@ impl Ticket {
     }
 }
 
-/// A background operation, named where it starts.
-///
-/// The fields are what the app needs of the operation while it runs and when it
-/// ends; the record they sit in is its only marker.
+/// A background operation. Its fields are what the app needs of it; the record
+/// holding it is its only marker.
 #[derive(Debug, Clone)]
 pub(crate) enum Job {
-    /// A phase of the open it names, before its first rows: the size probe, a
-    /// download, the scan, a decompression, the schema. Its answer is the open's to
-    /// judge ([`crate::loading::Loader`]), not the generation's.
+    /// A phase of the open it names, before its first rows. Judged by the open
+    /// ([`crate::loading::Loader`]), not the generation.
     Load(LoadId),
-    /// Whether the paths named on the command line are there, and which is a
-    /// directory: the first phase of the open it names.
+    /// The first phase of an open: whether the named paths exist and which is a
+    /// directory.
     OpenNamed(LoadId),
     /// The look at a directory named on the command line, before `load` opens it.
     LookAtDirectory { load: LoadId, path: PathBuf },
@@ -130,8 +112,8 @@ pub(crate) enum Job {
     Classify(Classify),
     /// The table's rows: a page the table waits on, or a load-ahead.
     Rows(crate::InflightCollect),
-    /// A page asked for while the generation was held, for the dataset it was asked
-    /// for: no worker yet. It is read once nothing would be stranded.
+    /// A page asked for while the generation was held: no worker yet; read once
+    /// nothing would be stranded.
     OwedRows { dataset: u64, status: String },
     /// An Analysis tool's computation.
     Analysis(AnalysisRun),
@@ -141,25 +123,24 @@ pub(crate) enum Job {
     SampleDraw(Box<SampleDraw>),
     /// A pivot from the Pivot & Melt builder.
     Pivot,
-    /// A view's pivot, read before the view's rows: the view it is for, and why it
-    /// was applied when it was for a match.
+    /// A view's pivot, read before its rows: the view, and why it was applied for a
+    /// match.
     ViewPivot(Box<(crate::view::SavedView, Option<crate::view::MatchReason>)>),
-    /// The Pivot & Melt builder's preview: request `token` of the builder's opening
-    /// `epoch`. Judged by those, not the generation; nobody waits on it.
+    /// The Pivot & Melt preview, request `token` of opening `epoch`; judged by those,
+    /// not the generation. Nobody waits on it.
     ReshapePreview { epoch: u64, token: u64 },
     /// The group row Enter drills into, when the buffer did not hold it.
     DrillRow,
-    /// The inspector's fields of one row that the buffer does not hold: row `row` of
-    /// frame `frame`.
+    /// The inspector's fields of row `row` of frame `frame`, not in the buffer.
     InspectRow { frame: u64, row: usize },
-    /// The inspector's text parsed as JSON to drill into: the
-    /// [`crate::inspector_drill::JsonWait`] it answers.
+    /// The inspector's text parsed as JSON to drill into; answers
+    /// [`crate::inspector_drill::JsonWait`].
     InspectJson { token: u64 },
-    /// The inspector's long JSON text indented for its JSON view: the
-    /// [`crate::inspector_modal::Pretty`] it answers.
+    /// The inspector's long JSON indented for its JSON view; answers
+    /// [`crate::inspector_modal::Pretty`].
     InspectPretty { token: u64 },
-    /// The inspector's gzip or zstd bytes decompressed for their Text view: the
-    /// [`crate::inspector_modal::Unpack`] it answers.
+    /// The inspector's gzip or zstd bytes decompressed for its Text view; answers
+    /// [`crate::inspector_modal::Unpack`].
     InspectUnpack { token: u64 },
     /// The inspector's value written to a file for another program to open.
     OpenValue,
@@ -169,17 +150,16 @@ pub(crate) enum Job {
     Copy,
     /// Writing the Data Quality report.
     QualityReport,
-    /// Reading the open file's size and footer for the Info panel. `dataset` is the
-    /// `dataset_generation` it was read for: the generation does not tell one dataset's
-    /// read from the next.
+    /// The open file's size and footer for the Info panel, for `dataset_generation`
+    /// `dataset` (the generation does not tell datasets apart).
     FileFacts { dataset: u64 },
     /// Writing a chart. The path and format reopen the form on a failure.
     ChartExport {
         path: PathBuf,
         format: crate::chart_export::ChartExportFormat,
     },
-    /// Preparing a chart's data for the selection on screen. Judged by itself, not
-    /// the generation: see [`ChartPrep`].
+    /// A chart's data for the selection on screen; judged by itself (see
+    /// [`ChartPrep`]).
     ChartPrepare(Box<ChartPrep>),
     /// A find reading the view for its next match.
     Find(crate::find::FindRun),
@@ -193,58 +173,50 @@ pub(crate) enum Job {
     },
     /// A find reading the hex view's file.
     HexFind(crate::hex_view::HexFindRun),
-    /// Counting the values the read's column types made null, for the Notes: judged
-    /// by the `dataset_generation` it was asked for, as the file facts are.
-    /// `version` is the view's column changes counted; `None` for the read's types.
+    /// Counting values the read's column types made null, for the Notes; judged by
+    /// `dataset`. `version` is the view's column changes counted; `None` for the read's
+    /// types.
     UnfitCount { dataset: u64, version: Option<u64> },
-    /// The pass behind a staged open reading every footer, for the `dataset_generation`
-    /// it was started for: judged by that, since it outlives several collects.
+    /// The pass reading every footer behind a staged open; judged by `dataset`, since
+    /// it outlives several collects.
     FootersJoin { dataset: u64 },
-    /// A piped journal's Info tab read again once it ended, for the
-    /// `dataset_generation` it was read for.
+    /// A piped journal's Info tab re-read once it ended, for `dataset`.
     JournalDetail { dataset: u64 },
     /// Indexing the rest of a text file's lines behind its first rows, for the
     /// `dataset_generation` it was started for. Stopped by its flag, it fails.
     IndexLines { dataset: u64 },
 }
 
-/// A look at a path chosen on the home screen. Every key acts on the home screen even
-/// while busy, so a second Enter is reachable, and the newer look supersedes the older:
-/// its answer is the one the user is waiting for.
+/// A look at a path chosen on the home screen. Home keys act while busy, so a
+/// second Enter supersedes the first.
 #[derive(Debug, Clone)]
 pub(crate) struct Classify {
     pub(crate) path: PathBuf,
-    /// Where the home screen was pointed when the look was asked for. An answer for
-    /// somewhere the user has browsed away from opens nothing.
-    ///
-    /// The browse rather than `home_generation`: the question is whether the user is
-    /// still where they asked from, and the listing is rebuilt for reasons that are
-    /// nothing to do with them — a probe of some other root answering is enough.
-    /// Gating on that made Enter on a share row do nothing, at random.
+    /// Where home was browsing when the look was asked; an answer for a place left
+    /// opens nothing. Not `home_generation`: listings rebuild for unrelated reasons
+    /// (another root's probe answering).
     pub(crate) browsing: Option<PathBuf>,
     /// A path typed at `~` rather than a row already listed.
     pub(crate) jump: bool,
 }
 
-/// A chart's data being prepared. One runs at a time: a burst of selection changes
-/// must not fan out into a collect per column, so the next waits for this one to
-/// end, superseded or not, and the newest selection is prepared then. Its answer is
-/// kept only while it is current (leaving the view or dataset supersedes it) and
-/// only for the dataset it was read from.
+/// A chart's data being prepared. One at a time, so a burst of selection changes
+/// does not fan out into a collect per column; the newest selection is prepared
+/// next. Its answer is kept only while current and only for its own dataset.
 #[derive(Debug, Clone)]
 pub(crate) struct ChartPrep {
     pub(crate) request: crate::ChartRequest,
-    /// `len_generation` of the dataset it reads, so an answer is never installed for
-    /// another that happens to share its column names.
+    /// `len_generation` of the dataset read, so an answer is never installed into
+    /// another with the same column names.
     pub(crate) dataset: Option<u64>,
-    /// Set when the selection moves past the request or its view goes. A streamed
-    /// count or group-by stops at its next batch; a sampled read runs to its end.
+    /// Set when the selection or its view moves on. A streamed count or group-by stops
+    /// at its next batch; a sampled read runs out.
     pub(crate) cancel: Arc<std::sync::atomic::AtomicBool>,
 }
 
-/// A view's sample being drawn. Judged by its rows rather than the generation: the
-/// table pages, finds and inspects while it is drawn, and each of those may move the
-/// generation on. The view it lands in is the one whose sample holds `rows`.
+/// A view's sample being drawn. Judged by its rows, not the generation: paging,
+/// finds and inspection move the generation meanwhile. It lands in the view whose
+/// sample holds `rows`.
 #[derive(Clone)]
 pub(crate) struct SampleDraw {
     pub(crate) sample: crate::sampling::Sample,
@@ -253,8 +225,8 @@ pub(crate) struct SampleDraw {
     pub(crate) watch: crate::sampling::ReadWatch,
     /// Drawn from the view's query or filters rather than the source under them.
     pub(crate) through: bool,
-    /// The steps laid on the sample once its view is built: the query, filters,
-    /// sort and columns of the view it was drawn from, or of the view being applied.
+    /// The steps laid on the built sample: query, filters, sort and columns of the view
+    /// drawn from, or being applied.
     pub(crate) replay: Option<crate::view::ViewSettings>,
     /// Analysis asked for it, and runs its tool once it is drawn.
     pub(crate) then_analyze: bool,
@@ -262,9 +234,8 @@ pub(crate) struct SampleDraw {
     pub(crate) path: Option<crate::table_sample::DrawPath>,
     /// What the draw is remembered by, for drawing it the same way again.
     pub(crate) path_key: String,
-    /// The columns of the rows drawn, once they are cut to their scope. The view
-    /// becomes the sample's when its first rows land, not before: until then the
-    /// view it replaces stays, and stays if no row comes.
+    /// The drawn rows' columns, once cut to scope. The view becomes the sample's when
+    /// its first rows land; until then, and if none come, the old view stays.
     pub(crate) schema: Option<polars::prelude::SchemaRef>,
 }
 
@@ -334,24 +305,12 @@ impl Job {
         }
     }
 
-    /// Whether a bump of the generation waits for this job's answer.
-    ///
-    /// A bump makes every answer on the generation it leaves stale, and nothing asks
-    /// for a stale answer again: an export that never writes its file, an analysis left
-    /// on its spinner, a dataset that never opens. So the bump waits, except for these:
-    ///
-    /// - the buffer's rows, whose answer, thrown away, is simply asked for again, and
-    ///   which, waited on, would make every page wait on the last one;
-    /// - the looks at a path named on the command line, whose answers are meant to be
-    ///   thrown away when the user moves on (Ctrl+O out of a long look must not hold
-    ///   the next dataset's rows behind it);
-    /// - the Info panel's file facts, a journal's detail and the footer pass, judged
-    ///   by the dataset rather than the generation;
-    /// - the Pivot & Melt preview, judged by the builder's request;
-    /// - a chart's data, judged by its dataset and asked for again whenever it is
-    ///   missing.
-    ///
-    /// A page that is owed has nothing running to strand.
+    /// Whether a generation bump waits for this job's answer: stale answers are never
+    /// asked for again, so most jobs are leased. Not leased: buffer rows (re-asked, and
+    /// leasing would chain pages); looks at named paths (meant to be dropped on
+    /// Ctrl+O); file facts, journal detail and the footer pass (judged by dataset); the
+    /// Pivot & Melt preview (by request); chart data (by dataset, re-asked when
+    /// missing). An owed page has nothing running.
     fn leased(&self) -> bool {
         !matches!(
             self,
@@ -370,10 +329,9 @@ impl Job {
         )
     }
 
-    /// Whether advancing the generation makes this job's answer stale. The Info
-    /// panel's facts belong to a dataset, a chart export and a chart's data to the
-    /// chart view, an owed page to the dataset it was owed to, and a preview to the
-    /// builder's request, each put down by its own owner.
+    /// Whether advancing the generation makes this answer stale. Excluded jobs are put
+    /// down by their own owner: file facts (dataset), chart export and data (chart
+    /// view), an owed page (dataset), a preview (builder request).
     fn follows_the_generation(&self) -> bool {
         !matches!(
             self,
@@ -393,7 +351,7 @@ impl Job {
 
 /// What a job's worker sends back when it succeeds. Each belongs to one [`Job`].
 pub(crate) enum Answer {
-    /// [`Job::Load`]: what the phase found. Dropped unhandled, a download removes its
+    /// [`Job::Load`]: what the phase found. A download dropped unhandled removes its
     /// file.
     Load(Box<LoadAnswer>),
     /// [`Job::OpenNamed`]: the paths are there; `directory` is one to look at first.
@@ -404,8 +362,8 @@ pub(crate) enum Answer {
     },
     /// [`Job::OpenNamed`]: a path named is not there.
     NamedPathMissing(PathBuf),
-    /// [`Job::LookAtDirectory`]: what the look found. `holds` is what a cloud
-    /// directory's listing found, which picks its reader.
+    /// [`Job::LookAtDirectory`]: what the look found; `holds` (a cloud listing) picks
+    /// the reader.
     LookedAt {
         kind: crate::discover::EntryKind,
         holds: Option<Box<crate::discover::Holds>>,
@@ -416,8 +374,8 @@ pub(crate) enum Answer {
     Kind(Option<crate::discover::EntryKind>),
     /// [`Job::Rows`]: the rows read.
     Rows(crate::table::CollectResult),
-    /// [`Job::Rows`]: the read failed. `conversion` is a value that would not
-    /// convert, for the SQL prompt to say in its own words.
+    /// [`Job::Rows`]: the read failed. `conversion` is a value that would not convert,
+    /// for the SQL prompt to word itself.
     RowsFailed {
         message: String,
         conversion: Option<Box<crate::error_display::ConversionFailure>>,
@@ -446,8 +404,8 @@ pub(crate) enum Answer {
     },
     /// [`Job::ViewPivot`]: the view's pivot.
     ViewPivoted(DataFrame),
-    /// [`Job::ReshapePreview`]: the head it read, when it read one, and the preview
-    /// or why the reshape failed on it.
+    /// [`Job::ReshapePreview`]: the head read, if any, and the preview or the reshape's
+    /// error.
     ReshapePreviewed {
         input: Option<crate::pivot_melt_modal::PreviewInput>,
         result: Result<crate::pivot_melt_modal::PreviewFrame, String>,
@@ -466,8 +424,8 @@ pub(crate) enum Answer {
     ValueWritten(crate::external_open::ExternalOpen),
     /// [`Job::Export`]: the file, committed.
     Exported(PathBuf),
-    /// [`Job::Copy`]: the view or a field, formatted, and the flash that says what was
-    /// copied. The clipboard is written on the event thread, which owns its handle.
+    /// [`Job::Copy`]: the formatted view or field and its flash. The clipboard is
+    /// written on the event thread, which owns its handle.
     Copied {
         payload: crate::clipboard::Payload,
         message: String,
@@ -476,8 +434,8 @@ pub(crate) enum Answer {
     QualityReportWritten(PathBuf),
     /// [`Job::ChartExport`]: the chart, written.
     ChartExported,
-    /// [`Job::ChartPrepare`]: the chart's data, and the Color column's values when
-    /// it counted them.
+    /// [`Job::ChartPrepare`]: the chart's data, and the Color column's values if
+    /// counted.
     ChartPrepared(
         Box<(
             crate::chart_plot::PlotData,
@@ -499,8 +457,8 @@ pub(crate) enum Answer {
     /// A test's answer, which says when it is dropped.
     #[cfg(test)]
     Probe(Arc<()>),
-    /// [`Job::FootersJoin`]: what the footers say; `None` when the pass could not read
-    /// them, so the dataset stops waiting for it.
+    /// [`Job::FootersJoin`]: what the footers say; `None` when unreadable, so the
+    /// dataset stops waiting.
     FootersJoined(Option<Box<crate::table::FootersFound>>),
     /// [`Job::JournalDetail`]: the journal's Info tab, when it could be read.
     JournalDescribed(Option<Box<crate::text_formats::Detail>>),
@@ -509,9 +467,8 @@ pub(crate) enum Answer {
 }
 
 impl Answer {
-    /// This answer, then `after` on the worker's thread once it has been sent. For
-    /// work that rides in a job without being part of it: the row count a page read
-    /// may answer, which must not hold the page back.
+    /// This answer, then `after` on the worker's thread once sent: for work riding in a
+    /// job, like the row count a page read may answer, which must not delay the page.
     pub(crate) fn then(self, after: impl FnOnce() + Send + 'static) -> Answered {
         Answered {
             answer: self,
@@ -535,8 +492,8 @@ impl From<Answer> for Answered {
 /// How a job ended.
 pub(crate) enum Outcome {
     Answered(Box<Answer>),
-    /// Its worker returned an error, or panicked. `panicked` says `message` is an
-    /// internal error naming the log rather than a reason the user can act on.
+    /// The worker returned an error or panicked; `panicked` means `message` is an
+    /// internal error naming the log.
     Failed {
         message: String,
         panicked: bool,
@@ -574,8 +531,7 @@ pub(crate) struct Ended {
     pub(crate) job: Job,
     /// Not superseded: the answer is the one the app is waiting for.
     pub(crate) current: bool,
-    /// What the footer said while the user waited on it, if they did and still
-    /// do.
+    /// The footer's line while the user waited, if they still do.
     pub(crate) keys: Option<String>,
     pub(crate) outcome: Outcome,
 }
@@ -594,16 +550,15 @@ type Slot = Arc<Mutex<Option<Outcome>>>;
 struct Record {
     ticket: Ticket,
     job: Job,
-    /// Where its worker puts the outcome. `None` for a job that is owed: asked for,
-    /// with no worker yet.
+    /// Where the worker puts the outcome; `None` for an owed job (no worker yet).
     slot: Option<Slot>,
-    /// What the footer says while the user waits on it. Set, keys wait for it.
+    /// The footer's line while the user waits on it; set, keys wait.
     keys: Option<String>,
-    /// When it was superseded. Its answer is stale, and it holds neither the
-    /// generation nor the keys.
+    /// When it was superseded: its answer is stale, and it holds neither generation
+    /// nor keys.
     superseded: Option<Instant>,
-    /// Superseded by the user's cancel, rather than by other work taking its place:
-    /// a read still going that a new one should not start beside.
+    /// Superseded by the user's cancel, not replacement: a read still going that a new
+    /// one should not start beside.
     cancelled: bool,
     /// Set when it is superseded, for its worker to see ([`superseded`]).
     stale: Arc<std::sync::atomic::AtomicBool>,
@@ -615,8 +570,8 @@ std::thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// Whether the job running on this thread has been superseded: its answer will be
-/// dropped, so a wait inside it may give up. False off a job's thread.
+/// Whether this thread's job was superseded: its answer will be dropped, so a wait
+/// inside may give up. False off a job's thread.
 pub(crate) fn superseded() -> bool {
     RUNNING.with(|running| {
         running
@@ -647,10 +602,8 @@ impl Record {
     }
 }
 
-/// A job that has been started, until its outcome is in. Whoever holds it ends it:
-/// [`Started::run`] hands it to a worker, which ends it with the worker's outcome.
-/// Dropped without ending, it ends as failed, so no record waits for an outcome that
-/// is never coming.
+/// A started job until its outcome is in. [`Started::run`] hands it to a worker;
+/// dropped without ending, it ends as failed, so no record waits forever.
 pub(crate) struct Started {
     ticket: Ticket,
     slot: Slot,
@@ -668,10 +621,8 @@ impl Started {
         self.ticket
     }
 
-    /// Run `work` on a blocking thread of `runtime`. Its answer, its error or its
-    /// panic is the job's outcome. Whatever `work` holds is dropped before the outcome
-    /// is sent, so nothing the job used outlives its answer unless the answer carries
-    /// it.
+    /// Run `work` on a blocking thread of `runtime`; its answer, error or panic is the
+    /// outcome. What `work` holds is dropped before the outcome is sent.
     pub(crate) fn run<F, R>(self, runtime: &tokio::runtime::Handle, work: F)
     where
         F: FnOnce(&Worker) -> Result<R, String> + Send + 'static,
@@ -719,8 +670,7 @@ impl Started {
         });
     }
 
-    /// End the job with `outcome` here, with no worker: for tests that need a job in
-    /// flight and decide how it ends.
+    /// End the job with `outcome` here, with no worker.
     #[cfg(test)]
     pub(crate) fn end(mut self, outcome: Outcome) {
         self.finish(outcome);
@@ -731,8 +681,8 @@ impl Started {
             return;
         }
         *self.slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(outcome);
-        // Nobody to tell means the app is gone or going: what the outcome holds, a
-        // downloaded file say, goes now rather than with the last of the app.
+        // Nobody to tell: the app is going, so drop what the outcome holds (a downloaded
+        // file) now.
         if self.events.send(AppEvent::JobEnded(self.ticket)).is_err() {
             drop(self.slot.lock().unwrap_or_else(|e| e.into_inner()).take());
         }
@@ -755,8 +705,7 @@ pub(crate) struct Worker {
 }
 
 impl Worker {
-    /// A way to report progress, from wherever the work needs it. The app takes a
-    /// report only while the job is current.
+    /// A progress reporter; the app takes reports only while the job is current.
     pub(crate) fn reporter(&self) -> impl Fn(Progress) + Send + Sync + 'static {
         let (ticket, events) = (self.ticket, Mutex::new(self.events.clone()));
         move |progress| {
@@ -765,8 +714,8 @@ impl Worker {
         }
     }
 
-    /// Send an event that is not this job's: something it read that is worth keeping
-    /// whatever becomes of the job.
+    /// Send an event not this job's: something read that is worth keeping whatever
+    /// becomes of the job.
     pub(crate) fn send(&self, event: AppEvent) {
         let _ = self.events.send(event);
     }
@@ -775,8 +724,8 @@ impl Worker {
 type HoldCounts = Arc<Mutex<HashMap<u64, usize>>>;
 
 /// A hold on the generation by work that is not a running job: a continuation
-/// [`crate::event_pump::EventPump`] has not dispatched, the gap between two phases of
-/// one errand, and a download waiting on the user. Released when dropped.
+/// [`crate::event_pump::EventPump`] has not dispatched, the gap between an errand's
+/// phases, a download waiting on the user. Released on drop.
 #[must_use]
 pub(crate) struct Hold {
     generation: u64,
@@ -795,23 +744,21 @@ impl Drop for Hold {
     }
 }
 
-/// The owner of every general background operation: the generation they are judged
-/// by, one record per job until its outcome is handled, and the holds on the
-/// generation that are not jobs.
+/// The owner of every general background operation: the generation, one record per
+/// job until handled, and the non-job holds.
 pub(crate) struct Jobs {
     events: Sender<AppEvent>,
-    /// The generation answers are judged by. Advancing it makes the answers of the
-    /// jobs that follow it stale.
+    /// The generation answers are judged by; advancing it makes following jobs' answers
+    /// stale.
     generation: u64,
     next_id: u64,
     records: Vec<Record>,
     holds: HoldCounts,
-    /// Which jobs panic before their work starts, for tests of what a dying worker
-    /// leaves behind.
+    /// Which jobs panic before starting, for tests.
     #[cfg(test)]
     pub(crate) worker_dies: Option<WorkerDies>,
-    /// Which jobs' workers wait, before their work starts, on the receiver it returns:
-    /// for tests that need a job still running at a given step, with no race.
+    /// Which jobs' workers wait on the returned receiver before starting, so tests can
+    /// catch a job mid-step without a race.
     #[cfg(test)]
     pub(crate) worker_waits: Option<WorkerWaits>,
 }
@@ -844,9 +791,8 @@ impl Jobs {
         }
     }
 
-    /// Record `job` as started on the current generation. With `keys`, the user waits
-    /// on it: keys are held until it ends or is superseded, and the footer says
-    /// `keys` meanwhile. The caller runs it, or, in a test, ends it.
+    /// Record `job` as started on the current generation. With `keys` the user waits:
+    /// keys are held until it ends or is superseded, the footer showing `keys`.
     pub(crate) fn start(&mut self, job: Job, keys: Option<&str>) -> Started {
         let ticket = self.ticket(&job);
         #[cfg(test)]
@@ -877,9 +823,8 @@ impl Jobs {
         }
     }
 
-    /// Record `job` as owed: asked for, waiting for the generation to be free, with
-    /// the user waiting on it when `keys` is set. Nothing runs until the app takes it
-    /// back with [`Self::take_owed`].
+    /// Record `job` as owed until the generation is free (waited on with `keys`).
+    /// Nothing runs until the app takes it back with [`Self::take_owed`].
     pub(crate) fn owe(&mut self, job: Job, keys: Option<&str>) {
         let ticket = self.ticket(&job);
         self.records.push(Record {
@@ -910,12 +855,9 @@ impl Jobs {
         Some(self.records.remove(at).job)
     }
 
-    /// Take the outcome of the job `ticket` names, and its record with it. `None` for
-    /// a ticket with no record, or one whose outcome is not in yet.
-    ///
-    /// The record goes here, in the call that hands its answer over, so a job holds
-    /// the generation and the keys until the app has its answer and not a moment
-    /// after.
+    /// Take the outcome of `ticket`'s job and remove its record; `None` if no record or
+    /// no outcome yet. Removing it here means the job holds generation and keys until
+    /// the app has its answer, and no longer.
     pub(crate) fn end(&mut self, ticket: Ticket) -> Option<Ended> {
         let at = self.records.iter().position(|r| r.ticket == ticket)?;
         let outcome = self.records[at]
@@ -966,8 +908,8 @@ impl Jobs {
             .map(|r| &mut r.job)
     }
 
-    /// The newest job `which` picks that the user cancelled and whose worker has not
-    /// ended, and when it was cancelled: a run still going.
+    /// The newest job `which` picks that the user cancelled and whose worker still runs,
+    /// with when it was cancelled.
     pub(crate) fn cancelled_running(
         &self,
         which: impl Fn(&Job) -> bool,
@@ -991,11 +933,9 @@ impl Jobs {
             .any(|r| r.keys.as_deref() == Some(status))
     }
 
-    /// Whether advancing the generation now would throw away an answer nothing will
-    /// ask for again: a job it would strand, or a hold on it.
-    ///
-    /// A count rather than a list of the kinds of work that might be running, which
-    /// was found short by one in three consecutive reviews (#221).
+    /// Whether advancing the generation now would throw away an answer nothing will ask
+    /// for again: a stranded job or a hold. Asked of the records, not of a list of
+    /// kinds of work.
     pub(crate) fn would_strand(&self) -> bool {
         self.records.iter().any(|r| r.holds(self.generation)) || self.held(self.generation)
     }
@@ -1032,8 +972,7 @@ impl Jobs {
             .is_some_and(|r| r.keys.is_some())
     }
 
-    /// What the footer says for the newest job `which` picks that the user waits
-    /// on, running or owed.
+    /// The footer line of the newest waited-on job `which` picks, running or owed.
     pub(crate) fn waiting_status(&self, which: impl Fn(&Job) -> bool) -> Option<&str> {
         self.records
             .iter()
@@ -1043,8 +982,7 @@ impl Jobs {
     }
 
     /// The user waits on the running job `which` picks from now on, with `status` on
-    /// the footer: a load-ahead a scroll has caught up with. Whether there was
-    /// one.
+    /// the footer (a load-ahead a scroll caught up with). Whether there was one.
     pub(crate) fn wait_on(&mut self, which: impl Fn(&Job) -> bool, status: &str) -> bool {
         let Some(record) = self
             .records
@@ -1059,8 +997,7 @@ impl Jobs {
     }
 
     /// Nobody waits on the jobs `which` picks any more, though their answers are still
-    /// wanted: the keys go back to the user. Returns the lines they had on the control
-    /// bar.
+    /// wanted: keys return to the user. Returns their footer lines.
     pub(crate) fn quiet(&mut self, which: impl Fn(&Job) -> bool) -> Vec<String> {
         self.records
             .iter_mut()
@@ -1078,9 +1015,8 @@ impl Jobs {
         true
     }
 
-    /// Advance the generation whatever is running: a cancel, or a new dataset taking
-    /// the screen. The jobs that follow the generation are superseded; nothing is
-    /// left waiting on an answer that will be dropped.
+    /// Advance the generation whatever runs (a cancel, a new dataset): jobs that follow
+    /// it are superseded.
     pub(crate) fn advance(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         let now = Instant::now();
@@ -1102,9 +1038,8 @@ impl Jobs {
         self.supersede(which)
     }
 
-    /// Supersede the running jobs `which` picks, and drop the owed ones: their answers
-    /// are stale, and they hold neither the generation nor the keys. Returns whether
-    /// there were any.
+    /// Supersede the running jobs `which` picks and drop the owed ones: stale, holding
+    /// neither generation nor keys. Whether there were any.
     pub(crate) fn supersede(&mut self, which: impl Fn(&Job) -> bool) -> bool {
         let now = Instant::now();
         let before = self.records.len();
@@ -1145,8 +1080,8 @@ impl Jobs {
                 .any(|n| *n > 0)
     }
 
-    /// Whether leased work a cancel passed is still running: started on a generation
-    /// since left.
+    /// Whether leased work a cancel passed still runs (started on a generation since
+    /// left).
     pub(crate) fn running_behind(&self) -> bool {
         self.records
             .iter()
@@ -1159,8 +1094,7 @@ impl Jobs {
                 .any(|(generation, n)| *generation != self.generation && *n > 0)
     }
 
-    /// Move every supersession back by `by`, for tests of how long a cancelled job
-    /// has been going.
+    /// Move every supersession back by `by`, for tests of cancel timing.
     #[cfg(test)]
     pub(crate) fn backdate_supersessions(&mut self, by: std::time::Duration) {
         for record in &mut self.records {

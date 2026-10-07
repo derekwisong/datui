@@ -30,8 +30,8 @@ impl App {
         self.open_overlay(crate::Overlay::View);
     }
 
-    /// Rebuild the list's rows from the store, scored and annotated against
-    /// the open dataset; the selection stays near where it was.
+    /// Rebuild the list from the store, scored against the open dataset; the selection
+    /// stays near where it was.
     pub(crate) fn refresh_view_list(&mut self) {
         let (Some(state), Some(dataset)) = (&self.data_table_state, self.view_dataset()) else {
             return;
@@ -60,10 +60,9 @@ impl App {
         self.view_modal.rows = rows;
     }
 
-    /// Open the save-view form prefilled from the open dataset: a name the
-    /// user will recognize, this file's paths and patterns as criteria, and
-    /// schema match on — the criterion that carries the view to the next
-    /// table shaped like this one.
+    /// Open the save-view form prefilled from the open dataset: a recognizable name,
+    /// this file's paths and patterns as criteria, and schema match on (the criterion
+    /// that carries the view to similar tables).
     pub(crate) fn open_save_view_form(&mut self) {
         self.view_modal
             .enter_create_mode(self.display.history_limit, &self.theme);
@@ -84,8 +83,8 @@ impl App {
 
         // Data piped in has no file to pin; its columns are what match it.
         if let Some(path) = self.path.as_ref().filter(|_| !self.reads_stdin()) {
-            // Pin this file: its absolute path or URL, its path relative to the
-            // working directory when it is local and under it, and glob suggestions.
+            // Pin this file: its absolute path or URL, its path relative to a working directory
+            // above it, and glob suggestions.
             let absolute_path = view::exact_location(path);
             self.view_modal
                 .exact_path_input
@@ -94,10 +93,9 @@ impl App {
                 self.view_modal.relative_path_input.suggest(relative);
             }
 
-            // Suggest a path pattern from the absolute path: the parent of a
-            // bare relative name is "", and ""/*.parquet is a pattern that
-            // matches every parquet file anywhere, forever. The separator is the
-            // path's own, or a Windows path never fits its pattern.
+            // A path pattern from the absolute path: a bare relative name's parent is "", and
+            // ""/*.parquet would match every parquet file anywhere. Use the path's own
+            // separator, or a Windows path never fits.
             if let Some(parent) = absolute_path.parent()
                 && let Some(parent_str) = parent.to_str()
                 && !parent_str.is_empty()
@@ -115,8 +113,8 @@ impl App {
                 ));
             }
 
-            // Suggest a filename pattern with digit runs wildcarded, so
-            // sales_2024.csv offers itself to sales_2025.csv.
+            // A filename pattern with digit runs wildcarded: sales_2024.csv matches
+            // sales_2025.csv.
             if let Some(filename) = path.file_name()
                 && let Some(filename_str) = filename.to_str()
             {
@@ -131,9 +129,8 @@ impl App {
 
         self.view_modal.table = self.view_table().map(str::to_string);
 
-        // Schema match starts on: "apply this to a similar table" is the
-        // reason views exist, and the columns are the only criterion that
-        // says similar.
+        // Schema match starts on: applying to similar tables is what views are for, and
+        // columns are the only criterion that says similar.
         if let Some(ref state) = self.data_table_state
             && !state.source_schema().is_empty()
         {
@@ -141,9 +138,8 @@ impl App {
         }
     }
 
-    /// Validate and persist the form: a new view, or the edited one. The
-    /// settings are rebuilt from the table's applied state either way. A
-    /// failed save keeps the form open.
+    /// Validate and save the form (a new view or the edited one). A failed save keeps
+    /// the form open.
     pub(crate) fn save_view_form(&mut self) {
         self.view_modal.name_error = None;
         let name = self.view_modal.name_input.value().trim().to_string();
@@ -175,8 +171,8 @@ impl App {
             relative_path: non_empty(&self.view_modal.relative_path_input),
             path_pattern: non_empty(&self.view_modal.path_pattern_input),
             filename_pattern: non_empty(&self.view_modal.filename_pattern_input),
-            // The columns the view's settings run on, not the query's output: the
-            // next file is matched as loaded.
+            // The columns the view's settings run on, not the query's output: the next file is
+            // matched as loaded.
             schema_columns: if self.view_modal.schema_match_enabled {
                 self.data_table_state.as_ref().map(|state| {
                     state
@@ -206,20 +202,16 @@ impl App {
             view.match_criteria = match_criteria;
             let editing_the_active_view =
                 self.views.active_id.as_deref() == Some(editing_id.as_str());
-            // The same principle as the settings below: editing an unapplied
-            // view must not swap the columns it matches on for the columns of
-            // whatever table happens to be open. The toggle still works — off
-            // drops the criterion — and the active view follows its table.
+            // Editing an unapplied view must not swap its matched columns for the open table's;
+            // the toggle still drops the criterion, and the active view follows its table.
             if !editing_the_active_view
                 && self.view_modal.schema_match_enabled
                 && stored_schema.is_some()
             {
                 view.match_criteria.schema_columns = stored_schema;
             }
-            // The settings follow the table only while this view is the one
-            // dressing it. Editing an unapplied view changes its name,
-            // description and matching alone — it must not overwrite what
-            // the view carries with whatever the table happens to show.
+            // The settings follow the table only for the view dressing it; editing an unapplied
+            // view changes only its name, description and matching.
             if editing_the_active_view && let Some(state) = &self.data_table_state {
                 view.settings = view_settings_of(state);
                 view.settings.chart = self.saved_chart();
@@ -227,8 +219,7 @@ impl App {
             match self.views.manager.update_view(&view) {
                 Ok(()) => true,
                 Err(e) => {
-                    // Deleted elsewhere, it has left the list too; otherwise the form
-                    // stays, edits and all, to try again.
+                    // Deleted elsewhere, it has left the list; otherwise the form stays to retry.
                     if self.views.manager.get_view_by_id(&editing_id).is_none() {
                         self.refresh_view_list();
                         self.view_modal.exit_form();
@@ -323,16 +314,16 @@ impl App {
         Some((format!("Score: {}", view.name), details))
     }
 
-    /// Start applying `view`. Its steps are planned here, which reads nothing; a
-    /// step that cannot be planned fails here and changes nothing. The reads — a pivot,
-    /// then the view's first rows — run in the background, and the view is installed
-    /// when they are in. One that fails there puts the view before it back (#400).
+    /// Start applying `view`. Planning its steps reads nothing; a step that cannot plan
+    /// fails here, changing nothing. The pivot and first rows are read in the
+    /// background and the view installed when in; a failure there restores the
+    /// previous view.
     pub(crate) fn apply_view(&mut self, view: &SavedView) -> Result<()> {
         self.apply_view_with(view, None)
     }
 
-    /// [`Self::apply_view`], for a view applied because its criteria fit as `why`
-    /// says: once its rows are in, a flash names it and the reason.
+    /// [`Self::apply_view`] for a view applied because its criteria fit (`why`): a flash
+    /// names it and the reason once its rows are in.
     pub(crate) fn apply_matched_view(
         &mut self,
         view: &SavedView,
@@ -357,8 +348,8 @@ impl App {
             (Replayed::Pivot(job), rollback) => {
                 // The table stays as it is while the pivot is read.
                 state.roll_back(rollback);
-                // Past any load-ahead for the view on screen, whose rows must not land
-                // in the one that replaces it.
+                // Past any load-ahead for the view on screen, whose rows must not land in its
+                // replacement.
                 self.jobs.try_advance();
                 let pivot_view = Job::ViewPivot(Box::new((view.clone(), why)));
                 self.spawn_job(pivot_view, Some(Self::APPLYING_VIEW), move |_| {
@@ -372,9 +363,9 @@ impl App {
         }
     }
 
-    /// The view's steps are planned over `rollback`, the view it replaces: mark it
-    /// applied and read its first rows. Until they are in, a failure puts `rollback`
-    /// back and the view marked applied before it.
+    /// The view's steps are planned over `rollback`, the replaced view: mark it applied
+    /// and read its first rows. A failure before they are in restores `rollback` and
+    /// its applied mark.
     pub(crate) fn view_planned(
         &mut self,
         view: &SavedView,
@@ -404,8 +395,8 @@ impl App {
             rows: None,
         });
         if !self.spawn_async_collect(Self::APPLYING_VIEW) {
-            // Nothing to read: the view has no rows. Applied on open, it was the
-            // open's last step.
+            // Nothing to read: the view has no rows. Applied on open, it was the open's last
+            // step.
             if let Some(why) = why {
                 self.flash_view_applied(&view.name, why);
             }
@@ -416,8 +407,7 @@ impl App {
         }
     }
 
-    /// Whether a view is being applied at the table: its pivot or its first rows are
-    /// being read.
+    /// Whether a view is being applied at the table (its pivot or first rows are read).
     pub(crate) fn view_applying(&self) -> bool {
         if !self.is_busy() || !self.in_normal_table_view() {
             return false;
@@ -436,8 +426,8 @@ impl App {
         pivot || rows
     }
 
-    /// Stop applying a view and keep the one before it. As with a pivot, a worker runs
-    /// to the end and the bump drops its answer.
+    /// Stop applying a view and keep the previous one; the bump drops the worker's
+    /// answer.
     pub(crate) fn cancel_view(&mut self) {
         self.jobs.advance();
         self.screen_generation = self.screen_generation.wrapping_add(1);
@@ -457,8 +447,8 @@ impl App {
         self.read_after_view_rollback();
     }
 
-    /// The view before a failed or cancelled one is back: read its rows if it has none
-    /// on hand, as when the view was applied on open, else stop being busy.
+    /// The view before a failed or cancelled one is back: read its rows if none are on
+    /// hand, else stop being busy.
     pub(crate) fn read_after_view_rollback(&mut self) {
         self.busy = false;
         self.status_message = None;
@@ -467,10 +457,10 @@ impl App {
         }
     }
 
-    /// Run a view's steps on `state` in the order they were built. With a pivot or melt:
-    /// the query, filters and sort it ran over, the reshape, then the query, filters and
-    /// sort on its result. Without one: the query, filters and sort. Column order last.
-    /// Stops at the first step that fails, and at a pivot unless `pivoted` holds it.
+    /// Run a view's steps on `state` in build order. With a pivot or melt: query,
+    /// filters and sort under it, the reshape, then query, filters and sort on its
+    /// result. Without: query, filters, sort. Column order last. Stops at the first
+    /// failing step, and at a pivot unless `pivoted` holds it.
     pub(crate) fn replay_view(
         state: &mut DataTableState,
         settings: &view::ViewSettings,

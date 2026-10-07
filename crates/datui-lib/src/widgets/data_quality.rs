@@ -514,7 +514,7 @@ fn render_setup(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buff
             SetupLine::Row(row) => {
                 let (value, placeholder) = setup_value(config, *row);
                 let room = (row_area.width as usize).saturating_sub(1 + SETUP_LABEL_WIDTH as usize);
-                let value = fit(&value, room);
+                let value = glyphs::fit(&value, room);
                 crate::widgets::ui::FormRow {
                     label: row.label(),
                     value: if placeholder {
@@ -1181,7 +1181,7 @@ fn render_overview(
             text.push_str(&format!(" {middot} {facet}"));
         }
         Paragraph::new(Line::styled(
-            fit(&text, list.width as usize),
+            glyphs::fit(&text, list.width as usize),
             Style::default().fg(config.theme.get("dimmed")),
         ))
         .render(Rect { height: 1, ..list }, buf);
@@ -1293,7 +1293,7 @@ fn pack_facts(facts: &[String], width: usize, room: usize) -> Vec<String> {
     let mut lines: Vec<Vec<String>> = vec![Vec::new()];
     let mut placed = 0;
     for fact in facts {
-        let fact = fit(fact, width);
+        let fact = glyphs::fit(fact, width);
         let current = lines.last_mut().expect("one line at least");
         let mut joined = current.clone();
         joined.push(fact.clone());
@@ -1325,7 +1325,7 @@ fn pack_facts(facts: &[String], width: usize, room: usize) -> Vec<String> {
                 let room =
                     width.saturating_sub(glyphs::display_width(&format!("{sep}+{dropped} more")));
                 if room >= 8 {
-                    *only = fit(only, room);
+                    *only = glyphs::fit(only, room);
                     continue;
                 }
             }
@@ -1521,8 +1521,8 @@ fn render_findings(
             Item::Finding(position) => {
                 let finding = &report.findings[shown[*position]];
                 let is_selected = *position == selected;
-                let columns = fit(&finding.columns_label(columns_width), columns_width);
-                let summary = fit(&finding.summary, summary_width);
+                let columns = glyphs::fit(&finding.columns_label(columns_width), columns_width);
+                let summary = glyphs::fit(&finding.summary, summary_width);
                 let mut spans = vec![
                     Span::styled(
                         if is_selected { g.rail } else { " " },
@@ -1677,18 +1677,6 @@ fn check_lines(
 /// stays as it is, since evidence finds a segment's rows by it.
 fn segment_text(label: &str) -> String {
     label.replace('∅', glyphs::get().null)
-}
-
-pub(crate) fn fit(text: &str, width: usize) -> String {
-    if glyphs::display_width(text) <= width {
-        return text.to_string();
-    }
-    if width == 0 {
-        return String::new();
-    }
-    let ellipsis = glyphs::get().ellipsis;
-    let keep = width.saturating_sub(glyphs::display_width(ellipsis));
-    format!("{}{ellipsis}", glyphs::take_columns(text, keep))
 }
 
 /// The finding itself: what it is in one sentence with its numbers, why it matters,
@@ -2033,7 +2021,7 @@ fn render_time_roles(
                     },
                 ),
                 Span::styled(format!("{dtype:<type_width$}"), dimmed),
-                Span::raw(fit(&values, values_width)),
+                Span::raw(glyphs::fit(&values, values_width)),
             ])
         })
         .collect::<Vec<_>>();
@@ -2552,7 +2540,11 @@ fn render_intervals(
         ),
         None => "Negative: end before start, of rows with both ends".to_string(),
     };
-    Paragraph::new(Line::styled(fit(&over, note.width as usize), dimmed)).render(note, buf);
+    Paragraph::new(Line::styled(
+        glyphs::fit(&over, note.width as usize),
+        dimmed,
+    ))
+    .render(note, buf);
 
     let segmented = profiles
         .iter()
@@ -2604,9 +2596,12 @@ fn render_intervals(
             + fixed.iter().map(|width| *width as usize + 1).sum::<usize>(),
     );
     let rows = profiles.iter().map(|profile| {
-        let mut cells = vec![fit(&profile.label(), interval_width)];
+        let mut cells = vec![glyphs::fit(&profile.label(), interval_width)];
         if segmented && (wide || medium) {
-            cells.push(fit(&segment_text(&profile.segment), segment_width as usize));
+            cells.push(glyphs::fit(
+                &segment_text(&profile.segment),
+                segment_width as usize,
+            ));
         }
         if wide {
             cells.extend([
@@ -2797,7 +2792,7 @@ fn render_interval_detail(
             _ => "a row chunk",
         };
         Line::styled(
-            fit(
+            glyphs::fit(
                 &format!("  Rows do not open: {what} is not a filter value"),
                 width,
             ),
@@ -2892,7 +2887,7 @@ fn render_interval_pairs(
         Row::new(vec![
             Cell::from(if on { g.checkbox_on } else { g.checkbox_off }),
             Cell::from(interval_label(*pair)),
-            Cell::from(Span::styled(fit(&columns, columns_width), dimmed)),
+            Cell::from(Span::styled(glyphs::fit(&columns, columns_width), dimmed)),
         ])
     });
     table_state.select(Some(
@@ -3160,7 +3155,7 @@ fn render_trend_table(
     Paragraph::new(
         notes
             .iter()
-            .map(|text| Line::styled(fit(text, note.width as usize), dimmed))
+            .map(|text| Line::styled(glyphs::fit(text, note.width as usize), dimmed))
             .collect::<Vec<_>>(),
     )
     .render(note, buf);
@@ -3631,7 +3626,7 @@ fn render_gaps(
     Paragraph::new(
         notes
             .iter()
-            .map(|text| Line::styled(fit(text, note.width as usize), dimmed))
+            .map(|text| Line::styled(glyphs::fit(text, note.width as usize), dimmed))
             .collect::<Vec<_>>(),
     )
     .render(note, buf);
@@ -3774,7 +3769,10 @@ fn render_expected_windows(config: &DataQualityWidgetConfig<'_>, area: Rect, buf
     if let Some(error) = &form.error {
         put_line(Line::raw(""), area, &mut y, buf);
         put_line(
-            Line::styled(fit(error, width), Style::default().fg(theme.get("warning"))),
+            Line::styled(
+                glyphs::fit(error, width),
+                Style::default().fg(theme.get("warning")),
+            ),
             area,
             &mut y,
             buf,
@@ -3914,14 +3912,14 @@ fn field_lines(
         spans.extend(
             values
                 .next()
-                .map(|value| Span::raw(fit(&value, value_width))),
+                .map(|value| Span::raw(glyphs::fit(&value, value_width))),
         );
         lines.push(Line::from(spans));
         lines.extend(values.map(|value| {
             Line::raw(format!(
                 "{}{}",
                 " ".repeat(lead + label_width),
-                fit(&value, value_width)
+                glyphs::fit(&value, value_width)
             ))
         }));
     }
@@ -3953,7 +3951,7 @@ fn detail_measurements(
 ) -> Vec<FieldRow> {
     // Long text is cut, so both ends of a range and a count after a value stay
     // in view.
-    let value = |text: &str| fit(&table_value(ctx, profile, text), END_WIDTH);
+    let value = |text: &str| glyphs::fit(&table_value(ctx, profile, text), END_WIDTH);
     let row = |label: &str, value: String| FieldRow {
         mark: None,
         label: label.to_string(),

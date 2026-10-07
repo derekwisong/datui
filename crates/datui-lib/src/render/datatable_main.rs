@@ -299,7 +299,7 @@ pub(crate) fn render_breadcrumb(
     let back = HintBar::from_ctx(ctx).hint("Esc", "Back");
     let chip_w = back.flush_width_in(area.width.saturating_sub(12));
     let text_w = area.width.saturating_sub(chip_w + 1);
-    Paragraph::new(crate::render::loading_view::truncate(text, text_w as usize))
+    Paragraph::new(crate::glyphs::fit(text, text_w as usize))
         .style(style.add_modifier(Modifier::BOLD))
         .render(
             Rect {

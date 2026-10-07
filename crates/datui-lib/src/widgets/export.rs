@@ -198,7 +198,7 @@ pub fn render_export_modal(
         lines.truncate(room);
         if let Some(last) = lines.last_mut() {
             let cut = format!("{last} {}", crate::glyphs::get().ellipsis);
-            *last = crate::widgets::data_quality::fit(&cut, width);
+            *last = crate::glyphs::fit(&cut, width);
         }
     }
     let top = content.bottom() - lines.len() as u16;

@@ -571,7 +571,10 @@ impl Footer {
         // Left: the pipeline.
         let mut steps: Vec<Vec<Span>> = Vec::new();
         if let (Some(w), Some(name)) = (fit.dataset, &self.dataset) {
-            steps.push(vec![Span::styled(elide_middle(name, w), label)]);
+            steps.push(vec![Span::styled(
+                crate::glyphs::fit_middle(name, w),
+                label,
+            )]);
         }
         // The steps a click presses a key on, by their place among the steps.
         let mut step_keys: Vec<(usize, &'static str)> = Vec::new();
@@ -761,23 +764,6 @@ pub fn cut_message(message: &str, path_from: Option<usize>, width: usize) -> Str
         }
     }
     crate::glyphs::fit_cells(message, width, "...").into_owned()
-}
-
-/// `text` in `width` columns, cut from the middle: `weather/…/daily`.
-pub fn elide_middle(text: &str, width: usize) -> String {
-    let full = crate::glyphs::display_width(text);
-    if full <= width {
-        return text.to_string();
-    }
-    let mark = crate::glyphs::get().ellipsis;
-    let mark_w = crate::glyphs::display_width(mark);
-    if width <= mark_w {
-        return crate::glyphs::take_columns(mark, width).to_string();
-    }
-    let room = width - mark_w;
-    let head = crate::glyphs::take_columns(text, room.div_ceil(2));
-    let tail = crate::glyphs::take_columns_end(text, room - crate::glyphs::display_width(head));
-    format!("{head}{mark}{tail}")
 }
 
 /// Draw the rule above the footer: the table's column separator color, no fill.
@@ -1049,8 +1035,8 @@ mod tests {
 
     #[test]
     fn a_long_name_is_cut_in_the_middle() {
-        assert_eq!(elide_middle("abcdefghij", 10), "abcdefghij");
-        let cut = elide_middle("weather/stations/daily", 12);
+        assert_eq!(crate::glyphs::fit_middle("abcdefghij", 10), "abcdefghij");
+        let cut = crate::glyphs::fit_middle("weather/stations/daily", 12);
         assert_eq!(crate::glyphs::display_width(&cut), 12);
         assert!(cut.starts_with("weath") && cut.ends_with("daily"), "{cut}");
     }

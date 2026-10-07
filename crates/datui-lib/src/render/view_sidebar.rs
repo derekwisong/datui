@@ -72,16 +72,9 @@ fn score_mark(score: f64, max_score: f64, ctx: &RenderContext) -> (&'static str,
 /// Pad or truncate to `width` display columns, marking the cut with the
 /// ellipsis glyph and never splitting a wide character.
 fn fit(text: &str, width: usize) -> String {
-    let g = crate::glyphs::get();
-    let count = crate::glyphs::display_width(text);
-    if count <= width {
-        let pad = width - count;
-        format!("{text}{}", " ".repeat(pad))
-    } else {
-        let ellipsis_width = crate::glyphs::display_width(g.ellipsis);
-        let cut = crate::glyphs::take_columns(text, width.saturating_sub(ellipsis_width));
-        format!("{cut}{}", g.ellipsis)
-    }
+    let fitted = crate::glyphs::fit(text, width);
+    let pad = width.saturating_sub(crate::glyphs::display_width(&fitted));
+    format!("{fitted}{}", " ".repeat(pad))
 }
 
 fn render_list(

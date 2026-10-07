@@ -5,7 +5,7 @@ use crate::glyphs;
 use crate::intent_modal::{IntentField, IntentForm};
 use crate::numfmt;
 use crate::render::layout::centered_rect;
-use crate::widgets::data_quality::{DataQualityWidgetConfig, fit, rule_line};
+use crate::widgets::data_quality::{DataQualityWidgetConfig, rule_line};
 use crate::widgets::ui::{FormRow, FormValue, Surface};
 use polars::prelude::DataType;
 use ratatui::buffer::Buffer;
@@ -98,11 +98,17 @@ pub fn render_list(
         let rules = if rules.is_empty() {
             Cell::from(Span::styled("any", dimmed))
         } else {
-            Cell::from(fit(&rules.join(&format!(" {} ", g.middot)), rules_width))
+            Cell::from(crate::glyphs::fit(
+                &rules.join(&format!(" {} ", g.middot)),
+                rules_width,
+            ))
         };
         Row::new(vec![
-            Cell::from(fit(column, name_width as usize - 2)),
-            Cell::from(Span::styled(fit(dtype, type_width as usize - 2), dimmed)),
+            Cell::from(crate::glyphs::fit(column, name_width as usize - 2)),
+            Cell::from(Span::styled(
+                crate::glyphs::fit(dtype, type_width as usize - 2),
+                dimmed,
+            )),
             rules,
         ])
     });
@@ -124,7 +130,11 @@ pub fn render_list(
     } else {
         format!("Key: {}", plan.intent.key.join(", "))
     };
-    Paragraph::new(Line::styled(fit(&key_line, key.width as usize), dimmed)).render(
+    Paragraph::new(Line::styled(
+        crate::glyphs::fit(&key_line, key.width as usize),
+        dimmed,
+    ))
+    .render(
         Rect {
             y: key.y + 1,
             height: 1,
@@ -217,7 +227,7 @@ pub fn render_form(
         ),
     };
     Paragraph::new(Line::styled(
-        fit(&crate::glyphs::dotted(&status), content.width as usize),
+        crate::glyphs::fit(&crate::glyphs::dotted(&status), content.width as usize),
         Style::default().fg(if warn { ctx.warning } else { ctx.dimmed }),
     ))
     .render(line(content.height - 1), buf);

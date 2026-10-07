@@ -1132,6 +1132,44 @@ pub fn ascii() -> &'static Glyphs {
     &ASCII
 }
 
+/// `text` in `width` columns, cut at its end and marked with the ellipsis.
+pub fn fit(text: &str, width: usize) -> String {
+    fit_cells(text, width, get().ellipsis).into_owned()
+}
+
+/// `text` in `width` columns, cut at its start: a path keeps its leaf. The ellipsis is
+/// measured, since it is three columns on an ASCII terminal.
+pub fn fit_start(text: &str, width: usize) -> String {
+    if display_width(text) <= width {
+        return text.to_string();
+    }
+    let ellipsis = get().ellipsis;
+    let ellipsis_width = display_width(ellipsis);
+    if width <= ellipsis_width {
+        return take_columns_end(text, width).to_string();
+    }
+    format!(
+        "{ellipsis}{}",
+        take_columns_end(text, width - ellipsis_width)
+    )
+}
+
+/// `text` in `width` columns, cut from the middle: `weather/…/daily`.
+pub fn fit_middle(text: &str, width: usize) -> String {
+    if display_width(text) <= width {
+        return text.to_string();
+    }
+    let mark = get().ellipsis;
+    let mark_w = display_width(mark);
+    if width <= mark_w {
+        return take_columns(mark, width).to_string();
+    }
+    let room = width - mark_w;
+    let head = take_columns(text, room.div_ceil(2));
+    let tail = take_columns_end(text, room - display_width(head));
+    format!("{head}{mark}{tail}")
+}
+
 /// Text written with `·` between its parts, in the glyph set's middot: `-` on an ASCII
 /// terminal. A `·` in a UI string is this template, drawn through here.
 pub fn dotted(text: &str) -> String {

@@ -63,11 +63,8 @@ pub fn render_chart_export_modal(
     {
         let width = content.width.saturating_sub(1);
         ratatui::widgets::Widget::render(
-            ratatui::widgets::Paragraph::new(crate::widgets::data_quality::fit(
-                error,
-                width as usize,
-            ))
-            .style(ratatui::style::Style::default().fg(ctx.warning)),
+            ratatui::widgets::Paragraph::new(crate::glyphs::fit(error, width as usize))
+                .style(ratatui::style::Style::default().fg(ctx.warning)),
             Rect {
                 x: content.x + 1,
                 y: content.bottom() - 1,

@@ -190,23 +190,6 @@ pub struct Holds {
 /// How many skipped names are kept for the pane. Enough to recognise the convention.
 pub(crate) const SKIPPED_NAMES_SHOWN: usize = 4;
 
-/// A name cut to `width`, keeping both ends and marking the middle.
-pub(crate) fn shorten(name: &str, width: usize) -> String {
-    let chars: Vec<char> = name.chars().collect();
-    if chars.len() <= width {
-        return name.to_string();
-    }
-    let ellipsis = crate::glyphs::get().ellipsis;
-    let room = width.saturating_sub(ellipsis.chars().count());
-    let head = room.div_ceil(2);
-    let tail = room - head;
-    format!(
-        "{}{ellipsis}{}",
-        chars[..head].iter().collect::<String>(),
-        chars[chars.len() - tail..].iter().collect::<String>()
-    )
-}
-
 impl Holds {
     /// Data files of every format.
     pub fn data_files(&self) -> usize {

@@ -1466,7 +1466,7 @@ fn render_distribution_selector(
     let line = |rail: &str, name: &str, pvalue: &str| {
         format!(
             "{rail}{name:<w$}{pvalue:>p$}",
-            name = crate::render::loading_view::truncate(name, name_width as usize),
+            name = crate::glyphs::fit(name, name_width as usize),
             w = name_width as usize,
             p = PVALUE_WIDTH as usize,
         )
@@ -1507,7 +1507,7 @@ fn render_distribution_selector(
             None => ("n/a".to_string(), Style::default().fg(ctx.dimmed)),
         };
         let is_cursor = i == selected;
-        let name = crate::render::loading_view::truncate(&family.to_string(), name_width as usize);
+        let name = crate::glyphs::fit(&family.to_string(), name_width as usize);
         let spans = vec![
             Span::styled(
                 if is_cursor { g.rail } else { " " },
@@ -1638,10 +1638,7 @@ pub(crate) fn render_sidebar(
             Span::styled(rail, rail_style(is_cursor, theme)),
             // Cut with a mark on a narrow screen, never silently.
             Span::styled(
-                crate::render::loading_view::truncate(
-                    name,
-                    content.width.saturating_sub(1) as usize,
-                ),
+                crate::glyphs::fit(name, content.width.saturating_sub(1) as usize),
                 name_style,
             ),
         ]));

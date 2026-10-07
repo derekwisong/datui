@@ -42,24 +42,6 @@ const PREVIEW_MIN_WIDTH: u16 = META_MIN_WIDTH + PREVIEW_WIDTH + 6;
 /// Below this even the metadata columns have to go.
 const META_MIN_WIDTH: u16 = 56;
 
-/// Truncate from the left, keeping the tail, to at most `width` display columns.
-///
-/// Paths are identified by their leaf, so the end is the part worth keeping. The
-/// ellipsis is measured rather than assumed to be one column: it is three characters
-/// wide when datui has fallen back to ASCII.
-fn truncate_start(text: &str, width: usize) -> String {
-    if glyphs::display_width(text) <= width {
-        return text.to_string();
-    }
-    let ellipsis = glyphs::get().ellipsis;
-    let ellipsis_width = glyphs::display_width(ellipsis);
-    if width <= ellipsis_width {
-        return glyphs::take_columns_end(text, width).to_string();
-    }
-    let tail = glyphs::take_columns_end(text, width - ellipsis_width);
-    format!("{ellipsis}{tail}")
-}
-
 /// The three metadata columns, already padded to fixed widths so they align down the
 /// list. Empty strings where a fact is genuinely unknown — a CSV's row count cannot
 /// be had without scanning it, and inventing one would be worse than a blank.
@@ -379,7 +361,7 @@ fn render_wordmark(
         if row == lines.len() / 2 {
             let room = (area.width as usize).saturating_sub(mark_w + 4);
             spans.push(Span::styled(
-                format!("   {}", truncate_start(&location, room)),
+                format!("   {}", glyphs::fit_start(&location, room)),
                 Style::default().fg(ctx.text_secondary),
             ));
         }
@@ -416,7 +398,7 @@ fn render_title_bar(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &Render
         bar.fg(ctx.keybind_hints).add_modifier(Modifier::BOLD),
     );
     // Keep the tail of a long path; the leaf is what tells you where you are.
-    let location = truncate_start(&location, (area.width as usize).saturating_sub(12));
+    let location = glyphs::fit_start(&location, (area.width as usize).saturating_sub(12));
     let pad = (area.width as usize).saturating_sub(8 + location.chars().count());
     Paragraph::new(Line::from(vec![
         left,
@@ -468,7 +450,7 @@ fn render_prompt(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderCon
         let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
         let room = (area.width as usize).saturating_sub(used + 3);
         spans.push(Span::styled(
-            format!("   {}", truncate_start(status, room)),
+            format!("   {}", glyphs::fit_start(status, room)),
             Style::default().fg(ctx.warning),
         ));
     }
@@ -812,7 +794,7 @@ fn render_path_list(
     let mut lines = vec![Line::from(vec![
         Span::styled(g.expanded, Style::default().fg(ctx.accent)),
         Span::styled(
-            truncate_start(shown_dir, width.saturating_sub(count.len() + 8)),
+            glyphs::fit_start(shown_dir, width.saturating_sub(count.len() + 8)),
             Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD),
         ),
         Span::styled(format!("  {count}  "), Style::default().fg(ctx.dimmed)),
@@ -966,7 +948,7 @@ fn place_line(
     } else {
         String::new()
     };
-    let name = truncate_start(&name, room.saturating_sub(label.chars().count()).max(1));
+    let name = glyphs::fit_start(&name, room.saturating_sub(label.chars().count()).max(1));
     let pad = width.saturating_sub(fixed + name.chars().count() + label.chars().count());
     Line::from(vec![
         chrome.marker(),
@@ -1120,7 +1102,7 @@ fn section_header<'a>(
     let note = if note.starts_with(g.warning) {
         glyphs::fit_cells(&note, note_room, g.ellipsis).into_owned()
     } else {
-        truncate_start(&note, note_room)
+        glyphs::fit_start(&note, note_room)
     };
     // A title that names a place keeps its case; only the word-like headings —
     // "RECENT", "ELSEWHERE" — are shouted. A URL is a place, and uppercasing one turns
@@ -1185,7 +1167,7 @@ fn section_header<'a>(
         origin_cells = 0;
         fixed = marker.chars().count() + 1 + chip.chars().count() + 1 + 2 + MIN_RULE;
     }
-    title = truncate_start(&title, width.saturating_sub(fixed));
+    title = glyphs::fit_start(&title, width.saturating_sub(fixed));
     let rule_w = width.saturating_sub(fixed + title.chars().count()) + MIN_RULE;
 
     // A title on a rule, not a filled bar: the accent carries the title, the count
@@ -1353,7 +1335,7 @@ fn source_line<'a>(
     } else {
         base.fg(ctx.text_secondary)
     };
-    let count = truncate_start(&count, COUNT_W - 1);
+    let count = glyphs::fit_start(&count, COUNT_W - 1);
     spans.push(Span::styled(format!("{count:<COUNT_W$}"), count_style));
     spans.push(Span::styled(" ".to_string(), base));
     let note_pad = note_w.saturating_sub(note.chars().count());
@@ -1662,7 +1644,7 @@ fn fit_kind_cell(
         (String::new(), false)
     } else if label.source && matched_column.is_none() {
         let room = name_width.saturating_sub(2 + place_w + 1 + 2);
-        (crate::discover::shorten(&text, room), false)
+        (glyphs::fit_middle(&text, room), false)
     } else {
         (text, chip)
     };
@@ -1728,7 +1710,7 @@ fn fit_name(
     }
     // A relative path too (a search hit under a directory): its leaf is the file.
     if name.starts_with('/') || name.starts_with('~') || name.trim_end_matches('/').contains('/') {
-        let name = truncate_start(&name, budget);
+        let name = glyphs::fit_start(&name, budget);
         // The tail survived: every position moves left by what was dropped, and right
         // by the ellipsis standing in for it.
         let dropped = length + ellipsis_len - name.chars().count();
@@ -2019,7 +2001,7 @@ fn preview_head_keyed(
         // One line, tail kept: a wrapped path costs three rows to say what the leaf
         // already said.
         Line::from(Span::styled(
-            truncate_start(&crate::home::display_path(&entry.path), width),
+            glyphs::fit_start(&crate::home::display_path(&entry.path), width),
             Style::default().fg(ctx.dimmed),
         )),
     ];
@@ -2221,7 +2203,7 @@ fn elide_path(path: &str, width: usize) -> String {
         .map(|(i, c)| (c, i + c.len_utf8()))
         .collect();
     let Some(&(first_sep, after_first)) = seps.first() else {
-        return truncate_start(path, width);
+        return glyphs::fit_start(path, width);
     };
     let first = &path[..after_first - first_sep.len_utf8()];
     // The most trailing components that fit after `first/…/`, then after `…/`.
@@ -2239,7 +2221,7 @@ fn elide_path(path: &str, width: usize) -> String {
         }
     }
     let (_, last) = seps[seps.len() - 1];
-    truncate_start(&path[last..], width)
+    glyphs::fit_start(&path[last..], width)
 }
 
 /// Whether chips are drawn on the chrome tier: a UTF-8 terminal whose header tint
@@ -3017,7 +2999,7 @@ fn place_details(
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(Span::styled(
-            truncate_start(&crate::home::display_path(path), width),
+            glyphs::fit_start(&crate::home::display_path(path), width),
             Style::default().fg(ctx.dimmed),
         )),
     ];

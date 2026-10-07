@@ -1,18 +1,10 @@
-//! WAV, BWF, RF64 and AIFF audio, read as a table of sample frames.
-//!
-//! The file is memory-mapped and a small chunk walker finds the format and where the
-//! samples are. Rows are frames: row `i` sits at `data_offset + i * frame_bytes`, so
-//! any window of rows is decoded from its own bytes and nothing else is touched. A
-//! table view of a 20 GB recording reads a screenful, wherever it is.
-//!
-//! Every length the file states is checked against the file before anything is
-//! allocated or read through it, so a corrupt or hostile header is an error, never a
-//! panic or an allocation sized by the file.
-//!
-//! The row count is arithmetic on the file's size, which is what lets the reader grow
-//! with a file still being written ([`AudioSource::extend`]): a recorder writes a
-//! placeholder data size until it stops, so the size on disk, not the header, says
-//! how many frames there are.
+//! WAV, BWF, RF64 and AIFF audio as a table of sample frames. The file is memory-mapped
+//! and a chunk walker finds the format and samples; row `i` is at
+//! `data_offset + i * frame_bytes`, so any window decodes from its own bytes (a 20 GB
+//! recording reads a screenful). Every stated length is checked against the file
+//! before use, so a hostile header errors rather than panics or over-allocates. The row
+//! count comes from the file size, letting a still-recording file grow
+//! ([`AudioSource::extend`]): recorders write a placeholder data size until they stop.
 
 use std::fs::File;
 use std::path::Path;
@@ -384,11 +376,9 @@ fn check_rate(rate: f64) -> Result<f64> {
     }
 }
 
-/// Chunks of a RIFF or AIFF file: `(id, body start, body length as stated)`.
-///
-/// The walk stops at the end of the file, at a chunk whose header does not fit, or
-/// after [`MAX_CHUNKS`]. A body that runs past the end is handed over as stated; the
-/// caller decides whether that is the data running on or a corrupt chunk.
+/// Chunks of a RIFF or AIFF file as `(id, body start, stated body length)`, stopping at
+/// the file's end, an unfit header, or [`MAX_CHUNKS`]. A body overrunning the end is
+/// passed as stated; the caller decides if it is running data or corruption.
 fn chunks(bytes: &[u8], big_endian: bool) -> impl Iterator<Item = ([u8; 4], u64, u64)> + '_ {
     let len = bytes.len() as u64;
     let mut pos: u64 = 12;
@@ -929,9 +919,8 @@ impl AudioSource {
         self.normalize
     }
 
-    /// Fails when the file is now shorter than its map. Reading a map past the end of
-    /// its file ends the process (SIGBUS), and a recording rewritten or cut while it is
-    /// open would do that; checked before each read.
+    /// Fails when the file is shorter than its map: reading past it ends the process
+    /// (SIGBUS), as a recording rewritten or cut while open would. Checked before each read.
     fn still_whole(&self) -> PolarsResult<()> {
         if let Some(file) = &self.file {
             let len = file.metadata()?.len();
@@ -968,10 +957,9 @@ impl AudioSource {
         (declared > held).then_some((declared, held))
     }
 
-    /// Map the file again at its current size and take in the frames written since.
-    /// Returns how many frames were added. A data size the header stated keeps its
-    /// cap; a placeholder grows with the file. This is what following a recording
-    /// needs: the header's size says nothing until the recorder stops.
+    /// Remap at the current size and take in new frames, returning how many. A stated data
+    /// size keeps its cap; a placeholder grows with the file (what following a recording
+    /// needs).
     pub fn extend(&mut self) -> Result<u64> {
         let Some(file) = &self.file else {
             return Ok(0);
@@ -1143,11 +1131,9 @@ impl AudioSource {
         }
     }
 
-    /// One pass over every frame, a channel at a time per frame, measuring what a
-    /// recording's quality turns on: runs of samples at full scale (clipping), runs of
-    /// exact zeros (dropouts and digital silence), and each channel's mean (DC offset).
-    /// Memory stays flat however long the file is. `stop` is asked every million frames;
-    /// `None` when it says to stop.
+    /// One pass over every frame, per channel, measuring clipping (runs at full scale),
+    /// dropouts (runs of exact zeros) and DC offset (the mean), in flat memory. `stop` is
+    /// checked every million frames; `None` when stopped.
     pub fn signal_report(
         &self,
         stop: &dyn Fn() -> bool,

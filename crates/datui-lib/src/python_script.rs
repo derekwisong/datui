@@ -1,10 +1,8 @@
-//! Copy as Python: the view as a Python Polars script.
-//!
-//! Built from datui's own record of how the view was made — the open's reader and
-//! its options, then each step in the order it ran ([`Step`]) — never by printing a
-//! Polars plan, so the script reads like code a person writes. A step Python
-//! cannot repeat is said in a comment, and what follows it is commented out with
-//! it: the script never computes something other than what the screen shows.
+//! Copy as Python: the view as a Python Polars script, built from datui's record of how
+//! the view was made (the open's reader and options, then each [`Step`]), never by
+//! printing a plan, so it reads like handwritten code. A step Python cannot repeat is
+//! said in a comment and everything after is commented out with it: the script never
+//! computes something other than the screen.
 
 use std::path::{Path, PathBuf};
 
@@ -33,9 +31,8 @@ pub(crate) fn py_str(s: &str) -> String {
     out
 }
 
-/// `text` as a Python comment line. A line break or other control character in
-/// it (a column name, a value, a path) is written escaped, so the text cannot end
-/// the comment and run as code.
+/// `text` as a Python comment line, control characters escaped so it cannot end the
+/// comment and run as code.
 pub(crate) fn py_comment(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 2);
     out.push_str("# ");
@@ -588,9 +585,9 @@ pub struct OpenRecord<'a> {
     /// The paths asked for; `None` for a frame handed over.
     pub paths: Option<&'a [PathBuf]>,
     pub options: &'a OpenOptions,
-    /// The format the open read, after sniffing and spec matching: what the scan
-    /// chose, which the name may not say (a `.bin` DataFlash log, a part file with no
-    /// extension). Before `--format` and the extension.
+    /// The format the open read after sniffing and spec matching, which the name may not say
+    /// (a `.bin` DataFlash log, an extensionless part file); before `--format` and the
+    /// extension.
     pub format: Option<FileFormat>,
     /// How datui read the data ([`crate::ReadMode`]), as the Info panel's `Read:` says.
     pub read_mode: Option<crate::ReadMode>,
@@ -614,9 +611,8 @@ fn is_url(path: &Path) -> bool {
     crate::source::is_remote_url(path)
 }
 
-/// `url` without what may be a secret: a user and password before the host, and
-/// for HTTP the query string and fragment, where a signed URL keeps its signature
-/// or a token. The second value says whether anything was taken out.
+/// `url` without possible secrets: user and password before the host, and for HTTP the
+/// query and fragment (signatures, tokens). The bool says whether anything was removed.
 fn without_secrets(url: &str) -> (String, bool) {
     // An S3 source ID before the bucket is datui's name for the source, not a user.
     let url = &*crate::source::split_source_id(url).1;
@@ -820,9 +816,9 @@ fn hugging_face_files(paths: &[PathBuf], table: Option<&str>) -> Option<Vec<Stri
     )
 }
 
-/// The read of Arrow `inputs`, each a file or URL and whether it is a stream, in
-/// order: a stream has no footer to scan, so it is read whole, as datui converts it,
-/// and the inputs are stacked as datui stacks them. `extra` goes to every call.
+/// Reading Arrow `inputs` (file or URL, stream or not) in order: streams have no footer,
+/// so they are read whole, as datui converts them, then stacked as datui stacks them.
+/// `extra` goes to every call.
 fn arrow_read(inputs: &[(String, bool)], extra: Option<&str>) -> String {
     let extra = extra.map(|e| format!(", {e}")).unwrap_or_default();
     let names: Vec<String> = inputs.iter().map(|(name, _)| name.clone()).collect();
@@ -919,9 +915,9 @@ fn store_scheme(name: &str) -> Option<&'static str> {
     }
 }
 
-/// `storage_options` for reading `name`, with what the open read it with that is not a
-/// secret: S3's endpoint and region, an Azure account, and no signature for a public
-/// place. Credentials stay where Polars finds them, as datui found them.
+/// `storage_options` for reading `name`, with the non-secret parts of how the open read
+/// it (S3 endpoint and region, Azure account, unsigned for public places). Credentials
+/// stay where Polars finds them.
 fn storage_options(name: &str, record: &OpenRecord, endpoint: Option<&str>) -> Option<String> {
     let mut pairs: Vec<(&str, String)> = Vec::new();
     match store_scheme(name)? {

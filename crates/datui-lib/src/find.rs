@@ -1,16 +1,10 @@
-//! Find in the table: `/` (or `f`) asks for a pattern, `n` and `N` move between the
-//! cells that hold it.
-//!
-//! As the pattern is typed, the cells that match among the rows on hand light up and
-//! are counted (`3 on screen`); nothing is read for that. Ctrl+G keeps only the rows
-//! that match, as a filter the Sort & Filter sidebar lists.
-//!
-//! The view is searched as it stands — query, filters, sort and the columns shown —
-//! and never changed: only the cursor moves. The search runs off the UI thread as a
-//! job, reading the view a window at a time the way pages are read, starting from the
-//! buffer the table already holds. It looks for the next match only: nothing counts
-//! every match, so a find near the cursor reads little, and the count of matches is
-//! known only as far as the finds so far have walked from the top.
+//! Find in the table: `/` (or `f`) asks for a pattern, `n` and `N` move between matching
+//! cells. While typing, matches among rows on hand light up and are counted (`3 on
+//! screen`) without reading; Ctrl+G keeps matching rows as a sidebar filter. The view
+//! (query, filters, sort, shown columns) is searched as is and never changed; only the
+//! cursor moves. Searches run as jobs reading a window at a time from the buffer
+//! outward, finding only the next match, so the total is known only as far as finds
+//! have walked.
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -29,14 +23,11 @@ use crate::{App, AppEvent, InputMode, InputType};
 const ROW: &str = "__datui_find_row";
 /// The rows a window held.
 const ROWS: &str = "__datui_find_rows";
-/// Rows in the first window read past the buffer. Each window after it is twice the
-/// one before: a view that cannot skip to a window (a filter, a CSV) reads up to it
-/// every time, and doubling keeps that within twice the rows a single pass would
-/// read, while a match a page past the buffer costs one small read. A view that sees
-/// every row before its first (a sort) is read in one window instead, and so is the
-/// range behind the cursor on a view that cannot skip: its first window back would
-/// read all of it anyway. Forward on such a view, a window is never smaller than the
-/// rows above it, which it reads too.
+/// Rows in the first window past the buffer; each next window doubles, so a view that
+/// cannot skip (filter, CSV) reads at most about twice a single pass, while a nearby
+/// match costs one small read. A view seeing every row first (a sort), and the range
+/// behind the cursor on a non-skipping view, are read in one window. Forward on such a
+/// view, a window is never smaller than the rows above it, which it reads too.
 const FIRST_WINDOW: usize = 65_536;
 /// The most rows one window reads: a slice's length is a `u32`.
 const LARGEST_WINDOW: usize = u32::MAX as usize;
@@ -215,9 +206,8 @@ pub enum Direction {
     Previous,
 }
 
-/// Where a find starts: a view row, and in it the cursor's place among the columns
-/// searched. With no place the whole row is in reach: `f` finds the first match at or
-/// after the cursor.
+/// Where a find starts: a view row and the cursor's place among the searched columns;
+/// with none, the whole row (`f` finds the first match at or after the cursor).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Start {
     pub(crate) row: usize,
@@ -458,9 +448,8 @@ impl Search {
             .map(|(df, start)| (*start, start + df.height()))
     }
 
-    /// The next window from `at`: the rest of the buffer when `at` is in it, else
-    /// rows read from the view, stopping short of the buffer. For the `last` match,
-    /// every row to the end is read, so a view that cannot skip reads them at once.
+    /// The next window from `at`: the rest of the buffer if `at` is in it, else rows from
+    /// the view up to the buffer. For the `last` match, all rows to the end at once.
     fn plan_forward(&mut self, at: usize, end: Option<usize>, last: bool) -> (usize, bool) {
         let end = end.unwrap_or(usize::MAX);
         if let Some((start, stop)) = self.buffered()
@@ -469,9 +458,8 @@ impl Search {
             return (stop.min(end) - at, true);
         }
         let mut window = self.window_for(last);
-        // A view that cannot skip reads the rows above a window with it: a window no
-        // smaller than them keeps a find from deep in the view from reading them
-        // again for every doubling.
+        // A non-skipping view reads the rows above a window anyway: a window at least that big
+        // keeps deep finds from rereading them per doubling.
         if self.rows.reads_up_to {
             window = window.max(at);
         }
@@ -513,10 +501,9 @@ impl Search {
         (start, false)
     }
 
-    /// Read rows `[start, start + len)` and find the first match among them (the
-    /// last with `last`). Returns the rows there were, and the match as its row and
-    /// column. One aggregate per column: the window's matching cells are never
-    /// collected, only where the first (or last) one is.
+    /// Read rows `[start, start + len)` and find the first (or with `last`, the last) match,
+    /// returning the rows read and the match's row and column. One aggregate per column;
+    /// matching cells are never collected.
     fn window_at(
         &mut self,
         start: usize,
@@ -709,10 +696,8 @@ impl App {
         self.refresh_live_matches();
     }
 
-    /// Light up the cells the prompt's pattern matches among the rows on screen and a
-    /// page either side. Only rows already in memory are matched, so typing never waits
-    /// on a read, and only those near the view, so a buffer of a whole row group is not
-    /// matched on every key.
+    /// Light up pattern matches among the on-screen rows and a page either side, from rows
+    /// in memory only, so typing never waits on a read or scans a whole row group.
     pub(crate) fn refresh_live_matches(&mut self) {
         self.prompt.find.live = None;
         self.prompt.find.live_rows = self.rows_on_hand_key();
@@ -786,9 +771,8 @@ impl App {
         Some((start, df.height(), state.len_generation()))
     }
 
-    /// While the find prompt is open, work the matches out again when the rows on
-    /// hand or the view changed under it: a collect after the footer took a row, a
-    /// follow's new rows, a resize. Whether it did.
+    /// With the find prompt open, rematch when the rows on hand or the view changed (a
+    /// collect, a follow's rows, a resize). Whether it did.
     pub(crate) fn refresh_stale_live_matches(&mut self) -> bool {
         let stale = self.prompt.input_type == Some(InputType::Find)
             && self.prompt.find.live_rows != self.rows_on_hand_key();
@@ -831,9 +815,8 @@ impl App {
         self.show_table();
     }
 
-    /// A key in the find prompt. Ctrl+R switches regex, Ctrl+T letters in order,
-    /// Ctrl+L the column limit, and Ctrl+G keeps the rows that match; the field keeps
-    /// its readline keys and its history.
+    /// A key in the find prompt: Ctrl+R regex, Ctrl+T letters in order, Ctrl+L column
+    /// limit, Ctrl+G keep matching rows; readline keys and history otherwise.
     pub(crate) fn find_prompt_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
         if event.is_press() && ctrl {

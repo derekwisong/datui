@@ -3,8 +3,7 @@
 //! which Ctrl+D writes; and the Documentation view.
 
 use crate::common;
-#[path = "../common/fake_s3.rs"]
-mod fake_s3;
+use crate::fake_s3;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use datui::config::AppConfig;

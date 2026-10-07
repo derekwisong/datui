@@ -408,7 +408,7 @@ fn a_download_nobody_takes_leaves_no_file() {
 /// Peak memory of one large download, for the PR's measurement: run alone, so the
 /// process's high-water mark is this test's.
 ///
-/// `DATUI_MEASURE_MB=512 scripts/dev/test.sh integration integration_test
+/// `DATUI_MEASURE_MB=512 scripts/dev/test.sh integration app
 /// cloud_download::measure_download_peak_memory -- --ignored --nocapture`
 #[test]
 #[ignore = "a measurement; run alone with --ignored --nocapture"]

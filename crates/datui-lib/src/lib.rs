@@ -1074,6 +1074,13 @@ impl App {
         options.table.as_deref()
     }
 
+    /// Wait for the cache writes in flight (recents, dataset facts) to land, as the
+    /// home listing does. For tests.
+    #[doc(hidden)]
+    pub fn settle_cache_writes(&self) {
+        self.cache_writes.settle();
+    }
+
     /// Whether any leased background work, current or abandoned, has yet to report.
     pub fn background_work_in_flight(&self) -> bool {
         self.jobs.in_flight()

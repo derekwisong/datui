@@ -1,6 +1,6 @@
 //! The Views surface, end to end: save form, list annotations, apply, delete.
 //!
-//! Kept out of `integration_test` because saving a view writes into the
+//! Kept out of the `app` executable because saving a view writes into the
 //! process's config dir, which its tests that assert "no view matches" read.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};

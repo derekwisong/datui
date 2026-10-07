@@ -439,7 +439,7 @@ fields = [{ name = "price", type = "f8" }, { name = "size", type = "s8" }]"#;
 
 /// Times the first page and a jump to the last row of a large file, for the numbers in
 /// the pull request. Run on a generated file:
-/// `DATUI_BENCH_L2=~/tmp/big.l2 cargo test --release --test integration_test
+/// `DATUI_BENCH_L2=~/tmp/big.l2 cargo test --release --test app
 /// formats_open::time_a_large_file -- --ignored --nocapture`
 #[test]
 #[ignore = "needs a large generated file"]
@@ -631,7 +631,7 @@ fn itch_bytes(pairs: u64, tail: &[u8]) -> Vec<u8> {
 
 /// Times queries over a large file of [`ITCH`] messages, which are walked rather than
 /// read at a stride: `DATUI_BENCH_ITCH=~/tmp/big.itch cargo test --release --test
-/// integration_test formats_open::time_a_large_framed_file -- --ignored --nocapture`
+/// app formats_open::time_a_large_framed_file -- --ignored --nocapture`
 #[test]
 #[ignore = "needs a large generated file"]
 fn time_a_large_framed_file() {

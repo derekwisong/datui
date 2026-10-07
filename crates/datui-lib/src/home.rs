@@ -751,7 +751,7 @@ pub struct Root {
 }
 
 /// A titled group of rows on the home screen.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Section {
     pub title: String,
     /// How the section is doing, at the far end of the rule: the filesystem it is on,
@@ -806,6 +806,17 @@ pub struct Section {
     /// grouped section. Filled from the cache when the listing is built, never by
     /// reading a place.
     pub place_labels: std::collections::HashMap<PathBuf, String>,
+}
+
+impl Section {
+    /// A section of `rows` under `title`, everything else at its default.
+    pub fn titled(title: impl Into<String>, rows: Vec<Entry>) -> Self {
+        Section {
+            title: title.into(),
+            rows,
+            ..Default::default()
+        }
+    }
 }
 
 /// Where a cloud source's listing stands.
@@ -2125,23 +2136,15 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             _ => None,
         });
         sections.push(Section {
-            title: source.map(|s| s.label.clone()).unwrap_or(id),
             subtitle: source.map(|s| s.note.clone()).filter(|n| !n.is_empty()),
-            origin: None,
-            rows,
             unavailable: source.is_none() || failure.is_some(),
             unavailable_note: if source.is_none() {
                 Some("source not found".to_string())
             } else {
                 failure
             },
-            folded_by_default: false,
-            remote_root: None,
             waiting: source.is_some_and(|s| s.busy()),
-            grouped_by_place: false,
-            door: None,
-            place_labels: Default::default(),
-            root: None,
+            ..Section::titled(source.map(|s| s.label.clone()).unwrap_or(id), rows)
         });
         annotate(&mut sections, known, network_check, &mounts);
         return Listing {
@@ -2238,47 +2241,42 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             door.modified = None;
             door.name = door_name(door, &rows);
         }
-        sections.push(Section {
-            // The URL without a source ID: the title bar's trail already says which
-            // source, and `s3://lab@data` is not a name anyone would write. An Azure
-            // account or container is titled by name, not by its long URL.
-            title: {
-                let text = dir.to_string_lossy();
-                if let Some(dataset) = catalogs
-                    .iter()
-                    .flat_map(|c| c.datasets.iter())
-                    .find(|d| is_object_store_url(&d.location) && same_place(&d.location, &dir))
-                {
-                    dataset.name.clone()
-                } else if let Some((_, account)) = cloud_account(&dir) {
-                    account
-                } else if let Some((_, container, key)) = crate::source::azure_parts(&text) {
-                    format!("{container}/{}", key.trim_matches('/'))
-                        .trim_end_matches('/')
-                        .to_string()
-                } else {
-                    match crate::source::split_source_id(&text) {
-                        (Some(_), plain) => plain.into_owned(),
-                        (None, _) => display_path(&dir),
-                    }
+        // The URL without a source ID: the title bar's trail already says which
+        // source, and `s3://lab@data` is not a name anyone would write. An Azure
+        // account or container is titled by name, not by its long URL.
+        let title = {
+            let text = dir.to_string_lossy();
+            if let Some(dataset) = catalogs
+                .iter()
+                .flat_map(|c| c.datasets.iter())
+                .find(|d| is_object_store_url(&d.location) && same_place(&d.location, &dir))
+            {
+                dataset.name.clone()
+            } else if let Some((_, account)) = cloud_account(&dir) {
+                account
+            } else if let Some((_, container, key)) = crate::source::azure_parts(&text) {
+                format!("{container}/{}", key.trim_matches('/'))
+                    .trim_end_matches('/')
+                    .to_string()
+            } else {
+                match crate::source::split_source_id(&text) {
+                    (Some(_), plain) => plain.into_owned(),
+                    (None, _) => display_path(&dir),
                 }
-            },
+            }
+        };
+        sections.push(Section {
             subtitle,
-            origin: None,
             root: Some(dir.clone()),
-            rows,
             unavailable,
             // A browsed remote place that did not answer has nothing to add; one whose
             // listing was refused says why.
             unavailable_note: probes.error(&dir).map(str::to_string),
-            folded_by_default: false,
             // Its wait is drawn in place of the whole list until rows arrive (see
-            // `awaiting_listing`), and on the heading once they do.
-            remote_root: None,
+            // `awaiting_listing`), and on the heading once they do; no `remote_root`.
             waiting: so_far,
-            grouped_by_place: false,
             door,
-            place_labels: Default::default(),
+            ..Section::titled(title, rows)
         });
         annotate(&mut sections, known, network_check, &mounts);
         return Listing {
@@ -2426,19 +2424,13 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         root_sections.push((
             root.origin,
             Section {
-                title: display_path(&root.path),
                 subtitle: (!state.is_empty()).then(|| state.join(" · ")),
                 origin: Some(root.origin.note()),
                 root: Some(root.path.clone()),
-                rows,
                 unavailable: !root.available || unreachable,
-                unavailable_note: None,
-                folded_by_default: false,
                 remote_root: root.network.then(|| root.path.clone()),
                 waiting,
-                grouped_by_place: false,
-                door: None,
-                place_labels: Default::default(),
+                ..Section::titled(display_path(&root.path), rows)
             },
         ));
     }
@@ -2476,23 +2468,13 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
     if !recent_rows.is_empty() {
         let place_labels = place_labels(&recent_rows, known, network_check);
         sections.push(Section {
-            title: HomeState::RECENT_SECTION.to_string(),
-            subtitle: None,
-            origin: None,
-            root: None,
-            rows: recent_rows,
-            unavailable: false,
-            unavailable_note: None,
-            folded_by_default: false,
-            remote_root: None,
-            waiting: false,
             // Every trace of recent use lives here. The directories recents live in
             // used to be sections of their own, titled by path and drawn exactly like
             // a configured directory, with `recent` at the far end of the rule the
             // only thing saying why they were there. Now they are rows of this one.
             grouped_by_place: true,
-            door: None,
             place_labels,
+            ..Section::titled(HomeState::RECENT_SECTION, recent_rows)
         });
     }
 
@@ -2508,21 +2490,10 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
     // configured directories below them went off the screen. Buckets are one level
     // down, listed once per session, never expanded here.
     if !cloud.is_empty() {
-        sections.push(Section {
-            title: HomeState::CLOUD_SECTION.to_string(),
-            subtitle: None,
-            origin: None,
-            rows: cloud.iter().map(source_entry).collect(),
-            unavailable: false,
-            unavailable_note: None,
-            folded_by_default: false,
-            remote_root: None,
-            waiting: false,
-            grouped_by_place: false,
-            door: None,
-            place_labels: Default::default(),
-            root: None,
-        });
+        sections.push(Section::titled(
+            HomeState::CLOUD_SECTION.to_string(),
+            cloud.iter().map(source_entry).collect(),
+        ));
     }
 
     // Catalogs in order: yours, the listed files, then the bundled one, which is for
@@ -2548,21 +2519,10 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
 
     if !elsewhere.is_empty() {
         sections.push(Section {
-            title: "Elsewhere".to_string(),
-            // The title says what these are; a note repeating it said nothing.
-            subtitle: None,
-            origin: None,
-            rows: elsewhere,
-            unavailable: false,
-            unavailable_note: None,
-            // Places to look, not datasets: folded until asked for.
+            // Places to look, not datasets: folded until asked for. No subtitle: the
+            // title says what these are, and a note repeating it said nothing.
             folded_by_default: true,
-            remote_root: None,
-            waiting: false,
-            grouped_by_place: false,
-            door: None,
-            place_labels: Default::default(),
-            root: None,
+            ..Section::titled("Elsewhere", elsewhere)
         });
     }
 
@@ -3747,19 +3707,8 @@ impl HomeState {
             if !cloud_rows.is_empty() {
                 let subtitle = format!("cloud · {} names", cloud_rows.len());
                 self.sections.push(Section {
-                    title: Self::SEARCH_SECTION.to_string(),
                     subtitle: Some(subtitle),
-                    origin: None,
-                    rows: cloud_rows,
-                    unavailable: false,
-                    unavailable_note: None,
-                    folded_by_default: false,
-                    remote_root: None,
-                    waiting: false,
-                    grouped_by_place: false,
-                    door: None,
-                    place_labels: Default::default(),
-                    root: None,
+                    ..Section::titled(Self::SEARCH_SECTION, cloud_rows)
                 });
             }
             return;
@@ -3809,19 +3758,8 @@ impl HomeState {
         let subtitle = self.found_subtitle(rows.is_empty());
 
         self.sections.push(Section {
-            title: Self::SEARCH_SECTION.to_string(),
             subtitle: Some(subtitle),
-            origin: None,
-            rows,
-            unavailable: false,
-            unavailable_note: None,
-            folded_by_default: false,
-            remote_root: None,
-            waiting: false,
-            grouped_by_place: false,
-            door: None,
-            place_labels: Default::default(),
-            root: None,
+            ..Section::titled(Self::SEARCH_SECTION, rows)
         });
     }
 
@@ -5529,21 +5467,7 @@ mod holds_flow_tests {
         row.holds = counted(15);
 
         let mut home = HomeState::default();
-        home.sections.push(Section {
-            title: "Here".to_string(),
-            subtitle: None,
-            origin: None,
-            rows: vec![row],
-            unavailable: false,
-            unavailable_note: None,
-            folded_by_default: false,
-            remote_root: None,
-            waiting: false,
-            grouped_by_place: false,
-            door: None,
-            place_labels: Default::default(),
-            root: None,
-        });
+        home.sections.push(Section::titled("Here", vec![row]));
         // A measurement of a file carries no `holds`, and the same struct measures both.
         home.enriched.insert(
             path,

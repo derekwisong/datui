@@ -1219,19 +1219,11 @@ fn test_a_share_named_by_its_filesystem_is_still_probed_and_shown() {
     home.apply_listing(datui::home::Listing {
         missing: Default::default(),
         sections: vec![datui::home::Section {
-            door: None,
-            title: "/mnt/share/sets".into(),
             subtitle: Some("nfs4 · recent".into()),
-            origin: None,
-            rows: Vec::new(),
-            unavailable: false,
-            unavailable_note: None,
             folded_by_default: true,
             remote_root: Some(root.clone()),
             waiting: true,
-            grouped_by_place: false,
-            place_labels: Default::default(),
-            root: None,
+            ..datui::home::Section::titled("/mnt/share/sets", Vec::new())
         }],
     });
 
@@ -2209,21 +2201,7 @@ fn home_with_rows(rows: Vec<datui::discover::Entry>) -> HomeState {
     let mut home = HomeState::default();
     home.apply_listing(datui::home::Listing {
         missing: Default::default(),
-        sections: vec![datui::home::Section {
-            door: None,
-            title: "TEST".into(),
-            subtitle: None,
-            origin: None,
-            rows,
-            unavailable: false,
-            unavailable_note: None,
-            folded_by_default: false,
-            remote_root: None,
-            waiting: false,
-            grouped_by_place: false,
-            place_labels: Default::default(),
-            root: None,
-        }],
+        sections: vec![datui::home::Section::titled("TEST", rows)],
     });
     home
 }
@@ -3363,21 +3341,10 @@ fn test_a_new_listing_moves_the_viewport_with_the_cursor() {
     hive_partitions(next.path(), 200);
     home.apply_listing(datui::home::Listing {
         missing: Default::default(),
-        sections: vec![datui::home::Section {
-            door: None,
-            title: "NEXT".into(),
-            subtitle: None,
-            origin: None,
-            rows: discover::scan_dir(next.path()),
-            unavailable: false,
-            unavailable_note: None,
-            folded_by_default: false,
-            remote_root: None,
-            waiting: false,
-            grouped_by_place: false,
-            place_labels: Default::default(),
-            root: None,
-        }],
+        sections: vec![datui::home::Section::titled(
+            "NEXT",
+            discover::scan_dir(next.path()),
+        )],
     });
 
     assert_eq!(home.selected, 1, "the cursor lands on the first row");

@@ -777,19 +777,8 @@ fn a_label_gives_way_to_the_name_on_a_narrow_screen() {
 fn an_empty_current_directory_says_so_and_points_at_the_path_prompt() {
     let ctx = RenderContext::for_test();
     let section = Section {
-        door: None,
-        title: "/home/me/empty".to_string(),
-        subtitle: None,
         origin: Some(crate::home::RootOrigin::Cwd.note()),
-        rows: Vec::new(),
-        unavailable: false,
-        unavailable_note: None,
-        folded_by_default: false,
-        remote_root: None,
-        waiting: false,
-        grouped_by_place: false,
-        place_labels: Default::default(),
-        root: None,
+        ..Section::titled("/home/me/empty", Vec::new())
     };
     let text = |matches: usize, section: &Section| -> String {
         section_header(section, matches, false, false, &header_row(&ctx, 80))
@@ -813,19 +802,9 @@ fn an_empty_current_directory_says_so_and_points_at_the_path_prompt() {
 fn the_origin_chip_sits_by_the_count_and_the_state_by_the_rule() {
     let ctx = RenderContext::for_test();
     let section = Section {
-        door: None,
-        title: "/mnt/data".to_string(),
         subtitle: Some("nfs4".to_string()),
         origin: Some("configured"),
-        rows: Vec::new(),
-        unavailable: false,
-        unavailable_note: None,
-        folded_by_default: false,
-        remote_root: None,
-        waiting: false,
-        grouped_by_place: false,
-        place_labels: Default::default(),
-        root: None,
+        ..Section::titled("/mnt/data", Vec::new())
     };
     let text = |width: usize| -> String {
         section_header(&section, 12, false, false, &header_row(&ctx, width))
@@ -872,19 +851,8 @@ fn a_long_path_leaves_the_focused_heading_its_rule() {
     let ctx = RenderContext::for_test();
     let g = glyphs::get();
     let section = Section {
-        door: None,
-        title: format!("/var/folders/{}", "x".repeat(120)),
-        subtitle: None,
         origin: Some("configured"),
-        rows: Vec::new(),
-        unavailable: false,
-        unavailable_note: None,
-        folded_by_default: false,
-        remote_root: None,
-        waiting: false,
-        grouped_by_place: false,
-        place_labels: Default::default(),
-        root: None,
+        ..Section::titled(format!("/var/folders/{}", "x".repeat(120)), Vec::new())
     };
     for width in [40usize, 80, 120] {
         let text: String = section_header(&section, 60, false, true, &header_row(&ctx, width))
@@ -1170,22 +1138,11 @@ fn a_long_note_never_pushes_the_header_past_the_screen() {
     // A search heading carries the path it searched, which is easily longer than
     // the terminal. The note is context; the title is what the section is.
     let section = Section {
-        door: None,
-        title: "Found".to_string(),
         subtitle: Some(
             "/very/deeply/nested/path/that/goes/on/and/on/for/quite/a/while · 99999 searched"
                 .to_string(),
         ),
-        origin: None,
-        rows: Vec::new(),
-        unavailable: false,
-        unavailable_note: None,
-        folded_by_default: false,
-        remote_root: None,
-        waiting: false,
-        grouped_by_place: false,
-        place_labels: Default::default(),
-        root: None,
+        ..Section::titled("Found", Vec::new())
     };
 
     for width in [20usize, 40, 80, 120] {
@@ -1689,19 +1646,8 @@ fn the_title_survives_a_note_that_wants_the_whole_line() {
     // Trimming the note first is the point: a header that says only where it
     // looked, and not what it is, has lost the more useful half.
     let section = Section {
-        door: None,
-        title: "Found".to_string(),
         subtitle: Some("x".repeat(200)),
-        origin: None,
-        rows: Vec::new(),
-        unavailable: false,
-        unavailable_note: None,
-        folded_by_default: false,
-        remote_root: None,
-        waiting: false,
-        grouped_by_place: false,
-        place_labels: Default::default(),
-        root: None,
+        ..Section::titled("Found", Vec::new())
     };
     let ctx = RenderContext::for_test();
     let line = section_header(&section, 3, false, false, &header_row(&ctx, 40));

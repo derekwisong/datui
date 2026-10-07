@@ -1,25 +1,25 @@
-//! The row inspector: every field of the table's selected row, and the focused
-//! field's whole value. A takeover over the table: one Surface titled with the
-//! row. Below 140 columns the fields are listed above the value; wider, the
-//! fields sit on the left, in as many columns as fit, and the value on the right
-//! at full height. Tab moves the focus between the list and the value, and the
-//! rail moves with it.
-//!
-//! The value pane reads any length: only the rows on screen are wrapped (see
-//! [`crate::inspector_reader`]), so the end of a 2 MiB value is a key away.
+//! The row inspector: every field of the selected row and the focused field's whole
+//! value, as one Surface titled with the row. Under 140 columns the fields list above
+//! the value; wider, fields fill columns on the left and the value runs full height on
+//! the right. Tab moves focus (and the rail). The value pane wraps only on-screen rows
+//! ([`crate::inspector::inspector_reader`]), so a 2 MiB value's end is a key away.
 
-use crate::copy_modal::thousands;
+use crate::app::modals::copy_modal::thousands;
 use crate::exact;
-use crate::inspector_bytes::{self, Decoded, Sniffed};
-use crate::inspector_drill::{JSON_INLINE_BYTES, Node, Shape, json_text, looks_like_json};
-use crate::inspector_modal::{
+use crate::formats::column_types::dtype_label;
+use crate::inspector::inspector_bytes::{self, Decoded, Sniffed};
+use crate::inspector::inspector_drill::{
+    JSON_INLINE_BYTES, Node, Shape, json_text, looks_like_json,
+};
+use crate::inspector::inspector_modal::{
     CHUNK_BYTES, FieldRead, Focus, InspectorModal, Order, PaneKey, Pretty, View,
 };
-pub use crate::inspector_reader::Tone;
-use crate::inspector_reader::{self as reader, Content, TextForm, Window};
+pub use crate::inspector::inspector_reader::Tone;
+use crate::inspector::inspector_reader::{self as reader, Content, TextForm, Window};
 use crate::render::context::RenderContext;
-use crate::widgets::datatable::{DataTableState, InspectField, InspectRow, NullKind, dtype_label};
+use crate::table::{DataTableState, InspectField, InspectRow, NullKind};
 use crate::widgets::ui::{HintBar, SectionRule, Surface};
+use datui_cli::keys::Context;
 use polars::prelude::*;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -172,14 +172,14 @@ fn plural(n: usize, one: &str, many: &str) -> String {
     format!("{} {}", thousands(n), if n == 1 { one } else { many })
 }
 
-/// A byte count as people read it, and exactly: `1.0 MB (1,048,576 bytes)`.
+/// A byte count as people read it, and exactly: `1.0 MiB (1,048,576 bytes)`.
 pub fn size_text(n: usize) -> String {
     if n < 1024 {
         plural(n, "byte", "bytes")
     } else {
         format!(
             "{} ({} bytes)",
-            crate::discover::format_size(n as u64),
+            crate::numfmt::bytes(n as u64),
             thousands(n)
         )
     }
@@ -381,9 +381,8 @@ impl Unpacked {
     }
 }
 
-/// The pane for bytes: a hex dump, the text they hold, or escaped. UTF-8 is its
-/// own text; gzip and zstd are decompressed by a worker when their Text view is
-/// asked for (`unpack`), never while the pane is built.
+/// The pane for bytes: hex dump, text, or escaped. UTF-8 is its own text; gzip and zstd
+/// are decompressed by a worker when Text is asked for (`unpack`), never here.
 fn binary_pane(bytes: &[u8], choice: Option<View>, width: usize, unpacked: &Unpacked) -> Pane {
     let sniffed = inspector_bytes::sniff(bytes);
     let mut facts = vec!["binary".to_string(), size_text(bytes.len())];
@@ -597,15 +596,14 @@ fn empty_preview(value: &AnyValue) -> Option<String> {
     }
 }
 
-/// The table's one-line preview of a value, formatted as the table formats it,
-/// and only as much of it as `room` cells can show. A long text or bytes say
-/// their size after a cut preview, so a huge value shows before it is focused.
+/// The table's one-line preview of a value, as the table formats it, fitted to `room`;
+/// long text or bytes add their size after the cut.
 fn preview(field: &InspectField, value: &AnyValue, room: usize, ctx: &RenderContext) -> String {
     let g = crate::glyphs::get();
     let budget = room.saturating_mul(4).max(16);
     let sized = |text: String, len: usize| {
         if len > 1024 && crate::glyphs::cell_width(&text) > room {
-            let size = format!(" {} {}", g.middot, crate::discover::format_size(len as u64));
+            let size = format!(" {} {}", g.middot, crate::numfmt::bytes(len as u64));
             let keep = room.saturating_sub(crate::glyphs::cell_width(&size));
             let cut = crate::glyphs::fit_cells(&text, keep, g.ellipsis).into_owned();
             format!("{cut}{size}")
@@ -641,7 +639,7 @@ fn binary_preview(b: &[u8]) -> String {
     let size = if b.len() < 1024 {
         plural(b.len(), "byte", "bytes")
     } else {
-        crate::discover::format_size(b.len() as u64)
+        crate::numfmt::bytes(b.len() as u64)
     };
     match inspector_bytes::sniff(&b[..b.len().min(4096)]) {
         // A prefix that is UTF-8 says little about the rest.
@@ -759,12 +757,47 @@ fn differs_from(
     known
 }
 
-/// The fields listed, in the order listed: the order chosen, then the nulls toggle (or,
-/// comparing, only the fields that differ), then the find text — names first,
-/// then values.
-pub fn visible_fields(modal: &InspectorModal, state: &DataTableState) -> Vec<usize> {
+/// Keep the fields listed for `row`, the row shown, as [`visible_fields`] has them:
+/// worked out again only when something they depend on changed.
+pub fn refresh_list(modal: &mut InspectorModal, state: &DataTableState, row: Option<&InspectRow>) {
+    let key = crate::inspector::inspector_modal::ListKey {
+        order: modal.order,
+        filled_only: modal.filled_only,
+        filter: modal.filter.clone(),
+        row: row.map(|r| (r.frame, r.row)),
+        buffered: state.buffered_span(),
+        compare: modal.compare,
+        compare_both: modal.compare_both,
+        pinned: modal.pinned.as_ref().map(|p| (p.frame, p.row)),
+        read: modal.read.as_ref().map(|r| {
+            let stage = match r {
+                FieldRead::Reading { .. } => 0,
+                FieldRead::Read { .. } => 1,
+                FieldRead::Failed { .. } => 2,
+            };
+            (r.key(), stage)
+        }),
+    };
+    if modal.listed.as_ref() == Some(&key) {
+        return;
+    }
+    let visible = visible_fields(modal, state, row);
+    modal.set_visible(visible);
+    modal.listed = Some(key);
+    #[cfg(test)]
+    {
+        modal.list_builds += 1;
+    }
+}
+
+/// The fields listed, in order: the chosen order, then the nulls toggle (or, comparing,
+/// only differing fields), then the find (names, then values).
+pub fn visible_fields(
+    modal: &InspectorModal,
+    state: &DataTableState,
+    row: Option<&InspectRow>,
+) -> Vec<usize> {
     let fields = &modal.fields;
-    let row = state.inspect_row();
     let mut order: Vec<usize> = (0..fields.len()).collect();
     if modal.order == Order::Name {
         order.sort_by_cached_key(|&i| fields[i].name.to_lowercase());
@@ -773,12 +806,12 @@ pub fn visible_fields(modal: &InspectorModal, state: &DataTableState) -> Vec<usi
         return order;
     };
     let read = modal.read.as_ref();
-    let shown_at = |i: usize| shown(&fields[i], &row, read, state);
+    let shown_at = |i: usize| shown(&fields[i], row, read, state);
     if modal.order == Order::Filled {
         order.sort_by_key(|&i| fill_of(&shown_at(i)) != Fill::Value);
     }
     if modal.filled_only {
-        match compared(modal, state, &row) {
+        match compared(modal, state, row) {
             Some(other) => order
                 .retain(|&i| differs_from(&shown_at(i), &fields[i], &other, state) == Some(true)),
             None => order.retain(|&i| matches!(fill_of(&shown_at(i)), Fill::Value | Fill::Unknown)),
@@ -868,9 +901,8 @@ fn title(display_row: usize, state: &DataTableState, other: Option<&Compared>) -
     title
 }
 
-/// Where the list starts, given `cap` slots for `n` items with the focus on
-/// `sel` and the list last starting at `offset`; and whether the first slot
-/// counts the items above and the last the items below.
+/// Where the list starts for `cap` slots of `n` items, focus at `sel`, last start
+/// `offset`; and whether the first and last slots count items above and below.
 pub fn list_window(n: usize, sel: usize, offset: usize, cap: usize) -> (usize, bool, bool) {
     if n <= cap {
         return (0, false, false);
@@ -915,12 +947,10 @@ pub struct ListShape {
     pub bytes: bool,
 }
 
-/// The value pane's width side by side with the list in `width` cells and
-/// `rows` rows. It depends on the terminal and the row's fields, never on the
-/// focused one, so nothing moves as the focus does. A list longer than the
-/// screen takes the columns it needs, down to [`VALUE_FLOOR`] for the value;
-/// otherwise the value has its measure, or from [`WIDER`] a 32-byte hex row
-/// for a row with bytes.
+/// The value pane's width beside the list in `width` cells and `rows` rows, from the
+/// terminal and the row's fields, never the focus, so nothing moves. A long list takes
+/// what it needs down to [`VALUE_FLOOR`]; otherwise the value gets its measure, or from
+/// [`WIDER`] a 32-byte hex row when bytes are present.
 fn value_pane_width(width: usize, rows: usize, list: ListShape) -> usize {
     let mut max = (MEASURE + 1).min(width * 45 / 100);
     if list.bytes && !list.single && width >= WIDER {
@@ -950,13 +980,10 @@ pub struct Layout {
     pub value: Rect,
 }
 
-/// Lay out `content` for `fields` listed and a value that needs `value_need`
-/// rows. Below [`WIDE`] the list sits above the value and takes the rows it
-/// needs, leaving the value what its lines need. The split follows what the
-/// panes hold, never where the focus is, so Tab moves nothing. From [`WIDE`] the two
-/// sit side by side, each at full height, the value as wide as
-/// [`value_pane_width`] says, and fields flow into as many columns of
-/// `list.min_col` cells as fit.
+/// Lay out `content` for `fields` and a value needing `value_need` rows. Below
+/// [`WIDE`] the list sits above, taking what it needs; from [`WIDE`] side by side at
+/// full height, the value `value_pane_width` wide, fields in columns of
+/// `list.min_col`. By content, never focus, so Tab moves nothing.
 pub fn layout(content: Rect, fields: usize, value_need: usize, list: ListShape) -> Layout {
     let line = |y: u16, x: u16, width: u16| Rect {
         x,
@@ -1098,9 +1125,8 @@ fn field_pane(
     built
 }
 
-/// The id for a pane just built for `key`: the last one's while it shows the same
-/// value at another width, so the reader stays where it was; else a new one,
-/// which the reader starts at the top of.
+/// The id for a pane just built for `key`: the previous one's when it is the same
+/// value at another width (the reader keeps its place), else new (from the top).
 fn renewed(modal: &mut InspectorModal, key: &PaneKey, built: &Pane) -> u64 {
     match &modal.pane {
         Some((cached, old)) if cached.same_value(key) => {
@@ -1142,7 +1168,7 @@ pub fn render(
     buf: &mut Buffer,
     modal: &mut InspectorModal,
     state: &DataTableState,
-    codebook: Option<&crate::codebook::Codebook>,
+    codebook: Option<&crate::home::codebook::Codebook>,
     ctx: &RenderContext,
 ) {
     let row = state.inspect_row();
@@ -1156,8 +1182,7 @@ pub fn render(
     }
     let content = Surface::content_area(area);
     modal.compare_both = content.width as usize >= WIDER;
-    let visible = visible_fields(modal, state);
-    modal.set_visible(visible);
+    refresh_list(modal, state, row.as_ref());
     let other = row.as_ref().and_then(|r| compared(modal, state, r));
 
     let focused = modal.focused().cloned();
@@ -1358,7 +1383,7 @@ pub fn render(
 /// The codebook's lines for a field: its meaning and unit, then what the value under
 /// the cursor stands for when the codebook lists it.
 pub fn codebook_lines(
-    column: &crate::codebook::Column,
+    column: &crate::home::codebook::Column,
     shown: &Shown,
     width: usize,
 ) -> Vec<(String, Tone)> {
@@ -1463,25 +1488,27 @@ struct FooterFacts {
 
 /// The keys that act now, primary first; the weights say which yield first on
 /// a narrow footer, the way out last.
-fn footer<'a>(
-    modal: &InspectorModal,
-    pane: &'a Pane,
-    f: &FooterFacts,
-    ctx: &RenderContext,
-) -> HintBar<'a> {
-    let g = crate::glyphs::get();
-    let mut bar = HintBar::from_ctx(ctx);
+fn footer(modal: &InspectorModal, pane: &Pane, f: &FooterFacts, ctx: &RenderContext) -> HintBar {
+    let bar = HintBar::from_ctx(ctx).screen(Context::Inspector);
     if modal.finding {
         return bar
-            .hint_weighted("Enter", "Done", 3)
-            .hint_weighted("type", "Find", 1)
-            .hint_weighted("Esc", "Clear", 4);
+            .group("Find")
+            .key("Enter")
+            .weight(3)
+            .key("(type)")
+            .weight(1)
+            .key("Esc")
+            .weight(4);
     }
     if modal.value_find.as_ref().is_some_and(|f| f.editing) {
         return bar
-            .hint_weighted("Enter", "Find", 3)
-            .hint_weighted("type", "Text", 1)
-            .hint_weighted("Esc", "Clear", 4);
+            .group("Find")
+            .key_as("Enter", "Find")
+            .weight(3)
+            .key_as("(type)", "Text")
+            .weight(1)
+            .key("Esc")
+            .weight(4);
     }
     let copy = match pane.copy {
         CopyAs::Base64 => "Copy base64",
@@ -1491,62 +1518,72 @@ fn footer<'a>(
     };
     let view = pane.next_view().map(View::label);
     if modal.focus == Focus::Value {
+        let mut bar = bar.group("Value");
         if f.value_overflows {
-            bar = bar
-                .hint_weighted(g.updown, "Scroll", 8)
-                .hint_weighted("Home/End", "Top/End", 6);
+            bar = bar.key("↑ / ↓").weight(8).key("Home / End").weight(6);
         }
-        bar = bar.hint_weighted("/", "Find", 7);
+        bar = bar.key("/").weight(7);
         if modal
             .value_find
             .as_ref()
             .is_some_and(|f| !f.hits.is_empty())
         {
-            bar = bar.hint_weighted("n/N", "Next", 7);
+            bar = bar.key("n / N").weight(7);
         }
+        bar = bar.group("Output");
         if let Some(view) = view {
-            bar = bar.hint_weighted("e", view, 5);
+            bar = bar.key_as("e", view).weight(5);
         }
         if pane.content.wraps() {
             let wrap = match modal.wrap {
                 reader::Wrap::Word => "Hard wrap",
                 reader::Wrap::Hard => "Word wrap",
             };
-            bar = bar.hint_weighted("w", wrap, 3);
+            bar = bar.key_as("w", wrap).weight(3);
         }
         if f.has_value {
-            bar = bar
-                .hint_weighted("y", copy, 4)
-                .hint_weighted("o", "Open", 2);
+            bar = bar.key_as("y", copy).weight(4).key("o").weight(2);
         }
-        bar = bar.hint_weighted(g.updown_lr, "Row", 1);
-        return bar.hint_weighted("Esc", "Fields", 10);
+        return bar
+            .group("Fields")
+            .key("← / →")
+            .weight(1)
+            .group("Value")
+            .key("Esc")
+            .weight(10);
     }
+    let mut bar = bar.group("Fields");
     if let Some(label) = f.enter {
-        bar = bar.hint_weighted("Enter", label, 9);
+        bar = bar.key_as("Enter", label).weight(9);
     }
     if f.read_key {
-        bar = bar.hint_weighted("r", "Read", 9);
+        bar = bar.key("r").weight(9);
     }
     if f.has_value {
-        bar = bar.hint_weighted("Tab", "Value", 8);
+        bar = bar.key("Tab").weight(8);
         if !matches!(f.enter, Some("Read" | "Retry")) {
-            bar = bar.hint_weighted("y", copy, 7);
+            bar = bar
+                .group("Output")
+                .key_as("y", copy)
+                .weight(7)
+                .group("Fields");
         }
     }
     // The arrows are the first keys anyone tries: their chip yields before the
     // view key, which nothing else would reveal.
     if f.many_fields {
-        bar = bar.hint_weighted(g.updown, "Field", 4);
+        bar = bar.key("↑ / ↓").weight(4);
     }
-    bar = bar
-        .hint_weighted(g.updown_lr, "Row", 6)
-        .hint_weighted("/", "Find", 5);
+    bar = bar.key("← / →").weight(6).key("/").weight(5);
     if let Some(view) = view {
-        bar = bar.hint_weighted("e", view, 5);
+        bar = bar
+            .group("Output")
+            .key_as("e", view)
+            .weight(5)
+            .group("Fields");
     }
     if f.list_overflows {
-        bar = bar.hint_weighted("PgUp/PgDn", "Page", 3);
+        bar = bar.key("PgUp / PgDn").weight(3);
     }
     // The toggle names its state: what `f` hides is the nulls and empties.
     let filled = match (f.comparing, modal.filled_only) {
@@ -1554,14 +1591,14 @@ fn footer<'a>(
         (false, true) => "Nulls: hidden",
         (false, false) => "Nulls: shown",
     };
-    bar = bar.hint_weighted("Y", "Copy row", 2);
+    bar = bar.group("Output").key("Y").weight(2).group("Fields");
     // Comparing, Esc is the way out of Compare, and says so.
     if !modal.compare {
-        bar = bar.hint_weighted("c", "Compare", 2);
+        bar = bar.key("c").weight(2);
     }
-    bar = bar.hint_weighted("f", filled, 1);
+    bar = bar.key_as("f", filled).weight(1);
     if f.comparing {
-        bar = bar.hint_weighted("m", "Pin", 1);
+        bar = bar.key("m").weight(1);
     }
     // Esc backs out a level at a time: the find, Compare, then the inspector.
     let esc = if !modal.filter.is_empty() {
@@ -1571,7 +1608,7 @@ fn footer<'a>(
     } else {
         "Close"
     };
-    bar.hint_weighted("Esc", esc, 10)
+    bar.key_as("Esc", esc).weight(10)
 }
 
 /// The rows the list shows, and its name and type columns' widths.
@@ -1585,10 +1622,9 @@ struct ListOf<'a> {
     rule_used: Option<usize>,
 }
 
-/// The fields, in as many columns as the layout has: rail, name, type, the
-/// table's preview, and with Compare the other rows' previews in row order, a
-/// mark where they differ and the rows named over them on the rule. The first
-/// slot counts the fields above, the last those below.
+/// The fields in the layout's columns: rail, name, type, preview, and with Compare the
+/// other rows' previews, a mark where they differ, rows named on the rule. The first
+/// and last slots count fields above and below.
 fn draw_fields(
     buf: &mut Buffer,
     lay: &Layout,
@@ -1764,11 +1800,9 @@ fn draw_fields(
     }
 }
 
-/// Compare's rows named over their previews on the list's rule, `Row 41`: the
-/// row shown in the text color, the others dimmed. `rows` are each preview's
-/// cells into the rule and its row's number, and whether it is the row shown.
-/// A name is drawn where it fits its column and clears the rule's title and
-/// chip, the first `used` cells.
+/// Compare's row names over their previews on the list's rule (`Row 41`): the shown row
+/// in text color, others dimmed. Drawn where each fits its column and clears the
+/// rule's title and chip (the first `used` cells).
 fn draw_compare_labels(
     buf: &mut Buffer,
     rule: Rect,
@@ -1847,9 +1881,8 @@ fn draw_value(
             let name = crate::glyphs::fit_cells(name, width / 3, g.ellipsis);
             let name_w = crate::glyphs::cell_width(&name);
             let overflows = win.above || win.below;
-            // The position, at its widest plus its padding and a cell of rule after
-            // it, comes before the facts: reading a long value, where you are
-            // matters more than its size, and the facts must not shift as it changes.
+            // The position (at its widest, padded) before the facts: in a long value where you
+            // are matters more, and facts must not shift.
             let reserve = if overflows {
                 reader::Reader::position_width(&pane.content) + 3
             } else {
@@ -1944,8 +1977,8 @@ fn dim_or(ctx: &RenderContext, focused: bool) -> Style {
 /// reads as a JSON object or array.
 pub fn value_opens(value: &AnyValue) -> bool {
     match value {
-        AnyValue::String(s) => crate::inspector_drill::opens_as_json(s),
-        AnyValue::StringOwned(s) => crate::inspector_drill::opens_as_json(s),
+        AnyValue::String(s) => crate::inspector::inspector_drill::opens_as_json(s),
+        AnyValue::StringOwned(s) => crate::inspector::inspector_drill::opens_as_json(s),
         v => exact::is_nested_value(v),
     }
 }
@@ -2054,9 +2087,8 @@ fn node_preview(node: &Node, room: usize, ctx: &RenderContext) -> (String, Style
     }
 }
 
-/// The title inside a drill: the row's, then each level's step. When it does not
-/// fit, the first steps after the row give way to an ellipsis: the row and where
-/// the drill is now stay.
+/// The title inside a drill: the row's, then each level's step; when too long, the
+/// first steps after the row yield to an ellipsis.
 fn drill_title(root: &str, labels: &[&str], max: usize) -> String {
     let g = crate::glyphs::get();
     let sep = format!(" {} ", g.trail);
@@ -2091,7 +2123,6 @@ fn render_drill(
     root_title: &str,
     ctx: &RenderContext,
 ) {
-    let g = crate::glyphs::get();
     let Some(drill) = modal.drill.clone() else {
         return;
     };
@@ -2192,13 +2223,12 @@ fn render_drill(
             ctx,
         );
     } else {
+        bar = bar.screen(Context::Inspector).group("Nested");
         if opens {
-            bar = bar.hint_weighted("Enter", "Open", 9);
+            bar = bar.key("Enter").weight(9);
         }
         if focused.is_some() {
-            bar = bar
-                .hint_weighted("Tab", "Value", 8)
-                .hint_weighted("y", "Copy", 7);
+            bar = bar.key("Tab").weight(8).key("y").weight(7);
         }
         if len > 1 {
             let word = match shape {
@@ -2206,15 +2236,15 @@ fn render_drill(
                 Shape::Object => "Key",
                 _ => "Item",
             };
-            bar = bar.hint_weighted(g.updown, word, 6);
+            bar = bar.key_as("↑ / ↓", word).weight(6);
         }
         if let Some(view) = pane.next_view() {
-            bar = bar.hint_weighted("e", view.label(), 3);
+            bar = bar.key_as("e", view.label()).weight(3);
         }
         if len > list_h {
-            bar = bar.hint_weighted("PgUp/PgDn", "Page", 2);
+            bar = bar.key("PgUp / PgDn").weight(2);
         }
-        bar = bar.hint_weighted("Esc", "Back", 10);
+        bar = bar.key("Esc").weight(10);
     }
 
     let labels: Vec<&str> = drill.levels.iter().map(|l| l.label.as_str()).collect();
@@ -2505,9 +2535,8 @@ fn draw_table(
     }
 }
 
-/// The row as one JSON object, field by field in the table's order: numbers
-/// exact, text and dates as strings, lists and structs as JSON, bytes as base64.
-/// Fields not read are left out and counted.
+/// The row as one JSON object in table order: exact numbers, text and dates as strings,
+/// lists and structs as JSON, bytes as base64. Unread fields are omitted and counted.
 pub fn row_json(
     fields: &[InspectField],
     row: &InspectRow,
@@ -2750,7 +2779,7 @@ mod tests {
             &Shown::Value(AnyValue::Binary(&big)),
             &ask(140),
         );
-        assert_eq!(p.facts, format!("binary {m} 1.0 MB (1,048,576 bytes)"));
+        assert_eq!(p.facts, format!("binary {m} 1.0 MiB (1,048,576 bytes)"));
         assert_eq!(p.views, [View::Hex, View::Escaped]);
         assert!(matches!(p.content, Content::Hex { per_line: 32, .. }));
         assert!(matches!(p.copy, CopyAs::Base64));
@@ -2984,6 +3013,6 @@ mod tests {
     fn sizes_read_in_human_units_and_exactly() {
         assert_eq!(size_text(73), "73 bytes");
         assert_eq!(size_text(1), "1 byte");
-        assert_eq!(size_text(4 << 20), "4.0 MB (4,194,304 bytes)");
+        assert_eq!(size_text(4 << 20), "4.0 MiB (4,194,304 bytes)");
     }
 }

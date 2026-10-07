@@ -1,14 +1,17 @@
 use std::path::Path;
-use std::process::Command;
-use std::sync::Once;
 
-static INIT: Once = Once::new();
+mod shared;
+pub use shared::{buffer_lines, buffer_text, ensure_sample_data, sample_data_dir, test_runtime};
+// `CacheManager::new` and `ConfigManager::new` isolate themselves in a unit test too.
+use crate::cache::isolate_cache;
+
+pub(crate) mod fixtures;
 
 #[cfg(feature = "cloud")]
 mod cloud_recent_facts {
-    use crate::dataset_files::DatasetFile;
-    use crate::discover::EntryKind;
-    use crate::schema_union::FileFooter;
+    use crate::formats::dataset_files::DatasetFile;
+    use crate::formats::schema_union::FileFooter;
+    use crate::home::discover::EntryKind;
     use polars::prelude::{DataType, Field, Schema};
     use std::sync::Arc;
 
@@ -30,7 +33,7 @@ mod cloud_recent_facts {
     ) -> Option<(std::path::PathBuf, crate::cache::DatasetFacts)> {
         static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
         let runtime = RUNTIME.get_or_init(|| tokio::runtime::Runtime::new().unwrap());
-        let source = crate::dataset_files::StoreFiles::new(
+        let source = crate::formats::dataset_files::StoreFiles::new(
             full,
             String::new(),
             None,
@@ -38,7 +41,7 @@ mod cloud_recent_facts {
             Default::default(),
             runtime.handle(),
         );
-        crate::dataset_files::facts_of(Arc::new(source), files.to_vec(), read, footers)
+        crate::formats::dataset_files::facts_of(Arc::new(source), files.to_vec(), read, footers)
     }
 
     fn footer(rows: &[usize]) -> Option<FileFooter> {
@@ -76,7 +79,10 @@ mod cloud_recent_facts {
         assert_eq!(facts.holds.formats, vec![("parquet".to_string(), 2)]);
         assert_eq!(facts.size, 3000);
         assert_eq!(facts.mtime, 20);
-        assert_eq!(facts.classified_by, crate::discover::CLASSIFIER_VERSION);
+        assert_eq!(
+            facts.classified_by,
+            crate::home::discover::CLASSIFIER_VERSION
+        );
         assert!(facts.columns.iter().any(|c| c == "amount"));
 
         // A flat prefix is a directory of files; one object is a file.
@@ -129,20 +135,22 @@ mod cloud_recent_facts {
             cols_sampled: true,
             ..Default::default()
         };
-        assert!(crate::dataset_files::facts_worth_recording(None, &sample));
-        assert!(crate::dataset_files::facts_worth_recording(
+        assert!(crate::formats::dataset_files::facts_worth_recording(
+            None, &sample
+        ));
+        assert!(crate::formats::dataset_files::facts_worth_recording(
             Some(&sample),
             &sample
         ));
-        assert!(crate::dataset_files::facts_worth_recording(
+        assert!(crate::formats::dataset_files::facts_worth_recording(
             Some(&sample),
             &whole
         ));
-        assert!(crate::dataset_files::facts_worth_recording(
+        assert!(crate::formats::dataset_files::facts_worth_recording(
             Some(&whole),
             &whole
         ));
-        assert!(!crate::dataset_files::facts_worth_recording(
+        assert!(!crate::formats::dataset_files::facts_worth_recording(
             Some(&whole),
             &sample
         ));
@@ -155,7 +163,7 @@ mod cloud_recent_facts {
         let tmp = tempfile::tempdir().unwrap();
         let cache = crate::cache::CacheManager::with_dir(tmp.path().to_path_buf());
         let schema = Schema::from_iter([Field::new("id".into(), DataType::Int64)]);
-        let footer = crate::cloud_hive::FileFooter {
+        let footer = crate::cloud::cloud_hive::FileFooter {
             schema: Arc::new(schema),
             row_group_rows: vec![3, 4],
             row_group_bytes: Vec::new(),
@@ -197,84 +205,6 @@ mod cloud_recent_facts {
     }
 }
 
-/// Ensures that sample data files are generated before tests run.
-/// This function uses `std::sync::Once` to ensure it only runs once,
-/// even if called from multiple tests.
-pub fn ensure_sample_data() {
-    INIT.call_once(|| {
-        // When the lib is in crates/datui-lib, repo root is CARGO_MANIFEST_DIR/../..
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let sample_data_dir = repo_root.join("tests/sample-data");
-
-        // Check if key files exist to determine if we need to generate data
-        // We check for a few representative files that should always be generated
-        let key_files = [
-            "people.parquet",
-            "sales.parquet",
-            "large_dataset.parquet",
-            "empty.parquet",
-            "pivot_long.parquet",
-            "melt_wide.parquet",
-            "infer_schema_length_data.csv",
-        ];
-
-        let needs_generation = !sample_data_dir.exists()
-            || key_files
-                .iter()
-                .any(|file| !sample_data_dir.join(file).exists());
-
-        if needs_generation {
-            // Get the path to the Python script (at repo root)
-            let script_path = repo_root.join("scripts/generate_sample_data.py");
-            if !script_path.exists() {
-                panic!(
-                    "Sample data generation script not found at: {}. \
-                    Please ensure you're running tests from the repository root.",
-                    script_path.display()
-                );
-            }
-
-            // Try to find Python (python3 or python)
-            let python_cmd = if Command::new("python3").arg("--version").output().is_ok() {
-                "python3"
-            } else if Command::new("python").arg("--version").output().is_ok() {
-                "python"
-            } else {
-                panic!(
-                    "Python not found. Please install Python 3 to generate test data. \
-                    The script requires: polars>=0.20.0 and numpy>=1.24.0"
-                );
-            };
-
-            // Run the generation script
-            let output = Command::new(python_cmd)
-                .arg(script_path)
-                .output()
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "Failed to run sample data generation script: {}. \
-                        Make sure Python is installed and the script is executable.",
-                        e
-                    );
-                });
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                panic!(
-                    "Sample data generation failed!\n\
-                    Exit code: {:?}\n\
-                    stdout:\n{}\n\
-                    stderr:\n{}",
-                    output.status.code(),
-                    stdout,
-                    stderr
-                );
-            }
-        }
-    });
-}
-
 /// Whether the app is still waiting on background work: `busy`, the row count, or
 /// the buffer collect, a load-ahead included. What a test driving the app without
 /// a terminal waits on: a quiet channel says only that nothing arrived lately,
@@ -284,27 +214,11 @@ pub fn work_pending(app: &crate::App) -> bool {
     app.is_busy() || app.row_count_pending() || app.rows_in_flight().is_some()
 }
 
-/// Returns a tokio runtime handle for use in tests.
-///
-/// The cache and config need no setup here: `CacheManager::new` and
-/// `ConfigManager::new` point themselves at scratch directories in a unit test
-/// (`cache::isolate_cache`).
-pub fn test_runtime() -> tokio::runtime::Handle {
-    static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
-    RT.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
-            .enable_all()
-            .build()
-            .expect("test tokio runtime")
-    })
-    .handle()
-    .clone()
-}
-
 /// For `App::worker_dies`: the first job `dies` picks panics as it starts, and
 /// every job after it runs.
-pub(crate) fn worker_dies_once(dies: fn(&crate::Job) -> bool) -> Option<crate::jobs::WorkerDies> {
+pub(crate) fn worker_dies_once(
+    dies: fn(&crate::Job) -> bool,
+) -> Option<crate::app::jobs::WorkerDies> {
     let mut died = false;
     Some(Box::new(move |job| {
         if died || !dies(job) {
@@ -321,12 +235,12 @@ pub(crate) fn worker_dies_once(dies: fn(&crate::Job) -> bool) -> Option<crate::j
 pub(crate) fn worker_waits_once(
     which: fn(&crate::Job) -> bool,
 ) -> (
-    Option<crate::jobs::WorkerWaits>,
+    Option<crate::app::jobs::WorkerWaits>,
     std::sync::mpsc::Sender<()>,
 ) {
     let (release, gate) = std::sync::mpsc::channel();
     let mut gate = Some(gate);
-    let waits: crate::jobs::WorkerWaits =
+    let waits: crate::app::jobs::WorkerWaits =
         Box::new(move |job| if which(job) { gate.take() } else { None });
     (Some(waits), release)
 }
@@ -386,14 +300,6 @@ fn a_runtime_shut_down_under_a_waiting_thread_does_not_panic_it() {
     assert!(outcome.is_none());
 }
 
-/// Path to the tests/sample-data directory (at repo root). Call `ensure_sample_data()` first if needed.
-pub fn sample_data_dir() -> std::path::PathBuf {
-    ensure_sample_data();
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join("tests/sample-data")
-}
-
 /// End pressed while the footers are still coming waits for them, then jumps.
 ///
 /// The pass is already reading every footer and those footers hold the count, so a
@@ -403,7 +309,7 @@ pub fn sample_data_dir() -> std::path::PathBuf {
 /// would be left with "Counting rows to find the end..." and no end.
 #[test]
 fn end_pressed_while_the_footers_are_coming_jumps_when_they_land() {
-    use crate::widgets::datatable::{DataTableState, FootersFound, RemoteFiles};
+    use crate::table::{DataTableState, FootersFound, RemoteFiles};
     use crate::{App, AppEvent, OpenOptions};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use polars::prelude::*;
@@ -413,14 +319,14 @@ fn end_pressed_while_the_footers_are_coming_jumps_when_they_land() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
+        let footer = crate::formats::schema_union::FileFooter {
             schema,
             row_group_rows: vec![100],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
         };
-        crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        crate::formats::schema_union::union_sampled(1, &[0], &[Some(footer)])
     };
 
     let mut state = DataTableState::from_schema_and_lazyframe(
@@ -430,7 +336,7 @@ fn end_pressed_while_the_footers_are_coming_jumps_when_they_land() {
         None,
     )
     .unwrap()
-    .with_open(crate::widgets::datatable::OpenFacts {
+    .with_open(crate::table::OpenFacts {
         remote_source: true,
         remote_files: Some(RemoteFiles {
             urls: Arc::new(vec!["one".to_string()]),
@@ -446,7 +352,7 @@ fn end_pressed_while_the_footers_are_coming_jumps_when_they_land() {
                 file_rows: vec![100],
                 files: vec!["one".to_string()],
                 row_groups: vec![vec![100]],
-                remote: Some(crate::widgets::datatable::RemoteRead {
+                remote: Some(crate::table::RemoteRead {
                     urls: vec!["one".to_string()],
                     scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
                     count: Arc::new(|_| Ok(vec![vec![100]])),
@@ -464,7 +370,7 @@ fn end_pressed_while_the_footers_are_coming_jumps_when_they_land() {
     // End, while the footers are still on their way.
     let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
     assert!(
-        app.len_count_inflight.is_none(),
+        app.counting.len_count_inflight.is_none(),
         "no second pass over the footers already being read"
     );
 
@@ -473,14 +379,15 @@ fn end_pressed_while_the_footers_are_coming_jumps_when_they_land() {
         let event = rx
             .recv_timeout(std::time::Duration::from_secs(10))
             .expect("the pass reports back");
-        if matches!(event, AppEvent::BackgroundFootersJoined { .. }) {
+        if matches!(event, AppEvent::JobEnded(ticket) if ticket.kind() == crate::JobKind::FootersJoin)
+        {
             break event;
         }
     };
-    let _ = app.handle(&reported);
+    let _ = app.handle(reported);
     // The jump the key asked for is queued behind the join, as a jump always is.
     while let Ok(event) = rx.try_recv() {
-        let _ = app.handle(&event);
+        let _ = app.handle(event);
     }
 
     let state = app.data_table_state.as_ref().unwrap();
@@ -495,7 +402,7 @@ fn end_pressed_while_the_footers_are_coming_jumps_when_they_land() {
         "with nothing left saying it is counting rows that have been counted"
     );
     assert!(
-        app.end_when_the_footers_land.is_none(),
+        app.counting.end_when_the_footers_land.is_none(),
         "and the key is spent, not left waiting on the next dataset"
     );
 }
@@ -506,10 +413,10 @@ fn end_pressed_while_the_footers_are_coming_jumps_when_they_land() {
 /// estimate stands until a count lands exact.
 #[test]
 fn a_sampled_dataset_shows_an_estimate_until_it_is_counted() {
+    use crate::formats::schema_union::RowEstimate;
     use crate::render::footer::Total;
     use crate::render::main_view::MainViewContent;
-    use crate::schema_union::RowEstimate;
-    use crate::widgets::datatable::{DataTableState, FootersFound, RemoteFiles, RemoteRead};
+    use crate::table::{DataTableState, FootersFound, RemoteFiles, RemoteRead};
     use crate::{App, OpenOptions};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use polars::prelude::*;
@@ -519,20 +426,20 @@ fn a_sampled_dataset_shows_an_estimate_until_it_is_counted() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
+        let footer = crate::formats::schema_union::FileFooter {
             schema,
             row_group_rows: vec![40],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
         };
-        crate::schema_union::union_sampled(3, &[0], &[Some(footer)])
+        crate::formats::schema_union::union_sampled(3, &[0], &[Some(footer)])
     };
     let urls = || vec!["a".to_string(), "b".to_string(), "c".to_string()];
     // A count that says it has read one footer of three, then waits to be let go.
     let (go, gate) = mpsc::channel::<()>();
     let gate = Arc::new(Mutex::new(gate));
-    let counter: crate::widgets::datatable::FileCounter = Arc::new(move |progress| {
+    let counter: crate::table::FileCounter = Arc::new(move |progress| {
         let pass = progress.pass(3);
         pass.advance();
         let _ = gate.lock().unwrap().recv();
@@ -551,7 +458,7 @@ fn a_sampled_dataset_shows_an_estimate_until_it_is_counted() {
         None,
     )
     .unwrap()
-    .with_open(crate::widgets::datatable::OpenFacts {
+    .with_open(crate::table::OpenFacts {
         remote_source: true,
         remote_files: Some(RemoteFiles {
             urls: Arc::new(urls()),
@@ -591,9 +498,9 @@ fn a_sampled_dataset_shows_an_estimate_until_it_is_counted() {
         while !done(app) {
             assert!(std::time::Instant::now() < deadline, "never got there");
             if let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
-                let mut next = app.event(&event);
+                let mut next = app.event(event);
                 while let Some(event) = next {
-                    next = app.event(&event);
+                    next = app.event(event);
                 }
             }
         }
@@ -610,7 +517,7 @@ fn a_sampled_dataset_shows_an_estimate_until_it_is_counted() {
     });
     assert_eq!(total(&app), Some(Total::Estimated(120)));
     assert!(
-        app.len_count_inflight.is_none(),
+        app.counting.len_count_inflight.is_none(),
         "too many files to count unasked"
     );
 
@@ -630,7 +537,7 @@ fn a_sampled_dataset_shows_an_estimate_until_it_is_counted() {
     assert_eq!((line.counts[0].done, line.counts[0].total), (1, Some(3)));
     key(&mut app, KeyCode::Esc);
     go.send(()).unwrap();
-    pump(&mut app, &|app| app.len_count_inflight.is_none());
+    pump(&mut app, &|app| app.counting.len_count_inflight.is_none());
     assert_eq!(
         total(&app),
         Some(Total::Estimated(120)),
@@ -656,7 +563,7 @@ fn a_sampled_dataset_shows_an_estimate_until_it_is_counted() {
 /// so `#` counts the view there and the footer says so.
 #[test]
 fn row_numbers_over_a_sort_fall_back_to_the_view_in_a_store() {
-    use crate::widgets::datatable::{DataTableState, OpenFacts};
+    use crate::table::{DataTableState, OpenFacts};
     use polars::prelude::*;
 
     let frame = || df!("v" => [3i64, 1, 2]).unwrap().lazy();
@@ -706,7 +613,7 @@ fn row_numbers_over_a_sort_fall_back_to_the_view_in_a_store() {
 /// a key that collects — `Char('R')`, say.
 #[test]
 fn a_key_that_acts_while_busy_reads_nothing() {
-    use crate::widgets::datatable::DataTableState;
+    use crate::table::DataTableState;
     use crate::{App, OpenOptions};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use polars::prelude::*;
@@ -798,7 +705,7 @@ fn a_key_that_acts_while_busy_reads_nothing() {
         // acts by handing back `AppEvent::Reset`, and dropping it here would let
         // an admitted key that collects through the check.
         if let Some(next) = app.key(&key) {
-            let _ = app.handle(&next);
+            let _ = app.handle(next);
         }
         // A page waiting on the widths lands at the next draw, which must read
         // nothing either.
@@ -827,7 +734,7 @@ fn a_key_that_acts_while_busy_reads_nothing() {
 /// user has only just opened jumping to its end on its own.
 #[test]
 fn end_pressed_at_one_dataset_does_not_move_the_next() {
-    use crate::widgets::datatable::{DataTableState, FootersFound, RemoteFiles};
+    use crate::table::{DataTableState, FootersFound, RemoteFiles};
     use crate::{App, OpenOptions};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use polars::prelude::*;
@@ -837,14 +744,14 @@ fn end_pressed_at_one_dataset_does_not_move_the_next() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
+        let footer = crate::formats::schema_union::FileFooter {
             schema,
             row_group_rows: vec![100],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
         };
-        crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        crate::formats::schema_union::union_sampled(1, &[0], &[Some(footer)])
     };
     let staged = move || {
         let mut state = DataTableState::from_schema_and_lazyframe(
@@ -854,7 +761,7 @@ fn end_pressed_at_one_dataset_does_not_move_the_next() {
             None,
         )
         .unwrap()
-        .with_open(crate::widgets::datatable::OpenFacts {
+        .with_open(crate::table::OpenFacts {
             remote_source: true,
             remote_files: Some(RemoteFiles {
                 urls: Arc::new(vec!["one".to_string()]),
@@ -870,7 +777,7 @@ fn end_pressed_at_one_dataset_does_not_move_the_next() {
                     file_rows: vec![100],
                     files: vec!["one".to_string()],
                     row_groups: vec![vec![100]],
-                    remote: Some(crate::widgets::datatable::RemoteRead {
+                    remote: Some(crate::table::RemoteRead {
                         urls: vec!["one".to_string()],
                         scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
                         count: Arc::new(|_| Ok(vec![vec![100]])),
@@ -888,14 +795,14 @@ fn end_pressed_at_one_dataset_does_not_move_the_next() {
     app.install_for_tests(staged(), None, &OpenOptions::default(), None);
     let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
     assert!(
-        app.end_when_the_footers_land.is_some(),
+        app.counting.end_when_the_footers_land.is_some(),
         "the key is waiting on this dataset's footers"
     );
 
     // The user goes elsewhere before they land.
     app.install_for_tests(staged(), None, &OpenOptions::default(), None);
     assert!(
-        app.end_when_the_footers_land.is_none(),
+        app.counting.end_when_the_footers_land.is_none(),
         "and does not take the key with them"
     );
     assert_eq!(
@@ -915,7 +822,7 @@ fn end_pressed_at_one_dataset_does_not_move_the_next() {
 /// that is not running.
 #[test]
 fn a_staged_open_does_not_leave_a_count_running_that_never_ran() {
-    use crate::widgets::datatable::{DataTableState, FootersFound, RemoteFiles};
+    use crate::table::{DataTableState, FootersFound, RemoteFiles};
     use crate::{App, AppEvent, OpenOptions};
     use polars::prelude::*;
     use std::sync::Arc;
@@ -929,14 +836,14 @@ fn a_staged_open_does_not_leave_a_count_running_that_never_ran() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
+        let footer = crate::formats::schema_union::FileFooter {
             schema,
             row_group_rows: vec![100],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
         };
-        crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        crate::formats::schema_union::union_sampled(1, &[0], &[Some(footer)])
     };
 
     let mut state = DataTableState::from_schema_and_lazyframe(
@@ -946,7 +853,7 @@ fn a_staged_open_does_not_leave_a_count_running_that_never_ran() {
         None,
     )
     .unwrap()
-    .with_open(crate::widgets::datatable::OpenFacts {
+    .with_open(crate::table::OpenFacts {
         remote_source: true,
         remote_files: Some(RemoteFiles {
             urls: Arc::new(vec!["one".to_string()]),
@@ -962,7 +869,7 @@ fn a_staged_open_does_not_leave_a_count_running_that_never_ran() {
                 file_rows: vec![100],
                 files: vec!["one".to_string()],
                 row_groups: vec![vec![100]],
-                remote: Some(crate::widgets::datatable::RemoteRead {
+                remote: Some(crate::table::RemoteRead {
                     urls: vec!["one".to_string()],
                     scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(wide())),
                     count: Arc::new(|_| Ok(vec![vec![100]])),
@@ -989,8 +896,8 @@ fn a_staged_open_does_not_leave_a_count_running_that_never_ran() {
         let event = rx
             .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
             .expect("the pass reports back");
-        let is_the_pass = matches!(event, AppEvent::BackgroundFootersJoined { .. });
-        let _ = app.handle(&event);
+        let is_the_pass = matches!(event, AppEvent::JobEnded(ticket) if ticket.kind() == crate::JobKind::FootersJoin);
+        let _ = app.handle(event);
         if is_the_pass {
             break;
         }
@@ -1002,7 +909,7 @@ fn a_staged_open_does_not_leave_a_count_running_that_never_ran() {
         "the pass brought the count with it"
     );
     assert!(
-        app.len_count_inflight.is_none(),
+        app.counting.len_count_inflight.is_none(),
         "so nothing is still counting, and the row count is a number rather than a \
          spinner for the rest of the session"
     );
@@ -1012,7 +919,7 @@ fn a_staged_open_does_not_leave_a_count_running_that_never_ran() {
 /// the frame scans: here a compressed CSV's decompressed copy (#511).
 #[test]
 fn a_failed_read_names_the_file_opened_not_its_temp_copy() {
-    use crate::widgets::datatable::DataTableState;
+    use crate::table::DataTableState;
     use crate::{App, OpenOptions};
     use std::io::Write;
     use std::path::PathBuf;
@@ -1030,7 +937,10 @@ fn a_failed_read_names_the_file_opened_not_its_temp_copy() {
         temp_dir: Some(scratch.path().to_path_buf()),
         ..OpenOptions::default()
     };
-    let state = DataTableState::from_csv(&gz, &options).unwrap();
+    let read =
+        crate::formats::readers::csv::read_delimited(&gz, b',', &options, &Default::default())
+            .unwrap();
+    let state = DataTableState::from_read(read, &options).unwrap();
     let copy = state.temp_files()[0].to_path_buf();
     assert!(copy.starts_with(scratch.path()));
 
@@ -1053,7 +963,7 @@ fn a_failed_read_names_the_file_opened_not_its_temp_copy() {
 /// session, no windowed reads, and nothing on screen to say why.
 #[test]
 fn a_pass_that_cannot_read_the_footers_stops_the_dataset_waiting_for_it() {
-    use crate::widgets::datatable::DataTableState;
+    use crate::table::DataTableState;
     use crate::{App, AppEvent, OpenOptions};
     use polars::prelude::*;
     use std::sync::Arc;
@@ -1067,7 +977,7 @@ fn a_pass_that_cannot_read_the_footers_stops_the_dataset_waiting_for_it() {
     let state =
         DataTableState::from_schema_and_lazyframe(schema, frame(), &OpenOptions::default(), None)
             .unwrap()
-            .with_open(crate::widgets::datatable::OpenFacts {
+            .with_open(crate::table::OpenFacts {
                 // The network was there for the open's two footers and gone for the rest.
                 footers_pending: Some(Arc::new(|_progress| None)),
                 ..Default::default()
@@ -1078,10 +988,10 @@ fn a_pass_that_cannot_read_the_footers_stops_the_dataset_waiting_for_it() {
         .recv_timeout(std::time::Duration::from_secs(10))
         .expect("a pass that failed still says so");
     assert!(
-        matches!(reported, AppEvent::BackgroundFootersJoined { .. }),
+        matches!(reported, AppEvent::JobEnded(ticket) if ticket.kind() == crate::JobKind::FootersJoin),
         "and says it the same way a pass that succeeded does"
     );
-    let _ = app.handle(&reported);
+    let _ = app.handle(reported);
 
     assert!(
         app.data_table_state
@@ -1095,13 +1005,13 @@ fn a_pass_that_cannot_read_the_footers_stops_the_dataset_waiting_for_it() {
 
 /// A count not yet taken is not printed as the total.
 ///
-/// The control bar takes its number straight from the field, so the only thing
+/// The footer takes its number straight from the field, so the only thing
 /// between a user and `Rows: 70` on a prefix of six thousand files is the pending
 /// flag. The integration test beside this one has a dataset whose count is real and
 /// asserts it is shown; this is the direction that goes wrong.
 #[test]
 fn a_count_not_yet_taken_is_not_printed_as_the_total() {
-    use crate::widgets::datatable::DataTableState;
+    use crate::table::DataTableState;
     use crate::{App, OpenOptions};
     use polars::prelude::*;
     use ratatui::buffer::Buffer;
@@ -1115,7 +1025,7 @@ fn a_count_not_yet_taken_is_not_printed_as_the_total() {
     let mut state =
         DataTableState::from_schema_and_lazyframe(schema, rows(), &OpenOptions::default(), None)
             .unwrap()
-            .with_open(crate::widgets::datatable::OpenFacts {
+            .with_open(crate::table::OpenFacts {
                 footers_pending: Some(Arc::new(|_| None)),
                 ..Default::default()
             });
@@ -1158,7 +1068,7 @@ fn a_count_not_yet_taken_is_not_printed_as_the_total() {
 /// it: a table with no rows in it until the next keypress.
 #[test]
 fn a_pass_that_brings_no_count_still_leaves_rows_on_screen() {
-    use crate::widgets::datatable::{DataTableState, FootersFound, RemoteFiles};
+    use crate::table::{DataTableState, FootersFound, RemoteFiles};
     use crate::{App, AppEvent, OpenOptions};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use polars::prelude::*;
@@ -1173,14 +1083,14 @@ fn a_pass_that_brings_no_count_still_leaves_rows_on_screen() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
+        let footer = crate::formats::schema_union::FileFooter {
             schema,
             row_group_rows: vec![100],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
         };
-        crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        crate::formats::schema_union::union_sampled(1, &[0], &[Some(footer)])
     };
 
     let mut state = DataTableState::from_schema_and_lazyframe(
@@ -1190,7 +1100,7 @@ fn a_pass_that_brings_no_count_still_leaves_rows_on_screen() {
         None,
     )
     .unwrap()
-    .with_open(crate::widgets::datatable::OpenFacts {
+    .with_open(crate::table::OpenFacts {
         remote_source: true,
         remote_files: Some(RemoteFiles {
             urls: Arc::new(vec!["one".to_string()]),
@@ -1229,11 +1139,12 @@ fn a_pass_that_brings_no_count_still_leaves_rows_on_screen() {
         let event = rx
             .recv_timeout(std::time::Duration::from_secs(10))
             .expect("the pass reports back");
-        if matches!(event, AppEvent::BackgroundFootersJoined { .. }) {
+        if matches!(event, AppEvent::JobEnded(ticket) if ticket.kind() == crate::JobKind::FootersJoin)
+        {
             break event;
         }
     };
-    let _ = app.handle(&reported);
+    let _ = app.handle(reported);
 
     assert!(
         app.rows_in_flight().is_some(),
@@ -1251,7 +1162,7 @@ fn a_pass_that_brings_no_count_still_leaves_rows_on_screen() {
 /// the rows to find the end" about something the user never asked for.
 #[test]
 fn end_on_a_sorted_dataset_still_reading_its_footers_waits_for_the_pass() {
-    use crate::widgets::datatable::{DataTableState, RemoteFiles};
+    use crate::table::{DataTableState, RemoteFiles};
     use crate::{App, OpenOptions};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use polars::prelude::*;
@@ -1263,7 +1174,7 @@ fn end_on_a_sorted_dataset_still_reading_its_footers_waits_for_the_pass() {
     let mut state =
         DataTableState::from_schema_and_lazyframe(schema, rows(), &OpenOptions::default(), None)
             .unwrap()
-            .with_open(crate::widgets::datatable::OpenFacts {
+            .with_open(crate::table::OpenFacts {
                 remote_source: true,
                 remote_files: Some(RemoteFiles {
                     urls: Arc::new(vec!["one".to_string()]),
@@ -1291,12 +1202,12 @@ fn end_on_a_sorted_dataset_still_reading_its_footers_waits_for_the_pass() {
 
     let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
     assert_eq!(
-        app.end_when_the_footers_land,
+        app.counting.end_when_the_footers_land,
         Some(app.dataset_generation),
         "so End waits for the pass rather than starting a count the join will orphan"
     );
     assert!(
-        app.end_after_count.is_none(),
+        app.counting.end_after_count.is_none(),
         "and nothing is left waiting on a count that will never be matched"
     );
 }
@@ -1316,7 +1227,7 @@ fn end_on_a_sorted_dataset_still_reading_its_footers_waits_for_the_pass() {
 /// not count the rows to find the end" about a key pressed on a different frame.
 #[test]
 fn a_count_the_join_orphaned_does_not_strand_end_or_speak_for_a_later_one() {
-    use crate::widgets::datatable::{DataTableState, FootersFound, RemoteFiles};
+    use crate::table::{DataTableState, FootersFound, RemoteFiles};
     use crate::{App, AppEvent, OpenOptions};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use polars::prelude::*;
@@ -1331,21 +1242,21 @@ fn a_count_the_join_orphaned_does_not_strand_end_or_speak_for_a_later_one() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
+        let footer = crate::formats::schema_union::FileFooter {
             schema,
             row_group_rows: vec![100],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
         };
-        crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        crate::formats::schema_union::union_sampled(1, &[0], &[Some(footer)])
     };
     let mut lf = rows();
     let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
     let mut state =
         DataTableState::from_schema_and_lazyframe(schema, rows(), &OpenOptions::default(), None)
             .unwrap()
-            .with_open(crate::widgets::datatable::OpenFacts {
+            .with_open(crate::table::OpenFacts {
                 remote_source: true,
                 remote_files: Some(RemoteFiles {
                     urls: Arc::new(vec!["one".to_string()]),
@@ -1361,7 +1272,7 @@ fn a_count_the_join_orphaned_does_not_strand_end_or_speak_for_a_later_one() {
                         file_rows: vec![100],
                         files: vec!["one".to_string()],
                         row_groups: vec![vec![100]],
-                        remote: Some(crate::widgets::datatable::RemoteRead {
+                        remote: Some(crate::table::RemoteRead {
                             urls: vec!["one".to_string()],
                             scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(wide())),
                             count: Arc::new(|_| Ok(vec![vec![100]])),
@@ -1384,7 +1295,7 @@ fn a_count_the_join_orphaned_does_not_strand_end_or_speak_for_a_later_one() {
     // End, which takes that count rather than waiting for the pass.
     let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
     assert_eq!(
-        app.end_after_count,
+        app.counting.end_after_count,
         Some(orphaned),
         "the jump is waiting on the query's own count"
     );
@@ -1395,18 +1306,17 @@ fn a_count_the_join_orphaned_does_not_strand_end_or_speak_for_a_later_one() {
         .data_table_state
         .as_ref()
         .and_then(|state| state.footers_pending())
-        .and_then(|pass| pass(&app.footer_progress));
-    App::record_footers(&app.pending_footers_result, live, found);
-    let _ = app.handle(&AppEvent::BackgroundFootersJoined { generation: live });
+        .and_then(|pass| pass(&app.counting.footer_progress));
+    let _ = app.footers_joined(live, found);
     assert!(
-        app.footers_held.is_some(),
+        app.counting.footers_held.is_some(),
         "held rather than joined, because a query is the root"
     );
 
     // The user leaves the query, and the join goes in underneath the count.
     let state = app.data_table_state.as_mut().unwrap();
     state.deferred(|s| s.query(String::new()));
-    let _ = app.handle(&AppEvent::Update);
+    let _ = app.handle(AppEvent::Update);
     let joined = app.data_table_state.as_ref().unwrap().len_generation();
     assert_ne!(
         joined, orphaned,
@@ -1415,13 +1325,13 @@ fn a_count_the_join_orphaned_does_not_strand_end_or_speak_for_a_later_one() {
 
     // And the count comes back, answering a frame that is gone.
     let before = app.data_table_state.as_ref().unwrap().start_row();
-    let next = app.event(&AppEvent::BackgroundLenReady {
+    let next = app.event(AppEvent::BackgroundLenReady {
         len_generation: orphaned,
         num_rows: 100,
         file_row_groups: None,
     });
     assert_eq!(
-        app.end_after_count, None,
+        app.counting.end_after_count, None,
         "the jump is not left waiting on a generation nothing will ever match"
     );
     assert_ne!(
@@ -1433,7 +1343,7 @@ fn a_count_the_join_orphaned_does_not_strand_end_or_speak_for_a_later_one() {
     // Retired, not re-issued: nothing jumps on the strength of the stale answer.
     let mut follow = next;
     while let Some(event) = follow {
-        follow = app.event(&event);
+        follow = app.event(event);
     }
     assert_eq!(
         app.data_table_state.as_ref().unwrap().start_row(),
@@ -1454,7 +1364,7 @@ fn a_count_the_join_orphaned_does_not_strand_end_or_speak_for_a_later_one() {
 /// waiting on was still running and about to succeed.
 #[test]
 fn a_count_that_failed_for_another_frame_does_not_answer_for_this_end() {
-    use crate::widgets::datatable::{DataTableState, RemoteFiles};
+    use crate::table::{DataTableState, RemoteFiles};
     use crate::{App, AppEvent, OpenOptions};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use polars::prelude::*;
@@ -1466,7 +1376,7 @@ fn a_count_that_failed_for_another_frame_does_not_answer_for_this_end() {
     let mut state =
         DataTableState::from_schema_and_lazyframe(schema, rows(), &OpenOptions::default(), None)
             .unwrap()
-            .with_open(crate::widgets::datatable::OpenFacts {
+            .with_open(crate::table::OpenFacts {
                 remote_source: true,
                 remote_files: Some(RemoteFiles {
                     urls: Arc::new(vec!["one".to_string()]),
@@ -1486,19 +1396,19 @@ fn a_count_that_failed_for_another_frame_does_not_answer_for_this_end() {
     let live = app.data_table_state.as_ref().unwrap().len_generation();
     let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
     assert_eq!(
-        app.end_after_count,
+        app.counting.end_after_count,
         Some(live),
         "the jump is waiting on this frame's count"
     );
     app.status_message = None;
 
     // And a count for some frame that is long gone fails.
-    let _ = app.handle(&AppEvent::BackgroundLenFailed {
+    let _ = app.handle(AppEvent::BackgroundLenFailed {
         len_generation: live.wrapping_sub(1),
     });
 
     assert_eq!(
-        app.end_after_count,
+        app.counting.end_after_count,
         Some(live),
         "the End is still waiting on its own count, which has not failed"
     );
@@ -1513,7 +1423,7 @@ fn a_count_that_failed_for_another_frame_does_not_answer_for_this_end() {
 ///
 /// The receiver comes back with it so a test can read what the App sent.
 fn uncounted_remote_app() -> (crate::App, std::sync::mpsc::Receiver<crate::AppEvent>) {
-    use crate::widgets::datatable::{DataTableState, RemoteFiles};
+    use crate::table::{DataTableState, RemoteFiles};
     use crate::{App, OpenOptions};
     use polars::prelude::*;
     use std::sync::Arc;
@@ -1524,7 +1434,7 @@ fn uncounted_remote_app() -> (crate::App, std::sync::mpsc::Receiver<crate::AppEv
     let mut state =
         DataTableState::from_schema_and_lazyframe(schema, frame(), &OpenOptions::default(), None)
             .unwrap()
-            .with_open(crate::widgets::datatable::OpenFacts {
+            .with_open(crate::table::OpenFacts {
                 remote_source: true,
                 remote_files: Some(RemoteFiles {
                     urls: Arc::new(vec!["one".to_string()]),
@@ -1546,8 +1456,8 @@ fn uncounted_remote_app() -> (crate::App, std::sync::mpsc::Receiver<crate::AppEv
     (app, rx)
 }
 
-/// The bottom line of a rendered App — the control bar, as a string.
-fn control_bar(app: &mut crate::App) -> String {
+/// The bottom line of a rendered App — the footer, as a string.
+fn footer_text(app: &mut crate::App) -> String {
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use ratatui::widgets::Widget;
@@ -1575,15 +1485,15 @@ fn the_bar_says_question_mark_when_the_count_failed() {
     let live = app.data_table_state.as_ref().unwrap().len_generation();
 
     assert!(
-        !control_bar(&mut app).contains("/ ?"),
+        !footer_text(&mut app).contains("/ ?"),
         "nothing has failed yet"
     );
 
-    let _ = app.handle(&AppEvent::BackgroundLenFailed {
+    let _ = app.handle(AppEvent::BackgroundLenFailed {
         len_generation: live,
     });
 
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(
         bar.contains("/ ?"),
         "the count failed, so the total is unknown: {bar:?}"
@@ -1606,20 +1516,20 @@ fn a_dead_frames_failed_count_leaves_this_frames_question_mark_alone() {
     let (mut app, _rx) = uncounted_remote_app();
     let live = app.data_table_state.as_ref().unwrap().len_generation();
 
-    let _ = app.handle(&AppEvent::BackgroundLenFailed {
+    let _ = app.handle(AppEvent::BackgroundLenFailed {
         len_generation: live,
     });
     assert!(
-        control_bar(&mut app).contains("/ ?"),
+        footer_text(&mut app).contains("/ ?"),
         "this frame's count failed"
     );
 
     // And now a count orphaned by an earlier frame change fails too.
-    let _ = app.handle(&AppEvent::BackgroundLenFailed {
+    let _ = app.handle(AppEvent::BackgroundLenFailed {
         len_generation: live.wrapping_sub(1),
     });
 
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(
         bar.contains("/ ?"),
         "a stranger's failure says nothing about this frame: {bar:?}"
@@ -1628,8 +1538,12 @@ fn a_dead_frames_failed_count_leaves_this_frames_question_mark_alone() {
 
 /// A look, set up as `ClassifyThenOpen` leaves it.
 #[cfg(test)]
-fn a_look_is_out(app: &mut crate::App, path: &std::path::Path, jump: bool) -> crate::jobs::Started {
-    let look = crate::Job::Classify(crate::jobs::Classify {
+fn a_look_is_out(
+    app: &mut crate::App,
+    path: &std::path::Path,
+    jump: bool,
+) -> crate::app::jobs::Started {
+    let look = crate::Job::Classify(crate::app::jobs::Classify {
         path: path.to_path_buf(),
         browsing: app.home.browsing.clone(),
         jump,
@@ -1653,12 +1567,12 @@ fn a_look_waits(app: &crate::App) -> Option<std::path::PathBuf> {
 #[cfg(test)]
 fn the_look_answers(
     app: &mut crate::App,
-    look: crate::jobs::Started,
-    found: Option<crate::discover::EntryKind>,
+    look: crate::app::jobs::Started,
+    found: Option<crate::home::discover::EntryKind>,
 ) -> Option<crate::AppEvent> {
     let ticket = look.ticket();
     look.end(crate::Outcome::answered(crate::Answer::Kind(found)));
-    app.event(&crate::AppEvent::JobEnded(ticket))
+    app.event(crate::AppEvent::JobEnded(ticket))
 }
 
 /// An answer nobody is waiting for is dropped — and the busy state it was holding
@@ -1705,7 +1619,11 @@ fn a_classify_answer_nobody_is_waiting_for_leaves_the_right_busy_behind() {
         moved_on(&mut app);
         let moved_to = app.home.browsing.clone();
 
-        let follow = the_look_answers(&mut app, look, Some(crate::discover::EntryKind::MultiFile));
+        let follow = the_look_answers(
+            &mut app,
+            look,
+            Some(crate::home::discover::EntryKind::MultiFile),
+        );
 
         assert!(follow.is_none(), "nothing was opened when {what}");
         assert_eq!(
@@ -1743,7 +1661,7 @@ fn a_newer_look_replaces_an_older_one() {
 
     // A second Enter, at a row the user moved to while the first was out.
     let second = std::path::PathBuf::from("/mnt/share/bbb");
-    let _ = app.event(&AppEvent::ClassifyThenOpen {
+    let _ = app.event(AppEvent::ClassifyThenOpen {
         path: second.clone(),
         jump: false,
     });
@@ -1754,7 +1672,11 @@ fn a_newer_look_replaces_an_older_one() {
     );
 
     // And the older answer arrives.
-    let follow = the_look_answers(&mut app, look, Some(crate::discover::EntryKind::MultiFile));
+    let follow = the_look_answers(
+        &mut app,
+        look,
+        Some(crate::home::discover::EntryKind::MultiFile),
+    );
 
     assert!(follow.is_none(), "the stale answer opened nothing");
     assert_eq!(
@@ -1835,11 +1757,11 @@ fn a_parked_end_does_not_put_its_message_on_the_home_screen() {
     let (mut app, _rx) = uncounted_remote_app();
     let waiting = app.data_table_state.as_ref().unwrap().len_generation();
     let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
-    assert!(control_bar(&mut app).contains("Counting rows"), "parked");
+    assert!(footer_text(&mut app).contains("Counting rows"), "parked");
 
     app.enter_home();
 
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(
         !bar.contains("Counting rows"),
         "the home bar is the home screen's: {bar:?}"
@@ -1852,10 +1774,10 @@ fn a_parked_end_does_not_put_its_message_on_the_home_screen() {
     // And the count it was waiting on then fails, with the user somewhere else.
     // (Both halves of the fix are exercised: `abandon_load` clears the message on
     // the way out, and the gate below keeps it off a view that is not the table.)
-    let _ = app.handle(&AppEvent::BackgroundLenFailed {
+    let _ = app.handle(AppEvent::BackgroundLenFailed {
         len_generation: waiting,
     });
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(
         !bar.contains("Could not count the rows"),
         "an error about a dataset they have left is not the home screen's news: \
@@ -1872,14 +1794,14 @@ fn a_parked_end_does_not_put_its_message_on_the_home_screen() {
 /// of those two ever changed.
 #[test]
 fn a_parked_end_does_not_put_its_message_on_the_next_dataset() {
-    use crate::{OpenOptions, widgets::datatable::DataTableState};
+    use crate::{OpenOptions, table::DataTableState};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use polars::prelude::*;
     use std::sync::Arc;
 
     let (mut app, _rx) = uncounted_remote_app();
     let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
-    assert!(control_bar(&mut app).contains("Counting rows"), "parked");
+    assert!(footer_text(&mut app).contains("Counting rows"), "parked");
 
     app.enter_home();
 
@@ -1893,7 +1815,7 @@ fn a_parked_end_does_not_put_its_message_on_the_next_dataset() {
     app.install_for_tests(next, None, &OpenOptions::default(), None);
     app.busy = false;
 
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(
         !bar.contains("Counting rows"),
         "the new dataset's bar is not the old one's: {bar:?}"
@@ -1913,12 +1835,11 @@ fn a_parked_end_does_not_put_its_message_on_the_chart_view() {
 
     let (mut app, _rx) = uncounted_remote_app();
     let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
-    assert!(control_bar(&mut app).contains("Counting rows"), "parked");
+    assert!(footer_text(&mut app).contains("Counting rows"), "parked");
 
-    app.input_mode = crate::InputMode::Chart;
-    app.chart_modal.active = true;
+    app.overlay = crate::Overlay::Chart;
 
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(
         app.status_message.is_some(),
         "the End is still waiting, and the field still says so"
@@ -1943,7 +1864,7 @@ fn a_failed_count_for_a_frame_that_is_gone_retires_its_end_quietly() {
     let (mut app, _rx) = uncounted_remote_app();
     let waiting = app.data_table_state.as_ref().unwrap().len_generation();
     let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
-    assert_eq!(app.end_after_count, Some(waiting));
+    assert_eq!(app.counting.end_after_count, Some(waiting));
     assert_eq!(
         app.status_message.as_deref(),
         Some(crate::App::COUNTING_FOR_END),
@@ -1959,15 +1880,15 @@ fn a_failed_count_for_a_frame_that_is_gone_retires_its_end_quietly() {
         "the frame the count belongs to is gone"
     );
 
-    let _ = app.handle(&AppEvent::BackgroundLenFailed {
+    let _ = app.handle(AppEvent::BackgroundLenFailed {
         len_generation: waiting,
     });
 
     assert_eq!(
-        app.end_after_count, None,
+        app.counting.end_after_count, None,
         "the End it belonged to is retired"
     );
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(
         !bar.contains("Counting rows"),
         "the status it put up comes down: {bar:?}"
@@ -1998,16 +1919,16 @@ fn the_bar_says_it_is_counting_for_an_end_and_says_when_that_failed() {
         !app.is_busy(),
         "the jump parked rather than blocking the keyboard"
     );
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(
         bar.contains("Counting rows"),
         "and the line says why the view has not moved: {bar:?}"
     );
 
-    let _ = app.handle(&AppEvent::BackgroundLenFailed {
+    let _ = app.handle(AppEvent::BackgroundLenFailed {
         len_generation: waiting,
     });
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(
         bar.contains("Could not count the rows"),
         "and says so when the count it was waiting on fails: {bar:?}"
@@ -2025,7 +1946,7 @@ fn the_bar_says_it_is_counting_for_an_end_and_says_when_that_failed() {
 /// when that count lands.
 #[test]
 fn an_end_pressed_on_the_dataset_they_left_does_not_move_the_next_one() {
-    use crate::widgets::datatable::{DataTableState, RemoteFiles};
+    use crate::table::{DataTableState, RemoteFiles};
     use crate::{App, AppEvent, OpenOptions};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use polars::prelude::*;
@@ -2042,7 +1963,7 @@ fn an_end_pressed_on_the_dataset_they_left_does_not_move_the_next_one() {
             None,
         )
         .unwrap()
-        .with_open(crate::widgets::datatable::OpenFacts {
+        .with_open(crate::table::OpenFacts {
             remote_source: true,
             remote_files: Some(RemoteFiles {
                 urls: Arc::new(vec!["one".to_string()]),
@@ -2064,7 +1985,7 @@ fn an_end_pressed_on_the_dataset_they_left_does_not_move_the_next_one() {
     // End on the first directory, before its count lands.
     let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
     assert_eq!(
-        app.end_after_count,
+        app.counting.end_after_count,
         Some(theirs),
         "the jump is waiting on that directory's count"
     );
@@ -2072,34 +1993,34 @@ fn an_end_pressed_on_the_dataset_they_left_does_not_move_the_next_one() {
     // And they open another one instead.
     app.install_for_tests(remote_state(500), None, &OpenOptions::default(), None);
     assert_eq!(
-        app.end_after_count, None,
+        app.counting.end_after_count, None,
         "the key they pressed in the directory they left does not come with them"
     );
 
     // The first directory's count finally arrives.
-    let mut follow = app.event(&AppEvent::BackgroundLenReady {
+    let mut follow = app.event(AppEvent::BackgroundLenReady {
         len_generation: theirs,
         num_rows: 100,
         file_row_groups: None,
     });
     while let Some(event) = follow {
-        follow = app.event(&event);
+        follow = app.event(event);
     }
     let next = app.data_table_state.as_ref().unwrap().len_generation();
     assert_ne!(
-        app.end_after_count,
+        app.counting.end_after_count,
         Some(next),
         "and the directory on screen has not inherited it"
     );
 
     // Even once its own count lands, as it would.
-    let mut follow = app.event(&AppEvent::BackgroundLenReady {
+    let mut follow = app.event(AppEvent::BackgroundLenReady {
         len_generation: next,
         num_rows: 500,
         file_row_groups: None,
     });
     while let Some(event) = follow {
-        follow = app.event(&event);
+        follow = app.event(event);
     }
     assert_eq!(
         app.data_table_state.as_ref().unwrap().start_row(),
@@ -2147,7 +2068,7 @@ fn a_job_holds_the_generation_until_its_answer_is_handled() {
         app.work_a_bump_would_strand(),
         "an answer not yet handled still holds it"
     );
-    let _ = app.handle(&ended);
+    let _ = app.handle(ended);
     assert!(
         !app.work_a_bump_would_strand(),
         "and handling it lets go, with nothing left to arrive"
@@ -2170,10 +2091,10 @@ fn a_job_puts_down_the_keys_and_the_line_it_held() {
 
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
-    let end = |app: &mut App, job: crate::jobs::Started, outcome: Outcome| {
+    let end = |app: &mut App, job: crate::app::jobs::Started, outcome: Outcome| {
         let ticket = job.ticket();
         job.end(outcome);
-        app.event(&AppEvent::JobEnded(ticket))
+        app.event(AppEvent::JobEnded(ticket))
     };
     let written = || Answer::QualityReportWritten(std::path::PathBuf::from("r.json"));
 
@@ -2240,7 +2161,7 @@ fn a_job_leaves_the_line_another_job_still_shows() {
     first.end(Outcome::answered(Answer::QualityReportWritten(
         std::path::PathBuf::from("a.json"),
     )));
-    app.event(&AppEvent::JobEnded(ticket));
+    app.event(AppEvent::JobEnded(ticket));
     assert!(app.is_busy(), "the second still holds the keys");
     assert_eq!(
         app.status_message.as_deref(),
@@ -2292,11 +2213,11 @@ fn a_cancelled_read_waits_out_its_worker_and_a_replaced_one_does_not() {
         "the cancelled read is still going"
     );
     drop(sample);
-    app.event(&recv(&rx));
+    app.event(recv(&rx));
     assert!(app.cancelled_analysis_running().is_none(), "until it ends");
 
     let run = app.job_for_tests(
-        Job::Analysis(crate::jobs::AnalysisRun::default()),
+        Job::Analysis(crate::app::jobs::AnalysisRun::default()),
         Some("Running analysis..."),
     );
     app.jobs.advance();
@@ -2305,7 +2226,7 @@ fn a_cancelled_read_waits_out_its_worker_and_a_replaced_one_does_not() {
         "replaced, not cancelled"
     );
     drop(run);
-    let _ = app.handle(&recv(&rx));
+    let _ = app.handle(recv(&rx));
     assert!(!matches!(rx.try_recv(), Ok(AppEvent::JobEnded(_))));
 }
 
@@ -2336,7 +2257,7 @@ fn a_superseded_scan_does_not_continue_the_load() {
     assert_ne!(first, second);
     let ticket = scan.ticket();
     scan.end(Outcome::answered(scanned()));
-    assert!(app.event(&AppEvent::JobEnded(ticket)).is_none());
+    assert!(app.event(AppEvent::JobEnded(ticket)).is_none());
     assert!(
         app.jobs
             .current(|job| matches!(job, Job::Load(_)))
@@ -2354,7 +2275,7 @@ fn a_superseded_scan_does_not_continue_the_load() {
     );
 
     // Nor does the first's dataset install, read after all.
-    let state = crate::widgets::datatable::DataTableState::from_lazyframe(
+    let state = crate::table::DataTableState::from_lazyframe(
         polars::df!("a" => [1i32]).unwrap().lazy(),
         &OpenOptions::default(),
     )
@@ -2390,8 +2311,8 @@ fn a_superseded_scan_does_not_continue_the_load() {
 /// screen, whatever the tool: every one of them is judged by its job.
 #[test]
 fn stale_analysis_answers_are_ignored() {
-    use crate::data_quality::{DataQualityResults, QualityPrecision};
-    use crate::statistics::AnalysisResults;
+    use crate::analysis::data_quality::{DataQualityResults, QualityPrecision};
+    use crate::analysis::statistics::AnalysisResults;
     use crate::{Answer, App, AppEvent, Job, Outcome};
 
     let (tx, _rx) = std::sync::mpsc::channel();
@@ -2401,20 +2322,21 @@ fn stale_analysis_answers_are_ignored() {
         total_rows: 999_999,
         sample_size: None,
         per_value: None,
-        sample_seed: 0,
         correlation_matrix: None,
         distribution_analyses: vec![],
     };
     let answers = vec![
-        Answer::Described(results()),
-        Answer::Distributions(results()),
-        Answer::Correlations(results()),
+        Answer::Analysis(|modal, r| modal.describe_results = Some(r), results()),
+        Answer::Analysis(|modal, r| modal.distribution_results = Some(r), results()),
+        Answer::Analysis(
+            crate::analysis::analysis_modal::AnalysisModal::install_correlations,
+            results(),
+        ),
         Answer::DataQuality {
             results: Box::new(DataQualityResults {
                 total_rows: Some(999_999),
                 evaluated_rows: 1,
                 precision: QualityPrecision::Sampled,
-                sample_seed: 1,
                 columns: vec![],
                 observations: vec![],
                 segments: vec![],
@@ -2430,18 +2352,20 @@ fn stale_analysis_answers_are_ignored() {
                 unsampled_segments: vec![],
                 intent: None,
                 source: None,
+                derived: Default::default(),
             }),
             kept: None,
             plan: Box::default(),
         },
     ];
-    app.analysis_modal.active = true;
-    app.analysis_modal.selected_tool = Some(crate::analysis_modal::AnalysisTool::DataQuality);
+    app.overlay = crate::Overlay::Analysis;
+    app.analysis_modal.selected_tool =
+        Some(crate::analysis::analysis_modal::AnalysisTool::DataQuality);
     let runs: Vec<_> = answers
         .iter()
         .map(|_| {
             app.job_for_tests(
-                Job::Analysis(crate::jobs::AnalysisRun::default()),
+                Job::Analysis(crate::app::jobs::AnalysisRun::default()),
                 Some("Running analysis..."),
             )
         })
@@ -2450,13 +2374,13 @@ fn stale_analysis_answers_are_ignored() {
     for (run, answer) in runs.into_iter().zip(answers) {
         let ticket = run.ticket();
         run.end(Outcome::answered(answer));
-        app.event(&AppEvent::JobEnded(ticket));
+        app.event(AppEvent::JobEnded(ticket));
     }
     let modal = &app.analysis_modal;
     assert!(modal.describe_results.is_none());
     assert!(modal.distribution_results.is_none());
     assert!(modal.correlation_results.is_none());
-    assert!(modal.data_quality_results.is_none());
+    assert!(modal.quality.results.is_none());
 }
 
 /// Work a cancel passed holds nothing up. Polars cannot stop the query, so the
@@ -2470,7 +2394,7 @@ fn a_cancelled_job_does_not_hold_the_generation() {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
     let old = app.job_for_tests(
-        Job::Analysis(crate::jobs::AnalysisRun::default()),
+        Job::Analysis(crate::app::jobs::AnalysisRun::default()),
         Some("Running analysis..."),
     );
     app.jobs.advance();
@@ -2481,13 +2405,13 @@ fn a_cancelled_job_does_not_hold_the_generation() {
     assert!(app.cancelled_work_running(), "though it is still running");
 
     let current = app.job_for_tests(
-        Job::Analysis(crate::jobs::AnalysisRun::default()),
+        Job::Analysis(crate::app::jobs::AnalysisRun::default()),
         Some("Running analysis..."),
     );
     assert!(app.work_a_bump_would_strand());
 
     drop(old);
-    let _ = app.handle(&recv(&rx));
+    let _ = app.handle(recv(&rx));
     assert!(
         app.work_a_bump_would_strand(),
         "the current job still holds"
@@ -2496,7 +2420,7 @@ fn a_cancelled_job_does_not_hold_the_generation() {
     drop(current);
     let ended = recv(&rx);
     assert!(matches!(ended, AppEvent::JobEnded(_)));
-    let _ = app.handle(&ended);
+    let _ = app.handle(ended);
     assert!(!app.work_a_bump_would_strand());
 }
 
@@ -2515,7 +2439,7 @@ fn a_panicking_worker_ends_its_job() {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
     let generation = app.task_generation();
-    app.input_mode = crate::InputMode::PivotMelt;
+    app.overlay = crate::Overlay::PivotMelt;
     let ticket = app.spawn_job(
         Job::Pivot,
         Some(App::COMPUTING_PIVOT),
@@ -2530,7 +2454,7 @@ fn a_panicking_worker_ends_its_job() {
         matches!(&failed, AppEvent::JobEnded(t) if *t == ticket && t.kind() == JobKind::Pivot),
         "the panic ends the job it stopped"
     );
-    let _ = app.handle(&failed);
+    let _ = app.handle(failed);
     assert!(!app.is_busy(), "the spinner comes down");
     assert!(app.status_message.is_none());
     assert!(app.error_modal.active, "and the user is told");
@@ -2588,7 +2512,7 @@ fn an_error_and_a_panic_end_a_job_the_same_way() {
             "a job that {what}: {}",
             describe(&ended)
         );
-        let _ = app.handle(&ended);
+        let _ = app.handle(ended);
         assert!(
             rx.recv_timeout(std::time::Duration::from_millis(50))
                 .is_err(),
@@ -2613,9 +2537,8 @@ fn an_error_and_a_panic_end_a_job_the_same_way() {
 /// flight alone: its spinner, its record, and the screen with no error on it.
 #[test]
 fn a_failure_leaves_other_work_alone() {
-    use crate::{
-        AnalysisProgress, App, AppEvent, ChartExportFormat, InflightCollect, Job, Outcome,
-    };
+    use crate::chart::chart_export::ChartExportFormat;
+    use crate::{AnalysisProgress, App, AppEvent, InflightCollect, Job, Outcome};
     use std::path::PathBuf;
 
     // An open replaced long since.
@@ -2623,13 +2546,13 @@ fn a_failure_leaves_other_work_alone() {
 
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
-    let fail = |app: &mut App, job: crate::jobs::Started| {
+    let fail = |app: &mut App, job: crate::app::jobs::Started| {
         let ticket = job.ticket();
         job.end(Outcome::Failed {
             message: "not this one".to_string(),
             panicked: false,
         });
-        app.event(&AppEvent::JobEnded(ticket));
+        app.event(AppEvent::JobEnded(ticket));
     };
     let untouched = |app: &App, what: &str| {
         assert!(app.is_busy(), "{what}: still busy");
@@ -2641,7 +2564,7 @@ fn a_failure_leaves_other_work_alone() {
             "{what}: the analysis is still waited on"
         );
     };
-    let analysis = || Job::Analysis(crate::jobs::AnalysisRun::default());
+    let analysis = || Job::Analysis(crate::app::jobs::AnalysisRun::default());
 
     // Jobs on a generation the analysis's has passed.
     let kinds = [
@@ -2684,7 +2607,7 @@ fn a_failure_leaves_other_work_alone() {
 
     // An older look at a path, which a newer one superseded.
     let look = |path: &str| {
-        Job::Classify(crate::jobs::Classify {
+        Job::Classify(crate::app::jobs::Classify {
             path: PathBuf::from(path),
             browsing: None,
             jump: false,
@@ -2721,7 +2644,7 @@ fn a_failure_leaves_other_work_alone() {
         .supersede(|job| matches!(job, Job::ChartExport { .. }));
     fail(&mut app, older);
     untouched(&app, "an older chart export");
-    assert!(!app.chart_export_modal.active);
+    assert_ne!(app.overlay, crate::Overlay::ChartExport);
 
     // An open is no longer waited on once the user has gone home from it.
     let load = app.open_for_tests("gone.csv");
@@ -2751,42 +2674,33 @@ fn a_count_answers_however_its_worker_ends() {
     let state = DataTableState::from_lazyframe(lf, &OpenOptions::default()).unwrap();
     let generation = state.len_generation();
     let owed = || OwedCount::new(LenCount::for_state(&state), tx.clone());
-    let answer = |app: &mut App| {
-        app.len_count_inflight = Some(generation);
+    let answer = |app: &mut App, said: fn(&AppEvent) -> bool| {
+        app.counting.len_count_inflight = Some(generation);
         let event = recv(&rx);
-        app.event(&event);
+        assert!(said(&event), "{}", describe(&event));
+        app.event(event);
         assert_eq!(
-            app.len_count_inflight, None,
+            app.counting.len_count_inflight, None,
             "the count is no longer waited on"
         );
         assert!(rx.try_recv().is_err(), "once");
-        event
     };
 
     owed().answer(|_| panic!("count died"));
-    let failed = answer(&mut app);
-    assert!(
-        matches!(failed, AppEvent::BackgroundLenFailed { .. }),
-        "{}",
-        describe(&failed)
-    );
+    answer(&mut app, |e| {
+        matches!(e, AppEvent::BackgroundLenFailed { .. })
+    });
 
     // The worker carrying it died first.
     drop(owed());
-    let failed = answer(&mut app);
-    assert!(
-        matches!(failed, AppEvent::BackgroundLenFailed { .. }),
-        "{}",
-        describe(&failed)
-    );
+    answer(&mut app, |e| {
+        matches!(e, AppEvent::BackgroundLenFailed { .. })
+    });
 
     owed().answer(LenCount::run);
-    let counted = answer(&mut app);
-    assert!(
-        matches!(counted, AppEvent::BackgroundLenReady { num_rows: 3, .. }),
-        "{}",
-        describe(&counted)
-    );
+    answer(&mut app, |e| {
+        matches!(e, AppEvent::BackgroundLenReady { num_rows: 3, .. })
+    });
 }
 
 /// An open's first phase holds the generation before the errands behind it get
@@ -2800,7 +2714,7 @@ fn a_count_answers_however_its_worker_ends() {
 /// and holds the generation itself.
 #[test]
 fn an_open_holds_the_generation_before_the_errands_behind_it() {
-    use crate::widgets::datatable::DataTableState;
+    use crate::table::DataTableState;
     use crate::{App, AppEvent, OpenOptions};
     use polars::prelude::*;
     use std::sync::Arc;
@@ -2829,7 +2743,7 @@ fn an_open_holds_the_generation_before_the_errands_behind_it() {
 
     // And the user opens something else.
     let out = app
-        .handle(&AppEvent::Open(vec![path], OpenOptions::default()))
+        .handle(AppEvent::Open(vec![path], OpenOptions::default()))
         .expect("the open is not a key");
     assert!(out.is_none(), "the open started its scan itself");
     assert!(
@@ -2981,11 +2895,11 @@ fn the_download_confirmation_is_not_busy() {
         OpenOptions::default(),
     ));
     while let Some(event) = next {
-        next = app.handle(&event).expect("no keys here");
+        next = app.handle(event).expect("no keys here");
     }
 
     assert!(app.is_busy(), "the probe is running");
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(bar.contains("Checking size"), "the probe is named: {bar}");
     assert!(!bar.contains("Scanning"), "nothing is scanned yet: {bar}");
 
@@ -2993,11 +2907,11 @@ fn the_download_confirmation_is_not_busy() {
         .recv_timeout(std::time::Duration::from_secs(60))
         .expect("the probe answers");
     assert!(matches!(answered, AppEvent::JobEnded(_)));
-    let _ = app.handle(&answered);
+    let _ = app.handle(answered);
 
     assert!(app.awaiting_open_confirmation(), "the user is being asked");
     assert!(!app.is_busy(), "and nothing is running while they decide");
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(!bar.contains("..."), "nothing said to be running: {bar}");
     assert!(
         !bar.contains("Checking") && !bar.contains("Scanning"),
@@ -3041,7 +2955,7 @@ fn uncapped_clipboard(app: &mut crate::App) {
 /// that asks, an unknown size or a large estimate collects without asking.
 #[test]
 fn a_capped_table_copy_asks_only_past_what_the_cap_could_hold() {
-    use crate::widgets::datatable::DataTableState;
+    use crate::table::DataTableState;
     use crate::{App, AppEvent, OpenOptions};
     use polars::prelude::*;
     use std::sync::Arc;
@@ -3061,7 +2975,7 @@ fn a_capped_table_copy_asks_only_past_what_the_cap_could_hold() {
             None,
         )
         .unwrap()
-        .with_open(crate::widgets::datatable::OpenFacts {
+        .with_open(crate::table::OpenFacts {
             column_bytes: footer_width
                 .map(|width| vec![("blob".to_string(), width)])
                 .unwrap_or_default(),
@@ -3073,7 +2987,7 @@ fn a_capped_table_copy_asks_only_past_what_the_cap_could_hold() {
         let state = app.data_table_state.as_mut().unwrap();
         assert!(state.count_landed(state.len_generation(), 3, None));
         app.set_clipboard_destination(Box::new(TestClipboard(Some(limit))));
-        app.copy_modal.scope = crate::copy_modal::CopyScope::Table;
+        app.copy_modal.scope = crate::app::modals::copy_modal::CopyScope::Table;
         let next = app.perform_copy();
         (app, next)
     };
@@ -3097,7 +3011,7 @@ fn a_capped_table_copy_asks_only_past_what_the_cap_could_hold() {
 /// being read) must ask first, never collect an unknown amount unprompted.
 #[test]
 fn a_table_copy_with_no_size_yet_asks_first() {
-    use crate::widgets::datatable::DataTableState;
+    use crate::table::DataTableState;
     use crate::{App, OpenOptions};
     use polars::prelude::*;
     use std::sync::Arc;
@@ -3117,13 +3031,16 @@ fn a_table_copy_with_no_size_yet_asks_first() {
     assert!(state.estimated_copy_bytes().is_none());
 
     uncapped_clipboard(&mut app);
-    app.copy_modal.scope = crate::copy_modal::CopyScope::Table;
+    app.copy_modal.scope = crate::app::modals::copy_modal::CopyScope::Table;
     let _ = app.perform_copy();
     assert!(
         app.confirmation_modal.active,
         "an unknown size asks; it never collects unprompted"
     );
-    assert!(app.pending_copy.is_some());
+    assert!(matches!(
+        app.confirmation_modal.asking,
+        Some(crate::app::feedback::Confirm::Copy(..))
+    ));
 }
 
 /// A Table copy writes binary as base64, so the guard counts it at that size
@@ -3131,7 +3048,7 @@ fn a_table_copy_with_no_size_yet_asks_first() {
 /// footer measured ask, since the buffer only ever holds a stub for them (#429).
 #[test]
 fn a_table_copy_counts_binary_at_its_base64_size() {
-    use crate::widgets::datatable::DataTableState;
+    use crate::table::DataTableState;
     use crate::{App, AppEvent, OpenOptions};
     use polars::prelude::*;
     use std::sync::Arc;
@@ -3151,7 +3068,7 @@ fn a_table_copy_counts_binary_at_its_base64_size() {
             None,
         )
         .unwrap()
-        .with_open(crate::widgets::datatable::OpenFacts {
+        .with_open(crate::table::OpenFacts {
             column_bytes: footer_width
                 .map(|width| vec![("blob".to_string(), width)])
                 .unwrap_or_default(),
@@ -3163,7 +3080,7 @@ fn a_table_copy_counts_binary_at_its_base64_size() {
         let state = app.data_table_state.as_mut().unwrap();
         assert!(state.count_landed(state.len_generation(), 3, None));
         uncapped_clipboard(&mut app);
-        app.copy_modal.scope = crate::copy_modal::CopyScope::Table;
+        app.copy_modal.scope = crate::app::modals::copy_modal::CopyScope::Table;
         let next = app.perform_copy();
         (app, next)
     };
@@ -3172,7 +3089,12 @@ fn a_table_copy_counts_binary_at_its_base64_size() {
     // bytes alone, or the stub the buffer holds, would not be.
     let (app, next) = copy(Some(3 * 1024 * 1024));
     assert!(app.confirmation_modal.active, "large blobs ask first");
-    assert!(app.pending_copy.is_some() && next.is_none());
+    assert!(
+        matches!(
+            app.confirmation_modal.asking,
+            Some(crate::app::feedback::Confirm::Copy(..))
+        ) && next.is_none()
+    );
 
     let (app, next) = copy(Some(100));
     assert!(!app.confirmation_modal.active, "small blobs copy");
@@ -3180,7 +3102,12 @@ fn a_table_copy_counts_binary_at_its_base64_size() {
 
     let (app, next) = copy(None);
     assert!(app.confirmation_modal.active, "unmeasured blobs ask");
-    assert!(app.pending_copy.is_some() && next.is_none());
+    assert!(
+        matches!(
+            app.confirmation_modal.asking,
+            Some(crate::app::feedback::Confirm::Copy(..))
+        ) && next.is_none()
+    );
 }
 
 /// A local directory's footers, read to open it, give its binary columns their
@@ -3217,7 +3144,7 @@ fn a_local_directorys_footers_size_its_binary_columns() {
         let state = app.data_table_state.as_mut().unwrap();
         assert!(state.count_landed(state.len_generation(), 3, None));
         uncapped_clipboard(&mut app);
-        app.copy_modal.scope = crate::copy_modal::CopyScope::Table;
+        app.copy_modal.scope = crate::app::modals::copy_modal::CopyScope::Table;
         let next = app.perform_copy();
         (app, next)
     };
@@ -3248,16 +3175,16 @@ fn a_confirmation_keeps_its_keys_in_its_own_footer() {
     chart_prepare_tests::open(&mut app, &rx, &tx, path);
     let _ = app.key(&KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
     assert!(
-        control_bar(&mut app).contains("+/- Filter"),
+        footer_text(&mut app).contains("+/- Filter"),
         "the column's keys"
     );
 
     app.data_table_state.as_mut().unwrap().invalidate_num_rows();
     uncapped_clipboard(&mut app);
-    app.copy_modal.scope = crate::copy_modal::CopyScope::Table;
+    app.copy_modal.scope = crate::app::modals::copy_modal::CopyScope::Table;
     let _ = app.perform_copy();
     assert!(app.confirmation_modal.active, "an unknown size asks");
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(!bar.contains("Filter"), "not the table's: {bar}");
 }
 
@@ -3271,7 +3198,7 @@ fn a_confirmation_keeps_its_keys_in_its_own_footer() {
 /// session.
 #[test]
 fn a_count_landing_during_a_load_does_not_bump_the_generation() {
-    use crate::widgets::datatable::{DataTableState, RemoteFiles};
+    use crate::table::{DataTableState, RemoteFiles};
     use crate::{App, AppEvent, OpenOptions};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use polars::prelude::*;
@@ -3283,7 +3210,7 @@ fn a_count_landing_during_a_load_does_not_bump_the_generation() {
     let mut state =
         DataTableState::from_schema_and_lazyframe(schema, rows(), &OpenOptions::default(), None)
             .unwrap()
-            .with_open(crate::widgets::datatable::OpenFacts {
+            .with_open(crate::table::OpenFacts {
                 remote_source: true,
                 remote_files: Some(RemoteFiles {
                     urls: Arc::new(vec!["one".to_string()]),
@@ -3302,20 +3229,20 @@ fn a_count_landing_during_a_load_does_not_bump_the_generation() {
     // End on a dataset whose rows are not counted yet: the jump waits for the count.
     let waiting = app.data_table_state.as_ref().unwrap().len_generation();
     let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
-    assert_eq!(app.end_after_count, Some(waiting));
+    assert_eq!(app.counting.end_after_count, Some(waiting));
 
     // Meanwhile the user opens something else, which is waiting on this generation.
     let lease = app.hold_the_generation();
     let opening = app.task_generation();
 
     // And the count lands.
-    let mut follow = app.event(&AppEvent::BackgroundLenReady {
+    let mut follow = app.event(AppEvent::BackgroundLenReady {
         len_generation: waiting,
         num_rows: 100,
         file_row_groups: None,
     });
     while let Some(event) = follow {
-        follow = app.event(&event);
+        follow = app.event(event);
     }
 
     assert_eq!(
@@ -3330,7 +3257,7 @@ fn a_count_landing_during_a_load_does_not_bump_the_generation() {
 
     // The open finishes, and the jump gets its turn.
     drop(lease);
-    let _ = app.handle(&AppEvent::Update);
+    let _ = app.handle(AppEvent::Update);
     assert!(
         !app.rows_owed(),
         "the collect the jump asked for runs once nothing is waiting"
@@ -3353,8 +3280,8 @@ fn a_count_landing_during_a_load_does_not_bump_the_generation() {
 /// the errand takes.
 #[test]
 fn a_dataset_owed_a_re_read_does_not_print_its_partial_as_the_total() {
-    use crate::widgets::datatable::DataTableState;
-    use crate::{App, AppEvent, OpenOptions};
+    use crate::table::DataTableState;
+    use crate::{App, OpenOptions};
     use polars::prelude::*;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
@@ -3367,7 +3294,7 @@ fn a_dataset_owed_a_re_read_does_not_print_its_partial_as_the_total() {
     let mut state =
         DataTableState::from_schema_and_lazyframe(schema, rows(), &OpenOptions::default(), None)
             .unwrap()
-            .with_open(crate::widgets::datatable::OpenFacts {
+            .with_open(crate::table::OpenFacts {
                 footers_pending: Some(Arc::new(|_| None)),
                 ..Default::default()
             });
@@ -3395,17 +3322,15 @@ fn a_dataset_owed_a_re_read_does_not_print_its_partial_as_the_total() {
 
     // An export is running and holds a lease, so the errand the failure raises has
     // to wait.
-    app.export_progress = Some(crate::ExportProgress {
-        file_path: std::path::PathBuf::from("/tmp/out.csv"),
-        current_phase: "Collecting".to_string(),
-        written: None,
-    });
+    app.export_progress = Some(crate::ExportProgress::new(
+        std::path::Path::new("/tmp/out.csv"),
+        "Collecting",
+    ));
     let _lease = app.hold_the_generation();
     let live = app.dataset_generation;
-    App::record_footers(&app.pending_footers_result, live, None);
-    let _ = app.handle(&AppEvent::BackgroundFootersJoined { generation: live });
+    let _ = app.footers_joined(live, None);
     assert!(
-        app.reread_owed.is_some(),
+        app.counting.reread_owed.is_some(),
         "the fixture is a dataset owed a re-read it cannot have yet"
     );
 
@@ -3425,7 +3350,7 @@ fn a_dataset_owed_a_re_read_does_not_print_its_partial_as_the_total() {
 /// to take: a frame that is not the scan does not read footers for its count.
 #[test]
 fn a_query_over_a_dataset_still_reading_its_footers_is_counted() {
-    use crate::widgets::datatable::{DataTableState, RemoteFiles};
+    use crate::table::{DataTableState, RemoteFiles};
     use crate::{App, OpenOptions};
     use polars::prelude::*;
     use std::sync::Arc;
@@ -3437,7 +3362,7 @@ fn a_query_over_a_dataset_still_reading_its_footers_is_counted() {
     let mut state =
         DataTableState::from_schema_and_lazyframe(schema, rows(), &OpenOptions::default(), None)
             .unwrap()
-            .with_open(crate::widgets::datatable::OpenFacts {
+            .with_open(crate::table::OpenFacts {
                 remote_source: true,
                 remote_files: Some(RemoteFiles {
                     urls: Arc::new(vec!["one".to_string()]),
@@ -3469,7 +3394,7 @@ fn a_query_over_a_dataset_still_reading_its_footers_is_counted() {
 
     app.spawn_async_collect(App::LOADING_BUFFER);
     assert!(
-        app.len_count_inflight.is_some(),
+        app.counting.len_count_inflight.is_some(),
         "so it is taken, rather than the row count spinning while the query is open"
     );
 }
@@ -3482,7 +3407,7 @@ fn a_query_over_a_dataset_still_reading_its_footers_is_counted() {
 /// gaining a column from a different directory entirely.
 #[test]
 fn a_pass_from_the_dataset_before_this_one_joins_nothing_to_it() {
-    use crate::widgets::datatable::DataTableState;
+    use crate::table::DataTableState;
     use crate::{App, OpenOptions};
     use polars::prelude::*;
     use std::sync::Arc;
@@ -3490,14 +3415,14 @@ fn a_pass_from_the_dataset_before_this_one_joins_nothing_to_it() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
+        let footer = crate::formats::schema_union::FileFooter {
             schema,
             row_group_rows: vec![1],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
         };
-        crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        crate::formats::schema_union::union_sampled(1, &[0], &[Some(footer)])
     };
     let state_of = |lf: LazyFrame| {
         DataTableState::from_schema_and_lazyframe(
@@ -3517,9 +3442,9 @@ fn a_pass_from_the_dataset_before_this_one_joins_nothing_to_it() {
     let mut app = App::new(tx, crate::tests::test_runtime());
 
     // The first dataset, staged.
-    let state = state_of(first()).with_open(crate::widgets::datatable::OpenFacts {
+    let state = state_of(first()).with_open(crate::table::OpenFacts {
         footers_pending: Some(Arc::new(move |_progress| {
-            Some(crate::widgets::datatable::FootersFound {
+            Some(crate::table::FootersFound {
                 estimate: None,
                 dataset: dataset_of(its_columns()),
                 lf: its_columns(),
@@ -3541,14 +3466,14 @@ fn a_pass_from_the_dataset_before_this_one_joins_nothing_to_it() {
     // the one that notices.
     app.install_for_tests(state_of(second()), None, &OpenOptions::default(), None);
 
-    let _ = app.handle(&reported);
+    let _ = app.handle(reported);
     assert_eq!(
         app.data_table_state.as_ref().unwrap().get_column_order(),
         ["other"],
         "the directory on screen does not gain a column from the directory before it"
     );
     assert!(
-        app.footers_held.is_none(),
+        app.counting.footers_held.is_none(),
         "and they are not kept waiting for a dataset that is gone"
     );
 }
@@ -3566,7 +3491,7 @@ fn a_pass_from_the_dataset_before_this_one_joins_nothing_to_it() {
 /// while the export is still waiting on it.
 #[test]
 fn a_pass_that_failed_waits_for_work_already_asked_for() {
-    use crate::widgets::datatable::DataTableState;
+    use crate::table::DataTableState;
     use crate::{App, AppEvent, OpenOptions};
     use polars::prelude::*;
     use std::sync::Arc;
@@ -3575,14 +3500,14 @@ fn a_pass_that_failed_waits_for_work_already_asked_for() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
+        let footer = crate::formats::schema_union::FileFooter {
             schema,
             row_group_rows: vec![1],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
         };
-        crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        crate::formats::schema_union::union_sampled(1, &[0], &[Some(footer)])
     };
 
     let (tx, _rx) = std::sync::mpsc::channel();
@@ -3598,18 +3523,16 @@ fn a_pass_that_failed_waits_for_work_already_asked_for() {
 
     // An export is collecting: it holds a lease on this exact generation, and its
     // answer is thrown away if anything bumps it.
-    app.export_progress = Some(crate::ExportProgress {
-        file_path: std::path::PathBuf::from("/tmp/out.csv"),
-        current_phase: "Collecting".to_string(),
-        written: None,
-    });
+    app.export_progress = Some(crate::ExportProgress::new(
+        std::path::Path::new("/tmp/out.csv"),
+        "Collecting",
+    ));
     let lease = app.hold_the_generation();
     let waiting_on = app.task_generation();
 
     // The pass comes back empty-handed for the dataset on screen.
     let live = app.dataset_generation;
-    App::record_footers(&app.pending_footers_result, live, None);
-    let _ = app.handle(&AppEvent::BackgroundFootersJoined { generation: live });
+    let _ = app.footers_joined(live, None);
 
     assert_eq!(
         app.task_generation(),
@@ -3617,7 +3540,7 @@ fn a_pass_that_failed_waits_for_work_already_asked_for() {
         "the export is still waiting on the answer this app would have thrown away"
     );
     assert_eq!(
-        app.reread_owed,
+        app.counting.reread_owed,
         Some(live),
         "and the re-read the dataset is owed is remembered, not dropped"
     );
@@ -3625,8 +3548,8 @@ fn a_pass_that_failed_waits_for_work_already_asked_for() {
     // The export finishes, and the errand gets its turn on the next event.
     app.export_progress = None;
     drop(lease);
-    let _ = app.handle(&AppEvent::Update);
-    let _ = app.handle(&AppEvent::Update);
+    let _ = app.handle(AppEvent::Update);
+    let _ = app.handle(AppEvent::Update);
 
     assert!(
         app.task_generation() != waiting_on,
@@ -3634,7 +3557,7 @@ fn a_pass_that_failed_waits_for_work_already_asked_for() {
          generation — without it, it never counts itself at all"
     );
     assert!(
-        app.reread_owed.is_none(),
+        app.counting.reread_owed.is_none(),
         "and the errand is done rather than run again on every event"
     );
 }
@@ -3650,7 +3573,7 @@ fn a_pass_that_failed_waits_for_work_already_asked_for() {
 /// certain to be inside that window.
 #[test]
 fn columns_arriving_during_work_already_asked_for_wait_for_it() {
-    use crate::widgets::datatable::{DataTableState, FootersFound};
+    use crate::table::{DataTableState, FootersFound};
     use crate::{App, AppEvent, OpenOptions};
     use polars::prelude::*;
     use std::sync::Arc;
@@ -3660,14 +3583,14 @@ fn columns_arriving_during_work_already_asked_for_wait_for_it() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
+        let footer = crate::formats::schema_union::FileFooter {
             schema,
             row_group_rows: vec![1],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
         };
-        crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        crate::formats::schema_union::union_sampled(1, &[0], &[Some(footer)])
     };
 
     let (tx, _rx) = std::sync::mpsc::channel();
@@ -3686,34 +3609,48 @@ fn columns_arriving_during_work_already_asked_for_wait_for_it() {
     // longer a list of the kinds that happen to exist today. The chart is here
     // beside it because it is the one that a bump would *not* strand: it is
     // prepared against the frame, and the join takes a fresh one of those too.
-    type Start = fn(&mut App) -> Option<crate::jobs::Hold>;
+    /// What keeps the work under way: a hold on the generation, or a running job.
+    type Underway = (
+        Option<crate::app::jobs::Hold>,
+        Option<crate::app::jobs::Started>,
+    );
+    type Start = fn(&mut App) -> Underway;
     let under_way: Vec<(&str, Start)> = vec![
         ("leased background work", |app: &mut App| {
-            Some(app.hold_the_generation())
+            (Some(app.hold_the_generation()), None)
         }),
         ("a chart", |app: &mut App| {
-            let mut modal = crate::chart_modal::ChartModal::new();
+            let mut modal = crate::chart::chart_modal::ChartModal::new();
             modal.spec.encoding.x.field = Some("id".to_string());
-            app.chart_inflight = Some(crate::ChartInflight {
+            let prep = crate::app::jobs::ChartPrep {
                 dataset: None,
                 request: crate::ChartRequest::from_modal(&modal).expect("an x range"),
-                stale: false,
                 cancel: Default::default(),
-            });
-            None
+            };
+            (
+                None,
+                Some(app.job_for_tests(crate::app::jobs::Job::ChartPrepare(Box::new(prep)), None)),
+            )
         }),
     ];
-    let put_away = |app: &mut App, lease: Option<crate::jobs::Hold>| {
+    let put_away = |app: &mut App, (lease, job): Underway| {
         // The hold is released by dropping it; the event after it lets the errands in.
         drop(lease);
-        let _ = app.handle(&AppEvent::Update);
-        app.chart_inflight = None;
+        if let Some(job) = job {
+            let ticket = job.ticket();
+            job.end(crate::app::jobs::Outcome::Failed {
+                message: "put away".to_string(),
+                panicked: false,
+            });
+            app.jobs.end(ticket);
+        }
+        let _ = app.handle(AppEvent::Update);
     };
 
     for (what, start) in under_way {
         let lease = start(&mut app);
         let waiting_on = app.task_generation();
-        app.footers_held = Some((
+        app.counting.footers_held = Some((
             app.dataset_generation,
             FootersFound {
                 estimate: None,
@@ -3725,7 +3662,7 @@ fn columns_arriving_during_work_already_asked_for_wait_for_it() {
                 remote: None,
             },
         ));
-        let _ = app.handle(&AppEvent::Update);
+        let _ = app.handle(AppEvent::Update);
 
         assert_eq!(
             app.task_generation(),
@@ -3733,14 +3670,14 @@ fn columns_arriving_during_work_already_asked_for_wait_for_it() {
             "{what} is still waiting on the answer this app would have thrown away"
         );
         assert!(
-            app.footers_held.is_some(),
+            app.counting.footers_held.is_some(),
             "and the columns wait their turn behind {what}"
         );
         put_away(&mut app, lease);
     }
 
     // Nothing under way now, and they go in.
-    let _ = app.handle(&AppEvent::Update);
+    let _ = app.handle(AppEvent::Update);
     assert_eq!(
         app.data_table_state
             .as_ref()
@@ -3762,7 +3699,7 @@ fn columns_arriving_during_work_already_asked_for_wait_for_it() {
 /// go in: one directory's schema, scan and file list installed into another.
 #[test]
 fn columns_held_for_one_dataset_are_not_given_to_the_next() {
-    use crate::widgets::datatable::{DataTableState, FootersFound};
+    use crate::table::{DataTableState, FootersFound};
     use crate::{App, AppEvent, OpenOptions};
     use polars::prelude::*;
     use std::sync::Arc;
@@ -3773,14 +3710,14 @@ fn columns_held_for_one_dataset_are_not_given_to_the_next() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
+        let footer = crate::formats::schema_union::FileFooter {
             schema,
             row_group_rows: vec![1],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
         };
-        crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        crate::formats::schema_union::union_sampled(1, &[0], &[Some(footer)])
     };
     let state_of = |lf: LazyFrame| {
         DataTableState::from_schema_and_lazyframe(
@@ -3801,7 +3738,7 @@ fn columns_held_for_one_dataset_are_not_given_to_the_next() {
         .as_mut()
         .unwrap()
         .query("select doubled: id * 2".to_string());
-    app.footers_held = Some((
+    app.counting.footers_held = Some((
         app.dataset_generation,
         FootersFound {
             estimate: None,
@@ -3813,12 +3750,15 @@ fn columns_held_for_one_dataset_are_not_given_to_the_next() {
             remote: None,
         },
     ));
-    let _ = app.handle(&AppEvent::Update);
-    assert!(app.footers_held.is_some(), "waiting, as they should be");
+    let _ = app.handle(AppEvent::Update);
+    assert!(
+        app.counting.footers_held.is_some(),
+        "waiting, as they should be"
+    );
 
     // And instead of clearing the query, the user opens something else.
     app.install_for_tests(state_of(second()), None, &OpenOptions::default(), None);
-    let _ = app.handle(&AppEvent::Update);
+    let _ = app.handle(AppEvent::Update);
 
     assert_eq!(
         app.data_table_state.as_ref().unwrap().get_column_order(),
@@ -3826,23 +3766,20 @@ fn columns_held_for_one_dataset_are_not_given_to_the_next() {
         "the directory now on screen is not given the last one's columns"
     );
     assert!(
-        app.footers_held.is_none(),
+        app.counting.footers_held.is_none(),
         "and they are let go rather than waiting on for a third dataset"
     );
 }
 
-/// The event that wakes the app does not decide whose answer is in the slot.
+/// An older dataset's pass, finishing after the one on screen, changes nothing.
 ///
-/// Two passes run at once when a second large prefix is opened, and the newer one
-/// can overwrite the slot before the older one's event is handled. Deciding by the
-/// event would drain the newer answer and throw it away on the older event's
-/// generation — and the newer event, arriving next, would find the slot empty. The
-/// dataset on screen would wait for columns that had already been and gone, with
-/// nothing to say so: the pass is over, so even the count in the bar is silent.
+/// Two passes run at once when a second large prefix is opened, and they answer in
+/// whatever order the network gives. Each answer carries its own dataset and what it
+/// found, so the older one is dropped and the one on screen still gets its columns.
 #[test]
 fn a_late_event_from_an_old_pass_does_not_throw_away_the_live_answer() {
-    use crate::widgets::datatable::{DataTableState, FootersFound};
-    use crate::{App, AppEvent, OpenOptions};
+    use crate::table::{DataTableState, FootersFound};
+    use crate::{App, OpenOptions};
     use polars::prelude::*;
     use std::sync::Arc;
 
@@ -3851,14 +3788,31 @@ fn a_late_event_from_an_old_pass_does_not_throw_away_the_live_answer() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
+        let footer = crate::formats::schema_union::FileFooter {
             schema,
             row_group_rows: vec![1],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
         };
-        crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        crate::formats::schema_union::union_sampled(1, &[0], &[Some(footer)])
+    };
+    let found = || FootersFound {
+        estimate: None,
+        dataset: dataset_of(wider()),
+        lf: wider(),
+        file_rows: Vec::new(),
+        files: Vec::new(),
+        row_groups: Vec::new(),
+        remote: None,
+    };
+    let last_column = |app: &App| {
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .get_column_order()
+            .last()
+            .cloned()
     };
 
     let (tx, _rx) = std::sync::mpsc::channel();
@@ -3872,28 +3826,98 @@ fn a_late_event_from_an_old_pass_does_not_throw_away_the_live_answer() {
     .unwrap();
     app.install_for_tests(state, None, &OpenOptions::default(), None);
 
-    // This dataset's own pass has finished and put its answer in the slot.
+    // The prefix opened before this one answers late: it is not this dataset's.
     let live = app.dataset_generation;
-    App::record_footers(
-        &app.pending_footers_result,
-        live,
-        Some(FootersFound {
-            estimate: None,
-            dataset: dataset_of(wider()),
-            lf: wider(),
-            file_rows: Vec::new(),
-            files: Vec::new(),
-            row_groups: Vec::new(),
-            remote: None,
-        }),
+    let _ = app.footers_joined(live.wrapping_sub(1), Some(found()));
+    assert_eq!(
+        last_column(&app).as_deref(),
+        Some("id"),
+        "the older answer changes nothing"
     );
 
-    // And the event that reaches the loop first belongs to the prefix the user
-    // opened before this one, whose pass was slower.
-    let _ = app.handle(&AppEvent::BackgroundFootersJoined {
-        generation: live.wrapping_sub(1),
-    });
+    // This dataset's own answer is the one that is used.
+    let _ = app.footers_joined(live, Some(found()));
+    assert_eq!(last_column(&app).as_deref(), Some("oops"));
+}
 
+/// A footer pass that answered before another open began still reaches its dataset
+/// when that open fails: the dataset on screen is still the one it read.
+#[test]
+fn a_footer_answer_survives_an_open_that_fails() {
+    use crate::table::{DataTableState, FootersFound};
+    use crate::{App, AppEvent, OpenOptions};
+    use polars::prelude::*;
+    use std::sync::Arc;
+
+    let frame = || df!("id" => &[1i64]).unwrap().lazy();
+    let wider = || df!("id" => &[1i64], "oops" => &["a"]).unwrap().lazy();
+    let dataset_of = |lf: LazyFrame| {
+        let mut lf = lf;
+        let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+        let footer = crate::formats::schema_union::FileFooter {
+            schema,
+            row_group_rows: vec![1],
+            file_bytes: 0,
+            row_group_bytes: Vec::new(),
+            column_bytes: Vec::new(),
+        };
+        crate::formats::schema_union::union_sampled(1, &[0], &[Some(footer)])
+    };
+    let found = FootersFound {
+        estimate: None,
+        dataset: dataset_of(wider()),
+        lf: wider(),
+        file_rows: Vec::new(),
+        files: Vec::new(),
+        row_groups: Vec::new(),
+        remote: None,
+    };
+    let found = std::sync::Mutex::new(Some(found));
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new(tx.clone(), crate::tests::test_runtime());
+    let state = DataTableState::from_schema_and_lazyframe(
+        dataset_of(frame()).schema.clone(),
+        frame(),
+        &OpenOptions::default(),
+        None,
+    )
+    .unwrap()
+    .with_open(crate::table::OpenFacts {
+        footers_pending: Some(Arc::new(move |_progress| found.lock().unwrap().take())),
+        ..Default::default()
+    });
+    app.install_for_tests(state, None, &OpenOptions::default(), None);
+
+    // The pass has answered; its end is not handled until the next open has failed.
+    let answered = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the pass answers");
+    assert!(
+        matches!(answered, AppEvent::JobEnded(ticket) if ticket.kind() == crate::JobKind::FootersJoin)
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let broken = dir.path().join("broken.parquet");
+    std::fs::write(&broken, b"not parquet").unwrap();
+    let mut next = Some(AppEvent::Open(vec![broken], OpenOptions::default()));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while app.error_message().is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the open never failed"
+        );
+        let event = match next.take() {
+            Some(event) => event,
+            None => match rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                Ok(event) => event,
+                Err(_) => continue,
+            },
+        };
+        next = app.event(event);
+    }
+
+    let _ = app.handle(answered);
     assert_eq!(
         app.data_table_state
             .as_ref()
@@ -3902,75 +3926,59 @@ fn a_late_event_from_an_old_pass_does_not_throw_away_the_live_answer() {
             .last()
             .map(String::as_str),
         Some("oops"),
-        "the answer in the slot is this dataset's, and it is the one that is used"
+        "the dataset still on screen gets its columns"
     );
 }
 
-/// A slower pass from an older dataset does not displace a newer one's answer.
-///
-/// Opening a second large prefix does not stop the first one reading, so two passes
-/// can be in flight and finish in either order. If the older one wrote last, the
-/// generation in the slot would disagree with the generation on the event and both
-/// would be thrown away — leaving the dataset on screen permanently short of the
-/// columns its own pass had already found.
+/// A journal's Info tab read again for a dataset since replaced is dropped: it does
+/// not describe the one on screen.
 #[test]
-fn an_older_pass_finishing_late_does_not_displace_a_newer_one() {
-    use crate::App;
+fn a_journal_reread_for_a_replaced_dataset_is_dropped() {
+    use crate::app::jobs::{Answer, Job, Outcome};
+    use crate::table::DataTableState;
+    use crate::{App, AppEvent, OpenOptions};
     use polars::prelude::*;
-    use std::sync::{Arc, Mutex};
 
-    let found = |name: &str| {
-        let mut lf = df!(name => &[1i64]).unwrap().lazy();
-        let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
-            schema,
-            row_group_rows: vec![1],
-            file_bytes: 0,
-            row_group_bytes: Vec::new(),
-            column_bytes: Vec::new(),
-        };
-        crate::widgets::datatable::FootersFound {
-            estimate: None,
-            dataset: crate::schema_union::union_sampled(1, &[0], &[Some(footer)]),
-            lf,
-            file_rows: Vec::new(),
-            files: Vec::new(),
-            row_groups: Vec::new(),
-            remote: None,
-        }
+    let state = || {
+        let lf = df!("id" => &[1i64]).unwrap().lazy();
+        let mut probe = lf.clone();
+        let schema = probe.collect_schema().unwrap();
+        DataTableState::from_schema_and_lazyframe(schema, lf, &OpenOptions::default(), None)
+            .unwrap()
     };
-    let name_in = |slot: &Mutex<Option<(u64, Option<crate::widgets::datatable::FootersFound>)>>| {
-        slot.lock().unwrap().as_ref().map(|(g, f)| {
-            let f = f.as_ref().expect("recorded with something in it");
-            (
-                *g,
-                f.dataset.schema.iter_names().next().unwrap().to_string(),
-            )
-        })
+    let detail = || {
+        Answer::JournalDescribed(Some(Box::new(crate::formats::text_formats::Detail {
+            tab: "Journal",
+            ..Default::default()
+        })))
+    };
+    let tab = |app: &App| {
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .format_detail()
+            .map(|detail| detail.tab)
     };
 
-    let slot = Mutex::new(None);
-    assert!(
-        App::record_footers(&slot, 7, Some(found("newer"))),
-        "the newer pass answers first"
-    );
-    assert!(
-        !App::record_footers(&slot, 6, Some(found("older"))),
-        "and the older one, finishing after it, is turned away"
-    );
-    assert_eq!(
-        name_in(&slot),
-        Some((7, "newer".to_string())),
-        "so what is waiting is still the newer dataset's"
-    );
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new(tx, crate::tests::test_runtime());
+    app.install_for_tests(state(), None, &OpenOptions::default(), None);
 
-    // The ordinary case is unaffected: a pass for the dataset now on screen goes in
-    // over whatever an abandoned one left behind.
-    assert!(
-        App::record_footers(&slot, 8, Some(found("newest"))),
-        "a later dataset's pass takes the slot"
-    );
-    assert_eq!(name_in(&slot), Some((8, "newest".to_string())));
+    let dataset = app.dataset_generation;
+    let started = app.job_for_tests(Job::JournalDetail { dataset }, None);
+    app.install_for_tests(state(), None, &OpenOptions::default(), None);
+    let ticket = started.ticket();
+    started.end(Outcome::answered(detail()));
+    let _ = app.handle(AppEvent::JobEnded(ticket));
+    assert_eq!(tab(&app), None, "the dataset on screen keeps its own tab");
+
+    // The same answer for the dataset on screen is taken.
+    let dataset = app.dataset_generation;
+    let started = app.job_for_tests(Job::JournalDetail { dataset }, None);
+    let ticket = started.ticket();
+    started.end(Outcome::answered(detail()));
+    let _ = app.handle(AppEvent::JobEnded(ticket));
+    assert_eq!(tab(&app), Some("Journal"));
 }
 
 /// Columns that arrive while the user is inside a query wait for them to leave it.
@@ -3981,7 +3989,7 @@ fn an_older_pass_finishing_late_does_not_displace_a_newer_one() {
 /// columns are held, and get in when the view comes back to the data.
 #[test]
 fn columns_arriving_under_a_query_wait_rather_than_break_it() {
-    use crate::widgets::datatable::DataTableState;
+    use crate::table::DataTableState;
     use crate::{App, AppEvent, OpenOptions};
     use polars::prelude::*;
     use std::sync::Arc;
@@ -3995,14 +4003,14 @@ fn columns_arriving_under_a_query_wait_rather_than_break_it() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
+        let footer = crate::formats::schema_union::FileFooter {
             schema,
             row_group_rows: vec![2],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
         };
-        crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        crate::formats::schema_union::union_sampled(1, &[0], &[Some(footer)])
     };
 
     let (tx, _rx) = std::sync::mpsc::channel();
@@ -4028,9 +4036,9 @@ fn columns_arriving_under_a_query_wait_rather_than_break_it() {
 
     // And the rest of the footers land underneath it.
     let generation = app.dataset_generation;
-    app.footers_held = Some((
+    app.counting.footers_held = Some((
         generation,
-        crate::widgets::datatable::FootersFound {
+        crate::table::FootersFound {
             estimate: None,
             dataset: dataset_of(wider()),
             lf: wider(),
@@ -4040,7 +4048,7 @@ fn columns_arriving_under_a_query_wait_rather_than_break_it() {
             remote: None,
         },
     ));
-    let _ = app.handle(&AppEvent::Update);
+    let _ = app.handle(AppEvent::Update);
 
     let table = app.data_table_state.as_ref().unwrap();
     assert_eq!(
@@ -4054,14 +4062,14 @@ fn columns_arriving_under_a_query_wait_rather_than_break_it() {
         table.error()
     );
     assert!(
-        app.footers_held.is_some(),
+        app.counting.footers_held.is_some(),
         "the columns are kept, not thrown away"
     );
 
     // The user clears the query — an empty one is how that is said — and now they
     // can get in.
     app.data_table_state.as_mut().unwrap().query(String::new());
-    let _ = app.handle(&AppEvent::Update);
+    let _ = app.handle(AppEvent::Update);
     assert_eq!(
         app.data_table_state
             .as_ref()
@@ -4072,7 +4080,10 @@ fn columns_arriving_under_a_query_wait_rather_than_break_it() {
         Some("oops"),
         "the columns join once the view is back on the data"
     );
-    assert!(app.footers_held.is_none(), "with nothing left waiting");
+    assert!(
+        app.counting.footers_held.is_none(),
+        "with nothing left waiting"
+    );
 }
 
 /// A dataset that opened from two footers gets the rest, through the app.
@@ -4083,7 +4094,7 @@ fn columns_arriving_under_a_query_wait_rather_than_break_it() {
 /// has since left cannot join its columns to the one that replaced it.
 #[test]
 fn a_staged_open_joins_what_its_footers_found() {
-    use crate::widgets::datatable::DataTableState;
+    use crate::table::DataTableState;
     use crate::{App, AppEvent, OpenOptions};
     use polars::prelude::*;
     use std::sync::Arc;
@@ -4097,14 +4108,14 @@ fn a_staged_open_joins_what_its_footers_found() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
+        let footer = crate::formats::schema_union::FileFooter {
             schema,
             row_group_rows: vec![2],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
         };
-        crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        crate::formats::schema_union::union_sampled(1, &[0], &[Some(footer)])
     };
 
     // The wider frame counts every time it is read, so the join can be asked
@@ -4139,10 +4150,10 @@ fn a_staged_open_joins_what_its_footers_found() {
         None,
     )
     .unwrap()
-    .with_open(crate::widgets::datatable::OpenFacts {
+    .with_open(crate::table::OpenFacts {
         // What the pass behind the open will find: one column more.
         footers_pending: Some(Arc::new(move |_progress| {
-            Some(crate::widgets::datatable::FootersFound {
+            Some(crate::table::FootersFound {
                 estimate: None,
                 dataset: dataset_of(counted()),
                 lf: counted(),
@@ -4165,9 +4176,10 @@ fn a_staged_open_joins_what_its_footers_found() {
     let joined = rx
         .recv_timeout(std::time::Duration::from_secs(10))
         .expect("the pass reports back");
-    let AppEvent::BackgroundFootersJoined { generation } = joined else {
+    let AppEvent::JobEnded(ticket) = joined else {
         panic!("expected the footers to be reported, got another event");
     };
+    assert_eq!(ticket.kind(), crate::JobKind::FootersJoin);
 
     // It lands after a glance at the home screen, which leaves the dataset up and
     // puts down whatever open was in flight. One keystroke there and back must not
@@ -4176,7 +4188,7 @@ fn a_staged_open_joins_what_its_footers_found() {
     // The re-read runs off this thread and would count too, as soon as it runs. It
     // dies before it reads, so what is counted below is this thread's alone.
     app.jobs.worker_dies = crate::tests::worker_dies_once(|job| matches!(job, crate::Job::Rows(_)));
-    let _ = app.handle(&AppEvent::BackgroundFootersJoined { generation });
+    let _ = app.handle(AppEvent::JobEnded(ticket));
     // Read again, not asked to be read again. The join drops the buffer, so a
     // request that goes on to be ignored — as a step of the open's chain is, once
     // the load is over — leaves the table with nothing to show at the moment it was
@@ -4242,6 +4254,8 @@ mod quality_sample_tests;
 
 mod chart_prepare_tests;
 
+mod chart_golden_tests;
+
 mod view_rollback_tests;
 
 #[cfg(feature = "sql")]
@@ -4286,3 +4300,12 @@ mod doc_queries_tests;
 
 /// A catalog dataset's codebook in the Info panel and the inspector (#734).
 mod codebook_tests;
+
+/// An open whose CSV type inference falls short shows the error, not a crash.
+mod csv_inference_tests;
+
+/// Every text field the app shows, driven through the real `App`.
+mod text_input_flows;
+
+/// Every confirmation's Yes, No and Esc.
+mod confirm_tests;

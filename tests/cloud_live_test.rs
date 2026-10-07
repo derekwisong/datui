@@ -44,8 +44,9 @@
 
 mod common;
 
-use datui::cloud_browse::{self, Environment, ProviderKind};
-use datui::cloud_sources;
+use datui::cloud::cloud_browse::{self, Environment};
+use datui::cloud::cloud_sources;
+use datui::cloud::source::ProviderKind;
 use datui::config::CloudConfig;
 
 /// The MinIO credentials the documented container runs with. Not a secret in any sense:
@@ -166,12 +167,12 @@ fn minio_is_discovered_and_its_buckets_listed() {
         .iter()
         .find(|r| r.name == "2024")
         .expect("the prefix row");
-    assert_eq!(prefix.kind, datui::discover::EntryKind::Directory);
+    assert_eq!(prefix.kind, datui::home::discover::EntryKind::Directory);
     let object = rows
         .iter()
         .find(|r| r.name == "top-level.csv")
         .expect("the object row");
-    assert_eq!(object.kind, datui::discover::EntryKind::File);
+    assert_eq!(object.kind, datui::home::discover::EntryKind::File);
     assert!(object.size.unwrap_or(0) > 0, "an object should have a size");
 
     // Descending, which is what pressing Enter on the prefix will do.
@@ -209,7 +210,7 @@ fn drive(app: &mut datui::App, first: datui::AppEvent) -> Option<String> {
         if let datui::AppEvent::Crash(message) = &event {
             crash = Some(message.clone());
         }
-        next = app.event(&event);
+        next = app.event(event);
     }
     crash
 }
@@ -329,7 +330,7 @@ fn enter_source(
     if !shown || !select_row(app, &label) {
         return false;
     }
-    app.event(&key(crossterm::event::KeyCode::Enter));
+    app.event(key(crossterm::event::KeyCode::Enter));
     pump_until(app, rx, 30, |app| {
         section_named(app, &label).is_some_and(|s| !s.rows.is_empty())
     })
@@ -396,7 +397,7 @@ fn the_home_screen_lists_buckets_and_descends_into_one() {
     // Expanding them would be a billed request per bucket on every start, and measuring
     // one would mean reading object bytes to fill in a column nobody asked for.
     for row in &section.rows {
-        assert_eq!(row.kind, datui::discover::EntryKind::Directory);
+        assert_eq!(row.kind, datui::home::discover::EntryKind::Directory);
         assert!(
             row.rows.is_none(),
             "a bucket row must not carry a row count"
@@ -428,7 +429,7 @@ fn the_home_screen_lists_buckets_and_descends_into_one() {
     // Enter on the bucket, through the real key handler rather than by reaching into
     // state, so what is tested is what a keypress does.
     assert!(select_row(&mut app, "datui-sales"), "the bucket row");
-    app.event(&key(crossterm::event::KeyCode::Enter));
+    app.event(key(crossterm::event::KeyCode::Enter));
     let descended = pump_until(&mut app, &rx, 30, |app| {
         section_named(app, "s3://datui-sales")
             .is_some_and(|s| s.rows.iter().any(|r| r.name == "top-level.csv"))
@@ -476,7 +477,7 @@ fn the_home_screen_lists_buckets_and_descends_into_one() {
 
     // And down one more level, into a prefix rather than a bucket.
     assert!(select_row(&mut app, "2024"), "the prefix row");
-    app.event(&key(crossterm::event::KeyCode::Enter));
+    app.event(key(crossterm::event::KeyCode::Enter));
     let deeper = pump_until(&mut app, &rx, 30, |app| {
         section_named(app, "s3://datui-sales/2024")
             .is_some_and(|s| s.rows.iter().any(|r| r.name == "january.csv"))
@@ -509,7 +510,7 @@ fn an_s3_object_opens_and_lands_in_recents() {
         "the bucket should be listed"
     );
     assert!(select_row(&mut app, "datui-sales"), "the bucket row");
-    app.event(&key(crossterm::event::KeyCode::Enter));
+    app.event(key(crossterm::event::KeyCode::Enter));
 
     let inside = pump_until(&mut app, &rx, 30, |app| {
         section_named(app, "s3://datui-sales")
@@ -531,7 +532,7 @@ fn an_s3_object_opens_and_lands_in_recents() {
         // The modal opens focused on No, which is the right default for a prompt that
         // spends somebody's egress budget. Moving to Yes is part of what a user does.
         println!("confirmation raised, accepting");
-        app.event(&key(crossterm::event::KeyCode::Left));
+        app.event(key(crossterm::event::KeyCode::Left));
         if let Some(crash) = drive(&mut app, key(crossterm::event::KeyCode::Enter)) {
             panic!("confirming the download crashed: {crash}");
         }
@@ -632,7 +633,7 @@ fn the_cloud_section_renders_legibly() {
 
     // And inside a bucket, where objects carry sizes and prefixes are somewhere to go.
     assert!(select_row(&mut app, "datui-sales"), "the bucket row");
-    app.event(&key(crossterm::event::KeyCode::Enter));
+    app.event(key(crossterm::event::KeyCode::Enter));
     pump_until(&mut app, &rx, 30, |app| {
         section_named(app, "s3://datui-sales")
             .is_some_and(|s| s.rows.iter().any(|r| r.name == "orders.parquet"))
@@ -649,8 +650,8 @@ fn the_cloud_section_renders_legibly() {
     );
 
     // The other provider looks the same.
-    app.event(&key(crossterm::event::KeyCode::Esc));
-    app.event(&key(crossterm::event::KeyCode::Esc));
+    app.event(key(crossterm::event::KeyCode::Esc));
+    app.event(key(crossterm::event::KeyCode::Esc));
     assert_eq!(app.home.browsing, None, "back at the home listing");
     assert!(
         enter_source(&mut app, &rx, "gcs-default"),
@@ -873,7 +874,7 @@ fn the_cloud_section_lists_sources_and_steps_through_them() {
         "the details pane names the endpoint"
     );
 
-    app.event(&key(crossterm::event::KeyCode::Enter));
+    app.event(key(crossterm::event::KeyCode::Enter));
     let inside = pump_until(&mut app, &rx, 10, |app| {
         section_named(app, "Lab MinIO").is_some_and(|s| s.rows.iter().any(|r| r.name == "data"))
     });
@@ -887,7 +888,7 @@ fn the_cloud_section_lists_sources_and_steps_through_them() {
     );
 
     assert!(select_row(&mut app, "data"), "the bucket row");
-    app.event(&key(crossterm::event::KeyCode::Enter));
+    app.event(key(crossterm::event::KeyCode::Enter));
     let objects = pump_until(&mut app, &rx, 30, |app| {
         app.home
             .sections
@@ -900,12 +901,12 @@ fn the_cloud_section_lists_sources_and_steps_through_them() {
     assert!(bucket.contains(&format!("cloud {sep} Lab MinIO {sep} data")));
 
     // Backspace climbs back out through the source to the home listing.
-    app.event(&key(crossterm::event::KeyCode::Backspace));
+    app.event(key(crossterm::event::KeyCode::Backspace));
     assert_eq!(
         app.home.browsing.as_deref(),
         Some(std::path::Path::new("cloud://lab"))
     );
-    app.event(&key(crossterm::event::KeyCode::Esc));
+    app.event(key(crossterm::event::KeyCode::Esc));
     assert_eq!(app.home.browsing, None, "Esc from the source returns home");
 }
 
@@ -1046,7 +1047,7 @@ fn awkward_names_list_and_open() {
             for row in rows {
                 let path = row.path.to_string_lossy().into_owned();
                 match row.kind {
-                    datui::discover::EntryKind::Directory => pending.push(path),
+                    datui::home::discover::EntryKind::Directory => pending.push(path),
                     _ => files.push((row.name, path)),
                 }
             }
@@ -1079,7 +1080,7 @@ fn awkward_names_list_and_open() {
                     || (app.data_table_state.is_some() && !app.is_busy())
             });
             if app.awaiting_open_confirmation() {
-                app.event(&key(crossterm::event::KeyCode::Left));
+                app.event(key(crossterm::event::KeyCode::Left));
                 drive(&mut app, key(crossterm::event::KeyCode::Enter));
                 pump_until(&mut app, &rx, 60, |app| {
                     app.data_table_state.is_some() && !app.is_busy()
@@ -1201,7 +1202,7 @@ fn open_url_with(
         app.awaiting_open_confirmation() || (app.data_table_state.is_some() && !app.is_busy())
     });
     if app.awaiting_open_confirmation() {
-        app.event(&key(crossterm::event::KeyCode::Left));
+        app.event(key(crossterm::event::KeyCode::Left));
         drive(&mut app, key(crossterm::event::KeyCode::Enter));
         pump_until(&mut app, &rx, 120, |app| {
             app.data_table_state.is_some() && !app.is_busy()
@@ -1233,18 +1234,19 @@ fn first_openable(
         if listings == 1 && rows.is_empty() {
             return Err(format!("{dir} lists nothing"));
         }
-        let parquet =
-            |r: &datui::discover::Entry| datui::discover::is_parquet_key(&r.path.to_string_lossy());
+        let parquet = |r: &datui::home::discover::Entry| {
+            datui::home::discover::is_parquet_key(&r.path.to_string_lossy())
+        };
         if let Some(row) = rows
             .iter()
-            .filter(|r| r.kind == datui::discover::EntryKind::File)
+            .filter(|r| r.kind == datui::home::discover::EntryKind::File)
             .find(|r| parquet(r) || r.size.is_some_and(|s| s < 8 << 20))
         {
             return Ok(Some(row.path.to_string_lossy().into_owned()));
         }
         let mut dirs: Vec<String> = rows
             .iter()
-            .filter(|r| r.kind == datui::discover::EntryKind::Directory)
+            .filter(|r| r.kind == datui::home::discover::EntryKind::Directory)
             .take(3)
             .map(|r| r.path.to_string_lossy().into_owned())
             .collect();
@@ -1272,7 +1274,7 @@ fn every_public_dataset_lists_and_opens() {
         datui::OpenOptions::default().effective_cloud(&datui::config::AppConfig::default().cloud);
     let runtime = common::test_runtime();
     let mut failures = Vec::new();
-    for dataset in datui::catalog::bundled().datasets {
+    for dataset in datui::home::catalog::bundled().datasets {
         let started = std::time::Instant::now();
         let url = dataset.url.as_deref().expect("the catalog is remote");
         // A web file opens as itself; an object-store root is searched for a file.
@@ -1368,7 +1370,7 @@ fn public_datasets_browse_and_open_from_the_home_screen() {
     );
     // Out of the dataset's root: back to the listing, not up into a bucket that cannot
     // be listed.
-    app.event(&key(crossterm::event::KeyCode::Backspace));
+    app.event(key(crossterm::event::KeyCode::Backspace));
     assert_eq!(app.home.browsing, None, "back to the listing");
 
     assert!(pump_until(&mut app, &rx, 60, listed("Palmer penguins")));
@@ -1448,11 +1450,11 @@ fn public_data_quirks() {
     assert!(
         yellow
             .iter()
-            .all(|r| r.kind == datui::discover::EntryKind::Directory),
+            .all(|r| r.kind == datui::home::discover::EntryKind::Directory),
         "folder markers are not files: {:?}",
         yellow
             .iter()
-            .filter(|r| r.kind != datui::discover::EntryKind::Directory)
+            .filter(|r| r.kind != datui::home::discover::EntryKind::Directory)
             .map(|r| &r.name)
             .collect::<Vec<_>>()
     );
@@ -1604,11 +1606,12 @@ fn gcloud_projects_browse_from_the_home_screen() {
             rows(app).iter().any(|(n, _)| n == &name)
         });
         assert!(select_row(&mut app, &name));
-        app.event(&key(crossterm::event::KeyCode::Enter));
+        app.event(key(crossterm::event::KeyCode::Enter));
         pump_until(&mut app, &rx, 30, |app| {
-            app.home.browsing.as_ref().is_some_and(|b| {
-                app.home.probed.contains_key(b) || app.home.probe_errors.contains_key(b)
-            })
+            app.home
+                .browsing
+                .as_ref()
+                .is_some_and(|b| app.home.probes.settled(b))
         });
         let sep = datui::glyphs::get().trail;
         let text = screen_text(&mut app, 160, 30);
@@ -1623,19 +1626,19 @@ fn gcloud_projects_browse_from_the_home_screen() {
         if let Some((bucket, path)) = buckets.first().cloned() {
             assert!(path.to_string_lossy().starts_with("gs://"));
             assert!(select_row(&mut app, &bucket));
-            app.event(&key(crossterm::event::KeyCode::Enter));
+            app.event(key(crossterm::event::KeyCode::Enter));
             pump_until(&mut app, &rx, 30, |app| {
                 app.home
                     .browsing
                     .as_ref()
-                    .is_some_and(|b| app.home.probed.contains_key(b))
+                    .is_some_and(|b| app.home.probes.listed(b).is_some())
             });
             let text = screen_text(&mut app, 160, 30);
             assert!(
                 text.contains(&format!("{name} {sep} {bucket}")),
                 "the trail goes through the project"
             );
-            app.event(&key(crossterm::event::KeyCode::Backspace));
+            app.event(key(crossterm::event::KeyCode::Backspace));
             assert_eq!(
                 app.home
                     .browsing
@@ -1647,7 +1650,7 @@ fn gcloud_projects_browse_from_the_home_screen() {
             entered_bucket = true;
             break;
         }
-        app.event(&key(crossterm::event::KeyCode::Backspace));
+        app.event(key(crossterm::event::KeyCode::Backspace));
     }
     assert!(entered_bucket, "no project had a bucket");
 }
@@ -1671,15 +1674,15 @@ fn azure_keys_connection_strings_and_sas_tokens_open() {
         return;
     };
     let url = format!("abfss://datui-test@{account}.dfs.core.windows.net/demo/penguins.parquet");
-    let key = datui::azure::fetch_account_key(
+    let key = datui::cloud::azure::fetch_account_key(
         &account,
-        &datui::azure::AzureAuth::AzCli,
+        &datui::cloud::azure::AzureAuth::AzCli,
         &Environment::current(),
     )
     .expect("the signed-in owner can fetch the account's keys");
     assert!(!key.is_empty());
     assert_eq!(
-        datui::azure::remembered_key(&account).as_deref(),
+        datui::cloud::azure::remembered_key(&account).as_deref(),
         Some(key.as_str())
     );
 
@@ -1688,7 +1691,7 @@ fn azure_keys_connection_strings_and_sas_tokens_open() {
     let resolved = cloud_sources::resolve(&url, &config).expect("resolves");
     assert!(matches!(
         resolved.azure.auth,
-        datui::azure::AzureAuth::Key(_)
+        datui::cloud::azure::AzureAuth::Key(_)
     ));
     let headers = open_url(&url, &config).expect("opens with the key");
     assert!(headers.iter().any(|h| h == "species"), "{headers:?}");
@@ -1836,8 +1839,8 @@ fn secret_commands_env_files_and_credentials_files() {
         }],
         ..Default::default()
     };
-    assert!(datui::cloud_env::load(&file_config, dir.path()).is_empty());
-    assert_eq!(datui::cloud_env::var("DATABASE_URL"), None);
+    assert!(datui::cloud::cloud_env::load(&file_config, dir.path()).is_empty());
+    assert_eq!(datui::cloud::cloud_env::var("DATABASE_URL"), None);
     assert!(std::env::var("LAB_KEY").is_err(), "nothing is exported");
     let config = datui::OpenOptions::default().effective_cloud(&file_config);
     assert_eq!(config.s3_endpoint_url.as_deref(), Some(second));
@@ -1870,7 +1873,7 @@ fn secret_commands_env_files_and_credentials_files() {
         println!("{} projects through credentials_file", projects.len());
         assert!(!projects.is_empty());
     }
-    datui::cloud_env::load(&CloudConfig::default(), dir.path());
+    datui::cloud::cloud_env::load(&CloudConfig::default(), dir.path());
 }
 
 /// Partitioned directories in a public dataset are labelled `hive` once peeked into, open
@@ -1913,15 +1916,15 @@ fn partitioned_cloud_directories_are_hive_datasets() {
     step(&mut app, "Bitcoin and Ethereum");
     step(&mut app, "btc");
     let labelled = pump_until(&mut app, &rx, 60, |app| {
-        row_kind(app, "blocks") == Some(datui::discover::EntryKind::Hive)
-            && row_kind(app, "transactions") == Some(datui::discover::EntryKind::Hive)
+        row_kind(app, "blocks") == Some(datui::home::discover::EntryKind::Hive)
+            && row_kind(app, "transactions") == Some(datui::home::discover::EntryKind::Hive)
     });
     println!("{}", screen_text(&mut app, 120, 20));
     assert!(labelled, "blocks and transactions are partitioned by date");
 
     // → goes inside, where one row stands for the whole directory.
     assert!(select_row(&mut app, "blocks"));
-    app.event(&key(crossterm::event::KeyCode::Right));
+    app.event(key(crossterm::event::KeyCode::Right));
     assert!(
         pump_until(&mut app, &rx, 60, |app| row_kind(
             app,
@@ -1931,7 +1934,7 @@ fn partitioned_cloud_directories_are_hive_datasets() {
         "a row for every partition"
     );
     println!("{}", screen_text(&mut app, 120, 20));
-    app.event(&key(crossterm::event::KeyCode::Backspace));
+    app.event(key(crossterm::event::KeyCode::Backspace));
 
     // Enter opens the directory as one dataset, with the partition as a column.
     step(&mut app, "blocks");
@@ -1982,7 +1985,7 @@ fn partitioned_cloud_directories_are_hive_datasets() {
     let (kind, holds) = runtime
         .block_on(cloud_browse::peek_kind(&parts, &config))
         .expect("peeking a public prefix");
-    assert_eq!(kind, datui::discover::EntryKind::MultiFile);
+    assert_eq!(kind, datui::home::discover::EntryKind::MultiFile);
     assert_eq!(
         holds.one_format(),
         Some("parquet"),
@@ -2092,7 +2095,7 @@ fn a_partitioned_dataset_is_not_mistaken_for_separate_tables() {
     println!("{parts} -> {kind:?} {:?}", holds.line(true));
     assert_eq!(
         kind,
-        datui::discover::EntryKind::MultiFile,
+        datui::home::discover::EntryKind::MultiFile,
         "the parts of one snapshot are one table"
     );
 
@@ -2102,5 +2105,5 @@ fn a_partitioned_dataset_is_not_mistaken_for_separate_tables() {
         .block_on(cloud_browse::peek_kind(all, &config))
         .expect("peeking a public prefix");
     println!("{all} -> {kind:?}");
-    assert_eq!(kind, datui::discover::EntryKind::Hive);
+    assert_eq!(kind, datui::home::discover::EntryKind::Hive);
 }

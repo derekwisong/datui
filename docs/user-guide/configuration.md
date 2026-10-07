@@ -453,7 +453,7 @@ table_header_bg = "default"
 `~/Library/Caches/datui` on macOS, `%LOCALAPPDATA%\datui` on Windows) holds
 Polars warnings, the errors datui showed, internal errors with their
 backtraces, cache and history failures, and anything else written to stderr
-while the UI was up, with credentials masked. It is capped at 1 MB, the
+while the UI was up, with credentials masked. It is capped at 1 MiB, the
 previous file kept as `datui.log.1`; `datui cache clear` leaves both. On
 Windows it receives Polars warnings and datui's own messages, not other stderr
 output.

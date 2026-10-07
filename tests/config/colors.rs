@@ -1,0 +1,397 @@
+use datui::config::{ColorParser, Theme};
+use ratatui::style::Color;
+
+// Helper to ensure NO_COLOR is not set for color parsing tests
+fn ensure_colors_enabled() {
+    // SAFETY: test-only. Tests run on parallel threads, so this can race another test
+    // reading the environment; accepted in tests and never done outside them.
+    unsafe { std::env::remove_var("NO_COLOR") };
+}
+
+#[test]
+fn test_parse_basic_ansi_colors() {
+    ensure_colors_enabled();
+    let parser = ColorParser::new();
+
+    // Test basic ANSI colors
+    assert_eq!(parser.parse("black").unwrap(), Color::Black);
+    assert_eq!(parser.parse("red").unwrap(), Color::Red);
+    assert_eq!(parser.parse("green").unwrap(), Color::Green);
+    assert_eq!(parser.parse("yellow").unwrap(), Color::Yellow);
+    assert_eq!(parser.parse("blue").unwrap(), Color::Blue);
+    assert_eq!(parser.parse("magenta").unwrap(), Color::Magenta);
+    assert_eq!(parser.parse("cyan").unwrap(), Color::Cyan);
+    assert_eq!(parser.parse("white").unwrap(), Color::White);
+}
+
+#[test]
+fn test_parse_bright_colors() {
+    ensure_colors_enabled();
+    let parser = ColorParser::new();
+
+    // Test bright variants
+    assert_eq!(parser.parse("bright_red").unwrap(), Color::Indexed(9));
+    assert_eq!(parser.parse("bright red").unwrap(), Color::Indexed(9));
+    assert_eq!(parser.parse("bright_green").unwrap(), Color::Indexed(10));
+    assert_eq!(parser.parse("bright_blue").unwrap(), Color::Indexed(12));
+    assert_eq!(parser.parse("bright_cyan").unwrap(), Color::Indexed(14));
+}
+
+#[test]
+fn test_parse_gray_aliases() {
+    ensure_colors_enabled();
+    let parser = ColorParser::new();
+
+    assert_eq!(parser.parse("gray").unwrap(), Color::Indexed(8));
+    assert_eq!(parser.parse("grey").unwrap(), Color::Indexed(8));
+    assert_eq!(parser.parse("dark_gray").unwrap(), Color::Indexed(8));
+    assert_eq!(parser.parse("dark gray").unwrap(), Color::Indexed(8));
+    assert_eq!(parser.parse("light_gray").unwrap(), Color::Indexed(7));
+}
+
+#[test]
+fn test_parse_case_insensitive() {
+    ensure_colors_enabled();
+    let parser = ColorParser::new();
+
+    assert_eq!(parser.parse("RED").unwrap(), Color::Red);
+    assert_eq!(parser.parse("Red").unwrap(), Color::Red);
+    assert_eq!(parser.parse("CYAN").unwrap(), Color::Cyan);
+    assert_eq!(parser.parse("BRIGHT_RED").unwrap(), Color::Indexed(9));
+}
+
+#[test]
+fn test_parse_hex_colors() {
+    ensure_colors_enabled();
+    let parser = ColorParser::new();
+
+    // Parse hex colors - actual result depends on terminal capability
+    let result = parser.parse("#ff0000");
+    assert!(result.is_ok());
+
+    let result = parser.parse("#00ff00");
+    assert!(result.is_ok());
+
+    let result = parser.parse("#0000ff");
+    assert!(result.is_ok());
+
+    let result = parser.parse("#ffffff");
+    assert!(result.is_ok());
+
+    let result = parser.parse("#000000");
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_parse_hex_case_insensitive() {
+    ensure_colors_enabled();
+    let parser = ColorParser::new();
+
+    let result1 = parser.parse("#FF0000");
+    let result2 = parser.parse("#ff0000");
+
+    assert!(result1.is_ok());
+    assert!(result2.is_ok());
+    // Both should parse successfully (actual color may vary by terminal capability)
+}
+
+#[test]
+fn test_parse_invalid_hex() {
+    ensure_colors_enabled();
+    let parser = ColorParser::new();
+
+    // Invalid formats
+    assert!(parser.parse("#ff00").is_err()); // Too short
+    assert!(parser.parse("#ff00000").is_err()); // Too long
+    assert!(parser.parse("ff0000").is_err()); // Missing #
+    assert!(parser.parse("#gggggg").is_err()); // Invalid hex digits
+}
+
+#[test]
+fn test_parse_indexed_colors() {
+    ensure_colors_enabled();
+    let parser = ColorParser::new();
+
+    // Valid indexed colors
+    assert_eq!(parser.parse("indexed(0)").unwrap(), Color::Indexed(0));
+    assert_eq!(parser.parse("indexed(236)").unwrap(), Color::Indexed(236));
+    assert_eq!(parser.parse("indexed(255)").unwrap(), Color::Indexed(255));
+
+    // Case insensitive
+    assert_eq!(parser.parse("INDEXED(236)").unwrap(), Color::Indexed(236));
+    assert_eq!(parser.parse("Indexed(100)").unwrap(), Color::Indexed(100));
+}
+
+#[test]
+fn test_parse_invalid_indexed() {
+    ensure_colors_enabled();
+    let parser = ColorParser::new();
+
+    // Invalid indexed formats
+    assert!(parser.parse("indexed(-1)").is_err()); // Negative
+    assert!(parser.parse("indexed(abc)").is_err()); // Not a number
+    assert!(parser.parse("indexed()").is_err()); // Empty
+    assert!(parser.parse("indexed(1.5)").is_err()); // Float
+    assert!(parser.parse("indexed(999)").is_err()); // Out of range (u8 overflow)
+}
+
+#[test]
+fn test_parse_unknown_color_name() {
+    ensure_colors_enabled();
+    let parser = ColorParser::new();
+
+    let result = parser.parse("unknowncolor");
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("Unknown color"));
+}
+
+#[test]
+fn test_parse_with_whitespace() {
+    ensure_colors_enabled();
+    let parser = ColorParser::new();
+
+    // Should handle whitespace
+    assert_eq!(parser.parse("  red  ").unwrap(), Color::Red);
+    assert_eq!(parser.parse(" cyan ").unwrap(), Color::Cyan);
+}
+
+#[test]
+fn test_parse_special_modifiers() {
+    ensure_colors_enabled();
+    let parser = ColorParser::new();
+
+    // Special modifiers should parse as Reset
+    assert_eq!(parser.parse("reset").unwrap(), Color::Reset);
+    assert_eq!(parser.parse("default").unwrap(), Color::Reset);
+    assert_eq!(parser.parse("none").unwrap(), Color::Reset);
+    assert_eq!(parser.parse("reversed").unwrap(), Color::Reset);
+}
+
+#[test]
+fn test_rgb_to_256_color_grayscale() {
+    use datui::config::rgb_to_256_color;
+
+    // Black
+    let result = rgb_to_256_color(0, 0, 0);
+    assert_eq!(result, 16);
+
+    // White
+    let result = rgb_to_256_color(255, 255, 255);
+    assert_eq!(result, 231);
+
+    // Gray shades should map to grayscale ramp (232-255)
+    let result = rgb_to_256_color(128, 128, 128);
+    assert!(result >= 232 || result == 16 || result == 231);
+}
+
+#[test]
+fn test_rgb_to_256_color_primary_colors() {
+    use datui::config::rgb_to_256_color;
+
+    // Red
+    let result = rgb_to_256_color(255, 0, 0);
+    assert!((16..=231).contains(&result));
+
+    // Green
+    let result = rgb_to_256_color(0, 255, 0);
+    assert!((16..=231).contains(&result));
+
+    // Blue
+    let result = rgb_to_256_color(0, 0, 255);
+    assert!((16..=231).contains(&result));
+}
+
+#[test]
+fn test_rgb_to_basic_ansi() {
+    use datui::config::rgb_to_basic_ansi;
+
+    // Test primary colors
+    assert_eq!(rgb_to_basic_ansi(255, 0, 0), Color::Red);
+    assert_eq!(rgb_to_basic_ansi(0, 255, 0), Color::Green);
+    assert_eq!(rgb_to_basic_ansi(0, 0, 255), Color::Blue);
+
+    // Test secondary colors
+    assert_eq!(rgb_to_basic_ansi(255, 255, 0), Color::Yellow);
+    assert_eq!(rgb_to_basic_ansi(255, 0, 255), Color::Magenta);
+    assert_eq!(rgb_to_basic_ansi(0, 255, 255), Color::Cyan);
+
+    // Test grayscale
+    assert_eq!(rgb_to_basic_ansi(0, 0, 0), Color::Black);
+    assert_eq!(rgb_to_basic_ansi(255, 255, 255), Color::White);
+    assert_eq!(rgb_to_basic_ansi(30, 30, 30), Color::Black);
+    assert_eq!(rgb_to_basic_ansi(200, 200, 200), Color::White);
+}
+
+#[test]
+fn test_theme_from_config() {
+    ensure_colors_enabled();
+    use datui::config::AppConfig;
+
+    let config = AppConfig::default();
+    let result = Theme::from_config(&config.theme);
+
+    assert!(result.is_ok());
+    let theme = result.unwrap();
+
+    // Check that colors are accessible
+    assert_ne!(theme.chip_key(), Color::Reset);
+    assert_ne!(theme.error(), Color::Reset);
+    assert_ne!(theme.success(), Color::Reset);
+}
+
+#[test]
+fn test_theme_get_optional() {
+    use datui::config::AppConfig;
+
+    let config = AppConfig::default();
+    let theme = Theme::from_config(&config.theme).unwrap();
+
+    // Known color should return Some
+    assert!(theme.get_optional("chip_key").is_some());
+
+    // Unknown color should return None
+    assert!(theme.get_optional("unknown_color").is_none());
+}
+
+#[test]
+fn test_theme_with_custom_colors() {
+    use datui::config::{AppConfig, ColorConfig};
+
+    let mut config = AppConfig::default();
+    config.theme.colors = ColorConfig {
+        chip_key: "#ff0000".to_string(),
+        chip_label: "blue".to_string(),
+        throbber: "cyan".to_string(),
+        success: "bright_green".to_string(),
+        error: "red".to_string(),
+        warning: "yellow".to_string(),
+        dimmed: "dark_gray".to_string(),
+        background: "black".to_string(),
+        surface: "black".to_string(),
+        controls_bg: "indexed(236)".to_string(),
+        text_primary: "white".to_string(),
+        text_secondary: "gray".to_string(),
+        text_inverse: "black".to_string(),
+        table_header: "white".to_string(),
+        input_cursor: "default".to_string(),
+        input_cursor_text: "default".to_string(),
+        table_header_bg: "indexed(236)".to_string(),
+        table_row_numbers: "dark_gray".to_string(),
+        table_column_separator: "cyan".to_string(),
+        table_selected: "reversed".to_string(),
+        table_column_cursor: "indexed(237)".to_string(),
+        table_cell_cursor: "indexed(239)".to_string(),
+        sidebar_border: "cyan".to_string(),
+        modal_border_active: "yellow".to_string(),
+        modal_border_error: "red".to_string(),
+        distribution_normal: "green".to_string(),
+        distribution_skewed: "yellow".to_string(),
+        distribution_other: "white".to_string(),
+        outlier_marker: "red".to_string(),
+        table_alternate_row: "default".to_string(),
+        type_str: "green".to_string(),
+        type_int: "cyan".to_string(),
+        type_float: "blue".to_string(),
+        type_bool: "yellow".to_string(),
+        type_temporal: "magenta".to_string(),
+        type_binary: "dark_gray".to_string(),
+        chart_1: "cyan".to_string(),
+        chart_2: "magenta".to_string(),
+        chart_3: "green".to_string(),
+        chart_4: "yellow".to_string(),
+        chart_5: "blue".to_string(),
+        chart_6: "red".to_string(),
+        chart_7: "bright_cyan".to_string(),
+        chart_8: "bright_green".to_string(),
+        chart_9: "bright_magenta".to_string(),
+        chart_10: "bright_yellow".to_string(),
+        chart_grid: "dark_gray".to_string(),
+        accent: "cyan".to_string(),
+        accent_bright: "bright_cyan".to_string(),
+        gradient_start: "blue".to_string(),
+        gradient_end: "magenta".to_string(),
+        find_match: "yellow".to_string(),
+        hex_null: "dark_gray".to_string(),
+        hex_printable: "cyan".to_string(),
+        hex_whitespace: "green".to_string(),
+        hex_control: "magenta".to_string(),
+        hex_high: "yellow".to_string(),
+        hex_ff: "red".to_string(),
+    };
+
+    let result = Theme::from_config(&config.theme);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_theme_with_invalid_color() {
+    ensure_colors_enabled();
+    use datui::config::AppConfig;
+
+    let mut config = AppConfig::default();
+    config.theme.colors.chip_key = "invalid_color_name".to_string();
+
+    let result = Theme::from_config(&config.theme);
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("Unknown color name")
+    );
+}
+
+#[test]
+fn test_parse_hex_component_extraction() {
+    ensure_colors_enabled();
+    let parser = ColorParser::new();
+
+    // Test that hex parsing extracts correct RGB values
+    // We can't directly test the RGB values without exposing internal functions,
+    // but we can verify that different hex values produce different results
+    let red = parser.parse("#ff0000").unwrap();
+    let green = parser.parse("#00ff00").unwrap();
+    let blue = parser.parse("#0000ff").unwrap();
+
+    // These should all be different colors (unless terminal doesn't support color)
+    // We just verify they all parse successfully
+    assert!(matches!(
+        red,
+        Color::Rgb(_, _, _) | Color::Indexed(_) | Color::Red | Color::Reset
+    ));
+    assert!(matches!(
+        green,
+        Color::Rgb(_, _, _) | Color::Indexed(_) | Color::Green | Color::Reset
+    ));
+    assert!(matches!(
+        blue,
+        Color::Rgb(_, _, _) | Color::Indexed(_) | Color::Blue | Color::Reset
+    ));
+}
+
+#[test]
+fn test_parse_rejects_non_ascii_seven_byte_strings() {
+    // Found by the `config_parse` fuzz target. `#` plus a four-byte emoji plus two
+    // ASCII characters is seven *bytes*, which is what the hex guard measured, so the
+    // parser went on to slice at fixed byte offsets and split the emoji in half.
+    // Every one of these must be a clean error, not a panic.
+    ensure_colors_enabled();
+    let parser = ColorParser::new();
+
+    for input in [
+        "#\u{1f600}xy",
+        "#x\u{1f600}y",
+        "#xy\u{1f600}",
+        "#\u{e9}\u{1f600}",
+        "#\u{e9}\u{e9}\u{e9}",
+    ] {
+        assert_eq!(input.len(), 7, "{input:?} should be seven bytes");
+        assert!(
+            parser.parse(input).is_err(),
+            "{input:?} should be rejected as a colour"
+        );
+    }
+
+    // The valid form still works.
+    assert!(parser.parse("#ff0000").is_ok());
+}

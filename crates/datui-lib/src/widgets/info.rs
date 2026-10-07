@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use polars::prelude::*;
 
-use crate::parquet_footer::Footer;
+use crate::formats::parquet_footer::Footer;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::prelude::Stylize;
@@ -16,9 +16,9 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{HighlightSpacing, Paragraph, Row, StatefulWidget, Table, Widget};
 
-use super::datatable::DataTableState;
-use crate::export_modal::ExportFormat;
+use crate::export::export_modal::ExportFormat;
 use crate::render::context::RenderContext;
+use crate::table::DataTableState;
 use crate::widgets::ui::{HintBar, SectionRule, Surface};
 
 /// One drawn line of the Notes tab.
@@ -28,23 +28,15 @@ struct NoteRow {
     dim: bool,
 }
 
-/// Which notes to draw, as a half-open range.
+/// Which notes to draw, as a half-open range. `heights` are each note's rows (a blank
+/// line between notes), `stored` the last scroll, `show` the rows available.
+/// Guarantees:
 ///
-/// `heights` is each note's rows; a blank line sits between adjacent notes. `stored` is
-/// where the panel was last scrolled to, and `show` the rows available.
-///
-/// Guarantees, whatever it is given:
-///
-/// - `first <= selected < last`, so the note the cursor is on is always drawn;
-/// - the notes in the range fit `show` rows, unless the range is one note that does not
-///   fit on its own — then it is drawn as far as it goes, since leaving it out would
-///   make it unreachable;
-/// - `last` is as large as it can be, so rows are never left blank while a whole note
-///   is out of view.
-///
-/// Review after review found defects in this arithmetic when it was inline in the
-/// render, expressed in rows and mixed with drawing. It is a function so the rules
-/// above can be checked directly rather than through a terminal.
+/// - `first <= selected < last`: the cursor's note is always drawn;
+/// - the range fits `show`, unless it is one note too tall alone (drawn as far as it
+///   goes, else unreachable);
+/// - `last` is as large as possible, never leaving rows blank while a whole note is
+///   hidden.
 fn notes_window(heights: &[usize], selected: usize, stored: usize, show: usize) -> (usize, usize) {
     if heights.is_empty() {
         return (0, 0);
@@ -96,13 +88,9 @@ fn note_rows(note: &crate::notes::Note, selected: bool, width: usize) -> Vec<Not
     rows
 }
 
-/// Break `text` on spaces so no line runs past `width` columns.
-///
-/// Measured in columns rather than characters: a column name can be any text the data
-/// holds, and a name whose characters are double-width would otherwise be clipped by
-/// the terminal after this said it fitted. A single word longer than the panel is left
-/// whole rather than split mid-word, though the terminal still clips what runs past
-/// the edge — the wrapping protects the note's height, not a single long word.
+/// Break `text` on spaces so no line passes `width` columns, measured in columns
+/// (double-width names). A word longer than the panel stays whole (the terminal clips
+/// it): wrapping protects the note's height.
 pub(crate) fn wrap_to(text: &str, width: usize) -> Vec<String> {
     use unicode_width::UnicodeWidthStr;
     if width == 0 {
@@ -158,10 +146,9 @@ pub(crate) fn short_count(n: u64) -> String {
     n.to_string()
 }
 
-/// Break one line of text into lines no wider than `width` columns, between words: the
-/// spaces at a break are dropped, and leading spaces (a template's indentation) kept.
-/// Only a word wider than `width` is broken, where it reaches the edge, so a long URL
-/// or hash is shown whole rather than clipped.
+/// Break one line into lines of at most `width` columns between words, dropping
+/// break spaces and keeping leading indentation. Only a word wider than `width` is
+/// broken, at the edge, so a long URL or hash shows whole.
 fn wrap_words(text: &str, width: usize) -> Vec<String> {
     use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
     let mut lines = Vec::new();
@@ -219,8 +206,8 @@ fn wrap_words(text: &str, width: usize) -> Vec<String> {
 }
 
 /// One metadata value as text: an array that was listed, or how long it is.
-pub(crate) fn meta_text(value: &crate::model_files::MetaValue) -> String {
-    use crate::model_files::MetaValue;
+pub(crate) fn meta_text(value: &crate::formats::model_files::MetaValue) -> String {
+    use crate::formats::model_files::MetaValue;
     match value {
         MetaValue::Text(text) => text.clone(),
         MetaValue::List { of, len, items } if items.len() as u64 == *len && *len > 0 => {
@@ -235,16 +222,15 @@ pub(crate) fn meta_text(value: &crate::model_files::MetaValue) -> String {
     }
 }
 
-/// The most of one metadata value a detail tab draws. A chat template is a few KB and
-/// is shown whole; a GGUF can carry a whole `tokenizer.json` as one string, megabytes
-/// that would be wrapped again on every frame.
+/// The most of one metadata value a detail tab draws: a chat template shows whole, a
+/// GGUF's embedded `tokenizer.json` (megabytes) would be rewrapped every frame.
 pub(crate) const VALUE_SHOWN_BYTES: usize = 64 * 1024;
 
-/// The metadata as drawn lines: the key on a value's first line, blank under it, and
-/// each value cut at its own newlines and wrapped to what is left of `width`. A value
-/// past [`VALUE_SHOWN_BYTES`] ends with a line saying how much more there is.
+/// Metadata as drawn lines: the key on a value's first line, each value split at its
+/// newlines and wrapped to the rest of `width`; past [`VALUE_SHOWN_BYTES`] a line says
+/// how much more.
 pub(crate) fn metadata_lines(
-    metadata: &[(String, crate::model_files::MetaValue)],
+    metadata: &[(String, crate::formats::model_files::MetaValue)],
     width: usize,
 ) -> Vec<(String, String)> {
     use unicode_width::UnicodeWidthStr;
@@ -254,12 +240,16 @@ pub(crate) fn metadata_lines(
     let value_width = width.saturating_sub(key_width + 2).max(1);
     let mut out = Vec::new();
     for (key, value) in metadata {
-        let key_cell = format!("{:<w$}  ", clip(key, key_width), w = key_width);
+        let key_cell = format!(
+            "{:<w$}  ",
+            crate::glyphs::fit(key, key_width),
+            w = key_width
+        );
         let blank = " ".repeat(key_width + 2);
         // Borrowed, not copied: this runs every frame.
         let listed;
         let text = match value {
-            crate::model_files::MetaValue::Text(text) => text.as_str(),
+            crate::formats::model_files::MetaValue::Text(text) => text.as_str(),
             other => {
                 listed = meta_text(other);
                 listed.as_str()
@@ -293,7 +283,7 @@ pub(crate) fn metadata_lines(
             let g = crate::glyphs::get();
             out.push((
                 blank,
-                format!("{} {} more", g.ellipsis, format_bytes(more as u64)),
+                format!("{} {} more", g.ellipsis, crate::numfmt::bytes(more as u64)),
             ));
         }
     }
@@ -311,31 +301,14 @@ pub(crate) fn clock(seconds: f64) -> String {
     }
 }
 
-/// Human-readable byte size (e.g. "1.2 MiB", "456 KiB").
-pub fn format_bytes(n: u64) -> String {
-    const K: u64 = 1024;
-    const M: u64 = K * K;
-    const G: u64 = M * K;
-    if n >= G {
-        format!("{:.1} GiB", n as f64 / G as f64)
-    } else if n >= M {
-        format!("{:.1} MiB", n as f64 / M as f64)
-    } else if n >= K {
-        format!("{:.1} KiB", n as f64 / K as f64)
-    } else {
-        format!("{} B", n)
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InfoTab {
     #[default]
     Schema,
     /// A delimited spec's metadata line, as key and value.
     Metadata,
-    /// What the file says besides its rows, as its reader found it
-    /// ([`crate::text_formats::Detail`]): a model's totals, a VCD header. Titled by
-    /// the detail.
+    /// What the file says besides its rows ([`crate::formats::text_formats::Detail`]): a model's
+    /// totals, a VCD header. Titled by the detail.
     Format,
     Resources,
     Partitions,
@@ -378,9 +351,8 @@ impl TabsOffered {
 }
 
 impl InfoTab {
-    /// The tabs on offer, in order: the file's own tab only when it says something
-    /// besides its rows, beside the schema it explains; Partitions only for a
-    /// partitioned dataset; Notes only when datui has something to say about the data.
+    /// The tabs on offer, in order: the file's own tab when it says something (beside the
+    /// schema), Partitions for partitioned data, Notes when datui has notes.
     pub fn visible(offered: TabsOffered) -> Vec<InfoTab> {
         let mut tabs = vec![InfoTab::Schema];
         if offered.documentation {
@@ -439,7 +411,6 @@ impl InfoTab {
 /// Modal state for the Info panel: focus, tab, schema table selection/scroll.
 #[derive(Default)]
 pub struct InfoModal {
-    pub active: bool,
     pub active_tab: InfoTab,
     pub schema_selected_index: usize,
     pub schema_scroll_offset: usize,
@@ -456,9 +427,8 @@ pub struct InfoModal {
     pub detail_scroll: usize,
     /// The list lines a detail tab last had room for; set during render.
     pub detail_visible: usize,
-    /// The entry the cursor is on, in a detail tab whose list is the file's tables
-    /// (Excel's worksheets, SQLite's tables), where Enter opens one. The render clamps
-    /// it and keeps it in view.
+    /// The cursor in a detail tab listing the file's tables (worksheets, SQLite tables),
+    /// where Enter opens one; the render clamps it and keeps it in view.
     pub detail_selected: usize,
 }
 
@@ -474,7 +444,6 @@ impl InfoModal {
     /// Open with `tab` in front. The accented `i` chip promises unread notes;
     /// arriving on the Schema tab instead made the reader hunt for them.
     pub fn open_on(&mut self, tab: InfoTab) {
-        self.active = true;
         self.active_tab = tab;
         self.schema_selected_index = 0;
         self.schema_scroll_offset = 0;
@@ -483,10 +452,6 @@ impl InfoModal {
         self.notes_scroll_offset = 0;
         self.detail_scroll = 0;
         self.detail_selected = 0;
-    }
-
-    pub fn close(&mut self) {
-        self.active = false;
     }
 
     /// Switch to the next of the tabs on offer.
@@ -515,16 +480,8 @@ impl InfoModal {
         self.detail_scroll = self.detail_scroll.saturating_add_signed(delta);
     }
 
-    /// Scroll a detail tab's list by a page.
-    pub fn detail_page(&mut self, down: bool) {
-        let page = self.detail_visible.max(1) as isize;
-        self.detail_scroll_by(if down { page } else { -page });
-    }
-
-    /// Move the cursor through the notes. Returns true when something changed.
-    ///
-    /// Only the index moves: the render scrolls to whatever is selected, so how tall a
-    /// note happens to be can never decide how far the cursor may go.
+    /// Move the cursor through the notes; true if changed. Only the index moves: the render
+    /// scrolls to the selection, so note heights never limit the cursor.
     pub fn notes_move(&mut self, delta: isize, total: usize) -> bool {
         if total == 0 {
             return false;
@@ -598,13 +555,9 @@ impl InfoModal {
     }
 }
 
-/// What the open file says about itself beyond its rows: its size on disk and, for a
-/// format whose reader has a facts read ([`crate::readers::Reader::facts`]), its tab
-/// of this panel and the footer it was made from.
-///
-/// Read on a worker, once per dataset, and drawn from here. A stat or a footer read on a
-/// mount that has stopped answering hangs the thread that makes it, so neither is made
-/// where keys are read or frames drawn (#457).
+/// What the open file says beyond its rows: its size and, where its reader has a facts
+/// read (`crate::formats::readers::Reader::facts`), its tab and the footer behind it. Read on a
+/// worker once per dataset: a stat or footer read on a dead mount hangs its thread.
 #[derive(Debug, Clone)]
 pub enum FileFacts {
     /// Asked for; the worker has not answered.
@@ -617,7 +570,7 @@ pub enum FileFacts {
         /// format without one.
         footer: Option<Footer>,
         /// The format's tab, made from what the read found.
-        detail: Option<Arc<crate::text_formats::Detail>>,
+        detail: Option<Arc<crate::formats::text_formats::Detail>>,
     },
     /// The read failed, and why. Kept for the dataset rather than asked again: a file
     /// that could not be read a moment ago is not worth a read per frame.
@@ -625,14 +578,11 @@ pub enum FileFacts {
 }
 
 impl FileFacts {
-    /// Stat `path` and, with `facts`, its format's facts read. Blocking: call it on a
-    /// worker.
-    ///
-    /// The reason for a failure is short enough for the panel's one line; the whole
-    /// error goes to the log.
+    /// Stat `path` and, with `facts`, read its format's facts. Blocking: call on a worker.
+    /// Failures are short for the panel's line; the full error is logged.
     pub(crate) fn read(
         path: &Path,
-        facts: Option<crate::readers::Facts>,
+        facts: Option<crate::formats::readers::Facts>,
     ) -> std::result::Result<Self, String> {
         let io = |e: std::io::Error| {
             log::warn!(target: "datui", "file size of {}: {e}", path.display());
@@ -662,7 +612,7 @@ impl FileFacts {
                 log::warn!(target: "datui", "footer of {}: {e}", path.display());
                 "unreadable footer".to_string()
             })?,
-            None => crate::readers::FormatFacts::default(),
+            None => crate::formats::readers::FormatFacts::default(),
         };
         Ok(Self::Read {
             size: Some(meta.len()),
@@ -672,27 +622,8 @@ impl FileFacts {
     }
 }
 
-/// `text` cut to `room` columns, with the ellipsis glyph saying where.
-fn clip(text: &str, room: usize) -> String {
-    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-    if text.width() <= room {
-        return text.to_string();
-    }
-    let mark = crate::glyphs::get().ellipsis;
-    let mut kept = String::new();
-    for ch in text.chars() {
-        if kept.width() + ch.width().unwrap_or(0) + mark.width() > room {
-            break;
-        }
-        kept.push(ch);
-    }
-    kept + mark
-}
-
-/// Context for the info panel: the format, and what the file says about itself.
-///
-/// What the open cost is not here: it belongs to the dataset, and the panel already
-/// has the dataset.
+/// Context for the info panel: the format and what the file says. Open costs belong to
+/// the dataset, which the panel already has.
 pub struct InfoContext<'a> {
     pub format: Option<ExportFormat>,
     /// The file declares its columns' types, as its format's descriptor says.
@@ -700,9 +631,8 @@ pub struct InfoContext<'a> {
     /// `None` when there is no one file on this machine to ask: a remote source, a
     /// glob, or a dataset opened from several paths.
     pub facts: Option<&'a FileFacts>,
-    /// The format's tab that the facts fill, for one local file whose reader has a
-    /// facts read: offered, named and given its room before they land, so nothing moves
-    /// when they do.
+    /// The format's tab the facts fill (one local file with a facts read), offered, named
+    /// and sized before they land so nothing moves.
     pub facts_tab: Option<&'static str>,
     /// The facts read a footer that gives the Compression column, whose room is kept
     /// while it is read.
@@ -728,7 +658,7 @@ impl<'a> InfoContext<'a> {
     }
 
     /// The format's tab the facts made, once it has landed.
-    fn facts_detail(&self) -> Option<&'a crate::text_formats::Detail> {
+    fn facts_detail(&self) -> Option<&'a crate::formats::text_formats::Detail> {
         match self.facts? {
             FileFacts::Read { detail, .. } => detail.as_deref(),
             FileFacts::Reading | FileFacts::Failed(_) => None,
@@ -751,11 +681,11 @@ pub struct DataTableInfo<'a> {
     /// The dataset is delimited text, whose first row `H` reads the other way.
     pub header_toggle: bool,
     /// What the columns mean, from the catalog that lists the dataset.
-    pub codebook: Option<&'a crate::codebook::Codebook>,
+    pub codebook: Option<&'a crate::home::codebook::Codebook>,
     /// The Documentation tab's page, when a catalog lists the dataset.
     pub documentation: Option<&'a mut crate::widgets::documentation::DocState>,
     /// The row count from a sample of the dataset's footers, until it is counted.
-    pub estimate: Option<crate::schema_union::RowEstimate>,
+    pub estimate: Option<crate::formats::schema_union::RowEstimate>,
 }
 
 /// The Resources tab's `Read:` value: how the open reads the data, and that a remote
@@ -769,12 +699,9 @@ fn read_line(state: &DataTableState) -> Option<String> {
     })
 }
 
-/// The first line of the Schema tab: the dataset's size, or that it does not know yet.
-///
-/// Told `None` rather than a number, because what a state holds before it has been
-/// counted is how far its buffer reached — printed under a heading that says "total",
-/// that reads as the size of the dataset. On a directory of thousands of files still
-/// being counted it would say `Rows (total): 70` beside a control bar showing a spinner.
+/// The Schema tab's first line: the size, or that it is not known yet. `None` rather
+/// than an uncounted state's number, which is only how far the buffer reached (`Rows
+/// (total): 70` beside a counting spinner).
 fn rows_and_columns(rows: Option<usize>, columns: usize) -> String {
     let middot = crate::glyphs::get().middot;
     match rows {
@@ -790,13 +717,13 @@ fn rows_and_columns(rows: Option<usize>, columns: usize) -> String {
 /// [`rows_and_columns`] for a count estimated from a sample of footers, with how many
 /// were read and the key that counts them all.
 fn estimated_rows_and_columns(
-    estimate: crate::schema_union::RowEstimate,
+    estimate: crate::formats::schema_union::RowEstimate,
     columns: usize,
 ) -> String {
     let middot = crate::glyphs::get().middot;
     format!(
         "Rows (total): ~{} (est. from {} of {} files; c counts) {middot} Columns: {columns}",
-        crate::discover::format_rows(estimate.rows as usize),
+        crate::home::discover::format_rows(estimate.rows as usize),
         format_int(estimate.sampled),
         format_int(estimate.files),
     )
@@ -823,7 +750,7 @@ impl<'a> DataTableInfo<'a> {
     }
 
     /// The codebook, when it has a note for one of the columns on screen.
-    fn codebook_here(&self) -> Option<&'a crate::codebook::Codebook> {
+    fn codebook_here(&self) -> Option<&'a crate::home::codebook::Codebook> {
         self.codebook
             .filter(|book| book.covers(self.state.schema().iter_names().map(|n| n.as_str())))
     }
@@ -895,7 +822,7 @@ impl<'a> DataTableInfo<'a> {
                         // The last line that fits carries the rest, cut with the ellipsis.
                         let rest = wrapped[left - 1..].join(" ");
                         wrapped.truncate(left - 1);
-                        wrapped.push(clip(&rest, width));
+                        wrapped.push(crate::glyphs::fit(&rest, width));
                     }
                     lines.extend(wrapped);
                 }
@@ -903,7 +830,7 @@ impl<'a> DataTableInfo<'a> {
             None => lines.push(format!("{name}: not documented")),
         }
         for (i, line) in lines.iter().take(rows).enumerate() {
-            Paragraph::new(clip(line, width))
+            Paragraph::new(crate::glyphs::fit(line, width))
                 .style(Style::default().fg(self.theme.text_secondary))
                 .render(
                     Rect {
@@ -937,7 +864,7 @@ impl<'a> DataTableInfo<'a> {
         if let Some(book) = self.codebook_here()
             && !book.source.is_empty()
         {
-            lines.push(clip(
+            lines.push(crate::glyphs::fit(
                 &format!("Documentation: {}", book.source),
                 area.width as usize,
             ));
@@ -969,9 +896,8 @@ impl<'a> DataTableInfo<'a> {
             }
             None => self.ctx.schema_source().to_string(),
         };
-        // Per column, how many of the footers read carry it. Only a dataset of files
-        // can vary this per column; for a single file the dataset-level fact already
-        // sits in the block title, so no column repeats it.
+        // Per column, how many read footers carry it; only multi-file datasets vary (a single
+        // file's fact is in the block title).
         let presence = dataset.map(|dataset| {
             let readable = dataset.files.saturating_sub(dataset.unreadable.len());
             let present_by_name: HashMap<&str, usize> = dataset
@@ -983,7 +909,10 @@ impl<'a> DataTableInfo<'a> {
         });
         let has_files = presence.is_some();
         let compression = self.ctx.footer().map(|m| {
-            crate::parquet_footer::column_compression(m.as_ref(), self.state.schema().as_ref())
+            crate::formats::parquet_footer::column_compression(
+                m.as_ref(),
+                self.state.schema().as_ref(),
+            )
         });
         // Kept for a file whose footer is still out, so the columns do not re-proportion
         // when it lands.
@@ -1025,9 +954,8 @@ impl<'a> DataTableInfo<'a> {
         };
         let visible_height = inner.height as usize;
 
-        // One row of header; one more reserved for the out-of-view count when
-        // the columns do not all fit, so their existence is stated before any
-        // scrolling ("… 3 more" beats half a schema presented as whole).
+        // One header row, plus one for the out-of-view count when columns overflow, so hidden
+        // columns are stated before scrolling.
         let fits = total_rows <= visible_height.saturating_sub(1);
         let data_height = visible_height.saturating_sub(1 + usize::from(!fits));
         self.modal.schema_visible_height = data_height;
@@ -1114,9 +1042,8 @@ impl<'a> DataTableInfo<'a> {
                 (false, false) => vec![Constraint::Percentage(50), Constraint::Percentage(50)],
             }
         };
-        // The rail and the tint while the table has focus; the accent alone when
-        // it does not, so the cursor stays visible without claiming focus. The
-        // rail's column is kept either way, so focus arriving moves nothing.
+        // Rail and tint while focused; accent alone otherwise, the rail's column kept so
+        // focus moves nothing.
         let g = crate::glyphs::get();
         let (highlight, symbol) = if body_focused {
             (self.theme.highlight_style(), g.selector)
@@ -1138,7 +1065,7 @@ impl<'a> DataTableInfo<'a> {
             if let Some(col) = cols.get(about) {
                 for cells in &mut rows {
                     if let Some(cell) = cells.get_mut(about) {
-                        *cell = clip(cell, col.width as usize);
+                        *cell = crate::glyphs::fit(cell, col.width as usize);
                     }
                 }
             }
@@ -1219,12 +1146,12 @@ impl<'a> DataTableInfo<'a> {
             None | Some(FileFacts::Read { size: None, .. }) => Span::raw(crate::glyphs::get().dash),
             Some(FileFacts::Read {
                 size: Some(size), ..
-            }) => Span::raw(format_bytes(*size)),
+            }) => Span::raw(crate::numfmt::bytes(*size)),
             Some(FileFacts::Reading) => {
                 Span::styled("reading...", Style::default().fg(self.theme.dimmed))
             }
             Some(FileFacts::Failed(why)) => Span::styled(
-                clip(why, size_chunks[1].width as usize),
+                crate::glyphs::fit(why, size_chunks[1].width as usize),
                 Style::default().fg(self.theme.error),
             ),
         };
@@ -1330,7 +1257,7 @@ impl<'a> DataTableInfo<'a> {
                 .unwrap_or_else(|| {
                     self.state
                         .buffered_memory_bytes()
-                        .map(|b| format_bytes(b as u64))
+                        .map(|b| crate::numfmt::bytes(b as u64))
                         .unwrap_or_else(|| crate::glyphs::get().dash.to_string())
                 });
             Paragraph::new(value).render(mb_chunks[1], buf);
@@ -1340,12 +1267,9 @@ impl<'a> DataTableInfo<'a> {
         self.render_measurements(area, buf, &mut y, LABEL_WIDTH);
     }
 
-    /// What the open cost, under its own heading at the foot of the tab.
-    ///
-    /// Only what was measured: a row appears for a stretch of work that happened, and a
-    /// stretch that made no requests of its own shows a time and a count and stops
-    /// there. A figure datui cannot stand behind is not shown as a zero — see
-    /// [`crate::measurements`] and `docs/user-guide/dataset-info.md`.
+    /// What the open cost, under its heading at the tab's foot. Only what was measured: no
+    /// zeros for figures datui cannot stand behind (see [`crate::loading::measurements`] and
+    /// `docs/user-guide/dataset-info.md`).
     fn render_measurements(&self, area: Rect, buf: &mut Buffer, y: &mut u16, label_w: u16) {
         let meter = self.state.measurements();
         let mut rows: Vec<(&str, String)> = [
@@ -1365,11 +1289,8 @@ impl<'a> DataTableInfo<'a> {
             return;
         }
         let bottom = area.y + area.height;
-        // The heading and at least one row, or neither: a heading alone says a section
-        // was cut off where there may have been nothing to cut. The blank line is at
-        // `y`, the heading at `y + 1` and the first row at `y + 2`, so all three have
-        // to fit — for every tab layout there is exactly one height at which checking
-        // any fewer leaves a bare heading.
+        // The heading with at least one row, or neither: blank at `y`, heading at `y + 1`,
+        // first row at `y + 2` must all fit.
         if *y + 2 >= bottom {
             return;
         }
@@ -1427,19 +1348,25 @@ impl<'a> DataTableInfo<'a> {
         if let Some(file) = &read.facts_from {
             lines.push((format!("From {file}"), Style::default()));
         }
-        let shown: Vec<(String, crate::model_files::MetaValue)> = if metadata.pairs.is_empty() {
-            let line = read.delimited().metadata_line.unwrap_or(1);
-            vec![(
-                format!("line {line}"),
-                crate::model_files::MetaValue::Text(metadata.raw.clone()),
-            )]
-        } else {
-            metadata
-                .pairs
-                .iter()
-                .map(|(k, v)| (k.clone(), crate::model_files::MetaValue::Text(v.clone())))
-                .collect()
-        };
+        let shown: Vec<(String, crate::formats::model_files::MetaValue)> =
+            if metadata.pairs.is_empty() {
+                let line = read.delimited().metadata_line.unwrap_or(1);
+                vec![(
+                    format!("line {line}"),
+                    crate::formats::model_files::MetaValue::Text(metadata.raw.clone()),
+                )]
+            } else {
+                metadata
+                    .pairs
+                    .iter()
+                    .map(|(k, v)| {
+                        (
+                            k.clone(),
+                            crate::formats::model_files::MetaValue::Text(v.clone()),
+                        )
+                    })
+                    .collect()
+            };
         self.render_detail(area, buf, &lines, "Metadata", &shown);
     }
 
@@ -1457,7 +1384,7 @@ impl<'a> DataTableInfo<'a> {
                     Style::default().fg(self.theme.dimmed),
                 ),
             };
-            Paragraph::new(clip(&said, area.width as usize))
+            Paragraph::new(crate::glyphs::fit(&said, area.width as usize))
                 .style(style)
                 .render(
                     Rect {
@@ -1479,16 +1406,15 @@ impl<'a> DataTableInfo<'a> {
         self.render_detail_list(area, buf, &lines, detail.list_title, &detail.list, pick);
     }
 
-    /// A detail tab's head lines, then a blank line, a rule titled `title` and the list
-    /// as key and value, scrolled by `detail_scroll`. Each value is drawn whole: it
-    /// wraps over as many lines as it takes.
+    /// A detail tab: head lines, a blank, a rule titled `title`, then the key/value list
+    /// scrolled by `detail_scroll`, each value wrapped whole.
     fn render_detail(
         &mut self,
         area: Rect,
         buf: &mut Buffer,
         lines: &[(String, Style)],
         title: &str,
-        list: &[(String, crate::model_files::MetaValue)],
+        list: &[(String, crate::formats::model_files::MetaValue)],
     ) {
         self.render_detail_list(area, buf, lines, title, list, false);
     }
@@ -1501,7 +1427,7 @@ impl<'a> DataTableInfo<'a> {
         buf: &mut Buffer,
         lines: &[(String, Style)],
         title: &str,
-        list: &[(String, crate::model_files::MetaValue)],
+        list: &[(String, crate::formats::model_files::MetaValue)],
         pick: bool,
     ) {
         if area.height == 0 || area.width < 8 {
@@ -1516,14 +1442,16 @@ impl<'a> DataTableInfo<'a> {
                 if y >= bottom {
                     return;
                 }
-                Paragraph::new(clip(&part, width)).style(*style).render(
-                    Rect {
-                        y,
-                        height: 1,
-                        ..area
-                    },
-                    buf,
-                );
+                Paragraph::new(crate::glyphs::fit(&part, width))
+                    .style(*style)
+                    .render(
+                        Rect {
+                            y,
+                            height: 1,
+                            ..area
+                        },
+                        buf,
+                    );
                 y += 1;
             }
         }
@@ -1635,15 +1563,9 @@ impl<'a> DataTableInfo<'a> {
         }
     }
 
-    /// What datui noticed: each note's summary and the line saying what it is based on.
-    ///
-    /// Whole notes only. A note half on screen is worse than one left off: a claim with
-    /// no basis under it, and a basis with no claim above it, are both the misreading
-    /// the basis exists to prevent. Which notes those are is [`notes_window`]'s job,
-    /// and its post-conditions are what make that true.
-    ///
-    /// Deliberately plain: no error styling, nothing that reads as an alarm. These are
-    /// observations about the data, not faults in it.
+    /// What datui noticed: each note's summary and its basis line. Whole notes only (a
+    /// claim without its basis, or the reverse, misleads), as [`notes_window`] ensures.
+    /// Plain styling: observations, not alarms.
     fn render_notes_tab(&mut self, area: Rect, buf: &mut Buffer) {
         let notes = self.state.notes();
         if area.height == 0 || area.width <= 4 || notes.is_empty() {
@@ -1659,18 +1581,12 @@ impl<'a> DataTableInfo<'a> {
         let heights: Vec<usize> = blocks.iter().map(Vec::len).collect();
         let dim = Style::default().fg(self.theme.dimmed);
 
-        // Try the whole panel first. Only when that leaves notes out is a row needed
-        // to count them, and only then do the notes have one row fewer — deciding it
-        // in advance spent a row that a note which exactly fitted could have used.
+        // Try the whole panel first; reserve a count row only when notes are left out.
         let full = area.height as usize;
         let (first, last) = notes_window(&heights, selected, self.modal.notes_scroll_offset, full);
         let all_shown = first == 0 && last == heights.len();
-        // A row for the count of what is hidden, but only when something is hidden and
-        // the note can spare it. A note that exactly fills the panel keeps its last
-        // row: saying "no room to show one" about a note that fits is worse than not
-        // saying how many are behind it.
-        // A row is worth spending on the offer too: a note that says a column is not
-        // read from some files, with no way to see what is there, is half a note.
+        // A row for the hidden count only when something is hidden and the note can spare it,
+        // and for the read-as-text offer, without which the note is half a note.
         let offer = notes[selected]
             .read_as_text
             .as_ref()
@@ -1678,10 +1594,8 @@ impl<'a> DataTableInfo<'a> {
         let reserve = (!all_shown || offer.is_some()) && heights[selected] < full;
         let show = if reserve { full - 1 } else { full };
         if heights[selected] > show {
-            // The note the cursor is on cannot show its summary and the line it rests
-            // on. Drawing the summary alone would be a claim from nowhere, so say what
-            // is there instead. Says "this one", not "one": a shorter note elsewhere in
-            // the list may well fit, and the cursor can be moved to it.
+            // The selected note cannot show summary and basis: say so ("this one": another note
+            // may fit).
             let count = notes.len();
             Paragraph::new(Line::from(Span::styled(
                 format!(
@@ -1726,11 +1640,8 @@ impl<'a> DataTableInfo<'a> {
             }
         }
 
-        // The offer and the count of what is out of view share the last row, so the
-        // room goes to the count first and the offer takes what is left. The count is
-        // a handful of characters and the offer is as long as a column name; giving
-        // the offer its width first would push the count off the edge, and the two
-        // drawn over each other read as neither.
+        // The offer and the hidden count share the last row: the short count first, the offer
+        // gets the rest, so neither overwrites the other.
         let (above, below) = (first, notes.len() - last);
         let hidden = match (reserve, above, below) {
             (false, _, _) | (_, 0, 0) => None,
@@ -1758,9 +1669,7 @@ impl<'a> DataTableInfo<'a> {
             .unwrap_or(0);
         if let Some(offer) = offer.as_ref() {
             let room = last_row.width.saturating_sub(taken) as usize;
-            // Cut with a mark, never silently. `Enter  read measurement_value` is a
-            // whole sentence that has lost `as text`, and `Enter  read me` is an offer
-            // about a column called `me`; both read as something datui did not say.
+            // Cut with a mark, never silently: a truncated offer can read as a different one.
             let offer = if offer.width() > room {
                 // Cut by width rather than by word: the spacing after the key name is
                 // part of how the line reads, and wrapping would close it up.
@@ -1837,24 +1746,13 @@ impl<'a> DataTableInfo<'a> {
     }
 }
 
-/// How long a stretch took, in a unit that does not round it away.
-///
-/// Milliseconds under a second, to two places. Most of these figures are under a
-/// second — a local directory of a few files is walked in a fraction of a millisecond —
-/// and in seconds to two places every one of them prints `0.00s`, which reads as "not
-/// measured" rather than "quick".
-///
-/// Two places rather than one because a one-file directory's listing really is tens of
-/// microseconds. There is still a floor: under five microseconds this prints
-/// `0.00 ms`. Nothing datui can do makes a five-microsecond walk legible, and a figure
-/// that small is honestly reported as none.
+/// How long a stretch took without rounding it away: milliseconds to two places under a
+/// second (seconds would print `0.00s` for most), floor `0.00 ms` under five
+/// microseconds.
 fn format_took(took: std::time::Duration) -> String {
     let ms = took.as_secs_f64() * 1000.0;
-    // Rounded to the two places that are printed, then chosen. Rounding to whole
-    // milliseconds instead moves the switch to 999.5 ms, which is a wide band of
-    // figures the doc promises in milliseconds and would hand back in seconds; and not
-    // rounding at all prints `1000.00 ms` for 999.997, which reads as larger than the
-    // `1.00s` a tick later.
+    // Round to the printed places before choosing the unit, so 999.997 ms prints `1.00s`,
+    // not `1000.00 ms`.
     if (ms * 100.0).round() < 100_000.0 {
         format!("{ms:.2} ms")
     } else {
@@ -1863,34 +1761,29 @@ fn format_took(took: std::time::Duration) -> String {
 }
 
 /// What datui asked for over a network, where it did the asking.
-fn wire_line(wire: crate::measurements::OverTheWire) -> String {
+fn wire_line(wire: crate::loading::measurements::OverTheWire) -> String {
     let mut line = format!(
         ", {} request{}",
         format_int(wire.requests),
         if wire.requests == 1 { "" } else { "s" }
     );
-    // A byte figure only where datui counted the bytes. Everything that reports
-    // requests today also weighs them; this is what stops a stretch that one day does
-    // not from printing `0 B`, which would say its requests came back empty.
+    // Bytes only where datui counted them, so an unweighed stretch never prints `0 B`.
     if let Some(bytes) = wire.bytes {
-        line.push_str(&format!(", {}", format_bytes(bytes)));
+        line.push_str(&format!(", {}", crate::numfmt::bytes(bytes)));
     }
     line
 }
 
-/// One measurement as a line: how long, over how many of whatever it counted, and —
-/// where datui made the requests itself — how many and how much came back.
-///
-/// `unit` is not always "files". The listing counts the dataset's files; a footer pass
-/// counts footers read, and those are not the same number — a dataset that opens before
-/// its footers are read has them read again behind the open, and one that cannot settle
-/// its row count reads them all again to count. Calling both "files" would put a figure
-/// larger than the dataset under the word the listing uses for the dataset's size.
-fn measurement_line(cost: &crate::measurements::Cost, unit: &str, singular: &str) -> String {
+/// One measurement as a line: time, count of what it counted, and requests and bytes
+/// where datui made them. `unit` varies: footer passes count footers, which may
+/// exceed the dataset's files.
+fn measurement_line(
+    cost: &crate::loading::measurements::Cost,
+    unit: &str,
+    singular: &str,
+) -> String {
     let mut line = format_took(cost.took);
-    // A stretch that never learned a count says a time and stops, rather than putting
-    // a number that is not the size of the dataset under the word the other rows use
-    // for exactly that.
+    // Without a count, just the time: no number that is not the dataset's size.
     if let Some(files) = cost.files {
         let unit = if files == 1 { singular } else { unit };
         line.push_str(&format!(", {} {unit}", format_int(files)));
@@ -1901,10 +1794,9 @@ fn measurement_line(cost: &crate::measurements::Cost, unit: &str, singular: &str
     line
 }
 
-/// The total as a line: a time, and the requests behind it.
-///
-/// No file count, deliberately — see [`crate::measurements::Meter::total`].
-fn total_line(total: &crate::measurements::Total) -> String {
+/// The total as a line: time and requests, no file count (see
+/// [`crate::loading::measurements::Meter::total`]).
+fn total_line(total: &crate::loading::measurements::Total) -> String {
     let mut line = format_took(total.took);
     if let Some(wire) = total.over_the_wire {
         line.push_str(&wire_line(wire));
@@ -1960,32 +1852,33 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
                 .state
                 .format_detail()
                 .is_some_and(|d| !d.tables.is_empty());
-        let mut footer = HintBar::from_ctx(ctx).hint_weighted(g.updown_lr, "Tabs", 3);
+        let mut footer = HintBar::from_ctx(ctx)
+            .screen(datui_cli::keys::Context::Info)
+            .key("← / →")
+            .weight(3);
         if tables {
-            footer = footer
-                .hint_weighted("Enter", "Open", 2)
-                .hint_weighted(g.updown, "Move", 2);
+            footer = footer.key("Enter").weight(2).key("↑ / ↓").weight(2);
         } else if scrolls {
-            footer = footer.hint_weighted(g.updown, "Scroll", 2);
+            footer = footer.key_as("↑ / ↓", "Scroll").weight(2);
         }
         if tab == InfoTab::Documentation && offered.documentation {
-            footer = footer.hint_weighted("Enter", "Values", 1);
+            footer = footer.key_as("Enter", "Values").weight(1);
             if self
                 .documentation
                 .as_deref()
                 .is_some_and(|d| d.offers_open())
             {
-                footer = footer.hint_weighted("o", "Open", 1);
+                footer = footer.key("o").weight(1);
             }
-            footer = footer.hint_weighted("y", "Copy", 1);
+            footer = footer.key("y").weight(1);
         }
         if tab == InfoTab::Schema && self.header_toggle {
-            footer = footer.hint_weighted("H", "Header", -1);
+            footer = footer.key("H").weight(-1);
         }
         if self.hex {
-            footer = footer.hint_weighted("x", "Hex", 0);
+            footer = footer.key("x").weight(0);
         }
-        let footer = footer.hint_weighted("Esc", "Close", 4);
+        let footer = footer.key("Esc").weight(4);
         // A frame of three rows has one inside it: the body's, so a panel too
         // short for a note still says so rather than showing only keys.
         let surface = Surface::new("Info");
@@ -2003,9 +1896,8 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
         let tab_rows = u16::from(content.height >= 4);
         let gap = u16::from(content.height >= 6);
 
-        // Tab line: the active tab carries the accent. The tab bar never takes
-        // focus (the tabs switch from anywhere), so it carries no rail; the slot
-        // stays, keeping the names where they were.
+        // Tab line: the active tab is accented; the bar never takes focus (tabs switch from
+        // anywhere), so no rail, slot kept.
         let tabs = InfoTab::visible(offered);
         let active = tabs[tab.index(offered)];
         let current = tab.index(offered);
@@ -2035,7 +1927,7 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
             // A click steps the tabs there, as ← / → do from anywhere here.
             clicks.push((
                 spans.len(),
-                crate::pointer::Hit::Option {
+                crate::app::pointer::Hit::Option {
                     field: None,
                     index: i,
                     current,
@@ -2049,7 +1941,7 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
         };
         let line = Line::from(spans);
         if tab_rows > 0 {
-            crate::pointer::record_spans(tab_area, &line, clicks);
+            crate::app::pointer::record_spans(tab_area, &line, clicks);
         }
         Paragraph::new(line).render(tab_area, buf);
 
@@ -2112,7 +2004,7 @@ mod tests {
             .finish(&mut df)
             .unwrap();
         let parquet_len = std::fs::metadata(&parquet).unwrap().len();
-        let facts = crate::readers::of(crate::FileFormat::Parquet).facts;
+        let facts = crate::formats::readers::of(crate::FileFormat::Parquet).facts;
 
         assert!(matches!(
             FileFacts::read(&csv, None),
@@ -2160,7 +2052,7 @@ mod tests {
     /// the bug was.
     #[test]
     fn the_schema_tab_does_not_call_a_partial_the_total() {
-        use crate::widgets::datatable::DataTableState;
+        use crate::table::DataTableState;
         use polars::prelude::*;
 
         let rows = || df!("id" => (0..70i64).collect::<Vec<_>>()).unwrap().lazy();
@@ -2195,14 +2087,7 @@ mod tests {
                 &theme,
             );
             panel.render_schema_summary(area, &mut buf);
-            (0..area.height)
-                .map(|y| {
-                    (0..area.width)
-                        .map(|x| buf[(x, y)].symbol().to_string())
-                        .collect::<String>()
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
+            crate::tests::buffer_text(&buf)
         };
 
         let uncounted = painted(&state);
@@ -2228,7 +2113,7 @@ mod tests {
     /// panel names its keys in a footer.
     #[test]
     fn a_tall_schema_counts_its_hidden_columns() {
-        use crate::widgets::datatable::DataTableState;
+        use crate::table::DataTableState;
         use polars::prelude::*;
 
         let wide = || {
@@ -2265,14 +2150,7 @@ mod tests {
             &theme,
         );
         (&mut panel).render(area, &mut buf);
-        let text = (0..area.height)
-            .map(|y| {
-                (0..area.width)
-                    .map(|x| buf[(x, y)].symbol().to_string())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+        let text = crate::tests::buffer_text(&buf);
         assert!(
             text.contains("below"),
             "the hidden columns are counted: {text}"
@@ -2286,7 +2164,7 @@ mod tests {
     /// tab does.
     #[test]
     fn the_schema_footer_offers_h_only_where_it_works() {
-        use crate::widgets::datatable::DataTableState;
+        use crate::table::DataTableState;
         use polars::prelude::*;
 
         let lf = || df!("a" => &[1i64], "b" => &[2i64]).unwrap().lazy();
@@ -2320,14 +2198,7 @@ mod tests {
             );
             panel.header_toggle = header_toggle;
             (&mut panel).render(area, &mut buf);
-            (0..area.height)
-                .map(|y| {
-                    (0..area.width)
-                        .map(|x| buf[(x, y)].symbol().to_string())
-                        .collect::<String>()
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
+            crate::tests::buffer_text(&buf)
         };
         let shown = footer(true, InfoTab::Schema);
         assert!(shown.contains("Header"), "{shown}");
@@ -2371,7 +2242,7 @@ mod tests {
     /// open found.
     #[test]
     fn the_resources_tab_says_how_the_data_is_read() {
-        use crate::widgets::datatable::{DataTableState, OpenFacts};
+        use crate::table::{DataTableState, OpenFacts};
         let painted = |read_mode: Option<crate::ReadMode>| {
             let rows = || df!("id" => [1i64, 2]).unwrap().lazy();
             let schema = Arc::new((*rows().collect_schema().unwrap()).clone());
@@ -2403,13 +2274,7 @@ mod tests {
                 &theme,
             )
             .render_resources_tab(area, &mut buf);
-            (0..area.height)
-                .map(|y| {
-                    (0..area.width)
-                        .map(|x| buf[(x, y)].symbol())
-                        .collect::<String>()
-                })
-                .collect::<Vec<_>>()
+            crate::tests::buffer_lines(&buf)
         };
         let lines = painted(Some(crate::ReadMode::InMemory));
         assert!(
@@ -2431,8 +2296,8 @@ mod tests {
     /// listing took no time at all.
     #[test]
     fn the_resources_tab_shows_what_was_measured_and_nothing_else() {
-        use crate::measurements::Meter;
-        use crate::widgets::datatable::DataTableState;
+        use crate::loading::measurements::Meter;
+        use crate::table::DataTableState;
         use polars::prelude::*;
         use std::time::Duration;
 
@@ -2449,7 +2314,7 @@ mod tests {
                 None,
             )
             .unwrap()
-            .with_open(crate::widgets::datatable::OpenFacts {
+            .with_open(crate::table::OpenFacts {
                 measurements: meter.clone(),
                 ..Default::default()
             })
@@ -2474,14 +2339,7 @@ mod tests {
                 &theme,
             );
             panel.render_resources_tab(area, &mut buf);
-            (0..area.height)
-                .map(|y| {
-                    (0..area.width)
-                        .map(|x| buf[(x, y)].symbol().to_string())
-                        .collect::<String>()
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
+            crate::tests::buffer_text(&buf)
         };
 
         // Nothing measured: no heading, and above all no row of zeroes standing in for
@@ -2635,7 +2493,7 @@ mod tests {
     /// one adds no line.
     #[test]
     fn the_schema_tab_names_a_file_s_other_tables() {
-        use crate::widgets::datatable::{DataTableState, OpenFacts};
+        use crate::table::{DataTableState, OpenFacts};
         use polars::prelude::*;
 
         let theme = RenderContext::for_test();
@@ -2670,13 +2528,7 @@ mod tests {
                 &theme,
             );
             (&mut panel).render(area, &mut buf);
-            (0..area.height)
-                .map(|y| {
-                    (0..area.width)
-                        .map(|x| buf[(x, y)].symbol().to_string())
-                        .collect::<String>()
-                })
-                .collect::<Vec<_>>()
+            crate::tests::buffer_lines(&buf)
         };
         let middot = crate::glyphs::get().middot;
         let text = paint(vec!["GSV 9".into(), "sentences".into()]);
@@ -2693,9 +2545,9 @@ mod tests {
     /// rule with a count, and says how much of the list is out of view.
     #[test]
     fn the_format_tab_shows_its_lines_and_list() {
-        use crate::model_files::MetaValue;
-        use crate::text_formats::Detail;
-        use crate::widgets::datatable::{DataTableState, OpenFacts};
+        use crate::formats::model_files::MetaValue;
+        use crate::formats::text_formats::Detail;
+        use crate::table::{DataTableState, OpenFacts};
         use polars::prelude::*;
 
         let theme = RenderContext::for_test();
@@ -2744,13 +2596,7 @@ mod tests {
             &theme,
         );
         (&mut panel).render(area, &mut buf);
-        let text: Vec<String> = (0..area.height)
-            .map(|y| {
-                (0..area.width)
-                    .map(|x| buf[(x, y)].symbol().to_string())
-                    .collect()
-            })
-            .collect();
+        let text: Vec<String> = crate::tests::buffer_lines(&buf);
         let has = |needle: &str| text.iter().any(|row| row.contains(needle));
         assert!(has("VCD") && !has("Format"), "{text:#?}");
         assert!(has("Version: Icarus"), "{text:#?}");
@@ -2764,7 +2610,7 @@ mod tests {
     /// footer inside it.
     #[test]
     fn the_body_has_the_accent_and_the_tab_bar_none() {
-        use crate::widgets::datatable::DataTableState;
+        use crate::table::DataTableState;
         use polars::prelude::*;
 
         let rows = || {
@@ -2802,13 +2648,7 @@ mod tests {
                 &theme,
             );
             (&mut panel).render(area, &mut buf);
-            let text: Vec<String> = (0..area.height)
-                .map(|y| {
-                    (0..area.width)
-                        .map(|x| buf[(x, y)].symbol().to_string())
-                        .collect()
-                })
-                .collect();
+            let text: Vec<String> = crate::tests::buffer_lines(&buf);
             (buf, text)
         };
         let find = |text: &[String], needle: &str| {
@@ -2922,7 +2762,7 @@ mod tests {
     /// array listed and a long one counted.
     #[test]
     fn metadata_values_wrap_whole_under_their_key() {
-        use crate::model_files::MetaValue;
+        use crate::formats::model_files::MetaValue;
         let meta = vec![
             (
                 "a".to_string(),
@@ -3109,14 +2949,6 @@ mod tests {
         );
         // Double-width characters take two columns each, so four of them fill eight.
         assert_eq!(wrap_to("日本語表 x", 8), ["日本語表", "x"]);
-    }
-
-    #[test]
-    fn test_format_bytes() {
-        assert_eq!(format_bytes(0), "0 B");
-        assert_eq!(format_bytes(500), "500 B");
-        assert_eq!(format_bytes(1536), "1.5 KiB");
-        assert_eq!(format_bytes(1024 * 1024), "1.0 MiB");
     }
 
     #[test]

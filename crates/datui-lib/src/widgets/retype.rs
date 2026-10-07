@@ -1,8 +1,9 @@
 //! The type picker and the combine form: one Surface each over the table.
 
+use crate::app::modals::retype_modal::{CombineField, CombineModal, RetypeModal, Stage};
 use crate::render::context::RenderContext;
-use crate::retype_modal::{CombineField, CombineModal, RetypeModal, Stage};
-use crate::widgets::ui::{FormRow, FormValue, HintBar, Picker, Surface};
+use crate::widgets::ui::{FormValue, FormView, HintBar, Picker, Surface};
+use datui_cli::keys::Context;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -31,12 +32,15 @@ pub fn render_retype(area: Rect, buf: &mut Buffer, modal: &RetypeModal, ctx: &Re
         width,
         height,
     };
-    crate::pointer::record(popup, crate::pointer::Hit::Modal);
+    crate::app::pointer::record(popup, crate::app::pointer::Hit::Modal);
     let back = match modal.stage {
         Stage::Type => "Cancel",
         Stage::Format { .. } => "Back",
     };
-    let footer = HintBar::from_ctx(ctx).hints(&[("Enter", "Choose"), ("Esc", back)]);
+    let footer = HintBar::from_ctx(ctx)
+        .screen(Context::Retype)
+        .key("Enter")
+        .key_as("Esc", back);
     let title = modal.title();
     let inner = Surface::new(&title).footer(&footer).render(popup, buf, ctx);
     if inner.height < 3 {
@@ -89,7 +93,7 @@ const LABEL_WIDTH: u16 = 13;
 
 /// The combine form over `area`.
 pub fn render_combine(area: Rect, buf: &mut Buffer, modal: &CombineModal, ctx: &RenderContext) {
-    let fields: Vec<CombineField> = crate::form::Form::fields(modal)
+    let fields: Vec<CombineField> = crate::app::form::Form::fields(modal)
         .into_iter()
         .map(|(f, _)| f)
         .collect();
@@ -103,119 +107,67 @@ pub fn render_combine(area: Rect, buf: &mut Buffer, modal: &CombineModal, ctx: &
     if height < 6 {
         return;
     }
-    let popup = Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    };
-    crate::pointer::record(popup, crate::pointer::Hit::Modal);
-    let footer = match &modal.picker {
-        Some(_) => HintBar::from_ctx(ctx)
-            .hint_weighted("Enter", "Choose", 3)
-            .hint_weighted("type", "Narrow", 1)
-            .hint_weighted("Esc", "Back", 4),
-        None => HintBar::from_ctx(ctx)
-            .hint_weighted("Enter", "Make", 3)
-            .hint_weighted("Space", "Pick", 2)
-            .hint_weighted("Tab", "Next", 1)
-            .hint_weighted("Esc", "Cancel", 4),
-    };
-    let content = Surface::new("Combine into Datetime")
-        .footer(&footer)
-        .render(popup, buf, ctx);
-    if content.height < 3 {
-        return;
-    }
-    let spec_y = content.y + content.height - 1;
-    let mut y = content.y;
-    let kinds: Vec<&str> = crate::column_types::DerivedKind::ALL
+    let popup = crate::render::layout::centered_rect(area, width, height);
+    let footer = HintBar::from_ctx(ctx)
+        .screen(Context::Combine)
+        .group("Fields")
+        .key("Enter")
+        .weight(3)
+        .key("Space")
+        .weight(2)
+        .key("Tab")
+        .weight(1)
+        .key("Esc")
+        .weight(4);
+    let kinds: Vec<&str> = crate::formats::column_types::DerivedKind::ALL
         .iter()
         .map(|k| k.name())
         .collect();
-    let kind_at = crate::column_types::DerivedKind::ALL
+    let kind_at = crate::formats::column_types::DerivedKind::ALL
         .iter()
         .position(|k| *k == modal.kind)
         .unwrap_or(0);
-    for &field in &fields {
-        if y >= spec_y {
-            break;
-        }
-        let row = Rect {
-            y,
-            height: 1,
-            ..content
-        };
-        crate::pointer::record_field::<CombineModal>(row, field);
-        let value = match field {
-            CombineField::Date => FormValue::Choice(&modal.date),
-            CombineField::Time => match &modal.time {
-                Some(c) => FormValue::Choice(c),
-                None => FormValue::Placeholder(crate::retype_modal::NONE),
-            },
-            CombineField::Offset => match &modal.offset {
-                Some(c) => FormValue::Choice(c),
-                None => FormValue::Placeholder(crate::retype_modal::NONE),
-            },
-            CombineField::Kind => FormValue::Options {
-                items: &kinds,
-                selected: kind_at,
-                clicks: None,
-            },
-            CombineField::Name => FormValue::Choice(&modal.name),
-        };
-        FormRow {
-            label: label(field),
-            value,
-            focused: modal.focus == field,
-            label_width: LABEL_WIDTH,
-        }
-        .render_picking(row, buf, ctx, modal.picker.is_some());
-        y += 1;
-    }
-    if let Some((_, state)) = &modal.picker {
-        crate::pointer::record(content, crate::pointer::Hit::Picker);
-        let picker_y = y + 1;
-        if picker_y < spec_y {
-            let picker_area = Rect {
-                x: content.x + 2,
-                y: picker_y,
-                width: content.width.saturating_sub(2),
-                height: spec_y - picker_y,
+    let none = || FormValue::Placeholder(crate::app::modals::retype_modal::NONE);
+    let rows = fields
+        .into_iter()
+        .map(|field| {
+            let value = match field {
+                CombineField::Date => FormValue::Choice(&modal.date),
+                CombineField::Time => modal.time.as_deref().map_or_else(none, FormValue::Choice),
+                CombineField::Offset => {
+                    modal.offset.as_deref().map_or_else(none, FormValue::Choice)
+                }
+                CombineField::Kind => FormValue::Options {
+                    items: &kinds,
+                    selected: kind_at,
+                    clicks: None,
+                },
+                CombineField::Name => FormValue::Input(&modal.name),
             };
-            Picker::from_state(state, true).render(picker_area, buf, ctx);
-        }
-    }
-    let (text, style) = match &modal.problem {
+            (field, label(field), value)
+        })
+        .collect();
+    let status = match &modal.problem {
         Some(problem) => (problem.clone(), Style::default().fg(ctx.warning)),
         None => (modal.spec_line(), Style::default().fg(ctx.text_primary)),
     };
-    Paragraph::new(text).style(style).render(
-        Rect {
-            y: spec_y,
-            height: 1,
-            ..content
-        },
-        buf,
-    );
+    FormView {
+        title: "Combine into Datetime",
+        screen: Context::Combine,
+        footer,
+        label_width: LABEL_WIDTH,
+        rows,
+        focused: modal.focus,
+        picker: modal.picker.as_ref().map(|(_, state)| state),
+        status,
+    }
+    .render::<CombineModal>(popup, buf, ctx);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use polars::prelude::DataType;
-
-    fn text(buf: &Buffer) -> String {
-        let area = buf.area;
-        (0..area.height)
-            .map(|y| {
-                (0..area.width)
-                    .map(|x| buf[(x, y)].symbol().to_string())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
 
     #[test]
     fn the_picker_lists_the_types_then_the_formats_with_a_preview() {
@@ -229,11 +181,11 @@ mod tests {
         );
         let mut buf = Buffer::empty(area);
         render_retype(area, &mut buf, &modal, &ctx);
-        let shown = text(&buf);
+        let shown = crate::tests::buffer_text(&buf);
         assert!(shown.contains("Type of when, read as str"), "{shown}");
         assert!(shown.contains("as read"), "{shown}");
         assert!(shown.contains("datetime"), "{shown}");
-        let date = crate::column_types::TYPE_NAMES
+        let date = crate::formats::column_types::TYPE_NAMES
             .iter()
             .position(|n| *n == "date")
             .unwrap();
@@ -241,7 +193,7 @@ mod tests {
         modal.choose();
         let mut buf = Buffer::empty(area);
         render_retype(area, &mut buf, &modal, &ctx);
-        let shown = text(&buf);
+        let shown = crate::tests::buffer_text(&buf);
         assert!(shown.contains("Date Format"), "{shown}");
         assert!(shown.contains("%d/%m/%Y  03/04/2024"), "{shown}");
         assert!(shown.contains("2024-04-03"), "{shown}");
@@ -250,7 +202,7 @@ mod tests {
         }
         let mut buf = Buffer::empty(area);
         render_retype(area, &mut buf, &modal, &ctx);
-        let shown = text(&buf);
+        let shown = crate::tests::buffer_text(&buf);
         assert!(
             shown.contains("%d %m: does not read the first value"),
             "{shown}"
@@ -265,7 +217,7 @@ mod tests {
         let modal = CombineModal::new("Lcl Date".into(), columns.clone(), &columns);
         let mut buf = Buffer::empty(area);
         render_combine(area, &mut buf, &modal, &ctx);
-        let shown = text(&buf);
+        let shown = crate::tests::buffer_text(&buf);
         assert!(shown.contains("Combine into Datetime"), "{shown}");
         assert!(shown.contains("UTC offset:"), "{shown}");
         assert!(

@@ -23,8 +23,9 @@ Usage: scripts/dev/test.sh [--print] COMMAND [ARGS...]
 
 Examples:
   scripts/dev/test.sh unit data_quality::
-  scripts/dev/test.sh integration integration_test test_data_quality
-  scripts/dev/test.sh integration home_test test_recognises_data_extensions
+  scripts/dev/test.sh integration app data_quality::
+  scripts/dev/test.sh integration home test_recognises_data_extensions
+  scripts/dev/test.sh integration data statistics::
   scripts/dev/test.sh --print preflight
 
 --print shows commands without running them. Ignored/live-cloud tests remain
@@ -155,8 +156,8 @@ case "$command" in
         ;;
     integration)
         target=${1:-}
-        if [[ -z $target || ! -f tests/$target.rs ]]; then
-            printf 'Choose an existing integration target from tests/*.rs.\n' >&2
+        if [[ -z $target || ! ( -f tests/$target.rs || -f tests/$target/main.rs ) ]]; then
+            printf 'Choose an existing integration target: tests/*.rs or tests/*/main.rs.\n' >&2
             exit 2
         fi
         shift

@@ -1,7 +1,7 @@
 //! Analysis modal view rendering (progress overlay, AnalysisWidget, or no-data message).
 //! Also provides help overlay title/text for analysis so the main render loop does not need analysis-specific layout.
 
-use crate::analysis_modal;
+use crate::analysis::analysis_modal;
 use crate::render::context::RenderContext;
 use crate::widgets::{analysis, data_quality};
 use ratatui::layout::Rect;
@@ -18,7 +18,7 @@ pub fn render(
     ctx: &RenderContext,
 ) {
     render_body(area, buf, app, ctx);
-    if let Some(picker) = &app.analysis_modal.data_quality_picker {
+    if let Some(picker) = &app.analysis_modal.quality.picker {
         render_plan_picker(
             picker,
             crate::widgets::data_quality::main_pane(area),
@@ -39,7 +39,7 @@ pub fn render(
             !form.inline || app.analysis_modal.focus == analysis_modal::AnalysisFocus::Main;
         if !form.inline {
             // Floating, it owns the keys: what it covers takes no clicks.
-            crate::pointer::record(target, crate::pointer::Hit::Modal);
+            crate::app::pointer::record(target, crate::app::pointer::Hit::Modal);
         }
         crate::widgets::sample_form::render(form, focused, target, buf, ctx);
     }
@@ -103,7 +103,7 @@ fn render_body(
         // A run has no total to count against, so a gauge could only ever read 0%.
         // What moves is time and the stage: the spinner, the clock and the stage's
         // name say it is alive, rows are counted only where the read counts them,
-        // and the control bar says Esc cancels. Every tool, Data Quality included,
+        // and the footer says Esc cancels. Every tool, Data Quality included,
         // runs behind this one view, whose lines never move as the stages go by.
         Clear.render(area, buf);
         let g = crate::glyphs::get();
@@ -114,7 +114,7 @@ fn render_body(
             let rows = progress
                 .read
                 .as_ref()
-                .and_then(crate::sampling::ReadWatch::rows_seen)
+                .and_then(crate::analysis::sampling::ReadWatch::rows_seen)
                 .map(|rows| {
                     format!(
                         " {} {} rows so far",
@@ -144,15 +144,15 @@ fn render_body(
                     Style::default().fg(ctx.text_primary),
                 ),
                 Span::styled(
-                    format!("  {}", elapsed(progress.started.elapsed())),
+                    format!("  {}", crate::numfmt::clock(progress.started.elapsed())),
                     Style::default().fg(ctx.dimmed),
                 ),
             ]),
             // What decides how long this takes, stated rather than left to guess.
             Line::from(Span::styled(
                 if quality
-                    && app.analysis_modal.data_quality_plan.compute
-                        == crate::data_quality::QualityCompute::Metadata
+                    && app.analysis_modal.quality.plan.compute
+                        == crate::analysis::data_quality::QualityCompute::Metadata
                 {
                     "   Reads file metadata only, no values".to_string()
                 } else if let Some(sampled) =
@@ -174,15 +174,16 @@ fn render_body(
             // dataset owns a column profile per column per segment, and copying all of
             // it once per repaint made the dashboard slowest at the scale it is for.
             let candidates = app.quality_time_candidates();
-            let note = app.analysis_modal.data_quality_setup_note.clone();
-            let plan = &app.analysis_modal.data_quality_plan;
-            let unchanged = app.analysis_modal.data_quality_results.is_some()
-                && app.analysis_modal.data_quality_last_plan.as_ref() == Some(plan);
+            let note = app.analysis_modal.quality.setup_note.clone();
+            let plan = &app.analysis_modal.quality.plan;
+            let unchanged = app.analysis_modal.quality.results.is_some()
+                && app.analysis_modal.quality.last_plan.as_ref() == Some(plan);
             let relabel_only = !unchanged
-                && app.analysis_modal.data_quality_results.is_some()
+                && app.analysis_modal.quality.results.is_some()
                 && app
                     .analysis_modal
-                    .data_quality_last_plan
+                    .quality
+                    .last_plan
                     .as_ref()
                     .is_some_and(|last| last.same_measurement(plan));
             let setup = data_quality::SetupView {
@@ -204,64 +205,62 @@ fn render_body(
             let rows_kept = app.quality_rows_kept().is_some();
             let modal = &mut app.analysis_modal;
             let config = data_quality::DataQualityWidgetConfig {
-                checks_expanded: modal.data_quality_checks_expanded,
+                checks_expanded: modal.quality.checks_expanded,
                 state,
                 // Setup edits the draft; the result pages show the plan they were
                 // measured with, whatever is being staged.
-                plan: if modal.data_quality_page.is_setup() {
-                    &modal.data_quality_plan
+                plan: if modal.quality.page.is_setup() {
+                    &modal.quality.plan
                 } else {
                     modal
-                        .data_quality_last_plan
+                        .quality
+                        .last_plan
                         .as_ref()
-                        .unwrap_or(&modal.data_quality_plan)
+                        .unwrap_or(&modal.quality.plan)
                 },
                 measured: modal
-                    .data_quality_last_plan
+                    .quality
+                    .last_plan
                     .as_ref()
-                    .unwrap_or(&modal.data_quality_plan),
-                results: modal.data_quality_results.as_ref(),
-                from_cache: modal.data_quality_from_cache,
-                metric: modal.data_quality_metric,
-                column_index: modal.data_quality_column_index,
-                segment_index: modal.data_quality_segment_index,
-                interval_index: modal.data_quality_interval_index,
-                trend_line: modal.data_quality_trend_line,
-                expected_form: modal.data_quality_expected_form.as_ref(),
-                segments_by_change: modal.data_quality_segments_by_change,
-                page: modal.data_quality_page,
+                    .unwrap_or(&modal.quality.plan),
+                results: modal.quality.results.as_ref(),
+                from_cache: modal.quality.from_cache,
+                metric: modal.quality.metric,
+                segment_index: modal.quality.segment_index,
+                interval_index: modal.quality.interval_index,
+                trend_line: modal.quality.trend_line,
+                expected_form: modal.quality.expected_form.as_ref(),
+                segments_by_change: modal.quality.segments_by_change,
+                page: modal.quality.page,
                 setup,
-                plan_field: modal.data_quality_plan_field,
-                show_access: modal.data_quality_show_access,
-                observation_detail: modal.data_quality_observation_detail,
-                findings: &modal.data_quality_findings,
+                plan_field: modal.quality.plan_field,
+                show_access: modal.quality.show_access,
+                observation_detail: modal.quality.observation_detail,
+                findings: &modal.quality.findings,
                 rows_kept,
-                evidence_read: modal.data_quality_evidence_read.as_ref(),
+                evidence_read: modal.quality.evidence_read.as_ref(),
                 focus: modal.focus,
                 theme: &app.theme,
                 ctx,
-                intent_form: modal.data_quality_intent_form.as_ref(),
-                export_form: modal.data_quality_export.as_ref(),
+                intent_form: modal.quality.intent_form.as_ref(),
+                export_form: modal.quality.export.as_ref(),
             };
             Clear.render(area, buf);
             data_quality::render(
                 config,
-                &mut modal.data_quality_table_state,
+                &mut modal.quality.table_state,
                 &mut modal.sidebar_state,
-                &mut modal.data_quality_detail_scroll,
+                &mut modal.quality.detail_scroll,
                 area,
                 buf,
             );
             return;
         }
-        let context = state.get_analysis_context();
         Clear.render(area, buf);
 
         let results_for_widget = app.analysis_modal.current_results().cloned();
         let config = analysis::AnalysisWidgetConfig {
-            state,
             results: results_for_widget.as_ref(),
-            context: &context,
             view: app.analysis_modal.view,
             selected_tool: app.analysis_modal.selected_tool,
             selected_correlation: app.analysis_modal.selected_correlation,
@@ -270,7 +269,7 @@ fn render_body(
             selected_theoretical_distribution: app.analysis_modal.selected_theoretical_distribution,
             histogram_scale: app.analysis_modal.histogram_scale,
             theme: &app.theme,
-            table_cell_padding: app.table_cell_padding,
+            table_cell_padding: app.display.table_cell_padding,
             number_format: &ctx.number_format,
             sample: &app.analysis_modal.sample,
             ctx,
@@ -305,15 +304,5 @@ fn render_body(
             .centered()
             .style(ratatui::style::Style::default().fg(ctx.warning))
             .render(area, buf);
-    }
-}
-
-/// `12s`, `3m 05s`, `1h 02m`: a clock for a wait, to the second while seconds matter.
-pub(crate) fn elapsed(d: std::time::Duration) -> String {
-    let secs = d.as_secs();
-    match secs {
-        0..=59 => format!("{secs}s"),
-        60..=3599 => format!("{}m {:02}s", secs / 60, secs % 60),
-        _ => format!("{}h {:02}m", secs / 3600, (secs % 3600) / 60),
     }
 }

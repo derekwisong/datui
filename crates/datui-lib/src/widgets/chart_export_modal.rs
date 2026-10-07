@@ -1,7 +1,7 @@
 //! Chart export dialog rendering: one Surface, a FormRow per field, the actions in
 //! the footer.
 
-use crate::chart_export_modal::{ChartExportFocus, ChartExportModal, FIELDS};
+use crate::chart::chart_export_modal::{ChartExportModal, FIELDS};
 use crate::render::context::RenderContext;
 use crate::widgets::ui::{FormRow, FormValue, HintBar, Surface};
 use ratatui::layout::Rect;
@@ -26,10 +26,15 @@ pub fn render_chart_export_modal(
     ctx: &RenderContext,
 ) {
     let footer = HintBar::from_ctx(ctx)
-        .hint_weighted("Enter", "Export", 3)
-        .hint_weighted("Tab", "Next", 1)
-        .hint_weighted("Esc", "Cancel", 4);
-    crate::pointer::record(area, crate::pointer::Hit::Modal);
+        .screen(datui_cli::keys::Context::Chart)
+        .group("Export dialog")
+        .key("Enter")
+        .weight(3)
+        .key("Tab")
+        .weight(1)
+        .key("Esc")
+        .weight(4);
+    crate::app::pointer::record(area, crate::app::pointer::Hit::Modal);
     let content = Surface::new("Export Chart")
         .footer(&footer)
         .render(area, buf, ctx);
@@ -37,18 +42,9 @@ pub fn render_chart_export_modal(
         return;
     }
     let focus = modal.focus;
-    for field in FIELDS {
-        let focused = field == focus;
-        match field {
-            ChartExportFocus::PathInput => modal.path_input.set_focused(focused),
-            ChartExportFocus::WidthInput => modal.width_input.set_focused(focused),
-            ChartExportFocus::HeightInput => modal.height_input.set_focused(focused),
-            ChartExportFocus::TitleInput => modal.title_input.set_focused(focused),
-            ChartExportFocus::DescriptionInput => modal.description_input.set_focused(focused),
-            ChartExportFocus::NotesInput => modal.notes_input.set_focused(focused),
-            ChartExportFocus::SourceInput => modal.source_input.set_focused(focused),
-            ChartExportFocus::BylineInput => modal.byline_input.set_focused(focused),
-            _ => {}
+    for (field, _) in FIELDS {
+        if let Some(input) = modal.input_mut(field) {
+            input.set_focused(field == focus);
         }
     }
     // The status line keeps its place at the bottom while there is room for a
@@ -63,11 +59,8 @@ pub fn render_chart_export_modal(
     {
         let width = content.width.saturating_sub(1);
         ratatui::widgets::Widget::render(
-            ratatui::widgets::Paragraph::new(crate::widgets::data_quality::fit(
-                error,
-                width as usize,
-            ))
-            .style(ratatui::style::Style::default().fg(ctx.warning)),
+            ratatui::widgets::Paragraph::new(crate::glyphs::fit(error, width as usize))
+                .style(ratatui::style::Style::default().fg(ctx.warning)),
             Rect {
                 x: content.x + 1,
                 y: content.bottom() - 1,
@@ -85,7 +78,7 @@ pub fn render_chart_export_modal(
     for (i, field) in shown.iter().enumerate().skip(first).take(rows) {
         let value = match modal.choice(*field) {
             Some(choice) => FormValue::Choice(choice),
-            None => match modal.input(*field) {
+            None => match modal.input_mut(*field) {
                 Some(input) => FormValue::Input(input),
                 None => continue,
             },
@@ -102,14 +95,14 @@ pub fn render_chart_export_modal(
             label_width: LABEL_WIDTH,
         }
         .render(row, buf, ctx);
-        crate::pointer::record_field::<ChartExportModal>(row, *field);
+        crate::app::pointer::record_field::<ChartExportModal>(row, *field);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chart_export_modal::ExportDefaults;
+    use crate::chart::chart_export_modal::ExportDefaults;
     use ratatui::buffer::Buffer;
 
     fn render_rows(width: u16, height: u16) -> Vec<String> {
@@ -178,7 +171,6 @@ mod tests {
     fn the_reason_sits_on_the_status_line() {
         let ctx = RenderContext::for_test();
         let mut modal = ChartExportModal::new();
-        modal.active = true;
         modal.error = Some("Enter a file path.".to_string());
         let area = Rect::new(0, 0, 64, height(&ChartExportModal::new()));
         let mut buf = Buffer::empty(area);

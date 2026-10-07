@@ -17,6 +17,11 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 ./scripts/dev/test.sh integration fuzz_corpus_test  # fast fuzz corpus replay; run if you touched a parser or matcher
 ```
 
+A `cargo build` binary needs the building machine's glibc or newer, so one built
+on a rolling distro will not start on a current LTS or in a VM. To run a build
+elsewhere, link it as the release does: `cargo zigbuild --release -p datui
+--target x86_64-unknown-linux-gnu.2.28` (see `docs/for-developers/packaging.md`).
+
 CI rejects unformatted code and any clippy warning. `pre-commit install` runs
 the same checks before each commit (`.pre-commit-config.yaml`). Never add
 `#[allow(clippy::…)]` to get past a lint; fix it.
@@ -38,11 +43,12 @@ executables. `scripts/dev/test.sh --help` lists the scoped commands;
 | Change | First check |
 |---|---|
 | Library implementation | `scripts/dev/test.sh check`, then `scripts/dev/test.sh unit MODULE::` |
-| App/key/background behavior | `scripts/dev/test.sh integration integration_test FILTER` |
-| Home/search | `scripts/dev/test.sh integration home_test FILTER` or `integration search_test FILTER` |
-| Config/theme | `scripts/dev/test.sh integration config_test FILTER`, plus the relevant theme/App tests |
+| App/key/background behavior | `scripts/dev/test.sh integration app FILTER` (modules: `loading::`, `query::`, `export::`, `data_quality::`, `formats_open::`, …) |
+| Home/search | `scripts/dev/test.sh integration home FILTER` (`search::`, `coming_back::`, …) |
+| Config/theme/views | `scripts/dev/test.sh integration config settings::` (or `colors::`, `themes::`, `views::`), plus the relevant App tests |
 | CLI definitions | `scripts/dev/test.sh check datui-cli`, then `scripts/dev/test.sh cli` |
-| A specific integration file | `scripts/dev/test.sh integration TARGET FILTER` (omit `.rs`) |
+| Statistics/pivot/Excel | `scripts/dev/test.sh integration data statistics::` (or `distribution::`, `reshape::`, `excel::`) |
+| A specific integration target | `scripts/dev/test.sh integration TARGET FILTER`: a directory with a `main.rs` (`app`), or a `tests/*.rs` file without `.rs` |
 | Formatting/lint before submission | `scripts/dev/test.sh preflight` |
 | Broad validation | `scripts/dev/test.sh full` |
 
@@ -65,22 +71,33 @@ instead of exhausting memory together.
 
 Prepare fixtures once; do not clear `target/`, change compiler flags/features,
 or regenerate all fixtures to diagnose an ordinary failure. Live/cloud tests
-are opt-in. Put new integration cases in an existing domain target rather than
-adding a top-level test executable for each feature. Use small in-memory data
-for logic tests and preserve regression coverage. See
-`docs/for-developers/tests.md` for selection and
-`tests/ORGANIZATION.md` for the reorganization plan.
+are opt-in. Use small in-memory data for logic tests and preserve regression
+coverage.
+
+Root tests are mostly five executables by domain, `tests/{app,home,data,config,repo}/`,
+each a `main.rs` declaring modules; a filter selects a module (`integration app
+loading::`). Every test executable links the app (about 400 MiB, a second or more
+of link after each library edit), so add a test to the module that fits, never a
+new top-level file. A test that changes the process for everyone in it (an
+environment variable others read, fd 2, Polars' configuration) keeps its own
+target, as `quality_spill_test` and the cloud credential targets do; prefer
+giving the code the setting directly instead.
 
 Tests that drive an `App` wait on the work with the helpers in `tests/common/`
-(`pump_open_until_loaded`, `drain_events`, `next_event`, `work_pending`), never
-on a sleep or a quiet channel.
+(`pump_open_until_loaded`, `drain_events`, `next_event`, `work_pending`, and
+`wait_for_event` in a loop that draws frames), or wait for the frame's content,
+never on a sleep or a quiet channel. A sleep stays only where a real timer is the
+subject, with a comment saying so. Size statistical and large-data tests to the
+smallest input that still makes the assertion; they set their executable's run
+time. Measured costs and the layout's reasons: `tests/ORGANIZATION.md`; commands
+and helpers: `docs/for-developers/tests.md`.
 
 ## Layout
 
 | Path | What |
 |---|---|
 | `Cargo.toml` (root) | The `datui` binary. `src/main.rs` parses args and runs `datui_lib::run` |
-| `crates/datui-lib/src/` | Everything else. `lib.rs` holds `App`, the event loop and key handling; `render/` draws each screen; `widgets/` are the Ratatui widgets; `*_modal.rs` hold modal state |
+| `crates/datui-lib/src/` | Everything else, by concern (below). `lib.rs` holds `App`, `AppEvent`, key handling and event dispatch; the event loop is `app/run.rs` and `app/event_pump.rs` |
 | `crates/datui-cli/` | Clap `Args` shared by the binary and `gen_docs`, which writes the generated docs and the manpages (`man/`, committed) |
 | `crates/datui-pyo3/`, `python/` | Python bindings and wheel. Not a workspace member; see `docs/for-developers/python-bindings.md` |
 | `fuzz/` | cargo-fuzz targets, own workspace; `docs/for-developers/fuzzing.md` |
@@ -89,14 +106,25 @@ on a sleep or a quiet channel.
 | `release-notes/vX.Y.Z.md` | Optional per-release notes, copied verbatim into the GitHub release and winget |
 | `scripts/` | Python tooling: `bump_version.py`, `docs/`, `demos/`, `packaging/`, `dev/` |
 
-Modules worth knowing: `query.rs` (the DSL parser), `jobs.rs` (background
-jobs), `loading.rs` (opening a dataset), `widgets/datatable.rs`
-(`DataTableState`: the LazyFrame pipeline and the
-row buffer), `config.rs` (config structs, merging, theme), `home.rs` +
-`discover.rs` + `search.rs` (the home screen), `cloud_browse.rs` +
-`cloud_hive.rs` + `source.rs` (S3, GCS, HTTP), `statistics.rs` (analysis),
-`chart_data.rs` (chart preparation), `view.rs` (saved views), `cache.rs`, `glyphs.rs`,
-`numfmt.rs`, `fuzzy.rs`.
+`crates/datui-lib/src/`, by directory:
+
+| Directory | What |
+|---|---|
+| `app/` | The event loop (`event_pump.rs`), jobs (`jobs.rs`), the terminal and its one reader (`terminal_input.rs`), the overlay (`overlay.rs`), forms, help, the footer's state; `keys/` and `modals/` hold the table dialogs' keys and state |
+| `loading/` | Opening a dataset: the `Loader` (`mod.rs`), routing and the scan (`open_scan.rs`), open options, row counts, stdin, `--tee`, `--follow`, temp files |
+| `formats/` | Every reader: the registry (`readers/`), a module per format, format specs, and the record decoders they share (`fixed_records.rs`, `framed_records.rs`, `schema_union.rs`) |
+| `cloud/` | S3, GCS, Azure and HTTP: stores and logins (`cloud_browse.rs`, `cloud_sources.rs`), hive listing (`cloud_hive.rs`), `source.rs`, downloads |
+| `home/` | The home screen (`mod.rs`), its work (`home_app.rs`), discovery (`discover.rs`), search, catalogs, `fuzzy.rs` |
+| `table/` | `DataTableState`: the LazyFrame pipeline and the row buffer, a module per concern |
+| `analysis/` | The analysis modal: the sampler (`sampling.rs`), statistics, distribution fits, value counts, Data Quality (`data_quality/`, `quality_*.rs`) |
+| `chart/` | The chart view: its spec (`chart_modal.rs`), preparation (`chart_data.rs`, `chart_jobs.rs`), export |
+| `query/` | The query DSL parser, SQL helpers, the command line (`query_prompt.rs`) |
+| `export/` | Export files, their dialog and keys, copy as Python, `output_file.rs` |
+| `view/`, `inspector/`, `config/` | Saved views; the row inspector; config structs, merging and themes |
+| `render/`, `widgets/` | Drawing: `render/` each screen, `widgets/` the Ratatui widgets (`widgets/table.rs`, the table) |
+
+Root modules are infra the rest share: `cache.rs`, `glyphs.rs`, `numfmt.rs`,
+`logging.rs`, `error_display.rs`, `notes.rs`, `find.rs`, `clipboard.rs`, `limits.rs`.
 
 ## How the app works
 
@@ -113,7 +141,7 @@ run steps with `deferred` (nothing collects; the App then calls
 checkpoint `roll_back` restores if its rows fail.
 
 **One event loop, background work by generation.** Keys (read by the one
-reader in `terminal_input.rs`), worker results and continuations all arrive as
+reader in `app/terminal_input.rs`), worker results and continuations all arrive as
 `AppEvent`s on one mpsc channel; `EventPump::run` sleeps on it until something
 arrives or a deadline passes (spinner, flash), with no polling tick, and
 `App::event` handles each. A key is offered once the results behind it are
@@ -127,7 +155,7 @@ is its one outcome, announced by `AppEvent::JobEnded`. `App::job_ended` takes
 the outcome and the record together, so a job holds the generation and the
 keys until its answer is handled. Advancing the generation, or
 `Jobs::supersede`, makes answers stale; App keeps no flags of its own for a
-job. Counts, the footer pass and chart preparation keep their own markers, and
+job. Counts keep their own markers, and
 home-screen workers, keyed by place rather than generation, run inside an
 `OwedAnswer` that sends their in-flight marker an answer if they panic. Async
 cloud calls go through `wait_on_runtime` on the shared Tokio runtime. Never
@@ -154,7 +182,7 @@ is still claimed. SIGTERM and SIGHUP end the binary's session as a quit does.
 **Keys typed while busy are queued.** While a job the user waits on runs, an
 errand is between phases, or an open is on its way to its dataset,
 `App::is_busy` is true and the footer shows a spinner. `EventPump`
-(`event_pump.rs`, owned by
+(`app/event_pump.rs`, owned by
 `run()`) holds the keys typed meanwhile and replays them in order, one per loop
 iteration, once the app is idle. Ctrl-Q, Ctrl-C outside a text field, Ctrl-O and
 confirmation-modal keys act at once; so do `q`, the column cursor and help at the
@@ -162,9 +190,17 @@ plain table view when nothing is held. Held keys are dropped when the screen
 they were typed at goes away. Change this through `classify` and its tests, not
 by gating keys in `App::key`.
 
-**Modals** each have a state struct with `active: bool`, own their focus, and
-emit an `AppEvent` when applied. Add a new one by copying an existing pair
-(`*_modal.rs` state, `widgets/*.rs` or `render/*.rs` drawing).
+**Overlays.** What is open over the table (a dialog, sidebar or screen such as
+Export, Info or Analysis) is one value, `App::overlay` (`app/overlay.rs`); keys go
+to it and it is drawn over the table. Open one with `open_overlay`, or
+`open_over` for one that goes back to what it was opened over (Export over
+Value Counts); leave through `close_overlay`, which drops the state it held for
+that opening and goes back. `step_back` leaves it without dropping its state,
+behind a confirmation or while it runs. A new dialog is a state struct in a
+`*_modal.rs` (`app/modals/`, or its feature's directory; it owns its focus), an `Overlay` variant with its arms (keys,
+`keys_context`, `close_overlay`) and its drawing in `widgets/` or `render/`; it
+has no `active` flag. The error and confirmation modals and the help stack
+over any overlay and keep their own.
 
 **Config** is TOML, in layers: defaults in `Default` impls, imported files,
 `~/.config/datui/config.toml`, `-c KEY=VALUE`, then flags. Each file is a partial
@@ -217,7 +253,7 @@ work. The short version:
 - Do not downgrade a dependency without being asked. Do not add one for
   something the tree already has.
 - American English everywhere: code, UI strings, docs, notes.
-- One word per concept: `docs/reference/glossary.md`. `tests/wording_test.rs`
+- One word per concept: `docs/reference/glossary.md`. `tests/repo/wording.rs`
   fails on a retired word in UI strings, the key registry, docs or the manpage.
 - Docs: lead with the command or the key, then a table. No essays. Verify every
   claim against the code. Never link `plans/` or other unpublished paths.

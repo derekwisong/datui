@@ -3,8 +3,8 @@
 //! side by side on its row, where ←/→ visibly step along them.
 
 use crate::CompressionFormat;
-use crate::export_modal::{COMPRESSION_OPTIONS, ExportFocus, ExportFormat, ExportModal};
-use crate::pointer::FieldId;
+use crate::app::pointer::FieldId;
+use crate::export::export_modal::{COMPRESSION_OPTIONS, ExportFocus, ExportFormat, ExportModal};
 use crate::render::context::RenderContext;
 use crate::widgets::ui::{FormRow, FormValue, HintBar, Surface};
 use ratatui::layout::Rect;
@@ -65,12 +65,7 @@ const COMPRESSION_NAMES: [&str; COMPRESSION_OPTIONS.len()] = {
 pub fn dialog_area(area: Rect) -> Rect {
     let width = area.width.saturating_sub(4).min(MAX_WIDTH);
     let height = HEIGHT.min(area.height);
-    Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    }
+    crate::render::layout::centered_rect(area, width, height)
 }
 
 pub fn render_export_modal(
@@ -82,24 +77,21 @@ pub fn render_export_modal(
     // Primary first, Esc last, and one chip for what the focused row itself
     // takes; when the dialog runs out of room, Tab yields first and the way
     // out goes last.
-    let g = crate::glyphs::get();
-    let mut footer = HintBar::from_ctx(ctx).hint_weighted("Enter", "Export", 3);
-    match modal.focus {
-        ExportFocus::FormatSelector => {
-            footer = footer.hint_weighted(g.updown_lr, "Format", 2);
-        }
+    let footer = HintBar::from_ctx(ctx)
+        .screen(datui_cli::keys::Context::Export)
+        .group("Form")
+        .key("Enter")
+        .weight(3);
+    let footer = match modal.focus {
+        ExportFocus::FormatSelector => footer.key_as("← / →", "Format").weight(2),
         ExportFocus::CsvIncludeHeader | ExportFocus::SourceFile => {
-            footer = footer.hint_weighted("Space", "Toggle", 2);
+            footer.key_as("Space", "Toggle").weight(2)
         }
-        ExportFocus::Compression => {
-            footer = footer.hint_weighted(g.updown_lr, "Change", 2);
-        }
-        ExportFocus::PathInput | ExportFocus::CsvDelimiter => {}
-    }
-    let footer = footer
-        .hint_weighted("Tab", "Next", 1)
-        .hint_weighted("Esc", "Cancel", 4);
-    crate::pointer::record(area, crate::pointer::Hit::Modal);
+        ExportFocus::Compression => footer.key("← / →").weight(2),
+        ExportFocus::PathInput | ExportFocus::CsvDelimiter => footer,
+    };
+    let footer = footer.key("Tab").weight(1).key("Esc").weight(4);
+    crate::app::pointer::record(area, crate::app::pointer::Hit::Modal);
     let content = Surface::new("Export Data")
         .footer(&footer)
         .render(area, buf, ctx);
@@ -165,7 +157,7 @@ pub fn render_export_modal(
             ..content
         };
         // The row first: the format's values, recorded as drawn, lie on top.
-        crate::pointer::record_field::<ExportModal>(row, field);
+        crate::app::pointer::record_field::<ExportModal>(row, field);
         FormRow {
             label,
             value,
@@ -203,7 +195,7 @@ pub fn render_export_modal(
         lines.truncate(room);
         if let Some(last) = lines.last_mut() {
             let cut = format!("{last} {}", crate::glyphs::get().ellipsis);
-            *last = crate::widgets::data_quality::fit(&cut, width);
+            *last = crate::glyphs::fit(&cut, width);
         }
     }
     let top = content.bottom() - lines.len() as u16;
@@ -229,7 +221,7 @@ pub fn render_export_modal(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pointer::Hit;
+    use crate::app::pointer::Hit;
     use ratatui::buffer::Buffer;
 
     fn draw(modal: &mut ExportModal, width: u16, height: u16) -> Buffer {
@@ -239,18 +231,8 @@ mod tests {
         buf
     }
 
-    fn lines(buf: &Buffer) -> Vec<String> {
-        (0..buf.area.height)
-            .map(|y| {
-                (0..buf.area.width)
-                    .map(|x| buf[(x, y)].symbol().to_string())
-                    .collect::<String>()
-            })
-            .collect()
-    }
-
     fn painted(modal: &mut ExportModal, width: u16, height: u16) -> String {
-        lines(&draw(modal, width, height)).join("\n")
+        crate::tests::buffer_lines(&draw(modal, width, height)).join("\n")
     }
 
     /// The dialog's first content row, where Format always sits.
@@ -263,10 +245,9 @@ mod tests {
         let ctx = RenderContext::for_test();
         let tint = ctx.highlight_style().bg.expect("the default theme tints");
         let mut modal = ExportModal::new();
-        modal.active = true;
         modal.selected_format = ExportFormat::Tsv;
         let buf = draw(&mut modal, MAX_WIDTH, HEIGHT);
-        let rows = lines(&buf);
+        let rows = crate::tests::buffer_lines(&buf);
         let row = &rows[usize::from(FORMAT_Y)];
         assert!(row.contains("Format:"), "{row}");
         let mut at = 0;
@@ -304,11 +285,10 @@ mod tests {
         let ctx = RenderContext::for_test();
         let tint = ctx.highlight_style().bg.expect("the default theme tints");
         let mut modal = ExportModal::new();
-        modal.active = true;
         modal.selected_format = ExportFormat::Csv;
         modal.csv_compression = Some(CompressionFormat::Zstd);
         let buf = draw(&mut modal, MAX_WIDTH, HEIGHT);
-        let rows = lines(&buf);
+        let rows = crate::tests::buffer_lines(&buf);
         let (y, row) = rows
             .iter()
             .enumerate()
@@ -327,9 +307,8 @@ mod tests {
     fn a_narrow_dialog_shows_the_chosen_format_alone() {
         let g = crate::glyphs::get();
         let mut modal = ExportModal::new();
-        modal.active = true;
         modal.selected_format = ExportFormat::Parquet;
-        let rows = lines(&draw(&mut modal, 50, HEIGHT));
+        let rows = crate::tests::buffer_lines(&draw(&mut modal, 50, HEIGHT));
         let row = &rows[usize::from(FORMAT_Y)];
         let compact = format!("{} Parquet {}", g.choice_prev, g.choice_next);
         assert!(row.contains(&compact), "{row:?}");
@@ -343,9 +322,8 @@ mod tests {
     #[test]
     fn fields_follow_the_format_under_a_fixed_format_row() {
         let mut modal = ExportModal::new();
-        modal.active = true;
         let shown = |modal: &mut ExportModal| {
-            let rows = lines(&draw(modal, MAX_WIDTH, HEIGHT));
+            let rows = crate::tests::buffer_lines(&draw(modal, MAX_WIDTH, HEIGHT));
             assert!(rows[usize::from(FORMAT_Y)].contains("Format:"));
             ["Delimiter:", "Header:", "Compression:", "Source file:"]
                 .into_iter()
@@ -368,9 +346,8 @@ mod tests {
     #[test]
     fn each_format_value_is_a_click_target() {
         let mut modal = ExportModal::new();
-        modal.active = true;
         modal.selected_format = ExportFormat::Tsv;
-        let hits = crate::pointer::recording(|| {
+        let hits = crate::app::pointer::recording(|| {
             draw(&mut modal, MAX_WIDTH, HEIGHT);
         });
         let field = Some(FieldId::of::<ExportModal>(ExportFocus::FormatSelector));
@@ -404,7 +381,7 @@ mod tests {
         assert!(row < first_option, "the values lie on top of the row");
 
         // Compact, the step marks step by one.
-        let hits = crate::pointer::recording(|| {
+        let hits = crate::app::pointer::recording(|| {
             draw(&mut modal, 50, HEIGHT);
         });
         let steps: Vec<(usize, usize)> = hits
@@ -426,7 +403,6 @@ mod tests {
     #[test]
     fn csv_says_how_nested_columns_are_written() {
         let mut modal = ExportModal::new();
-        modal.active = true;
         for width in [50u16, MAX_WIDTH] {
             let out = painted(&mut modal, width, HEIGHT);
             assert!(!out.contains(NESTED_NOTE), "no nested columns: {out}");
@@ -445,7 +421,6 @@ mod tests {
     #[test]
     fn avro_says_it_renames_columns() {
         let mut modal = ExportModal::new();
-        modal.active = true;
         modal.selected_format = ExportFormat::Avro;
         for width in [50u16, MAX_WIDTH] {
             let out = painted(&mut modal, width, HEIGHT);
@@ -466,12 +441,11 @@ mod tests {
     #[test]
     fn the_blank_path_message_renders_inline() {
         let mut modal = ExportModal::new();
-        modal.active = true;
         modal.path_error = Some("Enter a file path.".to_string());
         for format in [ExportFormat::Csv, ExportFormat::Parquet] {
             modal.selected_format = format;
             for width in [50u16, MAX_WIDTH] {
-                let rows = lines(&draw(&mut modal, width, HEIGHT));
+                let rows = crate::tests::buffer_lines(&draw(&mut modal, width, HEIGHT));
                 let at = rows
                     .iter()
                     .position(|row| row.contains("Enter a file path."));
@@ -487,10 +461,9 @@ mod tests {
             let screen = Rect::new(0, 0, width, 24);
             let dialog = dialog_area(screen);
             let mut modal = ExportModal::new();
-            modal.active = true;
             let mut buf = Buffer::empty(screen);
             render_export_modal(dialog, &mut buf, &mut modal, &RenderContext::for_test());
-            let text = lines(&buf).join("\n");
+            let text = crate::tests::buffer_lines(&buf).join("\n");
             assert_eq!(text.contains("Avro"), full, "at {width}: {text}");
         }
     }

@@ -2,8 +2,8 @@ use crate::*;
 use polars::prelude::{IntoLazy, df};
 
 /// The column notes of a GHCN-like catalog entry, as a catalog would carry them.
-fn codebook() -> codebook::Codebook {
-    let catalog = catalog::parse(
+fn codebook() -> home::codebook::Codebook {
+    let catalog = home::catalog::parse(
         r#"
 [weather]
 name = "Weather"
@@ -23,24 +23,24 @@ TMAX = "Maximum temperature (tenths of degrees C)"
 S = "failed spatial consistency check"
 "#,
         "t",
-        catalog::Origin::Listed,
+        home::catalog::Origin::Listed,
         None,
     )
     .unwrap();
-    codebook::Codebook::of(&catalog.datasets[0]).unwrap()
+    home::codebook::Codebook::of(&catalog.datasets[0]).unwrap()
 }
 
 /// The bundled NOAA entry keeps the readme's source flags under S_FLAG, where they
 /// belong, and only element codes under ELEMENT.
 #[test]
 fn the_noaa_source_flags_are_s_flags_not_elements() {
-    let catalog = catalog::bundled();
+    let catalog = home::catalog::bundled();
     let noaa = catalog
         .datasets
         .iter()
         .find(|d| d.url.as_deref() == Some("s3://noaa-ghcn-pds/parquet/"))
         .expect("the NOAA entry");
-    let book = codebook::Codebook::of(noaa).unwrap();
+    let book = home::codebook::Codebook::of(noaa).unwrap();
     let element = book.column("ELEMENT").unwrap();
     assert!(
         element.values.keys().all(|code| code.len() == 4),
@@ -77,7 +77,7 @@ fn app() -> (App, std::sync::mpsc::Receiver<AppEvent>) {
         "Q_FLAG".to_string(),
     ]);
     app.data_table_state = Some(state);
-    app.codebook = Some(std::sync::Arc::new(codebook()));
+    app.info.codebook = Some(std::sync::Arc::new(codebook()));
     draw(&mut app);
     (app, rx)
 }
@@ -87,18 +87,11 @@ fn draw(app: &mut App) -> String {
     let area = Rect::new(0, 0, 120, 40);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
-    (0..area.height)
-        .map(|y| {
-            (0..area.width)
-                .map(|x| buf[(x, y)].symbol())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    crate::tests::buffer_text(&buf)
 }
 
 fn press(app: &mut App, code: KeyCode) -> Option<AppEvent> {
-    app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+    app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
 }
 
 #[test]
@@ -128,7 +121,7 @@ fn info_says_what_each_column_means_and_where_that_comes_from() {
 #[test]
 fn info_without_a_codebook_has_no_about_column() {
     let (mut app, _rx) = app();
-    app.codebook = None;
+    app.info.codebook = None;
     press(&mut app, KeyCode::Char('i'));
     let screen = draw(&mut app);
     assert!(!screen.contains("About"), "{screen}");
@@ -139,7 +132,7 @@ fn info_without_a_codebook_has_no_about_column() {
 fn the_inspector_names_the_code_under_the_cursor() {
     let (mut app, _rx) = app();
     press(&mut app, KeyCode::Char(' '));
-    assert_eq!(app.input_mode, InputMode::Inspect);
+    assert_eq!(app.overlay, Overlay::Inspect);
     let screen = draw(&mut app);
     assert!(screen.contains("Element type"), "{screen}");
     assert!(

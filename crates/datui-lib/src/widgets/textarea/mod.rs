@@ -1,7 +1,7 @@
 //! A text editing widget built directly on ratatui.
 //!
 //! [`TextArea`] owns a buffer of lines, a cursor, a selection, an undo history
-//! and a yank buffer, and knows how to draw itself into a [`Rect`]. It has no
+//! and a yank buffer, and knows how to draw itself into a `Rect`. It has no
 //! opinion about history of previously submitted values, theming or focus:
 //! that belongs to [`crate::widgets::text_input::TextInput`], which wraps this
 //! type and is what the rest of datui uses.
@@ -9,7 +9,7 @@
 //! Coordinates are `(row, column)` pairs where the column is a *character*
 //! index, not a terminal column. Character indices are what the editing and
 //! cursor logic works in; display width is resolved only while rendering, in
-//! [`render`].
+//! `render`.
 
 mod cursor;
 mod edit;
@@ -92,6 +92,7 @@ impl TextArea {
     }
 
     /// An editor holding `text`, with the cursor at the end of it.
+    #[cfg(test)]
     pub fn from_text(text: &str) -> Self {
         let mut ta = Self::new();
         ta.set_text(text);
@@ -142,6 +143,7 @@ impl TextArea {
     }
 
     /// True when the buffer holds no characters at all.
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.lines.len() == 1 && self.lines[0].is_empty()
     }
@@ -153,6 +155,7 @@ impl TextArea {
 
     /// Move the cursor to an absolute position, clamped into the buffer. This
     /// cancels any selection.
+    #[cfg(test)]
     pub fn set_cursor(&mut self, row: usize, col: usize) {
         self.selection_anchor = None;
         self.cursor = self.clamp_position((row, col));
@@ -173,6 +176,7 @@ impl TextArea {
     }
 
     /// Begin a selection anchored at the cursor.
+    #[cfg(test)]
     pub fn start_selection(&mut self) {
         self.selection_anchor = Some(self.cursor);
     }
@@ -190,18 +194,9 @@ impl TextArea {
     }
 
     /// Text held by the yank buffer, as left by the last copy, cut or kill.
+    #[cfg(test)]
     pub fn yanked_text(&self) -> &str {
         &self.yank
-    }
-
-    /// Overwrite the yank buffer, for example from an external paste.
-    pub fn set_yank(&mut self, text: impl Into<String>) {
-        self.yank = text.into();
-    }
-
-    /// Style applied to the text.
-    pub fn style(&self) -> Style {
-        self.style
     }
 
     pub fn set_style(&mut self, style: Style) {
@@ -221,17 +216,10 @@ impl TextArea {
         self.cursor_visible = visible;
     }
 
-    pub fn cursor_visible(&self) -> bool {
-        self.cursor_visible
-    }
-
     /// Width of a tab stop, in columns. Tab keys insert this many spaces.
+    #[cfg(test)]
     pub fn set_tab_len(&mut self, len: usize) {
         self.tab_len = len.max(1);
-    }
-
-    pub fn tab_len(&self) -> usize {
-        self.tab_len
     }
 
     /// Scroll position as `(first visible row, first visible terminal column)`

@@ -191,7 +191,7 @@ fn run_query(path: &Path, lang: &str, query: &str, rows: Option<&str>) -> Result
         "sql" => AppEvent::SqlQuery(query.to_string()),
         _ => AppEvent::QQuery(query.to_string()),
     };
-    if let Some(next) = app.event(&event) {
+    if let Some(next) = app.event(event) {
         let _ = tx.send(next);
     }
     pump(&mut app, &rx, &tx, |a| !super::work_pending(a));

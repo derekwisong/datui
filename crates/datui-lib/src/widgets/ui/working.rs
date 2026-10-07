@@ -11,7 +11,7 @@ use ratatui::widgets::{Clear, Paragraph, Widget};
 #[derive(Clone, Copy)]
 pub struct Working<'a> {
     pub text: &'a str,
-    /// The throbber frame, so this spinner turns with the control bar's.
+    /// The throbber frame, so this spinner turns with the footer's.
     pub frame: usize,
 }
 
@@ -74,14 +74,6 @@ impl Working<'_> {
 mod tests {
     use super::*;
 
-    fn text(buf: &Buffer) -> Vec<String> {
-        let w = buf.area.width as usize;
-        buf.content()
-            .chunks(w)
-            .map(|row| row.iter().map(|c| c.symbol()).collect())
-            .collect()
-    }
-
     #[test]
     fn centered_replaces_what_was_there() {
         let ctx = RenderContext::for_test();
@@ -93,7 +85,7 @@ mod tests {
             frame: 0,
         }
         .render_centered(area, &mut buf, &ctx);
-        let rows = text(&buf);
+        let rows = crate::tests::buffer_lines(&buf);
         assert!(rows[1].contains("Applying SQL query..."), "{rows:#?}");
         assert!(rows.iter().all(|row| !row.contains("old")), "{rows:#?}");
     }
@@ -109,7 +101,7 @@ mod tests {
             frame: 0,
         }
         .render_corner(area, &mut buf, &ctx);
-        let rows = text(&buf);
+        let rows = crate::tests::buffer_lines(&buf);
         assert!(rows[0].trim_end().ends_with("Computing..."), "{rows:#?}");
         assert!(rows.iter().all(|row| row.starts_with("chart")), "{rows:#?}");
     }

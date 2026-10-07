@@ -9,28 +9,25 @@ use ratatui::{
     },
 };
 
-use crate::analysis_modal::{
+use crate::analysis::analysis_modal::{
     AnalysisFocus, AnalysisTool, AnalysisView, ColumnScroll, HistogramScale,
 };
-use crate::chart_data::{AxisFormat, AxisNumbers};
+use crate::analysis::distribution_fit::{FitOutcome, FitTest};
+use crate::analysis::statistics::{
+    AnalysisResults, CategoricalStatistics, ColumnStatistics, CorrelationMethod,
+    DistributionAnalysis, DistributionType, HistogramKey, NumericStatistics, TemporalStatistics,
+};
 use crate::config::Theme;
-use crate::distribution_fit::{FitOutcome, FitTest};
 use crate::glyphs::PlotMarks;
 use crate::numfmt::{self, NumberFormatSettings};
 use crate::render::context::RenderContext;
-use crate::statistics::{
-    AnalysisContext, AnalysisResults, CategoricalStatistics, ColumnStatistics, CorrelationMethod,
-    DistributionAnalysis, DistributionType, NumericStatistics, TemporalStatistics,
-};
 use crate::widgets::axes::{AxisSpec, PlotAxes};
-use crate::widgets::datatable::DataTableState;
+use crate::widgets::axis_numbers::{AxisFormat, AxisNumbers};
 use crate::widgets::ui::Surface;
 use polars::prelude::{AnyValue, DataType};
 
 pub struct AnalysisWidgetConfig<'a> {
-    pub state: &'a DataTableState,
     pub results: Option<&'a AnalysisResults>,
-    pub context: &'a AnalysisContext,
     pub view: AnalysisView,
     pub selected_tool: Option<AnalysisTool>,
     pub selected_correlation: Option<(usize, usize)>,
@@ -43,14 +40,12 @@ pub struct AnalysisWidgetConfig<'a> {
     /// Display-time number formatting, so counts here match the data table.
     pub number_format: &'a NumberFormatSettings,
     /// The shared sample the results were read with, for the header.
-    pub sample: &'a crate::sampling::Sample,
+    pub sample: &'a crate::analysis::sampling::Sample,
     pub ctx: &'a RenderContext,
 }
 
 pub struct AnalysisWidget<'a> {
-    _state: &'a DataTableState,
     results: Option<&'a AnalysisResults>,
-    _context: &'a AnalysisContext,
     view: AnalysisView,
     selected_tool: Option<AnalysisTool>,
     table_state: &'a mut TableState,
@@ -66,7 +61,7 @@ pub struct AnalysisWidget<'a> {
     theme: &'a Theme,
     table_cell_padding: u16,
     number_format: &'a NumberFormatSettings,
-    sample: &'a crate::sampling::Sample,
+    sample: &'a crate::analysis::sampling::Sample,
     ctx: &'a RenderContext,
     /// The selected tool's statistic scroll; the table sets how far it goes.
     column_scroll: &'a mut ColumnScroll,
@@ -83,9 +78,7 @@ impl<'a> AnalysisWidget<'a> {
         column_scroll: &'a mut ColumnScroll,
     ) -> Self {
         Self {
-            _state: config.state,
             results: config.results,
-            _context: config.context,
             view: config.view,
             selected_tool: config.selected_tool,
             table_state,
@@ -147,9 +140,7 @@ impl<'a> AnalysisWidget<'a> {
             None => "Analysis".to_string(),
         };
 
-        // What the numbers are of, stated rather than implied: a sample says how big,
-        // of how many, and of which rows, so a surprising figure can be told apart
-        // from a rare one.
+        // What the numbers are of: a sample says its size, of how many, and which rows.
         let breadcrumb_text = match self.results {
             Some(results) if self.selected_tool.is_some() => format!(
                 "{tool_name} {} {}",
@@ -160,12 +151,11 @@ impl<'a> AnalysisWidget<'a> {
             _ => tool_name,
         };
 
-        let header_row_style = header_style(self.theme, "controls_bg", "table_header");
+        let header_row_style = header_style(self.theme.controls_bg(), self.theme.table_header());
         Paragraph::new(breadcrumb_text)
             .style(header_row_style)
             .render(layout[0], buf);
 
-        // Split main area into content area and sidebar
         let main_layout = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
@@ -188,7 +178,7 @@ impl<'a> AnalysisWidget<'a> {
                     .split(main_layout[0]);
                 Paragraph::new("Pick a tool in the sidebar")
                     .centered()
-                    .style(Style::default().fg(self.theme.get("text_primary")))
+                    .style(Style::default().fg(self.theme.text_primary()))
                     .render(inner[1], buf);
             }
             Some(tool) => {
@@ -263,7 +253,6 @@ impl<'a> AnalysisWidget<'a> {
     }
 
     fn render_distribution_detail(self, area: Rect, buf: &mut Buffer) {
-        // Get selected distribution
         let selected_idx = self.distribution_table_state.selected();
         let dist_analysis: Option<&DistributionAnalysis> = self.results.and_then(|results| {
             selected_idx.and_then(|idx| results.distribution_analyses.get(idx))
@@ -279,9 +268,10 @@ impl<'a> AnalysisWidget<'a> {
                 ])
                 .split(area);
 
-            // The breadcrumb carries the name alone; the control bar says Esc.
+            // The breadcrumb carries the name alone; the footer says Esc.
             let title_text = format!("Distribution Analysis: {}", dist.column_name);
-            let header_row_style = header_style(self.theme, "controls_bg", "table_header");
+            let header_row_style =
+                header_style(self.theme.controls_bg(), self.theme.table_header());
             Paragraph::new(title_text)
                 .style(header_row_style)
                 .render(layout[0], buf);
@@ -320,7 +310,6 @@ impl<'a> AnalysisWidget<'a> {
                 ])
                 .split(content_layout[0]);
 
-            // Add padding around chart areas for better visual separation
             let chart_padding = 1u16; // 1 character padding on all sides
             let right_padding_extra = 1u16; // Extra padding on right side to separate from distribution box
             let top_padding_extra = 1u16; // Extra padding at top to separate title from chart
@@ -359,21 +348,19 @@ impl<'a> AnalysisWidget<'a> {
                 _ => (0.0, 1.0),
             };
 
-            // Both plots' y labels take one width, so the plots start in the same
-            // column: the widest Q-Q value, or the widest count the histogram could
-            // reach, the sample's size.
+            // Both plots share a y-label width so they start in the same column.
             let (lo, hi) = unified_x_range;
             let qq_format = AxisFormat::ends_and_middle([lo, hi], &values);
             let qq_width = [lo, (lo + hi) / 2.0, hi]
                 .iter()
                 .filter_map(|&v| qq_format.label(v, 0))
-                .map(|l| l.chars().count())
+                .map(|l| crate::glyphs::display_width(&l))
                 .max()
                 .unwrap_or(1);
             let n = sorted_data.len() as f64;
             let count_width = AxisFormat::new(&[0.0, n], &counts)
                 .label(n, 0)
-                .map_or(1, |l| l.chars().count());
+                .map_or(1, |l| crate::glyphs::display_width(&l));
             let shared_y_axis_label_width = (qq_width.max(count_width) as u16).max(1) + 1;
 
             // Both plots of the selected theoretical distribution, on one x range.
@@ -450,12 +437,12 @@ impl<'a> AnalysisWidget<'a> {
             .constraints([Constraint::Length(1), Constraint::Fill(1)])
             .split(area);
 
-        // The breadcrumb carries the pair alone; the control bar says Esc.
+        // The breadcrumb carries the pair alone; the footer says Esc.
         let title_text = format!(
             "Correlation: {} vs {}",
             matrix.columns[row], matrix.columns[col]
         );
-        let header_row_style = header_style(self.theme, "controls_bg", "table_header");
+        let header_row_style = header_style(self.theme.controls_bg(), self.theme.table_header());
         Paragraph::new(title_text)
             .style(header_row_style)
             .render(layout[0], buf);
@@ -479,7 +466,7 @@ impl<'a> AnalysisWidget<'a> {
 /// The correlation matrix as the screen shows it: by the method chosen.
 #[derive(Clone, Copy)]
 struct Shown<'a> {
-    matrix: &'a crate::statistics::CorrelationMatrix,
+    matrix: &'a crate::analysis::statistics::CorrelationMatrix,
     method: CorrelationMethod,
 }
 
@@ -532,9 +519,8 @@ fn describe_correlation(r: f64) -> &'static str {
     }
 }
 
-/// The body of the correlation pair detail: everything the matrix already knows
-/// about the pair. Nothing is collected here — a scatter or per-column moments
-/// would need the pair's values, which the correlation results do not carry.
+/// The correlation pair detail: what the matrix knows of the pair (no scatter or
+/// per-column moments: the results lack the values).
 fn render_correlation_pair_summary(
     Shown { matrix, method }: Shown,
     (row, col): (usize, usize),
@@ -548,8 +534,8 @@ fn render_correlation_pair_summary(
     let pairs = matrix.sample_sizes[row][col];
     let p_value = matrix.p_value(method, row, col);
 
-    let label_style = Style::default().fg(theme.get("text_secondary"));
-    let value_style = Style::default().fg(theme.get("text_primary"));
+    let label_style = Style::default().fg(theme.text_secondary());
+    let value_style = Style::default().fg(theme.text_primary());
 
     let mut lines: Vec<Line> = Vec::new();
     if r.is_nan() {
@@ -654,22 +640,21 @@ impl StatisticsTable<'_> {
         ];
         let num_stats = stat_names.len();
 
-        // Calculate column widths based on header names and content (minimal spacing)
-        // First, determine minimum width for each column based on header length
-        // Note: ratatui Table adds 1 space between columns by default, so we don't add extra padding
+        // Column widths from header names and content; ratatui's Table adds one space between
+        // columns.
         let mut min_col_widths: Vec<u16> = stat_display_names
             .iter()
-            .map(|name| name.chars().count() as u16) // header length (no extra padding - table handles spacing)
+            .map(|name| crate::glyphs::display_width(name) as u16) // header length (no extra padding - table handles spacing)
             .collect();
 
         // Scan all data to find maximum width needed for each column
         for col_stat in &results.column_statistics {
             for (stat_idx, stat_name) in stat_names.iter().enumerate() {
                 let value_str = describe_value(col_stat, stat_name, number_format);
-                let value_len = value_str.chars().count() as u16;
+                let value_len = crate::glyphs::display_width(&value_str) as u16;
                 // Ensure width is at least the header length (already initialized) AND value length
                 // This preserves header widths even if all data values are shorter
-                let header_len = stat_display_names[stat_idx].chars().count() as u16;
+                let header_len = crate::glyphs::display_width(stat_display_names[stat_idx]) as u16;
                 min_col_widths[stat_idx] = min_col_widths[stat_idx].max(value_len).max(header_len);
                 // must fit both header and content (no padding - table handles spacing)
             }
@@ -677,11 +662,11 @@ impl StatisticsTable<'_> {
 
         // Locked column width (column name) - calculate from header text AND actual column names
         let header_text = "Column";
-        let header_len = header_text.chars().count() as u16;
+        let header_len = crate::glyphs::display_width(header_text) as u16;
         let max_col_name_len = results
             .column_statistics
             .iter()
-            .map(|cs| cs.name.chars().count() as u16)
+            .map(|cs| crate::glyphs::display_width(&cs.name) as u16)
             .max()
             .unwrap_or(header_len);
         let locked_col_width = max_col_name_len.max(header_len).max(10); // min 10, must fit both header and data (no padding - table handles spacing)
@@ -706,13 +691,12 @@ impl StatisticsTable<'_> {
         for &stat_idx in &visible_stats {
             header_cells.push(Cell::from(stat_display_names[stat_idx]).style(Style::default()));
         }
-        let header_row_style = header_style(theme, "controls_bg", "table_header");
+        let header_row_style = header_style(theme.controls_bg(), theme.table_header());
         let header_row = Row::new(header_cells.clone()).style(header_row_style);
 
         for col_stat in &results.column_statistics {
             let mut cells = vec![
-                Cell::from(col_stat.name.as_str())
-                    .style(Style::default().fg(theme.get("text_primary"))),
+                Cell::from(col_stat.name.as_str()).style(Style::default().fg(theme.text_primary())),
             ];
             for &stat_idx in &visible_stats {
                 let stat_name = stat_names[stat_idx];
@@ -726,7 +710,6 @@ impl StatisticsTable<'_> {
 
         let mut constraints = vec![Constraint::Length(locked_col_width)];
         for &stat_idx in &visible_stats {
-            // Use minimum width needed (ratatui will add spacing between columns)
             constraints.push(Constraint::Length(min_col_widths[stat_idx]));
         }
 
@@ -786,10 +769,8 @@ fn describe_value(
     .unwrap_or_else(|| "-".to_string())
 }
 
-/// Format a row/null count, following the same grouping setting as the data
-/// table so a user who turned formatting on sees it everywhere they read
-/// numbers. Float statistics go through `format_num`, which switches to
-/// scientific notation well before grouping would apply.
+/// A row or null count, grouped as the data table is; float statistics use
+/// `format_num`, which switches to scientific notation first.
 fn format_count(n: usize, settings: &NumberFormatSettings) -> String {
     let fmt = settings.formatter_for("", &DataType::UInt64);
     let mut scratch = String::new();
@@ -844,18 +825,16 @@ fn format_fit_pvalue(test: &FitTest) -> String {
 /// Holds, marginal, rejected.
 fn pvalue_style(p: f64, theme: &Theme) -> Style {
     if p >= 0.05 {
-        Style::default().fg(theme.get("distribution_normal"))
+        Style::default().fg(theme.distribution_normal())
     } else if p > 0.01 {
-        Style::default().fg(theme.get("distribution_skewed"))
+        Style::default().fg(theme.distribution_skewed())
     } else {
-        Style::default().fg(theme.get("outlier_marker"))
+        Style::default().fg(theme.outlier_marker())
     }
 }
 
-/// Build header-style: bg+fg when bg_key is not Reset, else fg-only.
-pub(crate) fn header_style(theme: &Theme, bg_key: &str, fg_key: &str) -> Style {
-    let bg = theme.get(bg_key);
-    let fg = theme.get(fg_key);
+/// A header's style: `bg` behind `fg`, or `fg` alone when `bg` is the terminal's own.
+pub(crate) fn header_style(bg: Color, fg: Color) -> Style {
     if bg == Color::Reset {
         Style::default().fg(fg)
     } else {
@@ -897,65 +876,29 @@ fn render_distribution_table(
     // Note: ratatui Table adds 1 space between columns by default, so we don't add extra padding
     let mut min_col_widths: Vec<u16> = column_names
         .iter()
-        .map(|name| name.chars().count() as u16) // header length (no extra padding - table handles spacing)
+        .map(|name| crate::glyphs::display_width(name) as u16) // header length (no extra padding - table handles spacing)
         .collect();
 
-    // Calculate column name width (for locked column)
     let header_text = "Column";
-    let header_len = header_text.chars().count() as u16;
+    let header_len = crate::glyphs::display_width(header_text) as u16;
     let max_col_name_len = results
         .distribution_analyses
         .iter()
-        .map(|da| da.column_name.chars().count() as u16)
+        .map(|da| crate::glyphs::display_width(&da.column_name) as u16)
         .max()
         .unwrap_or(header_len);
     let locked_col_width = max_col_name_len.max(header_len).max(10);
 
-    // Scan all data to find maximum width needed for each column (excluding Column)
-    for dist_analysis in &results.distribution_analyses {
-        // Outlier count with percentage
-        let outlier_text = if dist_analysis.outliers.total_count > 0 {
-            format!(
-                "{} ({:.1}%)",
-                dist_analysis.outliers.total_count, dist_analysis.outliers.percentage
-            )
-        } else {
-            "0 (0.0%)".to_string()
-        };
-
-        // Shapiro-Wilk statistic and p-value formatting
-        let sw_stat_text = dist_analysis
-            .characteristics
-            .shapiro_wilk_stat
-            .map(|s| format!("{:.3}", s))
-            .unwrap_or_else(|| "N/A".to_string());
-        let sw_pvalue_text = dist_analysis
-            .characteristics
-            .shapiro_wilk_pvalue
-            .map(format_pvalue)
-            .unwrap_or_else(|| "N/A".to_string());
-
-        let pvalue_text = verdict_pvalue(dist_analysis);
-
-        // Update minimum widths based on content (skip column name)
-        let col_values = [
-            format!("{}", dist_analysis.distribution_type),
-            pvalue_text.clone(),
-            sw_stat_text.clone(),
-            sw_pvalue_text.clone(),
-            format!(
-                "{:.4}",
-                dist_analysis.characteristics.coefficient_of_variation
-            ),
-            outlier_text.clone(),
-            format_num(dist_analysis.characteristics.skewness),
-            format_num(dist_analysis.characteristics.kurtosis),
-        ];
-
-        for (idx, value) in col_values.iter().enumerate() {
-            let value_len = value.chars().count() as u16;
-            let header_len = column_names[idx].chars().count() as u16;
-            min_col_widths[idx] = min_col_widths[idx].max(value_len).max(header_len);
+    // Each row's values, formatted once for the widths and the cells both.
+    let texts: Vec<[String; 8]> = results
+        .distribution_analyses
+        .iter()
+        .map(stat_texts)
+        .collect();
+    for row in &texts {
+        for (idx, value) in row.iter().enumerate() {
+            min_col_widths[idx] =
+                min_col_widths[idx].max(crate::glyphs::display_width(value) as u16);
         }
     }
 
@@ -979,76 +922,52 @@ fn render_distribution_table(
     for &stat_idx in &visible_stats {
         header_cells.push(Cell::from(column_names[stat_idx]).style(Style::default()));
     }
-    let header_row_style = header_style(theme, "controls_bg", "table_header");
+    let header_row_style = header_style(theme.controls_bg(), theme.table_header());
     let header_row = Row::new(header_cells).style(header_row_style);
-    for dist_analysis in &results.distribution_analyses {
+    for (dist_analysis, texts) in results.distribution_analyses.iter().zip(texts) {
         // The verdict in the colors of its p-value; no clear fit in the rejected one.
         let type_color = match dist_analysis.distribution_type {
-            DistributionType::Unknown => theme.get("outlier_marker"),
-            DistributionType::Constant => theme.get("text_primary"),
+            DistributionType::Unknown => theme.outlier_marker(),
+            DistributionType::Constant => theme.text_primary(),
             _ => pvalue_style(dist_analysis.confidence, theme)
                 .fg
-                .unwrap_or_else(|| theme.get("text_primary")),
-        };
-
-        // Outlier count with percentage
-        let outlier_text = if dist_analysis.outliers.total_count > 0 {
-            format!(
-                "{} ({:.1}%)",
-                dist_analysis.outliers.total_count, dist_analysis.outliers.percentage
-            )
-        } else {
-            "0 (0.0%)".to_string()
+                .unwrap_or_else(|| theme.text_primary()),
         };
 
         // Relaxed outlier color thresholds - red only for very high percentages that might indicate data errors
         let outlier_style = if dist_analysis.outliers.percentage > 20.0 {
             // Red: very high outlier percentage (>20%) - might indicate data errors
-            Style::default().fg(theme.get("outlier_marker"))
+            Style::default().fg(theme.outlier_marker())
         } else if dist_analysis.outliers.percentage > 5.0 {
             // Yellow for moderate outliers (5-20%)
-            Style::default().fg(theme.get("distribution_skewed"))
+            Style::default().fg(theme.distribution_skewed())
         } else {
             // Default (white) for low outlier percentages (0-5%)
             Style::default()
         };
 
-        // Get skewness and kurtosis values for styling
         let skewness_value = dist_analysis.characteristics.skewness.abs();
         let kurtosis_value = dist_analysis.characteristics.kurtosis;
 
         // Skewness color coding: similar to describe table
         let skewness_style = if skewness_value >= 3.0 {
-            Style::default().fg(theme.get("outlier_marker"))
+            Style::default().fg(theme.outlier_marker())
         } else if skewness_value >= 1.0 {
-            Style::default().fg(theme.get("distribution_skewed"))
+            Style::default().fg(theme.distribution_skewed())
         } else {
             Style::default()
         };
 
         // Kurtosis color coding: 3.0 is normal, high/low is notable
         let kurtosis_style = if (kurtosis_value - 3.0).abs() >= 3.0 {
-            Style::default().fg(theme.get("outlier_marker"))
+            Style::default().fg(theme.outlier_marker())
         } else if (kurtosis_value - 3.0).abs() >= 1.0 {
-            Style::default().fg(theme.get("distribution_skewed"))
+            Style::default().fg(theme.distribution_skewed())
         } else {
             Style::default()
         };
 
-        let pvalue_text = verdict_pvalue(dist_analysis);
         let pvalue_style = pvalue_style(dist_analysis.confidence, theme);
-
-        // Shapiro-Wilk statistic and p-value formatting
-        let sw_stat_text = dist_analysis
-            .characteristics
-            .shapiro_wilk_stat
-            .map(|s| format!("{:.3}", s))
-            .unwrap_or_else(|| "N/A".to_string());
-        let sw_pvalue_text = dist_analysis
-            .characteristics
-            .shapiro_wilk_pvalue
-            .map(format_pvalue)
-            .unwrap_or_else(|| "N/A".to_string());
 
         // Color coding for SW p-value: same semantics as p-value column
         // Green = normal (>0.05), Yellow = moderate (0.01-0.05), Red = non-normal (≤0.01)
@@ -1057,11 +976,11 @@ fn render_distribution_table(
             .shapiro_wilk_pvalue
             .map(|p| {
                 if p > 0.05 {
-                    Style::default().fg(theme.get("distribution_normal"))
+                    Style::default().fg(theme.distribution_normal())
                 } else if p > 0.01 {
-                    Style::default().fg(theme.get("distribution_skewed"))
+                    Style::default().fg(theme.distribution_skewed())
                 } else {
-                    Style::default().fg(theme.get("outlier_marker"))
+                    Style::default().fg(theme.outlier_marker())
                 }
             })
             .unwrap_or_default();
@@ -1070,36 +989,29 @@ fn render_distribution_table(
         // Use explicit text_primary so column names stay visible (avoids black-on-black)
         let mut cells = vec![
             Cell::from(dist_analysis.column_name.as_str())
-                .style(Style::default().fg(theme.get("text_primary"))),
+                .style(Style::default().fg(theme.text_primary())),
         ];
 
-        // Add visible statistic values
+        let cv_style = if dist_analysis.characteristics.coefficient_of_variation > 1.0 {
+            // High variability.
+            Style::default().fg(theme.distribution_skewed())
+        } else {
+            Style::default()
+        };
+        let styles = [
+            Style::default().fg(type_color),
+            pvalue_style,
+            Style::default(),
+            sw_pvalue_style,
+            cv_style,
+            outlier_style,
+            skewness_style,
+            kurtosis_style,
+        ];
+        let mut texts = texts.map(Some);
         for &stat_idx in &visible_stats {
-            let cell = match stat_idx {
-                0 => Cell::from(format!("{}", dist_analysis.distribution_type))
-                    .style(Style::default().fg(type_color)),
-                1 => Cell::from(pvalue_text.clone()).style(pvalue_style),
-                2 => Cell::from(sw_stat_text.clone()),
-                3 => Cell::from(sw_pvalue_text.clone()).style(sw_pvalue_style),
-                4 => Cell::from(format!(
-                    "{:.4}",
-                    dist_analysis.characteristics.coefficient_of_variation
-                ))
-                .style(
-                    if dist_analysis.characteristics.coefficient_of_variation > 1.0 {
-                        Style::default().fg(theme.get("distribution_skewed")) // High variability
-                    } else {
-                        Style::default()
-                    },
-                ),
-                5 => Cell::from(outlier_text.clone()).style(outlier_style),
-                6 => Cell::from(format_num(dist_analysis.characteristics.skewness))
-                    .style(skewness_style),
-                7 => Cell::from(format_num(dist_analysis.characteristics.kurtosis))
-                    .style(kurtosis_style),
-                _ => Cell::from(""),
-            };
-            cells.push(cell);
+            let text = texts[stat_idx].take().unwrap_or_default();
+            cells.push(Cell::from(text).style(styles[stat_idx]));
         }
 
         rows.push(Row::new(cells));
@@ -1131,21 +1043,52 @@ fn render_distribution_table(
     );
 }
 
+/// One distribution's values in the table's column order, after its name.
+fn stat_texts(dist_analysis: &DistributionAnalysis) -> [String; 8] {
+    let characteristics = &dist_analysis.characteristics;
+    let outliers = if dist_analysis.outliers.total_count > 0 {
+        format!(
+            "{} ({:.1}%)",
+            dist_analysis.outliers.total_count, dist_analysis.outliers.percentage
+        )
+    } else {
+        "0 (0.0%)".to_string()
+    };
+    [
+        dist_analysis.distribution_type.to_string(),
+        verdict_pvalue(dist_analysis),
+        characteristics
+            .shapiro_wilk_stat
+            .map(|s| format!("{:.3}", s))
+            .unwrap_or_else(|| "N/A".to_string()),
+        characteristics
+            .shapiro_wilk_pvalue
+            .map(format_pvalue)
+            .unwrap_or_else(|| "N/A".to_string()),
+        format!("{:.4}", characteristics.coefficient_of_variation),
+        outliers,
+        format_num(characteristics.skewness),
+        format_num(characteristics.kurtosis),
+    ]
+}
+
 /// The column the cursor's rail sits in, kept whether or not the table has focus
 /// so focus arriving moves nothing.
 const RAIL_WIDTH: u16 = 1;
 
-/// The rail beside the row the cursor is on: in the accent while the table has
-/// focus, dimmed while the tool list has it, so the row stays marked without
-/// claiming the accent. The tint alone vanishes on a 16-color terminal whose
-/// black is the background.
+/// The rail beside the cursor's row: accented while the table has focus, dimmed while
+/// the tool list does (a tint alone vanishes on 16 colors).
 fn cursor_rail(focused: bool, theme: &Theme) -> Span<'static> {
     Span::styled(crate::glyphs::get().rail, rail_style(focused, theme))
 }
 
 /// The rail's color: the accent with focus, dimmed without.
 pub(crate) fn rail_style(focused: bool, theme: &Theme) -> Style {
-    Style::default().fg(theme.get(if focused { "accent" } else { "dimmed" }))
+    Style::default().fg(if focused {
+        theme.accent()
+    } else {
+        theme.dimmed()
+    })
 }
 
 /// The row the cursor is on: the tint while the table has focus; without it,
@@ -1163,11 +1106,10 @@ fn more_mark(hidden: usize) -> String {
     format!(" +{hidden} {}", crate::glyphs::get().arrow_right)
 }
 
-/// Which statistics fit beside the locked name column, as `start..end`, from the
-/// scroll's offset. Sets the scroll's `max` to the first start that brings the
-/// last statistic into view, and clamps the offset to it, so a key press past the
-/// end does nothing and the first press back always moves. A window that leaves
-/// statistics out to the right keeps room for the mark that counts them.
+/// Which statistics fit beside the locked name column, as `start..end` from the scroll
+/// offset. Sets the scroll's `max` to the first start showing the last statistic and
+/// clamps to it, so a press past the end does nothing and the first press back moves.
+/// Leaves room for the count mark when statistics are cut off right.
 fn stat_window(
     widths: &[u16],
     available: u16,
@@ -1210,9 +1152,8 @@ fn stat_window(
     (start, (start + shown(start)).min(n))
 }
 
-/// Say that statistics are out of view: an arrow at the end of the locked
-/// column's header when some are to the left, and the count at the right edge of
-/// the header when some are to the right.
+/// Mark statistics out of view: an arrow at the locked column header's end for the
+/// left, the count at the header's right edge for the right.
 fn draw_scroll_marks(
     area: Rect,
     buf: &mut Buffer,
@@ -1223,7 +1164,7 @@ fn draw_scroll_marks(
     if area.height == 0 || area.width == 0 {
         return;
     }
-    let style = header_style(theme, "controls_bg", "accent").add_modifier(Modifier::BOLD);
+    let style = header_style(theme.controls_bg(), theme.accent()).add_modifier(Modifier::BOLD);
     if start > 0 && locked_width > 0 && locked_width <= area.width {
         Paragraph::new(crate::glyphs::get().arrow_left)
             .style(style)
@@ -1299,7 +1240,6 @@ fn render_correlation_matrix(
 
     let n = correlation_matrix.columns.len();
 
-    // Calculate column widths - ensure they're wide enough for content
     let row_header_width = 20u16;
     let cell_width = 12u16; // Wide enough for "-0.999" and most names
     let column_spacing = 1u16; // Table widget adds 1 space between columns
@@ -1327,8 +1267,8 @@ fn render_correlation_matrix(
 
     let (selected_row, selected_col) = selected_cell.unwrap_or((n, n));
 
-    let header_row_style = header_style(theme, "controls_bg", "table_header");
-    let dim_header_style = header_style(theme, "controls_bg", "table_header");
+    let header_row_style = header_style(theme.controls_bg(), theme.table_header());
+    let dim_header_style = header_style(theme.controls_bg(), theme.table_header());
 
     let mut header_cells = vec![Cell::from("")];
     for j in start_col..end_col {
@@ -1348,12 +1288,11 @@ fn render_correlation_matrix(
     // But we render all rows and let Table widget handle vertical scrolling
     let mut rows = Vec::new();
     for (i, col_name) in correlation_matrix.columns.iter().enumerate() {
-        // Determine if this is the selected row
         let is_selected_row = selected_cell.is_some() && i == selected_row;
 
         // Row header cell - dim highlight if selected row
         let row_header_style = if is_selected_row {
-            Style::default().bg(theme.get("surface"))
+            Style::default().bg(theme.surface())
         } else {
             Style::default()
         };
@@ -1388,7 +1327,7 @@ fn render_correlation_matrix(
                     .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
             } else if is_selected_row || is_in_selected_col {
                 // Selected row or column: dim background with colored text
-                Style::default().fg(text_color).bg(theme.get("surface"))
+                Style::default().fg(text_color).bg(theme.surface())
             } else {
                 // Normal cell: just text color
                 Style::default().fg(text_color)
@@ -1398,7 +1337,7 @@ fn render_correlation_matrix(
         }
 
         let row_style = if is_selected_row {
-            Style::default().bg(theme.get("surface"))
+            Style::default().bg(theme.surface())
         } else {
             Style::default()
         };
@@ -1406,7 +1345,6 @@ fn render_correlation_matrix(
         rows.push(Row::new(cells).style(row_style));
     }
 
-    // Build constraints - fixed widths to prevent clipping
     let mut constraints = vec![Constraint::Length(row_header_width)];
     for _ in 0..visible_cols {
         constraints.push(Constraint::Length(cell_width));
@@ -1430,16 +1368,16 @@ fn get_correlation_color(correlation: f64, theme: &Theme) -> Color {
 
     if abs_corr < 0.05 {
         // No correlation (close to 0) - dimmed
-        theme.get("dimmed")
+        theme.dimmed()
     } else if abs_corr < 0.3 {
         // Low correlation - normal text
-        theme.get("text_primary")
+        theme.text_primary()
     } else if correlation > 0.0 {
         // Positive correlation - keybind hints color (UI element, not chart)
-        theme.get("chip_key")
+        theme.chip_key()
     } else {
         // Negative correlation - error/warning color
-        theme.get("outlier_marker")
+        theme.outlier_marker()
     }
 }
 
@@ -1455,9 +1393,8 @@ struct SelectorConfig<'a> {
     ctx: &'a RenderContext,
 }
 
-/// The families to compare with, one Surface on the right of the detail: each
-/// family and its p-value, the one on the plots on the rail, and the scale the
-/// histogram is drawn in on the last row.
+/// The families to compare with, one Surface right of the detail: each family and its
+/// p-value, the plotted one on the rail, and the histogram scale on the last row.
 fn render_distribution_selector(
     config: SelectorConfig,
     selector_state: &mut TableState,
@@ -1475,7 +1412,7 @@ fn render_distribution_selector(
     // Tested families by p-value, then the ones that do not apply; the same order
     // the modal's ↑↓ walks.
     let distribution_scores: Vec<(DistributionType, Option<&FitOutcome>)> =
-        crate::distribution_fit::listing_order(&dist.fits)
+        crate::analysis::distribution_fit::listing_order(&dist.fits)
             .into_iter()
             .map(|family| (family, dist.fit(family)))
             .collect();
@@ -1503,7 +1440,7 @@ fn render_distribution_selector(
     let line = |rail: &str, name: &str, pvalue: &str| {
         format!(
             "{rail}{name:<w$}{pvalue:>p$}",
-            name = crate::render::loading_view::truncate(name, name_width as usize),
+            name = crate::glyphs::fit(name, name_width as usize),
             w = name_width as usize,
             p = PVALUE_WIDTH as usize,
         )
@@ -1544,7 +1481,7 @@ fn render_distribution_selector(
             None => ("n/a".to_string(), Style::default().fg(ctx.dimmed)),
         };
         let is_cursor = i == selected;
-        let name = crate::render::loading_view::truncate(&family.to_string(), name_width as usize);
+        let name = crate::glyphs::fit(&family.to_string(), name_width as usize);
         let spans = vec![
             Span::styled(
                 if is_cursor { g.rail } else { " " },
@@ -1598,9 +1535,8 @@ struct DistributionPlotConfig<'a> {
 /// The family list's least width: the frame, the rail, "Exponential" and a p-value.
 const SELECTOR_WIDTH: u16 = 24;
 
-/// Which of `total` items a list of `rows` shows around the cursor, as the
-/// first and how many. While some are out of view below, the last row is kept
-/// to count them, so the cursor never sits on it.
+/// Which of `total` items `rows` rows show around the cursor (first, count). With items
+/// below, the last row counts them and the cursor never sits there.
 fn list_window(selected: usize, total: usize, rows: usize) -> (usize, usize) {
     if total <= rows || rows == 0 {
         return (0, total.min(rows));
@@ -1630,9 +1566,8 @@ pub(crate) fn main_pane(area: Rect) -> Rect {
     }
 }
 
-/// The Analysis Tools list, the same beside every tool: one Surface, the
-/// cursor carrying the rail and the tint while the list has focus, and the tool
-/// on screen carrying the accent.
+/// The Analysis Tools list, the same beside every tool: the cursor's rail and tint while
+/// focused, the tool on screen accented.
 pub(crate) fn render_sidebar(
     area: Rect,
     buf: &mut Buffer,
@@ -1675,10 +1610,7 @@ pub(crate) fn render_sidebar(
             Span::styled(rail, rail_style(is_cursor, theme)),
             // Cut with a mark on a narrow screen, never silently.
             Span::styled(
-                crate::render::loading_view::truncate(
-                    name,
-                    content.width.saturating_sub(1) as usize,
-                ),
+                crate::glyphs::fit(name, content.width.saturating_sub(1) as usize),
                 name_style,
             ),
         ]));
@@ -1691,13 +1623,11 @@ pub(crate) fn render_sidebar(
             ..content
         };
         line.render(row, buf);
-        crate::pointer::record(row, crate::pointer::Hit::Tool(idx));
+        crate::app::pointer::record(row, crate::app::pointer::Hit::Tool(idx));
     }
 }
 
 fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffer) {
-    // Use BarChart widget to show histogram comparing data vs theoretical distribution
-    // Use fixed-width bins that span both data range and theoretical distribution range
     let DistributionPlotConfig {
         dist,
         dist_type,
@@ -1721,9 +1651,6 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
 
     let n = sorted_data.len();
 
-    // Determine bin range: use percentile-based robust range (P1-P99) for all distributions
-    // This is a best practice that gives more visual space to the bulk of data while
-    // still showing outliers in edge bins. Matches professional tools like Observable Canvases.
     let data_min = sorted_data[0];
     let data_max = sorted_data[n - 1];
     let data_range = data_max - data_min;
@@ -1736,17 +1663,9 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
         return;
     }
 
-    // Use unified X-axis range (strict data range, no padding or extensions)
-    // This keeps both Q-Q plot and histogram in sync and ensures log scale works correctly
-    let (hist_min, hist_max, hist_range) = if let Some((unified_min, unified_max)) = unified_x_range
-    {
-        // Use unified range directly - it's already the strict data range
-        let range = unified_max - unified_min;
-        (unified_min, unified_max, range)
-    } else {
-        // Fallback: use actual data range (shouldn't happen if unified_x_range is always provided)
-        (data_min, data_max, data_range)
-    };
+    // The range the Q-Q plot shares, so both plots read the same values at the same
+    // column.
+    let (hist_min, hist_max) = unified_x_range.unwrap_or((data_min, data_max));
 
     // Calculate dynamic number of bins based on available width
     // This ensures bars fill the horizontal space and look dense at all widths
@@ -1754,37 +1673,28 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
     let y_axis_gap = 1u16; // Minimal gap between labels and plot area (needed to prevent bars from extending outside)
     let total_y_axis_space = shared_y_axis_label_width + y_axis_gap;
 
-    // Calculate available width for bars - must match Chart widget's plot area exactly
-    // Chart widget reserves space for Y-axis labels internally, using remaining width for plot
-    // Less the axis line itself, which the plot starts after.
+    // Bar width must match the Chart's plot area exactly: minus its y-axis labels and the
+    // axis line.
     let available_width = area.width.saturating_sub(total_y_axis_space + 1);
     // One blank column between neighboring bars.
     let gap_width = 1u16;
 
-    // Target bar width: aim for 6-8 pixels per bar for good density
-    // Calculate optimal number of bins to fill available width
-    // Formula: available_width = num_bins * bar_width + (num_bins - 1) * gap_width
-    // Rearranging: num_bins = (available_width + gap_width) / (bar_width + gap_width)
+    // Aim for ~7-cell bars: num_bins = (available + gap) / (bar + gap).
     let target_bar_width = 7.0; // Target bar width in pixels
     let optimal_num_bins = ((available_width as f64 + gap_width as f64)
         / (target_bar_width + gap_width as f64)) as usize;
 
-    // Clamp to reasonable bounds: minimum 5 bins, maximum 60 bins
-    // Fewer bins for very narrow displays, more bins for wide displays
-    // Increased max to 60 to better utilize ultrawide displays
+    // Between 5 and 60 bins (more for ultrawide displays).
     let num_bins = optimal_num_bins.clamp(5, 60);
 
-    // Use log-scale binning if user has selected log scale and data is positive
-    // Log-scale binning is standard practice for power law distributions and wide dynamic ranges
-    // Check actual data values, not histogram range (which may include padding or theoretical bounds)
-    let all_data_positive = sorted_data.iter().all(|&v| v > 0.0);
+    // Log-scale bins when chosen and the data (not the padded range) is positive.
+    let all_data_positive = data_min > 0.0;
     // For log scale, ensure hist_min is positive (adjust if needed)
     let (log_hist_min, log_hist_max) =
         if matches!(histogram_scale, HistogramScale::Log) && all_data_positive {
             // Use actual data min/max for log scale to avoid issues with padding or theoretical bounds
             let actual_min = sorted_data[0];
             let actual_max = sorted_data[sorted_data.len() - 1];
-            // Ensure minimum is positive for log scale
             if actual_min > 0.0 {
                 (actual_min, actual_max)
             } else {
@@ -1799,119 +1709,41 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
         && log_hist_min > 0.0
         && log_hist_max > log_hist_min;
 
-    let (bin_boundaries, bin_width): (Vec<f64>, f64) = if use_log_scale {
-        // Log-scale binning: bins with equal width in log space
-        // This ensures each bin represents roughly equal multiplicative range
-        // Use adjusted range based on actual data values
-        let log_min = log_hist_min.ln();
-        let log_max = log_hist_max.ln();
-        let log_range = log_max - log_min;
-        let log_bin_width = log_range / num_bins as f64;
-
-        let boundaries: Vec<f64> = (0..=num_bins)
-            .map(|i| {
-                let log_value = log_min + (i as f64) * log_bin_width;
-                log_value.exp()
-            })
-            .collect();
-
-        // For log scale, calculate average bin width for use in theoretical PDF calculations
-        // This is approximate but needed for compatibility
-        let log_range_linear = log_hist_max - log_hist_min;
-        let avg_bin_width = log_range_linear / num_bins as f64;
-        (boundaries, avg_bin_width)
-    } else {
-        // Linear binning for all other distributions
-        let bin_width = hist_range / num_bins as f64;
-        let boundaries: Vec<f64> = (0..=num_bins)
-            .map(|i| hist_min + (i as f64) * bin_width)
-            .collect();
-        (boundaries, bin_width)
-    };
-
-    // Count data points in each bin
-    let mut data_bin_counts = vec![0; num_bins];
-    for &val in sorted_data {
-        for (i, boundaries) in bin_boundaries.windows(2).enumerate().take(num_bins) {
-            if val >= boundaries[0]
-                && (val < boundaries[1] || (i == num_bins - 1 && val <= boundaries[1]))
-            {
-                data_bin_counts[i] += 1;
-                break;
-            }
-        }
-    }
-
-    // Expected counts from the fit every view of this family uses, by the CDF across
-    // each bin: exact for log-scaled and whole-number bins, where a density at the
-    // center is not. A family that does not apply draws no overlay.
-    let fitted = dist
-        .fit(dist_type)
-        .and_then(|outcome| outcome.test())
-        .map(|test| test.fitted);
-    let theory_probs: Vec<f64> = match &fitted {
-        Some(fitted) => bin_boundaries
-            .windows(2)
-            .enumerate()
-            .map(|(i, edges)| {
-                let upper = if i + 1 == num_bins {
-                    fitted.cdf(edges[1])
-                } else {
-                    fitted.cdf_below(edges[1])
-                };
-                (upper - fitted.cdf_below(edges[0])).max(0.0)
-            })
-            .collect(),
-        None => vec![0.0; num_bins],
-    };
-
-    // Convert probabilities to expected counts
-    let theory_bin_counts: Vec<f64> = theory_probs.iter().map(|&prob| prob * n as f64).collect();
-
-    // Normalize values for display (find the maximum for scaling)
-    let max_data = data_bin_counts.iter().cloned().fold(0, usize::max);
-    let max_theory = theory_bin_counts.iter().cloned().fold(0.0, f64::max);
-    // Even, so the middle label is a whole count.
-    let global_max = (max_data.max(max_theory.ceil() as usize).max(1) as f64 / 2.0).ceil() * 2.0;
+    // The fit's expected counts are drawn behind the bars, sampled densely enough
+    // that braille renders them as a line.
+    let histogram = dist.histogram(HistogramKey {
+        family: dist_type,
+        bins: num_bins,
+        log: use_log_scale,
+        range: if use_log_scale {
+            (log_hist_min, log_hist_max)
+        } else {
+            (hist_min, hist_max)
+        },
+        samples: (available_width as usize * 15).clamp(1500, 10000),
+    });
+    let global_max = histogram.top;
 
     // Use the shared label width calculated in the caller
     // This ensures both histogram and Q-Q plot use the same padding for alignment
     let y_axis_label_width = shared_y_axis_label_width;
 
-    // On Log the bins are equal in log space, and so is the x axis: a position is the
-    // log of the value it stands for, and a bin's center is its geometric middle.
-    let position = |x: f64| if use_log_scale { x.ln() } else { x };
-    let bin_centers: Vec<f64> = (0..num_bins)
-        .map(|i| {
-            let (lo, hi) = (bin_boundaries[i], bin_boundaries[i + 1]);
-            if use_log_scale {
-                (lo * hi).sqrt()
-            } else {
-                (lo + hi) / 2.0
-            }
-        })
-        .collect();
-
     // Each bin's bar on the 0-100 scale the curve and the count labels use. No value
     // or label: the axes say what a bar's height and place mean.
-    let data_bars: Vec<Bar> = data_bin_counts
+    let data_bars: Vec<Bar> = histogram
+        .counts
         .iter()
         .map(|&data_count| {
-            let data_height = if global_max > 0.0 {
-                ((data_count as f64 / global_max) * 100.0) as u64
-            } else {
-                0
-            };
+            let data_height = ((data_count as f64 / global_max) * 100.0) as u64;
             Bar::default()
                 .value(data_height)
                 .text_value(String::new())
-                .style(Style::default().fg(theme.get("chart_1")))
+                .style(Style::default().fg(theme.chart_1()))
         })
         .collect();
 
-    // The labels are padded to the width shared with the Q-Q plot, so both plots
-    // start in the same column. The bars stand on a 0-100 scale; their labels read
-    // counts.
+    // Labels padded to the width shared with the Q-Q plot; bars stand on a 0-100 scale,
+    // labeled in counts.
     let label_width = y_axis_label_width as usize;
     let count_axis = AxisSpec::numbers_as([0.0, 100.0], counts, "Counts", move |v| {
         v * global_max / 100.0
@@ -1925,15 +1757,11 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
     let block = distribution_block(format!("Histogram vs {dist_type}"));
     let chart_area = block.inner(area);
 
-    // Exactly the overlay's plot area: bar `i` starts where bin `i` does. Shifting the
-    // bars right to meet the overlay put the first bin's bar over the second bin and
-    // drew the last one past the axis, onto whatever sits beside the chart.
+    // Exactly the overlay's plot area: bar `i` starts where bin `i` does.
     let bar_plot_area = axes.frame(chart_area).graph;
 
-    // Bin `i` takes the plot columns its values map to, as the labels and the curve
-    // map them, and its bar fills them less a gap before the next bar. Bars of one
-    // shared width stopped short of the right end by up to a bar, leaving each bar
-    // left of the values it counts.
+    // Bin `i` spans the plot columns its values map to (as labels and curve map them),
+    // less a gap, so bars reach the right end.
     let plot_width = bar_plot_area.width as usize;
     let bin_edge = |i: usize| ((2 * i * plot_width + num_bins) / (2 * num_bins)) as u16;
     let bar_charts: Vec<(Rect, BarChart)> = data_bars
@@ -1954,9 +1782,7 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
             };
             let chart = BarChart::default()
                 .data(BarGroup::default().bars(&[bar]))
-                // The same 0-100 scale the curve and the labels use; left to itself the
-                // chart scales to its tallest bar and the curve no longer measures
-                // against the bars.
+                // The curve's 0-100 scale, not the tallest bar's, so the curve measures against bars.
                 .max(100)
                 .bar_set(g.plot.column_set())
                 .bar_width(width)
@@ -1965,37 +1791,6 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
         })
         .collect();
 
-    // The fit's expected counts, drawn behind the bars; sampled densely enough that
-    // braille renders it as a line.
-    let num_samples = (available_width as usize * 15).clamp(1500, 10000);
-
-    let height = |count: f64| {
-        if global_max > 0.0 {
-            count / global_max * 100.0
-        } else {
-            0.0
-        }
-    };
-    let theory_points: Vec<(f64, f64)> = match &fitted {
-        // A continuous family on linear bins is drawn as its density, scaled to a bin's
-        // count: a smooth curve rather than a staircase.
-        Some(fitted) if !fitted.discrete() && !use_log_scale && hist_range > 0.0 => (0
-            ..num_samples)
-            .map(|i| {
-                let x = hist_min + i as f64 / (num_samples - 1) as f64 * hist_range;
-                (x, height(fitted.density(x) * bin_width * n as f64))
-            })
-            .filter(|(_, y)| y.is_finite())
-            .collect(),
-        // Counts, and log-scaled bins, by each bin's expected count at its center.
-        Some(_) => bin_centers
-            .iter()
-            .zip(&theory_bin_counts)
-            .map(|(center, count)| (position(*center), height(*count)))
-            .collect(),
-        None => Vec::new(),
-    };
-
     // Dense points in the line mark read as a continuous curve.
     let marker = g.plot.line;
 
@@ -2003,18 +1798,15 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
         .name("") // Empty name to prevent legend from appearing
         .marker(marker)
         .graph_type(GraphType::Scatter)
-        .style(Style::default().fg(theme.get("dimmed")))
-        .data(&theory_points);
+        .style(Style::default().fg(theme.dimmed()))
+        .data(&histogram.curve);
 
     let theory_chart = Chart::new(vec![theory_dataset])
         .hidden_legend_constraints((Constraint::Length(0), Constraint::Length(0)));
 
-    // Render Chart overlay to full area (no borders)
-    // Chart widget will automatically handle its own inner layout for x-axis labels
-    // The bars, then the chart laid over them from a buffer of its own: its axes,
-    // labels and curve, except where the curve crosses a bar. Drawn straight over the
-    // bars, each braille cell of the curve replaced a block and cut a notch in the bar;
-    // drawn under them, the bar chart's blank cells erased the curve and the axis title.
+    // The bars, then the chart overlaid from its own buffer except where the curve
+    // crosses a bar: drawn directly, braille cells would notch bars; drawn under, blank
+    // bar cells would erase the curve and title.
     for (rect, chart) in bar_charts {
         chart.render(rect, buf);
     }
@@ -2047,8 +1839,6 @@ fn render_qq_plot(config: DistributionPlotConfig, buf: &mut Buffer) {
         values,
         ..
     } = config;
-    // Use Chart widget for Q-Q plot: Data quantiles vs Theoretical quantiles
-    // Use sorted_sample_values and position-based quantiles (not just 5 percentiles)
     let sorted_data = &dist.sorted_sample_values;
 
     if sorted_data.is_empty() || sorted_data.len() < 3 {
@@ -2084,9 +1874,7 @@ fn render_qq_plot(config: DistributionPlotConfig, buf: &mut Buffer) {
     }
     let n = qq_data.len();
 
-    // Find data ranges for both axes
-    // X-axis (Theoretical): calculated from probability percentiles via inverse CDF
-    // Y-axis (Empirical): raw sorted sample data (preserve all values, even if "impossible")
+    // Axis ranges: X theoretical (inverse CDF of percentiles), Y the sorted sample as is.
     let theory_min = qq_data
         .iter()
         .map(|(t, _)| *t)
@@ -2120,7 +1908,6 @@ fn render_qq_plot(config: DistributionPlotConfig, buf: &mut Buffer) {
     // Otherwise, handle case where all theoretical quantiles are the same (theory_range = 0)
     let (theory_min_plot, theory_max_plot) =
         if let Some((unified_min, unified_max)) = unified_x_range {
-            // Use unified range to align with histogram
             (unified_min, unified_max)
         } else if theory_range <= 0.0 || !theory_min.is_finite() || !theory_max.is_finite() {
             // Fallback: use data range (no padding)
@@ -2166,8 +1953,6 @@ fn render_qq_plot(config: DistributionPlotConfig, buf: &mut Buffer) {
         vec![(theory_min_plot, y_median), (theory_max_plot, y_median)]
     };
 
-    // Create datasets
-    // Use appropriate marker based on point density
     let marker = if qq_data.len() > 100 {
         g.plot.line
     } else {
@@ -2179,14 +1964,14 @@ fn render_qq_plot(config: DistributionPlotConfig, buf: &mut Buffer) {
         Dataset::default()
             .name("") // Empty name to hide from legend
             .marker(marker)
-            .style(Style::default().fg(theme.get("dimmed")))
+            .style(Style::default().fg(theme.dimmed()))
             .graph_type(GraphType::Line)
             .data(&reference_line),
         // Q-Q plot data points
         Dataset::default()
             .name("") // Empty name to hide from legend
             .marker(marker)
-            .style(Style::default().fg(theme.get("chart_1")))
+            .style(Style::default().fg(theme.chart_1()))
             .graph_type(GraphType::Scatter)
             .data(&qq_data),
     ];
@@ -2227,7 +2012,7 @@ fn distribution_axes<'a>(
     y: AxisSpec<'a>,
     marker: ratatui::symbols::Marker,
 ) -> PlotAxes<'a> {
-    let secondary = Style::default().fg(theme.get("text_secondary"));
+    let secondary = Style::default().fg(theme.text_secondary());
     PlotAxes {
         titles: Style::default(),
         ..PlotAxes::new(x, y, secondary, marker)
@@ -2277,7 +2062,7 @@ fn condensed_statistics_lines(
     width: u16,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
-    let style = Style::default().fg(theme.get("text_primary"));
+    let style = Style::default().fg(theme.text_primary());
     let mut lines = Vec::new();
     let mut spans = Vec::new();
     let mut used = 0usize;
@@ -2316,14 +2101,13 @@ mod tests {
     }
 
     fn analysis(mean: f64, std_dev: f64, sorted: Vec<f64>) -> DistributionAnalysis {
-        use crate::statistics::{
+        use crate::analysis::statistics::{
             DistributionCharacteristics, OutlierAnalysis, PercentileBreakdown,
         };
         DistributionAnalysis {
             column_name: "close".into(),
             distribution_type: DistributionType::Normal,
             confidence: 0.0,
-            fit_quality: 0.0,
             characteristics: DistributionCharacteristics {
                 shapiro_wilk_stat: None,
                 shapiro_wilk_pvalue: None,
@@ -2332,31 +2116,24 @@ mod tests {
                 mean,
                 median: mean,
                 std_dev,
-                variance: std_dev * std_dev,
                 coefficient_of_variation: std_dev / mean,
-                mode: None,
             },
             outliers: OutlierAnalysis {
                 total_count: 0,
                 percentage: 0.0,
                 iqr_count: 0,
                 zscore_count: 0,
-                outlier_rows: Vec::new(),
             },
             percentiles: PercentileBreakdown {
-                p1: 0.0,
-                p5: 0.0,
                 p25: 0.0,
                 p50: 0.0,
                 p75: 0.0,
-                p95: 0.0,
                 p99: 0.0,
             },
-            sample_size: sorted.len(),
             sorted_sample_values: sorted,
-            is_sampled: false,
             fits: Vec::new(),
             qq: Vec::new(),
+            histogram: Default::default(),
         }
     }
 
@@ -2372,7 +2149,7 @@ mod tests {
         dist.fits = vec![(
             DistributionType::Normal,
             FitOutcome::Tested(FitTest {
-                fitted: crate::distribution_fit::Fitted::Normal {
+                fitted: crate::analysis::distribution_fit::Fitted::Normal {
                     mean: 100.0,
                     sd: 80.0,
                 },
@@ -2471,6 +2248,23 @@ mod tests {
         assert_eq!(plain[0], grouped[0].replace(',', ""), "{plain:?}");
     }
 
+    /// A histogram is counted and fitted once for a layout: frames that change
+    /// nothing reuse it, and a new width builds it again.
+    #[test]
+    fn a_histogram_is_built_once_per_layout() {
+        use crate::analysis::statistics::HISTOGRAMS_BUILT;
+        let dist = skewed_normal_fit();
+        let g = crate::glyphs::unicode();
+        let built = || HISTOGRAMS_BUILT.with(std::cell::Cell::get);
+        let before = built();
+        for _ in 0..3 {
+            render_distribution_plot(&dist, g, render_distribution_histogram);
+        }
+        assert_eq!(built() - before, 1);
+        render_distribution_plot_in(&dist, g, render_distribution_histogram, 70);
+        assert_eq!(built() - before, 2);
+    }
+
     #[test]
     fn histogram_bars_stay_on_their_axis() {
         let dist = skewed_normal_fit();
@@ -2539,7 +2333,7 @@ mod tests {
                     },
                     &mut buf,
                 );
-                let text = rendered_text(&buf);
+                let text = crate::tests::buffer_text(&buf);
                 let what = format!("{scale:?} at {width}:\n{text}");
                 let axis_row = (0..20)
                     .rfind(|y| (0..width).any(|x| buf[(x, *y)].symbol() == g.plot.axis.bottom_left))
@@ -2610,7 +2404,7 @@ mod tests {
             },
             &mut buf,
         );
-        let text = rendered_text(&buf);
+        let text = crate::tests::buffer_text(&buf);
         let rows: Vec<&str> = text.lines().collect();
         let axis = rows
             .iter()
@@ -2652,14 +2446,14 @@ mod tests {
             ),
             ("Q-Q plot", render_qq_plot),
         ] {
-            let text = rendered_text(&render_distribution_plot(&dist, g, render));
+            let text = crate::tests::buffer_text(&render_distribution_plot(&dist, g, render));
             assert!(text.is_ascii(), "{name}:\n{text}");
             assert!(
                 text.contains('|') && text.contains("+-"),
                 "{name} axes:\n{text}"
             );
         }
-        let qq = rendered_text(&render_distribution_plot(&dist, g, render_qq_plot));
+        let qq = crate::tests::buffer_text(&render_distribution_plot(&dist, g, render_qq_plot));
         assert!(qq.contains('*'), "the Q-Q points:\n{qq}");
     }
 
@@ -2689,7 +2483,9 @@ mod tests {
                         Some("Theoretical Values"),
                     ),
                 ] {
-                    let text = rendered_text(&render_distribution_plot_in(&dist, g, render, width));
+                    let text = crate::tests::buffer_text(&render_distribution_plot_in(
+                        &dist, g, render, width,
+                    ));
                     let rows: Vec<&str> = text.lines().collect();
                     let what = format!("{name} at {width}:\n{text}");
                     let axis = rows
@@ -2739,8 +2535,8 @@ mod tests {
         assert_eq!(format_count(10_000, &settings("thousands", true)), "10,000");
     }
 
-    fn correlation_matrix(r: f64, pairs: usize) -> crate::statistics::CorrelationMatrix {
-        crate::statistics::CorrelationMatrix {
+    fn correlation_matrix(r: f64, pairs: usize) -> crate::analysis::statistics::CorrelationMatrix {
+        crate::analysis::statistics::CorrelationMatrix {
             columns: vec!["price".to_string(), "volume".to_string()],
             correlations: vec![vec![1.0, r], vec![r, 1.0]],
             p_values: Some(vec![vec![0.0, 0.004], vec![0.004, 0.0]]),
@@ -2748,17 +2544,6 @@ mod tests {
             rank_correlations: Some(vec![vec![1.0, 0.5], vec![0.5, 1.0]]),
             rank_p_values: Some(vec![vec![0.0, 0.03], vec![0.03, 0.0]]),
         }
-    }
-
-    fn rendered_text(buf: &Buffer) -> String {
-        let mut text = String::new();
-        for y in 0..buf.area.height {
-            for x in 0..buf.area.width {
-                text.push_str(buf[(x, y)].symbol());
-            }
-            text.push('\n');
-        }
-        text
     }
 
     /// The furthest scroll is the first that shows the last statistic: one short
@@ -2814,7 +2599,7 @@ mod tests {
     fn the_correlation_matrix_keeps_the_selected_column_in_view() {
         let names: Vec<String> = (0..6).map(|i| format!("col_{i}")).collect();
         let n = names.len();
-        let matrix = crate::statistics::CorrelationMatrix {
+        let matrix = crate::analysis::statistics::CorrelationMatrix {
             columns: names,
             correlations: vec![vec![0.5; n]; n],
             p_values: None,
@@ -2827,7 +2612,6 @@ mod tests {
             total_rows: 10,
             sample_size: None,
             per_value: None,
-            sample_seed: 0,
             correlation_matrix: Some(matrix),
             distribution_analyses: vec![],
         };
@@ -2853,7 +2637,11 @@ mod tests {
                 &mut buf,
                 &theme,
             );
-            rendered_text(&buf).lines().next().unwrap().to_string()
+            crate::tests::buffer_text(&buf)
+                .lines()
+                .next()
+                .unwrap()
+                .to_string()
         };
         let first = header((0, 0), &mut columns);
         assert!(
@@ -2881,8 +2669,8 @@ mod tests {
     #[test]
     fn the_unfocused_selection_is_dimmed() {
         let theme = Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
-        let accent = theme.get("accent");
-        let dimmed = theme.get("dimmed");
+        let accent = theme.accent();
+        let dimmed = theme.dimmed();
         let rail = crate::glyphs::get().rail;
         let area = Rect::new(0, 0, 30, 8);
         let sidebar = |focus: AnalysisFocus| {
@@ -2937,14 +2725,13 @@ mod tests {
     fn describe_shows_a_datetime_range_and_leaves_std_blank() {
         let theme =
             crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
-        let results = crate::statistics::compute_describe_single_aggregation(
-            &crate::statistics::describe_tests::temporal_frame(),
-            &crate::statistics::describe_tests::temporal_frame()
+        let results = crate::analysis::statistics::compute_describe_single_aggregation(
+            &crate::analysis::statistics::describe_tests::temporal_frame(),
+            &crate::analysis::statistics::describe_tests::temporal_frame()
                 .schema()
                 .clone(),
             6,
             None,
-            0,
             false,
         )
         .unwrap();
@@ -2961,9 +2748,9 @@ mod tests {
             area,
             &mut buf,
             &mut TableState::default(),
-            &mut crate::analysis_modal::ColumnScroll::default(),
+            &mut crate::analysis::analysis_modal::ColumnScroll::default(),
         );
-        let text = rendered_text(&buf);
+        let text = crate::tests::buffer_text(&buf);
         let mut lines = text.lines();
         let header = lines.next().unwrap();
         let pickup = lines
@@ -3002,7 +2789,7 @@ mod tests {
             &theme,
             &settings("thousands", false),
         );
-        let text = rendered_text(&buf);
+        let text = crate::tests::buffer_text(&buf);
         assert!(text.contains("Pearson r: 0.8740"), "{text}");
         assert!(text.contains("strong positive"), "{text}");
         let r_squared = crate::glyphs::get().r_squared;
@@ -3030,7 +2817,7 @@ mod tests {
             &theme,
             &settings("thousands", false),
         );
-        let text = rendered_text(&buf);
+        let text = crate::tests::buffer_text(&buf);
         assert!(text.contains("Fewer than 3 overlapping pairs"), "{text}");
         assert!(!text.contains("Pearson r:"), "{text}");
     }
@@ -3057,7 +2844,7 @@ mod tests {
             &theme,
             &settings("thousands", false),
         );
-        assert!(rendered_text(&buf).contains(SPEARMAN_TOO_MANY));
+        assert!(crate::tests::buffer_text(&buf).contains(SPEARMAN_TOO_MANY));
         let mut buf = Buffer::empty(area);
         render_correlation_pair_summary(
             Shown {
@@ -3071,7 +2858,7 @@ mod tests {
             &theme,
             &settings("thousands", false),
         );
-        assert!(rendered_text(&buf).contains("Pearson r: 0.8740"));
+        assert!(crate::tests::buffer_text(&buf).contains("Pearson r: 0.8740"));
     }
 
     #[test]
@@ -3092,7 +2879,7 @@ mod tests {
             &theme,
             &settings("thousands", false),
         );
-        let text = rendered_text(&buf);
+        let text = crate::tests::buffer_text(&buf);
         let rho = crate::glyphs::get().rho;
         assert!(text.contains(&format!("Spearman {rho}: 0.5000")), "{text}");
         assert!(text.contains("P-value: 0.03"), "{text}");

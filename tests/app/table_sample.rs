@@ -2,7 +2,7 @@
 //! the query, read by Analysis, charts and export, and checked against memory.
 
 use super::*;
-use datui::sampling::SampleMethod;
+use datui::analysis::sampling::SampleMethod;
 use std::sync::Arc;
 
 /// A Parquet file of `rows` rows: `id` in order, `group` one of four, `value`.
@@ -29,14 +29,14 @@ fn open(path: PathBuf) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>
 }
 
 fn key(app: &mut App, code: KeyCode) -> Option<AppEvent> {
-    app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+    app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
 }
 
 /// `S`, a size typed and a seed, then Enter: the draw starts.
 fn draw(app: &mut App, size: &str) {
     key(app, KeyCode::Char('S'));
-    assert_eq!(app.input_mode, InputMode::Sample);
-    let form = app.sample_form.as_mut().expect("the Sample form");
+    assert_eq!(app.overlay, Overlay::Sample);
+    let form = app.sample.form.as_mut().expect("the Sample form");
     form.size.set_value(size);
     form.seed.set_value("7");
     key(app, KeyCode::Enter);
@@ -70,19 +70,19 @@ fn s_draws_a_sample_the_table_shows_as_it_arrives() {
     let mut buffer = Buffer::empty(area);
     key(&mut app, KeyCode::Char('S'));
     app.render(area, &mut buffer);
-    let screen = rendered_text(&buffer);
+    let screen = common::buffer_text(&buffer);
     assert!(screen.contains("Sample size:"), "{screen}");
     assert!(screen.contains("Enter Draw"), "{screen}");
     key(&mut app, KeyCode::Esc);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
 
     draw(&mut app, "500");
     assert!(app.sample_drawing());
     // A sort needs every row: it waits. Moving reads the rows on hand: it acts.
     let sort = AppEvent::Key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE));
-    assert!(app.handle(&sort).is_err(), "a sort waits for the sample");
+    assert!(app.handle(sort).is_err(), "a sort waits for the sample");
     let down = AppEvent::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    assert!(app.handle(&down).is_ok(), "moving acts while it is drawn");
+    assert!(app.handle(down).is_ok(), "moving acts while it is drawn");
 
     pump_until_idle(&mut app, &rx, &tx);
     assert!(!app.sample_drawing());
@@ -131,9 +131,9 @@ fn a_query_runs_over_the_sample_and_clearing_it_keeps_the_query() {
 
     // No sample: the form takes it away.
     key(&mut app, KeyCode::Char('S'));
-    let form = app.sample_form.as_mut().unwrap();
+    let form = app.sample.form.as_mut().unwrap();
     while form.draft.method != SampleMethod::EveryRow {
-        form.field = datui::sample_modal::SampleField::Method;
+        form.field = datui::analysis::sample_modal::SampleField::Method;
         form.adjust(true);
     }
     key(&mut app, KeyCode::Enter);
@@ -149,7 +149,7 @@ fn a_query_runs_over_the_sample_and_clearing_it_keeps_the_query() {
 /// its seed.
 #[test]
 fn analysis_and_charts_read_the_views_sample() {
-    use datui::analysis_modal::AnalysisTool;
+    use datui::analysis::analysis_modal::AnalysisTool;
     let (mut app, rx, tx) = open(parquet("table_sample_tools.parquet", 10_000));
     draw(&mut app, "300");
     pump_until_idle(&mut app, &rx, &tx);
@@ -165,7 +165,7 @@ fn analysis_and_charts_read_the_views_sample() {
     let next = key(&mut app, KeyCode::Enter);
     let mut next = next;
     while let Some(ev) = next {
-        next = app.event(&ev);
+        next = app.event(ev);
     }
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(
@@ -181,23 +181,24 @@ fn analysis_and_charts_read_the_views_sample() {
     assert_eq!(results.sample_size, None, "the sample, read whole");
     key(&mut app, KeyCode::Esc);
     key(&mut app, KeyCode::Esc);
-    assert!(!app.analysis_modal.active);
+    assert_ne!(app.overlay, Overlay::Analysis);
 
     key(&mut app, KeyCode::Char('c'));
-    assert_eq!(app.input_mode, InputMode::Chart);
-    assert!(app.chart_modal.view_sampled);
-    assert_eq!(app.chart_modal.row_limit, None);
+    assert_eq!(app.overlay, Overlay::Chart);
+    assert!(app.chart.modal.view_sampled);
+    assert_eq!(app.chart.modal.row_limit, None);
     assert!(
-        !app.chart_modal
+        !app.chart
+            .modal
             .row_order()
-            .contains(&datui::chart_modal::ChartFocus::LimitRows),
+            .contains(&datui::chart::chart_modal::ChartFocus::LimitRows),
         "no Rows row while the view has a sample"
     );
     pump_until(&mut app, &rx, &tx, App::chart_data_ready);
     let area = Rect::new(0, 0, 120, 30);
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
-    let screen = rendered_text(&buffer);
+    let screen = common::buffer_text(&buffer);
     assert!(screen.contains("sample 300 of 10k"), "{screen}");
     assert!(screen.contains("seed 7"), "{screen}");
 }
@@ -215,7 +216,7 @@ fn export_writes_the_sample() {
         &rx,
         &tx,
         &path,
-        datui::export_modal::ExportFormat::Csv,
+        datui::export::export_modal::ExportFormat::Csv,
         false,
     );
     let written = CsvReadOptions::default()
@@ -233,9 +234,10 @@ fn a_sample_past_the_memory_available_warns_and_enter_again_draws() {
     let (mut app, rx, tx) = open(parquet("table_sample_memory.parquet", 10_000));
     app.set_memory_probe(Arc::new(|| Some(1_000)));
     draw(&mut app, "5000");
-    assert_eq!(app.input_mode, InputMode::Sample, "the form stays");
+    assert_eq!(app.overlay, Overlay::Sample, "the form stays");
     let warning = app
-        .sample_form
+        .sample
+        .form
         .as_ref()
         .and_then(|form| form.error.clone())
         .expect("a warning");
@@ -262,7 +264,7 @@ fn reset_takes_the_sample_away() {
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(sampled_rows(&app), 100);
     if let Some(reset) = key(&mut app, KeyCode::Char('R')) {
-        app.event(&reset);
+        app.event(reset);
     }
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
@@ -275,7 +277,7 @@ fn reset_takes_the_sample_away() {
 /// Omit the file carries no datui metadata at all.
 #[test]
 fn an_exported_chart_carries_its_recipe_unless_omitted() {
-    use datui::chart_export::{ChartExportFormat, recipe_in};
+    use datui::chart::chart_export::{ChartExportFormat, recipe_in};
     let path = parquet("table_sample_recipe.parquet", 10_000);
     let (mut app, rx, tx) = open(path.clone());
     draw(&mut app, "300");
@@ -284,7 +286,7 @@ fn an_exported_chart_carries_its_recipe_unless_omitted() {
     key(&mut app, KeyCode::Char('c'));
     pump_until(&mut app, &rx, &tx, App::chart_data_ready);
     assert!(
-        app.chart_export_modal.recipe,
+        app.chart.export_modal.recipe,
         "chart.export_recipe starts the row at Include"
     );
 
@@ -333,12 +335,12 @@ fn an_exported_chart_carries_its_recipe_unless_omitted() {
 /// same rows whether the count had come in for the first draw or not.
 #[test]
 fn the_same_seed_draws_the_same_rows_before_and_after_the_count() {
-    use datui::filter_modal::FilterOperator;
-    use datui::table_sample::DrawPath;
+    use datui::analysis::table_sample::DrawPath;
+    use datui::app::modals::filter_modal::FilterOperator;
     let (mut app, rx, tx) = open(parquet("table_sample_path.parquet", 20_000));
     // A filter streams the rows, and its count is not in yet when the sample is
     // drawn: a reservoir.
-    let mut next = app.event(&AppEvent::Filter(vec![filter_stmt(
+    let mut next = app.event(AppEvent::Filter(vec![filter_stmt(
         "id",
         FilterOperator::Gt,
         "-1",
@@ -351,7 +353,7 @@ fn the_same_seed_draws_the_same_rows_before_and_after_the_count() {
                 .recv_timeout(common::HANG_GUARD)
                 .expect("the page is read"),
         };
-        next = app.event(&event);
+        next = app.event(event);
     }
     assert!(!app.data_table_state.as_ref().unwrap().is_num_rows_valid());
     draw(&mut app, "500");
@@ -363,9 +365,9 @@ fn the_same_seed_draws_the_same_rows_before_and_after_the_count() {
 
     // Back to the filtered view, whose count comes in now; drawn again, the same.
     key(&mut app, KeyCode::Char('S'));
-    let form = app.sample_form.as_mut().unwrap();
+    let form = app.sample.form.as_mut().unwrap();
     while form.draft.method != SampleMethod::EveryRow {
-        form.field = datui::sample_modal::SampleField::Method;
+        form.field = datui::analysis::sample_modal::SampleField::Method;
         form.adjust(true);
     }
     key(&mut app, KeyCode::Enter);
@@ -398,20 +400,19 @@ fn ids(app: &App) -> Vec<i64> {
 /// sample away from under one, is refused with the way out.
 #[test]
 fn a_pivot_is_refused_never_dropped() {
-    use datui::pivot_melt_modal::{PivotAggregation, PivotSpec};
+    use datui::app::modals::pivot_melt_modal::{PivotAggregation, PivotSpec};
     let pivot = || {
         AppEvent::Pivot(PivotSpec {
             index: vec!["id".to_string()],
             pivot_column: "group".to_string(),
             value_column: "value".to_string(),
             aggregation: PivotAggregation::First,
-            sort_columns: None,
         })
     };
     let (mut app, rx, tx) = open(parquet("table_sample_pivot.parquet", 400));
     draw(&mut app, "100");
     pump_until_idle(&mut app, &rx, &tx);
-    app.event(&pivot());
+    app.event(pivot());
     pump_until_idle(&mut app, &rx, &tx);
     assert!(
         app.data_table_state
@@ -423,9 +424,9 @@ fn a_pivot_is_refused_never_dropped() {
 
     // Taking the sample away would leave the pivot off the source.
     key(&mut app, KeyCode::Char('S'));
-    let form = app.sample_form.as_mut().unwrap();
+    let form = app.sample.form.as_mut().unwrap();
     while form.draft.method != SampleMethod::EveryRow {
-        form.field = datui::sample_modal::SampleField::Method;
+        form.field = datui::analysis::sample_modal::SampleField::Method;
         form.adjust(true);
     }
     key(&mut app, KeyCode::Enter);
@@ -433,16 +434,16 @@ fn a_pivot_is_refused_never_dropped() {
     assert!(refused.contains("pivot"), "{refused}");
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.sampled().is_some() && state.last_pivot_spec().is_some());
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
 
     // Drawn again from the source, under the pivot.
     key(&mut app, KeyCode::Char('S'));
-    let form = app.sample_form.as_mut().unwrap();
+    let form = app.sample.form.as_mut().unwrap();
     form.draft.method = SampleMethod::Spread;
-    form.kind = datui::sample_modal::RowsKind::Source;
+    form.kind = datui::analysis::sample_modal::RowsKind::Source;
     form.size.set_value("50");
     key(&mut app, KeyCode::Enter);
     assert!(!app.sample_drawing(), "nothing drawn under the pivot");
@@ -461,8 +462,8 @@ fn a_redraw_that_fails_keeps_the_sample_it_would_replace() {
     let before = ids(&app);
     // A time range of a column that holds no times cannot be read.
     key(&mut app, KeyCode::Char('S'));
-    let form = app.sample_form.as_mut().unwrap();
-    form.kind = datui::sample_modal::RowsKind::Time;
+    let form = app.sample.form.as_mut().unwrap();
+    form.kind = datui::analysis::sample_modal::RowsKind::Time;
     form.context.time_columns = vec!["id".to_string()];
     form.time_column = 0;
     form.time_from.set_value("2024-01-01");
@@ -483,7 +484,7 @@ fn the_estimate_is_of_the_columns_drawn() {
     let (mut app, rx, tx) = open(parquet("table_sample_estimate.parquet", 1_000));
     run_query(&mut app, &rx, &tx, "select id");
     key(&mut app, KeyCode::Char('S'));
-    let form = app.sample_form.as_ref().unwrap();
+    let form = app.sample.form.as_ref().unwrap();
     let (view, source) = (
         form.bytes_per_row.unwrap(),
         form.source_bytes_per_row.unwrap(),

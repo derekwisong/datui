@@ -1,16 +1,7 @@
-//! The text entry field used everywhere in datui.
-//!
-//! One widget covers every shape of input the app needs. A single-line input
-//! submits on Enter and recalls previous values with the arrow keys; a
-//! multi-line input inserts newlines instead and recalls with `Ctrl-P` /
-//! `Ctrl-N`; a statement submits on Enter, breaks lines on Alt+Enter and
-//! wraps. Everything else, including the editing keys, is shared, so the
-//! query bar, the modal filter boxes and the view description all behave
-//! the same way.
-//!
-//! Editing itself belongs to [`crate::widgets::textarea::TextArea`], which this
-//! type owns. What is added here is theming, focus, and history of previously
-//! submitted values.
+//! The text entry field used everywhere. Single-line inputs submit on Enter and recall
+//! history with arrows; multi-line ones insert newlines and recall with Ctrl-P/Ctrl-N;
+//! statements submit on Enter, break lines on Alt+Enter and wrap. Editing belongs to
+//! [`crate::widgets::textarea::TextArea`]; this adds theming, focus and history.
 
 pub mod history;
 
@@ -121,6 +112,7 @@ impl TextInput {
     }
 
     /// Whether the field holds one line or many.
+    #[cfg(test)]
     pub fn mode(&self) -> TextInputMode {
         self.mode
     }
@@ -135,6 +127,7 @@ impl TextInput {
     }
 
     /// Set the text colour.
+    #[cfg(test)]
     pub fn with_text_color(mut self, color: Color) -> Self {
         self.text_color = Some(color);
         self.apply_styles();
@@ -142,6 +135,7 @@ impl TextInput {
     }
 
     /// Set the background colour of the input area.
+    #[cfg(test)]
     pub fn with_background(mut self, color: Color) -> Self {
         self.background_color = Some(color);
         self.apply_styles();
@@ -150,8 +144,8 @@ impl TextInput {
 
     /// Take text and cursor colours from the theme.
     pub fn with_theme(mut self, theme: &Theme) -> Self {
-        self.text_color = Some(theme.get("text_primary"));
-        let cursor = theme.get("input_cursor");
+        self.text_color = Some(theme.text_primary());
+        let cursor = theme.input_cursor();
         self.cursor_color = Some(cursor);
         self.cursor_text = Some(theme.cursor_text_for(cursor));
         self.selection_style = Some(theme.text_selection_style());
@@ -236,10 +230,9 @@ impl TextInput {
         self.sync();
     }
 
-    /// Fill the field with a default the form proposes rather than a value the
-    /// user chose. Until the first key, the value is selected whenever the field
-    /// has focus: a printable replaces it, Backspace or Delete clears it, and a
-    /// cursor movement or Enter keeps it. Leaving the field drops the selection.
+    /// Fill with a proposed default: until the first key it is selected while focused (a
+    /// printable replaces it, Backspace or Delete clears it, movement or Enter keeps it);
+    /// leaving drops the selection.
     pub fn suggest(&mut self, value: impl AsRef<str>) {
         self.set_value(value);
         self.suggested = !self.value.is_empty();
@@ -284,6 +277,7 @@ impl TextInput {
     }
 
     /// Move the cursor to a character offset into [`TextInput::value`].
+    #[cfg(test)]
     pub fn set_cursor(&mut self, cursor: usize) {
         let (row, col) = self.line_col_of(cursor);
         self.textarea.set_cursor(row, col);
@@ -300,6 +294,7 @@ impl TextInput {
     }
 
     /// Move the cursor to a line and column, clamped into the text.
+    #[cfg(test)]
     pub fn set_cursor_line_col(&mut self, line: usize, col: usize) {
         self.textarea.set_cursor(line, col);
     }
@@ -339,16 +334,19 @@ impl TextInput {
     }
 
     /// Scroll position of the last render, as `(row, column)`.
+    #[cfg(test)]
     pub fn scroll_offsets(&self) -> (usize, usize) {
         self.textarea.scroll_offsets()
     }
 
     /// The history entries loaded so far. Empty until something loads them.
+    #[cfg(test)]
     pub fn history_entries(&self) -> &[String] {
         self.history.entries()
     }
 
     /// Load the history from the cache if it has not been loaded yet.
+    #[cfg(test)]
     pub fn load_history(&mut self, cache: &CacheManager) -> Result<()> {
         self.history.ensure_loaded(cache)
     }
@@ -379,10 +377,7 @@ impl TextInput {
         }
     }
 
-    /// Handle one key press.
-    ///
-    /// `cache` is only needed by inputs that have a history; pass `None` when
-    /// there is none or when the caller does not want disk access.
+    /// Handle one key press; `cache` only for inputs with history (`None` skips disk).
     pub fn handle_key(&mut self, event: &KeyEvent, cache: Option<&CacheManager>) -> TextInputEvent {
         if event.code == KeyCode::Esc {
             return TextInputEvent::Cancel;
@@ -491,6 +486,7 @@ impl TextInput {
     }
 
     /// Split a character offset into the value into a line and column.
+    #[cfg(test)]
     fn line_col_of(&self, cursor: usize) -> (usize, usize) {
         let mut remaining = cursor;
         for (row, line) in self.textarea.lines().iter().enumerate() {

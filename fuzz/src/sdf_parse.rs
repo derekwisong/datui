@@ -5,7 +5,7 @@
 //! panic or hold more than its bounds: the rows add up to the records, the fields stay
 //! within their limit, and no value is longer than a value may be.
 
-use datui_lib::sdf::{self, CORE, MAX_FIELDS, MAX_VALUE, SdfReader};
+use datui_lib::formats::sdf::{self, CORE, MAX_VALUE, SdfReader};
 
 pub fn run(bytes: &[u8]) {
     let Some((&first, rest)) = bytes.split_first() else {
@@ -40,6 +40,6 @@ pub fn run(bytes: &[u8]) {
     let df = reader.finish().expect("the last batch builds");
     rows += check!(df);
     assert_eq!(rows as u64, reader.stats().records);
-    assert!(reader.fields().len() <= MAX_FIELDS);
+    assert!(reader.fields().len() <= datui_lib::limits::get().sdf_fields);
     let _ = sdf::detail(&reader);
 }

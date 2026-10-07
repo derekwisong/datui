@@ -3,10 +3,10 @@
 //! Only settings. A value names itself ("All rows (36.8M)", "Random", "100,000
 //! rows"), and a kind of rows that needs telling what to type (partitions, files, a
 //! time range) carries its context on the lines under it. The keys are on the
-//! control bar, like everywhere else.
+//! footer, like everywhere else.
 
+use crate::analysis::sample_modal::{SampleField, SampleForm};
 use crate::render::context::RenderContext;
-use crate::sample_modal::{SampleField, SampleForm};
 use crate::widgets::ui::{FormRow, FormValue, Surface};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -110,7 +110,7 @@ pub fn render(form: &SampleForm, focused: bool, area: Rect, buf: &mut Buffer, ct
             SampleField::Size => {
                 let per = if matches!(
                     form.draft.method,
-                    crate::sampling::SampleMethod::PerPartition { .. }
+                    crate::analysis::sampling::SampleMethod::PerPartition { .. }
                 ) {
                     "Rows per value"
                 } else {
@@ -123,7 +123,7 @@ pub fn render(form: &SampleForm, focused: bool, area: Rect, buf: &mut Buffer, ct
                         "{} rows {} ~{}",
                         crate::numfmt::group_chrome(rows),
                         g.middot,
-                        crate::widgets::info::format_bytes(bytes)
+                        crate::numfmt::bytes(bytes)
                     ),
                     _ => format!("{per}, like 50000, 50k or 2m"),
                 };
@@ -136,12 +136,7 @@ pub fn render(form: &SampleForm, focused: bool, area: Rect, buf: &mut Buffer, ct
     let error_height = u16::from(form.error.is_some()) * 3;
     let height = items.len() as u16 + error_height + 2;
     let width = area.width.saturating_sub(4).clamp(40, 72).min(area.width);
-    let frame = Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height: height.min(area.height),
-    };
+    let frame = crate::render::layout::centered_rect(area, width, height);
     let inner = Surface::new("Sample").render(frame, buf, ctx);
     let bottom = inner.y + inner.height;
     let mut y = inner.y;
@@ -168,7 +163,7 @@ pub fn render(form: &SampleForm, focused: bool, area: Rect, buf: &mut Buffer, ct
                     label_width: LABEL_WIDTH,
                 }
                 .render(line, buf, ctx);
-                crate::pointer::record_field::<SampleForm>(line, *field);
+                crate::app::pointer::record_field::<SampleForm>(line, *field);
             }
             Item::Context(text) => {
                 // Under the value column, so it reads as belonging to the row above.

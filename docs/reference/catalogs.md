@@ -78,7 +78,7 @@ connection = "<CONNECTION>"
 | `connection` | Object-store `url` only: the [`[[cloud.connections]]`](cloud-sources.md#connections) entry whose login reads it |
 | `description`, `publisher`, `license` | Shown in the details pane and the Documentation view |
 | `homepage`, `documentation` | Links: the dataset's page, and an `https://` link to the publisher's documentation of its columns |
-| `size` | HTTP(S) `url` only: about how many bytes the file is, shown as `~33 MB` until datui measures it |
+| `size` | HTTP(S) `url` only: about how many bytes the file is, shown as `~33 MiB` until datui measures it |
 | `columns.NAME` | What a column means; see [Columns](#columns) |
 | `bookmarks."Name"` | A place inside a directory to start from, relative to the dataset's `path` or object-store `url` |
 
@@ -91,7 +91,7 @@ share a name or a location.
 | Local directory | Steps inside | |
 | Object-store file | Opens it | `auth` or `connection` |
 | Object-store directory | Steps inside. <kbd>Backspace</kbd> at its top comes back to the list | `auth` or `connection` |
-| HTTP(S) file | Downloads it, after asking, and opens it; a `public` file under 50 MB is downloaded without asking, and asks if it passes 50 MB | No login |
+| HTTP(S) file | Downloads it, after asking, and opens it; a `public` file under 50 MiB is downloaded without asking, and asks if it passes 50 MiB | No login |
 
 | Reading | Means |
 |---|---|
@@ -228,7 +228,7 @@ example of every key.
 >
 > Each entry is labeled with its actual scope, and must be readable without
 > credentials or requester-pays access. An HTTP(S) file gives its `size` in bytes, as
-> measured when it was added: its row shows it, and one under 50 MB is downloaded
+> measured when it was added: its row shows it, and one under 50 MiB is downloaded
 > without asking. A rolling file's size is a typical one.
 >
 > An entry may carry `documentation`: the publisher's documentation of its columns, and

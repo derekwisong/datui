@@ -5,7 +5,7 @@
 //! ordinal, alias and expression and writes a statement of its own, so any text must
 //! give a plan or `None`, never a panic.
 
-use datui_lib::sql_group::plan;
+use datui_lib::query::sql_group::plan;
 
 /// No human types a statement longer than this.
 const MAX_SQL_LEN: usize = 4096;

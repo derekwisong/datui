@@ -231,6 +231,11 @@ pub const SECTIONS: &[Section] = &[
         intro: "Where [format specs](../formats/format-specs.md) and dictionaries are found.",
     },
     Section {
+        name: "limits",
+        title: "Limits",
+        intro: "The most of a file some readers take in. Past one, the rest is left out or the file refused, and the note or error names the key that raises it.",
+    },
+    Section {
         name: "log",
         title: "Log",
         intro: "",
@@ -291,6 +296,7 @@ pub const SETTINGS: &[Setting] = &[
     s("performance.max_buffered_rows", Count, Value("100000"), "Most rows the table buffers between reads; 0 for no limit.").kwarg("max_buffered_rows"),
     s("performance.max_buffered", Size, Value("\"512MiB\""), "Most memory the buffered rows may take, estimated from the schema; 0 for no limit. Rounded up to whole MiB.").kwarg("max_buffered"),
     s("performance.streaming", Bool, Value("true"), "Use the Polars streaming engine where it applies.").kwarg("streaming"),
+    s("performance.threads", Count, Value("0"), "Most threads Polars computes with; 0 for every core. It caps speed, not memory; POLARS_MAX_THREADS, when set, wins. The datui command only: the Python module runs its own Polars, which POLARS_MAX_THREADS sizes when it first computes."),
     // [analysis]
     s("analysis.sample_rows", Count, Value("100000"), "Rows an analysis samples from a larger table, spread across all of it; 0 reads every row.").flag("sample-rows").kwarg("sample_rows"),
     s("analysis.chart_rows", Count, Value("10000"), "Rows a chart reads; a larger table is sampled across all of it."),
@@ -334,6 +340,18 @@ pub const SETTINGS: &[Setting] = &[
     // [formats]
     s("formats.path", List, Value("[]"), "Directories of format specs and dictionaries, searched after ~/.config/datui/formats and $DATUI_FORMATS_PATH. Adds up across imports."),
     // [log]
+    s("limits.indexed_records", Count, Value("67108864"), "Most records one pass indexes: a flight log's messages, a candump's frames, a text file's lines, a format spec's tagged records."),
+    s("limits.elf_symbols", Count, Value("10000000"), "Most symbols read from an ELF file."),
+    s("limits.midi_bytes", Size, Value("\"64MiB\""), "Largest MIDI file read; a larger one is refused."),
+    s("limits.midi_events", Count, Value("10000000"), "Most events read from MIDI files, all files of one open together."),
+    s("limits.journal_bytes", Size, Value("\"1GiB\""), "Most journal JSON read into memory, all files of one open together; the records past it are left out, and the Notes tab says how much."),
+    s("limits.detail_rows", Count, Value("10000"), "Most rows of a list on an Info panel tab (symbols, sections, metadata); one more row says how many were left out."),
+    s("limits.sdf_fields", Count, Value("4096"), "Most fields (data items by name) read from an SDF file, each a column."),
+    s("limits.vcd_signals", Count, Value("1048576"), "Most signals read from a VCD file, each a column."),
+    s("limits.fix_tags", Count, Value("4096"), "Most tags read from a FIX file, each a column."),
+    s("limits.fix_fields", Count, Value("4096"), "Most fields read from one FIX message."),
+    s("limits.gpx_fields", Count, Value("256"), "Most extension fields read from a GPX file, each a column."),
+    s("limits.npy_header_bytes", Size, Value("\"4MiB\""), "Largest NumPy header read; a file with a larger one is refused."),
     s("log.file", Path, Unset("\"~/datui.log\""), "Where the log goes. Unset: datui.log in the cache directory.").flag("log-file"),
     s("log.level", Choice(&["error", "warn", "info", "debug", "trace", "off"]), Unset("\"warn\""), "How much the log says (default warn). DATUI_LOG beats a config file's; -c and --log-level beat DATUI_LOG.").flag("log-level"),
     // [theme]

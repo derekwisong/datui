@@ -1,4 +1,6 @@
-use crate::background::Counted;
+use crate::app::background::Counted;
+use crate::export::export_modal::ExportFormat;
+use crate::table::OpenFacts;
 use crate::*;
 use std::path::Path;
 
@@ -8,7 +10,7 @@ fn opts() -> OpenOptions {
 
 #[test]
 fn a_collect_in_flight_serves_the_frame_but_not_a_changed_frame() {
-    use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+    use crate::app::modals::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
     use polars::prelude::IntoLazy;
 
     let (tx, _rx) = std::sync::mpsc::channel();
@@ -40,7 +42,7 @@ fn a_collect_in_flight_serves_the_frame_but_not_a_changed_frame() {
     assert_eq!(app.task_generation(), generation);
 
     // A filter changes the data underneath; those rows no longer answer.
-    app.event(&AppEvent::Filter(vec![FilterStatement {
+    app.event(AppEvent::Filter(vec![FilterStatement {
         columns: Vec::new(),
         column: "a".to_string(),
         operator: FilterOperator::Lt,
@@ -58,7 +60,7 @@ fn a_collect_in_flight_serves_the_frame_but_not_a_changed_frame() {
 
 #[test]
 fn a_short_read_on_a_remote_scan_is_the_count() {
-    use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+    use crate::app::modals::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
     use polars::prelude::IntoLazy;
 
     // A frame whose len() cannot be taken: a short read has to answer without it.
@@ -74,7 +76,7 @@ fn a_short_read_on_a_remote_scan_is_the_count() {
         counter: None,
         lf: unreadable,
         streaming: false,
-        meter: Arc::new(crate::measurements::Meter::default()),
+        meter: Arc::new(crate::loading::measurements::Meter::default()),
         progress: Default::default(),
     };
     let rows = |counted: Result<Counted, ()>| counted.map(|c| c.rows);
@@ -121,7 +123,7 @@ fn a_short_read_on_a_remote_scan_is_the_count() {
     let dataset = state.len_generation();
     app.data_table_state = Some(state);
     assert!(app.spawn_async_collect("Filtering..."));
-    assert_eq!(app.len_count_inflight, Some(dataset));
+    assert_eq!(app.counting.len_count_inflight, Some(dataset));
 
     let wait = std::time::Duration::from_secs(20);
     let first = rx.recv_timeout(wait).expect("the collect lands");
@@ -141,11 +143,11 @@ fn a_short_read_on_a_remote_scan_is_the_count() {
         ),
         "the short read of 50 rows is the count"
     );
-    app.event(&first);
-    app.event(&second);
+    app.event(first);
+    app.event(second);
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.num_rows_if_valid(), Some(50));
-    assert_eq!(app.len_count_inflight, None);
+    assert_eq!(app.counting.len_count_inflight, None);
 }
 
 #[test]
@@ -161,7 +163,7 @@ fn end_on_an_uncounted_remote_dataset_waits_for_the_count() {
         .unwrap()
         .with_open(OpenFacts {
             remote_source: true,
-            remote_files: Some(crate::widgets::datatable::RemoteFiles {
+            remote_files: Some(crate::table::RemoteFiles {
                 urls: Arc::new(vec!["one".to_string(), "two".to_string()]),
                 scan: Arc::new(
                     move |urls: &[String], _as_text: &[polars::prelude::PlSmallStr]| {
@@ -184,10 +186,10 @@ fn end_on_an_uncounted_remote_dataset_waits_for_the_count() {
     app.data_table_state = Some(state);
 
     // No jump to a guess: the count starts, and nothing is busy.
-    assert!(app.jump_key(AppEvent::DoScrollEnd).is_none());
+    assert!(app.jump_key(Scroll::End).is_none());
     assert!(!app.is_busy());
-    assert_eq!(app.end_after_count, Some(dataset));
-    assert_eq!(app.len_count_inflight, Some(dataset));
+    assert_eq!(app.counting.end_after_count, Some(dataset));
+    assert_eq!(app.counting.len_count_inflight, Some(dataset));
     assert_eq!(app.data_table_state.as_ref().unwrap().start_row(), 0);
 
     let counted = rx
@@ -202,19 +204,19 @@ fn end_on_an_uncounted_remote_dataset_waits_for_the_count() {
         }
     ));
     // With the count in, End goes.
-    let next = app.event(&counted);
+    let next = app.event(counted);
     assert!(
-        matches!(next, Some(AppEvent::DoScrollEnd)),
+        matches!(next, Some(AppEvent::Scroll(Scroll::End))),
         "the jump follows the count"
     );
-    assert_eq!(app.end_after_count, None);
+    assert_eq!(app.counting.end_after_count, None);
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.num_rows_if_valid(), Some(1_000));
 }
 
 /// A local frame of `rows` rows of `a`, filtered to `a < keep`, with no count yet.
 fn filtered_local(rows: i32, keep: i32) -> (App, std::sync::mpsc::Receiver<AppEvent>, u64) {
-    use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+    use crate::app::modals::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
     use polars::prelude::IntoLazy;
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
@@ -263,7 +265,7 @@ fn until_counted(
             } if *len_generation == dataset => Some(*num_rows),
             _ => None,
         };
-        let next = app.event(&event);
+        let next = app.event(event);
         if let Some(rows) = counted {
             return (rows, next);
         }
@@ -276,38 +278,42 @@ fn until_counted(
 fn a_local_count_waits_for_its_page_to_be_painted() {
     let (mut app, rx, dataset) = filtered_local(100_000, 50_000);
     assert!(app.spawn_async_collect("Filtering..."));
-    assert_eq!(app.len_count_inflight, Some(dataset), "a count is coming");
-    assert_eq!(app.count_after_paint, Some(dataset));
+    assert_eq!(
+        app.counting.len_count_inflight,
+        Some(dataset),
+        "a count is coming"
+    );
+    assert_eq!(app.counting.count_after_paint, Some(dataset));
     assert!(app.row_count_pending());
     // Frames painted, and the view asking again, while the page is read.
     app.frame_painted();
     assert!(app.spawn_async_collect("Filtering..."));
     app.frame_painted();
     assert!(!app.count_waits_for_a_frame());
-    assert_eq!(app.counts_spawned.get(), 0);
+    assert_eq!(app.counting.counts_spawned.get(), 0);
 
     let ready = recv(&rx);
     assert!(matches!(ready, AppEvent::JobEnded(t) if t.kind() == crate::JobKind::Rows));
-    app.event(&ready);
+    app.event(ready);
     assert_eq!(
-        app.counts_spawned.get(),
+        app.counting.counts_spawned.get(),
         0,
         "the rows are in, not yet painted"
     );
     assert!(app.count_waits_for_a_frame());
 
     app.frame_painted();
-    assert_eq!(app.counts_spawned.get(), 1);
+    assert_eq!(app.counting.counts_spawned.get(), 1);
     // Scrolling and painting again do not start another.
     for _ in 0..3 {
         app.handle_scroll(|state| state.half_page_down());
         app.frame_painted();
     }
-    assert_eq!(app.counts_spawned.get(), 1);
+    assert_eq!(app.counting.counts_spawned.get(), 1);
     assert_eq!(until_counted(&mut app, &rx, dataset).0, 50_000);
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.num_rows_if_valid(), Some(50_000));
-    assert_eq!(app.len_count_inflight, None);
+    assert_eq!(app.counting.len_count_inflight, None);
     assert!(!app.row_count_pending());
 }
 
@@ -320,15 +326,15 @@ fn a_short_first_page_is_the_count_of_a_local_frame() {
         assert!(app.spawn_async_collect("Filtering..."));
         let ready = recv(&rx);
         assert!(matches!(ready, AppEvent::JobEnded(t) if t.kind() == crate::JobKind::Rows));
-        app.event(&ready);
+        app.event(ready);
         let state = app.data_table_state.as_ref().unwrap();
         assert_eq!(state.len_generation(), dataset);
         assert_eq!(state.num_rows_if_valid(), Some(keep as usize));
-        assert_eq!(app.count_after_paint, None);
-        assert_eq!(app.len_count_inflight, None);
+        assert_eq!(app.counting.count_after_paint, None);
+        assert_eq!(app.counting.len_count_inflight, None);
         assert!(!app.row_count_pending());
         app.frame_painted();
-        assert_eq!(app.counts_spawned.get(), 0, "{keep} rows");
+        assert_eq!(app.counting.counts_spawned.get(), 0, "{keep} rows");
     }
 }
 
@@ -343,14 +349,14 @@ fn a_page_that_fills_exactly_is_still_counted() {
 
     let (mut app, rx, dataset) = filtered_local(100_000, page as i32);
     app.spawn_async_collect("Filtering...");
-    app.event(&recv(&rx));
+    app.event(recv(&rx));
     assert_eq!(
         app.data_table_state.as_ref().unwrap().num_rows_if_valid(),
         None
     );
     assert!(app.count_waits_for_a_frame());
     app.frame_painted();
-    assert_eq!(app.counts_spawned.get(), 1);
+    assert_eq!(app.counting.counts_spawned.get(), 1);
     assert_eq!(until_counted(&mut app, &rx, dataset).0, page);
 }
 
@@ -361,27 +367,27 @@ fn a_page_that_fills_exactly_is_still_counted() {
 fn end_before_the_paint_starts_the_count_and_waits_for_it() {
     let (mut app, rx, dataset) = filtered_local(100_000, 50_000);
     app.spawn_async_collect("Filtering...");
-    app.event(&recv(&rx));
-    assert_eq!(app.counts_spawned.get(), 0);
+    app.event(recv(&rx));
+    assert_eq!(app.counting.counts_spawned.get(), 0);
 
-    assert!(app.jump_key(AppEvent::DoScrollEnd).is_none());
-    assert_eq!(app.end_after_count, Some(dataset));
-    assert_eq!(app.counts_spawned.get(), 1, "started for the End");
+    assert!(app.jump_key(Scroll::End).is_none());
+    assert_eq!(app.counting.end_after_count, Some(dataset));
+    assert_eq!(app.counting.counts_spawned.get(), 1, "started for the End");
     assert_eq!(app.status_message.as_deref(), Some(App::COUNTING_FOR_END));
     assert!(app.row_count_pending(), "the bar spins while it counts");
     assert_eq!(app.data_table_state.as_ref().unwrap().start_row(), 0);
     // The paint that follows, and End again, do not start a second.
     app.frame_painted();
-    assert!(app.jump_key(AppEvent::DoScrollEnd).is_none());
-    assert_eq!(app.counts_spawned.get(), 1);
+    assert!(app.jump_key(Scroll::End).is_none());
+    assert_eq!(app.counting.counts_spawned.get(), 1);
 
     let (rows, next) = until_counted(&mut app, &rx, dataset);
     assert_eq!(rows, 50_000);
     assert!(
-        matches!(next, Some(AppEvent::DoScrollEnd)),
+        matches!(next, Some(AppEvent::Scroll(Scroll::End))),
         "the jump follows"
     );
-    assert_eq!(app.end_after_count, None);
+    assert_eq!(app.counting.end_after_count, None);
 }
 
 /// A held count that End starts is marked running, whatever cleared the marker
@@ -391,13 +397,13 @@ fn end_before_the_paint_starts_the_count_and_waits_for_it() {
 fn a_count_end_starts_is_marked_running() {
     let (mut app, rx, dataset) = filtered_local(100_000, 50_000);
     app.spawn_async_collect("Filtering...");
-    app.event(&recv(&rx));
-    app.len_count_inflight = None;
-    assert!(app.jump_key(AppEvent::DoScrollEnd).is_none());
-    assert_eq!(app.len_count_inflight, Some(dataset));
-    assert!(app.jump_key(AppEvent::DoScrollEnd).is_none());
+    app.event(recv(&rx));
+    app.counting.len_count_inflight = None;
+    assert!(app.jump_key(Scroll::End).is_none());
+    assert_eq!(app.counting.len_count_inflight, Some(dataset));
+    assert!(app.jump_key(Scroll::End).is_none());
     app.frame_painted();
-    assert_eq!(app.counts_spawned.get(), 1);
+    assert_eq!(app.counting.counts_spawned.get(), 1);
     assert_eq!(until_counted(&mut app, &rx, dataset).0, 50_000);
 }
 
@@ -406,22 +412,22 @@ fn a_count_end_starts_is_marked_running() {
 #[test]
 fn a_failed_count_is_retried_by_end_not_by_scrolling() {
     let (mut app, rx, dataset) = filtered_local(100_000, 50_000);
-    app.len_count_failed = Some(dataset);
+    app.counting.len_count_failed = Some(dataset);
     app.spawn_async_collect("Filtering...");
-    assert_eq!(app.len_count_inflight, None);
-    assert_eq!(app.count_after_paint, None);
-    app.event(&recv(&rx));
+    assert_eq!(app.counting.len_count_inflight, None);
+    assert_eq!(app.counting.count_after_paint, None);
+    app.event(recv(&rx));
     app.frame_painted();
     app.handle_scroll(|state| state.half_page_down());
     app.frame_painted();
-    assert_eq!(app.counts_spawned.get(), 0);
+    assert_eq!(app.counting.counts_spawned.get(), 0);
     assert!(!app.row_count_pending());
 
-    assert!(app.jump_key(AppEvent::DoScrollEnd).is_none());
-    assert_eq!(app.counts_spawned.get(), 1);
+    assert!(app.jump_key(Scroll::End).is_none());
+    assert_eq!(app.counting.counts_spawned.get(), 1);
     let (rows, _) = until_counted(&mut app, &rx, dataset);
     assert_eq!(rows, 50_000);
-    assert_eq!(app.len_count_failed, None);
+    assert_eq!(app.counting.len_count_failed, None);
 }
 
 /// A page that fails to read takes the count waiting on it down with it, marked
@@ -451,15 +457,15 @@ fn a_page_that_fails_fails_the_count_waiting_on_it() {
     app.data_table_state = Some(state);
 
     app.spawn_async_collect(App::LOADING_BUFFER);
-    assert_eq!(app.count_after_paint, Some(dataset));
+    assert_eq!(app.counting.count_after_paint, Some(dataset));
     let failed = recv(&rx);
     assert!(matches!(failed, AppEvent::JobEnded(t) if t.kind() == crate::JobKind::Rows));
-    app.event(&failed);
-    assert_eq!(app.count_after_paint, None);
-    assert_eq!(app.len_count_inflight, None);
-    assert_eq!(app.len_count_failed, Some(dataset));
+    app.event(failed);
+    assert_eq!(app.counting.count_after_paint, None);
+    assert_eq!(app.counting.len_count_inflight, None);
+    assert_eq!(app.counting.len_count_failed, Some(dataset));
     app.frame_painted();
-    assert_eq!(app.counts_spawned.get(), 0);
+    assert_eq!(app.counting.counts_spawned.get(), 0);
 }
 
 /// A page whose worker dies takes the count waiting on it down too, as a page that
@@ -469,30 +475,30 @@ fn a_page_whose_worker_dies_fails_the_count_waiting_on_it() {
     let (mut app, rx, dataset) = filtered_local(100_000, 50_000);
     app.jobs.worker_dies = crate::tests::worker_dies_once(|job| matches!(job, Job::Rows(_)));
     app.spawn_async_collect(App::LOADING_BUFFER);
-    assert_eq!(app.count_after_paint, Some(dataset));
+    assert_eq!(app.counting.count_after_paint, Some(dataset));
     let died = recv(&rx);
     assert!(matches!(
         died,
         AppEvent::JobEnded(t) if t.kind() == crate::JobKind::Rows
     ));
-    app.event(&died);
-    assert_eq!(app.count_after_paint, None);
-    assert_eq!(app.len_count_inflight, None);
-    assert_eq!(app.len_count_failed, Some(dataset));
+    app.event(died);
+    assert_eq!(app.counting.count_after_paint, None);
+    assert_eq!(app.counting.len_count_inflight, None);
+    assert_eq!(app.counting.len_count_failed, Some(dataset));
     assert!(!app.count_waits_for_a_frame());
     app.frame_painted();
-    assert_eq!(app.counts_spawned.get(), 0);
+    assert_eq!(app.counting.counts_spawned.get(), 0);
 }
 
 /// A count waiting on a paint for a frame the view has left is never started:
 /// the frame that replaced it gets the one count.
 #[test]
 fn a_count_for_a_replaced_frame_never_starts() {
-    use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+    use crate::app::modals::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
     let (mut app, rx, first) = filtered_local(100_000, 50_000);
     app.spawn_async_collect("Filtering...");
-    assert_eq!(app.count_after_paint, Some(first));
-    app.event(&AppEvent::Filter(vec![FilterStatement {
+    assert_eq!(app.counting.count_after_paint, Some(first));
+    app.event(AppEvent::Filter(vec![FilterStatement {
         columns: Vec::new(),
         column: "a".to_string(),
         operator: FilterOperator::Lt,
@@ -501,14 +507,14 @@ fn a_count_for_a_replaced_frame_never_starts() {
     }]));
     let second = app.data_table_state.as_ref().unwrap().len_generation();
     assert_ne!(second, first);
-    assert_eq!(app.count_after_paint, Some(second));
-    assert_eq!(app.len_count_inflight, Some(second));
+    assert_eq!(app.counting.count_after_paint, Some(second));
+    assert_eq!(app.counting.len_count_inflight, Some(second));
     while !app.count_waits_for_a_frame() {
         let event = recv(&rx);
-        app.event(&event);
+        app.event(event);
     }
     app.frame_painted();
-    assert_eq!(app.counts_spawned.get(), 1);
+    assert_eq!(app.counting.counts_spawned.get(), 1);
     assert_eq!(until_counted(&mut app, &rx, second).0, 40_000);
 
     // Another dataset put on screen retires a count still waiting on the last.
@@ -520,11 +526,11 @@ fn a_count_for_a_replaced_frame_never_starts() {
     )
     .unwrap();
     app.install_for_tests(other, None, &opts(), None);
-    assert_ne!(app.count_after_paint, Some(dataset));
-    assert_ne!(app.len_count_inflight, Some(dataset));
+    assert_ne!(app.counting.count_after_paint, Some(dataset));
+    assert_ne!(app.counting.len_count_inflight, Some(dataset));
     app.frame_painted();
     assert_eq!(
-        app.counts_spawned.get(),
+        app.counting.counts_spawned.get(),
         0,
         "the old dataset is not counted"
     );
@@ -553,8 +559,12 @@ fn a_footer_count_starts_with_the_page() {
     app.data_table_state = Some(state);
 
     app.spawn_async_collect(App::LOADING_BUFFER);
-    assert_eq!(app.counts_spawned.get(), 1, "started beside the page");
-    assert_eq!(app.count_after_paint, None);
+    assert_eq!(
+        app.counting.counts_spawned.get(),
+        1,
+        "started beside the page"
+    );
+    assert_eq!(app.counting.count_after_paint, None);
     assert_eq!(until_counted(&mut app, &rx, dataset).0, 700);
 }
 
@@ -562,7 +572,7 @@ fn a_footer_count_starts_with_the_page() {
 fn a_filter_applied_from_the_end_shows_its_rows() {
     // End on a 10,000-row remote object, then a filter matching 100 rows: the view
     // comes back to the top and the count is the filter's, not the old position.
-    use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+    use crate::app::modals::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
     use polars::prelude::IntoLazy;
 
     let (tx, rx) = std::sync::mpsc::channel();
@@ -581,7 +591,7 @@ fn a_filter_applied_from_the_end_shows_its_rows() {
     assert!(state.deferred(DataTableState::scroll_to_end));
     app.data_table_state = Some(state);
 
-    app.event(&AppEvent::Filter(vec![FilterStatement {
+    app.event(AppEvent::Filter(vec![FilterStatement {
         columns: Vec::new(),
         column: "a".to_string(),
         operator: FilterOperator::Lt,
@@ -591,7 +601,7 @@ fn a_filter_applied_from_the_end_shows_its_rows() {
     let wait = std::time::Duration::from_secs(20);
     for _ in 0..2 {
         let event = rx.recv_timeout(wait).expect("the collect, then the count");
-        app.event(&event);
+        app.event(event);
     }
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.num_rows_if_valid(), Some(100));
@@ -656,7 +666,7 @@ fn the_format_read_beats_the_extension() {
 /// does not borrow its wording.
 #[test]
 fn export_errors_name_a_refusal_only_for_a_refusal() {
-    let refused: std::io::Error = crate::output_file::Refused::NotAFile.into();
+    let refused: std::io::Error = crate::export::output_file::Refused::NotAFile.into();
     assert_eq!(
         App::format_export_error(&refused.into()),
         "Cannot write: it is not a regular file."

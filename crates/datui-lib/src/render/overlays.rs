@@ -2,6 +2,7 @@
 
 use crate::render::context::RenderContext;
 use crate::widgets::ui::{HintBar, Surface};
+use datui_cli::keys::Context;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::prelude::Widget;
@@ -27,18 +28,15 @@ fn message_popup(area: Rect, message: &str, extra_rows: u16, max_width: u16) -> 
     let height = (lines as u16 + extra_rows + 5)
         .min(area.height * 3 / 4)
         .max(6);
-    let x = area.x + (area.width.saturating_sub(width)) / 2;
-    let y = area.y + (area.height.saturating_sub(height)) / 2;
-    Rect::new(x, y, width.min(area.width), height.min(area.height))
+    crate::render::layout::centered_rect(area, width, height)
 }
 
-/// The confirmation modal's keys: its footer, and the control bar while it is up.
-pub fn confirmation_keys() -> Vec<(&'static str, &'static str)> {
-    vec![
-        ("Enter", "Confirm"),
-        (crate::glyphs::get().updown_lr, "Switch"),
-        ("Esc", "Cancel"),
-    ]
+/// The confirmation modal's keys: its footer, and the footer while it is up.
+fn confirmation_keys() -> Vec<crate::render::footer::Hint> {
+    ["Enter", "← / →", "Esc"]
+        .into_iter()
+        .map(|keys| crate::render::footer::registry_hint(Context::Question, keys))
+        .collect()
 }
 
 /// Renders the confirmation modal: the question, a Yes/No choice the rail and
@@ -51,13 +49,11 @@ pub fn render_confirmation_modal(
 ) {
     // A question owns the screen: a click outside it does nothing, and its own
     // footer keys, drawn after, take theirs.
-    crate::pointer::record(area, crate::pointer::Hit::Modal);
+    crate::app::pointer::record(area, crate::app::pointer::Hit::Modal);
     let g = crate::glyphs::get();
     let footer = confirmation_keys()
         .into_iter()
-        .fold(HintBar::from_ctx(ctx), |bar, (key, label)| {
-            bar.hint(key, label)
-        });
+        .fold(HintBar::from_ctx(ctx), HintBar::push);
     let popup = message_popup(area, &modal.message, 2, 64);
     let content = Surface::new("Confirm")
         .footer(&footer)
@@ -108,9 +104,11 @@ pub fn render_error_modal(
     modal: &mut crate::ErrorModal,
     ctx: &RenderContext,
 ) {
-    crate::pointer::record(area, crate::pointer::Hit::Modal);
+    crate::app::pointer::record(area, crate::app::pointer::Hit::Modal);
     // One way out, named once: Esc closes it too, as every dialog.
-    let footer = HintBar::from_ctx(ctx).hint("Enter", "Close");
+    let footer = HintBar::from_ctx(ctx)
+        .screen(Context::Question)
+        .key_as("Enter", "Close");
     let popup = message_popup(area, &modal.message, 0, 64);
     let content = Surface::new("Error")
         .footer(&footer)
@@ -387,7 +385,10 @@ mod tests {
         let area = Rect::new(0, 0, 80, 24);
         let mut buf = Buffer::empty(area);
         let mut modal = crate::ConfirmationModal::new();
-        modal.show("Overwrite out.csv?".to_string());
+        modal.show(
+            "Overwrite out.csv?".to_string(),
+            crate::app::feedback::Confirm::ClearRecents,
+        );
         render_confirmation_modal(area, &mut buf, &mut modal, &ctx);
         let rows = grid(&buf, area);
         let frames = crate::glyphs::frame_corners(&rows).len();

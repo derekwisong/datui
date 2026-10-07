@@ -7,7 +7,7 @@
 //! help, the docs' format table, the home screen and the open cannot disagree.
 //!
 //! What needs a reader (the bytes that say a format, the scan, the Info tab, Copy as
-//! Python, the export default) is `datui_lib::readers`, keyed by the same
+//! Python, the export default) is `datui_lib::formats::readers`, keyed by the same
 //! [`FileFormat`]. Its docs list where a format is still named by the app because it
 //! changes what the app does: Parquet's partitions, Arrow's streams, SQLite's tables.
 //!
@@ -606,10 +606,9 @@ impl FileFormat {
         }
     }
 
-    /// Detect file format from path extension. Returns None when extension is missing or unknown.
-    ///
-    /// A name ending a descriptor lists (`model.safetensors.index.json`) says its format
-    /// before the extension does.
+    /// The format `path`'s name says: a name ending a descriptor lists
+    /// (`model.safetensors.index.json`) first, then its extension. `None` for a name that
+    /// says none.
     pub fn from_path(path: &Path) -> Option<Self> {
         Self::from_name_ending(path).or_else(|| {
             path.extension()
@@ -783,7 +782,7 @@ impl FileFormat {
         })
     }
 
-    /// Parse format from extension string (e.g. "parquet", "csv").
+    /// The format an extension says (`parquet`, `csv`).
     ///
     /// The one place an extension becomes a format. Everything that asks whether a name
     /// is data — the home screen, the search, `~` path input, the CLI and the cloud

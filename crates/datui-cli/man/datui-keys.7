@@ -36,6 +36,17 @@ Narrow to the keys whose text matches
 .TP
 \fBEsc\fR
 Clear the filter, then close
+.SS "Question"
+When datui asks before acting.
+.TP
+\fB\(<- / \(->\fR
+Choose the other answer
+.TP
+\fBEnter\fR
+Give the answer chosen, or close an error
+.TP
+\fBEsc\fR
+Leave it as it was
 .SS "Table"
 Where a dataset opens.
 .PP
@@ -220,7 +231,7 @@ A screenful, stopping at the first and last
 The first or last row. The filter has no cursor to move: it is edited at its end
 .TP
 \fB\(<- / \(->\fR
-Fold or unfold a section; \(-> on a directory or a file of tables goes inside it, and on a file a format spec reads as record types lists them, one row each
+Fold or unfold a section; \(-> on a directory or a file of tables goes inside it, and on a file a format spec reads as record types lists them, one row each. On a directory cut to its first rows, or RECENT, \(-> on its more row shows them all; \(<- on a row past the first ones cuts it back, and on any other row folds
 .TP
 \fBSpace\fR
 While the filter is empty: fold or unfold the section header under the cursor. With a filter typed, it types
@@ -231,7 +242,7 @@ Cycle the sort; the footer names the order in effect when it has room
 \fIGo\fR
 .TP
 \fBEnter\fR
-What the footer says on this row: "Open all" reads a whole directory as one table, "Inside" steps into it, "Open" loads a file, "Look" finds out first. A catalog bookmark, indented under its dataset, opens whole. On a section header, fold or unfold it; on the More row, show the rest; on the hidden-files row, show them
+What the footer says on this row: "Open all" reads a whole directory as one table, "Inside" steps into it, "Open" loads a file, "Look" finds out first. A catalog bookmark, indented under its dataset, opens whole. On a section header, fold or unfold it; on a more row, show the rest; on `..`, go up a level; on the hidden-files row, show them
 .TP
 \fBBackspace\fR
 Delete a filter character; on an empty filter, up a level (from a bucket, back to its cloud source; from the top of a catalog's remote dataset, back here)
@@ -474,25 +485,48 @@ Top and end, at once however long the value
 \fB/\fR
 Find in the value; n and N go to the next and last place
 .TP
+\fBn / N\fR
+The next or last place found in the value
+.TP
 \fBe, w, y, o\fR
 As in the fields
 .TP
 \fBEsc / Tab\fR
 Back to the fields (Shift+Tab too); Esc clears a find first
 .PP
+\fIFind\fR
+.TP
+\fB(type)\fR
+The name or value to find
+.TP
+\fBEnter\fR
+Keep the list narrowed; in a value, find
+.TP
+\fBEsc\fR
+Clear the find
+.PP
 \fINested\fR
 .TP
 \fBEnter / \(-> (l)\fR
 Open the focused item
 .TP
+\fB\(ua / \(da (j/k)\fR
+Move between fields, keys or items
+.TP
 \fBTab / Shift+Tab\fR
 Into the item's value; not in an empty level
+.TP
+\fBPgUp / PgDn\fR
+A page of the level
 .TP
 \fBEsc / \(<- (h)\fR
 Up a level; at the row, Esc closes
 .TP
 \fBy\fR
 Copy the focused item: text as itself, a JSON object or array indented
+.TP
+\fBe\fR
+The item's next view
 .SS "Info panel"
 \fBi\fR at the table.
 .PP
@@ -736,6 +770,17 @@ Export the chart to PNG, SVG or PDF, with a title, notes and source. Needs the c
 \fBt\fR
 While following a file, draw again with the rows that arrived since; the bar says how many
 .PP
+\fICrosshair\fR
+.TP
+\fB\(<- / \(->\fR
+Move the crosshair along the plot
+.TP
+\fBTab\fR
+Back to the panel, the crosshair kept
+.TP
+\fBEsc\fR
+The crosshair off, back to the panel
+.PP
 \fIPicker\fR
 .TP
 \fB\(ua / \(da\fR
@@ -967,6 +1012,37 @@ Done
 \fBEsc\fR
 Put the list back as it was
 .PP
+\fIForms\fR
+.TP
+\fBTab / Shift+Tab\fR
+Next or previous field
+.TP
+\fB\(<- / \(->\fR
+Change the field's choice
+.TP
+\fBSpace\fR
+Toggle a checkbox
+.TP
+\fBEnter\fR
+Apply the form; export the report
+.TP
+\fBEsc\fR
+Close the form unchanged
+.PP
+\fIPopups\fR
+.TP
+\fB\(ua / \(da\fR
+Scroll a popup, or move in its list
+.TP
+\fB(type)\fR
+Narrow a popup's list
+.TP
+\fBEnter\fR
+Close a popup, or act on what it shows: a finding's rows (shown when the run kept them, else read), its checks all or fewer, a list's choice
+.TP
+\fBEsc\fR
+Close a popup or a list unchanged
+.PP
 \fIReport\fR
 .TP
 \fB\(<- / \(-> (h/l)\fR
@@ -1115,6 +1191,9 @@ Choose
 .TP
 \fBTab / Shift+Tab\fR
 Choose and move on
+.TP
+\fBEsc\fR
+Back to the form, the choice unchanged
 .SS "Views"
 \fBv\fR at the table.
 .PP
@@ -1228,6 +1307,20 @@ Make the column, before the first column it is made from, as a format spec's der
 .TP
 \fBEsc\fR
 Cancel
+.PP
+\fIPicker\fR
+.TP
+\fB(type)\fR
+Narrow to the columns that contain it
+.TP
+\fB\(ua / \(da\fR
+Move
+.TP
+\fBEnter\fR
+Choose the column
+.TP
+\fBEsc\fR
+Back to the fields, the choice unchanged
 .SS "Table picker"
 \fBT\fR at a table of a file of several.
 .PP
@@ -1260,6 +1353,9 @@ Step Rows from, Method and Per value of; Method's No sample takes the view's sam
 .TP
 \fB(type)\fR
 Type into the focused row: the size (50000, 50k, 2m), the seed, a row range, partition values or file numbers
+.TP
+\fBPgUp / PgDn\fR
+Page through the files, where there are many
 .TP
 \fBEnter\fR
 Draw the sample: the table shows its rows as they arrive, and the query, filters and sort run over them. When the estimate is more than the memory available now (or analysis.\:sample_memory_limit), the form says so; Enter again draws anyway
@@ -1305,6 +1401,17 @@ When the matches after the one found are all the same distance apart, make that 
 .TP
 \fBEsc\fR
 Stop a find that is reading
+.PP
+\fIPrompt\fR
+.TP
+\fBEnter\fR
+Find, go to the offset or set the row size
+.TP
+\fBCtrl+U\fR
+Find the text as UTF-16 as well
+.TP
+\fBEsc\fR
+Close the prompt
 .PP
 \fIDisplay\fR
 .TP

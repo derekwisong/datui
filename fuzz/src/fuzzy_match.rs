@@ -8,7 +8,7 @@
 //! exists to keep that guard honest: every returned position must be a valid index
 //! into the haystack's characters.
 
-use datui_lib::fuzzy::{best_match, is_match};
+use datui_lib::home::fuzzy::{best_match, is_match};
 
 /// Matching is quadratic in the haystack length by design (every start position is
 /// tried). Bounding the inputs keeps a libFuzzer timeout meaningful as a hang report

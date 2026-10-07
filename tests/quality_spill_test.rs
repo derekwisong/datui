@@ -13,14 +13,14 @@
 mod common;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use datui::data_quality::{QualityCompute, QualityGrain};
+use datui::analysis::data_quality::{QualityCompute, QualityGrain};
 use datui::{App, AppEvent, OpenOptions};
 use polars::prelude::*;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 fn press(app: &mut App, code: KeyCode) -> Option<AppEvent> {
-    app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+    app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
 }
 
 /// Handle `first` and what follows until nothing is owed, abandoned work included.
@@ -29,7 +29,7 @@ fn settle(app: &mut App, rx: &mpsc::Receiver<AppEvent>, first: Option<AppEvent>)
     let mut next = first;
     loop {
         if let Some(event) = next.take() {
-            next = app.event(&event);
+            next = app.event(event);
             continue;
         }
         match rx.recv_timeout(std::time::Duration::from_millis(50)) {
@@ -126,8 +126,8 @@ fn a_full_scan_leaves_no_temporary_files() {
     app.analysis_modal.sidebar_state.select(Some(3));
     press(&mut app, KeyCode::Enter);
     let full = |app: &mut App, grain: QualityGrain| {
-        let plan = &mut app.analysis_modal.data_quality_plan;
-        plan.method = datui::sampling::SampleMethod::EveryRow;
+        let plan = &mut app.analysis_modal.quality.plan;
+        plan.method = datui::analysis::sampling::SampleMethod::EveryRow;
         plan.compute = QualityCompute::Full;
         plan.grain = grain;
         assert!(press(app, KeyCode::Enter).is_none(), "a full scan asks");
@@ -137,7 +137,7 @@ fn a_full_scan_leaves_no_temporary_files() {
     // Finished: every pass, a grouping by region among them.
     let run = full(&mut app, QualityGrain::Partition("region".into()));
     settle(&mut app, &rx, run);
-    let results = app.analysis_modal.data_quality_results.as_ref().unwrap();
+    let results = app.analysis_modal.quality.results.as_ref().unwrap();
     assert_eq!(results.evaluated_rows, rows);
     untouched("a finished full scan");
 
@@ -147,7 +147,7 @@ fn a_full_scan_leaves_no_temporary_files() {
     let Some(run) = run else {
         panic!("the scan was dispatched");
     };
-    app.event(&run);
+    app.event(run);
     assert!(app.is_busy());
     press(&mut app, KeyCode::Esc);
     settle(&mut app, &rx, None);
@@ -156,7 +156,7 @@ fn a_full_scan_leaves_no_temporary_files() {
 
     // Failed: the file is gone.
     std::fs::remove_file(&path).unwrap();
-    if !app.analysis_modal.data_quality_page.is_setup() {
+    if !app.analysis_modal.quality.page.is_setup() {
         press(&mut app, KeyCode::Char('e'));
     }
     let run = full(&mut app, QualityGrain::Partition("note".into()));

@@ -19,7 +19,7 @@ fn a_view_on_a_queried_remote_dataset_matches_by_url_and_source_columns() {
     open(&mut app, &rx, &tx, path);
     // Views of this test's own, so no other test's saved views show in the list.
     let config = crate::config::ConfigManager::with_dir(dir.path().join("config"));
-    app.view_manager = ViewManager::new(&config).unwrap().into();
+    app.views.manager = ViewManager::new(&config).unwrap().into();
 
     // Stand in for an S3 dataset: only the path decides how a view records it.
     let url = PathBuf::from("s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/ELEMENT=TMAX/");
@@ -41,7 +41,7 @@ fn a_view_on_a_queried_remote_dataset_matches_by_url_and_source_columns() {
         "a URL has no relative form"
     );
     app.save_view_form();
-    let saved = &app.view_manager.all_views()[0].match_criteria;
+    let saved = &app.views.manager.all_views()[0].match_criteria;
     assert_eq!(saved.exact_path.as_deref(), Some(url.as_path()));
     assert_eq!(saved.relative_path, None);
     assert_eq!(
@@ -76,13 +76,13 @@ fn a_view_on_a_queried_remote_dataset_matches_by_url_and_source_columns() {
     );
 
     // `V` applies it there: the next year's rows under the saved query.
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('V'),
         KeyModifiers::NONE,
     )));
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.error().is_none(), "{:?}", state.error());
-    assert!(app.active_view_id.is_some(), "the view is applied");
+    assert!(app.views.active_id.is_some(), "the view is applied");
     let names: Vec<&str> = state.schema().iter_names().map(|n| n.as_str()).collect();
     assert_eq!(names, ["day", "high_c"]);
     // Once its rows are in, the bar says which view and why.
@@ -96,7 +96,7 @@ fn a_view_on_a_queried_remote_dataset_matches_by_url_and_source_columns() {
 /// Views of this test's own, so no other test's saved views show in the list.
 fn own_views(app: &mut App, dir: &Path) {
     let config = crate::config::ConfigManager::with_dir(dir.join("config"));
-    app.view_manager = ViewManager::new(&config).unwrap().into();
+    app.views.manager = ViewManager::new(&config).unwrap().into();
 }
 
 /// Open `paths` with `options`, as the command line or the home screen does.
@@ -107,7 +107,7 @@ fn open_with(
     open: AppEvent,
 ) {
     app.input_mode = InputMode::Normal;
-    if let Some(next) = app.event(&open) {
+    if let Some(next) = app.event(open) {
         let _ = tx.send(next);
     }
     super::chart_prepare_tests::pump(app, rx, tx, |a| {
@@ -116,7 +116,7 @@ fn open_with(
 }
 
 fn press(app: &mut App, c: char) {
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char(c),
         KeyModifiers::NONE,
     )));
@@ -162,7 +162,7 @@ fn a_view_saved_on_one_table_fits_that_table_of_the_file_alone() {
     app.open_save_view_form();
     assert_eq!(app.view_modal.table.as_deref(), Some("orders"));
     app.save_view_form();
-    let saved = &app.view_manager.all_views()[0];
+    let saved = &app.views.manager.all_views()[0];
     assert_eq!(saved.match_criteria.table.as_deref(), Some("orders"));
     assert_eq!(reason(&mut app), Some(view::MatchReason::SameFile));
 
@@ -176,9 +176,9 @@ fn a_view_saved_on_one_table_fits_that_table_of_the_file_alone() {
     assert_eq!(reason(&mut app), None, "another table of the file");
     // V finds nothing that fits, so it opens the list rather than apply the view.
     press(&mut app, 'V');
-    assert!(app.active_view_id.is_none());
-    assert!(app.view_modal.active, "the list opens instead");
-    app.view_modal.close();
+    assert!(app.views.active_id.is_none());
+    assert_eq!(app.overlay, crate::Overlay::View, "the list opens instead");
+    app.close_overlay();
 
     // Downloaded, the dataset is the database's URL whatever the table.
     let url = PathBuf::from("https://example.com/data/shop.db");
@@ -187,7 +187,7 @@ fn a_view_saved_on_one_table_fits_that_table_of_the_file_alone() {
     app.open_save_view_form();
     app.view_modal.name_input.set_value("remote orders");
     app.save_view_form();
-    let remote = app.view_manager.get_view_by_name("remote orders").unwrap();
+    let remote = app.views.manager.get_view_by_name("remote orders").unwrap();
     assert_eq!(
         remote.match_criteria.exact_path.as_deref(),
         Some(url.as_path())
@@ -204,7 +204,7 @@ fn a_view_saved_on_one_table_fits_that_table_of_the_file_alone() {
     // Applied on open, the view says which it is and why.
     app.app_config.views.auto_apply = true;
     open_with(&mut app, &rx, &tx, by_flag("orders"));
-    assert!(app.active_view_id.is_some(), "the view is applied");
+    assert!(app.views.active_id.is_some(), "the view is applied");
     assert_eq!(
         app.flash_message(),
         Some("View \"orders\" applied: same file")
@@ -236,7 +236,7 @@ fn a_frame_from_python_matches_views_by_its_columns() {
     open_with(&mut app, &rx, &tx, frame(5));
     assert!(app.path.is_none(), "a frame has no path");
     press(&mut app, 'v');
-    assert!(app.view_modal.active, "v opens the views list");
+    assert_eq!(app.overlay, crate::Overlay::View, "v opens the views list");
     app.data_table_state
         .as_mut()
         .unwrap()
@@ -250,14 +250,14 @@ fn a_frame_from_python_matches_views_by_its_columns() {
         app.view_modal.rows[0].reason,
         Some(view::MatchReason::SameColumns)
     );
-    app.view_modal.close();
+    app.close_overlay();
 
     // The next frame with these columns: V applies the view and says why.
     open_with(&mut app, &rx, &tx, frame(8));
-    assert!(app.active_view_id.is_none());
+    assert!(app.views.active_id.is_none());
     press(&mut app, 'V');
     super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !a.is_busy());
-    assert!(app.active_view_id.is_some(), "V applies the view");
+    assert!(app.views.active_id.is_some(), "V applies the view");
     assert_eq!(
         app.flash_message(),
         Some("View \"warmest\" applied: same columns")
@@ -266,7 +266,7 @@ fn a_frame_from_python_matches_views_by_its_columns() {
     // And auto-apply dresses a frame as it opens.
     app.app_config.views.auto_apply = true;
     open_with(&mut app, &rx, &tx, frame(3));
-    assert!(app.active_view_id.is_some(), "applied on open");
+    assert!(app.views.active_id.is_some(), "applied on open");
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.get_sort_columns(), ["temp".to_string()]);
 }

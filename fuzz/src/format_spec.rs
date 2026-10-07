@@ -7,8 +7,8 @@
 //! counted must decode, every one, in any window. A delimited spec's header lines
 //! must read or fail, and its metadata line must parse or stay raw.
 
-use datui_lib::delimited_spec::parse_metadata;
-use datui_lib::fixed_records::Bytes;
+use datui_lib::formats::delimited_spec::parse_metadata;
+use datui_lib::formats::fixed_records::Bytes;
 use datui_lib::formats::{Layout, Registry, Spec};
 use std::path::Path;
 use std::sync::Arc;

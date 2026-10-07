@@ -1,10 +1,6 @@
-//! The log file, and keeping stray stderr off the screen.
-//!
-//! Anything written to stderr while the TUI owns the terminal is drawn over it, and
-//! Polars, its verbose mode and C libraries all write there. So while the TUI runs,
-//! fd 2 points at the log file, Polars warnings are routed through the `log` facade,
-//! and errors that are not worth stopping for (cache, history) land here instead of
-//! vanishing.
+//! The log file, and keeping stray stderr off the screen: while the TUI runs, fd 2
+//! points at the log, Polars warnings go through `log`, and non-fatal errors (cache,
+//! history) land here.
 
 use std::cell::Cell;
 use std::collections::{HashSet, VecDeque};
@@ -108,12 +104,9 @@ impl FileLog {
         self.rotate_if_full()
     }
 
-    /// Measured on the file rather than counted, since another session may share it.
-    ///
-    /// Another session may already have moved the file aside, leaving this one writing
-    /// into `<name>.1`; renaming then would put that session's fresh log over the old
-    /// one. So the rename happens under a lock beside the log, and only when the file
-    /// at the path is itself full; either way the path is opened again.
+    /// Measured on the file, since another session may share it. The rename happens under
+    /// a lock and only when the file at the path is full (another session may already have
+    /// rotated, leaving this one writing `<name>.1`); the path is reopened either way.
     fn rotate_if_full(&mut self) -> std::io::Result<bool> {
         if self.file.metadata()?.len() <= self.cap {
             return Ok(false);
@@ -231,11 +224,9 @@ fn write_record(level: &str, target: &str, message: impl std::fmt::Display) {
     }
 }
 
-/// Open the log and install the logger and the Polars warning hook. Safe to call
-/// again (the Python binding runs the TUI once per `view`); the latest settings win.
-///
-/// Returns what to tell the user when the log cannot be opened. Not printed here: the
-/// TUI may already own the terminal, and stderr is then the log that failed.
+/// Open the log and install the logger and Polars warning hook; repeatable (the Python
+/// binding runs the TUI per `view`), latest settings winning. Returns the message for
+/// the user if the log cannot open, unprinted since stderr may be that log.
 pub fn init(settings: &LogSettings) -> Option<String> {
     static INSTALLED: std::sync::Once = std::sync::Once::new();
     INSTALLED.call_once(|| {
@@ -292,7 +283,7 @@ pub fn keep_out_of_log(secret: &str) {
 /// Values of variables whose names say they hold a credential, the `[cloud] env_files`
 /// ones included.
 fn keep_out_of_log_from_env() {
-    for (name, value) in crate::cloud_env::vars() {
+    for (name, value) in crate::cloud::cloud_env::vars() {
         if holds_a_credential(&name, &value) {
             keep_out_of_log(&value);
         }
@@ -388,10 +379,8 @@ static POLARS: Mutex<Option<PolarsWarnings>> = Mutex::new(None);
 /// ones, the rest are dropped rather than let them fill the log.
 const MAX_POLARS_WARNINGS: usize = 256;
 
-/// Where `polars_warn!` goes instead of `eprintln!`. Each distinct warning is logged
-/// once per session. A deprecation is about Polars' API, which the user cannot act
-/// on; a user warning can explain a surprising result, so it is also queued for the
-/// control bar.
+/// Where `polars_warn!` goes: each distinct warning logged once per session; user
+/// warnings (not deprecations) are also queued for the footer.
 fn polars_warning(message: &str, kind: polars_error::PolarsWarning) {
     use polars_error::PolarsWarning as W;
     let text = message.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -413,7 +402,7 @@ fn polars_warning(message: &str, kind: polars_error::PolarsWarning) {
 }
 
 /// What wakes the run loop when there is news it has to come and look for: a warning
-/// queued for the control bar, a background panic nothing reported. The loop only
+/// queued for the footer, a background panic nothing reported. The loop only
 /// wakes for events and deadlines, so without this either would wait for a key.
 static NEWS: Mutex<Option<Box<dyn Fn() + Send + Sync>>> = Mutex::new(None);
 
@@ -423,7 +412,7 @@ fn tell_the_loop() {
     }
 }
 
-/// The next Polars user warning not yet shown, for the control bar.
+/// The next Polars user warning not yet shown, for the footer.
 pub fn next_polars_warning() -> Option<String> {
     POLARS
         .lock()
@@ -612,11 +601,9 @@ fn write_stray_line(line: &[u8]) {
     }
 }
 
-/// Pointing fd 2 away from the terminal and back. Windows is left alone: there the
-/// Polars hook is what keeps its warnings off the screen.
-///
-/// With the log open, fd 2 becomes a pipe that a thread reads into the log line by
-/// line, so stray output is masked and counted toward the cap like any other record.
+/// Pointing fd 2 away and back (not on Windows, where the Polars hook suffices). With the
+/// log open, fd 2 is a pipe a thread copies into the log line by line, counted against
+/// the cap.
 #[cfg(unix)]
 mod stderr {
     use std::io::BufRead;
@@ -907,7 +894,7 @@ mod tests {
         );
         assert!(!text.contains("below the level"), "{text}");
 
-        // The user warning reaches the control bar, once, when the bar is free.
+        // The user warning reaches the footer, once, when the bar is free.
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = crate::App::new(tx, crate::tests::test_runtime());
         app.busy = true;

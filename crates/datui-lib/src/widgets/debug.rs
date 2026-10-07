@@ -18,9 +18,18 @@ pub struct DebugState {
     pub show_help_at_render: bool,
     /// Schema load path taken by the open's schema phase (one-file vs full scan); set when loading Parquet.
     pub schema_load: Option<String>,
+    /// How long frames and event handlers take.
+    pub times: crate::loading::measurements::LoopTimes,
 }
 
 impl DebugState {
+    /// Name the action a key took, when the overlay is on to show it.
+    pub fn action(&mut self, name: impl FnOnce() -> String) {
+        if self.enabled {
+            self.last_action = name();
+        }
+    }
+
     pub fn on_key(&mut self, event: &crossterm::event::KeyEvent) {
         self.num_key_events += 1;
         self.last_key_event_name = format!("{:?}", event.code);
@@ -32,7 +41,7 @@ impl Widget for &DebugState {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let schema = self.schema_load.as_deref().unwrap_or("-");
         Paragraph::new(format!(
-            "events={} keys={} last_key={} kind={} last_action={} help={} frames={} schema={}",
+            "events={} keys={} last_key={} kind={} last_action={} help={} frames={} schema={} frame: {} handler: {}",
             self.num_events,
             self.num_key_events,
             self.last_key_event_name,
@@ -40,7 +49,9 @@ impl Widget for &DebugState {
             self.last_action,
             self.show_help_at_render,
             self.num_frames,
-            schema
+            schema,
+            self.times.frames.summary(),
+            self.times.handlers.summary()
         ))
         .render(area, buf);
     }

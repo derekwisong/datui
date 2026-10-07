@@ -1,0 +1,1918 @@
+use crate::analysis::data_quality::{
+    DataQualityPlan, DataQualityResults, IntervalClock, IntervalFact, QUALITY_WINDOW_WIDTHS,
+    QualityComparison, QualityCompute, QualityGrain, QualityMetric, QualityPage, TIME_FORMATS,
+    TemporalRole, TemporalRoleAssignment, TimeInterpretation, TimeKind,
+};
+use crate::analysis::quality_report::{EvidenceRows, Finding, FindingsView, QualityReport};
+use crate::analysis::statistics::{AnalysisResults, DistributionType};
+use ratatui::widgets::TableState;
+
+/// The rows of Data Quality Setup, top to bottom: the rows read, what the columns
+/// mean, and how the study splits and compares them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetupRow {
+    Sample,
+    TextAsTime,
+    TimeRoles,
+    Intervals,
+    /// What columns must hold, declared: the key and each column's rules.
+    Intent,
+    Grain,
+    Expected,
+    Compare,
+    Values,
+    Latency,
+    WindowBy,
+}
+
+impl SetupRow {
+    pub const ALL: [Self; 11] = [
+        Self::Sample,
+        Self::TextAsTime,
+        Self::TimeRoles,
+        Self::Intervals,
+        Self::Intent,
+        Self::Grain,
+        Self::Expected,
+        Self::Compare,
+        Self::Values,
+        Self::Latency,
+        Self::WindowBy,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Sample => "Sample",
+            Self::TextAsTime => "Text as time",
+            Self::TimeRoles => "Time roles",
+            Self::Intervals => "Intervals",
+            Self::Intent => "Column intent",
+            Self::Grain => "Grain",
+            Self::Expected => "Expected",
+            Self::Compare => "Compare",
+            Self::Values => "Values",
+            Self::Latency => "Latency over",
+            Self::WindowBy => "Window by",
+        }
+    }
+
+    /// The row at `index`, the last one past the end.
+    pub fn at(index: usize) -> Self {
+        Self::ALL[index.min(Self::ALL.len() - 1)]
+    }
+
+    pub fn index(self) -> usize {
+        Self::ALL.iter().position(|row| *row == self).unwrap_or(0)
+    }
+}
+
+/// What a Setup row's picker sets.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlanChoice {
+    Grain(QualityGrain),
+    Values(QualityCompute),
+    Compare(QualityComparison),
+    Latency(Option<i64>),
+    /// Which time puts an interval in a window.
+    Clock(IntervalClock),
+    /// A text column to read as time; choosing it asks for the format next.
+    TextColumn(String),
+    /// How a text column is read as time, or `None` to read it as text again.
+    Format(String, Option<(TimeKind, &'static str)>),
+    /// Only the findings that name this column, or all of them.
+    FindingColumn(Option<String>),
+    /// Only the findings this check made, or all of them.
+    FindingCheck(Option<&'static str>),
+}
+
+impl PlanChoice {
+    fn is_current(&self, plan: &DataQualityPlan) -> bool {
+        match self {
+            Self::Grain(grain) => &plan.grain == grain,
+            Self::Values(QualityCompute::Metadata) => plan.compute == QualityCompute::Metadata,
+            Self::Values(_) => plan.compute != QualityCompute::Metadata,
+            Self::Compare(comparison) => &plan.comparison == comparison,
+            Self::Latency(seconds) => &plan.latency_threshold_seconds == seconds,
+            Self::Clock(clock) => plan.interval_clock == *clock,
+            Self::TextColumn(column) => plan.time_format(column).is_some(),
+            Self::Format(column, format) => {
+                plan.time_format(column)
+                    .map(|current| (current.kind, current.format.as_str()))
+                    == format.map(|(kind, format)| (kind, format))
+            }
+            // The findings list is not the plan: its picker selects its own current.
+            Self::FindingColumn(_) | Self::FindingCheck(_) => false,
+        }
+    }
+}
+
+/// A Setup row's choices, or the findings list's narrowing, open as a list.
+#[derive(Debug, Clone)]
+pub struct PlanPicker {
+    pub title: String,
+    pub choices: Vec<PlanChoice>,
+    pub state: crate::widgets::ui::PickerState,
+}
+
+/// What the data offers Setup's choices: partition columns, time-window columns
+/// (and whether they hold times of day), whether there are files to split by, and
+/// text columns readable as time with a few values from the rows on screen.
+#[derive(Debug, Clone, Default)]
+pub struct PlanContext {
+    pub partitions: Vec<String>,
+    pub time_columns: Vec<(String, bool)>,
+    pub files: bool,
+    pub text_columns: Vec<(String, Vec<String>)>,
+}
+
+/// Rows a finding names that the run did not keep, waiting for Enter to read them.
+/// Nothing reads until then, and Esc drops it.
+#[derive(Debug, Clone)]
+pub struct EvidenceRead {
+    pub rows: EvidenceRows,
+    /// The table's label once the rows are shown.
+    pub label: String,
+    /// Draw this sample again from its seed, rather than read the scope.
+    pub sample: Option<crate::analysis::sampling::Sample>,
+    /// The scope the rows are read from.
+    pub scope: crate::analysis::data_quality::QualityScope,
+    /// What the read is, as the dialog says it: label, value.
+    pub summary: Vec<(&'static str, String)>,
+}
+
+/// A latency threshold as Setup offers it, or its length when it is none of those.
+pub fn threshold_label(seconds: Option<i64>) -> String {
+    match seconds {
+        None => "none".to_string(),
+        Some(3_600) => "1 hour".to_string(),
+        Some(86_400) => "1 day".to_string(),
+        Some(604_800) => "1 week".to_string(),
+        Some(seconds) => crate::numfmt::duration(seconds),
+    }
+}
+
+/// Which windows the Expected editor's first row says rows are expected in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpectedCadence {
+    /// None stated: no window is a gap.
+    None,
+    /// Every window of the grain.
+    Every,
+    /// Monday to Friday's hours or days.
+    Weekdays,
+}
+
+/// The rows of the Expected editor.
+pub const EXPECTED_ROWS: [&str; 3] = ["Windows", "From", "Before"];
+
+/// The Expected editor while it is open: the cadence, and the range as typed. Its
+/// Enter writes them into the draft, and its Esc leaves the draft as it was.
+#[derive(Debug, Clone)]
+pub struct ExpectedForm {
+    /// The row under the cursor, in [`EXPECTED_ROWS`].
+    pub field: usize,
+    pub cadence: ExpectedCadence,
+    pub from: crate::widgets::text_input::TextInput,
+    pub before: crate::widgets::text_input::TextInput,
+    /// Why Enter did not apply, until the next edit.
+    pub error: Option<String>,
+}
+
+impl ExpectedForm {
+    pub fn new(plan: &DataQualityPlan, theme: &crate::config::Theme) -> Self {
+        let input = || crate::widgets::text_input::TextInput::new().with_theme(theme);
+        let (mut from, mut before) = (input(), input());
+        let cadence = match &plan.expected {
+            None => ExpectedCadence::None,
+            Some(expected) => {
+                from.set_value(expected.from.as_deref().unwrap_or_default());
+                before.set_value(expected.before.as_deref().unwrap_or_default());
+                // Weekdays stated for days read as every window once the grain is
+                // weeks or months, as Setup and the check read it.
+                let every = match &plan.grain {
+                    crate::analysis::data_quality::QualityGrain::TimeWindows { every, .. } => {
+                        every.as_str()
+                    }
+                    _ => "",
+                };
+                if expected.weekdays
+                    && crate::analysis::data_quality::ExpectedWindows::weekdays_apply(every)
+                {
+                    ExpectedCadence::Weekdays
+                } else {
+                    ExpectedCadence::Every
+                }
+            }
+        };
+        let mut form = Self {
+            field: 0,
+            cadence,
+            from,
+            before,
+            error: None,
+        };
+        form.sync_focus();
+        form
+    }
+
+    /// The choices the Windows row cycles through for windows `every` wide.
+    pub fn cadences(every: &str) -> Vec<ExpectedCadence> {
+        let mut cadences = vec![ExpectedCadence::None, ExpectedCadence::Every];
+        if crate::analysis::data_quality::ExpectedWindows::weekdays_apply(every) {
+            cadences.push(ExpectedCadence::Weekdays);
+        }
+        cadences
+    }
+
+    /// The cadence in the editor's words.
+    pub fn cadence_label(&self, every: &str) -> String {
+        match self.cadence {
+            ExpectedCadence::None => "none: no window is a gap".to_string(),
+            ExpectedCadence::Every => {
+                crate::analysis::data_quality::ExpectedWindows::default().cadence_label(every)
+            }
+            ExpectedCadence::Weekdays => "weekdays, Monday to Friday".to_string(),
+        }
+    }
+
+    pub fn cycle(&mut self, every: &str, forward: bool) {
+        let cadences = Self::cadences(every);
+        let at = cadences
+            .iter()
+            .position(|cadence| *cadence == self.cadence)
+            .unwrap_or(0);
+        let next = if forward {
+            (at + 1) % cadences.len()
+        } else {
+            (at + cadences.len() - 1) % cadences.len()
+        };
+        self.cadence = cadences[next];
+        self.error = None;
+    }
+
+    /// Whether the row under the cursor is one typed into.
+    pub fn typing(&self) -> bool {
+        self.field > 0
+    }
+
+    pub fn input_mut(&mut self) -> Option<&mut crate::widgets::text_input::TextInput> {
+        match self.field {
+            1 => Some(&mut self.from),
+            2 => Some(&mut self.before),
+            _ => None,
+        }
+    }
+
+    pub fn sync_focus(&mut self) {
+        self.from.set_focused(self.field == 1);
+        self.before.set_focused(self.field == 2);
+    }
+
+    /// What the editor states, or why it cannot be read.
+    pub fn expected(
+        &self,
+    ) -> Result<Option<crate::analysis::data_quality::ExpectedWindows>, String> {
+        if self.cadence == ExpectedCadence::None {
+            return Ok(None);
+        }
+        let typed = |input: &crate::widgets::text_input::TextInput| {
+            let text = input.value().trim();
+            (!text.is_empty()).then(|| text.to_string())
+        };
+        let expected = crate::analysis::data_quality::ExpectedWindows {
+            weekdays: self.cadence == ExpectedCadence::Weekdays,
+            from: typed(&self.from),
+            before: typed(&self.before),
+        };
+        match expected.problem() {
+            Some(problem) => Err(problem),
+            None => Ok(Some(expected)),
+        }
+    }
+}
+
+impl crate::app::form::Form for ExpectedForm {
+    /// The row, in [`EXPECTED_ROWS`].
+    type Field = usize;
+
+    fn fields(&self) -> Vec<(usize, crate::app::form::FieldKind)> {
+        use crate::app::form::FieldKind;
+        (0..EXPECTED_ROWS.len())
+            .map(|row| {
+                let kind = if row == 0 {
+                    FieldKind::Choice
+                } else {
+                    FieldKind::Text
+                };
+                (row, kind)
+            })
+            .collect()
+    }
+
+    fn focused(&self) -> usize {
+        self.field
+    }
+
+    fn set_focused(&mut self, field: usize) {
+        self.field = field;
+        self.sync_focus();
+    }
+}
+
+/// Read `column` as time through `format`, or as text again with `None`; a time
+/// window on a column back to text falls back to the whole-dataset grain.
+pub fn set_time_format(plan: &mut DataQualityPlan, column: &str, format: Option<(TimeKind, &str)>) {
+    plan.time_formats
+        .retain(|interpretation| interpretation.column != column);
+    match format {
+        Some((kind, format)) => plan.time_formats.push(TimeInterpretation {
+            column: column.to_string(),
+            kind,
+            format: format.to_string(),
+        }),
+        None => {
+            if matches!(&plan.grain, QualityGrain::TimeWindows { column: on, .. } if on == column) {
+                plan.grain = QualityGrain::Dataset;
+                plan.baseline_segment = None;
+            }
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum AnalysisView {
+    #[default]
+    Main, // Main tool view
+    DistributionDetail, // Full-screen distribution detail view
+    CorrelationDetail,  // Full-screen correlation pair detail view
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum AnalysisTool {
+    #[default]
+    Describe, // Column describe table
+    DistributionAnalysis, // Distribution analysis table
+    CorrelationMatrix,    // Correlation matrix
+    DataQuality,          // Multi-scale quality profile
+}
+
+impl AnalysisTool {
+    /// The tools in the order the sidebar lists them.
+    pub const ALL: [Self; 4] = [
+        Self::Describe,
+        Self::DistributionAnalysis,
+        Self::CorrelationMatrix,
+        Self::DataQuality,
+    ];
+
+    /// The tool's row in the sidebar.
+    pub fn index(self) -> usize {
+        Self::ALL.iter().position(|tool| *tool == self).unwrap_or(0)
+    }
+}
+
+/// Progress state for the analysis progress overlay (display only).
+#[derive(Debug, Clone)]
+pub struct AnalysisProgress {
+    pub phase: String,
+    /// When the run began, for the elapsed time: a run has no total, so time is its
+    /// progress.
+    pub started: std::time::Instant,
+    /// Whether the running stage reads the source or rows already read; `None` until
+    /// a Data Quality run names its first stage.
+    pub reads_source: Option<bool>,
+    /// Whether a cancel stops the running stage partway; `None` until a Data Quality run
+    /// names its first stage.
+    pub interruptible: Option<bool>,
+    /// The sampler's count of rows seen, where the read can count them.
+    pub read: Option<crate::analysis::sampling::ReadWatch>,
+    /// What the run starts from, when it reuses something: said before it starts.
+    pub reuse: Option<String>,
+}
+
+impl AnalysisProgress {
+    pub fn new(phase: &str) -> Self {
+        Self {
+            phase: phase.to_string(),
+            started: std::time::Instant::now(),
+            reads_source: None,
+            interruptible: None,
+            read: None,
+            reuse: None,
+        }
+    }
+
+    /// The stage now running reads the source in one collect nothing can stop: a
+    /// cancel waits for its end.
+    pub fn read_runs_out(&self) -> bool {
+        self.reads_source == Some(true) && self.interruptible == Some(false)
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum AnalysisFocus {
+    #[default]
+    Main, // Focus on main area (tool view)
+    Sidebar,              // Focus on sidebar (tool list)
+    DistributionSelector, // Focus on distribution selector in detail view
+}
+
+/// A popup taller than the screen scrolls: the offset, and the most it can be.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DetailScroll {
+    pub offset: u16,
+    pub max: u16,
+}
+
+/// Scrolling of a result table wider than its pane, by statistic: the first shown,
+/// and `max`, set by the table as it draws, where the last comes into view.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ColumnScroll {
+    pub offset: usize,
+    pub max: usize,
+}
+
+impl ColumnScroll {
+    pub fn left(&mut self) {
+        self.offset = self.offset.min(self.max).saturating_sub(1);
+    }
+
+    pub fn right(&mut self) {
+        if self.offset < self.max {
+            self.offset += 1;
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct AnalysisModal {
+    pub scroll_position: usize,
+    pub selected_column: Option<usize>,
+    pub describe_columns: ColumnScroll,
+    pub distribution_columns: ColumnScroll,
+    /// Kept on the selected cell by the matrix as it draws.
+    pub correlation_columns: ColumnScroll,
+    /// The rows every tool reads (one scope, method, size and seed), so tools compare
+    /// like with like. Kept across opens; `s` edits it.
+    pub sample: crate::analysis::sampling::Sample,
+    /// The dataset the sample's scope was chosen for: a partition or file scope means
+    /// nothing on another.
+    pub sample_dataset: Option<u64>,
+    /// The dataset a sample last ran on; after that, a tool with no result runs at once
+    /// instead of asking with the Sample form.
+    pub sample_run_for: Option<u64>,
+    /// The Sample form, while it is open.
+    pub sample_form: Option<crate::analysis::sample_modal::SampleForm>,
+    /// The tools' own sample, set aside while the view has its own sample, which every
+    /// tool then reads whole.
+    pub own_sample: Option<crate::analysis::sampling::Sample>,
+    pub table_state: TableState,              // For describe table
+    pub distribution_table_state: TableState, // For distribution table
+    pub correlation_table_state: TableState,  // For correlation matrix
+    pub sidebar_state: TableState,            // For sidebar tool list
+    /// Cached results per tool; each tool computes and stores its own state independently.
+    pub describe_results: Option<AnalysisResults>,
+    pub distribution_results: Option<AnalysisResults>,
+    pub correlation_results: Option<AnalysisResults>,
+    /// Set while a tool runs: its phase and progress, drawn in place of results.
+    pub computing: Option<AnalysisProgress>,
+    pub view: AnalysisView,
+    pub focus: AnalysisFocus,
+    /// None = no tool selected yet (show instructions); Some(tool) = user chose a tool (may be computing or showing results).
+    pub selected_tool: Option<AnalysisTool>,
+    pub selected_distribution: Option<usize>, // Selected row in distribution table
+    pub selected_correlation: Option<(usize, usize)>, // Selected cell in correlation matrix (row, col)
+    /// The coefficient the matrix and the pair detail show; both are computed.
+    pub correlation_method: crate::analysis::statistics::CorrelationMethod,
+    pub selected_theoretical_distribution: DistributionType, // Selected theoretical distribution for Q-Q plot
+    pub distribution_selector_state: TableState,             // For distribution selector list
+    pub histogram_scale: HistogramScale,
+    /// Data Quality: its plan, its report and where the cursor is in each.
+    pub quality: QualityState, // Scale for histogram (linear or log)
+    /// The view (`DataTableState::len_generation`) the results are of.
+    pub results_view: Option<u64>,
+    /// The results and positions a close put down, restored by the next open on the
+    /// same view.
+    kept: Option<Kept>,
+}
+
+/// Data Quality's part of the analysis modal: the plan, Setup's draft and its
+/// editors, the report and where the cursor stands on each of its pages.
+#[derive(Default)]
+pub struct QualityState {
+    pub results: Option<DataQualityResults>,
+    pub page: QualityPage,
+    /// The plan the last Run committed; while Setup is open, the draft for the next.
+    pub plan: DataQualityPlan,
+    /// The plan when Setup opened, restored by Esc; `None` while Setup is closed.
+    pub setup_before: Option<DataQualityPlan>,
+    /// The report page Setup was opened from, and goes back to.
+    pub setup_return: QualityPage,
+    /// Why Enter did not run, said on Setup's own line until the next edit.
+    pub setup_note: Option<String>,
+    pub table_state: TableState,
+    /// The list a Setup row's choices open in, while it is open.
+    pub picker: Option<PlanPicker>,
+    /// The Setup row under the cursor, or the role in the time roles editor.
+    pub plan_field: usize,
+    pub show_access: bool,
+    pub observation_detail: bool,
+    /// Where the finding popup is scrolled to, and how far it can go (set as it draws).
+    pub detail_scroll: DetailScroll,
+    /// The segment a drill-in shows, and the one Segments selects on the way back.
+    pub segment_index: usize,
+    /// Segments listed clearest change first rather than in their own order.
+    pub segments_by_change: bool,
+    /// The clean entry's popup lists every check rather than the most important.
+    pub checks_expanded: bool,
+    pub plan_before_edit: Option<DataQualityPlan>,
+    pub last_plan: Option<DataQualityPlan>,
+    pub from_cache: bool,
+    pub metric: QualityMetric,
+    pub column_index: usize,
+    /// The interval a detail shows, and the one Intervals selects on the way back.
+    pub interval_index: usize,
+    /// How Overview narrows and orders its findings; the report is not measured again.
+    pub findings: FindingsView,
+    /// A read for a finding's rows, shown with what it reads until Enter or Esc.
+    pub evidence_read: Option<EvidenceRead>,
+    /// The Trends line a bar detail shows, and the one Trends selects on the way back.
+    pub trend_line: usize,
+    /// The Expected editor, while it is open.
+    pub expected_form: Option<ExpectedForm>,
+    /// One column's declared intent, being edited over the Column intent list.
+    pub intent_form: Option<crate::analysis::intent_modal::IntentForm>,
+    /// The dialog that writes the report on screen to a file.
+    pub export: Option<crate::analysis::quality_export::ExportForm>,
+}
+
+impl QualityState {
+    /// What a close leaves: the plan, and how Segments is ordered.
+    fn close(&mut self) {
+        *self = Self {
+            plan: std::mem::take(&mut self.plan),
+            segments_by_change: self.segments_by_change,
+            ..Self::default()
+        };
+    }
+}
+
+/// The tools' results as a close left them, and the cursor in each.
+struct Kept {
+    view: Option<u64>,
+    tool: Option<AnalysisTool>,
+    describe: Option<AnalysisResults>,
+    distribution: Option<AnalysisResults>,
+    correlation: Option<AnalysisResults>,
+    row: Option<usize>,
+    distribution_row: Option<usize>,
+    cell: Option<(usize, usize)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HistogramScale {
+    #[default]
+    Linear,
+    Log,
+}
+
+impl AnalysisModal {
+    /// A modal whose shared sample starts at the configured size: `[performance]
+    /// analysis_sample_rows`, where 0 means every row.
+    pub fn with_sample_rows(rows: usize) -> Self {
+        let mut modal = Self::default();
+        modal.sample.seed = crate::analysis::sample_modal::new_seed();
+        if rows == 0 {
+            modal.sample.method = crate::analysis::sampling::SampleMethod::EveryRow;
+        } else {
+            modal.sample.rows = rows;
+        }
+        modal
+    }
+
+    /// Open the screen on `view`: a close's results on this view come back as they
+    /// were; on any other view every tool starts empty.
+    pub fn open(&mut self, view: Option<u64>) {
+        let kept = self
+            .kept
+            .take()
+            .filter(|kept| view.is_some() && kept.view == view);
+        self.results_view = view;
+        self.scroll_position = 0;
+        self.selected_column = None;
+        self.describe_columns = ColumnScroll::default();
+        self.distribution_columns = ColumnScroll::default();
+        self.correlation_columns = ColumnScroll::default();
+        self.table_state.select(Some(0));
+        self.distribution_table_state.select(Some(0));
+        self.correlation_table_state.select(Some(0));
+        self.sidebar_state.select(Some(0)); // Highlight first tool; user must press Enter to select
+        self.view = AnalysisView::Main;
+        self.focus = AnalysisFocus::Sidebar; // Sidebar focused by default when no tool selected
+        self.selected_tool = None; // No tool until user selects from sidebar
+        self.selected_distribution = Some(0);
+        self.selected_correlation = None;
+        self.computing = None;
+        self.describe_results = None;
+        self.distribution_results = None;
+        self.correlation_results = None;
+        self.quality.close();
+        self.sample_form = None;
+        if let Some(kept) = kept {
+            self.describe_results = kept.describe;
+            self.distribution_results = kept.distribution;
+            self.correlation_results = kept.correlation;
+            self.selected_tool = kept.tool;
+            if self.current_results().is_none() {
+                self.selected_tool = None;
+            }
+            if let Some(tool) = self.selected_tool {
+                self.sidebar_state.select(Some(tool.index()));
+            }
+            self.table_state.select(kept.row.or(Some(0)));
+            self.distribution_table_state
+                .select(kept.distribution_row.or(Some(0)));
+            self.selected_distribution = kept.distribution_row.or(Some(0));
+            if let Some(cell) = kept.cell {
+                self.selected_correlation = Some(cell);
+                self.correlation_table_state.select(Some(cell.0));
+            }
+        }
+        if self.correlation_results.is_none() {
+            self.selected_correlation = None;
+        }
+    }
+
+    /// Close the screen, keeping the results for the next open on the same view.
+    pub fn close(&mut self) {
+        self.kept = Some(Kept {
+            view: self.results_view.take(),
+            tool: self
+                .selected_tool
+                .filter(|tool| *tool != AnalysisTool::DataQuality),
+            describe: self.describe_results.take(),
+            distribution: self.distribution_results.take(),
+            correlation: self.correlation_results.take(),
+            row: self.table_state.selected(),
+            distribution_row: self.distribution_table_state.selected(),
+            cell: self.selected_correlation,
+        });
+        self.scroll_position = 0;
+        self.selected_column = None;
+        self.describe_columns = ColumnScroll::default();
+        self.distribution_columns = ColumnScroll::default();
+        self.correlation_columns = ColumnScroll::default();
+        self.view = AnalysisView::Main;
+        self.focus = AnalysisFocus::Main;
+        self.selected_tool = None;
+        self.selected_distribution = None;
+        self.selected_correlation = None;
+        self.computing = None;
+        self.describe_results = None;
+        self.distribution_results = None;
+        self.correlation_results = None;
+        self.quality.results = None;
+        self.quality.page = QualityPage::Setup;
+        self.quality.setup_before = None;
+        self.quality.setup_note = None;
+        self.quality.picker = None;
+        self.quality.show_access = false;
+        self.quality.observation_detail = false;
+        self.quality.plan_before_edit = None;
+        self.quality.last_plan = None;
+        self.quality.from_cache = false;
+        self.quality.metric = QualityMetric::NullRate;
+        self.quality.column_index = 0;
+        self.quality.interval_index = 0;
+        self.quality.trend_line = 0;
+        self.quality.expected_form = None;
+        self.quality.intent_form = None;
+        self.quality.export = None;
+    }
+
+    /// Returns the cached results for the currently selected tool, if any.
+    pub fn current_results(&self) -> Option<&AnalysisResults> {
+        match self.selected_tool {
+            Some(AnalysisTool::Describe) => self.describe_results.as_ref(),
+            Some(AnalysisTool::DistributionAnalysis) => self.distribution_results.as_ref(),
+            Some(AnalysisTool::CorrelationMatrix) => self.correlation_results.as_ref(),
+            Some(AnalysisTool::DataQuality) => None,
+            None => None,
+        }
+    }
+
+    /// Tab on the main view: the tool list and the result trade focus. Not offered on
+    /// detail views (one focusable thing) or before a tool is chosen.
+    pub fn switch_focus(&mut self) {
+        self.focus = match self.focus {
+            AnalysisFocus::Sidebar if self.selected_tool.is_some() => AnalysisFocus::Main,
+            _ => AnalysisFocus::Sidebar,
+        };
+    }
+
+    /// The tool under the sidebar cursor.
+    pub fn highlighted_tool(&self) -> Option<AnalysisTool> {
+        AnalysisTool::ALL
+            .get(self.sidebar_state.selected()?)
+            .copied()
+    }
+
+    /// Select the tool under the sidebar cursor; the caller places the cursor.
+    pub fn select_tool(&mut self) {
+        if self.sidebar_state.selected().is_some() {
+            self.selected_tool = Some(self.highlighted_tool().unwrap_or_default());
+        }
+    }
+
+    pub fn next_tool(&mut self) {
+        if let Some(current) = self.sidebar_state.selected() {
+            let next = (current + 1).min(AnalysisTool::ALL.len() - 1);
+            self.sidebar_state.select(Some(next));
+        }
+    }
+
+    pub fn previous_tool(&mut self) {
+        if let Some(current) = self.sidebar_state.selected()
+            && current > 0
+        {
+            self.sidebar_state.select(Some(current - 1));
+        }
+    }
+
+    pub fn open_distribution_detail(&mut self) {
+        if self.focus == AnalysisFocus::Main
+            && self.selected_tool == Some(AnalysisTool::DistributionAnalysis)
+            && let Some(idx) = self.distribution_table_state.selected()
+        {
+            if let Some(results) = &self.distribution_results
+                && let Some(dist_analysis) = results.distribution_analyses.get(idx)
+            {
+                self.selected_theoretical_distribution = dist_analysis.distribution_type;
+            }
+            self.view = AnalysisView::DistributionDetail;
+            self.focus = AnalysisFocus::DistributionSelector;
+            if self.selected_theoretical_distribution == DistributionType::Unknown {
+                self.selected_theoretical_distribution = DistributionType::Normal;
+            }
+            self.distribution_selector_state.select(None);
+        }
+    }
+
+    pub fn open_correlation_detail(&mut self) {
+        if self.focus == AnalysisFocus::Main
+            && self.selected_tool == Some(AnalysisTool::CorrelationMatrix)
+            && let Some((row, col)) = self.selected_correlation
+            && row != col
+        {
+            self.view = AnalysisView::CorrelationDetail;
+        }
+    }
+
+    pub fn close_detail(&mut self) {
+        self.view = AnalysisView::Main;
+        self.focus = AnalysisFocus::Main;
+    }
+
+    pub fn scroll_left(&mut self) {
+        if let Some(columns) = self.column_scroll_mut() {
+            columns.left();
+        }
+    }
+
+    pub fn scroll_right(&mut self) {
+        if let Some(columns) = self.column_scroll_mut() {
+            columns.right();
+        }
+    }
+
+    /// The selected tool's statistic scroll, for the tools that scroll by statistic.
+    pub fn column_scroll(&self) -> Option<&ColumnScroll> {
+        match self.selected_tool {
+            Some(AnalysisTool::Describe) => Some(&self.describe_columns),
+            Some(AnalysisTool::DistributionAnalysis) => Some(&self.distribution_columns),
+            _ => None,
+        }
+    }
+
+    fn column_scroll_mut(&mut self) -> Option<&mut ColumnScroll> {
+        match self.selected_tool {
+            Some(AnalysisTool::Describe) => Some(&mut self.describe_columns),
+            Some(AnalysisTool::DistributionAnalysis) => Some(&mut self.distribution_columns),
+            _ => None,
+        }
+    }
+
+    /// Read the view's sample whole while it has one (`sampled`), and the tools' own
+    /// sample again once it has none.
+    pub fn follow_view_sample(&mut self, sampled: bool) {
+        match (sampled, self.own_sample.is_some()) {
+            (true, false) => {
+                let every = crate::analysis::sampling::Sample {
+                    scope: crate::analysis::data_quality::QualityScope::CurrentView,
+                    method: crate::analysis::sampling::SampleMethod::EveryRow,
+                    ..self.sample.clone()
+                };
+                self.own_sample = Some(std::mem::replace(&mut self.sample, every));
+            }
+            (false, true) => {
+                if let Some(own) = self.own_sample.take() {
+                    self.sample = own;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn quality_row_count(&self) -> usize {
+        let Some(results) = self.quality.results.as_ref() else {
+            return 0;
+        };
+        match self.quality.page {
+            QualityPage::Setup => SetupRow::ALL.len(),
+            QualityPage::TimeRoles => TemporalRole::ALL.len(),
+            QualityPage::IntervalPairs => self.quality.plan.candidate_pairs().len(),
+            // The scope's columns are not held here: `App` moves the list by them.
+            QualityPage::Intent => 0,
+            QualityPage::Intervals => results.temporal.len(),
+            QualityPage::IntervalDetail => self.interval_facts().len(),
+            QualityPage::Overview => self.quality.findings.shown(results.report()).len(),
+            QualityPage::Columns | QualityPage::Detail => results.columns.len(),
+            QualityPage::Segments => results.segments.len(),
+            QualityPage::SegmentDetail => {
+                crate::analysis::data_quality::segment_changes(results, self.quality.segment_index)
+                    .len()
+            }
+            // The trend table's lines; the width only changes how many bars.
+            QualityPage::Trends => {
+                crate::analysis::quality_trends::trend_view(results, self.quality.metric, 1)
+                    .lines
+                    .len()
+            }
+            // At most one bar per segment: the width decides how many, and the page clamps
+            // the cursor as it draws.
+            QualityPage::TrendDetail => crate::analysis::quality_trends::trend_slots(results).len(),
+            QualityPage::Gaps => {
+                match crate::analysis::quality_trends::expected_gaps(
+                    self.quality_result_plan(),
+                    results,
+                ) {
+                    Some(crate::analysis::quality_trends::Gaps::Checked(check)) => check.runs.len(),
+                    _ => 0,
+                }
+            }
+            QualityPage::ExpectedWindows => EXPECTED_ROWS.len(),
+        }
+    }
+
+    /// Whether the highlighted Overview entry is the clean-columns entry, which opens
+    /// no rows and instead lists the checks.
+    pub fn quality_selected_is_clean(&self) -> bool {
+        self.quality.page == QualityPage::Overview
+            && self
+                .selected_finding()
+                .is_some_and(|(_, finding)| finding.kind.is_none())
+    }
+
+    /// The report on screen and the finding under the cursor, as Overview lists
+    /// them: narrowed and ordered.
+    pub fn selected_finding(&self) -> Option<(&QualityReport, Finding)> {
+        let report = self.quality.results.as_ref()?.report();
+        let finding = self
+            .quality
+            .findings
+            .selected(report, self.quality.table_state.selected()?)?
+            .clone();
+        Some((report, finding))
+    }
+
+    /// Narrow the findings to a column (`by_column`) or a check, from a list of
+    /// those the report has, the current one selected.
+    pub fn open_findings_picker(&mut self, by_column: bool) {
+        let Some(results) = self.quality.results.as_ref() else {
+            return;
+        };
+        let report = results.report();
+        let view = &self.quality.findings;
+        let findings = |count: usize| match count {
+            0 => "none".to_string(),
+            1 => "1 finding".to_string(),
+            count => format!("{} findings", crate::numfmt::group_chrome(count)),
+        };
+        let (title, choices, current) = if by_column {
+            let columns = crate::analysis::quality_report::column_choices(report, results);
+            let width = columns
+                .iter()
+                .map(|(name, _)| crate::glyphs::display_width(name))
+                .max()
+                .unwrap_or(0);
+            let current = view
+                .column
+                .as_ref()
+                .and_then(|column| columns.iter().position(|(name, _)| name == column))
+                .map_or(0, |position| position + 1);
+            let mut choices = vec![("All columns".to_string(), PlanChoice::FindingColumn(None))];
+            choices.extend(columns.into_iter().map(|(name, count)| {
+                let pad = width.saturating_sub(crate::glyphs::display_width(&name));
+                (
+                    format!("{name}{}  {}", " ".repeat(pad), findings(count)),
+                    PlanChoice::FindingColumn(Some(name)),
+                )
+            }));
+            ("Findings by Column", choices, current)
+        } else {
+            let checks = crate::analysis::quality_report::check_choices(report);
+            let width = checks
+                .iter()
+                .map(|(name, _)| crate::glyphs::display_width(name))
+                .max()
+                .unwrap_or(0);
+            let current = view
+                .check
+                .and_then(|check| checks.iter().position(|(name, _)| *name == check))
+                .map_or(0, |position| position + 1);
+            let mut choices = vec![("All types".to_string(), PlanChoice::FindingCheck(None))];
+            choices.extend(checks.into_iter().map(|(name, count)| {
+                let pad = width.saturating_sub(crate::glyphs::display_width(name));
+                (
+                    format!("{name}{}  {}", " ".repeat(pad), findings(count)),
+                    PlanChoice::FindingCheck(Some(name)),
+                )
+            }));
+            ("Findings by Type", choices, current)
+        };
+        let (labels, choices): (Vec<_>, Vec<_>) = choices.into_iter().unzip();
+        let mut state = crate::widgets::ui::PickerState::new(labels);
+        state.select_original(current);
+        self.quality.picker = Some(PlanPicker {
+            title: title.to_string(),
+            choices,
+            state,
+        });
+    }
+
+    /// The next order for the findings, keeping the finding under the cursor under it.
+    pub fn cycle_findings_order(&mut self) {
+        let selected = self.selected_finding().map(|(_, finding)| finding);
+        self.quality.findings.order = self.quality.findings.order.next();
+        self.reselect_finding(selected);
+    }
+
+    /// Show every finding again, in the order chosen.
+    pub fn clear_findings_narrowing(&mut self) {
+        let selected = self.selected_finding().map(|(_, finding)| finding);
+        self.quality.findings.column = None;
+        self.quality.findings.check = None;
+        self.reselect_finding(selected);
+    }
+
+    /// Put the cursor on `finding` where the list now shows it, or on the first.
+    fn reselect_finding(&mut self, finding: Option<Finding>) {
+        let position = self.quality.results.as_ref().and_then(|results| {
+            let report = results.report();
+            let finding = finding?;
+            let shown = self.quality.findings.shown(report);
+            shown.iter().position(|index| {
+                let listed = &report.findings[*index];
+                listed.same_as(&finding)
+            })
+        });
+        self.quality.table_state.select(Some(position.unwrap_or(0)));
+        *self.quality.table_state.offset_mut() = 0;
+    }
+
+    /// Whether `s` opens the Sample form: on a tool's main view with nothing else
+    /// holding keys (run, popup, editor, text field).
+    pub fn sample_key_opens_form(&self) -> bool {
+        self.view == AnalysisView::Main
+            && self.selected_tool.is_some()
+            && self.computing.is_none()
+            && self.quality.picker.is_none()
+            && !matches!(
+                self.quality.page,
+                QualityPage::TimeRoles
+                    | QualityPage::IntervalPairs
+                    | QualityPage::ExpectedWindows
+                    | QualityPage::Intent
+            )
+            && !self.quality.show_access
+            && !self.quality.observation_detail
+            && self.quality.evidence_read.is_none()
+            && self.quality.export.is_none()
+            && self.quality.intent_form.is_none()
+            && self.sample_form.is_none()
+    }
+
+    /// Whether the export dialog's path owns typed characters.
+    pub fn export_typing(&self) -> bool {
+        self.quality
+            .export
+            .as_ref()
+            .is_some_and(|form| !form.on_format)
+    }
+
+    /// Whether a Column intent field owns typed characters, so Ctrl-C and `?` type.
+    pub fn intent_typing(&self) -> bool {
+        self.quality
+            .intent_form
+            .as_ref()
+            .is_some_and(crate::analysis::intent_modal::IntentForm::typing)
+    }
+
+    /// Whether the Sample form's scope field owns typed characters, so Ctrl-C and `?`
+    /// type.
+    pub fn sample_scope_typing(&self) -> bool {
+        self.sample_form.as_ref().is_some_and(|form| {
+            form.field.is_text() && (!form.inline || self.focus == AnalysisFocus::Main)
+        })
+    }
+
+    /// Whether the Expected editor's From or Before has the cursor, so all but its own
+    /// keys type.
+    pub fn quality_expected_typing(&self) -> bool {
+        self.quality.page == QualityPage::ExpectedWindows
+            && self
+                .quality
+                .expected_form
+                .as_ref()
+                .is_some_and(ExpectedForm::typing)
+    }
+
+    /// Open the bars of the Trends line under the cursor, the first bar selected.
+    pub fn open_trend_detail(&mut self) {
+        let line = self.quality.table_state.selected().unwrap_or(0);
+        self.quality.trend_line = line;
+        self.set_quality_page(QualityPage::TrendDetail);
+    }
+
+    /// The next measure in a bar's detail, on the same column's line. A column with
+    /// nothing to draw in it has no line, and Trends lists what does.
+    pub fn cycle_trend_detail_metric(&mut self) {
+        let Some(results) = self.quality.results.as_ref() else {
+            return;
+        };
+        let view = crate::analysis::quality_trends::trend_view(results, self.quality.metric, 1);
+        let line = view
+            .lines
+            .get(self.quality.trend_line)
+            .map(|line| (line.measure, line.names.clone()));
+        self.cycle_quality_metric();
+        let Some(results) = self.quality.results.as_ref() else {
+            return;
+        };
+        let view = crate::analysis::quality_trends::trend_view(results, self.quality.metric, 1);
+        let found = line.and_then(|(measure, names)| {
+            view.lines.iter().position(|candidate| {
+                candidate.measure == measure
+                    || candidate
+                        .names
+                        .iter()
+                        .any(|name| !candidate.rows() && names.contains(name))
+            })
+        });
+        match found {
+            Some(index) => self.quality.trend_line = index,
+            None => {
+                self.quality.trend_line = 0;
+                self.close_to_trends();
+            }
+        }
+    }
+
+    /// Back to Trends from a bar detail or the gaps, the line still selected.
+    pub fn close_to_trends(&mut self) {
+        let line =
+            (self.quality.page == QualityPage::TrendDetail).then_some(self.quality.trend_line);
+        self.set_quality_page(QualityPage::Trends);
+        self.quality.table_state.select(Some(line.unwrap_or(0)));
+    }
+
+    pub fn set_quality_page(&mut self, page: QualityPage) {
+        self.quality.page = page;
+        self.quality.observation_detail = false;
+        self.quality.evidence_read = None;
+        self.quality.table_state.select(Some(0));
+    }
+
+    /// Move between the column lens and its detail, keeping the selected column.
+    pub fn set_quality_column_page(&mut self, page: QualityPage) {
+        // Detail moves the same selection with Up/Down, so take it from there too.
+        if matches!(
+            self.quality.page,
+            QualityPage::Columns | QualityPage::Detail
+        ) {
+            self.quality.column_index = self.quality.table_state.selected().unwrap_or(0);
+        }
+        self.set_quality_page(page);
+        self.quality
+            .table_state
+            .select(Some(self.quality.column_index));
+    }
+
+    /// Open the highlighted segment's columns, or go back to the list with the
+    /// segment still selected.
+    pub fn open_segment_detail(&mut self) {
+        if let Some(segment) = self.selected_segment() {
+            self.quality.segment_index = segment;
+            self.set_quality_page(QualityPage::SegmentDetail);
+        }
+    }
+
+    pub fn close_segment_detail(&mut self) {
+        self.set_quality_page(QualityPage::Segments);
+        let position = self
+            .segment_order()
+            .iter()
+            .position(|segment| *segment == self.quality.segment_index);
+        self.quality.table_state.select(Some(position.unwrap_or(0)));
+    }
+
+    /// The order Segments lists its rows in.
+    pub fn segment_order(&self) -> Vec<usize> {
+        self.quality
+            .results
+            .as_ref()
+            .map(|results| {
+                crate::analysis::data_quality::segment_order(
+                    results,
+                    self.quality.segments_by_change,
+                )
+            })
+            .unwrap_or_default()
+    }
+
+    /// The segment under the cursor on Segments, whichever order it is listed in.
+    pub fn selected_segment(&self) -> Option<usize> {
+        let position = self.quality.table_state.selected()?;
+        self.segment_order().get(position).copied()
+    }
+
+    /// List segments in their own order or clearest change first, keeping the one
+    /// under the cursor under it.
+    pub fn toggle_segment_order(&mut self) {
+        let segment = self.selected_segment();
+        self.quality.segments_by_change = !self.quality.segments_by_change;
+        let position = segment
+            .and_then(|segment| self.segment_order().iter().position(|s| *s == segment))
+            .unwrap_or(0);
+        self.quality.table_state.select(Some(position));
+    }
+
+    /// Open the highlighted interval's detail, its first count under the cursor.
+    pub fn open_interval_detail(&mut self) {
+        let Some(index) = self.quality.table_state.selected() else {
+            return;
+        };
+        if self
+            .quality
+            .results
+            .as_ref()
+            .is_some_and(|results| index < results.temporal.len())
+        {
+            self.quality.interval_index = index;
+            self.set_quality_page(QualityPage::IntervalDetail);
+        }
+    }
+
+    /// Back to the list, the interval still selected.
+    pub fn close_interval_detail(&mut self) {
+        self.set_quality_page(QualityPage::Intervals);
+        self.quality
+            .table_state
+            .select(Some(self.quality.interval_index));
+    }
+
+    /// The counts an interval's detail lists, each with rows it can open: those
+    /// the interval measured, in the order the detail shows them.
+    pub fn interval_facts(&self) -> Vec<IntervalFact> {
+        let plan = self.quality_result_plan();
+        self.quality
+            .results
+            .as_ref()
+            .and_then(|results| results.temporal.get(self.quality.interval_index))
+            .map(|profile| {
+                IntervalFact::ALL
+                    .into_iter()
+                    .filter(|fact| profile.count(*fact, plan).is_some())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The count under the cursor in an interval's detail.
+    pub fn selected_interval_fact(&self) -> Option<IntervalFact> {
+        let facts = self.interval_facts();
+        facts
+            .get(self.quality.table_state.selected().unwrap_or(0))
+            .copied()
+    }
+
+    /// The rows behind the selected count in an interval's detail, when its values
+    /// identify them: a predicate over the run's rows, with a label. `schema` (where
+    /// known) lets a partition segment compare in its column's type.
+    pub fn interval_evidence(
+        &self,
+        schema: Option<&polars::prelude::Schema>,
+    ) -> Option<(polars::prelude::Expr, String, usize)> {
+        let results = self.quality.results.as_ref()?;
+        if !matches!(
+            results.precision,
+            crate::analysis::data_quality::QualityPrecision::Exact
+                | crate::analysis::data_quality::QualityPrecision::Sampled
+        ) {
+            return None;
+        }
+        let plan = self.quality_result_plan();
+        let profile = results.temporal.get(self.quality.interval_index)?;
+        let fact = self.selected_interval_fact()?;
+        let (count, _) = profile.count(fact, plan)?;
+        if count == 0 {
+            return None;
+        }
+        let predicate = profile.evidence_predicate(fact, plan, schema)?;
+        Some((
+            predicate,
+            format!(
+                "Data Quality / {} / {} / {}",
+                profile.label(),
+                profile.segment,
+                fact.short()
+            ),
+            count,
+        ))
+    }
+
+    /// Move the finding popup by `rows`, within what it last drew.
+    pub fn scroll_quality_detail(&mut self, rows: i32) {
+        let scroll = &mut self.quality.detail_scroll;
+        scroll.offset = (scroll.offset as i32 + rows).clamp(0, scroll.max as i32) as u16;
+    }
+
+    /// Show a tab, keeping the column in view across Columns, Segments and Trends.
+    pub fn show_quality_tab(&mut self, page: QualityPage) {
+        if matches!(
+            self.quality.page,
+            QualityPage::Columns | QualityPage::Detail
+        ) {
+            self.quality.column_index = self.quality.table_state.selected().unwrap_or(0);
+        }
+        self.set_quality_page(page);
+        if page == QualityPage::Columns {
+            self.quality
+                .table_state
+                .select(Some(self.quality.column_index));
+        }
+    }
+
+    /// The next or previous tab, stopping at either end.
+    pub fn step_quality_tab(&mut self, forward: bool) {
+        let tabs = QualityPage::TABS;
+        let Some(at) = tabs
+            .iter()
+            .position(|page| *page == self.quality.page.tab())
+        else {
+            return;
+        };
+        let next = if forward {
+            (at + 1).min(tabs.len() - 1)
+        } else {
+            at.saturating_sub(1)
+        };
+        if next != at {
+            self.show_quality_tab(tabs[next]);
+        }
+    }
+
+    pub fn cycle_quality_metric(&mut self) {
+        let current = QualityMetric::ALL
+            .iter()
+            .position(|metric| *metric == self.quality.metric)
+            .unwrap_or(0);
+        self.quality.metric = QualityMetric::ALL[(current + 1) % QualityMetric::ALL.len()];
+    }
+
+    /// The plan the on-screen result was measured with (the plan until a run exists),
+    /// so a draft never relabels what was measured.
+    pub fn quality_result_plan(&self) -> &DataQualityPlan {
+        self.quality
+            .last_plan
+            .as_ref()
+            .unwrap_or(&self.quality.plan)
+    }
+
+    /// The plan differs from the one the result on screen was measured with.
+    pub fn quality_plan_pending(&self) -> bool {
+        self.quality.results.is_some()
+            && self.quality.last_plan.as_ref() != Some(&self.quality.plan)
+    }
+
+    /// The Setup row under the cursor.
+    pub fn setup_row(&self) -> SetupRow {
+        SetupRow::at(self.quality.plan_field)
+    }
+
+    /// Whether Setup holds staged changes Esc would discard.
+    pub fn setup_edited(&self) -> bool {
+        self.quality
+            .setup_before
+            .as_ref()
+            .is_some_and(|before| *before != self.quality.plan)
+    }
+
+    /// The choices a Setup row offers, in the words the header uses.
+    pub fn plan_choices(&self, row: SetupRow, context: &PlanContext) -> Vec<(String, PlanChoice)> {
+        match row {
+            SetupRow::Grain => {
+                let mut grains = vec![QualityGrain::Dataset];
+                if context.files {
+                    grains.push(QualityGrain::File);
+                }
+                grains.extend(
+                    context
+                        .partitions
+                        .iter()
+                        .cloned()
+                        .map(QualityGrain::Partition),
+                );
+                // Any date column can split by day, week or month; hours only where there are times.
+                for (column, has_time) in &context.time_columns {
+                    for every in QUALITY_WINDOW_WIDTHS {
+                        if every == "1h" && !has_time {
+                            continue;
+                        }
+                        grains.push(QualityGrain::TimeWindows {
+                            column: column.clone(),
+                            every: every.to_string(),
+                        });
+                    }
+                }
+                grains.extend([100_000, 1_000_000].map(QualityGrain::RowChunks));
+                if !grains.contains(&self.quality.plan.grain) {
+                    grains.insert(0, self.quality.plan.grain.clone());
+                }
+                grains
+                    .into_iter()
+                    .map(|grain| (grain.label(), PlanChoice::Grain(grain)))
+                    .collect()
+            }
+            SetupRow::Values => {
+                // The draft's sample says which kind of read it is.
+                let read = if self.quality.plan.method
+                    == crate::analysis::sampling::SampleMethod::EveryRow
+                {
+                    QualityCompute::Full
+                } else {
+                    QualityCompute::Sample
+                };
+                vec![
+                    ("read".to_string(), PlanChoice::Values(read)),
+                    (
+                        "file metadata only".to_string(),
+                        PlanChoice::Values(QualityCompute::Metadata),
+                    ),
+                ]
+            }
+            SetupRow::Compare => [
+                QualityComparison::None,
+                QualityComparison::Previous,
+                QualityComparison::Baseline,
+            ]
+            .into_iter()
+            .map(|comparison| {
+                (
+                    comparison.choice_label().to_string(),
+                    PlanChoice::Compare(comparison),
+                )
+            })
+            .collect(),
+            SetupRow::WindowBy if !self.quality.plan.windows_intervals() => Vec::new(),
+            SetupRow::WindowBy => IntervalClock::ALL
+                .into_iter()
+                .map(|clock| (clock.label().to_string(), PlanChoice::Clock(clock)))
+                .collect(),
+            SetupRow::Latency if self.quality.plan.interval_pairs().is_empty() => Vec::new(),
+            SetupRow::Latency => [None, Some(3_600), Some(86_400), Some(604_800)]
+                .into_iter()
+                .map(|seconds| (threshold_label(seconds), PlanChoice::Latency(seconds)))
+                .collect(),
+            // Each text column with its first value on screen, so the choice is among things
+            // seen.
+            SetupRow::TextAsTime => context
+                .text_columns
+                .iter()
+                .map(|(column, examples)| {
+                    let label = match (self.quality.plan.time_format(column), examples.first()) {
+                        (Some(format), _) => format!("{column}  as {}", format.label()),
+                        (None, Some(example)) => format!("{column}  {example}"),
+                        (None, None) => column.clone(),
+                    };
+                    (label, PlanChoice::TextColumn(column.clone()))
+                })
+                .collect(),
+            SetupRow::Sample
+            | SetupRow::TimeRoles
+            | SetupRow::Intervals
+            | SetupRow::Expected
+            | SetupRow::Intent => Vec::new(),
+        }
+    }
+
+    /// Open the focused Setup row's choices, the current one selected.
+    pub fn open_plan_picker(&mut self, row: SetupRow, context: &PlanContext) {
+        let choices = self.plan_choices(row, context);
+        self.quality.plan_field = row.index();
+        self.show_picker(row.label().to_string(), choices);
+    }
+
+    fn show_picker(&mut self, title: String, choices: Vec<(String, PlanChoice)>) {
+        if choices.is_empty() {
+            return;
+        }
+        let current = choices
+            .iter()
+            .position(|(_, choice)| choice.is_current(&self.quality.plan))
+            .unwrap_or(0);
+        let (labels, choices): (Vec<_>, Vec<_>) = choices.into_iter().unzip();
+        let mut state = crate::widgets::ui::PickerState::new(labels);
+        state.select_original(current);
+        self.quality.picker = Some(PlanPicker {
+            title,
+            choices,
+            state,
+        });
+    }
+
+    /// How `column` can be read as time: each format with how many of the on-screen
+    /// `examples` it reads, best first, and reading as text again when it has a format.
+    pub fn open_format_picker(&mut self, column: &str, examples: &[String]) {
+        let mut formats = TIME_FORMATS
+            .iter()
+            .enumerate()
+            .map(|(order, (kind, format))| {
+                let interpretation = TimeInterpretation {
+                    column: column.to_string(),
+                    kind: *kind,
+                    format: format.to_string(),
+                };
+                let read = examples
+                    .iter()
+                    .filter(|value| interpretation.reads(value))
+                    .count();
+                (read, order, *kind, *format)
+            })
+            .collect::<Vec<_>>();
+        // Most read first; the offered order among equals, so the list is stable.
+        formats.sort_by_key(|(read, order, _, _)| (std::cmp::Reverse(*read), *order));
+        let mut choices = formats
+            .into_iter()
+            .map(|(read, _, kind, format)| {
+                // The count first, so a narrow list clips the format, not the evidence.
+                let label = if examples.is_empty() {
+                    format!("{} {format}", kind.label())
+                } else {
+                    format!(
+                        "reads {read} of {}  {} {format}",
+                        examples.len(),
+                        kind.label()
+                    )
+                };
+                (
+                    label,
+                    PlanChoice::Format(column.to_string(), Some((kind, format))),
+                )
+            })
+            .collect::<Vec<_>>();
+        if self.quality.plan.time_format(column).is_some() {
+            choices.push((
+                "text, not a time".to_string(),
+                PlanChoice::Format(column.to_string(), None),
+            ));
+        }
+        self.show_picker(format!("Read {column} As"), choices);
+    }
+
+    /// Take the picker's selection into the plan and close it. Returns a text column
+    /// chosen to read as time: its format is the next choice.
+    pub fn choose_plan_picker(&mut self) -> Option<String> {
+        let picker = self.quality.picker.take()?;
+        let choice = picker
+            .state
+            .selected_original()
+            .and_then(|index| picker.choices.get(index))?;
+        let plan = &mut self.quality.plan;
+        match choice.clone() {
+            PlanChoice::Grain(grain) => {
+                if plan.grain != grain {
+                    plan.baseline_segment = None;
+                }
+                plan.grain = grain;
+            }
+            PlanChoice::Values(compute) => plan.compute = compute,
+            PlanChoice::Compare(comparison) => {
+                plan.comparison = comparison;
+                if comparison != QualityComparison::Baseline {
+                    plan.baseline_segment = None;
+                }
+            }
+            PlanChoice::Latency(seconds) => plan.latency_threshold_seconds = seconds,
+            PlanChoice::Clock(clock) => plan.interval_clock = clock,
+            PlanChoice::TextColumn(column) => return Some(column),
+            PlanChoice::Format(column, format) => set_time_format(plan, &column, format),
+            PlanChoice::FindingColumn(column) => {
+                let selected = self.selected_finding().map(|(_, finding)| finding);
+                self.quality.findings.column = column;
+                self.reselect_finding(selected);
+            }
+            PlanChoice::FindingCheck(check) => {
+                let selected = self.selected_finding().map(|(_, finding)| finding);
+                self.quality.findings.check = check;
+                self.reselect_finding(selected);
+            }
+        }
+        None
+    }
+
+    /// The next or previous choice of a Setup row whose choices are a short list,
+    /// in place: ←→ on Grain, Compare, Values, Latency and Window by.
+    pub fn cycle_setup_choice(&mut self, row: SetupRow, context: &PlanContext, forward: bool) {
+        let choices = self.plan_choices(row, context);
+        if choices.is_empty() || matches!(row, SetupRow::TextAsTime) {
+            return;
+        }
+        let current = choices
+            .iter()
+            .position(|(_, choice)| choice.is_current(&self.quality.plan))
+            .unwrap_or(0);
+        let next = if forward {
+            (current + 1).min(choices.len() - 1)
+        } else {
+            current.saturating_sub(1)
+        };
+        let (labels, choices): (Vec<_>, Vec<_>) = choices.into_iter().unzip();
+        let mut state = crate::widgets::ui::PickerState::new(labels);
+        state.select_original(next);
+        self.quality.picker = Some(PlanPicker {
+            title: row.label().to_string(),
+            choices,
+            state,
+        });
+        self.choose_plan_picker();
+    }
+
+    pub fn cycle_quality_time_role(
+        &mut self,
+        role_index: usize,
+        columns: &[String],
+        forward: bool,
+    ) {
+        let Some(role) = TemporalRole::ALL.get(role_index).copied() else {
+            return;
+        };
+        let current = self
+            .quality
+            .plan
+            .temporal_roles
+            .iter()
+            .find(|assignment| assignment.role == role)
+            .and_then(|assignment| columns.iter().position(|name| name == &assignment.column))
+            .map(|index| index + 1)
+            .unwrap_or(0);
+        let choices = columns.len() + 1;
+        let next = if forward {
+            (current + 1) % choices
+        } else if current == 0 {
+            choices - 1
+        } else {
+            current - 1
+        };
+        self.quality
+            .plan
+            .temporal_roles
+            .retain(|assignment| assignment.role != role);
+        if next > 0 {
+            self.quality
+                .plan
+                .temporal_roles
+                .push(TemporalRoleAssignment {
+                    role,
+                    column: columns[next - 1].clone(),
+                    timezone: None,
+                });
+        }
+    }
+
+    /// Move the focused tool's cursor by `step` in `rows` rows, ten to a page. The
+    /// correlation matrix moves its row, keeping its column; Home and End take the first
+    /// and last off-diagonal pair.
+    pub fn move_row(&mut self, step: crate::app::form::ListMove, rows: usize) {
+        use crate::app::form::ListMove;
+        const PAGE: usize = 10;
+        let to = |at: Option<usize>| match (at, step) {
+            (Some(at), _) => Some(step.apply(at, rows, PAGE)),
+            // Nothing selected yet: Down and Home start the cursor at the top, End at
+            // the bottom.
+            (None, ListMove::Down | ListMove::Home) => Some(0),
+            (None, ListMove::End) => rows.checked_sub(1),
+            (None, _) => None,
+        };
+        match self.selected_tool {
+            Some(AnalysisTool::Describe) => {
+                if let Some(next) = to(self.table_state.selected()) {
+                    self.table_state.select(Some(next));
+                }
+            }
+            Some(AnalysisTool::DistributionAnalysis) => {
+                if let Some(next) = to(self.distribution_table_state.selected()) {
+                    self.distribution_table_state.select(Some(next));
+                    self.selected_distribution = Some(next);
+                }
+            }
+            Some(AnalysisTool::CorrelationMatrix) => {
+                let n = self.correlation_size();
+                let cell = match (step, self.selected_correlation) {
+                    (ListMove::Down, _) => return self.move_correlation_cell((1, 0)),
+                    (ListMove::Home, _) if n > 0 => (0, 1.min(n - 1)),
+                    (ListMove::End, _) if n > 0 => (n - 1, (n - 1).saturating_sub(1)),
+                    (ListMove::Up | ListMove::PageUp | ListMove::PageDown, Some((row, col))) => {
+                        (step.apply(row, rows, PAGE), col)
+                    }
+                    _ => return,
+                };
+                self.selected_correlation = Some(cell);
+                self.correlation_table_state.select(Some(cell.0));
+            }
+            Some(AnalysisTool::DataQuality) => {
+                let at = self.quality.table_state.selected().unwrap_or(0);
+                self.quality
+                    .table_state
+                    .select(Some(step.apply(at, rows, PAGE)));
+            }
+            None => {}
+        }
+    }
+
+    /// Install the matrix a run read. The cursor stays if still a cell, else starts on
+    /// the first off-diagonal pair, where Enter opens a detail.
+    pub fn install_correlations(&mut self, results: AnalysisResults) {
+        let n = results
+            .correlation_matrix
+            .as_ref()
+            .map_or(0, |matrix| matrix.columns.len());
+        self.correlation_results = Some(results);
+        let cell = match self.selected_correlation {
+            Some((row, col)) if row < n && col < n => (row, col),
+            _ if n >= 2 => (0, 1),
+            _ => (0, 0),
+        };
+        self.selected_correlation = Some(cell);
+        self.correlation_table_state.select(Some(cell.0));
+    }
+
+    /// The number of columns in the correlation matrix on screen.
+    pub fn correlation_size(&self) -> usize {
+        self.correlation_results
+            .as_ref()
+            .and_then(|results| results.correlation_matrix.as_ref())
+            .map_or(0, |matrix| matrix.columns.len())
+    }
+
+    /// The families the distribution detail's selector lists for the column under
+    /// the cursor.
+    pub fn distribution_choices(&self) -> usize {
+        let row = self.distribution_table_state.selected().unwrap_or(0);
+        self.distribution_results
+            .as_ref()
+            .and_then(|results| results.distribution_analyses.get(row))
+            .map_or(0, |analysis| {
+                crate::analysis::distribution_fit::listing_order(&analysis.fits).len()
+            })
+    }
+
+    /// Move the correlation cursor by `(rows, columns)`, stopping at edges; the matrix
+    /// scrolls to keep it in view as it draws.
+    pub fn move_correlation_cell(&mut self, (rows, cols): (isize, isize)) {
+        let n = self.correlation_size();
+        if n == 0 {
+            return;
+        }
+        if let Some((row, col)) = self.selected_correlation {
+            let row = row.saturating_add_signed(rows).min(n - 1);
+            let col = col.saturating_add_signed(cols).min(n - 1);
+            self.selected_correlation = Some((row, col));
+            self.correlation_table_state.select(Some(row));
+        }
+    }
+
+    pub fn next_distribution(&mut self) {
+        let max_idx = self.distribution_choices().saturating_sub(1);
+
+        if let Some(current) = self.distribution_selector_state.selected() {
+            let next = (current + 1).min(max_idx);
+            self.distribution_selector_state.select(Some(next));
+            self.select_distribution();
+        } else {
+            self.distribution_selector_state.select(Some(0));
+            self.select_distribution();
+        }
+    }
+
+    pub fn previous_distribution(&mut self) {
+        if let Some(current) = self.distribution_selector_state.selected() {
+            if current > 0 {
+                self.distribution_selector_state.select(Some(current - 1));
+                self.select_distribution();
+            }
+        } else {
+            self.distribution_selector_state.select(Some(0));
+            self.select_distribution();
+        }
+    }
+
+    pub fn select_distribution(&mut self) {
+        if let Some(idx) = self.distribution_selector_state.selected()
+            && let Some(results) = &self.distribution_results
+        {
+            let dist_analysis_idx = self.distribution_table_state.selected().unwrap_or(0);
+            if let Some(dist_analysis) = results.distribution_analyses.get(dist_analysis_idx) {
+                // The order the selector lists them in.
+                let distribution_scores =
+                    crate::analysis::distribution_fit::listing_order(&dist_analysis.fits);
+                let valid_idx = idx.min(distribution_scores.len().saturating_sub(1));
+                if let Some(dist_type) = distribution_scores.get(valid_idx) {
+                    self.selected_theoretical_distribution = *dist_type;
+                    if idx != valid_idx {
+                        self.distribution_selector_state.select(Some(valid_idx));
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod quality_scope_tests {
+    use super::*;
+
+    /// Weekdays stated for days, then a coarser grain: the editor offers what the
+    /// grain allows and shows what Setup and the check read, every week.
+    #[test]
+    fn expected_weekdays_read_as_every_window_on_weeks() {
+        let theme =
+            crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
+        let mut plan = DataQualityPlan {
+            grain: QualityGrain::TimeWindows {
+                column: "day".to_string(),
+                every: "1d".to_string(),
+            },
+            expected: Some(crate::analysis::data_quality::ExpectedWindows {
+                weekdays: true,
+                ..Default::default()
+            }),
+            ..DataQualityPlan::default()
+        };
+        assert_eq!(
+            ExpectedForm::new(&plan, &theme).cadence,
+            ExpectedCadence::Weekdays
+        );
+        plan.grain = QualityGrain::TimeWindows {
+            column: "day".to_string(),
+            every: "1w".to_string(),
+        };
+        let form = ExpectedForm::new(&plan, &theme);
+        assert_eq!(form.cadence, ExpectedCadence::Every);
+        assert_eq!(form.cadence_label("1w"), "every week");
+        assert!(!form.expected().unwrap().unwrap().weekdays);
+    }
+
+    /// Grain choices come from the data: files, partition columns, and a day, week
+    /// or month of any date column (hours only where there are times), then chunks.
+    #[test]
+    fn grain_choices_come_from_the_data() {
+        let mut modal = AnalysisModal::default();
+        let context = PlanContext {
+            partitions: vec!["year".to_string()],
+            time_columns: vec![("date".to_string(), false), ("stamp".to_string(), true)],
+            files: true,
+            text_columns: Vec::new(),
+        };
+        let labels = modal
+            .plan_choices(SetupRow::Grain, &context)
+            .into_iter()
+            .map(|(label, _)| label)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            labels,
+            [
+                "whole dataset",
+                "by file",
+                "by year",
+                "by day of date",
+                "by week of date",
+                "by month of date",
+                "by hour of stamp",
+                "by day of stamp",
+                "by week of stamp",
+                "by month of stamp",
+                "in chunks of 100,000 rows",
+                "in chunks of 1,000,000 rows",
+            ]
+        );
+        // Choosing opens the list on the current value and sets the one chosen.
+        modal.open_plan_picker(SetupRow::Grain, &context);
+        let picker = modal.quality.picker.as_mut().unwrap();
+        assert_eq!(picker.state.selected_original(), Some(0));
+        picker.state.move_down();
+        picker.state.move_down();
+        picker.state.move_down();
+        modal.choose_plan_picker();
+        assert!(modal.quality.picker.is_none());
+        assert_eq!(
+            modal.quality.plan.grain,
+            QualityGrain::TimeWindows {
+                column: "date".to_string(),
+                every: "1d".to_string()
+            }
+        );
+    }
+
+    /// Values: read or metadata only; which of sample and full scan a read is, the
+    /// shared sample says.
+    #[test]
+    fn a_read_is_the_samples_kind() {
+        let mut modal = AnalysisModal::default();
+        let context = PlanContext::default();
+        modal.quality.plan.compute = QualityCompute::Metadata;
+        modal.open_plan_picker(SetupRow::Values, &context);
+        modal
+            .quality
+            .picker
+            .as_mut()
+            .unwrap()
+            .state
+            .select_original(0);
+        modal.choose_plan_picker();
+        assert_eq!(modal.quality.plan.compute, QualityCompute::Sample);
+        modal.quality.plan.method = crate::analysis::sampling::SampleMethod::EveryRow;
+        modal.open_plan_picker(SetupRow::Values, &context);
+        modal.choose_plan_picker();
+        assert_eq!(modal.quality.plan.compute, QualityCompute::Full);
+        modal.open_plan_picker(SetupRow::Latency, &context);
+        assert!(
+            modal.quality.picker.is_none(),
+            "no threshold without an interval to measure"
+        );
+    }
+
+    /// A text column is read as time in two choices, the column and then its
+    /// format, the formats that read the values on screen first; reading it as text
+    /// again takes back a time window that needed it.
+    #[test]
+    fn text_is_read_as_time_through_a_chosen_format() {
+        let mut modal = AnalysisModal::default();
+        let context = PlanContext {
+            text_columns: vec![(
+                "created".to_string(),
+                vec!["2024-01-31 08:15:00".to_string()],
+            )],
+            ..PlanContext::default()
+        };
+        modal.open_plan_picker(SetupRow::TextAsTime, &context);
+        assert_eq!(modal.choose_plan_picker(), Some("created".to_string()));
+        modal.open_format_picker("created", &["2024-01-31 08:15:00".to_string()]);
+        let picker = modal.quality.picker.as_ref().unwrap();
+        assert_eq!(picker.title, "Read created As");
+        let first = picker.state.filtered()[0].1.to_string();
+        assert_eq!(first, "reads 1 of 1  datetime %Y-%m-%d %H:%M:%S");
+        assert_eq!(modal.choose_plan_picker(), None);
+        let format = modal.quality.plan.time_format("created").unwrap();
+        assert_eq!(format.kind, TimeKind::Datetime);
+
+        // Now a time window can split by it; as text again, the window goes.
+        let windows = PlanContext {
+            time_columns: vec![("created".to_string(), true)],
+            ..context.clone()
+        };
+        modal.open_plan_picker(SetupRow::Grain, &windows);
+        let picker = modal.quality.picker.as_mut().unwrap();
+        picker.state.move_down();
+        picker.state.move_down();
+        modal.choose_plan_picker();
+        assert!(matches!(
+            modal.quality.plan.grain,
+            QualityGrain::TimeWindows { .. }
+        ));
+        modal.open_format_picker("created", &[]);
+        let picker = modal.quality.picker.as_mut().unwrap();
+        let text = picker
+            .state
+            .filtered()
+            .iter()
+            .position(|(_, label)| *label == "text, not a time")
+            .unwrap();
+        for _ in 0..text {
+            picker.state.move_down();
+        }
+        modal.choose_plan_picker();
+        assert!(modal.quality.plan.time_formats.is_empty());
+        assert_eq!(modal.quality.plan.grain, QualityGrain::Dataset);
+    }
+}

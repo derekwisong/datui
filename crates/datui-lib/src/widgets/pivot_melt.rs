@@ -4,12 +4,12 @@
 //! the preview is the first rows of the reshaped head, typed and colored as the
 //! table draws them, under a line that says what it ran over and the shape.
 
-use crate::numfmt;
-use crate::pivot_melt_modal::{
+use crate::app::modals::pivot_melt_modal::{
     PREVIEW_INPUT_ROWS, PREVIEW_WIDE_PIVOT, PivotMeltFocus, PivotMeltModal, PivotMeltTab,
     PreviewFrame, ReshapePreview,
 };
-use crate::pointer::{FieldId, Hit};
+use crate::app::pointer::{FieldId, Hit};
+use crate::numfmt;
 use crate::render::context::RenderContext;
 use crate::render::footer::{Hint, registry_hint_in};
 use crate::widgets::ui::{FormRow, FormValue, Picker, SectionRule, Surface};
@@ -70,12 +70,7 @@ pub fn hints(modal: &PivotMeltModal) -> Vec<Hint> {
             vec![form("Enter"), form("Space"), form("Esc")]
         }
         None if modal.focus == PivotMeltFocus::TabBar || modal.is_choice_row(modal.focus) => {
-            let change = form("← / →");
-            vec![
-                form("Enter"),
-                Hint::new(crate::glyphs::get().updown_lr, change.label),
-                form("Esc"),
-            ]
+            vec![form("Enter"), form("← / →"), form("Esc")]
         }
         None => vec![form("Enter"), form("Esc")],
     }
@@ -172,7 +167,7 @@ fn render_form(area: Rect, buf: &mut Buffer, modal: &mut PivotMeltModal, ctx: &R
     let tab_area = Rect { height: 1, ..area };
     let field = Some(FieldId::of::<PivotMeltModal>(PivotMeltFocus::TabBar));
     let current = usize::from(!pivot_tab);
-    crate::pointer::record_spans(
+    crate::app::pointer::record_spans(
         tab_area,
         &tab_line,
         [1, 4]
@@ -251,7 +246,7 @@ fn render_form(area: Rect, buf: &mut Buffer, modal: &mut PivotMeltModal, ctx: &R
             label_width: LABEL_WIDTH,
         }
         .render_picking(row_area, buf, ctx, modal.picker.is_some());
-        crate::pointer::record_field::<PivotMeltModal>(row_area, row);
+        crate::app::pointer::record_field::<PivotMeltModal>(row_area, row);
         y += 1;
     }
 
@@ -259,7 +254,7 @@ fn render_form(area: Rect, buf: &mut Buffer, modal: &mut PivotMeltModal, ctx: &R
     // spec line; the selection carries the rail while the list is up.
     if let Some(state) = &modal.picker {
         // It owns the keys even with no room to draw: the rows take no clicks.
-        crate::pointer::record(area, Hit::Picker);
+        crate::app::pointer::record(area, Hit::Picker);
         let picker_y = y + 1;
         if picker_y < spec_y {
             let picker_area = Rect {
@@ -499,14 +494,14 @@ fn grid_columns(
                     )),
                 })
                 .collect();
-            let type_label = crate::widgets::datatable::dtype_label(dtype);
+            let type_label = crate::formats::column_types::dtype_label(dtype);
             let widest = cells
                 .iter()
                 .map(|c| c.as_deref().map_or(1, crate::glyphs::cell_width))
                 .chain([
                     crate::glyphs::cell_width(&name),
                     if ctx.dtype_row {
-                        type_label.chars().count()
+                        crate::glyphs::display_width(&type_label)
                     } else {
                         0
                     },
@@ -657,7 +652,7 @@ fn render_grid(area: Rect, buf: &mut Buffer, head: &DataFrame, stale: bool, ctx:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pivot_melt_modal::{
+    use crate::app::modals::pivot_melt_modal::{
         PivotAggregation, PivotSpec, PreviewInput, PreviewSpec, run_preview,
     };
     use polars::prelude::*;
@@ -700,7 +695,6 @@ mod tests {
             pivot_column: "job".to_string(),
             value_column: "salary".to_string(),
             aggregation: PivotAggregation::Avg,
-            sort_columns: None,
         }
     }
 
@@ -901,7 +895,7 @@ mod tests {
         let mut m = modal_with_columns(&["dept", "region", "salary"]);
         m.focus = PivotMeltFocus::PivotIndex;
         m.open_picker();
-        let hits = crate::pointer::recording(|| {
+        let hits = crate::app::pointer::recording(|| {
             render_rows(&mut m, 120, 9);
         });
         assert!(hits.iter().any(|(_, h)| *h == Hit::Picker), "{hits:?}");
@@ -917,7 +911,7 @@ mod tests {
     fn the_melt_form_follows_the_strategy() {
         let mut m = modal_with_columns(&["id", "q1", "q2"]);
         m.switch_tab();
-        m.melt_value_strategy = crate::pivot_melt_modal::MeltValueStrategy::ByPattern;
+        m.melt_value_strategy = crate::app::modals::pivot_melt_modal::MeltValueStrategy::ByPattern;
         let rows = render_rows(&mut m, 120, 24);
         assert!(rows[5].contains("Pattern:"), "got {:?}", rows[5]);
         assert!(rows[6].contains("Variable name:"), "got {:?}", rows[6]);

@@ -1,6 +1,7 @@
-use crate::widgets::datatable::DataTableState;
+use crate::table::DataTableState;
 use crate::*;
 use polars::prelude::{IntoLazy, ParquetWriter};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 
@@ -22,7 +23,7 @@ fn gated(app: &mut App) -> Gate {
     let ui = std::thread::current().id();
     let (counted, misplaced) = (calls.clone(), on_ui_thread.clone());
     app.file_facts_reader = Some(Arc::new(
-        move |_path: &Path, _facts: Option<crate::readers::Facts>| {
+        move |_path: &Path, _facts: Option<crate::formats::readers::Facts>| {
             counted.fetch_add(1, Ordering::SeqCst);
             if std::thread::current().id() == ui {
                 misplaced.fetch_add(1, Ordering::SeqCst);
@@ -63,13 +64,13 @@ fn install(app: &mut App, path: &str) {
 }
 
 fn press(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Option<AppEvent> {
-    app.event(&AppEvent::Key(KeyEvent::new(code, modifiers)))
+    app.event(AppEvent::Key(KeyEvent::new(code, modifiers)))
 }
 
 /// `i`, then → to the Resources tab, where the file size is: past a Parquet tab.
 fn open_resources(app: &mut App) {
     press(app, KeyCode::Char('i'), KeyModifiers::NONE);
-    assert_eq!(app.input_mode, InputMode::Info);
+    assert_eq!(app.overlay, Overlay::Info);
     for _ in 0..3 {
         press(app, KeyCode::Right, KeyModifiers::NONE);
         if app.info_modal.active_tab == crate::widgets::info::InfoTab::Resources {
@@ -83,14 +84,7 @@ fn screen(app: &mut App) -> String {
     let area = Rect::new(0, 0, 80, 24);
     let mut buf = Buffer::empty(area);
     Widget::render(&mut *app, area, &mut buf);
-    (0..area.height)
-        .map(|y| {
-            (0..area.width)
-                .map(|x| buf[(x, y)].symbol().to_string())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    crate::tests::buffer_text(&buf)
 }
 
 fn file_size_line(text: &str) -> &str {
@@ -133,7 +127,7 @@ fn info_draws_and_answers_keys_while_its_read_waits() {
     }
     // Esc and `i` act at once, and the panel opened again asks nothing new.
     press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
     open_resources(&mut app);
     let _ = screen(&mut app);
 
@@ -240,7 +234,7 @@ fn an_answer_for_a_replaced_dataset_is_dropped() {
             .expect("the old read answers");
         let answered =
             matches!(event, AppEvent::JobEnded(t) if t.kind() == crate::JobKind::FileFacts);
-        app.event(&event);
+        app.event(event);
         if answered {
             break;
         }
@@ -264,7 +258,7 @@ fn an_answer_for_a_replaced_dataset_is_dropped() {
         message: "not this one".to_string(),
         panicked: false,
     });
-    app.event(&AppEvent::JobEnded(ticket));
+    app.event(AppEvent::JobEnded(ticket));
     assert!(reading(&app), "the new dataset is still waiting on its own");
 
     gate.answer.send(read(5)).unwrap();
@@ -313,7 +307,7 @@ fn a_glob_or_several_files_read_nothing() {
     press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
 
     install(&mut app, "/nowhere/a.parquet");
-    app.opened = Some((
+    app.source.opened = Some((
         vec![
             PathBuf::from("/nowhere/a.parquet"),
             PathBuf::from("/nowhere/b.parquet"),
@@ -363,9 +357,9 @@ fn nothing_moves_when_the_footer_lands() {
     assert_eq!(row_of(&waiting, "Resources"), bar, "{waiting}");
     assert!(waiting.contains("reading..."), "{waiting}");
 
-    let facts = crate::readers::of(crate::FileFormat::Parquet).facts;
+    let facts = crate::formats::readers::of(crate::FileFormat::Parquet).facts;
     gate.answer.send(FileFacts::read(&file, facts)).unwrap();
-    super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !reading(a));
+    super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !reading(a) && !a.is_busy());
     let landed = screen(&mut app);
     assert_eq!(row_of(&landed, "Resources"), bar, "{landed}");
     assert!(landed.contains("3 rows in 1 row group"), "{landed}");

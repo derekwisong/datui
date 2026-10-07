@@ -43,7 +43,7 @@ The scripts find mdBook on `PATH` or in `~/.cargo/bin/`.
 | Prose | Only for what a table cannot say. No design rationale in user pages |
 | One home per fact | Sampling, what gets read, light and dark, cloud logins: one page says it, the others link to it |
 | Length | About 250 lines for a guide page; a reference page of tables may run longer |
-| Words | The [glossary](../reference/glossary.md); `tests/wording_test.rs` fails on a retired word |
+| Words | The [glossary](../reference/glossary.md); `tests/repo/wording.rs` fails on a retired word |
 | Claims | Verified against the code. No speed claim that was not measured |
 | Links | Relative, with `.md`. Never to `plans/` or another unpublished path |
 

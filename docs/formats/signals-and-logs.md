@@ -120,8 +120,9 @@ file order.
   each one with why.
 - `channel`, `note`, `velocity` and `controller` are `u8`, `track` is `u16`,
   and `value` is `i32`.
-- A file over 64 MiB is refused, or left out of a directory. An open of more
-  than 10 million events in all is refused.
+- A file over 64 MiB (`midi_bytes` in `[limits]`) is refused, or left out of a
+  directory. An open of more than 10 million events in all (`midi_events`) is
+  refused.
 - A real-time byte in a track keeps running status, as on the wire; a sysex,
   meta or system common message cancels it, as the specification says.
 
@@ -175,8 +176,8 @@ per value change of each signal, read once into a temporary Arrow IPC file.
   number of value changes and their time span, and each signal's type, width
   and identifier. The Notes tab counts tokens that are not VCD and changes to
   undeclared identifiers.
-- A token is at most 1 MiB, and a header holds at most 1,048,576 signals, 256
-  scopes deep.
+- A token is at most 1 MiB, and a header holds at most 1,048,576 signals
+  (`vcd_signals` in `[limits]`), 256 scopes deep.
 
 The wide table, one row per time and one column per signal, each carried
 forward from its last change, is this SQL query on `counter.vcd` above; for
@@ -295,7 +296,7 @@ has no dates, and `time` is null throughout.
 | the rest | The point's other fields (`name`, `sym`, `sat`, `hdop`...) and each leaf of its `<extensions>` by its name without the namespace (`hr`, `cad`, `atemp`), as numbers when every value is one |
 
 A file cut off mid-element opens with the points before the cut, and says so in
-Notes.
+Notes. A file's other fields add at most 256 columns (`gpx_fields` in `[limits]`).
 
 ### The gap column
 
@@ -357,7 +358,8 @@ reading the log again.
   record header; a log cut off mid-message keeps what it holds. The Notes tab
   says how many bytes were passed over.
 - ULog appended data (written after a crash) is read with the rest.
-- At most 67,108,864 messages are indexed in one log.
+- At most 67,108,864 messages are indexed in one log (`indexed_records` in
+  `[limits]`); the Notes tab counts the rest.
 
 ## CAN logs
 
@@ -470,8 +472,8 @@ be one per line or back to back.
   the delimiter or a newline.
 - A bad message stays: its checks are false, and the Notes tab counts them, the
   lines with no message, and messages cut short.
-- A message is at most 1 MiB and holds at most 4,096 fields; at most 4,096 tags
-  become columns.
+- A message is at most 1 MiB and holds at most 4,096 fields (`fix_fields` in
+  `[limits]`); at most 4,096 tags become columns (`fix_tags`).
 - Press <kbd>i</kbd> for the FIX tab: messages per BeginString, the dictionaries
   read with the log, and each column's tag number and the names the dictionaries
   give it.
@@ -543,7 +545,8 @@ temporary Arrow IPC file. The atom and bond blocks are passed over, never held.
 
 - A value of several lines keeps them, joined by newlines.
 - A record that names a field twice keeps the first; the Notes tab counts the rest.
-- A line or value is at most 1 MiB, and a file has at most 4,096 fields.
+- A line or value is at most 1 MiB, and a file has at most 4,096 fields
+  (`sdf_fields` in `[limits]`).
 - Press <kbd>i</kbd> for the SDF tab: the record count, and each field's type and
   how many records hold it.
 - **Aqueous solubility (SDF)** in the home screen's
@@ -580,7 +583,8 @@ them: `W` write, `A` alloc, `X` execute, ...), `kind` and `region`.
 - The symbol table is `.symtab`, or `.dynsym` for a stripped library.
 - `.elf` and `.axf` files open by name; any file that starts with `\x7fELF`
   opens too when named on the command line.
-- At most 10 million symbols are read; the Notes tab says how many more there are.
+- At most 10 million symbols are read (`elf_symbols` in `[limits]`); the Notes
+  tab says how many more there are.
 
 Press <kbd>i</kbd> for the ELF tab: class, machine, type, entry point, the bytes
 in flash and in RAM, and each section's address, size and flags.
@@ -618,6 +622,7 @@ journalctl -o json -f | datui -f -
   [pipe](../user-guide/pipes-and-follow.md#standard-input); a field first seen
   after the table opened joins as a column when the stream ends, and the
   Journal tab is read again over every entry.
-- A journal file is read whole into memory. Narrow a large journal with
-  `--since`, `-u` or `-b`.
+- A journal file is read whole into memory, up to 1 GiB (`journal_bytes` in
+  `[limits]`); the Notes tab says how much was left out past it. Narrow a large
+  journal with `--since`, `-u` or `-b`.
 - Copy as Python reads a journal file with `pl.scan_ndjson` and derives the same columns.

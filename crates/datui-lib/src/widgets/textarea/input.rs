@@ -44,6 +44,7 @@ pub struct Input {
 }
 
 impl Input {
+    #[cfg(test)]
     pub fn new(key: Key) -> Self {
         Self {
             key,

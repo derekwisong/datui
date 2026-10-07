@@ -6,8 +6,8 @@
 //! never a panic or an allocation sized by the file; every message the index records
 //! must decode, all of its columns.
 
-use datui_lib::fixed_records::Bytes;
-use datui_lib::indexed::IndexedRecords;
+use datui_lib::formats::fixed_records::Bytes;
+use datui_lib::formats::indexed::{IndexedRecords, Log};
 use std::sync::Arc;
 
 pub fn run(bytes: &[u8]) {
@@ -16,16 +16,16 @@ pub fn run(bytes: &[u8]) {
     };
     let shared = Arc::new(Bytes::Owned(rest.to_vec()));
     if pick % 2 == 0 {
-        let mut data = datui_lib::ulog::MAGIC.to_vec();
+        let mut data = datui_lib::formats::ulog::MAGIC.to_vec();
         data.push(1);
         data.extend([0u8; 8]);
         data.extend(rest);
         let shared = Arc::new(Bytes::Owned(data.clone()));
-        let Ok(index) = datui_lib::ulog::index(&data) else {
+        let Ok(index) = datui_lib::formats::ulog::index(&data) else {
             return;
         };
-        let _ = datui_lib::ulog::tables(&index);
-        let _ = datui_lib::ulog::detail(&index);
+        let _ = index.tables();
+        let _ = index.detail();
         for topic in index.topics.values() {
             let records =
                 IndexedRecords::new(shared.clone(), topic.offsets.clone(), topic.columns.clone())
@@ -37,13 +37,13 @@ pub fn run(bytes: &[u8]) {
             assert_eq!(df.height(), rows.min(64));
         }
     } else {
-        let Ok(index) = datui_lib::dataflash::index(rest) else {
+        let Ok(index) = datui_lib::formats::dataflash::index(rest) else {
             return;
         };
-        let _ = datui_lib::dataflash::detail(&index);
+        let _ = index.detail();
         for (_, id) in index.names() {
             let t = &index.types[&id];
-            let (columns, _) = datui_lib::dataflash::columns(&index, t);
+            let (columns, _) = datui_lib::formats::dataflash::columns(&index, t);
             let Ok(records) = IndexedRecords::new(shared.clone(), t.offsets.clone(), columns)
             else {
                 // Two labels alike: a log can say so.

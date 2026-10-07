@@ -31,6 +31,16 @@ These keys work on every screen.
 | `/` | Narrow to the keys whose text matches |
 | `Esc` | Clear the filter, then close |
 
+## Question
+
+When datui asks before acting.
+
+| Key | Action |
+|---|---|
+| `← / →` | Choose the other answer |
+| `Enter` | Give the answer chosen, or close an error |
+| `Esc` | Leave it as it was |
+
 ## Table
 
 Where a dataset opens.
@@ -132,7 +142,7 @@ Where a dataset opens.
 | `Ctrl+↑ / Ctrl+↓` | Previous or next section |
 | `PgUp / PgDn` | A screenful, stopping at the first and last |
 | `Home / End` | The first or last row. The filter has no cursor to move: it is edited at its end |
-| `← / →` | Fold or unfold a section; → on a directory or a file of tables goes inside it, and on a file a format spec reads as record types lists them, one row each |
+| `← / →` | Fold or unfold a section; → on a directory or a file of tables goes inside it, and on a file a format spec reads as record types lists them, one row each. On a directory cut to its first rows, or RECENT, → on its more row shows them all; ← on a row past the first ones cuts it back, and on any other row folds |
 | `Space` | While the filter is empty: fold or unfold the section header under the cursor. With a filter typed, it types |
 | `Tab` | Cycle the sort; the footer names the order in effect when it has room |
 
@@ -140,7 +150,7 @@ Where a dataset opens.
 
 | Key | Action |
 |---|---|
-| `Enter` | What the footer says on this row: "Open all" reads a whole directory as one table, "Inside" steps into it, "Open" loads a file, "Look" finds out first. A catalog bookmark, indented under its dataset, opens whole. On a section header, fold or unfold it; on the More row, show the rest; on the hidden-files row, show them |
+| `Enter` | What the footer says on this row: "Open all" reads a whole directory as one table, "Inside" steps into it, "Open" loads a file, "Look" finds out first. A catalog bookmark, indented under its dataset, opens whole. On a section header, fold or unfold it; on a more row, show the rest; on `..`, go up a level; on the hidden-files row, show them |
 | `Backspace` | Delete a filter character; on an empty filter, up a level (from a bucket, back to its cloud source; from the top of a catalog's remote dataset, back here) |
 | `Esc` | Back out one layer: the path prompt, the filter (onto the first dataset), the directory (back to the row it was entered from), then to the open table |
 
@@ -290,17 +300,29 @@ Where a dataset opens.
 | `PgUp / PgDn` | Scroll a page |
 | `Home / End` | Top and end, at once however long the value |
 | `/` | Find in the value; n and N go to the next and last place |
+| `n / N` | The next or last place found in the value |
 | `e, w, y, o` | As in the fields |
 | `Esc / Tab` | Back to the fields (Shift+Tab too); Esc clears a find first |
+
+### Inspector · Find
+
+| Key | Action |
+|---|---|
+| `(type)` | The name or value to find |
+| `Enter` | Keep the list narrowed; in a value, find |
+| `Esc` | Clear the find |
 
 ### Inspector · Nested
 
 | Key | Action |
 |---|---|
 | `Enter / → (l)` | Open the focused item |
+| `↑ / ↓ (j/k)` | Move between fields, keys or items |
 | `Tab / Shift+Tab` | Into the item's value; not in an empty level |
+| `PgUp / PgDn` | A page of the level |
 | `Esc / ← (h)` | Up a level; at the row, Esc closes |
 | `y` | Copy the focused item: text as itself, a JSON object or array indented |
+| `e` | The item's next view |
 
 ## Info panel
 
@@ -446,6 +468,14 @@ Where a dataset opens.
 | `x` | Line and Scatter: the plot takes the keys, and a crosshair reads out x and every series' value under the plot. ← / → (h/l) step to the next point or column, Home/End go to the ends; x, Tab or Esc hand the keys back to the panel. A click on the plot puts the crosshair there |
 | `e` | Export the chart to PNG, SVG or PDF, with a title, notes and source. Needs the chart's shelves filled first |
 | `t` | While following a file, draw again with the rows that arrived since; the bar says how many |
+
+### Chart · Crosshair
+
+| Key | Action |
+|---|---|
+| `← / →` | Move the crosshair along the plot |
+| `Tab` | Back to the panel, the crosshair kept |
+| `Esc` | The crosshair off, back to the panel |
 
 ### Chart · Picker
 
@@ -596,6 +626,25 @@ Data Quality in the Analysis sidebar.
 | `Enter` | Done |
 | `Esc` | Put the list back as it was |
 
+### Analysis: Data Quality · Forms
+
+| Key | Action |
+|---|---|
+| `Tab / Shift+Tab` | Next or previous field |
+| `← / →` | Change the field's choice |
+| `Space` | Toggle a checkbox |
+| `Enter` | Apply the form; export the report |
+| `Esc` | Close the form unchanged |
+
+### Analysis: Data Quality · Popups
+
+| Key | Action |
+|---|---|
+| `↑ / ↓` | Scroll a popup, or move in its list |
+| `(type)` | Narrow a popup's list |
+| `Enter` | Close a popup, or act on what it shows: a finding's rows (shown when the run kept them, else read), its checks all or fewer, a list's choice |
+| `Esc` | Close a popup or a list unchanged |
+
 ### Analysis: Data Quality · Report
 
 | Key | Action |
@@ -686,6 +735,7 @@ Data Quality in the Analysis sidebar.
 | `↑ / ↓` | Move the cursor (j/k narrow the picker; only ↑/↓ move there) |
 | `Enter / Space` | Choose |
 | `Tab / Shift+Tab` | Choose and move on |
+| `Esc` | Back to the form, the choice unchanged |
 
 ## Views
 
@@ -764,6 +814,15 @@ Combine into datetime in the cell menu, on a text, date or time column.
 | `Enter` | Make the column, before the first column it is made from, as a format spec's derived column is: a date and a time, and a UTC offset, make a datetime in UTC |
 | `Esc` | Cancel |
 
+### Combine into datetime · Picker
+
+| Key | Action |
+|---|---|
+| `(type)` | Narrow to the columns that contain it |
+| `↑ / ↓` | Move |
+| `Enter` | Choose the column |
+| `Esc` | Back to the fields, the choice unchanged |
+
 ## Table picker
 
 <kbd>T</kbd> at a table of a file of several.
@@ -789,6 +848,7 @@ Combine into datetime in the cell menu, on a text, date or time column.
 | `Tab / Shift+Tab (↑ / ↓)` | Next or previous row |
 | `← / →` | Step Rows from, Method and Per value of; Method's No sample takes the view's sample away |
 | `(type)` | Type into the focused row: the size (50000, 50k, 2m), the seed, a row range, partition values or file numbers |
+| `PgUp / PgDn` | Page through the files, where there are many |
 | `Enter` | Draw the sample: the table shows its rows as they arrive, and the query, filters and sort run over them. When the estimate is more than the memory available now (or analysis.sample_memory_limit), the form says so; Enter again draws anyway |
 | `Esc` | Close; the view's sample stays as it was |
 
@@ -816,6 +876,14 @@ Combine into datetime in the cell menu, on a text, date or time column.
 | `n / N` | The next or previous match, round the end of the file |
 | `R` | When the matches after the one found are all the same distance apart, make that the bytes per row |
 | `Esc` | Stop a find that is reading |
+
+### Hex view · Prompt
+
+| Key | Action |
+|---|---|
+| `Enter` | Find, go to the offset or set the row size |
+| `Ctrl+U` | Find the text as UTF-16 as well |
+| `Esc` | Close the prompt |
 
 ### Hex view · Display
 

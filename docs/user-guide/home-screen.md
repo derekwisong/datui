@@ -57,6 +57,15 @@ then types). Letters type into the filter, so
 | `ELSEWHERE` | Directories your desktop recorded (freedesktop `recently-used.xbel`); starts folded |
 | `Found` | [Search](#search-below-the-current-directory) results, while you type |
 
+A directory's section starts with `..`: <kbd>Enter</kbd> on it goes up a
+level, as <kbd>Backspace</kbd> does inside a directory. A directory too big for
+the list beside the other sections shows its first rows (about two fifths of the
+list's height) and `… 4,958 more`: <kbd>Enter</kbd> or <kbd>→</kbd> there
+shows them all. <kbd>←</kbd> on a row past the first ones cuts it back; on a first
+row it folds the section. Its heading counts every row, and a typed filter
+searches them all. Sorted by rows, the rows past the cut are measured too, and the
+more row says `· measuring` until they are.
+
 Folds last between runs. A heading says why its section is listed and how it
 stands: `catalog.toml`, `catalog` or `built in` for a catalog; `nfs4`, `listing`
 (then `1,200 so far` as a slow share answers), `unavailable`, or `first 5,000`
@@ -69,7 +78,8 @@ four times within the hour, twice within the day, half within the week and a
 quarter after. A place (a directory) ranks with its best dataset, and
 entering it shows all its files, opened or not. The cursor starts on the
 dataset opened last, so <kbd>Enter</kbd> reopens it. Places fill up to a third
-of the list at first; `… more in … places` shows the rest.
+of the list at first; `… more in … places` shows the rest, and <kbd>←</kbd>
+on a place past the first ones cuts it back, as in a directory's section.
 
 ### Add to your catalog
 
@@ -226,11 +236,11 @@ under its label: `catalog.toml` (`MY DATASETS`), each file in `catalogs/` or lis
 
 ```text
 ▾ MY DATASETS  5   catalog.toml  ─────────────────────────────────
-  ▪ Sales                                          6.8 KB   now
+  ▪ Sales                                          6.8 KiB  now
   ▪ Archive/ 1 csv                                          now
   ◦ Gone missing
   ≈ Weather/ dataset
-  ≈ Penguins                                      ~16.1 KB
+  ≈ Penguins                                      ~16.1 KiB
 ```
 
 | Row | <kbd>Enter</kbd> | Label |
@@ -239,7 +249,7 @@ under its label: `catalog.toml` (`MY DATASETS`), each file in `catalogs/` or lis
 | A local directory | Goes inside | What is inside |
 | A local path with nothing there | Says so | `missing` |
 | A directory in an object store | Goes inside; <kbd>Backspace</kbd> at its top comes back | `dataset` |
-| A remote file | Opens it | Its format, and its size: `~16.1 KB`, the catalog's word for it, until a `HEAD` sent when the row is selected measures it |
+| A remote file | Opens it | Its format, and its size: `~16.1 KiB`, the catalog's word for it, until a `HEAD` sent when the row is selected measures it |
 
 Nothing else remote is asked for until you open or enter a dataset. Inside one,
 the title reads `My datasets › Weather › by_year`, and the pane gives its
@@ -324,8 +334,8 @@ heading of your own catalog shows its file and its `[home] hide` id.
 | Bitcoin and Ethereum | Blocks and transactions, partitioned by date | AWS sample-code license |
 | Overture Maps | Places, buildings, addresses, roads and boundaries, by release | ODbL; places CDLA Permissive 2.0 and Apache 2.0 |
 
-- A web file's row gives its format and size, `~` until measured. One under 50 MB downloads
-  without a question; if it passes 50 MB while downloading, it stops and
+- A web file's row gives its format and size, `~` until measured. One under 50 MiB downloads
+  without a question; if it passes 50 MiB while downloading, it stops and
   asks once. A URL typed at <kbd>~</kbd> is always asked about.
 - Once opened, a dataset comes back under Recent by its catalog name.
 - The pane gives the publisher, license and homepage; check the license

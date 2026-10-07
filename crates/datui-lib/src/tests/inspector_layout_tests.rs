@@ -11,7 +11,7 @@ fn rows_at(app: &mut App, width: u16, height: u16) -> Vec<String> {
 }
 
 fn press(app: &mut App, code: KeyCode) {
-    app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
 }
 
 /// Twelve short fields and a long URL, the inspector open on the URL of row 2.
@@ -176,7 +176,7 @@ fn keys_past_the_measured_ones_are_not_cut() {
 
 /// #615: a row whose `order` is a struct holding a list of structs, drilled
 /// into twice: the title is the breadcrumb, the list is a table of its fields,
-/// and one frame holds it all, the way back on its footer and the control bar.
+/// and one frame holds it all, the way back on its footer and the footer.
 #[test]
 fn a_drill_titles_its_trail_and_tables_a_list_of_structs() {
     use polars::prelude::{DataFrame, IntoColumn, IntoSeries, NamedFrom, Series, df};
@@ -243,8 +243,8 @@ fn a_drill_titles_its_trail_and_tables_a_list_of_structs() {
         press(&mut app, KeyCode::Esc);
         press(&mut app, KeyCode::Esc);
         assert!(app.inspector_modal.drill.is_none());
-        assert_eq!(app.input_mode, InputMode::Inspect);
+        assert_eq!(app.overlay, Overlay::Inspect);
         press(&mut app, KeyCode::Esc);
-        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.at_table());
     }
 }

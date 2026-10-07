@@ -2,14 +2,26 @@ use crate::config::Theme;
 use crate::numfmt::NumberFormatSettings;
 use ratatui::style::Color;
 
-/// Snapshot of theme colors and display configuration for rendering.
-/// Passed to widgets to avoid threading many individual parameters.
+/// How the table is drawn this session: from the config, with the session's own toggles.
+pub struct DisplaySettings {
+    pub(crate) history_limit: usize, // History limit for all text inputs (from config.query.history_limit)
+    pub(crate) table_cell_padding: u16, // Spaces between columns (from config.display.cell_padding)
+    pub(crate) column_colors: bool, // When true, colorize table cells by column type (from config.display.column_colors)
+    /// Second header row of column types. Starts from `display.type_row`; `D` flips it.
+    pub(crate) dtype_row: bool,
+    // Resolved display-time number formatting. `enabled` is flipped by the F key.
+    pub(crate) number_format: NumberFormatSettings,
+    /// The terminal should be asked for its background before the next frame.
+    pub(crate) background_query: bool,
+}
+
+/// The theme's colors and the display settings, handed to every widget a frame draws
+/// in one value.
 #[derive(Debug, Clone)]
 pub struct RenderContext {
     pub keybind_hints: Color,
     pub keybind_labels: Color,
     pub controls_bg: Color,
-    pub background: Color,
     pub text_primary: Color,
     pub text_secondary: Color,
     pub text_inverse: Color,
@@ -21,7 +33,6 @@ pub struct RenderContext {
     pub modal_border: Color,
     pub modal_border_active: Color,
     pub modal_border_error: Color,
-    pub surface: Color,
     pub throbber: Color,
     pub primary_chart_series_color: Color,
 
@@ -133,34 +144,32 @@ impl RenderContext {
         number_format: NumberFormatSettings,
     ) -> Self {
         Self {
-            keybind_hints: theme.get("chip_key"),
-            keybind_labels: theme.get("chip_label"),
-            controls_bg: theme.get("controls_bg"),
-            background: theme.get("background"),
-            text_primary: theme.get("text_primary"),
-            text_secondary: theme.get("text_secondary"),
-            text_inverse: theme.get("text_inverse"),
-            dimmed: theme.get("dimmed"),
-            label: theme.get("label"),
-            success: theme.get("success"),
-            warning: theme.get("warning"),
-            error: theme.get("error"),
-            modal_border: theme.get("modal_border"),
-            modal_border_active: theme.get("modal_border_active"),
-            modal_border_error: theme.get("modal_border_error"),
-            surface: theme.get("surface"),
-            throbber: theme.get("throbber"),
-            primary_chart_series_color: theme.get("chart_1"),
+            keybind_hints: theme.chip_key(),
+            keybind_labels: theme.chip_label(),
+            controls_bg: theme.controls_bg(),
+            text_primary: theme.text_primary(),
+            text_secondary: theme.text_secondary(),
+            text_inverse: theme.text_inverse(),
+            dimmed: theme.dimmed(),
+            label: theme.label(),
+            success: theme.success(),
+            warning: theme.warning(),
+            error: theme.error(),
+            modal_border: theme.modal_border(),
+            modal_border_active: theme.modal_border_active(),
+            modal_border_error: theme.modal_border_error(),
+            throbber: theme.throbber(),
+            primary_chart_series_color: theme.chart_1(),
 
-            accent: theme.get("accent"),
-            accent_bright: theme.get("accent_bright"),
-            gradient_start: theme.get("gradient_start"),
-            gradient_end: theme.get("gradient_end"),
+            accent: theme.accent(),
+            accent_bright: theme.accent_bright(),
+            gradient_start: theme.gradient_start(),
+            gradient_end: theme.gradient_end(),
 
-            table_header: theme.get("table_header"),
-            table_header_bg: theme.get("table_header_bg"),
-            row_numbers: theme.get("table_row_numbers"),
-            column_separator: theme.get("table_column_separator"),
+            table_header: theme.table_header(),
+            table_header_bg: theme.table_header_bg(),
+            row_numbers: theme.table_row_numbers(),
+            column_separator: theme.table_column_separator(),
             alternate_row_color: theme.get_optional("table_alternate_row"),
             table_selected: theme.get_optional("table_selected"),
             find_match: theme.find_match_style(),
@@ -169,37 +178,37 @@ impl RenderContext {
             dtype_row: true,
 
             str_col: if column_colors {
-                theme.get("type_str")
+                theme.type_str()
             } else {
                 Color::Reset
             },
             int_col: if column_colors {
-                theme.get("type_int")
+                theme.type_int()
             } else {
                 Color::Reset
             },
             float_col: if column_colors {
-                theme.get("type_float")
+                theme.type_float()
             } else {
                 Color::Reset
             },
             bool_col: if column_colors {
-                theme.get("type_bool")
+                theme.type_bool()
             } else {
                 Color::Reset
             },
             temporal_col: if column_colors {
-                theme.get("type_temporal")
+                theme.type_temporal()
             } else {
                 Color::Reset
             },
-            binary_col: theme.get("type_binary"),
-            hex_null: theme.get("hex_null"),
-            hex_printable: theme.get("hex_printable"),
-            hex_whitespace: theme.get("hex_whitespace"),
-            hex_control: theme.get("hex_control"),
-            hex_high: theme.get("hex_high"),
-            hex_ff: theme.get("hex_ff"),
+            binary_col: theme.type_binary(),
+            hex_null: theme.hex_null(),
+            hex_printable: theme.hex_printable(),
+            hex_whitespace: theme.hex_whitespace(),
+            hex_control: theme.hex_control(),
+            hex_high: theme.hex_high(),
+            hex_ff: theme.hex_ff(),
 
             table_cell_padding,
             column_colors,

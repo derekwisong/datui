@@ -21,7 +21,7 @@ fn long_csv_app() -> (
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx.clone(), crate::tests::test_runtime());
     let config = crate::config::ConfigManager::with_dir(dir.path().join("config"));
-    app.view_manager = ViewManager::new(&config).unwrap().into();
+    app.views.manager = ViewManager::new(&config).unwrap().into();
     open(&mut app, &rx, &tx, path);
     (app, rx, tx, dir)
 }
@@ -47,8 +47,7 @@ fn pivot_view(app: &mut App, name: &str) -> SavedView {
         index: vec!["id".to_string()],
         pivot_column: "key".to_string(),
         value_column: "val".to_string(),
-        aggregation: pivot_melt_modal::PivotAggregation::First,
-        sort_columns: None,
+        aggregation: app::modals::pivot_melt_modal::PivotAggregation::First,
     });
     view.settings.column_order.clear();
     view
@@ -60,7 +59,7 @@ fn columns(app: &App) -> Vec<String> {
 }
 
 /// The bottom line of a rendered App.
-fn control_bar(app: &mut App) -> String {
+fn footer_text(app: &mut App) -> String {
     use ratatui::widgets::Widget;
     let area = ratatui::layout::Rect::new(0, 0, 120, 24);
     let mut buf = ratatui::buffer::Buffer::empty(area);
@@ -80,20 +79,20 @@ fn open_with_view(
     view: &SavedView,
     mut intercept: impl FnMut(&mut App, &AppEvent) -> bool,
 ) -> usize {
-    app.view_manager.update_view(view).unwrap();
-    app.startup_view = Some(view.name.clone());
+    app.views.manager.update_view(view).unwrap();
+    app.source.startup_view = Some(view.name.clone());
     let path = dir.path().join("long.csv");
-    let mut next = app.event(&AppEvent::Open(vec![path], OpenOptions::default()));
-    let asked = app.first_rows_asked;
+    let mut next = app.event(AppEvent::Open(vec![path], OpenOptions::default()));
+    let asked = app.counting.first_rows_asked;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
         while let Some(event) = next.take() {
             if !intercept(app, &event) {
-                next = app.event(&event);
+                next = app.event(event);
             }
         }
         if app.data_table_state.is_some() && !app.is_busy() && !app.awaiting_dataset() {
-            return app.first_rows_asked - asked;
+            return app.counting.first_rows_asked - asked;
         }
         assert!(std::time::Instant::now() < deadline, "the open never ended");
         next = rx.recv_timeout(std::time::Duration::from_millis(50)).ok();
@@ -117,31 +116,31 @@ fn a_startup_view_waits_for_views_still_being_read() {
     let (views_tx, views_rx) = mpsc::channel();
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
-    app.view_manager = Views::waiting_on(views_rx);
-    app.startup_view = Some(view.name.clone());
+    app.views.manager = Views::waiting_on(views_rx);
+    app.source.startup_view = Some(view.name.clone());
     app.set_loading_phase("Scanning input", 10);
     app.busy = true;
     // The app draws and handles a key with the views still out.
-    control_bar(&mut app);
-    app.event(&AppEvent::Key(KeyEvent::new(
+    footer_text(&mut app);
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('?'),
         KeyModifiers::NONE,
     )));
-    assert!(!app.view_manager.is_read(), "nothing has needed them yet");
+    assert!(!app.views.manager.is_read(), "nothing has needed them yet");
 
     // The views land only after the open has started.
     let sender = std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(20));
         views_tx.send(ViewManager::new(&config).unwrap()).unwrap();
     });
-    let mut next = app.event(&AppEvent::Open(
+    let mut next = app.event(AppEvent::Open(
         vec![dir.path().join("long.csv")],
         OpenOptions::default(),
     ));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
         while let Some(event) = next.take() {
-            next = app.event(&event);
+            next = app.event(event);
         }
         if app.data_table_state.is_some() && !app.is_busy() && !app.awaiting_dataset() {
             break;
@@ -150,7 +149,7 @@ fn a_startup_view_waits_for_views_still_being_read() {
         next = rx.recv_timeout(std::time::Duration::from_millis(50)).ok();
     }
     sender.join().unwrap();
-    assert_eq!(app.active_view_id.as_deref(), Some(view.id.as_str()));
+    assert_eq!(app.views.active_id.as_deref(), Some(view.id.as_str()));
     assert!(
         columns(&app).iter().any(|c| c == "k1"),
         "the rows shown are the view's: {:?}",
@@ -169,7 +168,7 @@ fn a_view_returns_before_its_pivot_is_read_and_installs_when_it_is() {
     assert!(app.is_busy(), "the pivot is read in the background");
     assert!(app.view_applying());
     assert_eq!(columns(&app), ["id", "key", "val"], "nothing changed yet");
-    assert!(app.active_view_id.is_none());
+    assert!(app.views.active_id.is_none());
 
     super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !a.is_busy());
     assert!(!app.error_modal.active, "{}", app.error_modal.message);
@@ -177,7 +176,7 @@ fn a_view_returns_before_its_pivot_is_read_and_installs_when_it_is() {
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.last_pivot_spec().is_some());
     assert_eq!(state.display_df().map(|df| df.height()), Some(5));
-    assert_eq!(app.active_view_id.as_deref(), Some(view.id.as_str()));
+    assert_eq!(app.views.active_id.as_deref(), Some(view.id.as_str()));
 }
 
 /// Applying a view counts the use on the stored view: a rename made by another
@@ -208,7 +207,7 @@ fn applying_a_view_keeps_another_instances_edit_and_delete() {
     assert!(!app.error_modal.active, "{}", app.error_modal.message);
     let stored = ViewManager::new(&config).unwrap();
     assert!(stored.all_views().is_empty(), "the deleted view came back");
-    assert!(app.view_manager.get_view_by_id(&view.id).is_none());
+    assert!(app.views.manager.get_view_by_id(&view.id).is_none());
 }
 
 /// Without a pivot every step plans at once, and the first rows are read in the
@@ -233,7 +232,7 @@ fn a_view_returns_before_its_rows_are_read() {
     let state = app.data_table_state.as_ref().unwrap();
     let first = state.display_df().unwrap().column("val").unwrap().get(0);
     assert_eq!(first.unwrap(), AnyValue::Int64(40));
-    assert_eq!(app.active_view_id.as_deref(), Some(view.id.as_str()));
+    assert_eq!(app.views.active_id.as_deref(), Some(view.id.as_str()));
 }
 
 /// A view that pivots and then fails must roll the pivot back too: otherwise the
@@ -266,7 +265,7 @@ fn a_failed_view_rolls_back_the_reshape() {
     assert!(state.last_pivot_spec().is_none());
     assert!(state.reshaped_lf_clone().is_none());
     assert_eq!(state.display_df(), shown.as_ref(), "with its rows");
-    assert!(app.active_view_id.is_none());
+    assert!(app.views.active_id.is_none());
 }
 
 /// A pivot that fails on the data, in the worker, leaves the table as it was.
@@ -275,7 +274,7 @@ fn a_failed_view_rolls_back_the_reshape() {
 fn a_view_whose_pivot_fails_on_the_data_changes_nothing() {
     let (mut app, rx, tx, _dir) = long_csv_app();
     let mut view = pivot_view(&mut app, "cast then pivot");
-    view.settings.reshape_source = Some(pivot_melt_modal::ReshapeSource {
+    view.settings.reshape_source = Some(app::modals::pivot_melt_modal::ReshapeSource {
         sql_query: Some("SELECT id, key, CAST(key AS INT) AS val FROM df".to_string()),
         ..Default::default()
     });
@@ -290,7 +289,7 @@ fn a_view_whose_pivot_fails_on_the_data_changes_nothing() {
     assert!(state.get_active_sql_query().is_empty());
     assert!(state.last_pivot_spec().is_none());
     assert_eq!(state.display_df(), shown.as_ref(), "with its rows");
-    assert!(app.active_view_id.is_none());
+    assert!(app.views.active_id.is_none());
 }
 
 /// A view saved with SQL, applied in a build without `sql`: it fails and says the
@@ -311,7 +310,7 @@ fn a_sql_view_without_the_sql_feature_says_why() {
         "{error}"
     );
     assert_eq!(columns(&app), ["id", "key", "val"]);
-    assert!(app.active_view_id.is_none());
+    assert!(app.views.active_id.is_none());
 }
 
 /// While a view's pivot or rows are read, the bar says Esc stops it.
@@ -324,10 +323,10 @@ fn the_bar_offers_esc_while_a_view_applies() {
             view.settings.pivot = None;
             view.settings.column_order = vec!["id".to_string(), "val".to_string()];
         }
-        let bar = control_bar(&mut app);
+        let bar = footer_text(&mut app);
         assert!(!bar.contains("Stop"), "nothing to stop yet: {bar}");
         assert!(app.apply_view(&view).is_ok());
-        let bar = control_bar(&mut app);
+        let bar = footer_text(&mut app);
         assert!(
             bar.contains("Applying view") && bar.contains("Esc Stop"),
             "pivot {pivot}: {bar}"
@@ -340,19 +339,18 @@ fn the_bar_offers_esc_while_a_view_applies() {
 #[test]
 fn the_bar_offers_esc_while_a_pivot_is_computed() {
     let (mut app, rx, tx, _dir) = long_csv_app();
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('p'),
         KeyModifiers::NONE,
     )));
-    assert_eq!(app.input_mode, InputMode::PivotMelt);
-    app.event(&AppEvent::Pivot(pivot_melt_modal::PivotSpec {
+    assert_eq!(app.overlay, Overlay::PivotMelt);
+    app.event(AppEvent::Pivot(app::modals::pivot_melt_modal::PivotSpec {
         index: vec!["id".to_string()],
         pivot_column: "key".to_string(),
         value_column: "val".to_string(),
-        aggregation: pivot_melt_modal::PivotAggregation::First,
-        sort_columns: None,
+        aggregation: app::modals::pivot_melt_modal::PivotAggregation::First,
     }));
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(
         bar.contains("Computing pivot") && bar.contains("Esc Stop"),
         "{bar}"
@@ -371,7 +369,7 @@ fn esc_cancels_a_view_being_pivoted() {
 
     let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
     assert!(app.hard_escape_while_busy(&esc), "it jumps the queue");
-    app.event(&AppEvent::Key(esc));
+    app.event(AppEvent::Key(esc));
     assert!(!app.is_busy());
     assert!(!app.view_applying());
     assert_eq!(app.flash_message(), Some("View cancelled"));
@@ -382,7 +380,7 @@ fn esc_cancels_a_view_being_pivoted() {
         let event = rx.recv_timeout(std::time::Duration::from_secs(1));
         if let Ok(event) = event {
             let pivot = matches!(event, AppEvent::JobEnded(t) if t.kind() == JobKind::ViewPivot);
-            if let Some(next) = app.event(&event) {
+            if let Some(next) = app.event(event) {
                 let _ = tx.send(next);
             }
             if pivot {
@@ -392,7 +390,7 @@ fn esc_cancels_a_view_being_pivoted() {
         assert!(std::time::Instant::now() < deadline, "the pivot never came");
     }
     assert_eq!(columns(&app), ["id", "key", "val"]);
-    assert!(app.active_view_id.is_none());
+    assert!(app.views.active_id.is_none());
     assert!(!app.is_busy());
 }
 
@@ -406,7 +404,7 @@ fn esc_cancels_a_view_being_read() {
     assert!(app.apply_view(&view).is_ok());
     assert!(app.view_applying());
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
@@ -414,7 +412,7 @@ fn esc_cancels_a_view_being_read() {
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.get_column_order(), ["id", "key", "val"]);
     assert_eq!(state.display_df().map(|df| df.width()), Some(3));
-    assert!(app.active_view_id.is_none());
+    assert!(app.views.active_id.is_none());
     assert!(!app.error_modal.active);
 }
 
@@ -432,7 +430,7 @@ fn a_stale_view_pivot_is_dropped() {
     let stale = polars::prelude::df!("id" => [1i64], "zz" => [2i64]).unwrap();
     let ticket = passed.ticket();
     passed.end(Outcome::answered(Answer::ViewPivoted(stale)));
-    app.event(&AppEvent::JobEnded(ticket));
+    app.event(AppEvent::JobEnded(ticket));
     assert_eq!(
         columns(&app),
         ["id", "key", "val"],
@@ -480,7 +478,7 @@ fn a_view_whose_pivot_worker_dies_on_open_reads_the_dataset() {
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.last_pivot_spec().is_none());
     assert!(state.display_df().is_some_and(|df| df.height() > 0));
-    assert!(app.active_view_id.is_none());
+    assert!(app.views.active_id.is_none());
     assert!(app.nothing_loading());
 }
 
@@ -499,7 +497,7 @@ fn a_view_whose_rows_worker_dies_rolls_back() {
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.get_column_order(), ["id", "key", "val"]);
     assert_eq!(state.display_df(), shown.as_ref());
-    assert!(app.active_view_id.is_none());
+    assert!(app.views.active_id.is_none());
 }
 
 /// `long.csv` sorted on `val` descending and filtered to `val > 0`, with the rows
@@ -509,10 +507,10 @@ fn sorted_and_filtered(
     rx: &mpsc::Receiver<AppEvent>,
     tx: &mpsc::Sender<AppEvent>,
 ) -> Option<DataFrame> {
-    use crate::filter_modal::{FilterOperator, LogicalOperator};
-    app.event(&AppEvent::Sort(vec!["val".to_string()], vec![true]));
+    use crate::app::modals::filter_modal::{FilterOperator, LogicalOperator};
+    app.event(AppEvent::Sort(vec!["val".to_string()], vec![true]));
     super::chart_prepare_tests::pump(app, rx, tx, |a| !crate::tests::work_pending(a));
-    app.event(&AppEvent::Filter(vec![FilterStatement {
+    app.event(AppEvent::Filter(vec![FilterStatement {
         columns: Vec::new(),
         column: "val".to_string(),
         operator: FilterOperator::Gt,
@@ -537,7 +535,7 @@ fn pump_with_dying_rows(app: &mut App, rx: &mpsc::Receiver<AppEvent>, tx: &mpsc:
 
 /// The view before the query is back: its rows, count, sort and filter.
 fn assert_rolled_back(app: &App, shown: Option<&DataFrame>) {
-    assert!(app.query_running.is_none());
+    assert!(app.prompt.query_running.is_none());
     assert!(!app.is_busy());
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.get_active_query().is_empty());
@@ -559,17 +557,19 @@ fn a_prompt_query_whose_rows_worker_dies_rolls_back() {
     let (mut app, rx, tx, _dir) = long_csv_app();
     let shown = sorted_and_filtered(&mut app, &rx, &tx);
     let press = |app: &mut App, code: KeyCode| {
-        let mut next = app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+        let mut next = app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
         while let Some(event) = next.take() {
-            next = app.event(&event);
+            next = app.event(event);
         }
     };
     press(&mut app, KeyCode::Char(':'));
     assert_eq!(app.query_prompt_mode(), Some(QueryMode::Sql));
-    app.sql_input.set_value("SELECT id FROM df WHERE val > 5");
+    app.prompt
+        .sql_input
+        .set_value("SELECT id FROM df WHERE val > 5");
     app.jobs.worker_dies = crate::tests::worker_dies_once(|job| matches!(job, Job::Rows(_)));
     press(&mut app, KeyCode::Enter);
-    assert!(app.query_running.is_some(), "the query planned");
+    assert!(app.prompt.query_running.is_some(), "the query planned");
     pump_with_dying_rows(&mut app, &rx, &tx);
 
     assert_rolled_back(&app, shown.as_ref());
@@ -591,8 +591,8 @@ fn a_query_whose_rows_worker_dies_rolls_back() {
     let (mut app, rx, tx, _dir) = long_csv_app();
     let shown = sorted_and_filtered(&mut app, &rx, &tx);
     app.jobs.worker_dies = crate::tests::worker_dies_once(|job| matches!(job, Job::Rows(_)));
-    app.event(&AppEvent::QQuery("select id where val > 5".to_string()));
-    assert!(app.query_running.is_some(), "the query planned");
+    app.event(AppEvent::QQuery("select id where val > 5".to_string()));
+    assert!(app.prompt.query_running.is_some(), "the query planned");
     pump_with_dying_rows(&mut app, &rx, &tx);
 
     assert_rolled_back(&app, shown.as_ref());
@@ -630,7 +630,7 @@ fn a_failed_view_rolls_back_what_the_rows_knew() {
         hive: true,
         ..OpenOptions::default()
     };
-    if let Some(next) = app.event(&AppEvent::Open(vec![dir.path().to_path_buf()], opts)) {
+    if let Some(next) = app.event(AppEvent::Open(vec![dir.path().to_path_buf()], opts)) {
         let _ = tx.send(next);
     }
     super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| {
@@ -707,7 +707,7 @@ fn a_failed_view_does_not_make_the_views_note_permanent() {
         hive: true,
         ..OpenOptions::default()
     };
-    if let Some(next) = app.event(&AppEvent::Open(vec![dir.path().to_path_buf()], opts)) {
+    if let Some(next) = app.event(AppEvent::Open(vec![dir.path().to_path_buf()], opts)) {
         let _ = tx.send(next);
     }
     super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| {
@@ -821,7 +821,7 @@ fn a_native_list_column_does_not_drill_and_keeps_the_views_note() {
         hive: true,
         ..OpenOptions::default()
     };
-    if let Some(next) = app.event(&AppEvent::Open(vec![dir.path().to_path_buf()], opts)) {
+    if let Some(next) = app.event(AppEvent::Open(vec![dir.path().to_path_buf()], opts)) {
         let _ = tx.send(next);
     }
     super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| {
@@ -836,7 +836,7 @@ fn a_native_list_column_does_not_drill_and_keeps_the_views_note() {
     assert!(!state.can_drill_down());
     assert!(state.drifts(), "and the files disagree on `n`");
 
-    let left_out = |s: &crate::widgets::datatable::DataTableState| {
+    let left_out = |s: &crate::table::DataTableState| {
         s.notes()
             .iter()
             .filter(|note| note.summary.contains("left out of the"))
@@ -893,7 +893,7 @@ fn a_rollback_that_fails_early_still_puts_all_of_the_view_back() {
         hive: true,
         ..OpenOptions::default()
     };
-    if let Some(next) = app.event(&AppEvent::Open(vec![dir.path().to_path_buf()], opts)) {
+    if let Some(next) = app.event(AppEvent::Open(vec![dir.path().to_path_buf()], opts)) {
         let _ = tx.send(next);
     }
     super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| {
@@ -1080,7 +1080,7 @@ fn a_view_whose_query_fails_on_the_data_is_not_applied() {
     assert!(state.is_num_rows_valid());
     assert_eq!(state.num_rows(), 40);
     assert_ne!(
-        app.active_view_id.as_deref(),
+        app.views.active_id.as_deref(),
         Some(view.id.as_str()),
         "the view that failed is not marked applied"
     );
@@ -1103,25 +1103,29 @@ fn a_count_that_lands_while_a_query_runs_comes_back_with_the_view() {
     let state = app.data_table_state.as_mut().unwrap();
     state.invalidate_num_rows();
     let counting = state.len_generation();
-    app.len_count_inflight = Some(counting);
+    app.counting.len_count_inflight = Some(counting);
 
-    app.event(&AppEvent::SqlQuery(
+    app.event(AppEvent::SqlQuery(
         "SELECT CAST(name AS INT) AS n FROM df".to_string(),
     ));
-    assert!(app.query_running.is_some());
-    app.event(&AppEvent::BackgroundLenReady {
+    assert!(app.prompt.query_running.is_some());
+    app.event(AppEvent::BackgroundLenReady {
         len_generation: counting,
         num_rows: 40,
         file_row_groups: None,
     });
     super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !a.is_busy());
 
-    assert!(app.query_running.is_none());
+    assert!(app.prompt.query_running.is_none());
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.len_generation(), counting, "the view is back");
     assert!(state.is_num_rows_valid(), "with its count");
     assert_eq!(state.num_rows(), 40);
-    assert_ne!(app.len_count_inflight, Some(counting), "not left counting");
+    assert_ne!(
+        app.counting.len_count_inflight,
+        Some(counting),
+        "not left counting"
+    );
 }
 
 /// A view whose SQL groups another way and then fails leaves the grouped view it
@@ -1198,7 +1202,7 @@ fn blank_view(app: &mut App, name: &str) -> SavedView {
 /// which stay valid for it, so nothing is read again.
 #[test]
 fn a_view_failing_after_any_step_puts_the_view_back() {
-    use crate::filter_modal::{FilterOperator, LogicalOperator};
+    use crate::app::modals::filter_modal::{FilterOperator, LogicalOperator};
     let filter = |column: &str| FilterStatement {
         columns: Vec::new(),
         column: column.to_string(),
@@ -1216,8 +1220,7 @@ fn a_view_failing_after_any_step_puts_the_view_back() {
         index: vec!["id".to_string()],
         pivot_column: "key".to_string(),
         value_column: "val".to_string(),
-        aggregation: pivot_melt_modal::PivotAggregation::First,
-        sort_columns: None,
+        aggregation: app::modals::pivot_melt_modal::PivotAggregation::First,
     };
     enum Fails {
         /// While planning: `apply_view` says so and nothing is read.
@@ -1256,7 +1259,7 @@ fn a_view_failing_after_any_step_puts_the_view_back() {
             Fails::Planning,
             Box::new(move |s| {
                 s.melt = Some(melt("val"));
-                s.reshape_source = Some(pivot_melt_modal::ReshapeSource {
+                s.reshape_source = Some(app::modals::pivot_melt_modal::ReshapeSource {
                     query: Some("select nope".to_string()),
                     ..Default::default()
                 });
@@ -1309,7 +1312,7 @@ fn a_view_failing_after_any_step_puts_the_view_back() {
     for (step, fails, steps) in cases {
         let (mut app, rx, tx, _dir) = long_csv_app();
         // The view it is applied over: a query, a sort and a filter, a selection.
-        app.event(&AppEvent::QQuery(
+        app.event(AppEvent::QQuery(
             "select id, key, val where val >= 0".to_string(),
         ));
         super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !crate::tests::work_pending(a));
@@ -1346,10 +1349,10 @@ fn a_view_failing_after_any_step_puts_the_view_back() {
             }
         }
 
-        assert!(app.query_running.is_none(), "{step}");
+        assert!(app.prompt.query_running.is_none(), "{step}");
         assert!(!app.view_applying(), "{step}");
         assert!(!app.is_busy(), "{step}: nothing is left to read");
-        assert!(app.active_view_id.is_none(), "{step}: not marked applied");
+        assert!(app.views.active_id.is_none(), "{step}: not marked applied");
         let state = app.data_table_state.as_ref().unwrap();
         assert_eq!(state.snapshot(), before, "{step}: the view is put back");
     }

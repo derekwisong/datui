@@ -1,15 +1,10 @@
-//! Axis ticks, labels, titles and the grid for every chart. ratatui places whatever
-//! labels it is given, cutting them or running them together on a narrow plot, and
-//! draws the axis titles over the plot's corners. So datui chooses the ticks, draws
-//! their labels and marks, and gives each title a row of its own or none.
-//!
-//! Ticks fall on nice values: 1, 2 or 5 times a power of ten, or calendar boundaries
-//! on a time axis, as many as the space holds (about one label per 15 columns, one
-//! per 4 rows). The rule for labels, on every chart: they never touch, two cells
-//! between them. A crowded axis first takes a coarser step, then a shorter form of
-//! its labels (`12.3k`, or a date without its year); the ends of a fixed axis stay
-//! while anything fits. A title never covers the plot: it is cut to its row, and
-//! dropped when the plot has no rows to spare.
+//! Axis ticks, labels, titles and grid for every chart. ratatui would cut or run labels
+//! together and draw titles over the plot, so datui picks ticks and draws labels and
+//! marks itself. Ticks fall on nice values (1, 2 or 5 times a power of ten, or calendar
+//! boundaries), about one label per 15 columns or 4 rows, never closer than two cells: a
+//! crowded axis takes a coarser step, then shorter labels (`12.3k`, yearless dates),
+//! keeping a fixed axis's ends while anything fits. A title gets its own row, cut to
+//! fit, or is dropped.
 
 use ratatui::{
     buffer::Buffer,
@@ -21,8 +16,9 @@ use ratatui::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::chart_data::{AxisFormat, AxisNumbers, XAxisTemporalKind, x_axis_label_at};
+use crate::chart::chart_data::{XAxisTemporalKind, x_axis_label_at};
 use crate::glyphs::Glyphs;
+use crate::widgets::axis_numbers::{AxisFormat, AxisNumbers};
 use crate::widgets::ticks;
 
 /// Rows the plot keeps before an axis title gives up its row.
@@ -169,10 +165,9 @@ impl<'a> AxisSpec<'a> {
         Self::fixed(bounds, ticks, label, title)
     }
 
-    /// A y axis on a log scale, position `v` standing for the value `exp_m1(v)` as
-    /// the chart draws it: ticked at nice values (1, 10, 100, and 2 and 5 between
-    /// when there is room) and widened to the ticks either side of its range, every
-    /// tick in one format.
+    /// A log-scale y axis (position `v` is `exp_m1(v)`): ticks at nice values (1, 10, 100,
+    /// with 2 and 5 between when there is room), widened to the ticks around its range, one
+    /// format throughout.
     pub fn y_log(bounds: [f64; 2], numbers: &AxisNumbers, title: &'a str) -> Self {
         Self {
             bounds,
@@ -189,18 +184,18 @@ impl<'a> AxisSpec<'a> {
         Self { pad: width, ..self }
     }
 
-    /// The ways to tick this axis along `track`, the preferred first: about one label
-    /// per `spacing` cells, then coarser. A second group follows when the first may
-    /// come up empty: a time axis's dates at its ends and middle.
-    fn tick_sets(
+    /// The ways to tick this axis of `length`, preferred first: about one label per
+    /// `spacing`, then coarser, none closer than `least`, minor ticks at least `minor_gap`
+    /// apart (cells on screen, points in a file). A second group follows when the first may
+    /// be empty: a time axis's ends and middle.
+    pub fn tick_sets(
         &self,
-        track: Track,
+        length: f64,
         spacing: f64,
         least: f64,
         minor_gap: f64,
     ) -> Vec<Vec<TickSet>> {
         let [lo, hi] = self.bounds;
-        let length = track.length();
         match &self.scale {
             Scale::Fixed { ticks, label } => vec![
                 strides(ticks.len())
@@ -246,7 +241,7 @@ impl<'a> AxisSpec<'a> {
                     Box::new(move |v, level| x_axis_label_at(v, kind, (lo, hi), level, &format)),
                     "",
                 );
-                let fallback = ends.tick_sets(track, spacing, least, minor_gap).remove(0);
+                let fallback = ends.tick_sets(length, spacing, least, minor_gap).remove(0);
                 vec![primary, fallback]
             }
         }
@@ -266,11 +261,9 @@ struct Candidate<T> {
     ticks: usize,
 }
 
-/// Of the options, finest first: the one nearest `spacing` apart and every coarser
-/// one, those at least `least` apart. Two ticks say little, so when the nearest has
-/// only two and a finer one is still `least` apart, the finer one comes first: a
-/// narrow 0 to 7 reads `0 2 4 6`, not `0 5`. Its labels may still not fit, and then
-/// the two do.
+/// Of the options (finest first), the one nearest `spacing` and every coarser one at
+/// least `least` apart. When the nearest has only two ticks and a finer one fits, the
+/// finer comes first (`0 2 4 6`, not `0 5`), the two-tick set as fallback.
 fn preferred<T>(options: Vec<Candidate<T>>, spacing: f64, least: f64) -> Vec<T> {
     let closeness = |gap: f64| (gap / spacing).ln().abs();
     let best = options
@@ -371,11 +364,10 @@ fn number_sets(
     with_ticks(sets)
 }
 
-/// Log-scale tick sets over `bounds`, positions standing for `exp_m1` of them, for an
-/// axis `length` cells long. From one up, the values at each power of ten (with 2 and
-/// 5 between, or every second or third power), 0 below them where the axis starts
-/// there; under one, nice steps as on a plain axis, which a log scale this close to
-/// zero nearly is. Each set widens the axis to its ticks either side of the data.
+/// Log-scale tick sets over `bounds` (positions are `exp_m1`) for an axis of `length`
+/// cells: from one up, powers of ten (with 2 and 5 between, or every second or third
+/// power), 0 below where the axis starts there; under one, plain nice steps. Each set
+/// widens the axis to its ticks around the data.
 fn log_sets(
     bounds: [f64; 2],
     numbers: &AxisNumbers,
@@ -740,7 +732,17 @@ impl<'a> PlotAxes<'a> {
     /// Draw `chart`'s datasets with these axes in `area`: the grid under them, the
     /// legend over them, then the tick marks, labels and titles.
     pub fn render(&self, chart: Chart<'_>, area: Rect, buf: &mut Buffer, g: &Glyphs) -> PlotFrame {
-        let frame = self.frame(area);
+        self.render_in(self.frame(area), chart, buf, g)
+    }
+
+    /// [`Self::render`] in a frame already worked out by [`Self::frame`].
+    pub fn render_in(
+        &self,
+        frame: PlotFrame,
+        chart: Chart<'_>,
+        buf: &mut Buffer,
+        g: &Glyphs,
+    ) -> PlotFrame {
         let x_track = Track {
             start: frame.graph.left(),
             cells: frame.graph.width,
@@ -773,15 +775,24 @@ impl<'a> PlotAxes<'a> {
                     .labels(y_labels),
             )
             .legend_position(None);
-        // Placed on the marks alone, before the grid is drawn under them.
+        // The marks drawn once, on their own: the legend is placed by them, and they
+        // go over the grid, which their blank cells leave alone.
+        let mut marks = Buffer::empty(frame.chart);
+        chart.render(frame.chart, &mut marks);
         let legend = self
             .legend
             .as_ref()
-            .and_then(|legend| place_legend(&chart, &frame, legend, g));
+            .and_then(|legend| place_legend(&marks, &frame, legend, g));
         if let Some(style) = self.grid {
             draw_grid(buf, frame.graph, &x.majors, &frame.y.majors, style, g);
         }
-        chart.render(frame.chart, buf);
+        let blank = ratatui::buffer::Cell::default();
+        for (i, cell) in marks.content().iter().enumerate() {
+            if *cell != blank {
+                let (x, y) = marks.pos_of(i);
+                buf[(x, y)] = cell.clone();
+            }
+        }
         g.plot.redraw_axes(frame.chart, buf);
         draw_tick_marks(buf, &frame, &x, self.line, g);
         let label_x = frame.chart.left();
@@ -817,12 +828,11 @@ struct LegendPlace {
     name_width: usize,
 }
 
-/// Where in `frame`'s plot the legend covers the fewest of `chart`'s marks: a
-/// corner, or the middle of an edge. A braille cell counts its dots, so a sparse
-/// patch wins over a dense one. Corners first on a tie, the top right first. `None`
-/// when the plot is too small to give it a quarter.
+/// Where in `frame`'s plot the legend covers the fewest marks of `probe` (braille cells
+/// by dots): a corner or edge middle, corners first and top right first on ties. `None`
+/// when the plot cannot spare a quarter.
 fn place_legend(
-    chart: &Chart<'_>,
+    probe: &Buffer,
     frame: &PlotFrame,
     legend: &Legend,
     g: &Glyphs,
@@ -846,8 +856,6 @@ fn place_legend(
     {
         return None;
     }
-    let mut probe = Buffer::empty(frame.chart);
-    chart.clone().render(frame.chart, &mut probe);
     let weight = |symbol: &str| -> usize {
         let mut chars = symbol.chars();
         match (chars.next(), chars.next()) {
@@ -1014,7 +1022,7 @@ fn fraction(v: f64, [lo, hi]: [f64; 2]) -> f64 {
 /// its axis: about one per four rows, each on its tick's row, in the fullest form
 /// that fits the width and tells them apart.
 pub fn fit_y_labels(axis: &AxisSpec<'_>, track: Track, width: u16) -> Placed {
-    let groups = axis.tick_sets(track, Y_SPACING, Y_LEAST, Y_MINOR_GAP);
+    let groups = axis.tick_sets(track.length(), Y_SPACING, Y_LEAST, Y_MINOR_GAP);
     let place = |set: &TickSet, labels: Option<&Vec<String>>| {
         let row = |v: f64| track.cell(1.0 - fraction(v, set.bounds));
         Placed {
@@ -1066,15 +1074,13 @@ fn distinct<'a>(labels: impl Iterator<Item = &'a String>) -> bool {
     labels.windows(2).all(|w| w[0] != w[1])
 }
 
-/// The x labels that fit on a row spanning columns `span` (start, end) under a plot
-/// whose columns are `track`, each with its column: centered under its tick, kept on
-/// the row, `LABEL_GAP` cells from the next. About one label per 15 columns; a
-/// coarser step when they crowd, then shorter forms; none at all when even two do
-/// not fit.
+/// The x labels fitting a row over columns `span` under a plot of `track`, each centered
+/// under its tick, kept on the row, `LABEL_GAP` cells apart: about one per 15 columns,
+/// coarser then shorter when crowded, none when even two do not fit.
 pub fn fit_x_labels(axis: &AxisSpec<'_>, span: (u16, u16), track: Track) -> Placed {
     let (start, end) = span;
     let column = |v: f64| track.cell(fraction(v, axis.bounds));
-    let groups = axis.tick_sets(track, X_SPACING, X_LEAST, X_MINOR_GAP);
+    let groups = axis.tick_sets(track.length(), X_SPACING, X_LEAST, X_MINOR_GAP);
     for sets in &groups {
         for level in 0..MAX_LEVELS {
             for set in sets {
@@ -1135,7 +1141,7 @@ pub fn cut(text: &str, width: usize, g: &Glyphs) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chart_data::{XAxisTemporalKind, x_axis_label_at};
+    use crate::chart::chart_data::{XAxisTemporalKind, x_axis_label_at};
     use ratatui::widgets::{Dataset, GraphType};
 
     /// Days since the epoch of 2020-01-01 and 2024-12-31.
@@ -1452,17 +1458,6 @@ mod tests {
         }
     }
 
-    fn text(buf: &Buffer) -> Vec<String> {
-        let area = buf.area;
-        (area.top()..area.bottom())
-            .map(|y| {
-                (area.left()..area.right())
-                    .map(|x| buf[(x, y)].symbol())
-                    .collect()
-            })
-            .collect()
-    }
-
     /// The grid draws at the major ticks when on and not at all when off, in either
     /// glyph set, and never takes a cell the series drew in.
     #[test]
@@ -1472,11 +1467,11 @@ mod tests {
             let (off, frame) = render_with(&axes(false), area, g);
             let (on, _) = render_with(&axes(true), area, g);
             let grid = |buf: &Buffer| {
-                let all = text(buf).concat();
+                let all = crate::tests::buffer_lines(buf).concat();
                 all.matches(g.plot.grid_across).count() + all.matches(g.plot.grid_down).count()
             };
-            assert_eq!(grid(&off), 0, "{:#?}", text(&off));
-            assert!(grid(&on) > 50, "{:#?}", text(&on));
+            assert_eq!(grid(&off), 0, "{:#?}", crate::tests::buffer_lines(&off));
+            assert!(grid(&on) > 50, "{:#?}", crate::tests::buffer_lines(&on));
             let graph = frame.graph;
             for y in graph.top()..graph.bottom() {
                 for x in graph.left()..graph.right() {
@@ -1540,10 +1535,10 @@ mod tests {
             row(y),
             format!(" {} first  ", g.bar_eighths[7]),
             "{:#?}",
-            text(&buf)
+            crate::tests::buffer_lines(&buf)
         );
         assert_eq!(row(y + 1), format!(" {} second ", g.bar_eighths[7]));
-        let all = text(&buf).join("\n");
+        let all = crate::tests::buffer_lines(&buf).join("\n");
         for frame_mark in ["┌", "┐", "┘"] {
             assert!(!all.contains(frame_mark), "{all}");
         }
@@ -1580,7 +1575,12 @@ mod tests {
         let mut buf = Buffer::empty(area);
         let frame = axes.render(chart, area, &mut buf, g);
         let swatch = (frame.graph.left() + 1, frame.graph.bottom() - 2);
-        assert_eq!(buf[swatch].symbol(), g.bar_eighths[7], "{:#?}", text(&buf));
+        assert_eq!(
+            buf[swatch].symbol(),
+            g.bar_eighths[7],
+            "{:#?}",
+            crate::tests::buffer_lines(&buf)
+        );
     }
 
     /// On a narrow plot of 0 to 7 the x row reads `0 2 4 6`: more labels when they
@@ -1600,11 +1600,16 @@ mod tests {
         );
         let (buf, frame) = render_with(&axes, Rect::new(0, 0, 34, 12), g);
         let row = frame.labels.expect("a label row").y;
-        let labels: Vec<String> = text(&buf)[row as usize]
+        let labels: Vec<String> = crate::tests::buffer_lines(&buf)[row as usize]
             .split_whitespace()
             .map(str::to_string)
             .collect();
-        assert_eq!(labels, ["0", "2", "4", "6"], "{:#?}", text(&buf));
+        assert_eq!(
+            labels,
+            ["0", "2", "4", "6"],
+            "{:#?}",
+            crate::tests::buffer_lines(&buf)
+        );
     }
 
     /// A title longer than its row is cut with the set's ellipsis.

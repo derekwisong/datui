@@ -51,17 +51,36 @@ fn pump(
 ) -> bool {
     let deadline = Instant::now() + Duration::from_secs(seconds);
     while Instant::now() < deadline {
+        // What is already queued first: `done` is about the state after it.
+        while let Ok(event) = rx.try_recv() {
+            handle(app, event);
+        }
         if done(app) {
             return true;
         }
         if let Ok(event) = rx.recv_timeout(Duration::from_millis(20)) {
-            let mut next = Some(event);
-            while let Some(event) = next {
-                next = app.event(&event);
-            }
+            handle(app, event);
         }
     }
     done(app)
+}
+
+fn handle(app: &mut datui::App, event: datui::AppEvent) {
+    let mut next = Some(event);
+    while let Some(event) = next {
+        next = app.event(event);
+    }
+}
+
+/// No source is being listed. A listing that started shows here until its answer,
+/// which comes only after its request reached the server.
+fn no_listing(app: &datui::App) -> bool {
+    !app.home.listing_in_flight
+        && app
+            .home
+            .cloud
+            .iter()
+            .all(|s| !s.refreshing && s.status != datui::home::CloudStatus::Listing)
 }
 
 fn key(code: crossterm::event::KeyCode) -> datui::AppEvent {
@@ -157,8 +176,8 @@ fn a_source_is_listed_when_entered_not_when_the_home_screen_opens() {
     assert!(!config.cloud.list_on_start, "the default is under test");
 
     // What an earlier run listed for `cached` and `hidden-old`.
-    let env = datui::cloud_browse::Environment::current();
-    let found = datui::cloud_sources::discover(&config.cloud, &env);
+    let env = datui::cloud::cloud_browse::Environment::current();
+    let found = datui::cloud::cloud_sources::discover(&config.cloud, &env);
     for (id, bucket) in [("cached", "from-last-run"), ("hidden-old", "shared-bucket")] {
         let source = found.iter().find(|s| s.id == id).expect(id);
         datui::CacheManager::new("datui")
@@ -190,8 +209,7 @@ fn a_source_is_listed_when_entered_not_when_the_home_screen_opens() {
         "both rows: {:?}",
         app.home.cloud
     );
-    // Long enough for a listing that was going to start to have reached the server.
-    pump(&mut app, &rx, 1, |_| false);
+    assert!(pump(&mut app, &rx, 5, no_listing), "{:?}", app.home.cloud);
     let ids: Vec<&str> = app.home.cloud.iter().map(|s| s.id.as_str()).collect();
     assert_eq!(ids, ["cached", "gone", "lab"], "found logins are not shown");
     assert_eq!(requests.load(Ordering::SeqCst), 0, "no request at launch");
@@ -207,19 +225,25 @@ fn a_source_is_listed_when_entered_not_when_the_home_screen_opens() {
     );
     assert!(!last_run.busy(), "the cached rows are not being refreshed");
     // A bucket under Recent still opens with the login that listed it last time.
-    let resolved =
-        datui::cloud_sources::resolve_with("s3://from-last-run/x.parquet", &config.cloud, &env)
-            .expect("resolves");
+    let resolved = datui::cloud::cloud_sources::resolve_with(
+        "s3://from-last-run/x.parquet",
+        &config.cloud,
+        &env,
+    )
+    .expect("resolves");
     assert_eq!(resolved.source_id, "cached");
     // A hidden source does not claim its old buckets from the login that should open them.
-    let resolved =
-        datui::cloud_sources::resolve_with("s3://shared-bucket/x.parquet", &config.cloud, &env)
-            .expect("resolves");
+    let resolved = datui::cloud::cloud_sources::resolve_with(
+        "s3://shared-bucket/x.parquet",
+        &config.cloud,
+        &env,
+    )
+    .expect("resolves");
     assert_ne!(resolved.source_id, "hidden-old");
 
     // Entering the source is the request.
     select(&mut app, "lab");
-    app.event(&key(crossterm::event::KeyCode::Enter));
+    app.event(key(crossterm::event::KeyCode::Enter));
     assert!(
         pump(&mut app, &rx, 10, |app| source(app, "lab").status
             == datui::home::CloudStatus::Listed),
@@ -233,23 +257,23 @@ fn a_source_is_listed_when_entered_not_when_the_home_screen_opens() {
     );
 
     // Once a session: back out and in again, and nothing more is asked.
-    app.event(&key(crossterm::event::KeyCode::Backspace));
+    app.event(key(crossterm::event::KeyCode::Backspace));
     assert!(pump(&mut app, &rx, 5, |app| app.home.browsing.is_none()
         && row_shown(app, "lab")));
     select(&mut app, "lab");
-    app.event(&key(crossterm::event::KeyCode::Enter));
-    pump(&mut app, &rx, 1, |_| false);
+    handle(&mut app, key(crossterm::event::KeyCode::Enter));
+    assert!(pump(&mut app, &rx, 5, no_listing), "{:?}", app.home.cloud);
     assert_eq!(requests.load(Ordering::SeqCst), 1, "listed once a session");
 
     // A source gone since its row was drawn says so, rather than waiting for good.
-    app.event(&key(crossterm::event::KeyCode::Backspace));
+    app.event(key(crossterm::event::KeyCode::Backspace));
     assert!(pump(&mut app, &rx, 5, |app| app.home.browsing.is_none()
         && row_shown(app, "gone")));
     datui::CacheManager::new("datui")
         .expect("isolated cache")
         .hide_cloud_source("gone");
     select(&mut app, "gone");
-    app.event(&key(crossterm::event::KeyCode::Enter));
+    app.event(key(crossterm::event::KeyCode::Enter));
     assert!(
         pump(&mut app, &rx, 5, |app| matches!(
             &source(app, "gone").status,

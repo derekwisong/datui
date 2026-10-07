@@ -6,8 +6,8 @@
 //! and the last batch, which has every column, renames and types into a frame that
 //! collects.
 
-use datui_lib::fix::dict::Layers;
-use datui_lib::fix::{self, FixReader, MAX_TAGS};
+use datui_lib::formats::fix::dict::Layers;
+use datui_lib::formats::fix::{self, FixReader};
 
 pub fn run(bytes: &[u8]) {
     let Some((&first, rest)) = bytes.split_first() else {
@@ -26,7 +26,7 @@ pub fn run(bytes: &[u8]) {
     let last = reader.finish().expect("the last batch builds");
     rows += last.height();
     assert_eq!(rows as u64, reader.stats().messages);
-    assert!(last.width() <= 5 + 3 * MAX_TAGS);
+    assert!(last.width() <= 5 + 3 * datui_lib::limits::get().fix_tags);
     let height = last.height();
     let df = reader.finished(last).expect("the frame renames and types");
     assert_eq!(df.height(), height);

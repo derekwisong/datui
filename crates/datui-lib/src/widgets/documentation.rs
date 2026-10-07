@@ -18,9 +18,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 use unicode_width::UnicodeWidthStr;
 
-use crate::catalog::{ColumnNote, Dataset};
 use crate::formats::SpecDocs;
 use crate::glyphs;
+use crate::home::catalog::{ColumnNote, Dataset};
 use crate::render::context::RenderContext;
 use crate::widgets::ui::{HintBar, SectionRule, Surface};
 
@@ -296,10 +296,10 @@ fn catalog_fields(out: &mut Vec<DocLine>, entry: &Dataset, catalog: &str, measur
         (None, None) => {}
     }
     match (measured, entry.size) {
-        (Some(size), _) => out.push(DocLine::Field("size", crate::discover::format_size(size))),
+        (Some(size), _) => out.push(DocLine::Field("size", crate::numfmt::bytes(size))),
         (None, Some(hint)) => out.push(DocLine::Field(
             "size",
-            format!("~{}", crate::discover::format_size(hint)),
+            format!("~{}", crate::numfmt::bytes(hint)),
         )),
         (None, None) => {}
     }
@@ -315,7 +315,7 @@ fn format_of(entry: &Dataset) -> String {
     crate::FileFormat::from_path(&location)
         .map(|f| f.name().to_string())
         .unwrap_or_else(|| {
-            if crate::catalog::is_object_store_dataset(&text) {
+            if crate::home::catalog::is_object_store_dataset(&text) {
                 "directory".to_string()
             } else {
                 "file".to_string()
@@ -448,24 +448,6 @@ impl DocState {
     }
 }
 
-/// `text` cut to `width` columns with the ellipsis when it does not fit.
-fn cut(text: &str, width: usize) -> String {
-    if text.width() <= width {
-        return text.to_string();
-    }
-    let ellipsis = glyphs::get().ellipsis;
-    let room = width.saturating_sub(ellipsis.width());
-    let mut out = String::new();
-    for c in text.chars() {
-        if out.width() + c.to_string().width() > room {
-            break;
-        }
-        out.push(c);
-    }
-    out.push_str(ellipsis);
-    out
-}
-
 /// `text` wrapped at word boundaries to `width` columns.
 fn wrap(text: &str, width: usize) -> Vec<String> {
     let width = width.max(8);
@@ -579,7 +561,10 @@ fn layout(
                 push(
                     vec![
                         Span::styled(format!("{key:<key_w$}"), key_style),
-                        Span::styled(cut(url, room), plain.add_modifier(Modifier::UNDERLINED)),
+                        Span::styled(
+                            glyphs::fit(url, room),
+                            plain.add_modifier(Modifier::UNDERLINED),
+                        ),
                     ],
                     true,
                 );
@@ -604,7 +589,7 @@ fn layout(
                 let text = format!("{about}{marker}");
                 for (n, row) in wrap(&text, room).into_iter().enumerate() {
                     let head = if n == 0 {
-                        format!("{:<col_w$}", cut(name, col_w - 2))
+                        format!("{:<col_w$}", glyphs::fit(name, col_w - 2))
                     } else {
                         " ".repeat(col_w)
                     };
@@ -618,7 +603,7 @@ fn layout(
                 let room = inner.saturating_sub(col_w);
                 for (n, row) in wrap(about, room).into_iter().enumerate() {
                     let head = if n == 0 {
-                        format!("{:<col_w$}", cut(name, col_w - 2))
+                        format!("{:<col_w$}", glyphs::fit(name, col_w - 2))
                     } else {
                         " ".repeat(col_w)
                     };
@@ -648,8 +633,11 @@ fn layout(
                 let room = inner.saturating_sub(col_w);
                 push(
                     vec![
-                        Span::styled(format!("{:<col_w$}", cut(name, col_w - 2)), key_style),
-                        Span::styled(cut(path, room), plain),
+                        Span::styled(
+                            format!("{:<col_w$}", glyphs::fit(name, col_w - 2)),
+                            key_style,
+                        ),
+                        Span::styled(glyphs::fit(path, room), plain),
                     ],
                     true,
                 );
@@ -729,18 +717,18 @@ pub fn render_view(state: &mut DocState, area: Rect, buf: &mut Buffer, ctx: &Ren
     let Some(title) = state.doc.as_ref().map(|d| d.title().to_string()) else {
         return;
     };
-    let mut footer = HintBar::from_ctx(ctx);
+    let mut footer = HintBar::from_ctx(ctx).screen(datui_cli::keys::Context::Documentation);
     let lines = state.lines();
     match lines.get(state.cursor) {
         Some(DocLine::Column { values: 1.., .. }) | Some(DocLine::Legend(..)) => {
-            footer = footer.hint("Enter", "Values");
+            footer = footer.key("Enter");
         }
         _ => {}
     }
     if state.offers_open() {
-        footer = footer.hint("o", "Open");
+        footer = footer.key("o");
     }
-    footer = footer.hint("y", "Copy").hint("Esc", "Back");
+    footer = footer.key("y").key("Esc");
     let title = format!("Documentation {} {title}", glyphs::get().trail);
     let inner = Surface::new(&title).footer(&footer).render(area, buf, ctx);
     render_page(state, inner, buf, ctx);
@@ -752,7 +740,7 @@ mod tests {
 
     fn noaa() -> Arc<Dataset> {
         Arc::new(
-            crate::catalog::bundled()
+            crate::home::catalog::bundled()
                 .datasets
                 .into_iter()
                 .find(|d| d.id == "noaa")
@@ -979,7 +967,7 @@ LogIdx = { type = "i64" }
 
     #[test]
     fn a_catalogs_word_stands_over_the_specs() {
-        let catalog = crate::catalog::parse(
+        let catalog = crate::home::catalog::parse(
             r#"
 label = "Mine"
 
@@ -992,7 +980,7 @@ columns.price = { description = "Price the lab quotes" }
 columns.venue = { description = "Where it traded" }
 "#,
             "mine",
-            crate::catalog::Origin::Mine,
+            crate::home::catalog::Origin::Mine,
             None,
         )
         .unwrap();

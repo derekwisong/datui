@@ -26,12 +26,12 @@ mod common;
 mod fake_s3;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use datui::analysis_modal::{AnalysisFocus, AnalysisTool};
-use datui::data_quality::{
+use datui::analysis::analysis_modal::{AnalysisFocus, AnalysisTool};
+use datui::analysis::data_quality::{
     QualityComparison, QualityCompute, QualityGrain, QualityPage, QualityScope, TemporalRole,
     TemporalRoleAssignment,
 };
-use datui::sampling::{Sample, SampleMethod};
+use datui::analysis::sampling::{Sample, SampleMethod};
 use datui::{App, AppConfig, AppEvent, OpenOptions};
 use polars::prelude::*;
 use std::collections::BTreeMap;
@@ -186,7 +186,7 @@ impl SpillWatch {
 }
 
 fn press(app: &mut App, code: KeyCode) -> Option<AppEvent> {
-    app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+    app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
 }
 
 /// Handle `first` and every event after it until the app owes nothing.
@@ -195,7 +195,7 @@ fn settle(app: &mut App, rx: &mpsc::Receiver<AppEvent>, first: Option<AppEvent>)
     let mut next = first;
     loop {
         if let Some(event) = next.take() {
-            next = app.event(&event);
+            next = app.event(event);
             continue;
         }
         match rx.recv_timeout(Duration::from_millis(10)) {
@@ -276,13 +276,13 @@ fn run_study(app: &mut App, rx: &mpsc::Receiver<AppEvent>, study: &Study) {
         rows: SAMPLE_ROWS,
         seed: SEED,
     };
+    app.overlay = datui::Overlay::Analysis;
     let modal = &mut app.analysis_modal;
-    modal.active = true;
     modal.selected_tool = Some(AnalysisTool::DataQuality);
     modal.focus = AnalysisFocus::Main;
     modal.sample = sample.clone();
     modal.set_quality_page(QualityPage::Setup);
-    let plan = &mut modal.data_quality_plan;
+    let plan = &mut modal.quality.plan;
     plan.scope = sample.scope.clone();
     plan.method = sample.method.clone();
     plan.dataset_rows = sample.rows;
@@ -315,7 +315,7 @@ fn run_study(app: &mut App, rx: &mpsc::Receiver<AppEvent>, study: &Study) {
         Vec::new()
     };
     let mut first = press(app, KeyCode::Enter);
-    if app.analysis_modal.data_quality_confirm_run {
+    if app.confirmation_modal.asks_full_scan() {
         // A full scan asks first; Enter there runs it.
         first = press(app, KeyCode::Enter);
     }
@@ -369,7 +369,7 @@ fn bench(scenario: &str, path: &str, config: AppConfig, wire: Option<&fake_s3::W
             }
             _ => ("unknown".into(), "unknown".into()),
         };
-        let outcome = match app.analysis_modal.data_quality_results.as_ref() {
+        let outcome = match app.analysis_modal.quality.results.as_ref() {
             _ if app.modal_showing() => "error".to_string(),
             Some(results) => format!(
                 "evaluated={} segments={} intervals={} compared={}",

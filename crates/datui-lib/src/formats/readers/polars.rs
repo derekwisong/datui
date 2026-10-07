@@ -1,0 +1,658 @@
+//! The readers of the formats Polars reads: Parquet, delimited text, JSON, Arrow IPC,
+//! Avro, ORC and Excel.
+
+use color_eyre::Result;
+
+use super::{BASE, EVERYWHERE, Kind, Reader, ScanIn, Signature, Trusted, Unnamed};
+#[cfg(feature = "cloud")]
+use crate::error_display::FileError;
+use crate::export::export_modal::ExportFormat;
+use crate::export::python_script::{self as py, Python};
+use crate::loading::scan::Scan;
+use std::fs::File;
+use std::path::{Path, PathBuf};
+
+use arrow::array::types::{
+    Date32Type, Date64Type, Float32Type, Float64Type, Int8Type, Int16Type, Int32Type, Int64Type,
+    TimestampMillisecondType, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
+};
+use arrow::array::{Array, AsArray};
+use arrow::record_batch::RecordBatch;
+use orc_rust::ArrowReaderBuilder;
+use polars::prelude::*;
+
+use super::Read;
+use crate::loading::unfinished::Writer;
+use crate::{OpenOptions, ParseStringsTarget};
+
+/// A prefix of CSV in an object store, read with the flags the user gave as they are
+/// for a local file.
+#[cfg(feature = "cloud")]
+fn bucket_csv(input: super::BucketIn<'_>) -> Result<polars::prelude::LazyFrame> {
+    use polars::prelude::{LazyCsvReader, LazyFileListReader};
+    let super::BucketIn {
+        url,
+        path,
+        cloud,
+        glob,
+        options,
+        format,
+    } = input;
+    let named = std::path::Path::new(url);
+    let failed = |e: polars::prelude::PolarsError| {
+        FileError::new(
+            named,
+            format!("could not read it as {}: {}", format.name(), said(&e)),
+        )
+    };
+    let reader = || {
+        LazyCsvReader::new(path.clone())
+            .with_cloud_options(Some(cloud.clone()))
+            .with_glob(glob)
+    };
+    // Each object has its own header lines, and the scan reads them all as one; the
+    // names cannot come from one of them.
+    if options.header_rows().is_some() {
+        return Err(FileError::new(
+            named,
+            "--header-rows reads a file's own lines, so it cannot read these in place. Download the files, or name the header with --skip-lines.",
+        )
+        .into());
+    }
+    let nv = super::csv::build_null_values_with(options, None, || {
+        super::csv::csv_schema_for_null_values(reader(), options)
+    })?;
+    // No `--infer-types` (its sample would reread the bucket), nor `try_parse_dates` (one
+    // unparsable value fails the whole read): timestamps and padded numbers stay text.
+    let lf = super::csv::configure_csv_reader(reader(), options, nv.as_ref())
+        .finish()
+        .and_then(|lf| crate::formats::csv_dialect::name_columns(lf, None))
+        .and_then(|lf| {
+            if !options.skip_initial_space {
+                return Ok(lf);
+            }
+            crate::formats::csv_dialect::skip_initial_space(lf, |column| {
+                super::csv::csv_null_values_for(options, column)
+            })
+        })
+        .map_err(failed)?;
+    super::csv::apply_skip_tail_rows_csv(lf, options)
+        .map_err(|e| crate::error_display::in_file(named, e))
+}
+
+/// A prefix of NDJSON in an object store.
+#[cfg(feature = "cloud")]
+fn bucket_json_lines(input: super::BucketIn<'_>) -> Result<polars::prelude::LazyFrame> {
+    use polars::prelude::LazyFileListReader;
+    polars::prelude::LazyJsonLineReader::new(input.path)
+        .with_cloud_options(Some(input.cloud))
+        .finish()
+        .map_err(|e| {
+            FileError::new(
+                std::path::Path::new(input.url),
+                format!("could not read it as {}: {}", input.format.name(), said(&e)),
+            )
+            .into()
+        })
+}
+
+/// IPC files in an object store, by range from their footers. A prefix is listed
+/// before it gets here (`cloud_arrow`), so this is a glob: a stream among its objects
+/// has no footer, and is read by its folder, which downloads it.
+#[cfg(feature = "cloud")]
+fn bucket_arrow(input: super::BucketIn<'_>) -> Result<polars::prelude::LazyFrame> {
+    let url = input.url;
+    let args = polars::prelude::UnifiedScanArgs {
+        cloud_options: Some(input.cloud),
+        glob: input.glob,
+        ..Default::default()
+    };
+    polars::prelude::LazyFrame::scan_ipc(input.path, Default::default(), args).map_err(|e| {
+        let folder = url
+            .split('*')
+            .next()
+            .and_then(|head| head.rsplit_once('/'))
+            .map_or(url, |(folder, _)| folder);
+        FileError::new(
+            std::path::Path::new(url),
+            format!(
+                "could not read it as Arrow IPC files: {}. A glob reads IPC files in place; Arrow streams are read by their folder: open {folder}/",
+                said(&e)
+            ),
+        )
+        .into()
+    })
+}
+
+/// Polars' words for `e`, as a clause: tidied, without its full stop.
+#[cfg(feature = "cloud")]
+fn said(e: &polars::prelude::PolarsError) -> String {
+    let said = crate::error_display::user_message_from_polars(e);
+    said.trim_end_matches('.').to_string()
+}
+
+/// The frame of a state a Polars reader built, with what the read did to its rows for
+/// Copy as Python.
+fn frame(read: Read, input: ScanIn<'_>) -> Result<Scan> {
+    let lf = resolved(read.lf)?;
+    input.report.read_python = read.python;
+    input.report.read_notes = read.notes;
+    input.report.typing = read.typing;
+    if let (Some(units), Some(delimited)) = (read.units, input.report.delimited.as_mut()) {
+        let mut merged = (**delimited).clone();
+        merged.units = units;
+        *delimited = std::sync::Arc::new(merged);
+    }
+    Ok(lf.into())
+}
+
+/// `lf` with its schema resolved, as an open needs it: a file Polars cannot read
+/// fails here, at the scan.
+pub(crate) fn resolved(mut lf: LazyFrame) -> Result<LazyFrame> {
+    lf.collect_schema()?;
+    Ok(lf)
+}
+
+/// A JSON reader's frame. JSON is read into memory whole, so its sample costs no read
+/// of the file.
+fn json_frame(lf: LazyFrame, input: ScanIn<'_>) -> Result<Scan> {
+    apply_parse_dates_to_json_lazyframe(resolved(lf)?, input.options, &mut input.report.read_python)
+        .map(Scan::from)
+}
+
+fn scan_parquet(input: ScanIn<'_>) -> Result<Scan> {
+    frame(each(input.paths, parquet)?.into(), input)
+}
+
+fn scan_csv(input: ScanIn<'_>) -> Result<Scan> {
+    let read = match input.paths {
+        [one] => super::csv::read_delimited(one, b',', input.options, &Writer::default())?,
+        many => super::csv::from_csv_paths(many, input.options)?,
+    };
+    frame(read, input)
+}
+
+/// TSV and PSV: one file, with the descriptor's separator.
+fn scan_delimited(input: ScanIn<'_>) -> Result<Scan> {
+    let separator = input.format.separator().unwrap_or(b',');
+    let read =
+        super::csv::read_delimited(input.path(), separator, input.options, &Writer::default())?;
+    frame(read, input)
+}
+
+fn scan_json(input: ScanIn<'_>) -> Result<Scan> {
+    let lf = each(input.paths, |p| json(p, JsonFormat::Json))?;
+    json_frame(lf, input)
+}
+
+/// NDJSON, read whole; followed, scanned, so the frame reads more of it as it grows.
+fn scan_json_lines(input: ScanIn<'_>) -> Result<Scan> {
+    if input.options.follow {
+        let path = input.paths[0].clone();
+        return crate::loading::follow::scan_lines(
+            &path,
+            input.options,
+            false,
+            &mut input.report.read_python,
+        )
+        .map(Scan::from);
+    }
+    let lf = each(input.paths, |p| json(p, JsonFormat::JsonLines))?;
+    json_frame(lf, input)
+}
+
+/// Arrow IPC files are scanned where they are; streams, which have no footer, are
+/// converted first. The first file says for a list: a `datasets` cache is all streams,
+/// and the conversion reads each file anyway.
+fn scan_arrow(input: ScanIn<'_>) -> Result<Scan> {
+    let paths = input.paths;
+    if crate::formats::ipc_stream::starts_with_stream(paths) {
+        return Ok(Scan::Streams(paths.to_vec()));
+    }
+    let lf = match paths {
+        [one] => ipc(one)?,
+        // Polars reads every IPC file's footer for the schema, and fails on a stream
+        // among them: only then is each file looked at.
+        many => match each(many, ipc).and_then(resolved) {
+            Ok(lf) => lf,
+            Err(_) if crate::formats::ipc_stream::any_stream(many) => {
+                return Ok(Scan::Streams(many.to_vec()));
+            }
+            Err(e) => return Err(e),
+        },
+    };
+    frame(lf.into(), input)
+}
+
+fn scan_avro(input: ScanIn<'_>) -> Result<Scan> {
+    frame(each(input.paths, avro)?.into(), input)
+}
+
+fn scan_orc(input: ScanIn<'_>) -> Result<Scan> {
+    frame(each(input.paths, orc)?.into(), input)
+}
+
+fn scan_excel(input: ScanIn<'_>) -> Result<Scan> {
+    let (lf, detail) = crate::formats::excel::read(input.path(), input.options)?;
+    input.report.opened = Some(std::sync::Arc::new(crate::formats::members::Opened {
+        detail: Some(std::sync::Arc::new(detail)),
+        ..Default::default()
+    }));
+    frame(lf.into(), input)
+}
+
+pub(crate) const PARQUET: Reader = Reader {
+    preview: Some(super::Preview::RowGroup),
+    python: Some(Python {
+        call: "pl.scan_parquet",
+        eager: false,
+        glob_flag: true,
+        arguments: Some(py::parquet_arguments),
+    }),
+    scan: scan_parquet,
+    facts: Some(super::Facts {
+        read: crate::formats::parquet_footer::facts,
+        footer: true,
+    }),
+    // `PAR1` at both ends of a file, because at the front alone it is a truncated
+    // write: the footer is what a reader needs.
+    signatures: &[Signature {
+        says: |head, file| {
+            head.starts_with(b"PAR1") && file.is_none_or(crate::home::discover::has_parquet_magic)
+        },
+        kind: Kind::Magic,
+        trusted: Trusted {
+            open: Unnamed::NoExtension,
+            ..EVERYWHERE
+        },
+    }],
+    export: Some(ExportFormat::Parquet),
+    ..BASE
+};
+
+/// CSV, TSV and PSV each export as themselves: TSV and PSV are CSV presets.
+pub(crate) const CSV: Reader = Reader {
+    #[cfg(feature = "cloud")]
+    bucket_scan: Some(bucket_csv),
+    preview: Some(super::Preview::Scan),
+    python: Some(Python {
+        call: "pl.scan_csv",
+        eager: false,
+        glob_flag: true,
+        arguments: Some(py::csv_arguments),
+    }),
+    scan: scan_csv,
+    export: Some(ExportFormat::Csv),
+    ..BASE
+};
+
+pub(crate) const TSV: Reader = Reader {
+    scan: scan_delimited,
+    // No prefix of it is read in place.
+    #[cfg(feature = "cloud")]
+    bucket_scan: None,
+    export: Some(ExportFormat::Tsv),
+    ..CSV
+};
+
+pub(crate) const PSV: Reader = Reader {
+    export: Some(ExportFormat::Psv),
+    ..TSV
+};
+
+pub(crate) const JSON: Reader = Reader {
+    python: Some(Python {
+        call: "pl.read_json",
+        eager: true,
+        glob_flag: false,
+        arguments: None,
+    }),
+    scan: scan_json,
+    export: Some(ExportFormat::Json),
+    ..BASE
+};
+
+pub(crate) const JSONL: Reader = Reader {
+    #[cfg(feature = "cloud")]
+    bucket_scan: Some(bucket_json_lines),
+    preview: Some(super::Preview::Scan),
+    // `scan_ndjson` has no `glob` flag: a name with a glob character is escaped.
+    python: Some(Python {
+        call: "pl.scan_ndjson",
+        eager: false,
+        glob_flag: false,
+        arguments: Some(py::ndjson_arguments),
+    }),
+    scan: scan_json_lines,
+    export: Some(ExportFormat::Ndjson),
+    ..BASE
+};
+
+pub(crate) const ARROW: Reader = Reader {
+    #[cfg(feature = "cloud")]
+    bucket_scan: Some(bucket_arrow),
+    preview: Some(super::Preview::Scan),
+    python: Some(Python {
+        call: "pl.scan_ipc",
+        eager: false,
+        glob_flag: true,
+        arguments: Some(py::arrow_arguments),
+    }),
+    scan: scan_arrow,
+    facts: Some(super::Facts {
+        read: super::facts::arrow,
+        footer: false,
+    }),
+    signatures: &[
+        Signature {
+            says: |head, _| head.starts_with(b"ARROW1"),
+            kind: Kind::Magic,
+            trusted: Trusted {
+                open: Unnamed::Never,
+                ..EVERYWHERE
+            },
+        },
+        // A stream has no magic, only its schema message: a file's is read whole to be
+        // sure, what is piped in is judged on its first bytes.
+        Signature {
+            says: |head, file| match file {
+                Some(file) => crate::formats::ipc_stream::is_stream_file(file),
+                None => crate::formats::ipc_stream::is_stream_head(head),
+            },
+            kind: Kind::Structure,
+            trusted: Trusted {
+                open: Unnamed::NoExtension,
+                ..EVERYWHERE
+            },
+        },
+    ],
+    export: Some(ExportFormat::Ipc),
+    ..BASE
+};
+
+pub(crate) const AVRO: Reader = Reader {
+    python: Some(Python {
+        call: "pl.read_avro",
+        eager: true,
+        glob_flag: false,
+        arguments: None,
+    }),
+    scan: scan_avro,
+    facts: Some(super::Facts {
+        read: super::facts::avro,
+        footer: false,
+    }),
+    signatures: &[Signature {
+        says: |head, _| head.starts_with(b"Obj\x01"),
+        kind: Kind::Magic,
+        trusted: Trusted {
+            open: Unnamed::Never,
+            ..EVERYWHERE
+        },
+    }],
+    export: Some(ExportFormat::Avro),
+    ..BASE
+};
+
+/// Datui writes no ORC. Its magic is three letters a text file may start with, so it
+/// is believed only of a file a listing looks inside.
+pub(crate) const ORC: Reader = Reader {
+    scan: scan_orc,
+    facts: Some(super::Facts {
+        read: super::facts::orc,
+        footer: false,
+    }),
+    signatures: &[Signature {
+        says: |head, _| head.starts_with(b"ORC"),
+        kind: Kind::Magic,
+        trusted: Trusted {
+            pipe: false,
+            open: Unnamed::Never,
+            listing: true,
+            tables: false,
+        },
+    }],
+    ..BASE
+};
+
+/// Datui writes no workbook.
+pub(crate) const EXCEL: Reader = Reader {
+    python: Some(Python {
+        call: "pl.read_excel",
+        eager: true,
+        glob_flag: false,
+        arguments: Some(py::excel_arguments),
+    }),
+    scan: scan_excel,
+    // A workbook whose sheets its directory lists: `.xlsx` and `.xlsm`, which are zip
+    // files. Never piped, and never asked of a listing, which would open every zip.
+    signatures: &[Signature {
+        says: crate::formats::excel::is_listable,
+        kind: Kind::Magic,
+        trusted: Trusted {
+            pipe: false,
+            open: Unnamed::Any,
+            listing: false,
+            tables: true,
+        },
+    }],
+    tables: Some(crate::formats::excel::sheets),
+    ..BASE
+};
+
+/// One frame of `paths`, each read by `read`, stacked in order.
+fn each(paths: &[PathBuf], read: impl Fn(&Path) -> Result<LazyFrame>) -> Result<LazyFrame> {
+    match paths {
+        [] => Err(color_eyre::eyre::eyre!("No paths provided")),
+        [one] => read(one),
+        many => {
+            let frames = many.iter().map(|p| read(p)).collect::<Result<Vec<_>>>()?;
+            Ok(concat(frames.as_slice(), Default::default())?)
+        }
+    }
+}
+
+pub(super) fn parquet(path: &Path) -> Result<LazyFrame> {
+    let args = ScanArgsParquet {
+        glob: crate::cloud::source::expands_as_glob(path),
+        ..Default::default()
+    };
+    Ok(LazyFrame::scan_parquet(
+        PlRefPath::try_from_path(path)?,
+        args,
+    )?)
+}
+
+/// An Arrow IPC / Feather v2 file, scanned.
+pub(super) fn ipc(path: &Path) -> Result<LazyFrame> {
+    let args = UnifiedScanArgs {
+        glob: crate::cloud::source::expands_as_glob(path),
+        ..Default::default()
+    };
+    Ok(LazyFrame::scan_ipc(
+        PlRefPath::try_from_path(path)?,
+        Default::default(),
+        args,
+    )?)
+}
+
+/// An Avro file, read whole.
+pub(super) fn avro(path: &Path) -> Result<LazyFrame> {
+    let file = File::open(path)?;
+    Ok(polars::io::avro::AvroReader::new(file).finish()?.lazy())
+}
+
+/// An ORC file, read whole through orc-rust's Arrow batches; see
+/// `docs/formats/columnar-and-json.md`.
+pub(super) fn orc(path: &Path) -> Result<LazyFrame> {
+    let file = File::open(path)?;
+    let reader = ArrowReaderBuilder::try_new(file)
+        .map_err(|e| color_eyre::eyre::eyre!("ORC: {}", e))?
+        .build();
+    let batches: Vec<RecordBatch> = reader
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| color_eyre::eyre::eyre!("ORC: {}", e))?;
+    Ok(arrow_record_batches_to_dataframe(&batches)?.lazy())
+}
+
+/// A JSON or NDJSON file, read whole.
+fn json(path: &Path, format: JsonFormat) -> Result<LazyFrame> {
+    let file = File::open(path)?;
+    Ok(JsonReader::new(file)
+        .with_json_format(format)
+        .finish()?
+        .lazy())
+}
+
+/// How one dataset's files stack into one table: `diagonal` (a file predating a column
+/// keeps its rows, null there, the Notes saying which) and `to_supertypes` (per-file CSV
+/// inference types `amount` String in one file and Int64 in another). Opt-ins elsewhere
+/// (DuckDB `union_by_name`, Spark `mergeSchema`), defaults here because datui notes
+/// what it did and `Enter` goes inside directories that are not one table; this is what
+/// their `(all files)` row reads with. Only for formats that rule judges (CSV, NDJSON;
+/// Parquet via `lenient_scan`): Arrow, Avro, ORC and `.json` would be silent, unnoted
+/// unions. Identical schemas stack as before; converted Arrow streams stack with IPC
+/// files read in place (`App::scan_arrow_parts`).
+pub(crate) fn union_of_files() -> polars::prelude::UnionArgs {
+    polars::prelude::UnionArgs {
+        diagonal: true,
+        to_supertypes: true,
+        ..Default::default()
+    }
+}
+
+/// Convert Arrow (arrow crate 57) RecordBatches to Polars DataFrame by value (ORC uses
+/// arrow 57; Polars uses polars-arrow, so we cannot use Series::from_arrow).
+fn arrow_record_batches_to_dataframe(batches: &[RecordBatch]) -> Result<DataFrame> {
+    if batches.is_empty() {
+        return Ok(DataFrame::empty());
+    }
+    let mut all_dfs = Vec::with_capacity(batches.len());
+    for batch in batches {
+        let n_cols = batch.num_columns();
+        let schema = batch.schema();
+        let mut series_vec = Vec::with_capacity(n_cols);
+        for (i, col) in batch.columns().iter().enumerate() {
+            let name = schema.field(i).name().as_str();
+            let s = arrow_array_to_polars_series(name, col)?;
+            series_vec.push(s.into());
+        }
+        let df = DataFrame::new_infer_height(series_vec)?;
+        all_dfs.push(df);
+    }
+    let mut out = all_dfs.remove(0);
+    for df in all_dfs {
+        out = out.vstack(&df)?;
+    }
+    Ok(out)
+}
+
+fn arrow_array_to_polars_series(name: &str, array: &dyn Array) -> Result<Series> {
+    use arrow::datatypes::DataType as ArrowDataType;
+    let strings = |values: Vec<Option<&str>>| Series::new(name.into(), values);
+    match array.data_type() {
+        ArrowDataType::Int8 => primitive::<Int8Type>(name, array, "Int8"),
+        ArrowDataType::Int16 => primitive::<Int16Type>(name, array, "Int16"),
+        ArrowDataType::Int32 => primitive::<Int32Type>(name, array, "Int32"),
+        ArrowDataType::Int64 => primitive::<Int64Type>(name, array, "Int64"),
+        ArrowDataType::UInt8 => primitive::<UInt8Type>(name, array, "UInt8"),
+        ArrowDataType::UInt16 => primitive::<UInt16Type>(name, array, "UInt16"),
+        ArrowDataType::UInt32 => primitive::<UInt32Type>(name, array, "UInt32"),
+        ArrowDataType::UInt64 => primitive::<UInt64Type>(name, array, "UInt64"),
+        ArrowDataType::Float32 => primitive::<Float32Type>(name, array, "Float32"),
+        ArrowDataType::Float64 => primitive::<Float64Type>(name, array, "Float64"),
+        ArrowDataType::Date32 => primitive::<Date32Type>(name, array, "Date32"),
+        ArrowDataType::Date64 => primitive::<Date64Type>(name, array, "Date64"),
+        ArrowDataType::Timestamp(_, _) => {
+            primitive::<TimestampMillisecondType>(name, array, "Timestamp")
+        }
+        ArrowDataType::Boolean => {
+            let a = array
+                .as_boolean_opt()
+                .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Boolean array"))?;
+            Ok(Series::new(name.into(), a.iter().collect::<Vec<_>>()))
+        }
+        ArrowDataType::Utf8 => {
+            let a = array
+                .as_string_opt::<i32>()
+                .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Utf8 array"))?;
+            Ok(strings(a.iter().collect()))
+        }
+        ArrowDataType::LargeUtf8 => {
+            let a = array
+                .as_string_opt::<i64>()
+                .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected LargeUtf8 array"))?;
+            Ok(strings(a.iter().collect()))
+        }
+        other => Err(color_eyre::eyre::eyre!(
+            "ORC: unsupported column type {:?} for column '{}'",
+            other,
+            name
+        )),
+    }
+}
+
+/// An Arrow array of primitive `T` as a Series of its native values, nulls kept.
+fn primitive<T: arrow::datatypes::ArrowPrimitiveType>(
+    name: &str,
+    array: &dyn Array,
+    type_name: &str,
+) -> Result<Series>
+where
+    Series: NamedFrom<Vec<Option<T::Native>>, [Option<T::Native>]>,
+{
+    let a = array
+        .as_primitive_opt::<T>()
+        .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected {type_name} array"))?;
+    Ok(Series::new(name.into(), a.iter().collect::<Vec<_>>()))
+}
+
+/// Dates and timestamps a JSON file holds as strings, typed the way a CSV's are.
+/// JSON already says which values are numbers, so a string only ever becomes a
+/// date, datetime or time, and one that is none of those is left as it was read.
+pub(crate) fn apply_parse_dates_to_json_lazyframe(
+    lf: LazyFrame,
+    options: &OpenOptions,
+    read: &mut Vec<String>,
+) -> Result<LazyFrame> {
+    if !options.parse_dates {
+        return Ok(lf);
+    }
+    super::csv::type_string_columns(
+        lf,
+        &ParseStringsTarget::All,
+        options.parse_strings_sample_rows,
+        super::csv::StringTypes {
+            dates: true,
+            numbers: false,
+        },
+        read,
+        &[],
+        &mut Vec::new(),
+    )
+}
+
+#[cfg(test)]
+mod reader_errors {
+    use crate::FileFormat;
+    use crate::formats::readers::bad_input::each_names_its_file;
+
+    /// Bytes no Polars reader can read name their file, in the one shape, at the scan
+    /// or at the first rows.
+    #[test]
+    fn errors_name_the_file() {
+        let garbage: &[u8] = b"\x00\x01\x02 this is not a file of any format \xff\xfe";
+        for (format, name) in [
+            (FileFormat::Parquet, "bad.parquet"),
+            (FileFormat::Arrow, "bad.arrow"),
+            (FileFormat::Avro, "bad.avro"),
+            (FileFormat::Orc, "bad.orc"),
+            (FileFormat::Excel, "bad.xlsx"),
+            (FileFormat::Json, "bad.json"),
+            (FileFormat::Jsonl, "bad.jsonl"),
+        ] {
+            each_names_its_file(format, &[(name, garbage, "")]);
+        }
+        each_names_its_file(FileFormat::Csv, &[("ragged.csv", b"a,b\n1,2\n\"3,4\n", "")]);
+    }
+}

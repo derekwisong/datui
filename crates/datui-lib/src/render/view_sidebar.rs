@@ -3,9 +3,10 @@
 //! breakdown. Built on the `widgets::ui` kit; the rail marks focus.
 
 use crate::render::context::RenderContext;
-use crate::render::layout::centered_rect_fixed;
+use crate::render::layout::centered_rect;
 use crate::widgets::ui::{FormRow, FormValue, HintBar, SectionRule, Surface};
 use crate::widgets::view_modal::{FormFocus, ViewModal, ViewModalMode};
+use datui_cli::keys::Context;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -72,16 +73,9 @@ fn score_mark(score: f64, max_score: f64, ctx: &RenderContext) -> (&'static str,
 /// Pad or truncate to `width` display columns, marking the cut with the
 /// ellipsis glyph and never splitting a wide character.
 fn fit(text: &str, width: usize) -> String {
-    let g = crate::glyphs::get();
-    let count = crate::glyphs::display_width(text);
-    if count <= width {
-        let pad = width - count;
-        format!("{text}{}", " ".repeat(pad))
-    } else {
-        let ellipsis_width = crate::glyphs::display_width(g.ellipsis);
-        let cut = crate::glyphs::take_columns(text, width.saturating_sub(ellipsis_width));
-        format!("{cut}{}", g.ellipsis)
-    }
+    let fitted = crate::glyphs::fit(text, width);
+    let pad = width.saturating_sub(crate::glyphs::display_width(&fitted));
+    format!("{fitted}{}", " ".repeat(pad))
 }
 
 fn render_list(
@@ -94,19 +88,23 @@ fn render_list(
     let g = crate::glyphs::get();
     // Only keys that act: with no view saved there is nothing to apply, edit,
     // delete or score.
+    let footer = HintBar::from_ctx(ctx).screen(Context::Views).group("List");
     let footer = if modal.rows.is_empty() {
-        HintBar::from_ctx(ctx)
-            .hint_weighted("s", "Save", 4)
-            .hint_weighted("Esc", "Close", 6)
+        footer.key("s").weight(4)
     } else {
-        HintBar::from_ctx(ctx)
-            .hint_weighted("Enter", "Apply", 5)
-            .hint_weighted("s", "Save", 4)
-            .hint_weighted("e", "Edit", 2)
-            .hint_weighted("d", "Delete", 3)
-            .hint_weighted("i", "Score", 1)
-            .hint_weighted("Esc", "Close", 6)
+        footer
+            .key("Enter")
+            .weight(5)
+            .key("s")
+            .weight(4)
+            .key("e")
+            .weight(2)
+            .key("d")
+            .weight(3)
+            .key("i")
+            .weight(1)
     };
+    let footer = footer.key("Esc").weight(6);
     let content = Surface::new("Views").footer(&footer).render(area, buf, ctx);
     if content.height < 2 || content.width < 10 {
         return;
@@ -259,25 +257,26 @@ fn render_form(area: Rect, buf: &mut Buffer, modal: &mut ViewModal, ctx: &Render
     } else {
         "Save View"
     };
-    let mut footer = HintBar::from_ctx(ctx);
-    footer = match modal.form_focus {
+    let footer = HintBar::from_ctx(ctx)
+        .screen(Context::Views)
+        .group("Save and edit");
+    let footer = match modal.form_focus {
         // Enter types inside the multiline description; the footer names the
         // key that still saves from there on every terminal (Ctrl+Enter needs
         // the keyboard-enhancement protocol).
-        FormFocus::Description => footer.hint_weighted("^J", "Save", 3),
-        _ => footer.hint_weighted("Enter", "Save", 3),
-    };
-    footer = match modal.form_focus {
+        FormFocus::Description => footer.key("Ctrl+J"),
+        _ => footer.key("Enter"),
+    }
+    .weight(3);
+    let footer = match modal.form_focus {
         FormFocus::Matching if modal.matching_expanded => {
-            footer.hint_weighted("Space", "Collapse", 2)
+            footer.key_as("Space", "Collapse").weight(2)
         }
-        FormFocus::Matching => footer.hint_weighted("Space", "Expand", 2),
-        FormFocus::SchemaMatch => footer.hint_weighted("Space", "Toggle", 2),
+        FormFocus::Matching => footer.key_as("Space", "Expand").weight(2),
+        FormFocus::SchemaMatch => footer.key("Space").weight(2),
         _ => footer,
     };
-    let footer = footer
-        .hint_weighted("Tab", "Next", 1)
-        .hint_weighted("Esc", "Cancel", 4);
+    let footer = footer.key("Tab").weight(1).key("Esc").weight(4);
     let content = Surface::new(title).footer(&footer).render(area, buf, ctx);
     if content.height < 5 || content.width < 10 {
         return;
@@ -311,9 +310,9 @@ fn render_form(area: Rect, buf: &mut Buffer, modal: &mut ViewModal, ctx: &Render
         label_width: LABEL_WIDTH,
     }
     .render(row(0, 1), buf, ctx);
-    crate::pointer::record_field::<ViewModal>(row(0, 1), FormFocus::Name);
+    crate::app::pointer::record_field::<ViewModal>(row(0, 1), FormFocus::Name);
     if let Some(error) = &modal.name_error {
-        let width = error.chars().count() as u16;
+        let width = crate::glyphs::display_width(error) as u16;
         if width < content.width {
             Paragraph::new(error.as_str())
                 .style(Style::default().fg(ctx.error))
@@ -337,7 +336,7 @@ fn render_form(area: Rect, buf: &mut Buffer, modal: &mut ViewModal, ctx: &Render
         label_width: LABEL_WIDTH,
     }
     .render(row(1, 3), buf, ctx);
-    crate::pointer::record_field::<ViewModal>(row(1, 3), FormFocus::Description);
+    crate::app::pointer::record_field::<ViewModal>(row(1, 3), FormFocus::Description);
 
     // The Matching section: a rule behind the rail gutter, criteria under it
     // only while expanded. The chip counts the criteria that are set.
@@ -354,7 +353,7 @@ fn render_form(area: Rect, buf: &mut Buffer, modal: &mut ViewModal, ctx: &Render
         .style(Style::default().fg(ctx.accent))
         .render(rail_area, buf);
     let rule_area = row(section_y, 1);
-    crate::pointer::record_field::<ViewModal>(rule_area, FormFocus::Matching);
+    crate::app::pointer::record_field::<ViewModal>(rule_area, FormFocus::Matching);
     SectionRule {
         title: "Matching",
         chip: Some(&chip),
@@ -412,7 +411,7 @@ fn render_form(area: Rect, buf: &mut Buffer, modal: &mut ViewModal, ctx: &Render
             label_width: LABEL_WIDTH,
         }
         .render(area, buf, ctx);
-        crate::pointer::record_field::<ViewModal>(area, focus);
+        crate::app::pointer::record_field::<ViewModal>(area, focus);
     }
 
     // The table is the dataset's, not typed: echoed, never focused. The path
@@ -438,8 +437,11 @@ fn render_score_details(area: Rect, buf: &mut Buffer, modal: &mut ViewModal, ctx
     // Sized to the breakdown, not the terminal: a compact centered dialog.
     // The body, the blank above the footer, the footer and the frame.
     let height = (body.lines().count() as u16 + 4).min(area.height);
-    let details_area = centered_rect_fixed(area, 56, height);
-    let footer = HintBar::from_ctx(ctx).hint("Esc", "Close");
+    let details_area = centered_rect(area, 56, height);
+    let footer = HintBar::from_ctx(ctx)
+        .screen(Context::Views)
+        .group("List")
+        .key("Esc");
     let content = Surface::new(title.as_str())
         .footer(&footer)
         .render(details_area, buf, ctx);
@@ -495,7 +497,6 @@ mod tests {
 
     fn list_modal() -> ViewModal {
         let mut modal = ViewModal::new();
-        modal.active = true;
         modal.rows = vec![
             ViewRow {
                 view: a_view("salary review", Some("Sorted by salary")),
@@ -532,7 +533,6 @@ mod tests {
     fn the_list_offers_only_what_acts_and_cuts_with_a_mark() {
         let g = crate::glyphs::get();
         let mut modal = ViewModal::new();
-        modal.active = true;
         let rows = render_to_rows(&mut modal, 40, 12);
         let text = rows.join("\n");
         assert!(!text.contains("Apply"), "{text}");

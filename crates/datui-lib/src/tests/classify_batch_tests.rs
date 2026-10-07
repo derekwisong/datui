@@ -1,3 +1,4 @@
+use crate::home::home_app::CLASSIFY_BATCH;
 use crate::*;
 use std::sync::mpsc;
 
@@ -7,27 +8,13 @@ fn unlooked_at(n: usize) -> home::Listing {
     let rows = (0..n)
         .map(|i| {
             let mut entry =
-                discover::Entry::directory(&PathBuf::from(format!("/pretend/share/d{i:04}")));
-            entry.kind = discover::EntryKind::Unknown;
+                home::discover::Entry::directory(&PathBuf::from(format!("/pretend/share/d{i:04}")));
+            entry.kind = home::discover::EntryKind::Unknown;
             entry
         })
         .collect();
     home::Listing {
-        sections: vec![home::Section {
-            door: None,
-            title: "SHARE".into(),
-            subtitle: None,
-            origin: None,
-            rows,
-            unavailable: false,
-            unavailable_note: None,
-            folded_by_default: false,
-            remote_root: None,
-            waiting: false,
-            grouped_by_place: false,
-            place_labels: Default::default(),
-            root: None,
-        }],
+        sections: vec![home::Section::titled("SHARE", rows)],
         ..Default::default()
     }
 }
@@ -67,7 +54,7 @@ fn only_one_classification_pass_is_out_at_a_time() {
     assert!(app.home.classify_in_flight, "and still only the one");
 
     // It lands, and what follows it is about where the viewport is now.
-    app.event(&AppEvent::HomeClassified {
+    app.event(AppEvent::HomeClassified {
         measured: Vec::new(),
         done: true,
     });
@@ -88,7 +75,7 @@ fn an_answered_pass_frees_the_slot() {
     let mut app = App::new(tx, crate::tests::test_runtime());
     app.home.classify_in_flight = true;
 
-    app.event(&AppEvent::HomeClassified {
+    app.event(AppEvent::HomeClassified {
         measured: Vec::new(),
         done: true,
     });
@@ -109,12 +96,12 @@ fn a_pass_that_outlives_its_listing_still_counts() {
     app.home.classify_in_flight = true;
 
     // What a rebuild does to the generation while the pass is out.
-    app.home_generation = app.home_generation.wrapping_add(1);
-    app.event(&AppEvent::HomeClassified {
+    app.home_app.generation = app.home_app.generation.wrapping_add(1);
+    app.event(AppEvent::HomeClassified {
         measured: vec![(
             path.clone(),
             home::Measured {
-                kind: Some(discover::EntryKind::Hive),
+                kind: Some(home::discover::EntryKind::Hive),
                 ..Default::default()
             },
         )],
@@ -125,7 +112,7 @@ fn a_pass_that_outlives_its_listing_still_counts() {
         home::Row::Entry { entry, .. } if entry.path == path => Some(entry.kind),
         _ => None,
     });
-    assert_eq!(kind, Some(discover::EntryKind::Hive));
+    assert_eq!(kind, Some(home::discover::EntryKind::Hive));
 }
 
 /// Space folds the header under the cursor, and never starts a filter: a filter of
@@ -141,21 +128,21 @@ fn space_folds_a_header_and_types_only_mid_filter() {
     app.home.selected = 0;
     assert!(app.home.selection_is_header());
 
-    app.event(&space());
+    app.event(space());
     assert!(app.home.is_collapsed(0));
-    app.event(&space());
+    app.event(space());
     assert!(!app.home.is_collapsed(0));
 
     app.home.selected = 1;
-    app.event(&space());
+    app.event(space());
     assert_eq!(app.home.filter, "", "a space on a row is nothing");
     assert!(!app.home.is_collapsed(0));
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('d'),
         KeyModifiers::NONE,
     )));
-    app.event(&space());
+    app.event(space());
     assert_eq!(app.home.filter, "d ");
 }
 
@@ -169,11 +156,11 @@ fn a_label_lands_before_its_batch_is_done() {
     let path = PathBuf::from("/pretend/share/d0000");
     app.home.classify_in_flight = true;
 
-    app.event(&AppEvent::HomeClassified {
+    app.event(AppEvent::HomeClassified {
         measured: vec![(
             path.clone(),
             home::Measured {
-                kind: Some(discover::EntryKind::Hive),
+                kind: Some(home::discover::EntryKind::Hive),
                 ..Default::default()
             },
         )],
@@ -184,6 +171,6 @@ fn a_label_lands_before_its_batch_is_done() {
         home::Row::Entry { entry, .. } if entry.path == path => Some(entry.kind),
         _ => None,
     });
-    assert_eq!(kind, Some(discover::EntryKind::Hive));
+    assert_eq!(kind, Some(home::discover::EntryKind::Hive));
     assert!(app.home.classify_in_flight, "the batch is still out");
 }

@@ -4,7 +4,7 @@
 
 use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, Timelike};
 
-use crate::chart_data::{XAxisTemporalKind, x_datetime, x_time};
+use crate::chart::chart_data::{XAxisTemporalKind, x_datetime, x_time};
 
 /// More ticks than this in one set is a step too fine to consider.
 const MOST_TICKS: f64 = 4096.0;

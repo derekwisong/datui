@@ -42,10 +42,11 @@ datui = { path = "crates/datui-lib", package = "datui-lib", version = "0.4.3-dev
 datui-cli = { path = "crates/datui-cli", version = "0.4.3-dev"}
 clap = { version = "4.5.54", features = ["derive"] }
 color-eyre = "0.6.5"
-crossterm = "0.29.0"
-ratatui = { version = "0.30.0", features = ["all-widgets"] }
 
 [dev-dependencies]
+# Integration tests drive the app through its key events and draw it.
+crossterm = "0.29.0"
+ratatui = { version = "0.30.0", features = ["all-widgets"] }
 # For integration tests (tests/*.rs) that use polars and config parsing
 polars = { version = "0.55", features = ["lazy"] }
 tempfile = "3.8"

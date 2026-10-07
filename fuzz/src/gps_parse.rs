@@ -6,8 +6,8 @@
 //! bounds: whatever it reads gives frames of the table's own schema, with every
 //! coordinate that is not null on the globe.
 
-use datui_lib::gps::gpx::{self, GpxReader};
-use datui_lib::gps::nmea::{NmeaReader, Table};
+use datui_lib::formats::gps::gpx::{self, GpxReader};
+use datui_lib::formats::gps::nmea::{NmeaReader, Table};
 
 /// Every latitude and longitude in a frame that is not null is in range. A macro, so
 /// this crate need not depend on Polars to name the frame's type.
@@ -59,7 +59,7 @@ pub fn run(bytes: &[u8]) {
     }
     if let Ok(df) = reader.finish() {
         assert_eq!(df.width(), gpx::CORE.len() + reader.fields().len());
-        assert!(reader.fields().len() <= gpx::MAX_FIELDS);
+        assert!(reader.fields().len() <= datui_lib::limits::get().gpx_fields);
         on_the_globe!(df);
     }
 }

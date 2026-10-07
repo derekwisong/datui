@@ -71,7 +71,7 @@ fn refusals_name_the_file() {
         ..OpenOptions::default()
     });
     eprintln!("{table}");
-    crate::readers::bad_input::assert_shape(&table, &data);
+    crate::formats::readers::bad_input::assert_shape(&table, &data);
     assert!(table.contains("--table picks one from"), "{table}");
 
     let spec_said = open(&OpenOptions {
@@ -79,6 +79,6 @@ fn refusals_name_the_file() {
         ..OpenOptions::default()
     });
     eprintln!("{spec_said}");
-    crate::readers::bad_input::assert_shape(&spec_said, &spec);
+    crate::formats::readers::bad_input::assert_shape(&spec_said, &spec);
     assert!(spec_said.contains(":3:"), "{spec_said}");
 }

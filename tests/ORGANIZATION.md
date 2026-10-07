@@ -1,107 +1,66 @@
-# Reduce test iteration time
+# Test organization
 
-Use `./scripts/dev/test.sh` to select a target before filtering tests. The
-[test policy](tests.md#select-the-checks) and `AGENTS.md` describe the current
-workflow; the target consolidation below is a proposal, not an available
-command set.
+`scripts/dev/test.sh` selects a target before a filter;
+[Run tests](../docs/for-developers/tests.md) has the commands and the layout. This
+file records why the targets are what they are, and what it cost and saved.
 
-## Findings
+## Where a test goes
 
-Measured on September 30, 2026, on a debug build:
+Every test executable links the app, about 400 MiB in a debug build, so the root
+targets are a few by domain, each a directory with a `main.rs` that declares its
+modules:
 
-| Observation | Consequence |
+| Target | Holds |
 |---|---|
-| 26 root integration targets, about 720 test functions | A library edit relinks every target that uses the app |
-| More than half the test executables link the app at 650–800 MiB each; the rest are under 45 MiB | Linking dominates a warm rebuild, even when the tests run in seconds |
-| `integration_test.rs`: 16,400 lines and 276 tests | Many unrelated behaviors share one large target |
-| `home_test.rs`: 5,400 lines and 171 tests | Another large target mixes discovery, UI and configuration |
-| About 1,400 library tests across 84 source files | `--lib FILTER` limits execution, but still compiles the library test executable |
-| Environment-mutating config, color and cloud tests | Combining executables can introduce new process-global races |
-| Python fixtures initialized with a per-executable `Once` | Different processes can independently notice missing fixtures and start generation |
+| `app` | The App end to end: helpers in `main.rs`, tests by area (`loading`, `query`, `export`, `data_quality`, `home_screen`, `inspector`, `chart`, `analysis`, `views`, `table_keys`, `harness`), formats in `formats/`, cloud in `cloud/`, `remote_quality` in `quality/`, and `capture`, `terminal_escape`, `catalog`, `public_datasets`, `quality_export` |
+| `home` | The home screen, with `search` and `locality` |
+| `data` | `statistics`, `distribution`, `reshape`, `excel` |
+| `config` | `settings`, `flags`, `themes`, `colors`, `indexed_colors`, `views`, `view_store` |
+| `repo` | `desktop_entry`, `release_notes`, `wording` |
 
-Waiting is no longer a cost: every App-driving wait returns when the work it
-waits on is done (see [Wait for completion](tests.md#wait-for-completion)).
-What remains is build and link time.
+A new test goes into the module that fits; a new area is a new module, not a new
+top-level file. Module-qualified names keep filters narrow (`app loading::`).
 
-Cargo compiles each top-level integration test as a separate crate. Its own
-[target documentation](https://doc.rust-lang.org/cargo/reference/cargo-targets.html#integration-tests)
-suggests grouping tests into modules to reduce executable overhead. Target
-selection and dependency boundaries are the useful levers here; deleting
-regression cases is not required.
+A target of its own is for a test that changes the process for everyone in it:
 
-## Delivered first steps
-
-| Change | Effect |
+| Target | Why apart |
 |---|---|
-| `scripts/dev/test.sh` and the selection policy | Runs the relevant target instead of building and running the whole suite |
-| Completion waits in `tests/common/` | One `work_pending`, `next_event`, `drain_events` and `pump_open_until_loaded` replace a copy in each target |
-| Footer passes count as pending work | Table assertions see the schema the footer pass brings back |
-| Whole event chains | Every returned event is handled, with no depth limit |
-| Deadline diagnostics | A wait that runs out fails, naming its location and what was still owed |
-| Harness regression tests | Queued events, an owed result and an expired guard each have a test |
+| `startup_test`, `stderr_log_test` | Run the binary, or this test binary, as a child process |
+| `quality_spill_test`, `quality_bench_test` | Set Polars' spill directory and `TMPDIR` before Polars reads them, once per process |
+| `aws_profiles_test`, `cloud_home_test`, `cloud_list_on_enter_test` | Set cloud credentials in the environment |
+| `cloud_live_test` | Live stores; ignored by default |
+| `fuzz_corpus_test` | The fuzz targets' bodies; run by name for parser changes |
 
-## Consolidate by domain, preserving isolation
+Before giving a test its own process, repair it instead when that is possible:
+the one test that set `NO_COLOR` now gives the color parser `no_color` directly,
+and `locality` counts its own thread's reads rather than the process's. A mutex
+helps only if every reader and writer shares it.
 
-Pilot the data target before changing the entire suite:
+## Phase E, before and after
 
-```text
-tests/
-  common/mod.rs
-  data/
-    main.rs
-    statistics.rs
-    distribution.rs
-    reshape.rs
-    excel.rs
-  app/
-    main.rs
-    analysis.rs
-    chart.rs
-    query_filter.rs
-    loading_schema.rs
-    capture.rs
-    views.rs
-    terminal.rs
-  home/
-    main.rs
-    discovery.rs
-    search.rs
-    locality.rs
-  config/
-    main.rs
-    settings.rs
-    views.rs
-    themes.rs
-```
+Code-review Phase E, October 7, 2026: 16 cores, sccache, mold, incremental,
+`CARGO_BUILD_JOBS=6`, `RUST_TEST_THREADS=6`, with other agents building on the
+machine, so wall times are approximate.
 
-These are candidate groups, not a mandate to create four new monoliths.
-`main.rs` declares modules; module-qualified filters preserve narrow execution.
-Move existing test bodies without altering their assertions in the layout PR.
-Extract shared helpers once per target, rather than including `mod common`
-separately in each child module. Update relative paths and commands deliberately.
+| Measure | Before (6596f3be) | After |
+|---|---|---|
+| Test executables in the workspace | 36; 22 over 200 MiB | 18; 12 over 200 MiB |
+| Their size | 8.2 GiB | 4.7 GiB |
+| Root test executables' compile and link after a one-line `datui-lib` edit | 33 units, 35.9 s CPU | 15 units, 16.8–17.9 s CPU |
+| Wall time of that rebuild | 11.4–12.0 s | 7.8–8.2 s |
+| Root test executables in a fresh target dir | 33 units, 70.1 s CPU | 15 units, 26.5 s CPU |
+| Rebuild after a one-line test edit | under 1 s | under 1 s (`app`, the largest, 1.0 s) |
+| `scripts/dev/test.sh full`, built | 38.8 s wall | 23.4 s wall |
+| Tests | 4,002 passed, 32 ignored | 3,977 passed, 31 ignored |
+| `sleep` calls in test code | 49 | 28, none waiting for work: 11 poll a condition no event reports (a file on disk, a flag), 15 have a real timer as the subject (a slow disk or server, a sampler, a frame rate, a wait that must not end), 2 in `src/tests` that set an order (views sent after an open starts, a future that outlasts the runtime's shutdown) |
 
-| Current cases | Suggested destination |
-|---|---|
-| Statistics, distribution, pivot/melt, Excel | First consolidation pilot: `data` |
-| App analysis/chart/query/loading, capture, views, terminal | Split the big file into `app` modules without adding an executable per module |
-| Home, search, locality | `home`, after separating environment-dependent cases |
-| Config, views, themes | `config`; keep process-global environment cases isolated until repaired |
-| Live cloud, AWS profiles, credential discovery | Separate process-isolated targets initially; retain ignored/live behavior |
-| Desktop entry and release-note wiring | Retain inexpensive targets or move to a lightweight repository-check package if measurements justify it |
-
-Pilot acceptance: identical discovered cases after accounting for module-name
-changes, unchanged ignored status, full-suite pass, fewer heavy executables,
-and measured improvements to a library-edit rebuild. Also measure edits to
-one test module: consolidation trades fewer links for recompiling more test
-code within that target. Keep a separate target if the measurements favor it.
-
-Do not blindly combine environment-mutating tests. Cloud targets set AWS
-credential/profile variables; color cases set/remove `NO_COLOR`. Prefer
-explicit configuration injection or subprocess isolation. A mutex helps only
-if every writer and reader shares it; locking selected tests alone is not
-isolation. Nextest's per-test process execution is another option, but native
-`cargo test --workspace` must remain reliable unless CI and policy are changed
-explicitly.
+The library's own test executable (about 9.5 s after an edit) is the critical path
+after a library edit; the root executables link beside it. The fresh-target-dir
+build after the change missed sccache and ran under a load average of 13, so only
+its root test units are compared. 29 tests were folded into table-driven or exact
+neighbors that cover the same cases; two were added
+(a followed file replaced before its watcher opens it, and `NO_COLOR` given to the
+color parser, which replaced an ignored test), and other work added two.
 
 ## Make the cheapest tests independent
 
@@ -151,3 +110,147 @@ Nextest can schedule execution across binaries and improve reports, but
 It complements target reorganization; it does not replace it. Format/clippy
 remain required before Rust submission. Broaden tests based on change scope,
 with full workspace and platform coverage retained in CI.
+
+## Record: baseline, October 7, 2026
+
+Before folding any target (code-review Phase E, milestone 1), on `code-review-plan`
+at 6596f3be: 16 cores, sccache, mold, incremental, `CARGO_BUILD_JOBS=6`,
+`RUST_TEST_THREADS=6`, a fresh target directory, other agents building on the
+machine. sccache was warm, so "cold" is a fresh target directory, not a fresh
+compiler cache.
+
+| Measure | Before |
+|---|---|
+| `cargo test --workspace --no-run --timings`, fresh target dir | 58.5 s wall, 693 units; `datui-lib` lib tests 45.9 s, `datui-lib` 21.5 s, `integration_test` 11.8 s, `home_test` 4.9 s |
+| The same after a one-line `datui-lib` edit | 12.0 s, 38 units: lib tests 9.7 s, `datui-lib` 3.9 s, `integration_test` 3.0 s, every other test binary about 1.5 s |
+| Test executables | 36; 22 over 200 MiB; 8.2 GiB together (14 GiB target dir) |
+| `scripts/dev/test.sh full` | 38.8 s wall, built; 26.2 s summed over 38 test binaries |
+| Tests | 4,002 passed, 0 failed, 32 ignored |
+
+`full`, per binary (the slowest test in a binary sets its time):
+
+| Binary | Tests | Time | Its slowest test |
+|---|---|---|---|
+| `integration_test` | 668 | 6.0 s | `test_abandoned_load_never_installs_itself_afterwards` 2.3 s |
+| `statistics_test` | 11 | 5.3 s | `distribution_of_a_wide_integer_range_finishes` 4.2 s alone |
+| `datui-lib` lib | 2,699 | 4.9 s | `data_quality::tests::a_count_past_a_million_keys_gives_up_and_keeps_the_rows` 3.3 s |
+| `distribution_detection_test` | 14 | 3.1 s | each family about 1 s alone: three seeds of one fit |
+| `cloud_list_on_enter_test` | 1 | 2.0 s | two one-second quiet waits |
+| `config_test` | 131 | 2.0 s | `test_history_update_is_dropped_rather_than_blocking`: a 2 s lock deadline |
+| every other binary | | under 1 s | |
+
+### First pass: slow tests, sleeps, duplicates
+
+Without folding targets. Times are nextest's, `-j 6`, over the lib,
+`integration_test`, `statistics_test` and `distribution_detection_test`: 21.2 s
+before, 16.9 s after.
+
+| Test | Before | After | Change |
+|---|---|---|---|
+| `statistics_test::correlation_allocates_per_column_not_per_pair` | 5.05 s | 1.28 s | 50,003 rows, not 200,003: a column-sized block is still far above anything else |
+| `statistics::tests::a_matrix_in_bands_is_the_matrix_in_one` | 1.53 s | 0.05 s | 200 rows; bands of 1, 2, 7, 67, 199, 200 and 1,000, dividing and not |
+| `cloud_list_on_enter_test` (binary) | 2.02 s | 0.01 s | waits for no source being listed, not one second each time |
+| `download::tests::a_refused_write_stops_the_stream` | 0.32 s | 0.11 s | waits for the stream to be let go |
+
+`full` after: 29.9 s wall, 28.5 s summed (`integration_test` measured 10.4 s
+under other agents' load; its tests' nextest times are unchanged), 3,981
+passed, 32 ignored: 21 tests folded into neighbors that cover their cases.
+
+Left as they are, each for a reason:
+
+| Test | Time | Why |
+|---|---|---|
+| `distribution_of_a_wide_integer_range_finishes` | 4–6 s | `incomplete_gamma` on values in the millions, in a debug build; 500 values instead of 2,000 saved 0.5 s |
+| `distribution_detection_test::*` | 1–2 s each | one fit per seed; the three seeds are the assertion |
+| `a_count_past_a_million_keys_gives_up_and_keeps_the_rows` | 2–3 s | the limit is the constant `MAX_COUNTED_KEYS` |
+| `sqlite::tests::a_preview_of_a_view_that_never_ends_gives_up`, `a_read_stops_when_the_dataset_lets_go` | 2 s | the product's 2 s budgets are the subject |
+| `event_pump::tests::a_background_count_redraws_at_the_idle_cadence` | 2 s | frames counted over a real second |
+| `config_test::test_history_update_is_dropped_rather_than_blocking` | 2 s | the lock deadline is the subject |
+
+### Pilot: the `data` target
+
+`tests/data/main.rs` declares `statistics`, `distribution`, `reshape` (pivot and
+melt) and `excel`, which were four executables. They share one `common`, and the
+counting allocator `statistics` installs covers the whole executable. Select
+them as `scripts/dev/test.sh integration data statistics::`. The same 49 tests
+pass under `cargo test` and under nextest.
+
+| Measure | Four targets | `data` |
+|---|---|---|
+| Executables in the workspace | 36 | 33 |
+| Their size | 1,204 MiB (236 + 237 + 400 + 390) | 382 MiB |
+| Rebuild after a one-line `datui-lib` edit, all test targets | 11.4 s wall, 38 units, 35.9 s across the root test units | 11.1 s wall, 35 units, 33.2 s |
+| Of that, the data tests | 4.3 s across four links | 1.5 s, one link |
+| Rebuild after a one-line edit of one data test file | 0.5 s | 0.5 s |
+| Run under `cargo test` | 8.3 s, one after another | 7.8 s |
+
+Wall time after a library edit hardly moves: the library's own test executable
+(about 9.5 s) is the critical path, and the root targets link alongside it. What
+folding saves is link work (2.8 s of CPU for these four), disk (820 MiB), and the
+cold build's link queue. A test edit costs the same. No cold build was measured
+for the pilot.
+
+### `config`, `home` and `repo`
+
+| Target | Modules (were) |
+|---|---|
+| `config` | `settings` (config_test), `flags` (config_integration_test), `themes` (theme_application_test), `colors` (color_parser_test), `indexed_colors` (indexed_color_test), `views` (views_test), `view_store` (view_store_test) |
+| `home` | `search` (search_test), `locality` (locality_test); `home_test.rs` stays apart for now |
+| `repo` | `desktop_entry`, `release_notes`, `wording` |
+
+The only test that set `NO_COLOR` (ignored, for that reason) is now a unit test
+that gives the parser `no_color` directly. The rest only remove it, and
+`DATUI_TEST_IMPORT_DIR` is read by the one test that sets it, so `config` runs
+them in one process. `stderr_log_test` and `startup_test` run child processes
+and stay apart, as do the cloud, live and AWS targets.
+
+| Measure | Before (after the data pilot) | After |
+|---|---|---|
+| Executables in the workspace | 33 | 24 (18 over 200 MiB), 6.8 GiB |
+| These twelve | 1,285 MiB (config group 944, home 316, repo 25) | 663 MiB (389 + 263 + 11) |
+| Rebuild after a one-line `datui-lib` edit | 11.1 s wall, 35 units, 33.2 s across the root test units | 10.1 s wall, 26 units, 24.7 s |
+| Rebuild after a one-line edit of one `config` module | 0.5 s | 0.6 s |
+| `scripts/dev/test.sh full`, built | 29.9 s wall, 38 binaries | 23.7 s wall, 26 binaries |
+
+The same 219 tests pass in the three targets, under `cargo test`, under nextest,
+and with `NO_COLOR=1` set for the run.
+
+### `app`, apart from `integration_test`
+
+`tests/app/main.rs` declares `capture`, `terminal_escape`, `catalog` and
+`public_datasets` (both with the `cloud` and `http` features), and
+`quality_export` (was quality_intent_export_test). `table_sample.rs` in the same
+directory is still a module of `integration_test`. `quality_spill_test` and
+`quality_bench_test` stay apart: each sets Polars' spill directory and `TMPDIR`
+before Polars reads them, once per process.
+
+| Measure | Before | After |
+|---|---|---|
+| Executables in the workspace | 24, 6.8 GiB | 20, 5.3 GiB |
+| These five | 1,900 MiB, about 375–390 each | 389 MiB |
+| Rebuild after a one-line `datui-lib` edit | 8.9 s wall, 26 units, 22.8 s across the root test units; these five 5.6 s | 8.4–9.5 s wall, 22 units, 19.4–24.4 s; `app` 1.4–2.8 s |
+| Rebuild after a one-line edit of one module | 0.6 s | 0.5 s |
+| `scripts/dev/test.sh full`, built | 23.7 s wall | 23.4 s wall; 3,983 passed, 31 ignored |
+
+Other agents kept the load average near 10 during these runs, so the rebuild
+times are ranges over two runs.
+
+### `app` and `home` whole
+
+`integration_test.rs` (26,166 lines) became `app`'s root: its helpers stay in
+`main.rs` and its 434 tests went to eleven modules by area; `formats/`, `cloud/`
+and `quality/` moved under `tests/app/`. `home_test.rs` became `home`'s root, so
+its tests and modules (`coming_back::`, …) keep their names. Waits between drawn
+frames are now on the channel (`common::wait_for_event`), which took
+`test_startup_buffer_race_does_not_lose_rows` from 2.05 s to 0.65 s with its 50
+iterations kept; `test_abandoned_load_never_installs_itself_afterwards` (2.3 s to
+2.0 s) keeps 40 quiet ticks per abandon point, which are what let a late row count
+show itself.
+
+| Measure | Before | After |
+|---|---|---|
+| Executables in the workspace | 20, 5.3 GiB | 18, 4.7 GiB |
+| `integration_test`, `home_test`, `app`, `home` | 1,444 MiB in four | 796 MiB in two |
+| Rebuild after a one-line `datui-lib` edit | 8.4–9.5 s wall, 22 units, 19.4–24.4 s | 7.8–8.2 s wall, 20 units, 16.8–17.9 s |
+| Rebuild after a one-line edit of an `app` module | 0.5 s (a small module) | 1.0 s (the whole of `app`) |
+| `scripts/dev/test.sh full`, built | 23.4 s | 23.4 s; 3,977 passed, 31 ignored |

@@ -1,7 +1,5 @@
-//! User-facing error message formatting.
-//!
-//! Uses typed error matching (PolarsError variants, io::ErrorKind) rather than
-//! string parsing to produce actionable, implementation-agnostic messages.
+//! User-facing error messages, matched on types (PolarsError variants, io::ErrorKind)
+//! rather than strings.
 
 use polars::prelude::PolarsError;
 use std::io;
@@ -247,10 +245,8 @@ pub fn in_file(path: &Path, err: color_eyre::eyre::Report) -> color_eyre::eyre::
 
 /// Format a PolarsError as a user-facing message by matching on its variant.
 pub fn user_message_from_polars(err: &PolarsError) -> String {
-    // Polars' words first, then the tidying every one of them wants: its query plan taken
-    // off the end, and the one shape worth rewriting said as a directory rather than as
-    // two schemas printed in full. Done here, around the match, so no arm can be added
-    // that forgets it.
+    // Polars' words, then tidying every message needs: the query plan cut off, and a union
+    // schema clash said as a directory problem. Around the match, so no arm skips it.
     let said = polars_words(err);
     if is_union_schema_error(&said) {
         return union_schema_message(&said);
@@ -309,10 +305,8 @@ fn rust_names_said_plainly(msg: &str) -> Option<String> {
     Some(format!("The file is not UTF-8 text{at}."))
 }
 
-/// A scan whose path expanded to no files, said plainly. Polars prints its expansion
-/// input (`paths: [PlRefPath { inner: … }]`, `glob: true`), which reads as internals.
-/// A local path is only handed over as a pattern when no file has its name
-/// (`source::expands_as_glob`), so for a pattern this is the whole story.
+/// A scan whose path expanded to no files, said plainly instead of Polars' internals. A
+/// local path is a pattern only when no file has its name (`source::expands_as_glob`).
 fn nothing_matched(msg: &str) -> Option<String> {
     let (_, input) = msg.split_once("expanded paths were empty")?;
     // The paths are Debug-printed, `paths: [PlRefPath { inner: "…" }]`: look inside
@@ -438,12 +432,11 @@ fn parse_conversion(msg: &str, parsing: bool) -> Option<ConversionFailure> {
 }
 
 impl ConversionFailure {
-    /// What a SQL writer can act on: the column, how many values, a few of them, and
-    /// the SQL that would get past them. `rows` is how many rows `df` holds, when
-    /// known. The count is "N of M" only when Polars checked all of them; otherwise it
-    /// covers the batch the run stopped in, and is said as a lower bound.
+    /// What a SQL writer can act on: the column, how many values, a few, and SQL to get past
+    /// them. `rows` is `df`'s height if known; "N of M" only when Polars checked all,
+    /// otherwise a lower bound from the batch it stopped in.
     pub fn sql_message(&self, rows: Option<usize>) -> String {
-        let column = crate::sql_assist::sql_name(&self.column);
+        let column = crate::query::sql_assist::sql_name(&self.column);
         let exact = rows == Some(self.checked);
         let one = !exact && self.failed == 1;
         let temporal = self.to == "date" || self.to == "time" || self.to.starts_with("datetime");
@@ -547,11 +540,9 @@ pub fn sql_error_message(err: &PolarsError, rows: Option<usize>) -> String {
 const HELD: &str =
     "is open in another program that does not allow reading it; close it there and reopen";
 
-/// Whether `err` is Windows refusing a file another program holds: a sharing
-/// violation (32), as from a spreadsheet app with the workbook open, or a locked
-/// region (33). Polars rewraps an open's error with the path in its text, keeping
-/// the OS's words but not the code, so the text is read too. Off Windows those
-/// codes mean something else.
+/// Whether `err` is Windows refusing a file another program holds: a sharing violation
+/// (32, e.g. a spreadsheet open) or locked region (33). Polars rewraps opens keeping
+/// the OS text but not the code, so the text is read too. Other OSes: never.
 pub fn held_by_another_program(err: &io::Error) -> bool {
     held_on(cfg!(windows), err)
 }
@@ -680,14 +671,10 @@ pub fn error_for_python(report: &color_eyre::eyre::Report) -> (ErrorKindForPytho
     (ErrorKindForPython::Other, msg)
 }
 
-/// `message` with `file`, a temporary copy datui made, called `source`: what the user
-/// opened. A download or a decompressed CSV is read from a temp path the user never
-/// typed, and Polars names the file it was reading.
-///
-/// Only a whole mention is replaced: one that a path character neither precedes nor
-/// follows, so a longer path that merely starts or ends with the temp file's (its
-/// name plus an extension, the same name in another directory) is left as it is. A
-/// full stop that ends a sentence still ends the mention.
+/// `message` with `file` (a temp copy datui made: a download, a decompressed CSV)
+/// renamed `source`, what the user opened. Only whole mentions are replaced (no path
+/// character on either side, though a sentence's full stop may follow), so longer paths
+/// sharing the name are untouched.
 pub fn named_by_source(message: &str, file: &Path, source: &Path) -> String {
     let file = file.to_string_lossy();
     if file.is_empty() {
@@ -753,15 +740,9 @@ fn report_message(windows: bool, report: &color_eyre::eyre::Report, path: Option
     named(rust_names_said_plainly(first_line).unwrap_or_else(|| first_line.to_string()))
 }
 
-/// Polars' own words, with its query plan taken off the end.
-///
-/// When a scan fails inside a plan, Polars appends the plan it had resolved so far —
-/// several lines of `Resolved plan until failure:`, an arrow reading `FAILED HERE
-/// RESOLVING THIS_NODE`, and a fragment naming the node. On a terminal that lands in an
-/// error modal as a paragraph of internals above the one sentence that matters.
-///
-/// The one part of it worth keeping is the file the scan stopped at, which the plan
-/// names and the message above it usually does not.
+/// Polars' words without the appended query plan (`Resolved plan until failure:` and
+/// the `FAILED HERE` fragment), keeping only the file the scan stopped at, which the
+/// plan names and the message often does not.
 fn without_the_query_plan(msg: &str) -> String {
     let Some(cut) = msg.find("Resolved plan until failure:") else {
         return msg.to_string();
@@ -774,12 +755,9 @@ fn without_the_query_plan(msg: &str) -> String {
     }
 }
 
-/// The path in a plan fragment's scan node: `Csv SCAN [/data/one.csv]`.
-///
-/// The one under the marker, not the first in the plan. A plan with more than one scan
-/// — a union branch, a join — names them all, and the first is rarely the one that
-/// failed; picking it makes a specific, checkable claim about the wrong file, which is
-/// worse than saying nothing.
+/// The path in the failing plan node's scan (`Csv SCAN [/data/one.csv]`): the one under
+/// the marker, not the plan's first scan, which in a union or join is often not the
+/// failing file.
 fn file_in_plan(plan: &str) -> Option<&str> {
     const MARKER: &str = "FAILED HERE";
     let from = plan.find(MARKER).map_or(0, |at| at + MARKER.len());
@@ -790,20 +768,13 @@ fn file_in_plan(plan: &str) -> Option<&str> {
     (!file.is_empty()).then_some(file)
 }
 
-/// Files that could not be stacked into one table, said as a directory rather than as a
-/// pair of schemas.
-///
-/// Polars prints both schemas in full — every field and dtype of each — which for two
-/// forty-column files is a screen of braces, and neither is labelled with the file it
-/// came from. Since #275 the reader unions by name and widens types, so this is what is
-/// left when even that cannot reconcile them, and the useful answer is which file and
-/// what to do, not the two schemas.
+/// Files that could not be stacked into one table, said as a directory rather than two
+/// unlabeled full schemas. The reader already unions by name and widens types, so
+/// what remains needs which file and what to do.
 fn is_union_schema_error(msg: &str) -> bool {
-    // Only the phrase a multi-file read produces. `unable to vstack` was here too and
-    // matched far more than it meant: `DataFrame::vstack` stitches the row buffer and
-    // builds a segment in the data-quality pass, both on a single open file with no
-    // directory in sight — and this message would have told the user to open one file
-    // instead, throwing the real cause away to do it.
+    // Only a multi-file read's phrase: `unable to vstack` also comes from single-file
+    // buffer stitching and DQ segments, where advising "open one file" would hide the
+    // cause.
     msg.contains("'union'/'concat' inputs should all have the same schema")
 }
 
@@ -821,11 +792,9 @@ fn union_schema_message(msg: &str) -> String {
     said
 }
 
-/// Files whose columns could not be lined up, said as files rather than as schemas.
-///
-/// Polars says this merging the schemas it inferred from each file of a directory:
-/// `schema names differ: got 39, expected 25`, where 39 and 25 are column *names* — the
-/// first row of a file with no header, read as one. Read as counts, it points nowhere.
+/// Files whose columns could not be lined up, said as files. Polars' `schema names
+/// differ: got 39, expected 25` counts names, often a headerless file's first row read
+/// as names.
 fn files_columns_differ(msg: &str) -> Option<String> {
     let how = if let Some(rest) = msg.split("schema names differ: got ").nth(1) {
         let (got, expected) = rest.split_once(", expected ")?;

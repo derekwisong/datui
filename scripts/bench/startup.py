@@ -79,7 +79,7 @@ BACKGROUND_REPLY = b"\x1b]11;rgb:0000/0000/0000\x1b\\"
 DOWNLOAD_QUESTION = b"Continuewithdownload"
 CSI = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
-# Public catalog files (crates/datui-lib/src/public_catalog.toml).
+# Public catalog files (crates/datui-lib/src/home/public_catalog.toml).
 REMOTE = {
     "taxi-http": (
         "NYC yellow taxis, Jan 2025 (HTTPS, 59 MB Parquet)",

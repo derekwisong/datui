@@ -108,7 +108,7 @@ fn a_source_that_never_answers_does_not_hold_up_the_others() {
         if let Ok(event) = rx.recv_timeout(Duration::from_millis(50)) {
             let mut next = Some(event);
             while let Some(event) = next {
-                next = app.event(&event);
+                next = app.event(event);
             }
         }
     }
@@ -158,7 +158,7 @@ fn a_failed_peek_stops_spinning_and_is_not_an_answer() {
     );
     let path = std::path::PathBuf::from("gs://pitscope/seasons");
     app.home.peeking.insert(path.clone());
-    app.event(&datui::AppEvent::HomeCloudKinds {
+    app.event(datui::AppEvent::HomeCloudKinds {
         kinds: Vec::new(),
         failed: vec![path.clone()],
     });
@@ -166,7 +166,7 @@ fn a_failed_peek_stops_spinning_and_is_not_an_answer() {
     assert!(app.home.peek_failed.contains(&path));
     assert!(!app.home.cloud_kinds.contains_key(&path), "not an answer");
 
-    let mut row = datui::discover::Entry::directory(&path);
+    let mut row = datui::home::discover::Entry::directory(&path);
     row.name = "seasons".to_string();
     assert_eq!(
         app.home.cloud_look(&row),
@@ -196,11 +196,11 @@ fn a_url_typed_at_the_prompt_is_browsed_or_opened() {
     app.enter_home();
     let type_at_prompt = |app: &mut datui::App, text: &str| {
         let key = |code| datui::AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE));
-        app.event(&key(KeyCode::Char('~')));
+        app.event(key(KeyCode::Char('~')));
         for c in text.chars() {
-            app.event(&key(KeyCode::Char(c)));
+            app.event(key(KeyCode::Char(c)));
         }
-        app.event(&key(KeyCode::Enter))
+        app.event(key(KeyCode::Enter))
     };
 
     // No extension: a directory, browsed.

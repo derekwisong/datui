@@ -32,13 +32,13 @@ preview. The inspector shows what is stored:
 | Float | The shortest decimal that reads back to the stored value: `1000000.125`, not the table's `1.0000e6`. `-0.0`, `NaN`, `inf` and `-inf` as they are |
 | Integer | Every digit. When the table groups digits, a line under it says what the table shows |
 | Datetime | Every digit of its unit and the zone's offset: `2024-01-02 04:04:05.000120 +01:00`. One past the calendar's range shows its stored number: `-9223372036854775807 us since 1970-01-01 UTC` |
-| Text | Whole, wrapped between words, a line per line break; its length, line count and any spaces at either end are named on the rule above it. Over 1 KB, the list's preview ends with its size: `… · 2.1 MB` |
+| Text | Whole, wrapped between words, a line per line break; its length, line count and any spaces at either end are named on the rule above it. Over 1 KiB, the list's preview ends with its size: `… · 2.1 MiB` |
 | JSON text | Indented, with `json` on the rule. <kbd>e</kbd> shows it raw or escaped |
 | Empty text | `""` in the list; `empty string` in the pane, or `""` escaped |
 | Empty bytes | `0 bytes · empty` in the list; `empty binary` in the pane |
 | Null | `∅ null`; `· absent` or `≠ conflicting` where the dataset's files differ |
 | List, struct | One item per line, text quoted |
-| Binary | Its size, `1.0 MB (1,048,576 bytes)`, and what the first bytes say it is: PNG, JPEG or GIF with its dimensions, PDF, gzip, zstd, zip, Parquet, Arrow. UTF-8 bytes read as text; others as a hex dump |
+| Binary | Its size, `1.0 MiB (1,048,576 bytes)`, and what the first bytes say it is: PNG, JPEG or GIF with its dimensions, PDF, gzip, zstd, zip, Parquet, Arrow. UTF-8 bytes read as text; others as a hex dump |
 
 Exact means the value as Polars stored it, not the spelling in a CSV file: a
 `1.50` read from CSV is the float `1.5`.
@@ -101,10 +101,10 @@ one shown. The footer offers <kbd>e</kbd> only where there is more than one.
 | Text that parses as JSON (up to 1 MiB) | JSON (indented), Raw, Escaped |
 | Other text | Raw, Escaped |
 | UTF-8 bytes | Text, Hex, Escaped |
-| gzip or zstd holding text | Hex, Text (the first 64 KB decompressed), Escaped |
+| gzip or zstd holding text | Hex, Text (the first 64 KiB decompressed), Escaped |
 | Other bytes | Hex, Escaped |
 
-JSON text over 64 KB is indented in the background; until then it shows raw,
+JSON text over 64 KiB is indented in the background; until then it shows raw,
 with `json, indenting...` on the rule. gzip and zstd are decompressed in the
 background when their Text view is chosen, with `decompressing...` on the rule
 until then; bytes that turn out to hold no text go back to Hex, and the rule
@@ -151,7 +151,7 @@ fit, and the focused item's whole value is under the table.
 | Limit | |
 |---|---|
 | Items | Only the items on screen are read: a list of a million items opens at once, and `End` reaches the last |
-| JSON text | Up to 64 KB is parsed on the key; longer text in the background, with the spinner. Text over 4 MiB is not opened; <kbd>Tab</kbd> reads it in the value |
+| JSON text | Up to 64 KiB is parsed on the key; longer text in the background, with the spinner. Text over 4 MiB is not opened; <kbd>Tab</kbd> reads it in the value |
 | Depth | JSON nested deeper than 128 levels does not open |
 
 Text that does not parse stays where it is, and the footer says why:

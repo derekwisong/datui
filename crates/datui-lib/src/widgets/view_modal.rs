@@ -38,7 +38,6 @@ pub enum FormFocus {
 
 #[derive(Default)]
 pub struct ViewModal {
-    pub active: bool,
     pub mode: ViewModalMode,
     pub table_state: TableState,
     pub rows: Vec<ViewRow>,
@@ -239,16 +238,15 @@ impl ViewModal {
     /// Take the modal down wholesale, whatever mode it is in.
     pub fn close(&mut self) {
         self.exit_form();
-        self.active = false;
         self.score_details = None;
     }
 }
 
-impl crate::form::Form for ViewModal {
+impl crate::app::form::Form for ViewModal {
     type Field = FormFocus;
 
-    fn fields(&self) -> Vec<(FormFocus, crate::form::FieldKind)> {
-        use crate::form::FieldKind;
+    fn fields(&self) -> Vec<(FormFocus, crate::app::form::FieldKind)> {
+        use crate::app::form::FieldKind;
         self.focus_order()
             .iter()
             .map(|&row| {
@@ -281,7 +279,7 @@ impl crate::form::Form for ViewModal {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::form::Form;
+    use crate::app::form::Form;
 
     /// Collapsed, Tab walks name → description → matching and wraps; the five
     /// criteria only join the walk once the section is expanded.

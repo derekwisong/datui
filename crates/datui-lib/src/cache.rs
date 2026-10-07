@@ -15,17 +15,13 @@ pub struct CacheManager {
 }
 
 impl CacheManager {
-    /// Create a new CacheManager for the given app name
     /// Create a CacheManager rooted at an explicit directory (primarily for testing).
     pub fn with_dir(cache_dir: PathBuf) -> Self {
         Self { cache_dir }
     }
 
-    /// Create a CacheManager for the given app name.
-    ///
-    /// `DATUI_CACHE_DIR` overrides the location. The test suite sets it, because
-    /// opening a dataset records it as recent — without the override a test run
-    /// writes its fixtures into the developer's own recent-files list.
+    /// Create a CacheManager for `app_name`. `DATUI_CACHE_DIR` overrides the location;
+    /// the test suite sets it so opens never record fixtures in the developer's recents.
     pub fn new(app_name: &str) -> Result<Self> {
         #[cfg(test)]
         isolate_cache();
@@ -34,11 +30,8 @@ impl CacheManager {
                 cache_dir: PathBuf::from(dir),
             });
         }
-        // A test that reaches the real cache writes its fixtures into the developer's
-        // own recents, and a dozen `/tmp/.tmp*` paths were found there. Refusing here
-        // is what makes it impossible to do by accident: every test binary cargo
-        // builds lives under `target/<profile>/deps/`, and the binary someone runs
-        // never does.
+        // A test reaching the real cache would write fixtures into the developer's recents:
+        // refuse. Test binaries live under `target/<profile>/deps/`; the real binary never.
         if running_as_a_cargo_test() {
             panic!(
                 "DATUI_CACHE_DIR is not set: a test would write to the real cache. \
@@ -73,21 +66,9 @@ impl CacheManager {
         Ok(())
     }
 
-    /// Clear a specific cache file
-    pub fn clear_file(&self, filename: &str) -> Result<()> {
-        let file_path = self.cache_file(filename);
-        if file_path.exists() {
-            fs::remove_file(&file_path)?;
-        }
-        Ok(())
-    }
-
-    /// Remove every cache kind's directory and every line-file list (recents,
-    /// histories, hidden sources, remembered places).
-    ///
-    /// Nothing else: lock files may be held by another instance, the log is not a
-    /// cache, and Data Quality's copies belong to the sessions holding them. Views live
-    /// in the config directory.
+    /// Remove every cache kind's directory and line-file list (recents, histories,
+    /// hidden sources, remembered places). Not lock files (another instance may hold
+    /// them), the log, Data Quality copies (owned by their sessions), or views (config).
     pub fn clear_all(&self) -> Result<()> {
         for dir in [Shapes::DIR, Facts::DIR, CloudListings::DIR] {
             match fs::remove_dir_all(self.cache_file(dir)) {
@@ -111,11 +92,8 @@ impl CacheManager {
         Ok(())
     }
 
-    /// Load history from a history file.
-    ///
-    /// A file that cannot be read is an error, never an empty list: an empty list
-    /// would be written back by the next push, and every entry would be gone. A line
-    /// that is not UTF-8 is skipped alone, so one bad byte costs one entry.
+    /// Load a history file. An unreadable file is an error, never an empty list (the next
+    /// push would write it back and lose every entry); a non-UTF-8 line is skipped alone.
     pub fn load_history_file(&self, history_id: &str) -> Result<Vec<String>> {
         let history_file = self.cache_file(&format!("{history_id}{HISTORY_SUFFIX}"));
 
@@ -146,25 +124,11 @@ impl CacheManager {
             .unwrap_or_default()
     }
 
-    /// Apply `update` to a history file, with the whole read-modify-write held under
-    /// an exclusive lock.
-    ///
-    /// Writing atomically stops two instances producing a *corrupt* file, but not a
-    /// lost one: both read `[x, y]`, one writes `[a, x, y]` and the other
-    /// `[b, x, y]`, and whichever lands second wins outright. Opening two datasets at
-    /// once is ordinary — a launcher, a file manager, two terminals — so the read and
-    /// the write have to be one operation.
-    ///
-    /// The lock is waited for, but only briefly. The critical section is reading and
-    /// rewriting a fifty-line file, so even a dozen contending instances clear in a
-    /// few milliseconds; a deadline well beyond that loses nothing in practice while
-    /// still guaranteeing an interactive action is never held up by a peer that has
-    /// wedged. Past the deadline the update is dropped — history is a convenience,
-    /// and it is never worth delaying what the user actually asked for.
-    ///
-    /// Giving up after a couple of quick attempts is *not* enough: with several opens
-    /// landing together, some are then dropped, which is the very loss this exists to
-    /// prevent.
+    /// Apply `update` to a history file with the read-modify-write under an exclusive
+    /// lock: atomic writes prevent corruption but not lost updates from instances
+    /// opening datasets at once. The lock is awaited up to `LOCK_TIMEOUT`, far past
+    /// realistic contention, then the update is dropped: history never delays what the
+    /// user asked for.
     pub fn update_history_file<F>(&self, history_id: &str, update: F) -> Result<HistoryUpdate>
     where
         F: FnOnce(&mut Vec<String>),
@@ -178,9 +142,8 @@ impl CacheManager {
             return Ok(HistoryUpdate::SkippedBusy);
         };
 
-        // Read, modify and write all inside the lock; the whole point is that another
-        // instance cannot land between the read and the write. A file that cannot be
-        // read is left as it is: rewriting it from nothing would lose every entry.
+        // Read, modify and write inside the lock. An unreadable file is left alone:
+        // rewriting it from nothing would lose every entry.
         let mut entries = self.load_history_file(history_id)?;
         update(&mut entries);
         let result = self.save_history_file(history_id, &entries);
@@ -201,8 +164,8 @@ impl CacheManager {
             text.push_str(entry);
             text.push('\n');
         }
-        // Truncating in place leaves the file readable half-written, and two instances
-        // writing at once interleave into one corrupt file.
+        // Not truncate-in-place: readers would see it half-written, and concurrent writers
+        // would interleave.
         atomic_write(&history_file, text.as_bytes())?;
         Ok(())
     }
@@ -214,14 +177,10 @@ const HISTORY_SUFFIX: &str = "_history.txt";
 /// The line-file of each terminal's last answer about its background.
 const TERMINAL_MODES: &str = "terminal_modes";
 
-/// Write `bytes` to `path` through a sibling temp file, synced, then renamed over it,
-/// so a reader, another instance or a crash mid-write sees the old file or the new
-/// one, never part of either. Every write into the cache, and every view, goes
-/// through here.
-///
-/// The temp name is unique to the write: the process id, then a counter shared by
-/// every thread of the process. It ends in `.tmp`, which nothing reads and a cache
-/// sweep removes once it is stale.
+/// Write `bytes` to `path` via a synced sibling temp file renamed over it, so readers,
+/// other instances and crashes see the old file or the new, never part. Every cache
+/// and view write goes through here. The temp name (pid plus a process-wide counter,
+/// ending `.tmp`) is unique per write; sweeps remove stale ones.
 pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let serial = SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -240,9 +199,8 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     written
 }
 
-/// Take an exclusive lock on the file at `path` (created if missing), waiting up to
-/// `timeout` for another instance to let it go. `None` when it stayed busy; the lock
-/// is held until the returned file is dropped.
+/// Take an exclusive lock on `path` (created if missing), waiting up to `timeout`;
+/// `None` if it stayed busy. Held until the returned file drops.
 pub(crate) fn lock_file(
     path: &Path,
     timeout: std::time::Duration,
@@ -287,34 +245,17 @@ fn take_lock(
     }
 }
 
-/// How long to wait for another instance to finish rewriting a history file.
-///
-/// The critical section is a read and an atomic rewrite of a small file, so under any
-/// realistic number of concurrent datui instances this is never approached. It exists
-/// to bound the wait if a peer wedges, not to be reached.
-///
-/// It was 250ms, which is ample on Linux and not on Windows: sixteen writers
-/// contending, each paying a slower `LockFileEx` and a slower rename, serialised past
-/// the deadline and the last one gave up. Giving up means silently dropping someone's
-/// entry, so the deadline has to clear realistic contention by a wide margin. Nothing
-/// waits on this write -- see `push_recent`'s caller -- so a longer bound costs no
-/// latency anywhere.
+/// How long to wait for another instance rewriting a history file: a bound on a
+/// wedged peer, not something realistic contention reaches. Generous because giving
+/// up drops an entry and Windows locks and renames are slow (250ms failed with
+/// sixteen writers); nothing waits on this write.
 const LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// Maximum number of recently opened paths kept. Enough to span a few days of work;
-/// small enough that the home screen never has to paginate it.
+/// Maximum recent paths kept: a few days of work, never needing pagination.
 pub const MAX_RECENTS: usize = 50;
 
-/// Whether a history update actually happened.
-///
-/// A contended update is abandoned rather than waited on, because nothing should
-/// delay what the user asked for in order to record that they asked for it. That
-/// is the right trade, but it means "no error" and "it was written" are different
-/// claims, and for a long time the API could only make the weaker one.
-///
-/// Saying which happened is worth the extra type. A caller that cares can retry
-/// or report, and a test can assert something exact instead of hoping the
-/// scheduler was kind: every update that reported `Written` is in the file.
+/// Whether a history update happened. Contended updates are abandoned rather than
+/// awaited, so "no error" and "written" differ; callers and tests can tell exactly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HistoryUpdate {
     /// The lock was taken and the new contents are on disk.
@@ -324,16 +265,13 @@ pub enum HistoryUpdate {
 }
 
 impl CacheManager {
-    /// Recently opened dataset paths, most recent first.
-    ///
-    /// This is the *only* thing datui remembers about your data between runs. It is
-    /// a convenience, not a record: deleting it loses nothing but ordering.
+    /// Recently opened dataset paths, most recent first: the only thing datui remembers
+    /// about your data between runs, and deleting it loses only ordering.
     pub fn load_recents(&self) -> Vec<std::path::PathBuf> {
         self.load_recents_with_visits().0
     }
 
-    /// Recents, most recent first, and how often and how lately each was opened, by
-    /// its path as recorded: one read of the list.
+    /// Recents, most recent first, with each one's visits, in one read.
     pub fn load_recents_with_visits(
         &self,
     ) -> (Vec<PathBuf>, std::collections::HashMap<PathBuf, Visits>) {
@@ -349,10 +287,8 @@ impl CacheManager {
         (recents, visits)
     }
 
-    /// Which home-screen sections the user folded or opened, by title.
-    ///
-    /// One line per section, `title<TAB>1` for folded and `title<TAB>0` for opened.
-    /// A section not listed takes its own default.
+    /// Home sections the user folded (`title<TAB>1`) or opened (`title<TAB>0`), by title;
+    /// unlisted sections take their default.
     pub fn load_folds(&self) -> std::collections::HashMap<String, bool> {
         self.load_history_or_log("home_folds")
             .into_iter()
@@ -374,8 +310,8 @@ impl CacheManager {
             .or_log("save home folds");
     }
 
-    /// The mode `terminal` last said its background was, for the first frame of the
-    /// next start under `theme.mode = "auto"`. One line per terminal: `key<TAB>dark`.
+    /// The background mode `terminal` last reported, for the next start's first frame
+    /// under `theme.mode = "auto"`. One line per terminal: `key<TAB>dark`.
     pub fn terminal_mode(&self, terminal: &str) -> Option<crate::config::ThemeMode> {
         self.load_history_or_log(TERMINAL_MODES)
             .iter()
@@ -402,11 +338,7 @@ impl CacheManager {
         .or_log("remember the terminal's background");
     }
 
-    /// Forget a single recently opened path.
-    ///
-    /// A recents list you cannot edit is one people stop trusting: an experiment, a
-    /// file that would not open, something private — all land there, and clearing the
-    /// whole cache to remove one is too blunt.
+    /// Forget one recent path: an editable recents list is one people trust.
     pub fn forget_recent(&self, path: &std::path::Path) {
         let target = path.to_string_lossy().into_owned();
         self.update_history_file("recents", |recents| {
@@ -433,33 +365,15 @@ impl CacheManager {
             .or_log("clear recents");
     }
 
-    /// Whether a recorded path is still worth offering.
-    ///
-    /// Recents are written on open and read on the home screen, and nothing used to take
-    /// entries out again except the fifty-entry cap. A dataset in a directory that has
-    /// since been deleted therefore stayed in the file, and while the home screen does
-    /// not list the entry itself, it does derive a *root* from the directory — which
-    /// then sits there marked `unavailable` with nothing in it, until fifty more opens
-    /// push it off the end.
-    ///
-    /// Two deliberate narrownesses:
-    ///
-    /// The test is on the containing directory, not the file. A file that is gone from a
-    /// directory that is still there is an ordinary deletion, and forgetting it the
-    /// moment it disappears would be wrong for anything regenerated in place — a nightly
-    /// export, a file being rewritten as datui looks at it. Only a directory that has
-    /// gone entirely takes its contents with it.
-    ///
-    /// Remote paths are never checked at all. `exists` stats the path, and on an
-    /// object-store URL or a share that has stopped answering that is the call that
-    /// hangs. A share being down is also precisely when its recents matter most, so
-    /// pruning them would throw away the list exactly when it is needed.
-    fn recent_is_worth_keeping(path: &str, mounts: &crate::locality::Mounts) -> bool {
+    /// Whether a recorded path is still worth offering. Judged by its directory: a file
+    /// missing from an existing directory may be regenerated in place, but a deleted
+    /// directory takes its recents with it (else a dead root lingers until fifty opens
+    /// push it off). Remote paths are never checked: stat'ing one can hang, and a down
+    /// share is when its recents matter most.
+    fn recent_is_worth_keeping(path: &str, mounts: &crate::home::locality::Mounts) -> bool {
         let path = std::path::Path::new(path);
-        // The mount table is passed in rather than read here. `is_remote_path` reads
-        // /proc/self/mountinfo every time it is called, and this runs once per entry, so
-        // asking it directly meant fifty reads of the same file on every open.
-        if crate::locality::object_scheme(path).is_some() || mounts.is_network(path) {
+        // The mount table is passed in: reading it per entry meant fifty reads per open.
+        if crate::home::locality::object_scheme(path).is_some() || mounts.is_network(path) {
             return true;
         }
         match path.parent() {
@@ -468,33 +382,30 @@ impl CacheManager {
         }
     }
 
-    /// Record a path as most recently opened, de-duplicating and capping the list.
-    ///
-    /// Failures are ignored: not being able to write a convenience list must never
-    /// interfere with opening data. The return value distinguishes a write from a
-    /// contended skip for callers and tests that care; the normal caller does not.
+    /// Record a path as most recently opened, deduplicated and capped. Failures are
+    /// ignored: a convenience list must never hinder opening data. The result tells a
+    /// write from a contended skip.
     pub fn push_recent(&self, path: &std::path::Path) -> HistoryUpdate {
-        // A URL is recorded exactly as given: canonicalising one is meaningless, and
-        // it would also stat a path that does not exist locally.
+        // A URL is recorded as given: canonicalizing is meaningless and would stat a
+        // nonlocal path.
         let looks_like_url = path.to_string_lossy().contains("://");
         let stored = if looks_like_url {
             path.to_path_buf()
         } else {
-            // A table inside a file of tables is no file of its own: its file is made
-            // absolute and the name kept.
+            // A table inside a file of tables has no file of its own: the file is made absolute,
+            // the name kept.
             crate::canonical::canonicalize(path)
-                .or_else(|e| match crate::members::split(path) {
+                .or_else(|e| match crate::formats::members::split(path) {
                     Some((db, table)) => crate::canonical::canonicalize(&db)
-                        .map(|db| crate::members::place(&db, &table)),
+                        .map(|db| crate::formats::members::place(&db, &table)),
                     None => Err(e),
                 })
                 .unwrap_or_else(|_| path.to_path_buf())
         };
         let entry = stored.to_string_lossy().into_owned();
 
-        // One read of the mount table for the whole prune. It is a kernel-generated
-        // file, so reading it cannot block on the filesystems it describes.
-        let mounts = crate::locality::Mounts::current();
+        // One mount table read for the whole prune; kernel-generated, so it cannot block.
+        let mounts = crate::home::locality::Mounts::current();
 
         let now = unix_now();
         self.update_history_file("recents", |recents| {
@@ -511,15 +422,10 @@ impl CacheManager {
         .inspect_err(|e| log::warn!(target: "datui", "record a recent: {e:#}"))
         .unwrap_or(HistoryUpdate::SkippedBusy)
     }
-
-    /// How often and how lately each recent was opened, by its path as recorded.
-    pub fn load_visits(&self) -> std::collections::HashMap<PathBuf, Visits> {
-        self.load_recents_with_visits().1
-    }
 }
 
-/// One line of the recents list: `path<TAB>opens<TAB>last opened`, its visits kept
-/// with it so forgetting a recent forgets them too. A bare path has none.
+/// One recents line: `path<TAB>opens<TAB>last opened`, visits kept with the path so
+/// forgetting it forgets them. A bare path has none.
 fn parse_recent(line: &str) -> (&str, Visits) {
     let mut parts = line.rsplitn(3, '\t');
     if let (Some(last), Some(count), Some(path)) = (parts.next(), parts.next(), parts.next())
@@ -537,8 +443,8 @@ fn unix_now() -> u64 {
         .unwrap_or_default()
 }
 
-/// How often and how lately a dataset was opened: zoxide's frecency, which ranks
-/// Recent and lifts often-opened matches (#547 M9).
+/// How often and how lately a dataset was opened: zoxide-style frecency, ranking
+/// Recent and lifting often-opened matches.
 #[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Visits {
     pub count: u32,
@@ -547,8 +453,8 @@ pub struct Visits {
 }
 
 impl Visits {
-    /// Opens, weighted by how lately: four times within the hour, twice within the
-    /// day, half within the week, a quarter after.
+    /// Opens weighted by recency: ×4 within the hour, ×2 within the day, ×½ within the
+    /// week, ×¼ after.
     pub fn frecency(&self, now: u64) -> f64 {
         let age = now.saturating_sub(self.last);
         let weight = match age {
@@ -561,8 +467,7 @@ impl Visits {
     }
 }
 
-/// `recents`, most recent first, reordered by frecency. Ties, and recents opened
-/// before visits were counted, keep the order they had.
+/// `recents` reordered by frecency; ties and pre-visit-count recents keep their order.
 pub fn by_frecency(
     mut recents: Vec<PathBuf>,
     visits: &std::collections::HashMap<PathBuf, Visits>,
@@ -573,13 +478,8 @@ pub fn by_frecency(
     recents
 }
 
-/// What datui remembers about a dataset it has already measured.
-///
-/// This is a **cache, not a catalogue**. Every field is re-derivable by reading the
-/// dataset again, and each entry carries the size and modification time it was taken
-/// from, so a changed dataset invalidates itself. Deleting the file costs speed and
-/// nothing else — there is nothing here a user curated, and nothing that cannot be
-/// rebuilt by looking again.
+/// What datui remembers about a measured dataset: a cache, not a catalog. Every field
+/// is re-derivable, and the recorded size and mtime invalidate a changed dataset.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct DatasetFacts {
     /// Modification time in seconds since the epoch, as a fingerprint.
@@ -588,117 +488,76 @@ pub struct DatasetFacts {
     pub size: u64,
     pub rows: Option<usize>,
     pub cols: Option<usize>,
-    /// Whether `cols` is a floor rather than a total: the directory was too large to read
-    /// every footer of, so it was sampled. Restored with the count, or the row would
-    /// present a sample as a total the next time it is listed.
+    /// Whether `cols` is a floor (a sampled large directory), restored with the count so
+    /// a sample is never shown as a total.
     #[serde(default)]
     pub cols_sampled: bool,
-    /// Column names, which is what makes searching by column possible before
-    /// anything has been read this run.
+    /// Column names, enabling search by column before anything is read this run.
     #[serde(default)]
     pub columns: Vec<String>,
-    /// What the dataset turned out to be. Recorded rather than re-derived, because a
-    /// remote path cannot be classified without reading it, and a row that says
-    /// `hive` under its own directory should not say something else under Recent.
+    /// What the dataset turned out to be: recorded since a remote path cannot be
+    /// classified without reading, and a row should read the same in every section.
     #[serde(default)]
-    pub kind: Option<crate::discover::EntryKind>,
-    /// Which build's rules `kind` came from. See [`crate::discover::CLASSIFIER_VERSION`].
-    /// Absent in records written before this existed, which is what `0` means.
+    pub kind: Option<crate::home::discover::EntryKind>,
+    /// The build rules `kind` came from (see [`crate::home::discover::CLASSIFIER_VERSION`]); `0`
+    /// in records older than this field.
     #[serde(default)]
     pub classified_by: u32,
-    /// What opening it will cost: compression, layout, partitioning. Worth keeping
-    /// for the same reason the row count is — it came from a footer read that a
-    /// remote dataset may not get a second chance at.
+    /// What opening costs (compression, layout, partitioning), from a footer read a
+    /// remote dataset may not get twice.
     #[serde(default)]
-    pub cost: crate::discover::Cost,
-    /// What one listing of the directory found in it, which is what its label says.
-    /// Restored beside `kind` and gated by the same classifier version: both are what
-    /// looking into the directory produced, and a build that classified differently
-    /// counted differently too.
-    #[serde(default, skip_serializing_if = "crate::discover::Holds::is_empty")]
-    pub holds: crate::discover::Holds,
+    pub cost: crate::home::discover::Cost,
+    /// What one listing of the directory found (its label), restored beside `kind` under
+    /// the same classifier version.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::home::discover::Holds::is_empty"
+    )]
+    pub holds: crate::home::discover::Holds,
 }
 
-/// What an open learned about a dataset's files, kept so the next one can show its
-/// columns and its row count without reading a single footer.
-///
-/// Reading the footers is what opening a large dataset costs: one read per file, and a
-/// prefix of a few thousand objects spends seconds there every time it is opened. The
-/// listing is one request and has to happen anyway — it is how datui knows what the
-/// dataset is now — so it is the listing that decides whether this is still true, and
-/// the footers that it saves.
-///
-/// A **cache, not a catalogue**, in the same sense as [`DatasetFacts`]: every field is
-/// re-derivable by reading the dataset again, a fingerprint that no longer matches is
-/// ignored, and deleting the file costs speed and nothing else.
+/// What an open learned about a dataset's files, so the next open shows columns and
+/// row count without reading footers (seconds for thousands of objects). The listing,
+/// which happens anyway, decides via the fingerprint whether this still holds. A cache,
+/// not a catalog, like [`DatasetFacts`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DatasetShape {
-    /// What the dataset's files looked like when this was taken. A listing that comes
-    /// back with a different one describes a dataset that has changed, and everything
-    /// below it is then about a dataset that no longer exists.
+    /// What the files looked like when taken; a listing with a different one describes a
+    /// changed dataset, and the rest is ignored.
     pub fingerprint: String,
-    /// One entry per file, in the order the listing returned them, which is the order a
-    /// scan reads them in.
+    /// One entry per file, in listing order, which is scan order.
     pub files: Vec<CachedFooter>,
-    /// The distinct schemas the files have, as name and type in order.
-    ///
-    /// Held apart and referred to by index because a dataset of ten thousand files
-    /// usually has one schema, sometimes three, and never ten thousand. Writing each
-    /// file's columns out in full would make the cache larger than the footers it
-    /// saves reading.
-    ///
-    /// The types are Polars' own, serialised as Polars serialises them, rather than
-    /// their printed names parsed back. A name is not enough to rebuild a type — a
-    /// nested or parametrised one prints as something no parser here could take apart
-    /// again — and a type rebuilt slightly wrong would seat the wrong schema under a
-    /// dataset that reads fine. Should that representation change under a Polars
-    /// upgrade, the entries stop parsing and the cache is simply empty, which is the
-    /// failure this is allowed to have.
+    /// The distinct schemas, by index, since thousands of files usually share one. Types
+    /// are Polars' own serialization (names cannot rebuild nested types); if a Polars
+    /// upgrade changes it, entries stop parsing and the cache is just empty.
     pub schemas: Vec<Vec<(String, polars::prelude::DataType)>>,
     /// Seconds since the Unix epoch, for a human reading the file.
     pub taken_at: u64,
 }
 
-/// What one file's footer said, as much of it as a reopen needs.
-///
-/// Everything here comes back out as a `FileFooter`, so a dataset rebuilt from the
-/// cache goes through exactly the same code as one read from the store — the union, the
-/// drift groups, the row numbering and the notes are all computed the same way from the
-/// same shapes. A cache that took a shortcut past that would be a second
-/// implementation of the dataset, and the two would drift.
+/// What one file's footer said, as much as a reopen needs. It comes back as a
+/// `FileFooter`, so a cached dataset goes through the same code as a fresh read.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CachedFooter {
-    /// Which of [`DatasetShape::schemas`] this file has. `None` for a file whose footer
-    /// would not read, which a reopen must remember as unreadable rather than quietly
-    /// reading it again and getting a different dataset.
+    /// Which [`DatasetShape::schemas`] entry this file has; `None` for an unreadable
+    /// footer, remembered as such so a reopen gives the same dataset.
     pub schema: Option<usize>,
     /// The rows in each of its row groups, in order.
     pub row_group_rows: Vec<usize>,
-    /// The compressed bytes of each, in the same order. Kept because a note is built
-    /// from it, and a note that appears on a first open and not on a reopen is a worse
-    /// bug than a slow open.
+    /// Compressed bytes of each row group, kept because a note uses them, and a note
+    /// present only on first open is a worse bug than a slow open.
     pub row_group_bytes: Vec<usize>,
-    /// Uncompressed bytes of each of its schema's columns, in the schema's order. A
-    /// local footer carries them and a binary column's width is known nowhere else;
-    /// a cloud footer does not, and leaves this empty.
+    /// Uncompressed bytes of each schema column, in order: local footers carry them (the
+    /// only source for binary widths); cloud footers leave this empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub column_bytes: Vec<usize>,
 }
 
 impl DatasetShape {
-    /// The fingerprint of a listing: which files, how many, how much they weigh, when
-    /// each was last written, and the store's own tag for each where it gave one.
-    ///
-    /// Everything a listing can see without opening anything, which is the point — this
-    /// has to be cheap enough to be worth taking, and all of it arrives in the one
-    /// response that had to happen anyway. A file added, removed, renamed, resized or
-    /// rewritten changes it; a dataset that has not been touched does not.
-    ///
-    /// The names are in it because the cache is a positional join: the remembered
-    /// footers are lined up against a freshly listed dataset by position, so the
-    /// identity of what is being joined belongs in the thing that says the join is
-    /// still valid. The ETag is in it because size and a whole-second timestamp cannot
-    /// see a file overwritten within the same second at the same length.
+    /// A listing's fingerprint: file names, count, sizes, mtimes and store tags, all seen
+    /// without opening anything. Names are included since remembered footers join to a
+    /// fresh listing by position; ETags since size and whole-second mtime miss
+    /// same-length rewrites within a second.
     pub fn fingerprint_of<'a>(
         files: impl IntoIterator<Item = (&'a str, u64, u64, Option<&'a str>)>,
     ) -> String {
@@ -749,21 +608,12 @@ impl DatasetShape {
     }
 }
 
-/// Point the cache and config at scratch directories of this test process's own.
-///
-/// Library tests need not call this: `CacheManager::new` and `ConfigManager::new`
-/// do, so no unit test reaches either without it, whatever order the tests run in
-/// and however few share the process. Opening a dataset records it in recents and
-/// saving a view writes under the config directory; left alone, both land in
-/// the developer's own. The variables are process-wide, so this runs once.
-///
-/// The directories are named at random, not by process id: ids are reused, and a run
-/// that landed on a finished run's id inherited its recents and views. They are
-/// removed when the process exits.
+/// Point the cache and config at this test process's own scratch directories, once
+/// per process (`CacheManager::new` and `ConfigManager::new` call it). Named at random,
+/// not by pid (reused pids inherited old recents), and removed at exit.
 #[cfg(test)]
 pub(crate) fn isolate_cache() {
-    // Held for the life of the process. A static is never dropped, so they are removed
-    // by an exit handler instead.
+    // Held for the process's life; a static never drops, so an exit handler removes them.
     static SCRATCH: std::sync::Mutex<Vec<tempfile::TempDir>> = std::sync::Mutex::new(Vec::new());
     unsafe extern "C" {
         fn atexit(callback: extern "C" fn()) -> std::ffi::c_int;
@@ -797,19 +647,15 @@ pub(crate) fn isolate_cache() {
     });
 }
 
-/// Whether this process is a test binary cargo built, which is where `cargo test`
-/// and `cargo bench` put everything: `target/<profile>/deps/<crate>-<hash>`, or
-/// `target/<triple>/<profile>/deps/` for a cross build. The program itself is
-/// `target/<profile>/datui`, and an installed one is nowhere near.
+/// Whether this process is a cargo-built test binary (`target/<profile>/deps/…`, or
+/// `target/<triple>/<profile>/deps/` cross-built); the program itself never is.
 pub(crate) fn running_as_a_cargo_test() -> bool {
     std::env::current_exe()
         .is_ok_and(|exe| cargo_test_layout(&exe, std::env::var_os("CARGO_TARGET_DIR").as_deref()))
 }
 
-/// The directory is `deps`, and it sits under a `target` at most three levels up, or
-/// under the target directory cargo was told to use. Asked of the shape rather than of
-/// any `deps` anywhere in the path, so a program installed under some `deps` directory
-/// of the user's own is not mistaken for a test.
+/// The directory is `deps` under a `target` at most three levels up, or under cargo's
+/// configured target dir, so a program installed in some `deps` is not mistaken.
 fn cargo_test_layout(exe: &Path, target_dir: Option<&std::ffi::OsStr>) -> bool {
     let Some(deps) = exe.parent() else {
         return false;
@@ -826,23 +672,20 @@ fn cargo_test_layout(exe: &Path, target_dir: Option<&std::ffi::OsStr>) -> bool {
         .any(|dir| dir.file_name().is_some_and(|name| name == "target"))
 }
 
-/// The buckets a cloud source listed on an earlier run, shown straight away on the next
-/// one while a fresh listing is out.
+/// A cloud source's buckets from an earlier run, shown at once while a fresh listing
+/// is out.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CloudListing {
-    /// What the source pointed at when it was listed. A listing whose fingerprint no
-    /// longer matches describes another server and is ignored.
+    /// What the source pointed at when listed; a mismatch means another server, ignored.
     pub fingerprint: String,
     pub buckets: Vec<String>,
     /// Seconds since the Unix epoch.
     pub listed_at: u64,
 }
 
-/// Dataset shapes, by dataset path, at their listing's fingerprint.
-///
-/// Bounded by bytes: a shape's size follows its dataset's file count — NOAA's
-/// by_station, 842k files, is a few megabytes — so a count alone would let a handful of
-/// huge datasets hold the disk while a small one pushed out a shape still being opened.
+/// Dataset shapes by path, at their listing's fingerprint. Bounded by bytes: shape
+/// size follows file count (842k files is megabytes), so a count bound would let a
+/// few huge datasets evict a small one in use.
 pub(crate) struct Shapes;
 
 impl Kind for Shapes {
@@ -861,13 +704,9 @@ impl Kind for Shapes {
     }
 }
 
-/// The footers a dataset's count has read, each under its file's identity
-/// ([`file_identity`]): a count of the dataset again reads only the files it has not,
-/// though files were added since, and a count that was stopped keeps what it read.
-///
-/// A cache in the same sense as [`DatasetShape`], which holds the same footers in the
-/// listing's order once all of them are read; this one is by file, so it is still
-/// right for a dataset that has changed.
+/// The footers a dataset's count has read, each by [`file_identity`], so a recount
+/// reads only new files and a stopped count keeps its progress. By file, unlike
+/// [`DatasetShape`], so it stays right for a changed dataset.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FileFooters {
     /// The distinct schemas, as in [`DatasetShape::schemas`].
@@ -876,8 +715,8 @@ pub struct FileFooters {
     pub files: Vec<(u64, CachedFooter)>,
 }
 
-/// What a file is, for [`FileFooters`]: its key, size, modification time and the
-/// store's tag, any of which changes when the file is written again.
+/// A file's identity for [`FileFooters`]: key, size, mtime and store tag, any of which
+/// changes on rewrite.
 pub fn file_identity(key: &str, size: u64, stamp: u64, etag: Option<&str>) -> u64 {
     let mut hasher = StableHasher::default();
     hasher.bytes(key.as_bytes()).u64(size).u64(stamp);
@@ -888,8 +727,7 @@ pub fn file_identity(key: &str, size: u64, stamp: u64, etag: Option<&str>) -> u6
     hasher.finish()
 }
 
-/// [`FileFooters`] by dataset path. The fingerprint is empty: each file's identity is
-/// its own check.
+/// [`FileFooters`] by dataset path; empty fingerprint, as each file checks itself.
 pub(crate) struct FileFootersKind;
 
 impl Kind for FileFootersKind {
@@ -939,8 +777,8 @@ impl Kind for FileFootersKind {
     }
 }
 
-/// What home has measured of each dataset, by path. Each record carries the size and
-/// mtime it was taken at, so the store's fingerprint is empty.
+/// What home measured of each dataset, by path; records carry their own size and
+/// mtime, so the store fingerprint is empty.
 pub(crate) struct Facts;
 
 impl Kind for Facts {
@@ -978,9 +816,8 @@ impl Kind for CloudListings {
     }
 }
 
-/// The part of a shape read before its footers: its fingerprint, its schemas and when
-/// it was taken. JSON because the schemas are Polars types, serialised as Polars
-/// serialises them; the per-file footers, which are most of the bytes, follow as varints.
+/// A shape's header, read before its footers: fingerprint, schemas, time. JSON for the
+/// Polars-serialized schemas; the bulk per-file footers follow as varints.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct ShapeHeader {
     fingerprint: String,
@@ -1017,8 +854,8 @@ fn put_list(out: &mut Vec<u8>, values: &[usize]) {
 
 fn take_list(bytes: &mut &[u8]) -> Option<Vec<usize>> {
     let len = usize::try_from(take_varint(bytes)?).ok()?;
-    // Each value is at least a byte, so a length past what is left is a broken file,
-    // not an allocation to attempt.
+    // Each value is at least a byte: a longer length means a broken file, not an
+    // allocation.
     if len > bytes.len() {
         return None;
     }
@@ -1057,8 +894,7 @@ fn decode_shape(bytes: &[u8]) -> Option<DatasetShape> {
         return None;
     }
     let mut files = Vec::with_capacity(count);
-    // Totals over the whole dataset must fit, so no sum a reader makes later can
-    // overflow on a damaged file.
+    // Dataset totals must fit, so no later sum overflows on a damaged file.
     let (mut rows, mut bytes_total) = (0usize, 0usize);
     for _ in 0..count {
         let schema = match take_varint(&mut body)? {
@@ -1094,23 +930,18 @@ fn decode_shape(bytes: &[u8]) -> Option<DatasetShape> {
 
 impl CacheManager {
     /// How many dataset shapes are kept.
+    #[cfg(test)]
     pub fn dataset_shapes_kept(&self) -> usize {
         Store::<Shapes>::new(self).len()
     }
 
-    /// What datui remembers about one dataset, if the fingerprint still matches.
-    ///
-    /// Taking the fingerprint as an argument rather than returning the entry and
-    /// letting the caller check is deliberate: an entry whose fingerprint has moved on
-    /// describes a dataset that no longer exists, and there is no use for it that is
-    /// not a mistake. A hit counts as use, so the datasets that never change, with the
-    /// most to gain, are not the first to age out.
+    /// The remembered shape of a dataset if `fingerprint` still matches (a mismatched
+    /// entry has no correct use). A hit counts as use, so unchanging datasets stay.
     pub fn dataset_shape(&self, path: &str, fingerprint: &str) -> Option<DatasetShape> {
         Store::<Shapes>::new(self).get(path, fingerprint)
     }
 
-    /// Whether a shape is kept for `path` at all, whatever it was taken against: one
-    /// stat, so a caller can tell whether listing the dataset could find it.
+    /// Whether any shape is kept for `path`: one stat.
     pub fn has_dataset_shape(&self, path: &str) -> bool {
         Store::<Shapes>::new(self).file(path).exists()
     }
@@ -1135,14 +966,6 @@ impl CacheManager {
         Store::<CloudListings>::new(self).get(id, fingerprint)
     }
 
-    /// Every source's last listing, by source ID.
-    pub fn load_cloud_listings(&self) -> std::collections::HashMap<String, CloudListing> {
-        Store::<CloudListings>::new(self)
-            .scan()
-            .into_iter()
-            .collect()
-    }
-
     /// Record one source's listing, keeping the others.
     pub fn save_cloud_listing(&self, id: &str, listing: CloudListing) {
         Store::<CloudListings>::new(self).put(id, &listing.fingerprint.clone(), &listing);
@@ -1164,21 +987,20 @@ impl CacheManager {
         .or_log("hide a cloud source");
     }
 
-    /// Whether Delete on its heading hid the Example datasets that come with datui.
-    /// Only the bundled catalog: a user's own `examples.toml` still shows.
+    /// Whether Delete on its heading hid the bundled Example datasets (a user's
+    /// `examples.toml` still shows).
     pub fn examples_hidden(&self) -> bool {
         !self.load_history_or_log("examples_hidden").is_empty()
     }
 
-    /// Hide the bundled Example datasets from the home screen until the cache is
-    /// cleared.
+    /// Hide the bundled Example datasets until the cache is cleared.
     pub fn hide_examples(&self) {
         self.save_history_file("examples_hidden", &["hidden".to_string()])
             .or_log("hide the example datasets");
     }
 
-    /// The directories Ctrl+D kept here before 0.4.0, which keeps them in
-    /// `catalog.toml`, in the order they were added.
+    /// The directories Ctrl+D kept here before 0.4.0 (now in `catalog.toml`), in added
+    /// order.
     pub fn load_remembered_places(&self) -> Vec<PathBuf> {
         let file = self.cache_file(&format!("home_remembered{HISTORY_SUFFIX}"));
         if !file.exists() {
@@ -1211,9 +1033,8 @@ impl CacheManager {
 }
 
 impl CacheManager {
-    /// Everything datui knows about datasets it has measured before, without counting
-    /// any of it as use. Unreadable records are absent: this is a cache, and failing to
-    /// read it must never be worse than not having it.
+    /// Every remembered dataset fact, not counted as use. Unreadable records are absent:
+    /// failing to read a cache must never be worse than lacking it.
     pub fn load_dataset_facts(&self) -> std::collections::HashMap<PathBuf, DatasetFacts> {
         Store::<Facts>::new(self)
             .scan()
@@ -1227,8 +1048,8 @@ impl CacheManager {
         Store::<Facts>::new(self).get(path.to_str()?, "")
     }
 
-    /// Count these datasets' records as used: shown on the home screen, say. The
-    /// least recently used go first once the records pass their budget.
+    /// Count these records as used (shown on home); least recently used go first past
+    /// the budget.
     pub fn touch_dataset_facts<'a>(&self, paths: impl IntoIterator<Item = &'a Path>) {
         let store = Store::<Facts>::new(self);
         for path in paths.into_iter().filter_map(Path::to_str) {
@@ -1236,8 +1057,7 @@ impl CacheManager {
         }
     }
 
-    /// Record newly measured datasets, one file each. A path that is not UTF-8 is
-    /// not recorded.
+    /// Record newly measured datasets, one file each; non-UTF-8 paths are skipped.
     pub fn record_dataset_facts(&self, facts: &[(PathBuf, DatasetFacts)]) {
         Store::<Facts>::new(self).put_all(
             facts
@@ -1246,8 +1066,7 @@ impl CacheManager {
         );
     }
 
-    /// Run `work` holding the named cache lock, or skip it if the lock is contended
-    /// past the deadline.
+    /// Run `work` under the named cache lock, or skip it if contended past the deadline.
     fn with_cache_lock<F>(&self, name: &str, work: F) -> Result<()>
     where
         F: FnOnce() -> Result<()>,
@@ -2041,7 +1860,7 @@ mod store_harness_tests {
 #[cfg(test)]
 mod facts_compat_tests {
     use super::DatasetFacts;
-    use crate::discover::EntryKind;
+    use crate::home::discover::EntryKind;
 
     /// A kind this build does not recognize costs its own row, not the whole index.
     ///

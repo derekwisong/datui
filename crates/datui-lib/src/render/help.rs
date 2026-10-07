@@ -2,10 +2,11 @@
 //! terminal is wide enough, sized to its content and scrolled only when the
 //! terminal is too small for it.
 
+use crate::app::help::{Block, Help, Line};
 use crate::glyphs::{asciify_instructions, display_width, take_columns};
-use crate::help::{Block, Help, Line};
 use crate::render::context::RenderContext;
 use crate::widgets::ui::{HintBar, SectionRule, Surface};
+use datui_cli::keys::Context;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -214,7 +215,7 @@ fn frame(area: Rect, two: bool, content_height: u16) -> Rect {
 /// written back to `help`.
 pub fn render_help(area: Rect, buf: &mut Buffer, help: &mut Help, ctx: &RenderContext) {
     // Help owns the clicks over the view: only its footer's keys take them.
-    crate::pointer::record(area, crate::pointer::Hit::Modal);
+    crate::app::pointer::record(area, crate::app::pointer::Hit::Modal);
     let blocks = help.blocks();
     let shown = key_count(&blocks);
     if shown > 0 {
@@ -240,15 +241,11 @@ pub fn render_help(area: Rect, buf: &mut Buffer, help: &mut Help, ctx: &RenderCo
     let content = filter_line + body_height.max(1) + 2;
     let popup = frame(area, two, content);
 
+    let footer = HintBar::from_ctx(ctx).screen(Context::Help).key("Enter");
     let footer = if help.filtering {
-        HintBar::from_ctx(ctx)
-            .hint("Enter", "Run")
-            .hint("Esc", "Clear")
+        footer.key_as("Esc", "Clear")
     } else {
-        HintBar::from_ctx(ctx)
-            .hint("Enter", "Run")
-            .hint("/", "Filter")
-            .hint("Esc", "Close")
+        footer.key("/").key("Esc")
     };
     let title = help.title();
     let inner = Surface::new(&title).footer(&footer).render(popup, buf, ctx);

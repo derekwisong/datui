@@ -1,29 +1,18 @@
-//! The home screen.
+//! The home screen. Its design rules:
 //!
-//! # Design
+//! - **No boxes.** Structure comes from alignment and space, with one vertical rule
+//!   where two panes need separating.
+//! - **One accent**, in four places: the wordmark, section headers, the selection
+//!   marker and the prompt. Everything else is primary, secondary or dim text.
+//! - **Metadata right-aligns into columns**, so datasets compare at a glance.
+//! - **Typed columns**: the schema preview colors each type as the table does,
+//!   showing a dataset's shape before it is opened.
 //!
-//! This is the first screen datui has that is *designed* rather than assembled, so
-//! the choices are deliberate and worth stating:
-//!
-//! - **No boxes.** The default TUI look is borders around everything; it reads as
-//!   busy and dated. Structure comes from alignment and negative space instead, with
-//!   a single vertical rule where two panes genuinely need separating.
-//! - **One accent, spent carefully.** The theme's accent appears in four places: the
-//!   wordmark, section headers, the selection marker, and the prompt. Everything else
-//!   is primary, secondary or dim text. Restraint is what reads as professional.
-//! - **Metadata right-aligns into columns.** Ragged trailing text looks accidental;
-//!   a clean column looks designed, and it makes datasets comparable at a glance.
-//! - **Typed columns are the signature.** The schema preview colours each type with
-//!   the same palette the table uses. No file picker tells you the shape of your data
-//!   before you open it — this is the thing worth being known for, and it is why the
-//!   preview pane earns its width.
-//!
-//! Everything is drawn from the active theme, so on Omarchy this inherits the desktop
-//! palette and sits in the same visual family as the rest of the system.
+//! Everything is drawn from the active theme.
 
-use crate::discover::{self, Entry, EntryKind};
 use crate::formats::MatchChip;
 use crate::glyphs;
+use crate::home::discover::{self, Entry, EntryKind};
 use crate::render::context::RenderContext;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -35,55 +24,27 @@ use ratatui::widgets::{Clear, Paragraph, Widget};
 const META_WIDTH: u16 = 34;
 /// Width given to the preview pane when there is room for it.
 const PREVIEW_WIDTH: u16 = 40;
-/// Below this, showing the preview would squeeze the list under [`META_MIN_WIDTH`]
-/// and cost every row its size and shape. The scent is what the list is *for*, so the
-/// preview yields first.
+/// Below this the preview would squeeze the list under [`META_MIN_WIDTH`] and cost
+/// every row its size and shape, so the preview yields first.
 const PREVIEW_MIN_WIDTH: u16 = META_MIN_WIDTH + PREVIEW_WIDTH + 6;
 /// Below this even the metadata columns have to go.
 const META_MIN_WIDTH: u16 = 56;
 
-/// Truncate from the left, keeping the tail, to at most `width` display columns.
-///
-/// Paths are identified by their leaf, so the end is the part worth keeping. The
-/// ellipsis is measured rather than assumed to be one column: it is three characters
-/// wide when datui has fallen back to ASCII.
-fn truncate_start(text: &str, width: usize) -> String {
-    if glyphs::display_width(text) <= width {
-        return text.to_string();
-    }
-    let ellipsis = glyphs::get().ellipsis;
-    let ellipsis_width = glyphs::display_width(ellipsis);
-    if width <= ellipsis_width {
-        return glyphs::take_columns_end(text, width).to_string();
-    }
-    let tail = glyphs::take_columns_end(text, width - ellipsis_width);
-    format!("{ellipsis}{tail}")
-}
-
-/// The three metadata columns, already padded to fixed widths so they align down the
-/// list. Empty strings where a fact is genuinely unknown — a CSV's row count cannot
-/// be had without scanning it, and inventing one would be worse than a blank.
-/// `unmeasured` puts an ellipsis where the shape would go: the row is a dataset
-/// nothing has read yet, and a blank there beside rows that have a shape reads as
-/// broken. The same admission the label makes for a directory nothing has looked into.
-///
-/// `hint` is what a catalog says the file weighs, shown as `~33 MB` until something
-/// has measured it. `gone` takes the size's place for a web file that cannot be had
-/// (`HTTP 404`, `no answer`): beside the name, where the choice to open it is made.
+/// The three metadata columns, padded to fixed widths to align down the list. Empty
+/// where a fact is unknown (a CSV's row count needs a scan). `unmeasured` shows an
+/// ellipsis for a dataset nothing has read yet. `hint` is a catalog's size
+/// (`~33.0 MiB`) until measured; `gone` replaces the size for an unavailable web file
+/// (`HTTP 404`, `no answer`).
 fn meta_columns(entry: &Entry, unmeasured: bool, hint: Option<u64>, gone: Option<&str>) -> String {
-    // A dataset too large to count still knows its width. Showing `? x 158` says more
-    // than a blank, and the `?` is an admission rather than a guess.
+    // A dataset too large to count still knows its width: `? x 158`.
     let times = glyphs::get().times;
-    // A column count read from a spread of a directory rather than all of it is a floor,
-    // so it says so, the way the row count already says `?` when it is out of reach.
+    // A column count from a spread of a directory is a floor, marked `+`.
     let more = if entry.cols_sampled { "+" } else { "" };
     let shape = match (entry.rows, entry.cols) {
         (Some(r), Some(c)) => format!("{} {times} {c}{more}", discover::format_rows(r)),
-        // `?` says a count is out of reach. A directory that is not one table has no row
-        // count to be out of reach — a sum over unrelated tables is not a number — so
-        // it shows its width alone. Named, not multiplied: `× 72` in a column whose
-        // neighbours read `1.2M × 72` is an operator with nothing on its left, and a
-        // bare `72` reads as a row count.
+        // A directory that is not one table has no row count (a sum over unrelated tables),
+        // so its width is named alone: `72 cols`, not `× 72` or a bare `72` that reads as
+        // rows.
         (None, Some(c)) if entry.kind == EntryKind::Directory => format!("{c}{more} cols"),
         (None, Some(c)) => format!("? {times} {c}{more}"),
         _ if unmeasured => glyphs::get().ellipsis.to_string(),
@@ -91,8 +52,8 @@ fn meta_columns(entry: &Entry, unmeasured: bool, hint: Option<u64>, gone: Option
     };
     let size = match (gone, entry.size, hint) {
         (Some(gone), _, _) => gone.to_string(),
-        (None, Some(size), _) => discover::format_size(size),
-        (None, None, Some(hint)) => format!("~{}", discover::format_size(hint)),
+        (None, Some(size), _) => crate::numfmt::bytes(size),
+        (None, None, Some(hint)) => format!("~{}", crate::numfmt::bytes(hint)),
         (None, None, None) => String::new(),
     };
     let age = entry.modified.map(discover::format_age).unwrap_or_default();
@@ -102,8 +63,7 @@ fn meta_columns(entry: &Entry, unmeasured: bool, hint: Option<u64>, gone: Option
 pub fn render(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderContext) {
     Clear.render(area, buf);
 
-    // One column of breathing room, no more. Vertical space is the scarce thing in a
-    // terminal: every blank line here is a dataset the user cannot see.
+    // One column of breathing room: vertical space is scarce.
     let padded = Rect {
         x: area.x.saturating_add(1),
         y: area.y,
@@ -114,10 +74,8 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderCo
         return;
     }
 
-    // The wordmark costs two rows more than the title bar, and twenty-five columns
-    // beside the path. On a big terminal that is nothing; on a short one it is two
-    // datasets, and on a narrow one the path beside it is all ellipsis — so in
-    // either case the one-line bar comes back.
+    // The wordmark costs two rows and twenty-five columns over the title bar; on a short
+    // or narrow terminal the one-line bar comes back.
     let wordmark = glyphs::get()
         .wordmark
         .filter(|_| padded.height >= WORDMARK_MIN_HEIGHT && padded.width >= WORDMARK_MIN_WIDTH);
@@ -139,8 +97,8 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderCo
 
     let show_preview = padded.width >= PREVIEW_MIN_WIDTH;
     if show_preview {
-        // The list keeps a reading measure on a wide screen, so a row's size and age sit
-        // near its name; the pane, which has rows to show, takes the rest (#547 M8).
+        // The list keeps a reading measure on wide screens, so a row's facts sit near its
+        // name; the pane takes the rest.
         let list_w = padded
             .width
             .saturating_sub(3 + PREVIEW_WIDTH)
@@ -162,17 +120,15 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderCo
     }
 }
 
-/// The widest the list gets. Past it the facts on the right of a row drift away from
-/// its name, and the pane has better use for the columns.
+/// The widest the list gets: past it a row's facts drift from its name.
 const LIST_MAX_WIDTH: u16 = 84;
 
-/// The fewest rows the bottom strip is drawn in: its heading, the column names and
-/// two rows.
+/// The fewest rows the bottom strip is drawn in: heading, column names, two rows.
 const STRIP_MIN_HEIGHT: usize = 4;
 
-/// Below the pane's width, the selected file's first rows in the rows the list leaves
-/// free at the bottom of the screen. Never over the list: with no rows to spare there
-/// is no strip, and nothing is read for one.
+/// Below the pane's width, the selected file's first rows in rows the list leaves free
+/// at the bottom. Never over the list: with no spare rows there is no strip, and
+/// nothing is read.
 fn render_rows_strip(
     area: Rect,
     used: usize,
@@ -185,7 +141,7 @@ fn render_rows_strip(
     if free < STRIP_MIN_HEIGHT || app.home.path_input_active {
         return;
     }
-    let Some(entry) = app.home.selected_entry() else {
+    let Some(entry) = app.home.selected_entry().cloned() else {
         return;
     };
     let Some(preview) = app.home_preview_rows(&entry, screen_height) else {
@@ -204,10 +160,10 @@ fn render_rows_strip(
     Paragraph::new(lines).render(strip, buf);
 }
 
-/// The `ROWS` block: a heading, the leading columns' names in their types' colors, and
-/// as many of the first rows as `room` lines leave, in columns as many as `width` fits.
+/// The `ROWS` block: a heading, the leading columns' names in their type colors, and
+/// as many first rows and columns as `room` and `width` fit.
 fn rows_block(
-    preview: &crate::home_preview::PreviewRows,
+    preview: &crate::home::home_preview::PreviewRows,
     width: usize,
     room: usize,
     ctx: &RenderContext,
@@ -314,13 +270,11 @@ fn rows_heading(shown: usize, total: usize, width: usize, ctx: &RenderContext) -
 
 /// Below this many rows the wordmark gives way to the one-line title bar.
 const WORDMARK_MIN_HEIGHT: u16 = 28;
-/// Below this width, the wordmark's twenty-five columns leave the path beside it
-/// nothing but its own ellipsis.
+/// Below this width the wordmark leaves the path beside it only an ellipsis.
 const WORDMARK_MIN_WIDTH: u16 = 52;
 
-/// Interpolate two colours, when both are RGB. Anything else — a named ANSI colour,
-/// an indexed one, the terminal default — has no arithmetic, so the first stop is
-/// used for every column and the wordmark is simply the accent.
+/// Interpolate two colors when both are RGB; otherwise (named, indexed, default) the
+/// first stop, so the wordmark is the accent.
 fn mix(a: Color, b: Color, t: f32) -> Color {
     match (a, b) {
         (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) => {
@@ -332,10 +286,8 @@ fn mix(a: Color, b: Color, t: f32) -> Color {
     }
 }
 
-/// The wordmark: three rows of box drawing, coloured column by column along the
-/// theme's gradient. Once, here, and nowhere else — a gradient on data would be
-/// decoration. The location sits beside the middle row where the title bar used to
-/// put it.
+/// The wordmark: three rows of box drawing colored along the theme's gradient (the
+/// one place it is used), with the location beside the middle row.
 fn render_wordmark(
     area: Rect,
     buf: &mut Buffer,
@@ -354,7 +306,11 @@ fn render_wordmark(
                 .map(|p| crate::home::display_path(&p))
         })
         .unwrap_or_default();
-    let mark_w = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    let mark_w = lines
+        .iter()
+        .map(|l| glyphs::display_width(l))
+        .max()
+        .unwrap_or(0);
     let start = ctx.gradient_start;
     let end = ctx.gradient_end;
     for (row, line) in lines.iter().enumerate() {
@@ -379,7 +335,7 @@ fn render_wordmark(
         if row == lines.len() / 2 {
             let room = (area.width as usize).saturating_sub(mark_w + 4);
             spans.push(Span::styled(
-                format!("   {}", truncate_start(&location, room)),
+                format!("   {}", glyphs::fit_start(&location, room)),
                 Style::default().fg(ctx.text_secondary),
             ));
         }
@@ -395,8 +351,8 @@ fn render_wordmark(
     }
 }
 
-/// A filled bar carrying the name and current location, mirroring the control bar at
-/// the foot of the screen so the list sits between two anchors.
+/// A filled bar with the name and location, mirroring the footer so the list sits
+/// between two anchors.
 fn render_title_bar(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderContext) {
     let location = app
         .home
@@ -416,8 +372,8 @@ fn render_title_bar(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &Render
         bar.fg(ctx.keybind_hints).add_modifier(Modifier::BOLD),
     );
     // Keep the tail of a long path; the leaf is what tells you where you are.
-    let location = truncate_start(&location, (area.width as usize).saturating_sub(12));
-    let pad = (area.width as usize).saturating_sub(8 + location.chars().count());
+    let location = glyphs::fit_start(&location, (area.width as usize).saturating_sub(12));
+    let pad = (area.width as usize).saturating_sub(8 + glyphs::display_width(&location));
     Paragraph::new(Line::from(vec![
         left,
         Span::styled(" ".repeat(pad), bar),
@@ -430,9 +386,8 @@ fn render_title_bar(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &Render
 fn render_prompt(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderContext) {
     let home = &app.home;
     let g = glyphs::get();
-    // Placeholders name what the field takes, rather than instructing you to type
-    // in the box the cursor is already sitting in. The filter one earns its space by
-    // saying the part that is not obvious: typing searches below here as well.
+    // Placeholders name what the field takes; the filter's says the non-obvious part
+    // (typing also searches below here).
     let (glyph, value, hint) = if home.path_input_active {
         (" ~ ", home.path_input.as_str(), "file or directory")
     } else {
@@ -463,12 +418,15 @@ fn render_prompt(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderCon
         ));
     }
     if let Some(status) = &home.status {
-        // Keep the tail: these read "\"<long path>\": <reason>", and the
-        // reason is the part worth the space. The name is already on the row.
-        let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+        // Keep the tail ("\"<long path>\": <reason>"): the reason matters; the row shows the
+        // name.
+        let used: usize = spans
+            .iter()
+            .map(|s| glyphs::display_width(&s.content))
+            .sum();
         let room = (area.width as usize).saturating_sub(used + 3);
         spans.push(Span::styled(
-            format!("   {}", truncate_start(status, room)),
+            format!("   {}", glyphs::fit_start(status, room)),
             Style::default().fg(ctx.warning),
         ));
     }
@@ -489,40 +447,31 @@ fn render_rule(area: Rect, buf: &mut Buffer, ctx: &RenderContext) {
     }
 }
 
-/// Draw the list; returns how many of its lines it used, or all of them when it
-/// drew a message rather than rows.
+/// Draw the list; returns the lines used, or all of them when a message was drawn.
 fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderContext) -> usize {
     if app.home.path_input_active {
         return render_path_list(area, buf, app, ctx);
     }
-    // Where this frame starts and how many rows it has room for. Settled before
-    // anything borrows the listing, because both the scroll below and the decision
-    // about what is worth looking into are made from it.
+    // This frame's start and row room, settled before borrowing the listing: the scroll
+    // and what to look into both derive from it.
     let height = area.height as usize;
-    // With room to spare, a blank line before every header but the first. At most
-    // five sections, so at most four lines, and below thirty the list is as dense as
-    // it can be. The spacers come off the height the cap on RECENT is a share of.
+    // With room, a blank line before every header but the first (at most four); under
+    // thirty lines the list is dense. Spacers come off the height RECENT's cap uses.
     let spaced = height >= SPACED_LIST_HEIGHT;
-    let headers = app
-        .home
-        .visible()
-        .iter()
-        .filter(|row| matches!(row, crate::home::Row::Header { .. }))
-        .count();
+    let headers = app.home.header_rows().into_iter().filter(|h| *h).count();
     let spacers = if spaced { headers.saturating_sub(1) } else { 0 };
-    // The height first: the cap on RECENT is a share of it, and the cursor has to be
-    // put back on its row before the scroll is settled from it.
+    // Height first: RECENT's cap is a share of it, and the cursor must be back on its
+    // row before the scroll settles.
     app.home.set_view_height(height.saturating_sub(spacers));
-    // Where each row lands as a line, spacers counted, so the scroll is settled in
-    // lines and the selected row is on screen however many spacers sit above it.
+    // Each row's line, spacers counted, so the scroll keeps the selected row on screen.
     let row_lines: Vec<usize> = {
         let mut line = 0;
         app.home
-            .visible()
-            .iter()
+            .header_rows()
+            .into_iter()
             .enumerate()
-            .map(|(i, row)| {
-                if spaced && i > 0 && matches!(row, crate::home::Row::Header { .. }) {
+            .map(|(i, header)| {
+                if spaced && i > 0 && header {
                     line += 1;
                 }
                 let at = line;
@@ -539,8 +488,8 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
         height,
         total,
     );
-    // As a row index, for the passes that look into what is on screen and for the
-    // next frame. A view that would open on a spacer opens on the header below it.
+    // As a row index, for the look-into passes and the next frame; a view starting on a
+    // spacer starts on the header below.
     app.home.scroll = row_lines.partition_point(|line| *line < first_line);
     let first_line = row_lines
         .get(app.home.scroll)
@@ -552,11 +501,6 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
         .collect();
     app.pointer.home_list_drawn(area, lines_drawn);
 
-    // Nothing is read here. Rows carry whatever a worker has measured so far, and
-    // the request for more is made after the frame, not during it.
-    app.home.pending_enrich = !app.home.unmeasured_visible(1).is_empty();
-    app.home.pending_classify = !app.home.unclassified_visible(1).is_empty();
-    app.home.pending_peek = !app.home.cloud_directories_to_peek(1).is_empty();
     let awaiting = app.home.awaiting_listing().map(|d| d.to_path_buf());
     let since = match awaiting {
         Some(_) => Some(
@@ -605,9 +549,7 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
     }
 
     if visible.is_empty() && !app.home.filter.is_empty() {
-        // Browsed into a directory, the blank answer must say where it looked: a
-        // filter that misses a sibling of the current directory reads as a bug
-        // until the reader notices the header path.
+        // Browsing, the empty answer says where it looked, or a miss reads as a bug.
         let text = match &app.home.browsing {
             Some(dir) => format!("No match under {}.", crate::home::display_path(dir)),
             None => "No match.".to_string(),
@@ -620,13 +562,8 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
         return area.height as usize;
     }
 
-    // Guidance shows whenever there is nothing openable — not only when the list is
-    // literally empty. A first run in a directory holding one subdirectory would
-    // otherwise present a bare listing with no hint of what datui is for, which is the
-    // worst possible first impression for a screen meant to be the way in.
-    //
-    // Counted over every section, folded or not: with everything folded the headers
-    // are the content, and a hint that says there is nothing here would be wrong.
+    // Guidance shows whenever nothing is openable, not only for an empty list, so a
+    // first run is never a bare listing. Counted over every section, folded or not.
     let has_dataset = app.home.has_any_dataset();
     // Cloud sources are something to browse too, so they count as content.
     let guidance = if has_dataset || !app.home.filter.is_empty() || !app.home.cloud.is_empty() {
@@ -660,27 +597,15 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
         area.width as usize
     };
 
-    // Sources a URL can name. Taken from the config rather than from the sources
-    // listed so far, so a source that is hidden or still being discovered is not
-    // reported as missing.
-    let known_sources: Vec<String> = app
-        .app_config
-        .cloud
-        .connections
-        .iter()
-        .map(|s| s.name.clone())
-        .collect();
     let list = ListDraw {
         ctx,
         width: area.width as usize,
         name_width,
         show_meta,
-        filter: &app.home.filter,
         frame: app.throbber_frame as usize,
     };
     let mut lines: Vec<Line> = Vec::new();
-    // Only the rows on screen are drawn: a search can list a thousand, and building a
-    // line for each on every frame was most of what a keystroke cost.
+    // Only rows on screen are drawn: a search may list thousands.
     let last_line = first_line + height;
     for (idx, row) in visible.iter().enumerate() {
         let at = row_lines.get(idx).copied().unwrap_or(usize::MAX);
@@ -709,7 +634,7 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                     &list,
                 ));
             }
-            crate::home::Row::Entry { entry, .. }
+            crate::home::Row::Entry { entry, hit, .. }
                 if crate::home::cloud_source_id(&entry.path).is_some() =>
             {
                 let source = app.home.cloud_source_of(&entry.path);
@@ -719,31 +644,29 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                     selected,
                     area.width as usize,
                     app.throbber_frame as usize,
-                    &app.home.filter,
+                    &hit.positions,
                     ctx,
                 ));
             }
-            crate::home::Row::Entry { entry, nested, .. } => {
-                // When a row is here because of a column rather than its name, say so:
-                // otherwise it reads as the filter having gone wrong.
-                let via = if crate::home::fuzzy_score(&app.home.filter, &entry.name).is_some() {
-                    None
-                } else {
-                    crate::home::matching_column(&app.home.filter, entry)
-                };
+            crate::home::Row::Entry {
+                entry, nested, hit, ..
+            } => {
                 lines.push(entry_line(
                     entry,
                     selected,
                     EntryNotes {
-                        matched_column: via,
-                        // Inside a source the trail already names it.
+                        // A row matched by a column rather than its name says so.
+                        matched_column: hit.column_of(entry),
+                        marks: &hit.positions,
+                        // Sources a URL can name, from the config (not those listed so far, so hidden or
+                        // undiscovered ones are not reported missing). Inside a source the trail names it.
                         known_sources: app
                             .home
                             .browsing
                             .is_none()
-                            .then_some(known_sources.as_slice()),
+                            .then_some(app.app_config.cloud.connections.as_slice()),
                         place_kind: app.home.place_kind(&entry.path),
-                        looking: looking_glyph(app, entry),
+                        look: app.home.cloud_look(entry),
                         indent: if *nested { NEST_INDENT } else { 0 },
                         size_hint: app.home.size_hint(&entry.path),
                         gone: app.home.web_gone.get(&entry.path).map(|g| g.cell.as_str()),
@@ -751,16 +674,15 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                     &list,
                 ));
             }
-            // Drawn exactly like an entry, because to look at it is one: a row in
-            // the directory's list with a name, a shape and a size. What it is not is a
-            // row *of* the directory, which is why it arrives here by its own variant.
+            // Drawn like an entry, but arrives by its own variant: it is not a row of the
+            // directory.
             crate::home::Row::Door { entry, .. } => {
                 lines.push(entry_line(
                     entry,
                     selected,
                     EntryNotes {
                         place_kind: app.home.place_kind(&entry.path),
-                        looking: looking_glyph(app, entry),
+                        look: app.home.cloud_look(entry),
                         ..EntryNotes::default()
                     },
                     &list,
@@ -782,9 +704,14 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                     ctx,
                 ));
             }
-            crate::home::Row::More { hidden, places, .. } => {
+            crate::home::Row::More {
+                hidden,
+                places,
+                measuring,
+                ..
+            } => {
                 lines.push(more_line(
-                    *hidden, *places, selected, name_width, show_meta, ctx,
+                    *hidden, *places, *measuring, selected, name_width, show_meta, ctx,
                 ));
             }
             crate::home::Row::Hidden { section, count } => {
@@ -793,6 +720,13 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                     *count, tables, selected, name_width, show_meta, ctx,
                 ));
             }
+            crate::home::Row::Up { .. } => lines.push(note_row(
+                glyphs::get().up.to_string(),
+                selected,
+                name_width,
+                show_meta,
+                ctx,
+            )),
         }
     }
 
@@ -803,8 +737,8 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
     used
 }
 
-/// While `~` is typed, the list is the directory being typed: its names that the last
-/// segment matches, best first, with the one ↑↓ picked on the rail (#547 M6).
+/// While `~` is typed, the list is the typed directory: names matching the last
+/// segment, best first, with the ↑↓ pick on the rail.
 fn render_path_list(
     area: Rect,
     buf: &mut Buffer,
@@ -823,11 +757,12 @@ fn render_path_list(
     let candidates = home.path_candidates();
     let shown_dir = if dir.is_empty() { "./" } else { dir };
     let count = format!("{}", candidates.len());
-    let rule_w = width.saturating_sub(shown_dir.chars().count() + count.chars().count() + 6);
+    let rule_w =
+        width.saturating_sub(glyphs::display_width(shown_dir) + glyphs::display_width(&count) + 6);
     let mut lines = vec![Line::from(vec![
         Span::styled(g.expanded, Style::default().fg(ctx.accent)),
         Span::styled(
-            truncate_start(shown_dir, width.saturating_sub(count.len() + 8)),
+            glyphs::fit_start(shown_dir, width.saturating_sub(count.len() + 8)),
             Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD),
         ),
         Span::styled(format!("  {count}  "), Style::default().fg(ctx.dimmed)),
@@ -909,36 +844,29 @@ fn render_path_list(
     used
 }
 
-/// How far a row under a place is drawn in. Two cells: enough to read as "under",
-/// not enough to cost a name its tail.
+/// How far a row under a place is indented: enough to read as "under".
 const NEST_INDENT: usize = 2;
 
-/// The list height from which a blank line precedes every section header but the
-/// first. Below it every row is content.
+/// The list height from which a blank line precedes each section header but the
+/// first.
 const SPACED_LIST_HEIGHT: usize = 30;
 
-/// What [`meta_columns`] draws: shape, size and age, each right-aligned in a fixed
-/// cell. A row that has no meta columns of its own is drawn to the same edge, so
-/// the width is named here rather than measured on every row.
+/// [`meta_columns`]' width: shape, size and age right-aligned in fixed cells. Rows
+/// without meta columns are drawn to the same edge.
 const META_COLUMNS_WIDTH: usize = 13 + 2 + 9 + 2 + 4;
 /// The shape cell and the gap after it, at the head of the meta columns.
 const SHAPE_COLUMNS_WIDTH: usize = 13 + 2;
 
-/// Where an entry row drawn with `name_width` ends: the marker, the name's cells, the
-/// meta columns when shown, and one cell of air. The rows that carry no meta columns
-/// of their own — a place, the `more` row — are drawn to this same edge.
+/// Where an entry row of `name_width` ends: marker, name, meta columns when shown,
+/// one cell of air. Place and `more` rows share this edge.
 fn row_width(name_width: usize, show_meta: bool) -> usize {
-    let marker = glyphs::get().selector_blank.chars().count();
+    let marker = glyphs::display_width(glyphs::get().selector_blank);
     marker + name_width + if show_meta { META_COLUMNS_WIDTH } else { 0 } + 1
 }
 
-/// The place a group of recents lives in: its path with a trailing slash, and at the
-/// far right the filesystem it is on.
-///
-/// Quiet on purpose. It is a heading for the rows under it, not a row to open in its
-/// own right, so it takes the secondary text color and no locality glyph, and the
-/// filesystem name is the one fact it carries: the same word the rows' glyph stands
-/// for, spelled out once for the group rather than once per row.
+/// A recents group's place: its path with a trailing slash and, at the right, its
+/// filesystem. Quiet (secondary text, no locality glyph): a heading, not a row to
+/// open.
 fn place_line(
     path: &std::path::Path,
     label: Option<&str>,
@@ -948,88 +876,74 @@ fn place_line(
     show_meta: bool,
     ctx: &RenderContext,
 ) -> Line<'static> {
-    let g = glyphs::get();
+    let chrome = RowChrome::new(selected, ctx);
     let width = row_width(name_width, show_meta);
-    let marker = if selected {
-        g.selector
-    } else {
-        g.selector_blank
-    };
-    let base = if selected {
-        ctx.highlight_style()
-    } else {
-        Style::default()
-    };
     let source = source.unwrap_or("").to_string();
-    // Unknown or local: nothing to say. Only a place that could be slow or cost money
-    // names what it is on, which is the rule the rows' own glyph follows.
-    let locality = crate::locality::Locality::of_fstype(&source);
+    // Unknown or local: nothing to say. Only places that could be slow or cost money
+    // name their filesystem, as the rows' glyph does.
+    let locality = crate::home::locality::Locality::of_fstype(&source);
     let source = match locality {
-        crate::locality::Locality::Object
-        | crate::locality::Locality::Network
-        | crate::locality::Locality::Memory => source,
+        crate::home::locality::Locality::Object
+        | crate::home::locality::Locality::Network
+        | crate::home::locality::Locality::Memory => source,
         _ => String::new(),
     };
-    let source_style = base.fg(match locality {
-        crate::locality::Locality::Object => ctx.keybind_hints,
-        crate::locality::Locality::Network => ctx.warning,
-        crate::locality::Locality::Memory => ctx.temporal_col,
-        _ => ctx.dimmed,
-    });
+    let source_style = chrome.base.fg(locality_color(Some(locality), ctx));
     let mut name = crate::home::display_path(path);
     // A file of tables (a SQLite database, a NumPy archive) is a place, and a file.
     if !name.ends_with('/')
-        && !crate::discover::data_format(path).is_some_and(crate::FileFormat::holds_tables)
+        && !crate::home::discover::data_format(path).is_some_and(crate::FileFormat::holds_tables)
     {
         name.push('/');
     }
-    // What the place itself is, when the dataset index remembers it: `hive`, `12
-    // parquet`. From the cache only; a place row never causes a directory read.
+    // What the dataset index remembers the place to be (`hive`, `12 parquet`); from the
+    // cache only.
     let label = label.map(|l| format!("  {l}")).unwrap_or_default();
-    // marker, name, [label,] at least one space, source, space. The padding is what
-    // puts the source on the right edge, and a name cut to fit still leaves it a cell
-    // of air. The label goes before the name is cut, since the name is the place.
-    let fixed = marker.chars().count() + source.chars().count() + 1;
+    // Marker, name, [label,] space, source, space: padding puts the source on the right
+    // edge; the label goes before the name is cut.
+    let fixed = glyphs::display_width(chrome.marker) + glyphs::display_width(&source) + 1;
     let room = width.saturating_sub(fixed + 1).max(1);
-    let label = if name.chars().count() + label.chars().count() <= room {
+    let label = if glyphs::display_width(&name) + glyphs::display_width(&label) <= room {
         label
     } else {
         String::new()
     };
-    let name = truncate_start(&name, room.saturating_sub(label.chars().count()).max(1));
-    let pad = width.saturating_sub(fixed + name.chars().count() + label.chars().count());
-    let name_style = if selected {
-        base.fg(ctx.text_secondary).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(ctx.text_secondary)
-    };
+    let name = glyphs::fit_start(
+        &name,
+        room.saturating_sub(glyphs::display_width(&label)).max(1),
+    );
+    let pad =
+        width.saturating_sub(fixed + glyphs::display_width(&name) + glyphs::display_width(&label));
     Line::from(vec![
-        Span::styled(
-            marker,
-            base.fg(ctx.keybind_hints).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(name, name_style),
-        Span::styled(label, base.fg(ctx.dimmed)),
-        Span::styled(" ".repeat(pad), base),
+        chrome.marker(),
+        Span::styled(name, chrome.name(ctx.text_secondary)),
+        Span::styled(label, chrome.base.fg(ctx.dimmed)),
+        chrome.pad(pad),
         Span::styled(source, source_style),
-        Span::styled(" ", base),
+        chrome.pad(1),
     ])
 }
 
-/// What the cap on `RECENT` is hiding, as one row: `… 13 more in 5 places`.
+/// What a cap hides, as one row: `RECENT`'s `… 13 more in 5 places`, or a
+/// directory's `… 4,958 more`, with `· measuring` while a rows sort still measures.
 fn more_line(
     hidden: usize,
     places: usize,
+    measuring: bool,
     selected: bool,
     name_width: usize,
     show_meta: bool,
     ctx: &RenderContext,
 ) -> Line<'static> {
-    let text = format!(
-        "{} {hidden} more in {places} {}",
-        glyphs::get().ellipsis,
-        if places == 1 { "place" } else { "places" }
-    );
+    let g = glyphs::get();
+    let ellipsis = g.ellipsis;
+    let more = crate::numfmt::group_chrome(hidden);
+    let text = match places {
+        0 if measuring => format!("{ellipsis} {more} more {} measuring", g.middot),
+        0 => format!("{ellipsis} {more} more"),
+        1 => format!("{ellipsis} {more} more in 1 place"),
+        _ => format!("{ellipsis} {more} more in {places} places"),
+    };
     note_row(text, selected, name_width, show_meta, ctx)
 }
 
@@ -1065,32 +979,19 @@ fn note_row(
     show_meta: bool,
     ctx: &RenderContext,
 ) -> Line<'static> {
-    let g = glyphs::get();
+    let chrome = RowChrome::new(selected, ctx);
     let width = row_width(name_width, show_meta);
-    let marker = if selected {
-        g.selector
-    } else {
-        g.selector_blank
-    };
-    let base = if selected {
-        ctx.highlight_style()
-    } else {
-        Style::default()
-    };
-    let pad = width.saturating_sub(marker.chars().count() + text.chars().count() + 1);
+    let pad = width
+        .saturating_sub(glyphs::display_width(chrome.marker) + glyphs::display_width(&text) + 1);
     Line::from(vec![
-        Span::styled(
-            marker,
-            base.fg(ctx.keybind_hints).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(text, base.fg(ctx.dimmed)),
-        Span::styled(" ".repeat(pad), base),
-        Span::styled(" ", base),
+        chrome.marker(),
+        Span::styled(text, chrome.base.fg(ctx.dimmed)),
+        chrome.pad(pad),
+        chrome.pad(1),
     ])
 }
 
-/// What every row of the home list is drawn with in one frame, as opposed to what
-/// each row says.
+/// What every home row is drawn with in one frame.
 #[derive(Clone, Copy)]
 struct ListDraw<'f> {
     ctx: &'f RenderContext,
@@ -1099,7 +1000,6 @@ struct ListDraw<'f> {
     /// What an entry's name may take beside the meta columns.
     name_width: usize,
     show_meta: bool,
-    filter: &'f str,
     /// The throbber's frame, for a section still listing.
     frame: usize,
 }
@@ -1109,10 +1009,13 @@ struct ListDraw<'f> {
 struct EntryNotes<'a> {
     /// The column the filter matched, when the name did not.
     matched_column: Option<&'a str>,
+    /// The matched characters: in the name, or in `matched_column` when set.
+    marks: &'a [usize],
     /// Sources a URL may name; `None` where the trail already names it.
-    known_sources: Option<&'a [String]>,
+    known_sources: Option<&'a [crate::config::CloudConnectionConfig]>,
     place_kind: Option<&'static str>,
-    looking: Option<&'static str>,
+    /// Where a bucket directory is in being looked into.
+    look: Option<crate::home::CloudLook>,
     indent: usize,
     /// What a catalog says the row's file weighs, until it is measured.
     size_hint: Option<u64>,
@@ -1120,8 +1023,8 @@ struct EntryNotes<'a> {
     gone: Option<&'a str>,
 }
 
-/// Section headers carry the collapse marker and the provenance note, so the list
-/// explains itself without a legend.
+/// Section headers carry the fold marker and provenance note, so the list explains
+/// itself.
 fn section_header<'a>(
     section: &'a crate::home::Section,
     matches: usize,
@@ -1134,8 +1037,7 @@ fn section_header<'a>(
     } = *list;
     let g = glyphs::get();
     let note = if section.unavailable {
-        // The reason when there is one. A refused bucket listing says what to fix; a
-        // share that has gone away has nothing to add beyond the word itself.
+        // The reason when there is one (a refused listing says what to fix).
         section
             .unavailable_note
             .clone()
@@ -1149,18 +1051,16 @@ fn section_header<'a>(
         && section.door.is_none()
         && section.origin == Some(crate::home::RootOrigin::Cwd.note())
     {
-        // Launched somewhere with nothing to open, the heading says so and where to go:
-        // the public rows below would otherwise read as this directory's (#547 D9).
+        // Launched with nothing to open: say so and how to go elsewhere, so the public rows
+        // below do not read as this directory's.
         format!("nothing to open here {} ~ types a path", g.middot)
     } else {
         section.subtitle.clone().unwrap_or_default()
     };
-    // The note is trimmed before the title is, and never takes more than half the
-    // line. A note is context; the title is what the section *is*, and a search
-    // heading carrying a long path would otherwise crowd the title out entirely.
-    // `Found`'s title is one short word, and its note is the answer to the search.
+    // The note is trimmed before the title and takes at most half the line (`Found`'s
+    // short title leaves its note, the answer, more).
     let note_room = if section.title == crate::home::HomeState::SEARCH_SECTION {
-        width.saturating_sub(section.title.chars().count() + 16)
+        width.saturating_sub(glyphs::display_width(&section.title) + 16)
     } else {
         width / 2
     };
@@ -1168,12 +1068,10 @@ fn section_header<'a>(
     let note = if note.starts_with(g.warning) {
         glyphs::fit_cells(&note, note_room, g.ellipsis).into_owned()
     } else {
-        truncate_start(&note, note_room)
+        glyphs::fit_start(&note, note_room)
     };
-    // A title that names a place keeps its case; only the word-like headings —
-    // "RECENT", "ELSEWHERE" — are shouted. A URL is a place, and uppercasing one turns
-    // `s3://datui-sales` into `S3://DATUI-SALES`, which is not the bucket's name and in
-    // a case-sensitive store is not even a valid one.
+    // Paths and URLs keep their case (`s3://datui-sales` uppercased is a different
+    // bucket); only word headings ("RECENT") are uppercased.
     let is_path = section.title.starts_with('/')
         || section.title.starts_with('~')
         || section.title.contains("://")
@@ -1185,18 +1083,16 @@ fn section_header<'a>(
         section.title.to_uppercase()
     };
     let marker = if collapsed { g.collapsed } else { g.expanded };
-    // Shown whether folded or not: how much is in a place is worth knowing before
-    // deciding to look in it, and a folded section would otherwise read as empty.
-    // Until the listing is in, a count would be a guess, and a zero reads as empty.
+    // The count shows folded or not; until the listing is in, a spinner instead of a
+    // guessed count.
     let chip = if section.waiting {
         let spinner = g.spinner;
         format!(" {} ", spinner[frame % spinner.len()])
     } else {
         format!(" {matches} ")
     };
-    // Why the section is here, right after the count: `current directory`,
-    // `configured`. A flat chip in the style of `hive`, since it is a word about the
-    // section the way that is a word about a row.
+    // Why the section is here (`current directory`, `configured`), as a flat chip after
+    // the count.
     let origin = section
         .origin
         .map(|origin| format!(" {origin} "))
@@ -1204,42 +1100,43 @@ fn section_header<'a>(
     let origin_cells = if origin.is_empty() {
         0
     } else {
-        origin.chars().count() + 1
+        glyphs::display_width(&origin) + 1
     };
-    // marker, title, space, chip, space, [origin, space,] rule, space, note, space.
-    // The title gives way to the note only down to three cells; below that the note
-    // goes instead, since a heading that is all note and no title says nothing. The
-    // origin chip goes before the note does: it is the shorter word and the one that
-    // says what the section is. A cell of rule always stays: its weight is how
-    // the cursor shows on a heading, and a long path would otherwise take it all.
+    // Marker, title, chip, [origin,] rule, note. The title yields to the note down to
+    // three cells, then the note goes; the origin chip goes before the note. One cell of
+    // rule always stays: its weight shows the cursor on a heading.
     const MIN_RULE: usize = 1;
     let mut note = note;
     let mut origin = origin;
     let mut origin_cells = origin_cells;
-    let mut fixed = marker.chars().count()
+    let mut fixed = glyphs::display_width(marker)
         + 1
-        + chip.chars().count()
+        + glyphs::display_width(&chip)
         + 1
         + origin_cells
-        + note.chars().count()
+        + glyphs::display_width(&note)
         + 2
         + MIN_RULE;
     if width.saturating_sub(fixed) < 3 {
         note = String::new();
-        fixed = marker.chars().count() + 1 + chip.chars().count() + 1 + origin_cells + 2 + MIN_RULE;
+        fixed = glyphs::display_width(marker)
+            + 1
+            + glyphs::display_width(&chip)
+            + 1
+            + origin_cells
+            + 2
+            + MIN_RULE;
     }
     if width.saturating_sub(fixed) < 3 {
         origin = String::new();
         origin_cells = 0;
-        fixed = marker.chars().count() + 1 + chip.chars().count() + 1 + 2 + MIN_RULE;
+        fixed = glyphs::display_width(marker) + 1 + glyphs::display_width(&chip) + 1 + 2 + MIN_RULE;
     }
-    title = truncate_start(&title, width.saturating_sub(fixed));
-    let rule_w = width.saturating_sub(fixed + title.chars().count()) + MIN_RULE;
+    title = glyphs::fit_start(&title, width.saturating_sub(fixed));
+    let rule_w = width.saturating_sub(fixed + glyphs::display_width(&title)) + MIN_RULE;
 
-    // A title on a rule, not a filled bar: the accent carries the title, the count
-    // sits in a flat chip, and the rule runs out to the provenance note. The section
-    // the cursor is in is brighter and its rule heavier, which is the whole of the
-    // focus language — nothing moves, one thing lights up.
+    // A title on a rule, not a filled bar: accented title, flat count chip, rule out to
+    // the note. The focused section is brighter with a heavier rule.
     let title_style = if selected {
         Style::default()
             .fg(ctx.accent_bright)
@@ -1285,10 +1182,8 @@ fn section_header<'a>(
     Line::from(spans)
 }
 
-/// Split `text` into spans, styling the characters at `positions` differently.
-///
-/// Consecutive positions are merged into one span, so a run of matched characters is
-/// a single styled stretch rather than a stutter of one-character spans.
+/// Split `text` into spans, styling the characters at `positions`; consecutive
+/// positions merge into one span.
 fn highlight_spans(
     text: &str,
     positions: &[usize],
@@ -1320,42 +1215,22 @@ fn highlight_spans(
     spans
 }
 
-/// A cloud source under `CLOUD`: its name, the API it speaks, how many buckets it
-/// has (or why it has none) and where its login came from.
-///
-/// A column layout of its own rather than a dataset's. A source has no rows, columns,
-/// size or age, and three blank metadata columns beside every source would say so on
-/// every line.
+/// A cloud source under `CLOUD`: name, API, bucket count (or why none) and the
+/// login's origin. Its own layout: a source has no rows, columns, size or age.
 fn source_line<'a>(
     entry: &'a Entry,
     source: Option<&crate::home::CloudSource>,
     selected: bool,
     width: usize,
     frame: usize,
-    filter: &str,
+    marks: &[usize],
     ctx: &RenderContext,
 ) -> Line<'a> {
     let g = glyphs::get();
-    let base = if selected {
-        ctx.highlight_style()
-    } else {
-        Style::default()
-    };
-    let marker = if selected {
-        g.selector
-    } else {
-        g.selector_blank
-    };
-    let name_style = if selected {
-        base.fg(ctx.text_primary).add_modifier(Modifier::BOLD)
-    } else {
-        base.fg(ctx.text_primary)
-    };
-    let hit_style = base
-        .fg(ctx.keybind_hints)
-        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+    let chrome = RowChrome::new(selected, ctx);
+    let base = chrome.base;
 
-    let api = source.map(|s| s.api.as_str()).unwrap_or("");
+    let api = source.map(|s| s.api.name()).unwrap_or("");
     let count = match source {
         Some(s) if s.busy() => {
             let spinner = g.spinner[frame % g.spinner.len()];
@@ -1370,12 +1245,13 @@ fn source_line<'a>(
     let failed = source.is_some_and(|s| s.failed());
     let note = source.map(|s| s.note.clone()).unwrap_or_default();
 
-    // marker, place, name, api, count, note. The name takes what it needs up to a
-    // third of the line, the count a fixed column, and the note whatever is left.
+    // Marker, place, name, api, count, note: the name up to a third of the line, the
+    // count a fixed column, the note the rest.
     const API_W: usize = 7;
     const COUNT_W: usize = 14;
     let place = format!("{} ", g.in_object_store);
-    let fixed = marker.chars().count() + place.chars().count() + API_W + COUNT_W + 3;
+    let fixed =
+        glyphs::display_width(chrome.marker) + glyphs::display_width(&place) + API_W + COUNT_W + 3;
     let name_w = entry
         .name
         .chars()
@@ -1384,7 +1260,7 @@ fn source_line<'a>(
         .max(16)
         .min(width.saturating_sub(fixed));
     let mut name = entry.name.clone();
-    let mut positions = crate::home::fuzzy_positions(filter, &name);
+    let mut positions = marks.to_vec();
     if name.chars().count() > name_w && name_w > 1 {
         let kept = name_w - 1;
         name = name.chars().take(kept).collect::<String>() + g.ellipsis;
@@ -1392,36 +1268,108 @@ fn source_line<'a>(
     }
     let name_pad = name_w.saturating_sub(name.chars().count());
     let note_w = width.saturating_sub(fixed + name_w);
-    // Cut from the end: the account or endpoint leads, and it is the part that tells
-    // two sources apart.
-    let note = if note.chars().count() > note_w && note_w > 1 {
-        note.chars().take(note_w - 1).collect::<String>() + g.ellipsis
-    } else {
-        note
-    };
+    // Cut from the end: the leading account or endpoint tells sources apart.
+    let note = glyphs::fit(&note, note_w);
 
     let mut spans = vec![
-        Span::styled(
-            marker,
-            base.fg(ctx.keybind_hints).add_modifier(Modifier::BOLD),
-        ),
+        chrome.marker(),
         Span::styled(place, base.fg(ctx.keybind_hints)),
     ];
-    spans.extend(highlight_spans(&name, &positions, name_style, hit_style));
-    spans.push(Span::styled(" ".repeat(name_pad + 1), base));
+    spans.extend(highlight_spans(
+        &name,
+        &positions,
+        chrome.name(ctx.text_primary),
+        chrome.hit,
+    ));
+    spans.push(chrome.pad(name_pad + 1));
     spans.push(Span::styled(format!("{api:<API_W$}"), base.fg(ctx.dimmed)));
     let count_style = if failed {
         base.fg(ctx.warning)
     } else {
         base.fg(ctx.text_secondary)
     };
-    let count = truncate_start(&count, COUNT_W - 1);
+    let count = glyphs::fit_start(&count, COUNT_W - 1);
     spans.push(Span::styled(format!("{count:<COUNT_W$}"), count_style));
     spans.push(Span::styled(" ".to_string(), base));
-    let note_pad = note_w.saturating_sub(note.chars().count());
+    let note_pad = note_w.saturating_sub(glyphs::display_width(&note));
     spans.push(Span::styled(note, base.fg(ctx.dimmed)));
     spans.push(Span::styled(" ".repeat(note_pad + 1), base));
     Line::from(spans)
+}
+
+/// A home line's rail and selected-row tint, carried to the edge. Tinted, not
+/// reversed, so a row's own colors survive; "reversed" in the theme gets the old look.
+struct RowChrome {
+    selected: bool,
+    base: Style,
+    marker: &'static str,
+    marker_style: Style,
+    hit: Style,
+}
+
+impl RowChrome {
+    fn new(selected: bool, ctx: &RenderContext) -> Self {
+        let g = glyphs::get();
+        let base = if selected {
+            ctx.highlight_style()
+        } else {
+            Style::default()
+        };
+        RowChrome {
+            selected,
+            base,
+            // The loudest thing on screen, found instantly.
+            marker: if selected {
+                g.selector
+            } else {
+                g.selector_blank
+            },
+            marker_style: base.fg(ctx.keybind_hints).add_modifier(Modifier::BOLD),
+            hit: base
+                .fg(ctx.keybind_hints)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        }
+    }
+
+    fn marker(&self) -> Span<'static> {
+        Span::styled(self.marker, self.marker_style)
+    }
+
+    /// A name in `fg`, bold on the selected row.
+    fn name(&self, fg: Color) -> Style {
+        if self.selected {
+            self.base.fg(fg).add_modifier(Modifier::BOLD)
+        } else {
+            self.base.fg(fg)
+        }
+    }
+
+    fn pad(&self, cells: usize) -> Span<'static> {
+        Span::styled(" ".repeat(cells), self.base)
+    }
+}
+
+/// Where a row's data lives, as the glyph drawn before its name.
+fn locality_glyph(locality: Option<crate::home::locality::Locality>) -> &'static str {
+    let g = glyphs::get();
+    match locality {
+        Some(crate::home::locality::Locality::Object) => g.in_object_store,
+        Some(crate::home::locality::Locality::Network) => g.over_network,
+        Some(crate::home::locality::Locality::Memory) => g.in_memory,
+        Some(crate::home::locality::Locality::Local) => g.here,
+        Some(crate::home::locality::Locality::Unknown) | None => g.place_unknown,
+    }
+}
+
+/// Places that can stall or cost money are colored; local disk, most rows, is dimmed
+/// to texture.
+fn locality_color(locality: Option<crate::home::locality::Locality>, ctx: &RenderContext) -> Color {
+    match locality {
+        Some(crate::home::locality::Locality::Object) => ctx.keybind_hints,
+        Some(crate::home::locality::Locality::Network) => ctx.warning,
+        Some(crate::home::locality::Locality::Memory) => ctx.temporal_col,
+        _ => ctx.dimmed,
+    }
 }
 
 fn entry_line<'a>(
@@ -1430,312 +1378,263 @@ fn entry_line<'a>(
     notes: EntryNotes<'a>,
     list: &ListDraw,
 ) -> Line<'a> {
-    let EntryNotes {
-        matched_column,
-        known_sources,
-        place_kind,
-        looking,
-        indent,
-        size_hint,
-        gone,
-    } = notes;
     let ListDraw {
         ctx,
         name_width,
         show_meta,
-        filter,
+        frame,
         ..
     } = *list;
-    // The selection marker is the loudest thing on screen, and the only thing that
-    // needs to be found instantly.
     let g = glyphs::get();
-    let marker = if selected {
-        g.selector
-    } else {
-        g.selector_blank
-    };
-    // A row under a place is drawn in, and the cells it is drawn in by come off the
-    // name's side: the meta columns stay where every other row puts them, so the rule
-    // below that gives a label up for the name fires that much sooner.
-    let name_width = name_width.saturating_sub(indent);
+    let chrome = RowChrome::new(selected, ctx);
+    // A row under a place is indented from the name's side; the meta columns stay put.
+    let name_width = name_width.saturating_sub(notes.indent);
 
     let mut name = entry.name.clone();
     // Nothing is there to go inside of, whatever the path looks like.
-    if shows_as_a_place(entry) && place_kind != Some("missing") {
+    if shows_as_a_place(entry) && notes.place_kind != Some("missing") {
         name.push('/');
     }
-    // A column hit takes the place of the kind label: both are a short note about
-    // what this row is, and two of them would crowd the name.
-    //
-    // Inside an object store the service's own word is used, so a bucket reads as a
-    // bucket rather than as a directory.
-    let path_text = entry.path.to_string_lossy();
-    let named_source = crate::source::split_source_id(&path_text).0;
-    let described = entry.label();
-    // Whether the cell ends up holding the curated word rather than a label. Only one
-    // arm below reaches for it, and a row whose *path* is curated but whose kind sends
-    // it elsewhere — a `multi` prefix in a catalog — is carrying a label.
-    let mut shows_curated = false;
-    let kind = match entry.kind {
-        // A count beats the word for a bucket or container. Not the *curated* word,
-        // though — `dataset` and `project` are what a source calls a place it names,
-        // and that is the only thing marking it as one.
-        //
-        // The same order the details pane takes, or the row and the pane beside it
-        // disagree about one directory.
-        EntryKind::Directory => match (place_kind, entry.holds.formats.is_empty()) {
-            (Some(curated), _) => {
-                shows_curated = true;
-                curated
-            }
-            (None, false) => described.as_ref(),
-            // A directory in a bucket not yet looked into shows that it is being looked
-            // into, rather than a word for the kind of place it is.
-            (None, true) => crate::home::object_place_label(&entry.path)
-                .or(looking)
-                .unwrap_or(described.as_ref()),
-        },
-        // A catalog's local dataset that is not there says so, rather than the
-        // ellipsis of a row nothing has looked at yet.
-        EntryKind::Unknown if place_kind.is_some() => {
-            shows_curated = true;
-            place_kind.unwrap_or_default()
-        }
-        _ => described.as_ref(),
-    };
-    // Two stores can hold the same bucket and key, so a row from one that is named in
-    // its URL says which, where a kind would otherwise go. A recent whose source has
-    // since left the config says that instead of failing only when it is opened.
-    let missing_source = named_source
-        .is_some_and(|id| known_sources.is_some_and(|known| !known.iter().any(|k| k == id)));
-    let missing_note = named_source.map(|id| format!("source not found: {id}"));
-    // Whether the cell ends up holding the source id or the warning rather than a
-    // label. The path having an id is not the same question: a peeked prefix under a
-    // named source has both, and its label is a label.
-    let mut shows_source = true;
-    let kind: &str = match (named_source, kind, known_sources) {
-        (Some(_), "", Some(_)) if missing_source => missing_note.as_deref().unwrap_or(""),
-        (Some(id), "", Some(_)) => id,
-        _ => {
-            shows_source = false;
-            kind
-        }
-    };
-    // The row that opens the directory being browsed carries none of this: not a label,
-    // not the curated word a source gives the place, not the source id that stands in
-    // where a label would be. Every one of them is about the directory, and this row is
-    // the door — `bigquery (all files)  dataset` says the door is the dataset, and
-    // under a named source the cell filled with the id instead.
-    let (kind, shows_curated, shows_source) = if entry.opens_whole_directory {
-        ("", false, false)
-    } else {
-        (kind, shows_curated, shows_source)
-    };
-    // Nothing has looked into this row yet, and it has nothing else to say for itself.
-    // An ellipsis says so and claims nothing: the word `dir` was a claim, and a blank
-    // is what a file's empty label looks like.
-    let kind = if kind.is_empty() && entry.kind == EntryKind::Unknown {
-        g.ellipsis
-    } else {
-        kind
-    };
-    // Hive and multi-file datasets wear a flat chip; the rest stay as a word. Never on
-    // an empty label: the chip is drawn by taking the cell apart again below, and a
-    // dataset row can now have no label at all — the row that opens the directory being
-    // browsed. A chip made of nothing was a panic in the renderer.
-    let kind_is_chip = matched_column.is_none()
-        && !kind.is_empty()
-        && matches!(entry.kind, EntryKind::Hive | EntryKind::MultiFile);
-    let kind_cell = match matched_column {
-        Some(column) => format!(" {}{column}", g.middot),
-        // `shown_column` below may cut this; both are written from the same string.
-        None if kind.is_empty() => String::new(),
-        None if kind_is_chip => format!("  {kind} "),
-        // Two cells between a name and what it is, on every row: a place row's
-        // label, a bucket's, a catalog's and a file's read the same (#547 M7).
-        None => format!("  {kind}"),
-    };
-
-    // Where this row's data lives, immediately before its name. The detail pane has
-    // carried this for a long time, and on a full-screen ultrawide the pane is far
-    // enough from the cursor that a cloud path reads as a local one at a glance.
+    let label = crate::home::describe(
+        entry,
+        notes.place_kind,
+        notes.look,
+        frame,
+        notes.known_sources,
+    );
+    // Where the data lives, right before its name: on an ultrawide the pane is too far
+    // to tell cloud from local.
     let locality = entry
         .cost
         .source
         .as_deref()
-        .map(crate::locality::Locality::of_fstype);
-    let place = match locality {
-        Some(crate::locality::Locality::Object) => g.in_object_store,
-        Some(crate::locality::Locality::Network) => g.over_network,
-        Some(crate::locality::Locality::Memory) => g.in_memory,
-        Some(crate::locality::Locality::Local) => g.here,
-        Some(crate::locality::Locality::Unknown) | None => g.place_unknown,
-    };
-    let place_cell = format!("{place} ");
+        .map(crate::home::locality::Locality::of_fstype);
+    let place_cell = format!("{} ", locality_glyph(locality));
+    let place_w = glyphs::display_width(&place_cell);
+    let (name_width, meta) = meta_cells(entry, &notes, locality, show_meta, name_width);
+    let cell = fit_kind_cell(
+        entry,
+        &label,
+        notes.matched_column,
+        &name,
+        name_width,
+        place_w,
+    );
 
-    // A recent from a store or a share that nothing has measured: the probe that
-    // measures remote rows runs over roots, and a recent's place is not one, so what it
-    // shows is what an open or a listing remembered — or, until then, that nothing is
-    // known.
-    let unmeasured = indent > 0
-        && place_kind.is_none()
+    // Marks only when the name matched; a column match would mark unrelated letters.
+    let marks = if notes.matched_column.is_none() {
+        notes.marks.to_vec()
+    } else {
+        Vec::new()
+    };
+    let budget = name_width.saturating_sub(2 + place_w + glyphs::display_width(&cell.text) + 1);
+    let (name, name_positions) = fit_name(name, marks, budget, entry.opens_whole_directory);
+    let pad = name_width
+        .saturating_sub(2 + glyphs::display_width(&name) + glyphs::display_width(&cell.text));
+
+    // Unreadable files are listed so the directory reads as it is, dimmed.
+    let name_fg = if entry.kind == EntryKind::Other {
+        ctx.dimmed
+    } else {
+        ctx.text_primary
+    };
+    let base = chrome.base;
+    let kind_style = if notes.matched_column.is_some() {
+        base.fg(ctx.keybind_hints)
+    } else if label.missing_source {
+        base.fg(ctx.warning)
+    } else if matches!(entry.kind, EntryKind::Hive | EntryKind::MultiFile) {
+        Style::default()
+            .bg(ctx.controls_bg)
+            .fg(ctx.accent)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        base.fg(ctx.dimmed)
+    };
+
+    let mut spans = vec![
+        chrome.marker(),
+        chrome.pad(notes.indent),
+        Span::styled(place_cell, base.fg(locality_color(locality, ctx))),
+    ];
+    spans.extend(highlight_spans(
+        &name,
+        &name_positions,
+        chrome.name(name_fg),
+        chrome.hit,
+    ));
+    match (&cell.column, notes.matched_column) {
+        // The column note is a substring match, highlighted as one; `kept` counts the note's
+        // own characters so the ellipsis gets no mark.
+        (Some((shown, kept)), Some(_)) => {
+            spans.push(Span::styled(format!(" {}", g.middot), kind_style));
+            let mut positions = notes.marks.to_vec();
+            positions.retain(|p| p < kept);
+            spans.extend(highlight_spans(shown, &positions, kind_style, chrome.hit));
+        }
+        _ if cell.chip => {
+            // One cell of row background, then the chip; stripped, not sliced (an empty cell
+            // would panic).
+            spans.push(chrome.pad(1));
+            let chip = cell.text.strip_prefix(' ').unwrap_or(&cell.text);
+            spans.push(Span::styled(chip.to_string(), kind_style));
+        }
+        _ => spans.push(Span::styled(cell.text, kind_style)),
+    }
+    match meta {
+        Some(meta) => {
+            spans.push(chrome.pad(pad));
+            spans.push(Span::styled(meta, base.fg(ctx.dimmed)));
+        }
+        // The meta columns went to the name: pad across them so the bar reaches the edge.
+        None if show_meta => spans.push(chrome.pad(pad)),
+        None => {}
+    }
+    spans.push(chrome.pad(1));
+    Line::from(spans)
+}
+
+/// An entry row's meta columns, and the name's width once a row with nothing to show
+/// there gives them up (all, or the shape cells; size and age keep theirs).
+fn meta_cells(
+    entry: &Entry,
+    notes: &EntryNotes,
+    locality: Option<crate::home::locality::Locality>,
+    show_meta: bool,
+    name_width: usize,
+) -> (usize, Option<String>) {
+    // An unmeasured recent from a store or share (probes run over roots, not recents'
+    // places): shows what was remembered, or that nothing is known.
+    let unmeasured = notes.indent > 0
+        && notes.place_kind.is_none()
         && entry.rows.is_none()
         && entry.cols.is_none()
         && entry.kind != EntryKind::Unknown
         && matches!(
             locality,
-            Some(crate::locality::Locality::Object | crate::locality::Locality::Network)
+            Some(
+                crate::home::locality::Locality::Object | crate::home::locality::Locality::Network
+            )
         );
-    let meta = show_meta.then(|| meta_columns(entry, unmeasured, size_hint, gone));
-    // A row with nothing to say in the meta columns (a public dataset, a directory not
-    // looked into) gives them to its name rather than cutting it beside blank cells
-    // (#648).
-    // An empty shape cell goes to the name the same way; size and age keep their
-    // columns.
-    let (name_width, meta) = match meta {
+    match show_meta.then(|| meta_columns(entry, unmeasured, notes.size_hint, notes.gone)) {
         Some(meta) if meta.trim().is_empty() => (name_width + META_COLUMNS_WIDTH, None),
         Some(meta) if meta.chars().take(SHAPE_COLUMNS_WIDTH).all(|c| c == ' ') => (
             name_width + SHAPE_COLUMNS_WIDTH,
             Some(meta.chars().skip(SHAPE_COLUMNS_WIDTH).collect()),
         ),
         meta => (name_width, meta),
-    };
+    }
+}
 
-    // A label counts now — `5000+ parquet` is thirteen characters where `iceberg` was
-    // seven — and on a narrow screen it can leave the name nothing to be truncated
-    // into, which puts the meta columns out of their alignment and clips them. The name
-    // is what identifies a row and the label only describes it, so the label goes. It
-    // goes for good at these widths — the details pane is not drawn below a hundred and
-    // two columns, and this fires far below that — which is the trade a screen with
-    // room for one of the two forces. The test is the one truncation already makes, so
-    // there is no width here to pick.
-    //
-    // Only a label. A column note says *why this row is in the list*, and the draw site
-    // writes it from `matched_column` rather than from this cell, so blanking the cell
-    // would hand the name a budget the note then overruns — the misalignment this
-    // exists to stop, one column wider. And `source not found:` is a warning the pane
-    // does not carry, so dropping it leaves a broken recent looking like a working one.
-    // Not a source id or a `source not found:` either: two stores can hold the same
-    // bucket and key, and that chip is the only thing that says which this row came
-    // from. Asked of what the cell holds, not of what the path carries.
-    //
-    // Nor the curated word. `dataset` and `project` are what a source calls a place it
-    // names, and the match above prefers them to the count for that reason; dropping
-    // them here would take away the one thing marking a curated row. Asked of the cell
-    // and not of the path, the same as the source id: a `multi` row under a public
-    // source has a curated path and a count in its cell, and a count gives way.
-    let is_label = matched_column.is_none() && !shows_source && !shows_curated;
-    let fits = |cell: &str| {
-        name_width.saturating_sub(2 + place_cell.chars().count() + cell.chars().count() + 1) > 1
+/// The cell beside a row's name, as drawn.
+struct KindCell {
+    text: String,
+    /// Hive and multi-file datasets wear their label as a flat chip.
+    chip: bool,
+    /// The matched column as cut to fit, and how many characters are the column's own.
+    column: Option<(String, usize)>,
+}
+
+/// The cell beside a row's name: the matched column, else the label, else how Enter
+/// reads it; cut or dropped so the name keeps room and the meta columns align.
+fn fit_kind_cell(
+    entry: &Entry,
+    label: &crate::home::RowLabel,
+    matched_column: Option<&str>,
+    name: &str,
+    name_width: usize,
+    place_w: usize,
+) -> KindCell {
+    let g = glyphs::get();
+    let kind = label.short.as_str();
+    // Never a chip of nothing: the chip is drawn by taking the cell apart again.
+    let chip = matched_column.is_none()
+        && !kind.is_empty()
+        && matches!(entry.kind, EntryKind::Hive | EntryKind::MultiFile);
+    // Two cells between a name and what it is, on every row (#547 M7).
+    let text = match kind {
+        "" => String::new(),
+        _ if chip => format!("  {kind} "),
+        _ => format!("  {kind}"),
     };
-    // A column note says why the row is in the list and may not go, but it is as long
-    // as somebody's column name: `transaction_amount` is twenty cells, which at the
-    // narrowest width that draws meta leaves the name nothing to be cut into. Its head
-    // is the identifying part, so the tail goes and the marks that fell in it go with
-    // it — the same shape the name's own truncation takes.
-    // The ellipsis is one character in the Unicode set and three in the ASCII one, so
-    // the room it takes is asked for rather than assumed. Assuming one made the cut
-    // note two characters longer than it was allowed under `unicode = never`, which
-    // collapsed the name's budget — the misalignment this is all for, reached through
-    // the fix for it.
-    let ellipsis = glyphs::get().ellipsis;
-    let ellipsis_len = ellipsis.chars().count();
-    // The note as it will be drawn, and with it how many of those characters are the
-    // note rather than the ellipsis standing for the rest. The draw site needs that
-    // number to drop the marks the cut left behind, and carrying it from here is the
-    // point: subtracting an ellipsis there means knowing its length in two places, and
-    // the two only agree in one of the glyph sets.
-    let shown_column: Option<(String, usize)> = matched_column.map(|column| {
-        let room = name_width.saturating_sub(2 + place_cell.chars().count() + 1 + 2 + 2);
+    let ellipsis_len = g.ellipsis.chars().count();
+    // A column note (why the row is listed) stays but may be long: its tail goes, and
+    // marks in the cut tail go with it.
+    let column = matched_column.map(|column| {
+        let room = name_width.saturating_sub(2 + place_w + 1 + 2 + 2);
         let whole = column.chars().count();
-        // Cut only where a letter survives the ellipsis: `checked_sub` rather than a
-        // test of `room` against the ellipsis, so the subtraction cannot be reached
-        // without room for it. `…` is one character and `...` is three, which made the
-        // difference between a guard and a panic under `unicode = never`.
         match room.checked_sub(ellipsis_len) {
             Some(kept) if kept > 0 && whole > room => (
-                column.chars().take(kept).collect::<String>() + ellipsis,
+                column.chars().take(kept).collect::<String>() + g.ellipsis,
                 kept,
             ),
             _ => (column.to_string(), whole),
         }
     });
-    let kind_cell = match &shown_column {
-        Some((column, _)) => format!(" {}{column}", g.middot),
-        None => kind_cell,
+    let text = match &column {
+        Some((shown, _)) => format!(" {}{shown}", g.middot),
+        None => text,
     };
-    let (kind_cell, kind_is_chip) = if fits(&kind_cell) {
-        (kind_cell, kind_is_chip)
+    let fits =
+        |cell: &str| name_width.saturating_sub(2 + place_w + glyphs::display_width(cell) + 1) > 1;
+    // On a narrow screen a plain label goes (it describes; the name identifies). A column
+    // note, source id, `source not found:` or curated word stays, a source id cut to fit.
+    let is_label = matched_column.is_none() && !label.source && !label.curated;
+    let (text, chip) = if fits(&text) {
+        (text, chip)
     } else if is_label {
         (String::new(), false)
-    } else if shows_source && matched_column.is_none() {
-        // A source id and a `source not found:` are as long as somebody's
-        // configuration, and this cell may not go — so it is cut to the longest that
-        // leaves the name room, which is the same test read backwards. The curated
-        // word is not cut: it is one of two words, `dataset` or `project`, and `d…t`
-        // says nothing at all where the whole of it still fits in eight cells.
-        //
-        // And not when a column matched, because then the cell is the note and the
-        // draw site writes that from `shown_column`: cutting the cell here would leave
-        // the two disagreeing about the width, which is how the columns come unstuck.
-        let room = name_width.saturating_sub(2 + place_cell.chars().count() + 1 + 2);
-        (crate::discover::shorten(&kind_cell, room), false)
+    } else if label.source && matched_column.is_none() {
+        let room = name_width.saturating_sub(2 + place_w + 1 + 2);
+        (glyphs::fit_middle(&text, room), false)
     } else {
-        (kind_cell, kind_is_chip)
+        (text, chip)
     };
-
-    // How Enter will read a file that is not scanned where it is, in the cell a file's
-    // empty label leaves. Lazy rows, most of them, stay quiet. It gives way before the
-    // name is cut at all: the pane beside it says the same.
-    let kind_cell = match discover::how_read(entry).and_then(read_marker) {
-        Some(marker) if matched_column.is_none() && kind_cell.is_empty() => {
+    // How Enter reads a file not scanned in place, in an empty label's cell while the
+    // whole name still fits (the pane says the same).
+    let text = match discover::how_read(entry).and_then(read_marker) {
+        Some(marker) if matched_column.is_none() && text.is_empty() => {
             let cell = format!("  {marker}");
-            let room = name_width.saturating_sub(2 + place_cell.chars().count() + 1);
-            if name.chars().count() + cell.chars().count() <= room {
+            let room = name_width.saturating_sub(2 + place_w + 1);
+            if glyphs::display_width(name) + glyphs::display_width(&cell) <= room {
                 cell
             } else {
-                kind_cell
+                text
             }
         }
-        _ => kind_cell,
+        _ => text,
     };
+    KindCell { text, chip, column }
+}
 
-    // Positions are taken from the untruncated name, because that is what matched.
-    // Truncation then shifts them, and dropping the ones that fall outside is exactly
-    // right: a character no longer on screen cannot be highlighted.
-    //
-    // Only when the name is *why* this row is here — a row matched by one of its
-    // columns would otherwise get marks scattered over letters that had nothing to do
-    // with it.
-    let mut name_positions = if matched_column.is_none() {
-        crate::home::fuzzy_positions(filter, &name)
-    } else {
-        Vec::new()
-    };
-
-    // Truncate the name, never the metadata: the columns must stay aligned. A row
-    // whose name is a path keeps its tail, since the leaf is what identifies it;
-    // an ordinary filename keeps its head, where the distinguishing part usually is.
-    let budget =
-        name_width.saturating_sub(2 + place_cell.chars().count() + kind_cell.chars().count() + 1);
-    // The door's name is the directory, which the section title already says, and what
-    // Enter opens, which nothing else does: the directory gives way first.
+/// `name` cut to `budget` (never the metadata), surviving match `positions` shifted.
+/// A path keeps its tail, a filename its head; the door's name drops the directory
+/// (the section title says it) before what Enter opens.
+fn fit_name(
+    name: String,
+    mut positions: Vec<usize>,
+    budget: usize,
+    door: bool,
+) -> (String, Vec<usize>) {
+    let g = glyphs::get();
+    let ellipsis_len = g.ellipsis.chars().count();
+    let length = name.chars().count();
+    if length <= budget {
+        return (name, positions);
+    }
     let door_cut = name
         .rfind(" (")
-        .filter(|_| entry.opens_whole_directory)
-        .map(|at| name.split_at(at))
-        .map(|(base, what)| (base.to_string(), what.to_string()));
-    if name.chars().count() > budget
-        && budget > ellipsis_len
+        .filter(|_| door)
+        .map(|at| name.split_at(at));
+    if budget > ellipsis_len
         && let Some((base, what)) = door_cut
     {
-        name = if budget > what.chars().count() + ellipsis_len {
+        let cut = if budget > what.chars().count() + ellipsis_len {
             let room = budget - what.chars().count() - ellipsis_len;
             let kept: String = base.chars().take(room).collect();
             format!("{kept}{}{what}", g.ellipsis)
         } else {
-            // Narrower still: the directory goes entirely, and what Enter opens keeps
-            // its head.
+            // Narrower still: drop the directory; what Enter opens keeps its head.
             let what = what.trim_start();
             if what.chars().count() <= budget {
                 what.to_string()
@@ -1744,143 +1643,34 @@ fn entry_line<'a>(
                 format!("{kept}{}", g.ellipsis)
             }
         };
-        name_positions.clear();
-    } else if name.chars().count() > budget && budget > 1 {
-        let original_len = name.chars().count();
-        // A relative path too (a search hit under a directory): its leaf is the file.
-        if name.starts_with('/')
-            || name.starts_with('~')
-            || name.trim_end_matches('/').contains('/')
-        {
-            name = truncate_start(&name, budget);
-            // The tail survived: shift every position left by what was dropped, and
-            // right by the ellipsis now standing in for it.
-            let kept = name.chars().count();
-            let ellipsis = g.ellipsis.chars().count();
-            let dropped = original_len + ellipsis - kept;
-            name_positions.retain(|p| *p >= dropped);
-            for p in &mut name_positions {
-                *p = *p - dropped + ellipsis;
-            }
-        } else {
-            let kept = budget - 1;
-            name = name.chars().take(kept).collect::<String>() + g.ellipsis;
-            // The head survived, so surviving positions keep their index.
-            name_positions.retain(|p| *p < kept);
-        }
+        return (cut, Vec::new());
     }
-    let pad = name_width.saturating_sub(2 + name.chars().count() + kind_cell.chars().count());
-
-    // The selected row is tinted across its full width and carries the rail, the way
-    // the table marks its current row. Tinted rather than reversed so the colours
-    // that say what a row is survive on the row you are looking at. A theme that
-    // asks for "reversed" gets the old look.
-    let base = if selected {
-        ctx.highlight_style()
-    } else {
-        Style::default()
-    };
-    // A file datui cannot read is listed so the directory reads as it is, and dimmed
-    // so the eye passes over it to the data.
-    let name_fg = if entry.kind == EntryKind::Other {
-        ctx.dimmed
-    } else {
-        ctx.text_primary
-    };
-    let name_style = if selected {
-        base.fg(name_fg).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(name_fg)
-    };
-    let kind_style = if matched_column.is_some() {
-        base.fg(ctx.keybind_hints)
-    } else if missing_source {
-        base.fg(ctx.warning)
-    } else {
-        match entry.kind {
-            EntryKind::Hive | EntryKind::MultiFile => Style::default()
-                .bg(ctx.controls_bg)
-                .fg(ctx.accent)
-                .add_modifier(Modifier::BOLD),
-            _ => base.fg(ctx.dimmed),
-        }
-    };
-
-    let hit_style = base
-        .fg(ctx.keybind_hints)
-        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
-
-    // Loud enough to find, quiet enough to ignore. Somewhere that can stall or cost
-    // money is coloured; a local disk, which is the overwhelming majority of rows, is
-    // dimmed so the column reads as texture rather than as a warning repeated on every
-    // line.
-    let place_style = base.fg(match locality {
-        Some(crate::locality::Locality::Object) => ctx.keybind_hints,
-        Some(crate::locality::Locality::Network) => ctx.warning,
-        Some(crate::locality::Locality::Memory) => ctx.temporal_col,
-        _ => ctx.dimmed,
-    });
-
-    let mut spans = vec![
-        Span::styled(
-            marker,
-            base.fg(ctx.keybind_hints).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" ".repeat(indent), base),
-        Span::styled(place_cell, place_style),
-    ];
-    spans.extend(highlight_spans(
-        &name,
-        &name_positions,
-        name_style,
-        hit_style,
-    ));
-    // The column note is a substring match, so its highlight has to be one too.
-    match matched_column {
-        Some(column) => {
-            spans.push(Span::styled(format!(" {}", g.middot), kind_style));
-            // The note as it was cut to fit, and the marks the cut left standing: a
-            // character no longer on screen cannot be highlighted. `kept` counts the
-            // note's own characters, so an uncut note keeps the mark on its final
-            // letter and a cut one puts none on the ellipsis.
-            let (shown, kept) = match &shown_column {
-                Some((shown, kept)) => (shown.as_str(), *kept),
-                None => (column, column.chars().count()),
-            };
-            let mut positions = crate::home::substring_positions(filter, column);
-            positions.retain(|p| *p < kept);
-            spans.extend(highlight_spans(shown, &positions, kind_style, hit_style));
-        }
-        None if kind_is_chip => {
-            // One cell of the row's own background, then the chip.
-            spans.push(Span::styled(" ".to_string(), base));
-            // The cell's own leading space, given the row's background instead of the
-            // chip's. Stripped rather than sliced: a cell with nothing in it is a
-            // panic, and whether one can reach here is a question the next change to
-            // `kind_is_chip` gets to answer wrongly.
-            let chip = kind_cell.strip_prefix(' ').unwrap_or(&kind_cell);
-            spans.push(Span::styled(chip.to_string(), kind_style));
-        }
-        None => spans.push(Span::styled(kind_cell.clone(), kind_style)),
+    if budget <= 1 {
+        return (name, positions);
     }
-    match meta {
-        Some(meta) => {
-            spans.push(Span::styled(" ".repeat(pad), base));
-            spans.push(Span::styled(meta, base.fg(ctx.dimmed)));
+    // A relative path too (a search hit under a directory): its leaf is the file.
+    if name.starts_with('/') || name.starts_with('~') || name.trim_end_matches('/').contains('/') {
+        let name = glyphs::fit_start(&name, budget);
+        // The tail survived: positions shift left by what was dropped, right by the
+        // ellipsis.
+        let dropped = length + ellipsis_len - name.chars().count();
+        positions.retain(|p| *p >= dropped);
+        for p in &mut positions {
+            *p = *p - dropped + ellipsis_len;
         }
-        // The meta columns went to the name: padded across them, so the selection bar
-        // still runs to the edge.
-        None if show_meta => spans.push(Span::styled(" ".repeat(pad), base)),
-        None => {}
+        (name, positions)
+    } else {
+        let kept = budget - 1;
+        positions.retain(|p| *p < kept);
+        (
+            name.chars().take(kept).collect::<String>() + g.ellipsis,
+            positions,
+        )
     }
-    // Carry the reverse to the edge, so the bar is a bar and not a ragged highlight.
-    spans.push(Span::styled(" ", base));
-    Line::from(spans)
 }
 
-/// The word a file row carries for how opening it reads it: `converts` or `in memory`,
-/// or `downloads` for a remote file copied whole first. `None` for a file scanned where
-/// it is, which is most of them.
+/// A file row's word for how opening reads it: `converts`, `in memory`, or
+/// `downloads` (copied whole first). `None` when scanned in place, as most are.
 fn read_marker(how: discover::HowRead) -> Option<&'static str> {
     if how.download {
         return Some("downloads");
@@ -1888,8 +1678,7 @@ fn read_marker(how: discover::HowRead) -> Option<&'static str> {
     how.mode.marker()
 }
 
-/// The pane's `read` line: [`crate::ReadMode::label`], after the download when there
-/// is one.
+/// The pane's `read` line: [`crate::ReadMode::label`], after the download if any.
 fn read_words(how: discover::HowRead) -> String {
     let mode = how.mode.label();
     if how.download {
@@ -1899,17 +1688,14 @@ fn read_words(how: discover::HowRead) -> String {
     }
 }
 
-/// A filled heading inside the preview pane.
-///
-/// The same grammar as the list's section headers — a filled bar, not a box — so the
-/// two halves of the screen read as one program.
+/// A filled heading in the preview pane, the same grammar as the list's section
+/// headers.
 fn pane_heading(text: &str, width: usize, ctx: &RenderContext) -> Line<'static> {
     pane_heading_counted(text, None, width, ctx)
 }
 
-/// A pane heading with a flat chip after its title, as the list's sections carry
-/// their counts: `COLUMNS [20]`, `ROWS [5 of 20 columns]`. The title is always a
-/// noun, the count always in the chip.
+/// A pane heading with a flat count chip, as list sections carry: `COLUMNS [20]`,
+/// `ROWS [5 of 20 columns]`. The title is always a noun.
 fn pane_heading_counted(
     text: &str,
     chip: Option<&str>,
@@ -1918,7 +1704,7 @@ fn pane_heading_counted(
 ) -> Line<'static> {
     let g = glyphs::get();
     let label = text.to_string();
-    let mut used = label.chars().count() + 2;
+    let mut used = glyphs::display_width(&label) + 2;
     let mut spans = vec![
         Span::styled(
             label,
@@ -1928,7 +1714,7 @@ fn pane_heading_counted(
     ];
     if let Some(chip) = chip {
         let chip = format!(" {chip} ");
-        used += chip.chars().count() + 1;
+        used += glyphs::display_width(&chip) + 1;
         spans.push(Span::styled(
             chip,
             Style::default().bg(ctx.controls_bg).fg(ctx.text_primary),
@@ -1945,11 +1731,10 @@ fn pane_heading_counted(
 /// The most column notes the details pane lists a line each.
 const CODEBOOK_ROWS: usize = 12;
 
-/// What a documented file's columns mean, in the details pane: each column and its
-/// note, wrapped when the pane has `room` rows for all of it, else a line a column cut
-/// to the pane. Ctrl+E shows the whole page.
+/// A documented file's column notes in the details pane: wrapped when `room` rows hold
+/// them all, else one cut line per column. Ctrl+E shows the whole page.
 fn column_notes_block(
-    columns: &[(String, crate::catalog::ColumnNote)],
+    columns: &[(String, crate::home::catalog::ColumnNote)],
     width: usize,
     room: usize,
     ctx: &RenderContext,
@@ -1958,7 +1743,7 @@ fn column_notes_block(
     let key_w = key_column(columns.iter().map(|(name, _)| name.as_str())).min(22);
     let style = Style::default().fg(ctx.text_secondary);
     // A column with only a legend (a spec's enum) says how long it is, as the page does.
-    let about = |note: &crate::catalog::ColumnNote| match note.about() {
+    let about = |note: &crate::home::catalog::ColumnNote| match note.about() {
         about if about.is_empty() && !note.values.is_empty() => {
             format!("{} values", note.values.len())
         }
@@ -1994,16 +1779,9 @@ fn column_notes_block(
     lines
 }
 
-/// How many rows a line takes once the pane has wrapped it.
-///
-/// Word-wrapped, the way `Wrap { trim: false }` does it: a word that will not fit goes
-/// whole to the next row, so dividing the width into the length is a floor and not an
-/// answer — and the one line this is asked about, `holds`, is a list of words.
-///
-/// A space at the end of a row is counted, where the renderer drops it, so this errs
-/// one high on a line that happens to break there. Which way it errs matters: what it
-/// feeds is a budget, and a row too few leaves a blank line where a row too many draws
-/// over the bottom of the pane.
+/// How many rows a line takes once the pane word-wraps it (as `Wrap { trim: false }`:
+/// a word that does not fit moves whole). Trailing spaces are counted, so it errs one
+/// high: it feeds a budget, where too few leaves a blank row and too many overflows.
 pub(crate) fn wrapped_rows(line: &Line<'_>, width: usize) -> usize {
     use unicode_width::UnicodeWidthStr;
     let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
@@ -2013,8 +1791,7 @@ pub(crate) fn wrapped_rows(line: &Line<'_>, width: usize) -> usize {
     let mut rows = 1;
     let mut used = 0;
     for word in text.split_inclusive(' ') {
-        // Cells, not characters: the pane wraps by what a glyph occupies, and a
-        // skipped file can be named in a script where one character is two cells.
+        // Cells, not characters: some scripts' characters are two cells.
         let len = UnicodeWidthStr::width(word);
         if used + len > width && used > 0 {
             rows += 1;
@@ -2030,12 +1807,8 @@ pub(crate) fn wrapped_rows(line: &Line<'_>, width: usize) -> usize {
     rows
 }
 
-/// As many of a schema's columns as `room` rows will hold, and how many that was.
-///
-/// Counted as they are built, because a schema line wraps too — `created_at
-/// datetime[μs, America/New_York]` is past the forty cells the pane has. Taking a
-/// column per row draws the tail past the bottom and sends the `… N more` line over
-/// the edge with it, which is the loss the count exists to report.
+/// As many of a schema's columns as `room` rows hold, and how many: counted as built,
+/// since a long type wraps, and the `… N more` line must stay on screen.
 fn schema_lines(
     schema: &[(String, polars::prelude::DataType)],
     name_w: usize,
@@ -2043,14 +1816,11 @@ fn schema_lines(
     room: usize,
     ctx: &RenderContext,
 ) -> (usize, Vec<Line<'static>>) {
-    let g = glyphs::get();
+    let _g = glyphs::get();
     let mut lines = Vec::new();
     let mut used = 0;
     for (name, dtype) in schema {
-        let mut display = name.clone();
-        if display.chars().count() > name_w {
-            display = display.chars().take(name_w - 1).collect::<String>() + g.ellipsis;
-        }
+        let display = glyphs::fit(name, name_w);
         let line = Line::from(vec![
             Span::styled(
                 format!("{display:<name_w$}  "),
@@ -2071,9 +1841,8 @@ fn schema_lines(
     (lines.len(), lines)
 }
 
-/// One `key   value` fact, with the value carrying the emphasis. A value longer than the
-/// pane wraps under itself, not under the key: a URL or a description that ran back to
-/// column 0 read as a new fact (#547 D6).
+/// One `key   value` fact, the value emphasized. A long value wraps under itself, not
+/// under the key.
 fn fact_lines(
     key: &str,
     value: String,
@@ -2086,7 +1855,7 @@ fn fact_lines(
     let room = width.saturating_sub(indent);
     let key_span = Span::styled(format!("{key:<key_w$}  "), Style::default().fg(ctx.dimmed));
     // Too narrow to hang anything under: the pane's own wrap does what it can.
-    if room < 12 || value.chars().count() <= room {
+    if room < 12 || glyphs::display_width(&value) <= room {
         return vec![Line::from(vec![key_span, Span::styled(value, style)])];
     }
     let pieces = crate::render::overlays::wrap_help_line(&value, room);
@@ -2104,19 +1873,16 @@ fn fact_lines(
         .collect()
 }
 
-/// The width of the key column for a pane's facts: one column for all of them, so the
-/// values line up down the pane.
+/// The key column width for a pane's facts, shared so values line up.
 fn key_column<'a>(keys: impl IntoIterator<Item = &'a str>) -> usize {
     keys.into_iter()
-        .map(|k| k.chars().count())
+        .map(glyphs::display_width)
         .max()
         .unwrap_or(0)
 }
 
-/// A compression ratio, when it is worth stating.
-///
-/// Below about 1.2x the number is noise; above it, it is the difference between what
-/// a file weighs and what it will weigh once open.
+/// A compression ratio when worth stating: above about 1.2x, the difference between
+/// on-disk and open size.
 fn ratio_of(size: Option<u64>, uncompressed: Option<u64>) -> Option<f64> {
     let (on_disk, in_memory) = (size?, uncompressed?);
     if on_disk == 0 {
@@ -2126,86 +1892,8 @@ fn ratio_of(size: Option<u64>, uncompressed: Option<u64>) -> Option<f64> {
     (ratio >= 1.2).then_some(ratio)
 }
 
-/// What stands in for the label of a directory in a bucket that has not said what it
-/// holds: `…` before it is asked about, a spinner while it is, `?` when asking failed.
-fn looking_glyph(app: &crate::App, entry: &Entry) -> Option<&'static str> {
-    let g = glyphs::get();
-    Some(match app.home.cloud_look(entry)? {
-        crate::home::CloudLook::Waiting => g.ellipsis,
-        crate::home::CloudLook::Looking => g.spinner[app.throbber_frame as usize % g.spinner.len()],
-        crate::home::CloudLook::Failed => "?",
-    })
-}
-
-/// What a row is, in words, for the pane's `kind` line. The list's labels are terse
-/// because they share a row with the name (`dir`, `mixed`, `12 parquet`); the pane has
-/// the room to say it, and what is inside goes on the `contains` line.
-fn kind_words(
-    entry: &Entry,
-    place_kind: Option<&'static str>,
-    looking: Option<crate::home::CloudLook>,
-) -> String {
-    // The door into this directory is an action, not a thing: see
-    // `Entry::opens_whole_directory`. Its name and the line under the facts say it.
-    if entry.opens_whole_directory {
-        return String::new();
-    }
-    if let Some(table) = &entry.table {
-        let of = match (&entry.format_spec, table.format) {
-            (Some(spec), _) => spec.clone(),
-            (None, Some(format)) => format.name().to_string(),
-            (None, None) => String::new(),
-        };
-        return format!("{of} {}", table.kind).trim_start().to_string();
-    }
-    match entry.kind {
-        EntryKind::File => match crate::FileFormat::from_path(&entry.path) {
-            _ if entry.format_spec.is_some() => {
-                format!("{} file", entry.format_spec.as_deref().unwrap_or_default())
-            }
-            Some(format) => format!("{} file", format.name()),
-            // Named nothing, and found by its bytes to be data.
-            None => "data file".to_string(),
-        },
-        EntryKind::Other => String::new(),
-        EntryKind::Hive => "hive table".to_string(),
-        EntryKind::MultiFile => "multi-file table".to_string(),
-        k if k.is_lake_table() => {
-            format!("{} table", k.lake_name().unwrap_or_default().to_lowercase())
-        }
-        EntryKind::Directory => match place_kind {
-            Some(curated) => curated.to_string(),
-            None if looking == Some(crate::home::CloudLook::Failed) => {
-                format!("? {} listing failed, Ctrl+R retries", glyphs::get().middot)
-            }
-            // Nothing to say yet; the row's spinner says it is being found out.
-            None if looking.is_some() => String::new(),
-            None => crate::home::object_place_label(&entry.path)
-                .unwrap_or("directory")
-                .to_string(),
-        },
-        // A local dataset of a catalog that is not there.
-        EntryKind::Unknown if place_kind == Some("missing") => "missing".to_string(),
-        _ => String::new(),
-    }
-}
-
-/// [`preview_head_keyed`] with nothing below it to line up with, as the tests check it.
-#[cfg(test)]
-fn preview_head(
-    entry: &Entry,
-    place_kind: Option<&'static str>,
-    looking: Option<crate::home::CloudLook>,
-    width: usize,
-    ctx: &RenderContext,
-) -> Vec<Line<'static>> {
-    preview_head_keyed(entry, place_kind, looking, None, width, 0, ctx).0
-}
-
-/// The name, the path, and everything known about the dataset, its key column at least
-/// `key_w` wide so facts drawn below it line up with its own; and the key column used.
-///
-/// Split out from the pane so it can be checked without an application behind it.
+/// The name, path and every known fact, its key column at least `key_w` wide so later
+/// facts align; returns the key column used. Separate from the pane for testing.
 fn preview_head_keyed(
     entry: &Entry,
     place_kind: Option<&'static str>,
@@ -2223,25 +1911,24 @@ fn preview_head_keyed(
                 .fg(ctx.text_primary)
                 .add_modifier(Modifier::BOLD),
         )),
-        // One line, tail kept: a wrapped path costs three rows to say what the leaf
-        // already said.
+        // One line, tail kept: a wrapped path costs rows to repeat the leaf.
         Line::from(Span::styled(
-            truncate_start(&crate::home::display_path(&entry.path), width),
+            glyphs::fit_start(&crate::home::display_path(&entry.path), width),
             Style::default().fg(ctx.dimmed),
         )),
     ];
 
-    // One list, in the order a sidebar reads: what it is, where it lives, what is in
-    // it, what reading it will take, and when it last changed.
+    // In sidebar order: what it is, where, what is inside, what reading takes, when it
+    // changed.
     let mut facts: Vec<(&str, String, Style)> = Vec::new();
     let plain = Style::default().fg(ctx.text_secondary);
 
-    let kind = kind_words(entry, place_kind, looking);
+    let kind = crate::home::describe(entry, place_kind, looking, 0, None).words;
     if !kind.is_empty() {
         facts.push(("kind", kind, plain));
     }
-    // The spec that reads it, and what about the file says so: drawn after `kind`, a
-    // path cut in its middle and the conditions as chips, neither wrapped mid-word.
+    // The spec reading it and why: after `kind`, the path cut in the middle and the
+    // conditions as chips, never wrapped mid-word.
     let spec_at = facts.len();
     let spec_path = spec
         .and_then(|s| s.path.as_deref())
@@ -2254,29 +1941,23 @@ fn preview_head_keyed(
         .cost
         .source
         .as_deref()
-        .map(crate::locality::Source::from_fstype)
+        .map(crate::home::locality::Source::from_fstype)
     {
-        // The filesystem's own name and nothing else. Colour carries the warning:
-        // a sentence explaining that a network is a network is a sentence the
-        // reader has to skip on every row they look at.
+        // The filesystem's own name; color carries the warning.
         let style = match source.locality {
-            crate::locality::Locality::Network | crate::locality::Locality::Object => {
+            crate::home::locality::Locality::Network | crate::home::locality::Locality::Object => {
                 Style::default().fg(ctx.warning)
             }
-            crate::locality::Locality::Memory => Style::default().fg(ctx.success),
+            crate::home::locality::Locality::Memory => Style::default().fg(ctx.success),
             _ => plain,
         };
         facts.push(("storage", source.label().to_string(), style));
     }
-    // What there is to open inside. Without the partition count when the `partitions`
-    // fact below carries one: they count the same thing under different caps, and two
-    // adjacent numbers that ought to agree and do not are worse than one.
-    //
-    // A directory that was looked into and holds nothing to open says so, rather than
-    // leaving the reader to wonder whether anything was looked at.
+    // What there is to open inside, without the partition count when the `partitions`
+    // fact carries one (they differ in caps). A looked-into directory with nothing to
+    // open says so.
     match entry.holds.line(entry.cost.partitions.is_none()) {
-        // One part to a line, under the one label: joined, `1 parquet · 1 csv · 1
-        // directory` broke in the middle of a count at the pane's width.
+        // One part per line under one label, so a count never breaks mid-line.
         Some(line) => {
             for (i, part) in line.split(" · ").enumerate() {
                 let key = if i == 0 { "contains" } else { "" };
@@ -2298,7 +1979,7 @@ fn preview_head_keyed(
         facts.push(("contains", format!("{n} {what}"), plain));
     }
     // A door that is not one table reads part of the directory: which part, and what it
-    // leaves out, where the user decides whether to press Enter.
+    // leaves out.
     if entry.opens_whole_directory
         && let Some((reads, skips)) = crate::home::door_reads(entry)
     {
@@ -2315,14 +1996,13 @@ fn preview_head_keyed(
         facts.push(("columns", format!("{cols}{more}"), plain));
     }
     if let Some(size) = entry.size {
-        facts.push(("on disk", discover::format_size(size), plain));
+        facts.push(("on disk", crate::numfmt::bytes(size), plain));
     }
     if let Some(uncompressed) = entry.cost.uncompressed {
-        // The one number nothing else here implies: 200 MB of zstd Parquet is two
-        // gigabytes once it is open.
+        // The number nothing else implies: 200 MB of zstd Parquet is gigabytes open.
         facts.push((
             "in memory",
-            discover::format_size(uncompressed),
+            crate::numfmt::bytes(uncompressed),
             Style::default().fg(ctx.float_col),
         ));
     }
@@ -2334,8 +2014,8 @@ fn preview_head_keyed(
         (None, None) => {}
     }
     if let Some(groups) = entry.cost.row_groups {
-        // One enormous row group cannot be read in parallel or skipped through; a
-        // thousand tiny ones cost more in overhead than they save.
+        // One huge row group cannot be read in parallel or skipped; thousands of tiny ones
+        // cost overhead.
         facts.push(("row groups", groups.to_string(), plain));
     }
     if let Some(parts) = &entry.cost.partitions {
@@ -2354,8 +2034,7 @@ fn preview_head_keyed(
             parts.first_key_values.last(),
         ) {
             let key = parts.keys.first().map(String::as_str).unwrap_or("");
-            // Spelled rather than drawn: an arrow glyph here would be the only one
-            // on the screen, and "to" reads the same on every terminal.
+            // "to", not an arrow glyph: reads the same everywhere.
             let range = if first == last {
                 first.clone()
             } else {
@@ -2412,10 +2091,9 @@ fn preview_head_keyed(
     (lines, key_w)
 }
 
-/// `path` in `width` columns, cut between its components so the file name stays:
-/// `~/…/formats/demo-mktdata.toml`. The first component stays when there is room for it;
-/// a name too long on its own keeps its end. Cut at the platform's separators (`\`
-/// as well as `/` on Windows), each kept as the path spells it.
+/// `path` in `width` columns, cut between components so the file name stays
+/// (`~/…/formats/demo-mktdata.toml`); the first component stays if room; a name too
+/// long alone keeps its end. Platform separators are kept as spelled.
 fn elide_path(path: &str, width: usize) -> String {
     if glyphs::display_width(path) <= width {
         return path.to_string();
@@ -2428,7 +2106,7 @@ fn elide_path(path: &str, width: usize) -> String {
         .map(|(i, c)| (c, i + c.len_utf8()))
         .collect();
     let Some(&(first_sep, after_first)) = seps.first() else {
-        return truncate_start(path, width);
+        return glyphs::fit_start(path, width);
     };
     let first = &path[..after_first - first_sep.len_utf8()];
     // The most trailing components that fit after `first/…/`, then after `…/`.
@@ -2446,19 +2124,18 @@ fn elide_path(path: &str, width: usize) -> String {
         }
     }
     let (_, last) = seps[seps.len() - 1];
-    truncate_start(&path[last..], width)
+    glyphs::fit_start(&path[last..], width)
 }
 
-/// Whether chips are drawn on the chrome tier: a UTF-8 terminal whose header tint
-/// shows. Otherwise they are bracketed, and text values quoted.
+/// Whether chips are drawn on the chrome tier (UTF-8 with a visible header tint);
+/// otherwise bracketed, text values quoted.
 fn chips_filled(ctx: &RenderContext) -> bool {
     glyphs::get().unicode && crate::config::tint_shows(Some(ctx.table_header_bg)).is_some()
 }
 
-/// One condition of a spec's match as spans, at most `room` columns: a flat chip on the
-/// header tier, name dimmed and value in its type's color, or `[name value]` where no
-/// tint shows. Too long for the line, the name is cut before the value, which keeps at
-/// least its first character.
+/// One spec match condition as spans within `room`: a flat chip (dim name, value in
+/// its type's color), or `[name value]` without a tint. The name is cut before the
+/// value, keeping at least its first character.
 fn chip_spans(
     chip: &MatchChip,
     room: usize,
@@ -2484,9 +2161,8 @@ fn chip_spans(
         glyphs::display_width(&value),
     );
     let inner = room.saturating_sub(3);
-    // A chip that says `exchange_feed_sequence_version` and not its number says
-    // nothing: the value keeps up to half the chip, the name what is left (a letter
-    // and the marker at least), and a long value takes what the name leaves.
+    // The value keeps up to half the chip, the name the rest (at least a letter and the
+    // marker).
     let name_floor = name_w.min(1 + glyphs::display_width(ellipsis));
     let name_room = name_w.min(inner.saturating_sub(value_w.min(inner / 2)).max(name_floor));
     let name = glyphs::fit_cells(&chip.name, name_room, ellipsis).into_owned();
@@ -2504,8 +2180,8 @@ fn chip_spans(
     (spans, width)
 }
 
-/// The `match` fact: its chips laid out under the value column, wrapping between whole
-/// chips and never inside one. `no match` when the spec has none.
+/// The `match` fact: chips under the value column, wrapping between whole chips; `no
+/// match` when the spec has none.
 fn chip_fact_lines(
     key: &str,
     chips: &[MatchChip],
@@ -2549,12 +2225,8 @@ fn chip_fact_lines(
         .collect()
 }
 
-/// The details pane for a cloud source: what it points at, how it logs in, and when
-/// its buckets were listed. When listing failed, the whole message, since the row only
-/// had room for a word of it.
-/// A catalog's heading: what the catalog is, where it comes from, and how to hide
-/// it. Delete hides only the catalog that comes with datui; any catalog hides for
-/// good by its id in `[home] hide`.
+/// A catalog heading's pane: what the catalog is, where it comes from, how to hide it
+/// (Delete hides only the bundled one; any hides by id in `[home] hide`).
 fn catalog_details(
     catalog: &crate::home::ShownCatalog,
     width: usize,
@@ -2572,7 +2244,7 @@ fn catalog_details(
         Line::from(""),
         pane_heading("DETAILS", width, ctx),
     ];
-    let bundled = catalog.origin == crate::catalog::Origin::Bundled;
+    let bundled = catalog.origin == crate::home::catalog::Origin::Bundled;
     let for_good = format!("[home] hide = [\"{}\"]", catalog.id);
     let mut facts: Vec<(&str, String)> = vec![("datasets", catalog.datasets.len().to_string())];
     match (&catalog.file, bundled) {
@@ -2603,6 +2275,8 @@ fn catalog_details(
     lines
 }
 
+/// The details pane for a cloud source: what it points at, how it logs in, when its
+/// buckets were listed, and a failed listing's whole message.
 fn source_details(
     entry: &Entry,
     source: &crate::home::CloudSource,
@@ -2627,8 +2301,8 @@ fn source_details(
         Some(age) if !age.is_empty() => format!(" {middot} listed {age} ago"),
         _ => String::new(),
     };
-    let noun = match source.api.as_str() {
-        "azure" => "accounts",
+    let noun = match source.api {
+        crate::cloud::source::ProviderKind::Azure => "accounts",
         _ => "buckets",
     };
     match &source.status {
@@ -2661,6 +2335,43 @@ fn source_details(
     lines
 }
 
+/// The pane for a row that is not an entry: a place, the hidden files, a catalog.
+fn other_details(
+    app: &crate::App,
+    width: usize,
+    height: usize,
+    ctx: &RenderContext,
+) -> Option<Paragraph<'static>> {
+    let wrapped = |lines| Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false });
+    match app.home.selected_row()? {
+        crate::home::Row::Place {
+            path, source, held, ..
+        } => Some(wrapped(place_details(
+            &path,
+            source.as_deref(),
+            held,
+            width,
+            ctx,
+        ))),
+        crate::home::Row::Hidden { section, count } => {
+            let section = &app.home.sections[section];
+            let names: Vec<&str> = section
+                .rows
+                .iter()
+                .filter(|row| row.hidden_by_default())
+                .map(|row| row.name.as_str())
+                .collect();
+            let lines = hidden_details(&names, count, holds_tables(section), height, ctx);
+            Some(Paragraph::new(lines))
+        }
+        _ => Some(wrapped(catalog_details(
+            app.home.selected_catalog()?,
+            width,
+            ctx,
+        ))),
+    }
+}
+
 fn render_preview(
     area: Rect,
     buf: &mut Buffer,
@@ -2669,45 +2380,15 @@ fn render_preview(
     screen_height: u16,
 ) {
     let width = area.width as usize;
-    // The list is the typed directory's meanwhile; a row's details would be about
-    // something not on screen.
+    // The list is the typed directory meanwhile; a row's details would be off screen.
     if app.home.path_input_active {
         return;
     }
-    if let Some(crate::home::Row::Place {
-        path, source, held, ..
-    }) = app.home.selected_row()
-    {
-        Paragraph::new(place_details(&path, source.as_deref(), held, width, ctx))
-            .wrap(ratatui::widgets::Wrap { trim: false })
-            .render(area, buf);
+    if let Some(pane) = other_details(app, width, area.height as usize, ctx) {
+        pane.render(area, buf);
         return;
     }
-    if let Some(crate::home::Row::Hidden { section, count }) = app.home.selected_row() {
-        let names: Vec<&str> = app.home.sections[section]
-            .rows
-            .iter()
-            .filter(|row| row.hidden_by_default())
-            .map(|row| row.name.as_str())
-            .collect();
-        let tables = holds_tables(&app.home.sections[section]);
-        Paragraph::new(hidden_details(
-            &names,
-            count,
-            tables,
-            area.height as usize,
-            ctx,
-        ))
-        .render(area, buf);
-        return;
-    }
-    if let Some(catalog) = app.home.selected_catalog() {
-        Paragraph::new(catalog_details(catalog, width, ctx))
-            .wrap(ratatui::widgets::Wrap { trim: false })
-            .render(area, buf);
-        return;
-    }
-    let Some(entry) = app.home.selected_entry() else {
+    let Some(entry) = app.home.selected_entry().cloned() else {
         return;
     };
     if crate::home::cloud_source_id(&entry.path).is_some() {
@@ -2719,8 +2400,8 @@ fn render_preview(
         return;
     }
     let g = glyphs::get();
-    // What the source's listing said about this place: an Azure account's subscription,
-    // a catalog dataset's publisher. Drawn below the facts, in their key column.
+    // The source listing's details for this place (an Azure subscription, a publisher),
+    // below the facts in their key column.
     let place_details = app.home.place_details(&entry.path).map(<[_]>::to_vec);
     let key_w = place_details
         .as_ref()
@@ -2742,8 +2423,7 @@ fn render_preview(
         key_w,
         ctx,
     );
-    // That the row that reads a bucket directory whole cannot, before Enter is pressed:
-    // what it holds is on the row already, and Enter says why at length.
+    // That a bucket door cannot read the directory whole, before Enter (which says why).
     #[cfg(feature = "cloud")]
     if entry.opens_whole_directory && crate::App::why_a_door_reads_nothing(&entry).is_some() {
         lines.push(Line::from(Span::styled(
@@ -2761,9 +2441,8 @@ fn render_preview(
             lines.extend(fact_lines(&key, value, key_w, width, style, ctx));
         }
     }
-    // What the columns mean, merged as the Documentation page merges them: the
-    // catalog's note over the format spec's. A file inside a catalog dataset gets no
-    // catalog notes here: they are the dataset's columns, which need not be the file's.
+    // Column notes merged as the Documentation page does (catalog over spec). A file
+    // inside a catalog dataset gets none: the dataset's columns need not be the file's.
     if let Some((_, mut doc)) = app.home_documented_row().filter(|(p, _)| *p == entry.path) {
         if app.home.catalog_dataset(&entry.path).is_none()
             && app.home.bookmark(&entry.path).is_none()
@@ -2778,14 +2457,13 @@ fn render_preview(
         }
     }
 
-    // ---- Rows --------------------------------------------------------------------
-    // Before the schema: a few real values say more about a file than its types. At
-    // most the block's own rows, so the columns below keep their room.
+    // Rows before the schema (real values say more than types), at most the block's own
+    // rows.
     if let Some(preview) = app.home_preview_rows(&entry, screen_height) {
         let drawn: usize = lines.iter().map(|line| wrapped_rows(line, width)).sum();
         let room = (area.height as usize)
             .saturating_sub(drawn + 1)
-            .min(2 + crate::home_preview::PREVIEW_ROWS);
+            .min(2 + crate::home::home_preview::PREVIEW_ROWS);
         if room >= STRIP_MIN_HEIGHT {
             lines.push(Line::from(""));
             lines.extend(rows_block(&preview, width, room, ctx));
@@ -2805,14 +2483,12 @@ fn render_preview(
 
             let name_w = schema
                 .iter()
-                .map(|(n, _)| n.chars().count())
+                .map(|(n, _)| glyphs::display_width(n))
                 .max()
                 .unwrap_or(0)
                 .min(22);
-            // The rows the lines so far will *occupy*, not how many there are: the
-            // pane wraps, and a fact longer than its width takes two rows. Counting
-            // lines drew the tail of the schema past the bottom and reported `… N
-            // more` as if nothing had been lost.
+            // Rows the lines will occupy after wrapping, not their count, so the schema tail and
+            // `… N more` stay on screen.
             let drawn: usize = lines.iter().map(|line| wrapped_rows(line, width)).sum();
             let room = (area.height as usize).saturating_sub(drawn + 1);
             let (shown, mut schema_lines) = schema_lines(&schema, name_w, width, room, ctx);
@@ -2825,134 +2501,38 @@ fn render_preview(
             }
         }
         _ => {
-            // One fragment, or none. The details list above already says what this
-            // is, and the control bar already says what Enter does; a sentence
-            // repeating either is a sentence to read past on every row.
-            let reading =
-                app.home_schema_pending(&entry.path) || app.home_preview_pending(&entry.path);
-            // Whether there will actually be a door in there to point at. An empty
-            // directory gets none, nor does one holding only a writer's own markers, and
-            // promising a row that is not there is worse than saying nothing — it is
-            // the row a new user would go looking for on the strength of this sentence.
-            //
-            // The filter on *this* listing is not a reason to withhold it: stepping into
-            // a directory clears the filter before the listing inside it is built, so the
-            // door will be there — and a user with a filter typed is the one most likely
-            // to be lost.
-            let door_in_there = !crate::home::holds_nothing_to_open(&entry.holds);
-            let web_gone = app.home.web_gone.get(&entry.path);
-            let footer_unreadable = entry.kind == EntryKind::File
-                && entry.rows.is_none()
-                && discover::is_parquet_path(&entry.path)
-                && app.home.enriched.contains_key(&entry.path);
-            // A file of tables that opens one of them, as its format's descriptor says.
-            let opens = discover::data_format(&entry.path)
-                .and_then(|f| f.descriptor().tables.as_ref())
-                .and_then(|t| t.opens);
-            // What → lists: a spec's variants are record types, a real file's members
-            // tables.
-            let inside = if entry.format_spec.is_some() {
-                (g.arrow_right, "its record types".to_string())
-            } else {
-                (g.arrow_right, "its tables".to_string())
-            };
-            // What the spec says the file holds: its variants, or its columns.
+            // One fragment or none: the details and the footer already say what this is and what
+            // Enter does.
             let variants = spec
                 .as_deref()
                 .filter(|s| s.lists_variants())
-                .map(crate::members::variant_tables);
+                .map(crate::formats::members::variant_tables);
             let spec_columns = spec
                 .as_deref()
                 .and_then(crate::formats::Spec::static_columns)
                 .filter(|c| !c.is_empty());
-            let step_in = |then: &str| format!("step in {} {then}", g.middot);
-            let notes: Vec<(&str, String)> = match entry.kind {
-                // The door itself. It is the row the other notes point at, so it says
-                // what it does rather than where to find it.
-                _ if entry.opens_whole_directory => {
-                    let does = match crate::home::door_kind(&entry) {
-                        crate::home::DoorKind::Lake => DOOR_OF_A_LAKE_TABLE,
-                        crate::home::DoorKind::Hive => DOOR_OF_A_HIVE_TABLE,
-                        crate::home::DoorKind::SchemasDiffer => DOOR_OF_FILES_THAT_DIFFER,
-                        crate::home::DoorKind::Mixed | crate::home::DoorKind::Single => {
-                            DOOR_OF_A_MIX
-                        }
-                        crate::home::DoorKind::OneSchema | crate::home::DoorKind::Unknown => {
-                            THE_DOOR
-                        }
-                    };
-                    vec![("Enter", does.to_string())]
-                }
-                // Where the other door is. A directory datui will not read as one table
-                // is the row a new user is most likely to be stuck on — the label says
-                // what is in there, Enter steps into it, and nothing until now said that
-                // the way to read the whole of it is one row further in.
-                // A web file a HEAD settled cannot be had: why, before Enter is pressed
-                // on it. A callout, as an unreadable footer is.
-                _ if web_gone.is_some() => {
-                    if let Some(gone) = web_gone {
-                        lines.push(Line::from(Span::styled(
-                            format!("{} {}", g.warning, gone.message),
-                            Style::default().fg(ctx.warning),
-                        )));
-                    }
-                    Vec::new()
-                }
-                EntryKind::Directory if door_in_there => {
-                    vec![("Enter", step_in(INSIDE_AND_THE_DOOR))]
-                }
-                EntryKind::Directory => Vec::new(),
-                // A catalog's local dataset that is not there: the kind line says so.
-                EntryKind::Unknown if app.home.missing.contains(&entry.path) => Vec::new(),
-                EntryKind::Unknown => vec![("schema", "not read".to_string())],
-                EntryKind::Other => {
-                    vec![("format", format!("unknown {} Enter shows hex", g.middot))]
-                }
-                EntryKind::File if entry.enter_lists_tables() => {
-                    vec![("Enter", "its tables".to_string())]
-                }
-                // The spec's variants are the spec's to say, whatever a measurement or a
-                // cached record left in the row's count.
-                EntryKind::File
-                    if variants.is_some() || entry.cost.tables.is_some_and(|n| n > 1) =>
-                {
-                    let opens = opens.filter(|_| entry.cost.opens_one);
-                    let mut notes = vec![
-                        ("Enter", opens.unwrap_or("every record").to_string()),
-                        inside,
-                    ];
-                    if let Some(variants) = &variants {
-                        let n = variants.len();
-                        let what = if n == 1 { "type" } else { "types" };
-                        notes.push(("records", format!("{n} {what} (spec)")));
-                    }
-                    notes
-                }
-                // The log says which files are live, and datui does not read it.
-                k if k.is_lake_table() && door_in_there => {
-                    vec![("Enter", step_in(INSIDE_A_LAKE_TABLE))]
-                }
-                k if k.is_lake_table() => vec![("Enter", step_in("log not read"))],
-                // Measured, and its footer said nothing: the open will most likely fail
-                // the same way, and saying so before Enter beats a pane promising columns
-                // (#547 D8). A callout rather than a fact: it is the surprise.
-                EntryKind::File if footer_unreadable => {
-                    lines.push(Line::from(Span::styled(
-                        format!("{} {FOOTER_UNREADABLE}", g.warning),
-                        Style::default().fg(ctx.warning),
-                    )));
-                    Vec::new()
-                }
-                _ if spec_columns.is_some() => {
-                    let n = spec_columns.as_ref().map_or(0, Vec::len);
-                    let what = if n == 1 { "column" } else { "columns" };
-                    vec![("schema", format!("{n} {what} (spec)"))]
-                }
-                _ if reading => vec![("schema", "reading...".to_string())],
-                // Only Parquet says its columns without being read; everything else is
-                // read when it is opened, which is nothing to warn about.
-                _ => vec![("schema", "on open".to_string())],
-            };
+            let (notes, warning) = enter_notes(
+                &entry,
+                &NoteFacts {
+                    reading: app.home_schema_pending(&entry.path)
+                        || app.home_preview_pending(&entry.path),
+                    web_gone: app
+                        .home
+                        .web_gone
+                        .get(&entry.path)
+                        .map(|g| g.message.as_str()),
+                    measured: app.home.enriched.contains_key(&entry.path),
+                    missing: app.home.missing.contains(&entry.path),
+                    variants: variants.as_ref().map(Vec::len),
+                    spec_columns: spec_columns.as_ref().map(Vec::len),
+                },
+            );
+            if let Some(warning) = warning {
+                lines.push(Line::from(Span::styled(
+                    format!("{} {warning}", g.warning),
+                    Style::default().fg(ctx.warning),
+                )));
+            }
             let note_w = key_column(notes.iter().map(|(k, _)| *k)).max(key_w);
             let style = Style::default().fg(ctx.text_secondary);
             let said_spec = notes.iter().any(|(_, v)| v.ends_with("(spec)"));
@@ -2979,12 +2559,121 @@ fn render_preview(
         .render(area, buf);
 }
 
-/// What a spec says a file holds, under its `records` or `schema` line: its record
-/// types and their column counts packed under the value column (`Status 6 · OrderAdd 9
-/// · …`), wrapping between whole items; or each column and its type. As many as `room`
-/// rows hold.
+/// What the pane says of opening a row whose schema it cannot show.
+#[derive(Clone, Copy)]
+struct NoteFacts<'a> {
+    /// Its schema or rows are being read.
+    reading: bool,
+    /// Why a web file cannot be had, when a HEAD settled that.
+    web_gone: Option<&'a str>,
+    /// It has been measured.
+    measured: bool,
+    /// A catalog's local dataset that is not there.
+    missing: bool,
+    /// How many record types its spec lists, when the spec lists them.
+    variants: Option<usize>,
+    /// How many columns its spec names, when it names them.
+    spec_columns: Option<usize>,
+}
+
+/// The pane's notes on what Enter does with a row whose schema it cannot show, and a
+/// warning to draw instead of them.
+fn enter_notes(entry: &Entry, facts: &NoteFacts) -> (Vec<(&'static str, String)>, Option<String>) {
+    let NoteFacts {
+        reading,
+        web_gone,
+        measured,
+        missing,
+        variants,
+        spec_columns,
+    } = *facts;
+    let g = glyphs::get();
+    // Whether a door will be inside to point at (none for an empty or markers-only
+    // directory). The current filter does not matter: stepping in clears it.
+    let door_in_there = !crate::home::holds_nothing_to_open(&entry.holds);
+    let footer_unreadable = entry.kind == EntryKind::File
+        && entry.rows.is_none()
+        && discover::is_parquet_path(&entry.path)
+        && measured;
+    // A file of tables that opens one of them, as its format's descriptor says.
+    let opens = discover::data_format(&entry.path)
+        .and_then(|f| f.descriptor().tables.as_ref())
+        .and_then(|t| t.opens);
+    // What → lists: a spec's record types, or a file's tables.
+    let inside = if entry.format_spec.is_some() {
+        (g.arrow_right, "its record types".to_string())
+    } else {
+        (g.arrow_right, "its tables".to_string())
+    };
+    let step_in = |then: &str| format!("step in {} {then}", g.middot);
+    let notes: Vec<(&'static str, String)> = match entry.kind {
+        // The door says what it does.
+        _ if entry.opens_whole_directory => {
+            let does = match crate::home::door_kind(entry) {
+                crate::home::DoorKind::Lake => DOOR_OF_A_LAKE_TABLE,
+                crate::home::DoorKind::Hive => DOOR_OF_A_HIVE_TABLE,
+                crate::home::DoorKind::SchemasDiffer => DOOR_OF_FILES_THAT_DIFFER,
+                crate::home::DoorKind::Mixed | crate::home::DoorKind::Single => DOOR_OF_A_MIX,
+                crate::home::DoorKind::OneSchema | crate::home::DoorKind::Unknown => THE_DOOR,
+            };
+            vec![("Enter", does.to_string())]
+        }
+        // A web file a HEAD showed unavailable: why, as a callout.
+        _ if web_gone.is_some() => return (Vec::new(), web_gone.map(str::to_string)),
+        // Where the other door is, for a directory not read as one table: one row further in.
+        EntryKind::Directory if door_in_there => {
+            vec![("Enter", step_in(INSIDE_AND_THE_DOOR))]
+        }
+        EntryKind::Directory => Vec::new(),
+        // A catalog's local dataset that is not there: the kind line says so.
+        EntryKind::Unknown if missing => Vec::new(),
+        EntryKind::Unknown => vec![("schema", "not read".to_string())],
+        EntryKind::Other => {
+            vec![("format", format!("unknown {} Enter shows hex", g.middot))]
+        }
+        EntryKind::File if entry.enter_lists_tables() => {
+            vec![("Enter", "its tables".to_string())]
+        }
+        // Spec variants are the spec's to say, whatever count the row carries.
+        EntryKind::File if variants.is_some() || entry.cost.tables.is_some_and(|n| n > 1) => {
+            let opens = opens.filter(|_| entry.cost.opens_one);
+            let mut notes = vec![
+                ("Enter", opens.unwrap_or("every record").to_string()),
+                inside,
+            ];
+            if let Some(n) = variants {
+                let what = if n == 1 { "type" } else { "types" };
+                notes.push(("records", format!("{n} {what} (spec)")));
+            }
+            notes
+        }
+        // The log says which files are live, and datui does not read it.
+        k if k.is_lake_table() && door_in_there => {
+            vec![("Enter", step_in(INSIDE_A_LAKE_TABLE))]
+        }
+        k if k.is_lake_table() => vec![("Enter", step_in("log not read"))],
+        // Measured with an unreadable footer: the open will likely fail too, so say so as a
+        // callout before Enter.
+        EntryKind::File if footer_unreadable => {
+            return (Vec::new(), Some(FOOTER_UNREADABLE.to_string()));
+        }
+        _ if spec_columns.is_some() => {
+            let n = spec_columns.unwrap_or_default();
+            let what = if n == 1 { "column" } else { "columns" };
+            vec![("schema", format!("{n} {what} (spec)"))]
+        }
+        _ if reading => vec![("schema", "reading...".to_string())],
+        // Only Parquet gives columns unread; others are read on open, nothing to warn of.
+        _ => vec![("schema", "on open".to_string())],
+    };
+    (notes, None)
+}
+
+/// What a spec says a file holds, under `records` or `schema`: record types with column
+/// counts packed under the value column (`Status 6 · OrderAdd 9 · …`), or each column and
+/// type, as `room` rows hold.
 fn spec_schema_lines(
-    variants: Option<&[crate::members::Table]>,
+    variants: Option<&[crate::formats::members::Table]>,
     columns: Option<&[(String, polars::prelude::DataType)]>,
     indent: usize,
     width: usize,
@@ -2999,7 +2688,7 @@ fn spec_schema_lines(
     };
     let name_w = columns
         .iter()
-        .map(|(n, _)| n.chars().count())
+        .map(|(n, _)| glyphs::display_width(n))
         .max()
         .unwrap_or(0)
         .min(22);
@@ -3020,10 +2709,10 @@ fn spec_schema_lines(
     lines
 }
 
-/// A spec's variants as `name count` items under the value column, ` · ` between them,
-/// a line breaking only between items; `… N more` when `room` rows do not hold them.
+/// A spec's variants as `name count` items, ` · ` between, breaking only between
+/// items; `… N more` past `room` rows.
 fn variant_lines(
-    variants: &[crate::members::Table],
+    variants: &[crate::formats::members::Table],
     indent: usize,
     width: usize,
     room: usize,
@@ -3112,23 +2801,7 @@ const DOOR_OF_FILES_THAT_DIFFER: &str = "files stacked, columns matched by name"
 /// The same, where only part of the directory is read: the `reads` line says which.
 const DOOR_OF_A_MIX: &str = "matching files as one table";
 
-/// Every value the pane offers as guidance, for the test that reads them.
-#[cfg(test)]
-fn guidance_notes() -> [&'static str; 8] {
-    [
-        FOOTER_UNREADABLE,
-        INSIDE_AND_THE_DOOR,
-        INSIDE_A_LAKE_TABLE,
-        THE_DOOR,
-        DOOR_OF_A_HIVE_TABLE,
-        DOOR_OF_A_LAKE_TABLE,
-        DOOR_OF_FILES_THAT_DIFFER,
-        DOOR_OF_A_MIX,
-    ]
-}
-
-/// The pane for the row standing in for hidden files: which files they are, as many
-/// as fit, so the count is never all there is to go on.
+/// The pane for the hidden-files row: which files, as many as fit.
 fn hidden_details(
     names: &[&str],
     count: usize,
@@ -3175,8 +2848,8 @@ fn hidden_details(
     lines
 }
 
-/// The pane for a place under `RECENT`: what it is, where, and how many recents it
-/// holds. From what the listing already knows; a place is never read for this.
+/// The pane for a place under `RECENT`: what, where, how many recents. Never reads the
+/// place.
 fn place_details(
     path: &std::path::Path,
     source: Option<&str>,
@@ -3185,8 +2858,7 @@ fn place_details(
     ctx: &RenderContext,
 ) -> Vec<Line<'static>> {
     let plain = Style::default().fg(ctx.text_secondary);
-    // Named like any row: its last component, or the whole of it at a root or a
-    // bucket, which have none.
+    // Its last component, or the whole path at a root or bucket.
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -3199,17 +2871,17 @@ fn place_details(
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(Span::styled(
-            truncate_start(&crate::home::display_path(path), width),
+            glyphs::fit_start(&crate::home::display_path(path), width),
             Style::default().fg(ctx.dimmed),
         )),
     ];
     let mut facts: Vec<(&str, String, Style)> = Vec::new();
-    if let Some(source) = source.map(crate::locality::Source::from_fstype) {
+    if let Some(source) = source.map(crate::home::locality::Source::from_fstype) {
         let style = match source.locality {
-            crate::locality::Locality::Network | crate::locality::Locality::Object => {
+            crate::home::locality::Locality::Network | crate::home::locality::Locality::Object => {
                 Style::default().fg(ctx.warning)
             }
-            crate::locality::Locality::Memory => Style::default().fg(ctx.success),
+            crate::home::locality::Locality::Memory => Style::default().fg(ctx.success),
             _ => plain,
         };
         facts.push(("storage", source.label().to_string(), style));
@@ -3226,24 +2898,16 @@ fn place_details(
     lines
 }
 
-/// Whether a row's name is drawn with a trailing slash.
-///
-/// A row nothing has looked into is still a place: a listing datui made itself only ever
-/// puts a directory on one, so `project.old` and `v1.2` keep their slash however many
-/// dots are in the name. A remote row — a bucket, an HTTP URL, a path on a share — is
-/// the one nothing can stat, and there the name is all there is — so a name with an extension is a file even when it is one datui does not
-/// read (`export.txt`), and everything else is a prefix.
-///
-/// Said up front so the name does not change shape a frame later when the label lands;
-/// the `…` beside it already carries the part that is not known.
+/// Whether a row's name gets a trailing slash, decided up front so it does not change
+/// when the label lands. An unexamined local row is a directory (`project.old`,
+/// `v1.2`); a remote row cannot be stat'ed, so a name with an extension is a file and
+/// anything else a prefix.
 fn shows_as_a_place(entry: &Entry) -> bool {
-    // The row that opens the directory being browsed is an action, not a place: → does
-    // nothing on it, so a trailing slash offers a step that is not there.
+    // The door is an action: → does nothing on it, so no slash.
     if entry.opens_whole_directory {
         return false;
     }
-    // A dataset that is a directory is still one: `events/  hive` reads as the place
-    // it is, the way `data/  3 dirs` does.
+    // A directory dataset is still a place: `events/  hive`.
     if matches!(
         entry.kind,
         EntryKind::Directory | EntryKind::Hive | EntryKind::MultiFile
@@ -3255,2032 +2919,8 @@ fn shows_as_a_place(entry: &Entry) -> bool {
         return false;
     }
     !crate::home::is_remote_path(&entry.path)
-        || (!crate::discover::is_data_file(&entry.path) && entry.path.extension().is_none())
+        || (!crate::home::discover::is_data_file(&entry.path) && entry.path.extension().is_none())
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::discover::Entry;
-    use crate::home::Section;
-
-    /// The list as an entry row is drawn in, at `name_width`.
-    fn rows<'f>(
-        ctx: &'f RenderContext,
-        name_width: usize,
-        show_meta: bool,
-        filter: &'f str,
-    ) -> ListDraw<'f> {
-        ListDraw {
-            ctx,
-            width: name_width,
-            name_width,
-            show_meta,
-            filter,
-            frame: 0,
-        }
-    }
-
-    /// The list as a section header is drawn in, `width` wide.
-    fn header_row(ctx: &RenderContext, width: usize) -> ListDraw<'_> {
-        rows(ctx, width, true, "")
-    }
-
-    /// The pane's guidance is a value, not a sentence: short, lower case, unpunctuated,
-    /// with no gap left by a wrapped literal (`cargo fmt` once joined a `\` continuation
-    /// back up and kept the indentation with it).
-    #[test]
-    fn the_pane_s_guidance_is_a_value_not_a_sentence() {
-        for note in guidance_notes() {
-            assert!(
-                !note.contains("  "),
-                "a run of spaces in the middle of {note:?}"
-            );
-            assert!(
-                !note.ends_with('.') && !note.contains('\n') && !note.contains(';'),
-                "a value, not a sentence: {note:?}"
-            );
-            assert!(
-                note.chars().count() <= 40,
-                "short enough for the pane: {note:?}"
-            );
-        }
-    }
-
-    fn row(path: &str, kind: crate::discover::EntryKind) -> Entry {
-        Entry {
-            path: std::path::PathBuf::from(path),
-            kind,
-            name: path.rsplit('/').next().unwrap_or(path).to_string(),
-            size: None,
-            modified: None,
-            rows: None,
-            cols: None,
-            cols_sampled: false,
-            columns: Vec::new(),
-            cost: Default::default(),
-            holds: Default::default(),
-            opens_whole_directory: false,
-            format_spec: None,
-            table: None,
-        }
-    }
-
-    /// A row with nothing in the meta columns gives them to its name, and an empty
-    /// shape cell gives its columns too, size and age staying aligned; a relative path
-    /// keeps its leaf (#648).
-    #[test]
-    fn blank_meta_columns_go_to_the_name() {
-        let ctx = RenderContext::for_test();
-        let text = |entry: &Entry| -> String {
-            entry_line(
-                entry,
-                false,
-                EntryNotes::default(),
-                &rows(&ctx, 26, true, ""),
-            )
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect()
-        };
-        let mut public = row("/data/food_nutrition.csv", EntryKind::File);
-        public.name = "Food nutrition (fast food)".to_string();
-        assert!(text(&public).contains("Food nutrition (fast food)"));
-
-        let mut sized = row("/data/chart_export_overwrite_test.csv", EntryKind::File);
-        sized.size = Some(25);
-        let mut shaped = sized.clone();
-        shaped.rows = Some(3);
-        shaped.cols = Some(2);
-        let (sized, shaped) = (text(&sized), text(&shaped));
-        assert!(
-            sized.contains("chart_export_overwrite_test.csv"),
-            "{sized:?}"
-        );
-        assert!(
-            !shaped.contains("chart_export_overwrite_test.csv"),
-            "{shaped:?}"
-        );
-        assert_eq!(
-            sized.chars().count(),
-            shaped.chars().count(),
-            "the same width either way"
-        );
-        assert_eq!(
-            sized.find("25 B").map(|at| sized[..at].chars().count()),
-            shaped.find("25 B").map(|at| shaped[..at].chars().count()),
-            "size stays in its column"
-        );
-
-        let mut hit = row(
-            "/data/tests/sample-data/sales_by_region.csv",
-            EntryKind::File,
-        );
-        hit.name = "tests/sample-data/sales_by_region.csv".to_string();
-        hit.size = Some(25);
-        hit.rows = Some(3);
-        hit.cols = Some(2);
-        assert!(text(&hit).contains("region.csv"), "{:?}", text(&hit));
-    }
-
-    /// The row and the pane beside it say the same word about one directory. They are two
-    /// renderers with the same question to answer, and answering it in two orders is
-    /// how a list says `12 parquet` while the pane says `dataset`.
-    #[test]
-    fn the_row_and_the_pane_agree_on_what_a_directory_is() {
-        let ctx = RenderContext::for_test();
-        let mut entry = row("s3://bucket/occurrence", EntryKind::Directory);
-        entry.holds = crate::discover::Holds {
-            formats: vec![("parquet".to_string(), 12)],
-            ..Default::default()
-        };
-        for curated in [None, Some("dataset"), Some("project")] {
-            let line = entry_line(
-                &entry,
-                false,
-                EntryNotes {
-                    place_kind: curated,
-                    ..EntryNotes::default()
-                },
-                &rows(&ctx, 40, false, ""),
-            )
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect::<Vec<_>>()
-            .join("");
-            let pane: String = preview_head(&entry, curated, None, 60, &ctx)
-                .iter()
-                .flat_map(|l| l.spans.iter())
-                .map(|s| s.content.as_ref())
-                .collect();
-            let word = curated.unwrap_or("12 parquet");
-            assert!(
-                pane.contains(word),
-                "the pane {pane:?} does not name it {word:?}"
-            );
-            assert!(
-                line.contains(word),
-                "the row {line:?} does not name it {word:?}"
-            );
-        }
-    }
-
-    /// A directory in a bucket reads like a local one: a spinner while it is looked
-    /// into, `…` before, and then what it holds, or `dir`. Never `prefix`, which said
-    /// nothing a user could act on. A bucket keeps its word.
-    #[test]
-    fn a_cloud_directory_is_labelled_by_what_it_holds() {
-        let ctx = RenderContext::for_test();
-        let drawn = |entry: &Entry, looking: Option<&'static str>| -> String {
-            entry_line(
-                entry,
-                false,
-                EntryNotes {
-                    looking,
-                    ..EntryNotes::default()
-                },
-                &rows(&ctx, 40, false, ""),
-            )
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect::<Vec<_>>()
-            .join("")
-        };
-        let g = glyphs::get();
-        let spinner = g.spinner[0];
-
-        let mut directory = row("s3://bucket/exports", EntryKind::Directory);
-        let text = drawn(&directory, Some(spinner));
-        assert!(text.contains(spinner), "{text}");
-        assert!(!text.contains("dir") && !text.contains("prefix"), "{text}");
-        let text = drawn(&directory, Some(g.ellipsis));
-        assert!(text.contains(g.ellipsis), "{text}");
-
-        // Looked into, and nothing counted: a directory of directories.
-        let text = drawn(&directory, None);
-        assert!(text.contains(" dir"), "{text}");
-        assert!(!text.contains("prefix"), "{text}");
-
-        directory.holds = crate::discover::Holds {
-            formats: vec![("csv".to_string(), 12)],
-            ..Default::default()
-        };
-        let text = drawn(&directory, None);
-        assert!(text.contains("12 csv"), "{text}");
-
-        let bucket = row("s3://bucket", EntryKind::Directory);
-        assert!(drawn(&bucket, Some(g.ellipsis)).contains("bucket"));
-        let container = row(
-            "abfss://data@acct.dfs.core.windows.net/",
-            EntryKind::Directory,
-        );
-        assert!(drawn(&container, Some(g.ellipsis)).contains("container"));
-        let inside = row(
-            "abfss://data@acct.dfs.core.windows.net/jolpica",
-            EntryKind::Directory,
-        );
-        assert!(!drawn(&inside, None).contains("prefix"));
-    }
-
-    /// One grammar on every row: the name, a slash when it is a place to go into, two
-    /// cells, and what it is. Local, catalog and bucket rows alike, a directory of
-    /// directories counting them (#547 M7).
-    #[test]
-    fn every_row_reads_name_slash_two_spaces_label() {
-        let ctx = RenderContext::for_test();
-        let drawn = |entry: &Entry, place_kind: Option<&'static str>| -> String {
-            entry_line(
-                entry,
-                false,
-                EntryNotes {
-                    place_kind,
-                    ..EntryNotes::default()
-                },
-                &rows(&ctx, 60, true, ""),
-            )
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect::<Vec<_>>()
-            .join("")
-        };
-        let mut local = row("/data/project/data", EntryKind::Directory);
-        local.holds.directories = 3;
-        let mut hive = row("/data/project/events", EntryKind::Hive);
-        hive.holds.partitions = 2;
-        let mut parquet = row("/data/project/processed", EntryKind::MultiFile);
-        parquet.holds.formats = vec![("parquet".to_string(), 2)];
-        let mut prefix = row("s3://bucket/exports", EntryKind::Directory);
-        prefix.holds.formats = vec![("csv".to_string(), 12)];
-        let bucket = row("s3://noaa-ghcn-pds", EntryKind::Directory);
-        let mut noaa = row("s3://noaa-ghcn-pds/parquet/", EntryKind::Directory);
-        noaa.name = "NOAA daily weather".to_string();
-        let mut penguins = row("https://example.com/csv/penguins.csv", EntryKind::File);
-        penguins.name = "Palmer penguins".to_string();
-        for (entry, place_kind, expect) in [
-            (&local, None, "data/  3 dirs"),
-            (&hive, None, "events/  hive"),
-            (&parquet, None, "processed/  2 parquet"),
-            (&prefix, None, "exports/  12 csv"),
-            (&bucket, None, "noaa-ghcn-pds/  bucket"),
-            (&noaa, Some("dataset"), "NOAA daily weather/  dataset"),
-            (&penguins, None, "Palmer penguins  csv"),
-        ] {
-            let text = drawn(entry, place_kind);
-            assert!(text.contains(expect), "{expect:?} in {text:?}");
-        }
-    }
-
-    /// And the pane beside it says the same word. The two take the same order through
-    /// two separate matches, so a directory with nothing counted in it can read `prefix`
-    /// on the row and `dir` in the pane — the one disagreement this is all arranged to
-    /// stop, on the row a search is about.
-    /// The row that opens the directory being browsed has no label, and in a bucket a
-    /// directory of Parquet files is a kind that wears its label as a chip. The chip is
-    /// drawn by taking the cell apart again, so a chip made of nothing indexed past the
-    /// end of an empty string and brought the renderer down — on a real GCS prefix,
-    /// where CI found it and no test here had put the two together.
-    #[test]
-    fn the_row_that_opens_a_directory_draws_without_a_label() {
-        let ctx = RenderContext::for_test();
-        let mut drawn: Vec<(EntryKind, String)> = Vec::new();
-        for kind in [EntryKind::MultiFile, EntryKind::Hive, EntryKind::Directory] {
-            let mut door = row("gs://cloud-samples-data/bigquery/us-states", kind);
-            door.name = "us-states (all files)".to_string();
-            door.opens_whole_directory = true;
-            door.holds = crate::discover::Holds {
-                formats: vec![("parquet".to_string(), 9)],
-                ..Default::default()
-            };
-            assert_eq!(door.label(), "", "{kind:?}");
-
-            // Every width, because the crash was in taking the cell apart and the
-            // widths are where the cell is rewritten. Nothing here asserts a shape:
-            // drawing at all is the thing that was not happening.
-            for width in 1..=60usize {
-                let line = entry_line(
-                    &door,
-                    false,
-                    EntryNotes::default(),
-                    &rows(&ctx, width, true, ""),
-                );
-                let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-                assert!(!text.is_empty(), "at {width} cells, {kind:?}");
-            }
-            // And with room to spare it reads as itself, with no label beside it.
-            let line = entry_line(
-                &door,
-                false,
-                EntryNotes::default(),
-                &rows(&ctx, 40, true, ""),
-            );
-            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-            assert!(text.contains("us-states (all files)"), "{kind:?}: {text:?}");
-            assert!(!text.contains("parquet"), "{kind:?}: {text:?}");
-            drawn.push((kind, text));
-        }
-
-        // Nor does a curated place word or a source id stand in for the label it does
-        // not have. Both are about the directory; this row is the door into it, and
-        // `bigquery (all files)  dataset` says the door is the dataset.
-        let mut door = row("s3://lab@bucket/exports", EntryKind::Directory);
-        door.name = "exports (all files)".to_string();
-        door.opens_whole_directory = true;
-        let known = ["lab".to_string()];
-        let text: String = entry_line(
-            &door,
-            false,
-            EntryNotes {
-                known_sources: Some(&known),
-                place_kind: Some("dataset"),
-                ..EntryNotes::default()
-            },
-            &rows(&ctx, 60, true, ""),
-        )
-        .spans
-        .iter()
-        .map(|s| s.content.as_ref())
-        .collect();
-        assert!(text.contains("exports (all files)"), "{text:?}");
-        assert!(
-            !text.contains("dataset"),
-            "curated word on a door: {text:?}"
-        );
-        assert!(!text.contains("lab"), "source id on a door: {text:?}");
-
-        // And the pane beside it says the same nothing. It takes the place word through
-        // a second match of its own, which is how the row and the pane come to disagree
-        // about one directory.
-        let mut door = row("s3://bucket/warehouse", EntryKind::Directory);
-        door.name = "warehouse (all files)".to_string();
-        door.opens_whole_directory = true;
-        let pane = preview_text(&door, 60);
-        assert!(pane.contains("warehouse (all files)"), "{pane}");
-        assert!(
-            !pane.lines().any(|l| l.trim_start().starts_with("kind")),
-            "a kind stood in for the label it does not have: {pane}"
-        );
-
-        // And all three draw the same row. A hive or multi-file kind wears its label as
-        // a chip, which is a space of the row's own background and then the label — so
-        // with no label, a kind that would have worn one leaves the space behind and
-        // the row sits one cell right of every other door.
-        let (_, first) = &drawn[0];
-        for (kind, text) in &drawn[1..] {
-            assert_eq!(first, text, "{kind:?} drew a different row");
-        }
-    }
-
-    /// And the pane beside it agrees: no kind while it is being looked into, `?` with
-    /// why when looking failed, `directory` once it has been, and the count on the
-    /// `contains` line when there is one.
-    #[test]
-    fn the_pane_calls_a_cloud_directory_what_the_row_calls_it() {
-        use crate::home::CloudLook;
-        let ctx = RenderContext::for_test();
-        let pane = |entry: &Entry, looking: Option<CloudLook>| -> Vec<String> {
-            preview_head(entry, None, looking, 60, &ctx)
-                .iter()
-                .map(|l| {
-                    l.spans
-                        .iter()
-                        .map(|s| s.content.as_ref())
-                        .collect::<String>()
-                })
-                .collect()
-        };
-        let kind_line = |lines: &[String]| {
-            lines
-                .iter()
-                .find(|l| l.trim_start().starts_with("kind"))
-                .cloned()
-        };
-
-        let mut directory = row("s3://bucket/warehouse", EntryKind::Directory);
-        assert_eq!(kind_line(&pane(&directory, Some(CloudLook::Waiting))), None);
-        assert_eq!(kind_line(&pane(&directory, Some(CloudLook::Looking))), None);
-        let failed = kind_line(&pane(&directory, Some(CloudLook::Failed))).expect("a kind");
-        assert!(failed.contains("listing failed"), "{failed}");
-        let looked = kind_line(&pane(&directory, None)).expect("a kind");
-        assert!(looked.trim_end().ends_with("directory"), "{looked}");
-
-        directory.holds = crate::discover::Holds {
-            formats: vec![("parquet".to_string(), 12)],
-            ..Default::default()
-        };
-        let lines = pane(&directory, None);
-        let contains = lines
-            .iter()
-            .find(|l| l.trim_start().starts_with("contains"))
-            .expect("a contains line");
-        assert!(contains.contains("12 parquet"), "{contains}");
-    }
-
-    /// A row count that is out of reach says `?`. A directory that is not one table has
-    /// none to be out of reach, and must not read like a dataset too big to count.
-    #[test]
-    fn a_directory_of_separate_tables_shows_its_width_without_a_question_mark() {
-        let mut directory = row("/data/consolidated", EntryKind::Directory);
-        directory.cols = Some(72);
-        let shape = meta_columns(&directory, false, None, None);
-        assert!(shape.contains("72 cols"), "{shape}");
-        assert!(!shape.contains('?'), "{shape}");
-        assert!(
-            !shape.contains(glyphs::get().times),
-            "an operator with nothing on its left: {shape}"
-        );
-
-        let mut big = row("/data/events", EntryKind::Hive);
-        big.cols = Some(72);
-        assert!(
-            meta_columns(&big, false, None, None).contains('?'),
-            "a hive dataset still says ?"
-        );
-    }
-
-    /// A schema line wraps too, so the budget counts the rows they take rather than
-    /// one per column. Taking a column per row draws the tail past the bottom of the
-    /// pane and sends the `… N more` line over the edge with it — the loss the count
-    /// exists to report.
-    #[test]
-    fn a_wrapping_schema_line_is_paid_for_at_its_real_height() {
-        use polars::prelude::DataType;
-        let ctx = RenderContext::for_test();
-        // Forty cells is what the pane has; this type alone is past it.
-        let long = (0..6).fold(DataType::Int64, |inner, _| DataType::List(Box::new(inner)));
-        assert!(
-            format!("{long}").chars().count() > 18,
-            "a type past the pane's forty cells beside a name: {long}"
-        );
-        let schema: Vec<(String, DataType)> = (0..10)
-            .map(|i| (format!("created_at_{i}"), long.clone()))
-            .collect();
-
-        let (shown, lines) = schema_lines(&schema, 22, 40, 6, &ctx);
-        let rows: usize = lines.iter().map(|l| wrapped_rows(l, 40)).sum();
-        assert!(rows <= 6, "{rows} rows drawn into six: {shown} columns");
-        assert!(shown < 6, "each column takes more than one row: {shown}");
-        assert!(shown > 0, "and at least one still fits");
-    }
-
-    /// The pane word-wraps, so a row count taken by dividing the width into the length
-    /// is a floor: a word that will not fit goes whole to the next row. The schema list
-    /// is drawn in what is left, and under-counting drew its tail past the bottom while
-    /// `… N more` reported nothing lost.
-    #[test]
-    fn a_wrapped_line_is_counted_by_the_rows_it_takes() {
-        let line = |text: &str| Line::from(vec![Span::raw(text.to_string())]);
-        assert_eq!(wrapped_rows(&line("short"), 40), 1);
-        // Five four-letter words at a width of six. Dividing twenty-four characters
-        // into six says four rows; each row can hold one word and the two cells left
-        // beside it are cells no word can use, so it takes five.
-        assert_eq!(
-            wrapped_rows(&line("aaaa aaaa aaaa aaaa aaaa"), 6),
-            5,
-            "the room left at the end of a row is room a word cannot use"
-        );
-        // A single word longer than the pane wraps inside itself.
-        assert_eq!(wrapped_rows(&line(&"x".repeat(25)), 10), 3);
-        // Cells, not characters. Three glyphs of two cells each do not fit in five,
-        // and counting characters would say they do — a skipped file can be named in
-        // a script where that is true of every letter.
-        assert_eq!(
-            wrapped_rows(&line("漢字漢"), 5),
-            2,
-            "three characters, six cells"
-        );
-    }
-
-    /// A label describes and a name identifies, so on a screen too narrow for both the
-    /// label goes. Before this a `5000+ parquet` chip left the name nothing to be
-    /// truncated into and shoved the size and modified columns out of alignment.
-    #[test]
-    fn a_label_gives_way_to_the_name_on_a_narrow_screen() {
-        let ctx = RenderContext::for_test();
-        let mut entry = row("/data/exports", crate::discover::EntryKind::MultiFile);
-        // Real metadata, so the meta columns are a string the offset can be found by.
-        entry.size = Some(4096);
-        entry.rows = Some(12);
-        // A shape too: a row with an empty shape cell gives it to the name (#648).
-        entry.cols = Some(3);
-        entry.holds = crate::discover::Holds {
-            formats: vec![("parquet".to_string(), 5000)],
-            truncated: true,
-            ..Default::default()
-        };
-        assert_eq!(entry.label(), "5000+ parquet");
-
-        // Where the meta columns begin: everything drawn before them. It must not
-        // depend on how long a row's label is, or the columns stop lining up.
-        let offset_of_meta = |line: Line<'_>, entry: &Entry| -> usize {
-            let meta = meta_columns(entry, false, None, None);
-            let at = line
-                .spans
-                .iter()
-                .position(|s| s.content == meta)
-                .expect("the meta columns are drawn");
-            line.spans[..at]
-                .iter()
-                .map(|s| s.content.chars().count())
-                .sum()
-        };
-        let meta_starts_at = |entry: &Entry, width: usize| -> usize {
-            let line = entry_line(
-                entry,
-                false,
-                EntryNotes::default(),
-                &rows(&ctx, width, true, ""),
-            );
-            offset_of_meta(line, entry)
-        };
-
-        // The same kind, so only the label's length differs: a `Directory` row carries
-        // a trailing slash and would be a character wider for a reason of its own.
-        let mut short = row("/data/exports", crate::discover::EntryKind::MultiFile);
-        short.size = Some(4096);
-        short.rows = Some(12);
-        short.cols = Some(3);
-        short.holds = crate::discover::Holds {
-            formats: vec![("csv".to_string(), 2)],
-            ..Default::default()
-        };
-        assert_eq!(short.label(), "2 csv");
-
-        for width in [22usize, 24, 30, 48, 100] {
-            assert_eq!(
-                meta_starts_at(&entry, width),
-                meta_starts_at(&short, width),
-                "the meta columns must start in the same place at {width}"
-            );
-        }
-
-        // The curated word is not a label to give up. `dataset` and `project` are what
-        // a source calls a place it names, and the only thing marking a curated row.
-        let mut named = row("s3://bucket/occurrence", EntryKind::Directory);
-        named.size = Some(4096);
-        named.holds = crate::discover::Holds {
-            formats: vec![("parquet".to_string(), 5000)],
-            truncated: true,
-            ..Default::default()
-        };
-        let curated = |width: usize| -> String {
-            entry_line(
-                &named,
-                false,
-                EntryNotes {
-                    place_kind: Some("dataset"),
-                    ..EntryNotes::default()
-                },
-                &rows(&ctx, width, true, ""),
-            )
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect::<Vec<_>>()
-            .join("")
-        };
-        // Narrow enough that the guard fires: the word is eight cells with its space,
-        // so anything at or under fourteen leaves the name nothing to be cut into.
-        for width in [10usize, 12, 14, 22, 30] {
-            assert!(
-                curated(width).contains("dataset"),
-                "at {width}: {}",
-                curated(width)
-            );
-        }
-
-        // And a row whose *path* is curated but whose kind never reaches for the word
-        // is carrying a label, which gives way like any other. Only a `Directory` row
-        // consults `place_kind`; a `multi` prefix in a catalog does not.
-        let mut curated_multi = row("s3://bucket/occurrence", EntryKind::MultiFile);
-        curated_multi.size = Some(4096);
-        curated_multi.rows = Some(12);
-        curated_multi.cols = Some(3);
-        curated_multi.holds = crate::discover::Holds {
-            formats: vec![("parquet".to_string(), 5000)],
-            truncated: true,
-            ..Default::default()
-        };
-        let with_curated_path = |width: usize| -> usize {
-            let line = entry_line(
-                &curated_multi,
-                false,
-                EntryNotes {
-                    place_kind: Some("dataset"),
-                    ..EntryNotes::default()
-                },
-                &rows(&ctx, width, true, ""),
-            );
-            offset_of_meta(line, &curated_multi)
-        };
-        for width in [20usize, 22, 24, 30] {
-            assert_eq!(
-                with_curated_path(width),
-                meta_starts_at(&short, width),
-                "a count under a curated path still gives way at {width}"
-            );
-        }
-
-        // A cell the guard may not drop is cut instead. A `source not found:` is as
-        // long as somebody's configuration, and a name with nothing left to be cut
-        // into is the misalignment all of this is for.
-        let mut gone = row("s3://averylongsourcename@bucket/exports", EntryKind::File);
-        gone.size = Some(4096);
-        gone.rows = Some(12);
-        gone.cols = Some(3);
-        let known: [String; 1] = ["other".to_string()];
-        let missing = |width: usize| -> usize {
-            let line = entry_line(
-                &gone,
-                false,
-                EntryNotes {
-                    known_sources: Some(&known),
-                    ..EntryNotes::default()
-                },
-                &rows(&ctx, width, true, ""),
-            );
-            offset_of_meta(line, &gone)
-        };
-        for width in [22usize, 24, 30, 48] {
-            assert_eq!(
-                missing(width),
-                meta_starts_at(&short, width),
-                "a warning too long for the row is cut, not left to push the columns \
-                 out, at {width}"
-            );
-        }
-
-        // An uncut note keeps the mark on its last letter. The subtraction that makes
-        // room for the ellipsis applies only where there is one.
-        let marks = |width: usize| -> Vec<String> {
-            entry_line(
-                &short,
-                false,
-                EntryNotes {
-                    matched_column: Some("amount"),
-                    ..EntryNotes::default()
-                },
-                &rows(&ctx, width, true, "amount"),
-            )
-            .spans
-            .iter()
-            .filter(|s| s.style.add_modifier.contains(Modifier::UNDERLINED))
-            .map(|s| s.content.to_string())
-            .collect()
-        };
-        assert_eq!(
-            marks(200).join(""),
-            "amount",
-            "every letter of the match is marked when the note is whole"
-        );
-
-        // A label under a named source is still a label. The path carrying a source id
-        // is a different question from the cell showing one, and a peeked prefix under
-        // `s3://prod@bucket` has both.
-        let mut named = row("s3://prod@bucket/exports", EntryKind::MultiFile);
-        named.size = Some(4096);
-        named.rows = Some(12);
-        named.cols = Some(3);
-        named.holds = crate::discover::Holds {
-            formats: vec![("parquet".to_string(), 12000)],
-            ..Default::default()
-        };
-        let sources = ["prod".to_string()];
-        let offset = |width: usize| -> usize {
-            let line = entry_line(
-                &named,
-                false,
-                EntryNotes {
-                    known_sources: Some(&sources),
-                    ..EntryNotes::default()
-                },
-                &rows(&ctx, width, true, ""),
-            );
-            offset_of_meta(line, &named)
-        };
-        for width in [22usize, 24, 30] {
-            assert_eq!(
-                offset(width),
-                meta_starts_at(&short, width),
-                "a label under a named source gives way like any other, at {width}"
-            );
-        }
-
-        // A column note is not a label: it says why the row is in the list, and the
-        // draw site writes it from `matched_column` rather than from the cell, so
-        // blanking the cell would hand the name a budget the note then overruns.
-        let noted = |entry: &Entry, width: usize| -> usize {
-            let line = entry_line(
-                entry,
-                false,
-                EntryNotes {
-                    matched_column: Some("transaction_amount"),
-                    ..EntryNotes::default()
-                },
-                &rows(&ctx, width, true, ""),
-            );
-            offset_of_meta(line, entry)
-        };
-        for width in [20usize, 24, 30, 48] {
-            assert_eq!(
-                noted(&entry, width),
-                noted(&short, width),
-                "a matched row is drawn by its note, whatever its label would say, \
-                 at {width}"
-            );
-            // And the note itself is cut to fit, not left to push the columns out.
-            assert_eq!(
-                noted(&short, width),
-                meta_starts_at(&short, width),
-                "a column note too long for the row is cut, at {width}"
-            );
-        }
-    }
-
-    /// A dot in a directory's name does not make it a file. A local row nothing has
-    /// looked into came from a listing that saw a directory, so the name is not the
-    /// evidence.
-    /// Launched where there is nothing to open, the directory's heading says so and
-    /// points at `~`, rather than a bare `0` above the public rows (#547 D9).
-    #[test]
-    fn an_empty_current_directory_says_so_and_points_at_the_path_prompt() {
-        let ctx = RenderContext::for_test();
-        let section = Section {
-            door: None,
-            title: "/home/me/empty".to_string(),
-            subtitle: None,
-            origin: Some(crate::home::RootOrigin::Cwd.note()),
-            rows: Vec::new(),
-            unavailable: false,
-            unavailable_note: None,
-            folded_by_default: false,
-            remote_root: None,
-            waiting: false,
-            grouped_by_place: false,
-            place_labels: Default::default(),
-            root: None,
-        };
-        let text = |matches: usize, section: &Section| -> String {
-            section_header(section, matches, false, false, &header_row(&ctx, 80))
-                .spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect()
-        };
-        let empty = text(0, &section);
-        assert!(empty.contains("nothing to open here"), "{empty:?}");
-        assert!(empty.contains("~ types a path"), "{empty:?}");
-        assert!(!text(3, &section).contains("nothing to open"));
-        let configured = Section {
-            origin: Some("configured"),
-            ..section
-        };
-        assert!(!text(0, &configured).contains("nothing to open"));
-    }
-
-    #[test]
-    fn the_origin_chip_sits_by_the_count_and_the_state_by_the_rule() {
-        let ctx = RenderContext::for_test();
-        let section = Section {
-            door: None,
-            title: "/mnt/data".to_string(),
-            subtitle: Some("nfs4".to_string()),
-            origin: Some("configured"),
-            rows: Vec::new(),
-            unavailable: false,
-            unavailable_note: None,
-            folded_by_default: false,
-            remote_root: None,
-            waiting: false,
-            grouped_by_place: false,
-            place_labels: Default::default(),
-            root: None,
-        };
-        let text = |width: usize| -> String {
-            section_header(&section, 12, false, false, &header_row(&ctx, width))
-                .spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect()
-        };
-        let wide = text(80);
-        let count = wide.find(" 12 ").expect("count chip");
-        let origin = wide.find(" configured ").expect("origin chip");
-        let state = wide.find("nfs4").expect("state note");
-        assert!(count < origin && origin < state, "{wide:?}");
-        assert_eq!(wide.chars().count(), 80);
-
-        // At forty columns both chips and the note still fit beside the title.
-        let narrow = text(40);
-        assert_eq!(narrow.chars().count(), 40, "{narrow:?}");
-        assert!(
-            narrow.contains(" configured ") && narrow.contains("nfs4"),
-            "{narrow:?}"
-        );
-        assert!(narrow.contains("/mnt/data"), "{narrow:?}");
-
-        // Squeezed further: the title keeps at least three cells while the note and
-        // then the chip give way, and once both are gone the whole title is back.
-        for width in [30usize, 24, 16] {
-            let tight = text(width);
-            assert_eq!(tight.chars().count(), width, "{tight:?}");
-            assert!(tight.contains("ta"), "{width}: {tight:?}");
-        }
-        let bare = text(20);
-        assert!(bare.contains("/mnt/data"), "{bare:?}");
-        assert!(
-            !bare.contains("configured") && !bare.contains("nfs4"),
-            "{bare:?}"
-        );
-    }
-
-    /// A path longer than the line still leaves the rule a cell, so the cursor on the
-    /// heading shows (#575).
-    #[test]
-    fn a_long_path_leaves_the_focused_heading_its_rule() {
-        let ctx = RenderContext::for_test();
-        let g = glyphs::get();
-        let section = Section {
-            door: None,
-            title: format!("/var/folders/{}", "x".repeat(120)),
-            subtitle: None,
-            origin: Some("configured"),
-            rows: Vec::new(),
-            unavailable: false,
-            unavailable_note: None,
-            folded_by_default: false,
-            remote_root: None,
-            waiting: false,
-            grouped_by_place: false,
-            place_labels: Default::default(),
-            root: None,
-        };
-        for width in [40usize, 80, 120] {
-            let text: String = section_header(&section, 60, false, true, &header_row(&ctx, width))
-                .spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect();
-            assert_eq!(text.chars().count(), width, "{text:?}");
-            assert!(text.contains(g.rule_h_focused), "{width}: {text:?}");
-        }
-    }
-
-    #[test]
-    fn an_unmeasured_recent_from_a_store_shows_an_ellipsis_for_its_shape() {
-        let ctx = RenderContext::for_test();
-        let g = glyphs::get();
-        let mut entry = row("s3://bucket/sales/", EntryKind::MultiFile);
-        entry.cost.source = Some("s3".to_string());
-        let text = |entry: &Entry, indent: usize| -> String {
-            entry_line(
-                entry,
-                false,
-                EntryNotes {
-                    indent,
-                    ..EntryNotes::default()
-                },
-                &rows(&ctx, 60, true, ""),
-            )
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect()
-        };
-        // Under a place, with nothing measured: the shape cell is an admission.
-        let meta = meta_columns(&entry, true, None, None);
-        assert!(text(&entry, NEST_INDENT).contains(&meta));
-        assert!(meta.contains(g.ellipsis), "{meta:?}");
-        // The same row in a directory listing, where the probe measures it, and a
-        // local row, which is measured in place: blank, as before.
-        assert!(!text(&entry, 0).contains(g.ellipsis));
-        let mut local = row("/data/sales.csv", EntryKind::File);
-        local.cost.source = Some("ext4".to_string());
-        local.size = Some(10);
-        assert!(!text(&local, NEST_INDENT).contains(g.ellipsis));
-        // Once measured, the shape.
-        entry.rows = Some(20);
-        entry.cols = Some(3);
-        assert!(!text(&entry, NEST_INDENT).contains(g.ellipsis));
-    }
-
-    #[test]
-    fn a_place_row_carries_the_label_the_index_remembers_and_drops_it_before_the_path() {
-        let ctx = RenderContext::for_test();
-        let text = |label: Option<&str>, name_width: usize| -> String {
-            place_line(
-                std::path::Path::new("/mnt/data/sets/bitcoin"),
-                label,
-                Some("nfs4"),
-                false,
-                name_width,
-                false,
-                &ctx,
-            )
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect()
-        };
-        let wide = text(Some("2 parquet"), 60);
-        assert!(wide.contains("bitcoin/  2 parquet"), "{wide:?}");
-        assert!(wide.trim_end().ends_with("nfs4"), "{wide:?}");
-        assert_eq!(wide.chars().count(), row_width(60, false));
-        // No room for both: the path stays, the label goes.
-        let tight = text(Some("2 parquet"), 22);
-        assert!(!tight.contains("parquet"), "{tight:?}");
-        assert!(tight.contains("bitcoin/"), "{tight:?}");
-        assert_eq!(tight.chars().count(), row_width(22, false));
-    }
-
-    #[test]
-    fn a_nested_row_keeps_the_meta_columns_where_the_place_row_ends() {
-        // A row two cells in under a place must not push its meta columns two cells
-        // to the right, or the column of shapes and sizes zigzags down RECENT. The
-        // indent comes off the name's side, and the narrow-screen rule that gives a
-        // label up for the name fires that much sooner.
-        let ctx = RenderContext::for_test();
-        let mut entry = row("/data/exports", EntryKind::MultiFile);
-        entry.size = Some(4096);
-        entry.rows = Some(12);
-        // A shape too: a row with an empty shape cell gives it to the name (#648).
-        entry.cols = Some(3);
-        entry.holds = crate::discover::Holds {
-            formats: vec![("parquet".to_string(), 5000)],
-            truncated: true,
-            ..Default::default()
-        };
-        let meta = meta_columns(&entry, false, None, None);
-        let meta_at = |indent: usize, width: usize| -> usize {
-            let line = entry_line(
-                &entry,
-                false,
-                EntryNotes {
-                    indent,
-                    ..EntryNotes::default()
-                },
-                &rows(&ctx, width, true, ""),
-            );
-            let at = line
-                .spans
-                .iter()
-                .position(|s| s.content == meta)
-                .expect("the meta columns are drawn");
-            line.spans[..at]
-                .iter()
-                .map(|s| s.content.chars().count())
-                .sum()
-        };
-        for width in [24usize, 30, 48, 100] {
-            assert_eq!(
-                meta_at(NEST_INDENT, width),
-                meta_at(0, width),
-                "at {width} the indented row's meta columns start where a plain row's do"
-            );
-        }
-        // And the place row above it ends where the entry row ends, so its right-hand
-        // cell sits on the edge the age column sits on. `row_width` names the entry
-        // row's width rather than measuring it, and this is what keeps the two honest.
-        assert_eq!(meta.chars().count(), META_COLUMNS_WIDTH);
-        let drawn = |line: Line<'_>| -> usize {
-            line.spans.iter().map(|s| s.content.chars().count()).sum()
-        };
-        // With the meta columns shown, which is when there is an edge to share. Without
-        // them an entry row stops after its label, and the place row fills its width
-        // alone so the selection tint reaches the edge.
-        for name_width in [60usize, 24] {
-            let entry_width = drawn(entry_line(
-                &entry,
-                false,
-                EntryNotes {
-                    indent: NEST_INDENT,
-                    ..EntryNotes::default()
-                },
-                &rows(&ctx, name_width, true, ""),
-            ));
-            assert_eq!(entry_width, row_width(name_width, true));
-            let place = place_line(
-                std::path::Path::new("/data"),
-                None,
-                Some("nfs4"),
-                false,
-                name_width,
-                true,
-                &ctx,
-            );
-            assert_eq!(drawn(place), entry_width, "{name_width}");
-            let more = more_line(3, 2, false, name_width, true, &ctx);
-            assert_eq!(drawn(more), entry_width, "{name_width}");
-        }
-    }
-
-    #[test]
-    fn a_place_row_names_only_a_filesystem_worth_naming() {
-        // A local disk is the overwhelming majority of places, and `ext4` beside
-        // every one would be texture. A share or a store is worth a word, in the
-        // color the rows' own glyph uses for it.
-        let ctx = RenderContext::for_test();
-        let text = |source: Option<&str>| -> String {
-            place_line(
-                std::path::Path::new("/data/x"),
-                None,
-                source,
-                false,
-                40,
-                false,
-                &ctx,
-            )
-            .spans
-            .iter()
-            .map(|s| s.content.to_string())
-            .collect::<String>()
-        };
-        assert!(
-            text(Some("ext4")).trim_end().ends_with("/data/x/"),
-            "{:?}",
-            text(Some("ext4"))
-        );
-        assert!(
-            text(Some("nfs4")).trim_end().ends_with("nfs4"),
-            "{:?}",
-            text(Some("nfs4"))
-        );
-        assert!(
-            text(Some("s3")).trim_end().ends_with("s3"),
-            "{:?}",
-            text(Some("s3"))
-        );
-        assert!(
-            text(None).trim_end().ends_with("/data/x/"),
-            "{:?}",
-            text(None)
-        );
-        // A long path keeps its tail, which is the part that says where it is.
-        let long = place_line(
-            std::path::Path::new("/very/deeply/nested/place/on/a/share/somewhere/far"),
-            None,
-            Some("nfs4"),
-            false,
-            27,
-            false,
-            &ctx,
-        );
-        let drawn: String = long.spans.iter().map(|s| s.content.to_string()).collect();
-        assert_eq!(drawn.chars().count(), row_width(27, false), "{drawn:?}");
-        assert!(drawn.contains("far/"), "{drawn:?}");
-    }
-
-    #[test]
-    fn the_more_row_counts_rows_and_places() {
-        let ctx = RenderContext::for_test();
-        let text = |hidden: usize, places: usize| -> String {
-            more_line(hidden, places, false, 40, false, &ctx)
-                .spans
-                .iter()
-                .map(|s| s.content.to_string())
-                .collect::<String>()
-                .trim_end()
-                .to_string()
-        };
-        let g = glyphs::get();
-        assert_eq!(
-            text(13, 5),
-            format!("{}{} 13 more in 5 places", g.selector_blank, g.ellipsis)
-        );
-        assert_eq!(
-            text(1, 1),
-            format!("{}{} 1 more in 1 place", g.selector_blank, g.ellipsis)
-        );
-    }
-
-    #[test]
-    fn a_local_directory_keeps_its_slash_however_its_name_is_spelled() {
-        for name in ["project.old", "v1.2", "site.com", "datui.git", "plain"] {
-            let entry = row(&format!("/home/derek/{name}"), EntryKind::Unknown);
-            assert!(
-                shows_as_a_place(&entry),
-                "{name} is a directory the listing saw"
-            );
-        }
-    }
-
-    /// Remote, the name is all there is. One with an extension is a file even when it
-    /// is one datui does not read, and one without is a prefix.
-    #[test]
-    fn a_remote_row_is_read_as_a_prefix_only_when_its_name_is_not_a_file() {
-        // A path on a network mount takes the same branch, but whether one *is* a
-        // network mount is a question about this machine's mount table, so the two
-        // URL schemes are what a test can say.
-        for prefix in ["s3://bucket", "https://host"] {
-            for name in ["export.txt", "part-00000.parquet", "notes.md"] {
-                assert!(
-                    !shows_as_a_place(&row(&format!("{prefix}/{name}"), EntryKind::Unknown)),
-                    "{prefix}/{name} is named like a file"
-                );
-            }
-        }
-        for prefix in ["s3://bucket", "https://host"] {
-            for name in ["exports", "2024", "raw"] {
-                assert!(
-                    shows_as_a_place(&row(&format!("{prefix}/{name}"), EntryKind::Unknown)),
-                    "{prefix}/{name} is a prefix"
-                );
-            }
-        }
-    }
-
-    fn header_width(section: &Section, width: usize) -> usize {
-        let ctx = RenderContext::for_test();
-        let line = section_header(section, 3, false, false, &header_row(&ctx, width));
-        line.spans.iter().map(|s| s.content.chars().count()).sum()
-    }
-
-    #[test]
-    fn a_long_note_never_pushes_the_header_past_the_screen() {
-        // A search heading carries the path it searched, which is easily longer than
-        // the terminal. The note is context; the title is what the section is.
-        let section = Section {
-            door: None,
-            title: "Found".to_string(),
-            subtitle: Some(
-                "/very/deeply/nested/path/that/goes/on/and/on/for/quite/a/while · 99999 searched"
-                    .to_string(),
-            ),
-            origin: None,
-            rows: Vec::new(),
-            unavailable: false,
-            unavailable_note: None,
-            folded_by_default: false,
-            remote_root: None,
-            waiting: false,
-            grouped_by_place: false,
-            place_labels: Default::default(),
-            root: None,
-        };
-
-        for width in [20usize, 40, 80, 120] {
-            let rendered = header_width(&section, width);
-            assert!(
-                rendered <= width,
-                "a {width}-wide screen produced a {rendered}-character header"
-            );
-        }
-    }
-
-    #[test]
-    fn a_recent_from_a_source_names_it_or_says_it_is_gone() {
-        let ctx = RenderContext::for_test();
-        let path = std::path::Path::new("s3://lab@data/sales.parquet");
-        let mut entry = Entry::for_test(path, "sales.parquet");
-        entry.kind = EntryKind::Unknown;
-        let text = |known: Option<&[String]>| -> String {
-            entry_line(
-                &entry,
-                false,
-                EntryNotes {
-                    known_sources: known,
-                    ..EntryNotes::default()
-                },
-                &rows(&ctx, 80, false, ""),
-            )
-            .spans
-            .iter()
-            .map(|s| s.content.to_string())
-            .collect()
-        };
-        let lab = ["lab".to_string()];
-        assert!(text(Some(&lab)).contains("sales.parquet  lab"));
-        assert!(text(Some(&[])).contains("source not found: lab"));
-        // Inside a source the trail already says which, so nothing is added.
-        assert!(!text(None).contains("lab"));
-    }
-
-    /// Where the meta columns begin, in cells. Everything left of them is the name
-    /// half of the row, and it is one width for every row on screen or the columns are
-    /// not columns.
-    fn meta_offset(line: &Line) -> usize {
-        // The meta text is second from the end; the last span carries the tint to the
-        // edge.
-        let spans = &line.spans[..line.spans.len().saturating_sub(2)];
-        spans
-            .iter()
-            .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
-            .sum()
-    }
-
-    #[test]
-    fn the_pane_does_not_say_what_a_directory_holds_twice() {
-        let mut entry = Entry::for_test(std::path::Path::new("/data/consolidated"), "consolidated");
-        entry.kind = EntryKind::Directory;
-        // A directory of one format and nothing else: the label and the line are the same
-        // words, and `kind  12 parquet` above `holds  12 parquet` says it twice.
-        entry.holds = crate::discover::Holds {
-            formats: vec![("parquet".to_string(), 12)],
-            ..Default::default()
-        };
-        let text = preview_text(&entry, 60);
-        assert!(text.contains("12 parquet"), "{text}");
-        assert_eq!(
-            text.matches("12 parquet").count(),
-            1,
-            "the label and the line are the same words: {text}"
-        );
-
-        // With anything else beside them the line carries that too.
-        entry.holds.directories = 3;
-        let text = preview_text(&entry, 60);
-        assert!(text.contains("contains"), "{text}");
-        assert!(text.contains("3 directories"), "{text}");
-
-        // Files datui cannot open are not counted here: inside, a row says so.
-        entry.holds = crate::discover::Holds {
-            not_read: 10,
-            ..Default::default()
-        };
-        let text = preview_text(&entry, 60);
-        assert!(!text.contains("10"), "{text}");
-        assert!(text.contains("no data files"), "{text}");
-    }
-
-    #[test]
-    fn no_mark_ever_lands_on_a_cut_notes_ellipsis() {
-        // The note says why a row is in the list, and the marks say which letters
-        // matched. The ellipsis standing for the rest of the note matched nothing, so a
-        // mark on it is the row claiming a hit it does not have. `kept` counts the
-        // note's own characters and the marks stop there — this is what says so, since
-        // the comparison between the two rows below cannot see a change that moves
-        // both of them.
-        let ctx = RenderContext::for_test();
-        let entry = Entry::for_test(std::path::Path::new("/tmp/x"), "x");
-        let g = glyphs::get();
-        for width in 1..=40usize {
-            let line = entry_line(
-                &entry,
-                false,
-                EntryNotes {
-                    matched_column: Some("transaction_amount_usd"),
-                    known_sources: Some(&[]),
-                    ..EntryNotes::default()
-                },
-                &rows(&ctx, width, false, "usd"),
-            );
-            let marked: String = line
-                .spans
-                .iter()
-                .filter(|s| s.style.add_modifier.contains(Modifier::UNDERLINED))
-                .map(|s| s.content.to_string())
-                .collect();
-            assert!(
-                !marked.contains(g.ellipsis),
-                "at {width} cells a mark landed on the cut note's ellipsis: {marked:?}"
-            );
-            // And a note cut down to nothing but the ellipsis is not a note. Where
-            // there is no room for a letter beside it the whole note stays and the name
-            // gives way instead, the same reasoning that keeps `dataset` from becoming
-            // `d…t`.
-            let sep = format!(" {}", g.middot);
-            let note: String = line
-                .spans
-                .iter()
-                .skip_while(|s| s.content != sep)
-                .skip(1)
-                .map(|s| s.content.to_string())
-                .collect();
-            assert_ne!(
-                note.trim_end(),
-                g.ellipsis,
-                "at {width} cells the note was cut down to an ellipsis and said nothing"
-            );
-            // A note that fits is not cut. The cut one is always shorter than the
-            // whole, so a drawn note as long as the column can only be the column
-            // itself — which is what catches a boundary set one cell the wrong way,
-            // where the ellipsis replaces the last letter and changes nothing else.
-            let note = note.trim_end();
-            if note.chars().count() >= "transaction_amount_usd".chars().count() {
-                assert_eq!(
-                    note, "transaction_amount_usd",
-                    "at {width} cells a note that fitted was cut anyway"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn a_column_note_on_a_row_from_a_source_leaves_the_meta_columns_alone() {
-        let ctx = RenderContext::for_test();
-        let known = ["prod".to_string()];
-        // The same row in every way but the source id, so the only thing that can
-        // move the meta columns is the cell the id goes in.
-        let mut plain = Entry::for_test(
-            std::path::Path::new("s3://bucket/sales.parquet"),
-            "sales.parquet",
-        );
-        plain.kind = EntryKind::Unknown;
-        let mut sourced = Entry::for_test(
-            std::path::Path::new("s3://prod@bucket/sales.parquet"),
-            "sales.parquet",
-        );
-        sourced.kind = EntryKind::Unknown;
-
-        // Two cells hold this row's note: the source id, which is as long as somebody's
-        // configuration and so is cut when it stops fitting, and the column that put
-        // the row in the list. Only one of them is drawn. Cutting the other moved the
-        // meta columns of this row and no other — the columns coming unstuck on the one
-        // row a search was about.
-        for width in 6..=30usize {
-            let with_note = entry_line(
-                &sourced,
-                false,
-                EntryNotes {
-                    matched_column: Some("customer_identifier"),
-                    known_sources: Some(&known),
-                    ..EntryNotes::default()
-                },
-                &rows(&ctx, width, true, "cust"),
-            );
-            let without = entry_line(
-                &plain,
-                false,
-                EntryNotes {
-                    matched_column: Some("customer_identifier"),
-                    known_sources: Some(&[]),
-                    ..EntryNotes::default()
-                },
-                &rows(&ctx, width, true, "cust"),
-            );
-            assert_eq!(
-                meta_offset(&with_note),
-                meta_offset(&without),
-                "at {width} cells the source id moved the meta columns"
-            );
-        }
-    }
-
-    /// The row's spans, as (text, is_highlighted) pairs.
-    fn row_spans(name: &str, filter: &str, column: Option<&str>) -> Vec<(String, bool)> {
-        let ctx = RenderContext::for_test();
-        let entry = Entry::for_test(std::path::Path::new("/tmp/x"), name);
-        let line = entry_line(
-            &entry,
-            false,
-            EntryNotes {
-                matched_column: column,
-                known_sources: Some(&[]),
-                ..EntryNotes::default()
-            },
-            &rows(&ctx, 60, false, filter),
-        );
-        line.spans
-            .iter()
-            .skip(1) // the selection marker
-            .map(|s| {
-                (
-                    s.content.to_string(),
-                    s.style.add_modifier.contains(Modifier::UNDERLINED),
-                )
-            })
-            .collect()
-    }
-
-    fn highlighted_text(spans: &[(String, bool)]) -> String {
-        spans
-            .iter()
-            .filter(|(_, hit)| *hit)
-            .map(|(t, _)| t.as_str())
-            .collect()
-    }
-
-    fn preview_text(entry: &Entry, width: usize) -> String {
-        let ctx = RenderContext::for_test();
-        preview_head(entry, None, None, width, &ctx)
-            .iter()
-            .map(|l| {
-                l.spans
-                    .iter()
-                    .map(|s| s.content.as_ref())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    fn costed(name: &str, cost: crate::discover::Cost, size: Option<u64>) -> Entry {
-        let mut e = Entry::for_test(std::path::Path::new("/tmp/x"), name);
-        e.size = size;
-        e.cost = cost;
-        e
-    }
-
-    /// A file of tables says how many it contains; a spec's file does not, whose
-    /// variants are record types its `records` line counts.
-    #[test]
-    fn only_a_file_of_real_tables_contains_tables() {
-        let db = costed(
-            "shop.db",
-            crate::discover::Cost {
-                tables: Some(3),
-                ..Default::default()
-            },
-            None,
-        );
-        let shown = preview_text(&db, 60);
-        assert!(
-            shown
-                .lines()
-                .any(|l| l.starts_with("contains") && l.ends_with(" 3 tables")),
-            "{shown}"
-        );
-        let mut spec_file = costed(
-            "day.ord",
-            crate::discover::Cost {
-                tables: Some(5),
-                ..Default::default()
-            },
-            None,
-        );
-        spec_file.format_spec = Some("acme.orders".into());
-        let shown = preview_text(&spec_file, 60);
-        assert!(!shown.contains("tables"), "{shown}");
-        assert!(shown.contains("acme.orders file"), "{shown}");
-    }
-
-    #[test]
-    fn a_network_source_is_named_rather_than_described() {
-        // The filesystem's own name and nothing else. A sentence explaining that a
-        // network is a network is a sentence to skip on every row.
-        let e = costed(
-            "prices.parquet",
-            crate::discover::Cost {
-                source: Some("nfs4".into()),
-                ..Default::default()
-            },
-            None,
-        );
-        let text = preview_text(&e, 44);
-        assert!(text.contains("nfs4"), "{text}");
-    }
-
-    #[test]
-    fn local_disk_gets_no_warning() {
-        let e = costed(
-            "prices.parquet",
-            crate::discover::Cost {
-                source: Some("ext4".into()),
-                ..Default::default()
-            },
-            None,
-        );
-        let text = preview_text(&e, 44);
-        assert!(text.contains("ext4"), "{text}");
-        assert!(
-            !text.contains("network"),
-            "an ordinary disk should say nothing alarming: {text}"
-        );
-    }
-
-    #[test]
-    fn what_a_file_weighs_open_is_stated_with_its_ratio() {
-        // The number nothing else on screen implies.
-        let e = costed(
-            "prices.parquet",
-            crate::discover::Cost {
-                source: Some("ext4".into()),
-                uncompressed: Some(2_000_000_000),
-                codec: Some("zstd".into()),
-                row_groups: Some(12),
-                ..Default::default()
-            },
-            Some(200_000_000),
-        );
-        let text = preview_text(&e, 44);
-        assert!(text.contains("in memory"), "{text}");
-        assert!(text.contains("zstd"), "{text}");
-        assert!(text.contains("10.0"), "the ratio should be stated: {text}");
-        assert!(text.contains("row groups"), "{text}");
-    }
-
-    #[test]
-    fn a_ratio_too_small_to_matter_is_left_out() {
-        // Below about 1.2x the number is noise dressed as insight.
-        let e = costed(
-            "prices.parquet",
-            crate::discover::Cost {
-                source: Some("ext4".into()),
-                uncompressed: Some(1_050_000),
-                codec: Some("uncompressed".into()),
-                ..Default::default()
-            },
-            Some(1_000_000),
-        );
-        let text = preview_text(&e, 44);
-        assert!(!text.contains("1.0×") && !text.contains("1.1×"), "{text}");
-    }
-
-    #[test]
-    fn a_partition_layout_names_its_keys_and_its_range() {
-        let e = costed(
-            "events",
-            crate::discover::Cost {
-                source: Some("nfs4".into()),
-                partitions: Some(crate::discover::Partitions {
-                    keys: vec!["year".into(), "region".into()],
-                    first_key_values: vec!["2023".into(), "2024".into(), "2025".into()],
-                    count: 3,
-                    more: false,
-                }),
-                ..Default::default()
-            },
-            None,
-        );
-        let text = preview_text(&e, 44);
-        assert!(text.contains("3 by year, region"), "{text}");
-        assert!(text.contains("year 2023 to 2025"), "{text}");
-    }
-
-    #[test]
-    fn a_bounded_partition_count_says_it_is_a_floor() {
-        let e = costed(
-            "daily",
-            crate::discover::Cost {
-                partitions: Some(crate::discover::Partitions {
-                    keys: vec!["day".into()],
-                    first_key_values: vec!["0001".into()],
-                    count: 512,
-                    more: true,
-                }),
-                ..Default::default()
-            },
-            None,
-        );
-        assert!(preview_text(&e, 44).contains("512+"));
-    }
-
-    #[test]
-    fn the_preview_never_draws_past_its_pane() {
-        let e = costed(
-            "a_dataset_with_a_very_long_name_indeed.parquet",
-            crate::discover::Cost {
-                source: Some("fuse.sshfs".into()),
-                uncompressed: Some(9_000_000_000),
-                codec: Some("zstd".into()),
-                row_groups: Some(1024),
-                partitions: Some(crate::discover::Partitions {
-                    keys: vec!["year".into(), "month".into(), "day".into()],
-                    first_key_values: vec!["2001".into(), "2025".into()],
-                    count: 9999,
-                    more: true,
-                }),
-                tables: None,
-                opens_one: false,
-                ipc_stream: false,
-            },
-            Some(400_000_000),
-        );
-        for width in [24usize, 40, 80] {
-            let ctx = RenderContext::for_test();
-            for line in preview_head(&e, None, None, width, &ctx) {
-                // The pane wraps rather than clips, so a long value is allowed to run
-                // on; what must not happen is a *heading* bar overrunning its width.
-                let text: String = l_text(&line);
-                if text.trim_start().starts_with("OPENING") {
-                    assert!(
-                        text.chars().count() <= width,
-                        "a {width}-wide pane drew a {}-character heading",
-                        text.chars().count()
-                    );
-                }
-            }
-        }
-    }
-
-    fn l_text(line: &Line<'_>) -> String {
-        line.spans.iter().map(|s| s.content.as_ref()).collect()
-    }
-
-    #[test]
-    fn the_matched_characters_are_the_highlighted_ones() {
-        let spans = row_spans("sales_2024.parquet", "sales", None);
-        assert_eq!(highlighted_text(&spans), "sales");
-        // Reassembling the spans must give back exactly the name; highlighting is a
-        // change of style, never of text. The locality marker sits between the
-        // selection marker and the name, so the name is what follows it rather than
-        // what the row starts with.
-        let text: String = spans.iter().map(|(t, _)| t.as_str()).collect();
-        assert!(text.contains("sales_2024.parquet"), "got {text:?}");
-    }
-
-    #[test]
-    fn a_scattered_match_highlights_each_run_separately() {
-        let spans = row_spans("sales_by_region.parquet", "sreg", None);
-        assert_eq!(highlighted_text(&spans), "sreg");
-        let runs = spans.iter().filter(|(_, hit)| *hit).count();
-        assert!(
-            runs >= 2,
-            "a match spread across the name should be several runs, got {runs}"
-        );
-    }
-
-    #[test]
-    fn consecutive_matches_become_one_span_not_a_stutter() {
-        let spans = row_spans("sales.parquet", "sales", None);
-        let runs = spans.iter().filter(|(_, hit)| *hit).count();
-        assert_eq!(runs, 1, "five adjacent characters are one run, got {runs}");
-    }
-
-    #[test]
-    fn nothing_is_highlighted_without_a_filter() {
-        let spans = row_spans("sales.parquet", "", None);
-        assert_eq!(highlighted_text(&spans), "");
-    }
-
-    #[test]
-    fn a_row_matched_by_a_column_highlights_the_column_not_the_name() {
-        // Marks scattered over a name that had nothing to do with the match read as
-        // the filter having gone wrong.
-        let spans = row_spans("orders.parquet", "cust", Some("customer_id"));
-        assert_eq!(highlighted_text(&spans), "cust");
-        let text: String = spans.iter().map(|(t, _)| t.as_str()).collect();
-        let note = format!("{}customer_id", glyphs::get().middot);
-        assert!(
-            text.contains(&note),
-            "the column note should still read whole, got {text:?}"
-        );
-    }
-
-    #[test]
-    fn the_title_survives_a_note_that_wants_the_whole_line() {
-        // Trimming the note first is the point: a header that says only where it
-        // looked, and not what it is, has lost the more useful half.
-        let section = Section {
-            door: None,
-            title: "Found".to_string(),
-            subtitle: Some("x".repeat(200)),
-            origin: None,
-            rows: Vec::new(),
-            unavailable: false,
-            unavailable_note: None,
-            folded_by_default: false,
-            remote_root: None,
-            waiting: false,
-            grouped_by_place: false,
-            place_labels: Default::default(),
-            root: None,
-        };
-        let ctx = RenderContext::for_test();
-        let line = section_header(&section, 3, false, false, &header_row(&ctx, 40));
-        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(
-            text.contains("FOUND"),
-            "the title should still be readable, got {text:?}"
-        );
-    }
-
-    /// At 80 columns the open-all row keeps what it opens and cuts the directory's
-    /// name, which the section title above it already carries; at 200 it is whole.
-    #[test]
-    fn the_door_keeps_what_it_opens_when_its_name_is_cut() {
-        let ctx = RenderContext::for_test();
-        let mut door = row("/data/same_schema/", EntryKind::MultiFile);
-        door.name = "same_schema (3 Parquet files, one schema)".to_string();
-        door.opens_whole_directory = true;
-        door.rows = Some(6);
-        door.cols = Some(2);
-        let drawn = |width: usize| -> String {
-            entry_line(
-                &door,
-                true,
-                EntryNotes::default(),
-                &rows(&ctx, width.saturating_sub(META_WIDTH as usize), true, ""),
-            )
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect()
-        };
-        // An 80-column terminal leaves the list 78.
-        let narrow = drawn(78);
-        assert!(
-            narrow.contains("(3 Parquet files, one schema)"),
-            "{narrow:?}"
-        );
-        assert!(!narrow.contains("same_schema ("), "{narrow:?}");
-        assert!(
-            narrow.contains("6 × 2") || narrow.contains("6 x 2"),
-            "{narrow:?}"
-        );
-        assert_eq!(
-            narrow.chars().count(),
-            row_width(78 - META_WIDTH as usize, true),
-            "the columns stay where they are: {narrow:?}"
-        );
-        // At 60 the directory goes and what Enter opens keeps its head.
-        let narrowest = drawn(58);
-        assert!(narrowest.contains("(3 Parquet files"), "{narrowest:?}");
-        assert!(!narrowest.contains("same_"), "{narrowest:?}");
-        assert_eq!(
-            narrowest.chars().count(),
-            row_width(58 - META_WIDTH as usize, true),
-            "{narrowest:?}"
-        );
-        let wide = drawn(200);
-        assert!(
-            wide.contains("same_schema (3 Parquet files, one schema)"),
-            "{wide:?}"
-        );
-    }
-
-    fn texts(lines: &[Line]) -> Vec<String> {
-        lines
-            .iter()
-            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
-            .collect()
-    }
-
-    /// A path too long for the pane loses its middle, between components, and keeps its
-    /// file name; one that fits is left alone.
-    #[test]
-    fn a_long_path_is_cut_in_the_middle_not_wrapped() {
-        let e = glyphs::get().ellipsis;
-        let path = "~/.config/datui/formats/demo-mktdata.toml";
-        assert_eq!(elide_path(path, 60), path);
-        assert_eq!(
-            elide_path(path, 30),
-            format!("~/{e}/formats/demo-mktdata.toml")
-        );
-        assert!(elide_path(path, 30).chars().count() <= 30);
-        assert_eq!(elide_path(path, 22), format!("~/{e}/demo-mktdata.toml"));
-        assert_eq!(
-            elide_path("/a/b/c/long-name.toml", 17),
-            format!("/{e}/long-name.toml")
-        );
-        // Only the name's end fits.
-        let cut = elide_path(path, 10);
-        assert!(cut.ends_with("ta.toml"), "{cut}");
-        assert!(glyphs::display_width(&cut) <= 10, "{cut}");
-    }
-
-    /// Windows' `\` separates components too, and is kept where the path has it.
-    #[cfg(windows)]
-    #[test]
-    fn a_windows_path_is_cut_at_its_backslashes() {
-        let e = glyphs::get().ellipsis;
-        let path = r"~\.config\datui\formats\demo-mktdata.toml";
-        assert_eq!(
-            elide_path(path, 30),
-            format!(r"~\{e}\formats\demo-mktdata.toml")
-        );
-    }
-
-    fn spec_chips() -> Vec<MatchChip> {
-        let spec = crate::formats::Spec::parse(
-            r#"name = "acme.chips"
-match = { glob = ["*.bin", "*.dat"], magic = "MKTD", where = { "header.version" = 1, "header.kind" = "A" } }
-[header]
-fields = [
-  { name = "magic", type = "str", size = 4 },
-  { name = "version", type = "u2" },
-  { name = "kind", type = "str", size = 1 },
-]
-[records]
-fields = [{ name = "x", type = "u1" }]
-"#,
-            None,
-        )
-        .unwrap();
-        spec.match_chips()
-    }
-
-    /// The match line wraps between chips, never inside one, at any width; on the
-    /// chrome tier where the tint shows, bracketed with text quoted where it does not.
-    #[test]
-    fn match_chips_wrap_between_whole_chips() {
-        let ctx = RenderContext::for_test();
-        let chips = spec_chips();
-        for filled in [true, false] {
-            for width in [24, 30, 40, 80] {
-                let lines = chip_fact_lines("match", &chips, 5, width, filled, &ctx);
-                let shown = texts(&lines);
-                for line in &shown {
-                    assert!(
-                        glyphs::display_width(line) <= width,
-                        "{line:?} wider than {width}"
-                    );
-                }
-                let kind = if filled { "kind A" } else { "kind \"A\"" };
-                let whole: &[&str] = if width < 30 {
-                    &[]
-                } else {
-                    &["magic MKTD", "version 1", kind, "glob *.bin *.dat"]
-                };
-                for chip in whole {
-                    assert!(
-                        shown.iter().any(|l| l.contains(chip)),
-                        "{chip:?} whole on one line at {width}: {shown:#?}"
-                    );
-                }
-                assert!(shown[0].starts_with("match  "), "{shown:?}");
-                assert!(
-                    shown[1..].iter().all(|l| l.starts_with("       ")),
-                    "wrapped under the value: {shown:#?}"
-                );
-            }
-        }
-        let wide = texts(&chip_fact_lines("match", &chips, 5, 80, false, &ctx));
-        assert_eq!(
-            wide,
-            ["match  [magic MKTD] [kind \"A\"] [version 1] [glob *.bin *.dat]"]
-        );
-        let wide = chip_fact_lines("match", &chips, 5, 80, true, &ctx);
-        let magic = &wide[0].spans[1..6];
-        assert!(
-            magic
-                .iter()
-                .all(|s| s.style.bg == Some(ctx.table_header_bg)),
-            "{magic:?}"
-        );
-        assert_eq!(magic[1].style.fg, Some(ctx.dimmed));
-        assert_eq!(magic[3].style.fg, Some(ctx.str_col));
-        let one = wide[0]
-            .spans
-            .iter()
-            .find(|s| s.content == "1")
-            .expect("the version");
-        assert_eq!(one.style.fg, Some(ctx.int_col), "{wide:?}");
-    }
-
-    #[test]
-    fn a_spec_without_a_match_says_so() {
-        let ctx = RenderContext::for_test();
-        let lines = chip_fact_lines("match", &[], 5, 40, true, &ctx);
-        assert_eq!(texts(&lines), ["match  no match"]);
-    }
-
-    /// A field name too long for the line is cut, not the value, and the chip stays on
-    /// its line whole: never past the pane, never broken in two.
-    #[test]
-    fn a_long_field_name_is_cut_before_its_value() {
-        use crate::formats::ChipKind;
-        let ctx = RenderContext::for_test();
-        let e = glyphs::get().ellipsis;
-        let chips = [
-            MatchChip {
-                name: "magic".to_string(),
-                value: "MKTD".to_string(),
-                kind: ChipKind::Magic,
-                offset: None,
-            },
-            MatchChip {
-                name: "exchange_feed_sequence_version".to_string(),
-                value: "3".to_string(),
-                kind: ChipKind::Int,
-                offset: None,
-            },
-        ];
-        for filled in [true, false] {
-            let shown = texts(&chip_fact_lines("match", &chips, 8, 40, filled, &ctx));
-            assert_eq!(shown.len(), 2, "{shown:#?}");
-            for line in &shown {
-                assert!(glyphs::display_width(line) <= 40, "{line:?}");
-            }
-            let long = &shown[1];
-            assert!(long.starts_with("          "), "{shown:#?}");
-            let chip = long.trim();
-            let (open, close) = if filled { ("", "") } else { ("[", "]") };
-            assert!(
-                chip.starts_with(&format!("{open}exchange_feed")),
-                "{chip:?}"
-            );
-            assert!(chip.ends_with(&format!("{e} 3{close}")), "{chip:?}");
-        }
-        // A long value with a short name still cuts the value.
-        let glob = MatchChip {
-            name: "glob".to_string(),
-            value: "*.alpha *.bravo *.charlie *.delta *.echo".to_string(),
-            kind: ChipKind::Glob,
-            offset: None,
-        };
-        let shown = texts(&chip_fact_lines("match", &[glob], 5, 30, false, &ctx));
-        assert_eq!(shown.len(), 1, "{shown:#?}");
-        assert!(shown[0].starts_with("match  [glob *.alpha"), "{shown:#?}");
-        assert!(shown[0].ends_with(&format!("{e}]")), "{shown:#?}");
-        assert_eq!(glyphs::display_width(&shown[0]), 30, "{shown:#?}");
-    }
-
-    /// Variants pack under the value column, `name count` each, a line breaking only
-    /// between them, counted when the rows run out.
-    #[test]
-    fn variants_pack_densely_and_break_between_items() {
-        let ctx = RenderContext::for_test();
-        let table = |name: &str, n: usize| crate::members::Table {
-            name: name.to_string(),
-            kind: "record type".to_string(),
-            internal: false,
-            columns: (0..n).map(|i| (format!("c{i}"), String::new())).collect(),
-        };
-        let variants = [
-            table("Status", 6),
-            table("OrderAdd", 9),
-            table("OrderCancel", 6),
-            table("Trade", 9),
-            table("Fill", 9),
-        ];
-        let m = glyphs::get().middot;
-        let wide = texts(&variant_lines(&variants, 8, 80, 10, &ctx));
-        assert_eq!(
-            wide,
-            [format!(
-                "        Status 6 {m} OrderAdd 9 {m} OrderCancel 6 {m} Trade 9 {m} Fill 9"
-            )]
-        );
-        let narrow = texts(&variant_lines(&variants, 8, 40, 10, &ctx));
-        assert!(narrow.len() > 1, "{narrow:#?}");
-        for line in &narrow {
-            assert!(glyphs::display_width(line) <= 40, "{line:?}");
-            assert!(!line.trim_end().ends_with(m), "{line:?}");
-        }
-        for item in [
-            "Status 6",
-            "OrderAdd 9",
-            "OrderCancel 6",
-            "Trade 9",
-            "Fill 9",
-        ] {
-            assert!(
-                narrow.iter().any(|l| l.contains(item)),
-                "{item}: {narrow:#?}"
-            );
-        }
-        let cut = texts(&variant_lines(&variants, 8, 30, 2, &ctx));
-        assert_eq!(cut.len(), 2, "{cut:#?}");
-        assert!(cut[1].trim_start().ends_with("more"), "{cut:#?}");
-    }
-
-    /// Every pane heading reads the same way: a noun on the rule, and any count
-    /// in a flat chip after it, as the list's sections carry theirs.
-    #[test]
-    fn pane_headings_put_counts_in_a_chip() {
-        let ctx = RenderContext::for_test();
-        let text = |line: &Line| {
-            line.spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect::<String>()
-        };
-        let rows = rows_heading(5, 20, 40, &ctx);
-        assert!(
-            text(&rows).starts_with("ROWS  5 of 20 columns  "),
-            "{:?}",
-            text(&rows)
-        );
-        let chip = rows
-            .spans
-            .iter()
-            .find(|s| s.content.contains("5 of 20"))
-            .unwrap();
-        assert_eq!(chip.style.bg, Some(ctx.controls_bg));
-        assert!(text(&rows_heading(5, 5, 40, &ctx)).starts_with("ROWS "));
-        let columns = pane_heading_counted("COLUMNS", Some("1,200"), 40, &ctx);
-        assert!(
-            text(&columns).starts_with("COLUMNS  1,200  "),
-            "{:?}",
-            text(&columns)
-        );
-        assert_eq!(
-            text(&columns).chars().count(),
-            39,
-            "as wide as a heading without one"
-        );
-    }
-
-    /// The pane's column notes sit under COLUMNS, a line each, with no key hint among
-    /// them (the footer has `^E Docs`); cut to the pane, the rest are counted.
-    #[test]
-    fn column_notes_are_listed_under_columns_and_counted_when_cut() {
-        let ctx = RenderContext::for_test();
-        let columns: Vec<(String, crate::catalog::ColumnNote)> = (0..6)
-            .map(|i| {
-                let note = crate::catalog::ColumnNote {
-                    description: format!("Note {i}"),
-                    unit: if i == 0 { "USD".into() } else { String::new() },
-                    values: Vec::new(),
-                    ty: String::new(),
-                };
-                (format!("col{i}"), note)
-            })
-            .collect();
-        let whole = texts(&column_notes_block(&columns, 50, 20, &ctx));
-        assert!(whole[1].starts_with("COLUMNS "), "{whole:#?}");
-        assert_eq!(whole.len(), 2 + 6, "{whole:#?}");
-        assert!(whole[2].contains("col0") && whole[2].contains("Note 0 (USD)"));
-        assert!(!whole.iter().any(|l| l.contains("^E")), "{whole:#?}");
-
-        let cut = texts(&column_notes_block(&columns, 50, 6, &ctx));
-        assert_eq!(cut.len(), 6, "{cut:#?}");
-        let more = format!("{} 3 more", glyphs::get().ellipsis);
-        assert_eq!(cut.last(), Some(&more), "{cut:#?}");
-        assert!(!cut.iter().any(|l| l.contains("^E")), "{cut:#?}");
-    }
-}
+mod tests;

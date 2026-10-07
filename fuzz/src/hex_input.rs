@@ -6,7 +6,7 @@
 //! the first from the start must be the first a plain scan finds, and the inspector
 //! must read any bytes without a panic.
 
-use datui_lib::hex_view::{
+use datui_lib::app::hex_view::{
     MAX_PATTERN, Pattern, find, parse_offset, parse_pattern, readings, stride, varint,
 };
 use std::sync::atomic::AtomicBool;

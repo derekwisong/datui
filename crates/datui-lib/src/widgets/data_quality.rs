@@ -1,22 +1,25 @@
-use crate::analysis_modal::{AnalysisFocus, AnalysisTool, DetailScroll, EvidenceRead, SetupRow};
-use crate::config::Theme;
-use crate::data_quality::{
+use crate::analysis::analysis_modal::{
+    AnalysisFocus, AnalysisTool, DetailScroll, EvidenceRead, SetupRow,
+};
+use crate::analysis::data_quality::{
     ColumnQualityProfile, CopyPlan, DataQualityPlan, DataQualityResults, IntervalClock,
     IntervalFact, NoCopy, ObservationKind, QualityComparison, QualityCompute, QualityGrain,
     QualityMetric, QualityPage, QualityPrecision, QualityScope, SegmentCount,
     TemporalLatencyProfile, TemporalRole, interval_label, window_cadence,
 };
-use crate::glyphs;
-use crate::numfmt;
-use crate::quality_report::{
-    CHECKS_SHOWN, Check, Coverage, EvidenceRows, FindingOrder, FindingsView, Outcome,
-    QualityReport, Severity, advice, build_report, checks, coverage, describe, verdict,
+use crate::analysis::quality_report::{
+    CHECKS_SHOWN, Check, Coverage, Evidence, EvidenceRows, FindingOrder, FindingsView, Outcome,
+    QualityReport, Severity, advice, coverage, describe, verdict,
 };
-use crate::quality_trends::{
+use crate::analysis::quality_trends::{
     GapCheck, GapKind, Gaps, TrendBar, TrendMeasure, TrendRow, TrendView, trend_view,
 };
+use crate::config::Theme;
+use crate::glyphs;
+use crate::numfmt;
 use crate::render::context::RenderContext;
-use crate::widgets::datatable::DataTableState;
+use crate::render::layout::dialog_in;
+use crate::table::DataTableState;
 use crate::widgets::ui::{FormValue, Picker, Surface};
 use polars::prelude::{DataType, Schema};
 use ratatui::buffer::Buffer;
@@ -66,7 +69,7 @@ pub struct KeptRows {
     /// Samples kept: one per scope, method, size and seed a run read.
     pub samples: usize,
     pub rows: usize,
-    /// Near enough to budget by: [`crate::data_quality::QualitySample::estimated_bytes`].
+    /// Near enough to budget by: [`crate::analysis::data_quality::QualitySample::estimated_bytes`].
     pub bytes: usize,
     /// Bytes on disk in a full scan's local copy of a remote source; 0 for none.
     pub copy_bytes: u64,
@@ -79,7 +82,7 @@ impl KeptRows {
         let middot = glyphs::get().middot;
         let copy = format!(
             "local copy {middot} {}",
-            crate::widgets::info::format_bytes(self.copy_bytes)
+            crate::numfmt::bytes(self.copy_bytes)
         );
         if self.samples == 0 {
             return copy;
@@ -88,7 +91,7 @@ impl KeptRows {
             "{} {} kept {middot} {}",
             numfmt::group_chrome(self.rows),
             if self.rows == 1 { "row" } else { "rows" },
-            crate::widgets::info::format_bytes(self.bytes as u64)
+            crate::numfmt::bytes(self.bytes as u64)
         );
         let rows = if self.samples > 1 {
             format!("{} samples, {rows}", numfmt::group_chrome(self.samples))
@@ -135,14 +138,13 @@ pub struct DataQualityWidgetConfig<'a> {
     pub results: Option<&'a DataQualityResults>,
     pub from_cache: bool,
     pub metric: QualityMetric,
-    pub column_index: usize,
     pub segment_index: usize,
     /// The interval a detail shows.
     pub interval_index: usize,
     /// The Trends line a bar detail shows.
     pub trend_line: usize,
     /// The Expected editor, while it is open.
-    pub expected_form: Option<&'a crate::analysis_modal::ExpectedForm>,
+    pub expected_form: Option<&'a crate::analysis::analysis_modal::ExpectedForm>,
     pub segments_by_change: bool,
     pub page: QualityPage,
     pub setup: SetupView<'a>,
@@ -160,9 +162,9 @@ pub struct DataQualityWidgetConfig<'a> {
     /// The dialogs' Surfaces and the table's number formatting.
     pub ctx: &'a RenderContext,
     /// One column's declared intent, being edited over the Column intent list.
-    pub intent_form: Option<&'a crate::intent_modal::IntentForm>,
+    pub intent_form: Option<&'a crate::analysis::intent_modal::IntentForm>,
     /// The dialog writing the report on screen to a file.
-    pub export_form: Option<&'a crate::quality_export::ExportForm>,
+    pub export_form: Option<&'a crate::analysis::quality_export::ExportForm>,
 }
 
 /// The tool list's width: the width every analysis tool gives it, and none on a
@@ -248,7 +250,7 @@ pub fn render(
         || config.show_access
         || config.observation_detail
     {
-        crate::pointer::record(area, crate::pointer::Hit::Modal);
+        crate::app::pointer::record(area, crate::app::pointer::Hit::Modal);
     }
     if let Some(form) = config.intent_form {
         crate::widgets::quality_intent::render_form(form, &config, area, buf);
@@ -259,12 +261,12 @@ pub fn render(
     } else if config.observation_detail {
         render_finding_detail(&config, table_state, detail_scroll, area, buf);
     } else if sidebar_width == 0 && config.focus == AnalysisFocus::Sidebar {
-        crate::pointer::record(area, crate::pointer::Hit::Modal);
+        crate::app::pointer::record(area, crate::app::pointer::Hit::Modal);
         render_narrow_tool_picker(&config, sidebar_state, area, buf);
     }
     // A staged read of rows sits over whatever asked for it: a finding or a count.
     if let Some(read) = config.evidence_read {
-        crate::pointer::record(area, crate::pointer::Hit::Modal);
+        crate::app::pointer::record(area, crate::app::pointer::Hit::Modal);
         render_evidence_read(&config, read, area, buf);
     }
 }
@@ -291,7 +293,7 @@ fn render_header(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buf
     if config.from_cache && !config.page.is_setup() {
         spans.push(Span::styled(
             "  [session cache]",
-            Style::default().fg(config.theme.get("dimmed")),
+            Style::default().fg(config.theme.dimmed()),
         ));
     }
     // State, not a message: it holds until the worker exits, on every page.
@@ -301,16 +303,15 @@ fn render_header(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buf
                 "  Cancelling: {} {} {}",
                 cancelling.what(),
                 glyphs::get().middot,
-                crate::render::analysis_view::elapsed(cancelling.since.elapsed())
+                crate::numfmt::clock(cancelling.since.elapsed())
             ),
-            Style::default().fg(config.theme.get("warning")),
+            Style::default().fg(config.theme.warning()),
         ));
     }
     Paragraph::new(Line::from(spans))
         .style(crate::widgets::analysis::header_style(
-            config.theme,
-            "controls_bg",
-            "table_header",
+            config.theme.controls_bg(),
+            config.theme.table_header(),
         ))
         .render(area, buf);
 }
@@ -326,10 +327,10 @@ fn measured_on(plan: &DataQualityPlan, results: &DataQualityResults) -> String {
     match (results.precision, results.total_rows) {
         (QualityPrecision::Metadata, _) => format!("file metadata only, no values read{scope}"),
         (QualityPrecision::Exact, _) => sample.outcome(results.evaluated_rows, None, None),
-        (QualityPrecision::Sampled | QualityPrecision::Estimated, Some(total)) => {
+        (QualityPrecision::Sampled, Some(total)) => {
             sample.outcome(total, Some(results.evaluated_rows), results.per_value)
         }
-        (QualityPrecision::Sampled | QualityPrecision::Estimated, None) => format!(
+        (QualityPrecision::Sampled, None) => format!(
             "sample of {} rows{scope}",
             numfmt::group_chrome(results.evaluated_rows)
         ),
@@ -343,16 +344,16 @@ fn render_tabs(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffe
         Paragraph::new(Line::styled(
             "Setup",
             Style::default()
-                .fg(config.theme.get("accent"))
+                .fg(config.theme.accent())
                 .add_modifier(Modifier::BOLD),
         ))
         .render(area, buf);
         return;
     }
     let shown = config.page.tab();
-    let dimmed = Style::default().fg(config.theme.get("dimmed"));
+    let dimmed = Style::default().fg(config.theme.dimmed());
     let accent = Style::default()
-        .fg(config.theme.get("accent"))
+        .fg(config.theme.accent())
         .add_modifier(Modifier::BOLD);
     // Each title padded a space each side, a space between: a click on one presses
     // its number, as typed.
@@ -365,7 +366,7 @@ fn render_tabs(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffe
         spans.push(Span::styled(" ", dimmed));
         clicks.push((
             spans.len(),
-            crate::pointer::Hit::Key(crossterm::event::KeyEvent::new(
+            crate::app::pointer::Hit::Key(crossterm::event::KeyEvent::new(
                 crossterm::event::KeyCode::Char(char::from(b'1' + i as u8)),
                 crossterm::event::KeyModifiers::NONE,
             )),
@@ -377,7 +378,7 @@ fn render_tabs(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffe
         spans.push(Span::styled(" ", dimmed));
     }
     let line = Line::from(spans);
-    crate::pointer::record_spans(area, &line, clicks);
+    crate::app::pointer::record_spans(area, &line, clicks);
     Paragraph::new(line).style(dimmed).render(area, buf);
 }
 /// One line of Setup, top to bottom.
@@ -387,9 +388,8 @@ enum SetupLine {
     Note(String, bool),
 }
 
-/// Data Quality Setup: every setting a run takes, in four sections, and what the
-/// run will read. Nothing here reads: the schema, the rows on screen and what
-/// earlier runs kept are all it knows. Staged edits wait for Enter.
+/// Data Quality Setup: every run setting in four sections, and what the run will read.
+/// Reads nothing (only schema, on-screen rows and kept runs); edits wait for Enter.
 fn render_setup(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffer) {
     let plan = config.plan;
     let view = &config.setup;
@@ -429,7 +429,7 @@ fn render_setup(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buff
     lines.push(SetupLine::Row(SetupRow::Intervals));
     lines.push(SetupLine::Row(SetupRow::Intent));
     for (note, warn) in column_notes(plan, schema) {
-        for line in crate::widgets::info::wrap_to(&dotted(&note), width.saturating_sub(2)) {
+        for line in crate::widgets::info::wrap_to(&note, width.saturating_sub(2)) {
             lines.push(SetupLine::Note(line, warn));
         }
     }
@@ -447,14 +447,14 @@ fn render_setup(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buff
     lines.push(SetupLine::Rule("Read", view.kept.map(|kept| kept.label())));
     let read_start = lines.len();
     for note in read_lines(config) {
-        for line in crate::widgets::info::wrap_to(&dotted(&note), width.saturating_sub(2)) {
+        for line in crate::widgets::info::wrap_to(&note, width.saturating_sub(2)) {
             lines.push(SetupLine::Note(line, false));
         }
     }
 
     // The status line keeps the bottom row: why Run waits, or that it would
     // replace the report on screen.
-    let status = setup_status(config).map(|(text, warn)| (dotted(&text), warn));
+    let status = setup_status(config);
     let body_height = area.height.saturating_sub(1) as usize;
     // Scrolled only as far as the focused row needs; the read summary, last, is
     // what gives way, and says how much of it is off screen.
@@ -513,7 +513,7 @@ fn render_setup(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buff
             SetupLine::Row(row) => {
                 let (value, placeholder) = setup_value(config, *row);
                 let room = (row_area.width as usize).saturating_sub(1 + SETUP_LABEL_WIDTH as usize);
-                let value = fit(&value, room);
+                let value = glyphs::fit(&value, room);
                 crate::widgets::ui::FormRow {
                     label: row.label(),
                     value: if placeholder {
@@ -559,7 +559,7 @@ fn setup_value(config: &DataQualityWidgetConfig<'_>, row: SetupRow) -> (String, 
         SetupRow::Sample => {
             // The view's rows, when counted: a sample never promises more.
             let sample = plan.sample();
-            let known = (sample.scope == crate::data_quality::QualityScope::CurrentView)
+            let known = (sample.scope == crate::analysis::data_quality::QualityScope::CurrentView)
                 .then(|| config.state.num_rows_if_valid())
                 .flatten();
             (sample.summary_within(known), false)
@@ -632,7 +632,7 @@ fn setup_value(config: &DataQualityWidgetConfig<'_>, row: SetupRow) -> (String, 
             ("needs an interval to measure".to_string(), true)
         }
         SetupRow::Latency => (
-            crate::analysis_modal::threshold_label(plan.latency_threshold_seconds).to_string(),
+            crate::analysis::analysis_modal::threshold_label(plan.latency_threshold_seconds),
             plan.latency_threshold_seconds.is_none(),
         ),
         SetupRow::WindowBy => match (&plan.grain, plan.interval_clock) {
@@ -678,7 +678,10 @@ fn column_notes(plan: &DataQualityPlan, schema: &Schema) -> Vec<(String, bool)> 
     }
     for column in unread {
         notes.push((
-            format!("{column}: text, no format · set Text as time"),
+            format!(
+                "{column}: text, no format {} set Text as time",
+                glyphs::get().middot
+            ),
             true,
         ));
     }
@@ -686,18 +689,19 @@ fn column_notes(plan: &DataQualityPlan, schema: &Schema) -> Vec<(String, bool)> 
     let unpaired = plan.unpaired_roles();
     if plan.temporal_roles.len() == 1 {
         notes.push((
-            "1 role, no interval · add one under Time roles".to_string(),
+            crate::glyphs::dotted("1 role, no interval · add one under Time roles"),
             true,
         ));
     } else if !unpaired.is_empty() {
         notes.push((
             format!(
-                "In no interval: {} · set Intervals",
+                "In no interval: {} {} set Intervals",
                 unpaired
                     .iter()
                     .map(|role| role.label())
                     .collect::<Vec<_>>()
-                    .join(", ")
+                    .join(", "),
+                glyphs::get().middot
             ),
             true,
         ));
@@ -746,24 +750,23 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
     let state = config.state;
     let mut lines = Vec::new();
     if view.unchanged {
-        lines.push("Report on screen: this setup · no read".to_string());
+        lines.push(crate::glyphs::dotted(
+            "Report on screen: this setup · no read",
+        ));
         return lines;
     }
     if view.relabel_only {
         let compare = config.measured.compares_differently(plan);
         let expected = config.measured.expected != plan.expected;
-        lines.push(
-            match (compare, expected) {
-                (true, true) => "Changed: Compare, Expected · no read",
-                (true, false) => "Changed: Compare · no read",
-                _ => "Changed: Expected · no read",
-            }
-            .to_string(),
-        );
+        lines.push(glyphs::dotted(match (compare, expected) {
+            (true, true) => "Changed: Compare, Expected · no read",
+            (true, false) => "Changed: Compare · no read",
+            _ => "Changed: Expected · no read",
+        }));
         return lines;
     }
     if view.cached {
-        lines.push("Session cache: this setup · no read".to_string());
+        lines.push(crate::glyphs::dotted("Session cache: this setup · no read"));
         return lines;
     }
     let scope_rows = planned_scope_rows(state, plan);
@@ -776,8 +779,10 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
         QualityCompute::Full => {
             lines.extend(copy_lines(view, full_passes(config)));
             // Each column an interval is windowed by is a grouping of its own.
-            let clocks =
-                crate::data_quality::interval_passes(plan, state.quality_schema(&plan.scope));
+            let clocks = crate::analysis::data_quality::interval_passes(
+                plan,
+                state.quality_schema(&plan.scope),
+            );
             if clocks > 1 {
                 lines.push(format!(
                     "Window by {}: {clocks} of those passes, 1 per column",
@@ -786,26 +791,33 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
             }
         }
         QualityCompute::Sample if view.reuses_sample => {
-            lines.push("Rows: from an earlier run · no source read".to_string());
+            lines.push(crate::glyphs::dotted(
+                "Rows: from an earlier run · no source read",
+            ));
         }
         QualityCompute::Sample => lines.push(match &plan.method {
-            crate::sampling::SampleMethod::FirstRows => {
+            crate::analysis::sampling::SampleMethod::FirstRows => {
                 format!("First {n} rows of the scope")
             }
-            crate::sampling::SampleMethod::PerPartition { column } => {
-                format!("1 pass over every eligible row · {n} kept per {column}")
-            }
+            crate::analysis::sampling::SampleMethod::PerPartition { column } => format!(
+                "1 pass over every eligible row {} {n} kept per {column}",
+                glyphs::get().middot
+            ),
             _ if scope_rows.is_some_and(|rows| rows <= plan.dataset_rows) => {
-                "Every row · scope no larger than the sample".to_string()
+                crate::glyphs::dotted("Every row · scope no larger than the sample")
             }
-            _ if view.reads_blocks => {
-                format!("Seeded runs of the file · about {n} rows, no full pass")
-            }
-            _ => format!("1 streaming pass over every eligible row · seeded {n} kept"),
+            _ if view.reads_blocks => crate::glyphs::dotted(&format!(
+                "Seeded runs of the file · about {n} rows, no full pass"
+            )),
+            _ => crate::glyphs::dotted(&format!(
+                "1 streaming pass over every eligible row · seeded {n} kept"
+            )),
         }),
     }
     if plan.compute == QualityCompute::Sample && !view.reuses_sample && view.released {
-        lines.push("Released since last read · read again".to_string());
+        lines.push(crate::glyphs::dotted(
+            "Released since last read · read again",
+        ));
     }
     let exact = scope_rows.is_some_and(|rows| rows <= plan.dataset_rows);
     if plan.compute == QualityCompute::Sample && !exact {
@@ -816,34 +828,40 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
             _ => "",
         };
         match &view.segment_count {
-            SegmentCount::CountPass => {
-                lines.push(format!("+1 count of {column} · exact segment totals, kept"))
-            }
+            SegmentCount::CountPass => lines.push(format!(
+                "+1 count of {column} {} exact segment totals, kept",
+                glyphs::get().middot
+            )),
             SegmentCount::InSamplePass => lines.push(format!(
                 "Segment totals: exact, counted by {column} in that pass"
             )),
-            SegmentCount::Retained => {
-                lines.push("Segment totals: from an earlier count · no read".to_string())
-            }
+            SegmentCount::Retained => lines.push(crate::glyphs::dotted(
+                "Segment totals: from an earlier count · no read",
+            )),
             SegmentCount::RolledUp(finer) => lines.push(format!(
                 "Segment totals: summed from earlier {} counts",
                 window_cadence(finer)
             )),
             SegmentCount::TooMany => lines.push(format!(
-                "Too many segments {} to count · choose a coarser grain",
-                plan.grain.label()
+                "Too many segments {} to count {} choose a coarser grain",
+                plan.grain.label(),
+                glyphs::get().middot
             )),
             SegmentCount::NotNeeded | SegmentCount::PerValue => {}
         }
     }
     if plan.compute == QualityCompute::Sample {
-        lines.push("Measured in memory · no further reads".to_string());
+        lines.push(crate::glyphs::dotted(
+            "Measured in memory · no further reads",
+        ));
     }
     lines.extend(intent_read_lines(plan, exact));
     // Gaps come from the segment counts the run already takes, never a read of
     // their own.
     if plan.expected_windows().is_some() && plan.compute != QualityCompute::Metadata {
-        lines.push("Expected windows: from the segment counts · no read".to_string());
+        lines.push(crate::glyphs::dotted(
+            "Expected windows: from the segment counts · no read",
+        ));
     }
     let rows = planned_rows(state, plan)
         .map(numfmt::group_chrome)
@@ -860,7 +878,7 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
     } else if sampled
         && view.reads_blocks
         && !exact
-        && matches!(plan.method, crate::sampling::SampleMethod::Spread)
+        && matches!(plan.method, crate::analysis::sampling::SampleMethod::Spread)
     {
         // A ceiling of the whole file would say more than the runs read.
         "the row groups the runs fall in".to_string()
@@ -882,34 +900,37 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
 /// A full scan's first lines in Read: one pass per check, over the source, over a
 /// local copy fetched first, or over one fetched earlier, and why no copy where none.
 fn copy_lines(view: &SetupView<'_>, passes: usize) -> Vec<String> {
-    let bytes = crate::widgets::info::format_bytes;
-    let over_source =
-        format!("Every eligible row · up to {passes} passes over the source, 1 per check");
+    let bytes = crate::numfmt::bytes;
+    let over_source = crate::glyphs::dotted(&format!(
+        "Every eligible row · up to {passes} passes over the source, 1 per check"
+    ));
     match view.copy {
-        CopyPlan::NotApplicable => vec![format!(
+        CopyPlan::NotApplicable => vec![crate::glyphs::dotted(&format!(
             "Every eligible row · up to {passes} passes over the scope, 1 per check"
-        )],
+        ))],
         CopyPlan::Fetch {
             bytes: size,
             objects,
         } => {
             let mut lines = vec![
-                format!(
+                crate::glyphs::dotted(&format!(
                     "1 fetch of {} ({size}) to a local copy · up to {passes} passes over it",
                     objects_label(objects),
                     size = bytes(size)
-                ),
-                "Local copy kept for later full scans · d releases".to_string(),
+                )),
+                crate::glyphs::dotted("Local copy kept for later full scans · d releases"),
             ];
             if view.copy_released {
-                lines.push("Released since last copy · fetched again".to_string());
+                lines.push(crate::glyphs::dotted(
+                    "Released since last copy · fetched again",
+                ));
             }
             lines
         }
-        CopyPlan::Kept { bytes: size, .. } => vec![format!(
+        CopyPlan::Kept { bytes: size, .. } => vec![crate::glyphs::dotted(&format!(
             "Every eligible row · up to {passes} passes over the local copy ({}) · no source read",
             bytes(size)
-        )],
+        ))],
         CopyPlan::Passes(why) => vec![
             over_source,
             match why {
@@ -959,7 +980,7 @@ fn copy_transfer(copy: CopyPlan, state: &DataTableState) -> Option<String> {
     match copy {
         CopyPlan::Fetch { bytes, .. } => Some(format!(
             "{}, one request per object{conflicts}",
-            crate::widgets::info::format_bytes(bytes)
+            crate::numfmt::bytes(bytes)
         )),
         CopyPlan::Kept { .. } if conflicts.is_empty() => Some("none".to_string()),
         CopyPlan::Kept { .. } => Some("only the conflict reads".to_string()),
@@ -967,9 +988,8 @@ fn copy_transfer(copy: CopyPlan, state: &DataTableState) -> Option<String> {
     }
 }
 
-/// What the declared intent costs, said before Run: nothing past the rows read, but
-/// a key on a sample speaks only for the sampled rows, and on a full scan it is a
-/// grouping of its own.
+/// What declared intent costs, said before Run: no extra rows, but a key on a sample
+/// covers only sampled rows, and on a full scan is a grouping of its own.
 fn intent_read_lines(plan: &DataQualityPlan, every_row: bool) -> Vec<String> {
     if plan.intent.is_empty() {
         return Vec::new();
@@ -978,27 +998,32 @@ fn intent_read_lines(plan: &DataQualityPlan, every_row: bool) -> Vec<String> {
     match plan.compute {
         QualityCompute::Metadata => vec!["Column intent: not checked, needs values".to_string()],
         QualityCompute::Full if key => {
-            vec!["Column intent: in the profile pass · key adds 1 pass".to_string()]
+            vec![crate::glyphs::dotted(
+                "Column intent: in the profile pass · key adds 1 pass",
+            )]
         }
         QualityCompute::Full => {
-            vec!["Column intent: in the profile pass · no extra pass".to_string()]
+            vec![crate::glyphs::dotted(
+                "Column intent: in the profile pass · no extra pass",
+            )]
         }
         QualityCompute::Sample => {
-            let mut lines = vec!["Column intent: on the rows read · no extra read".to_string()];
+            let mut lines = vec![crate::glyphs::dotted(
+                "Column intent: on the rows read · no extra read",
+            )];
             if key && !every_row {
-                lines.push(format!(
+                lines.push(crate::glyphs::dotted(&format!(
                     "Key: repeats among the {} sampled rows only · Every row checks all",
                     numfmt::group_chrome(plan.dataset_rows)
-                ));
+                )));
             }
             lines
         }
     }
 }
 
-/// Collects a full run makes over its scope: one per check, and a count first when
-/// the scope's size is not known. How much each reads again depends on the
-/// source; that there are this many is the plan's.
+/// Collects a full run makes over its scope: one per check, plus a count first when the
+/// scope's size is unknown.
 fn full_passes(config: &DataQualityWidgetConfig<'_>) -> usize {
     let plan = config.plan;
     let state = config.state;
@@ -1012,7 +1037,8 @@ fn full_passes(config: &DataQualityWidgetConfig<'_>) -> usize {
     if !matches!(plan.grain, QualityGrain::Dataset) {
         passes += 1;
     }
-    passes += crate::data_quality::interval_passes(plan, state.quality_schema(&plan.scope));
+    passes +=
+        crate::analysis::data_quality::interval_passes(plan, state.quality_schema(&plan.scope));
     // The declared key is a grouping of its columns: one pass of its own.
     passes += usize::from(!plan.intent.key.is_empty());
     if planned_scope_rows(state, plan).is_none() {
@@ -1038,7 +1064,7 @@ fn setup_status(config: &DataQualityWidgetConfig<'_>) -> Option<(String, bool)> 
                 },
                 cancelling.what(),
                 glyphs::get().middot,
-                crate::render::analysis_view::elapsed(cancelling.since.elapsed())
+                crate::numfmt::clock(cancelling.since.elapsed())
             ),
             true,
         ));
@@ -1047,7 +1073,10 @@ fn setup_status(config: &DataQualityWidgetConfig<'_>) -> Option<(String, bool)> 
         return Some((note.to_string(), true));
     }
     if view.edited {
-        return Some(("Edited · Enter runs, Esc discards".to_string(), false));
+        return Some((
+            crate::glyphs::dotted("Edited · Enter runs, Esc discards"),
+            false,
+        ));
     }
     None
 }
@@ -1062,8 +1091,8 @@ fn render_overview(
         render_run_prompt(area, config.theme, buf);
         return;
     };
-    let report = build_report(results);
-    let all_checks = checks(results, &report);
+    let report = results.report();
+    let all_checks = results.checks();
     let notes = config.state.notes();
     let notes_height = if notes.is_empty() {
         0
@@ -1073,7 +1102,7 @@ fn render_overview(
     // Coverage sits under the verdict on every report, clean or not: four lines
     // where there is room, two on a short terminal.
     let coverage = coverage_lines(
-        &coverage(results, &all_checks, config.measured),
+        &coverage(results, all_checks, config.measured),
         area.width.saturating_sub(2),
         if area.height >= 16 { 4 } else { 2 },
         config.theme,
@@ -1088,7 +1117,7 @@ fn render_overview(
         .horizontal_margin(1)
         .vertical_margin(1)
         .split(area);
-    render_verdict(config, &report, sections[0], buf);
+    render_verdict(config, report, sections[0], buf);
     Paragraph::new(coverage).render(
         Rect {
             y: sections[0].y + 1,
@@ -1124,13 +1153,13 @@ fn render_overview(
         } else {
             "No columns to check"
         };
-        Paragraph::new(dotted(message))
+        Paragraph::new(glyphs::dotted(message))
             .wrap(Wrap { trim: true })
-            .style(Style::default().fg(config.theme.get("dimmed")))
+            .style(Style::default().fg(config.theme.dimmed()))
             .render(list, buf);
         return;
     }
-    let shown = config.findings.shown(&report);
+    let shown = config.findings.shown(report);
     // Narrowed or reordered, the list says so above itself, and what it holds.
     let facets = config.findings.describe();
     if !facets.is_empty() && list.height > 1 {
@@ -1156,8 +1185,8 @@ fn render_overview(
             text.push_str(&format!(" {middot} {facet}"));
         }
         Paragraph::new(Line::styled(
-            fit(&text, list.width as usize),
-            Style::default().fg(config.theme.get("dimmed")),
+            glyphs::fit(&text, list.width as usize),
+            Style::default().fg(config.theme.dimmed()),
         ))
         .render(Rect { height: 1, ..list }, buf);
         list.y += 1;
@@ -1165,9 +1194,9 @@ fn render_overview(
     }
     normalize_selection(table_state, shown.len());
     if shown.is_empty() {
-        Paragraph::new(dotted("No findings match · Esc shows all"))
+        Paragraph::new(glyphs::dotted("No findings match · Esc shows all"))
             .wrap(Wrap { trim: true })
-            .style(Style::default().fg(config.theme.get("dimmed")))
+            .style(Style::default().fg(config.theme.dimmed()))
             .render(list, buf);
         return;
     }
@@ -1178,12 +1207,12 @@ fn render_overview(
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(3), Constraint::Fill(1)])
             .split(list);
-        render_findings(config, &report, table_state, parts[0], buf);
-        Paragraph::new(check_lines(&all_checks, parts[1].width, None, config.theme))
+        render_findings(config, report, table_state, parts[0], buf);
+        Paragraph::new(check_lines(all_checks, parts[1].width, None, config.theme))
             .render(parts[1], buf);
         return;
     }
-    render_findings(config, &report, table_state, list, buf);
+    render_findings(config, report, table_state, list, buf);
 }
 
 /// The answer before the evidence: a mark and the counts. What they were measured on
@@ -1197,11 +1226,11 @@ fn render_verdict(
     let g = glyphs::get();
     let theme = config.theme;
     let (mark, tone) = if report.problems > 0 {
-        (g.warning, theme.get("warning"))
+        (g.warning, theme.warning())
     } else if report.metadata_only || report.no_rows {
-        (g.middot, theme.get("dimmed"))
+        (g.middot, theme.dimmed())
     } else {
-        (g.check, theme.get("success"))
+        (g.check, theme.success())
     };
     Paragraph::new(Line::from(vec![
         Span::styled(format!("{mark} "), Style::default().fg(tone)),
@@ -1216,9 +1245,9 @@ fn render_verdict(
 /// The label gutter of the coverage lines, as wide as its longest label and a gap.
 const COVERAGE_LABEL: usize = 8;
 
-/// The coverage under the verdict: checks, rows and limits, each a labeled line of
-/// facts that wraps between facts. Within `max_lines` the rows give way first, since
-/// the header states them too, and a section cut short counts what it left out.
+/// The coverage under the verdict (checks, rows, limits), each a labeled line wrapping
+/// between facts. Over `max_lines`, rows go first (the header states them); a cut
+/// section counts what it omitted.
 fn coverage_lines(
     coverage: &Coverage,
     width: u16,
@@ -1238,8 +1267,8 @@ fn coverage_lines(
     }
     sections.truncate(max_lines);
     let text_width = (width as usize).saturating_sub(COVERAGE_LABEL).max(1);
-    let dimmed = Style::default().fg(theme.get("dimmed"));
-    let plain = Style::default().fg(theme.get("text_primary"));
+    let dimmed = Style::default().fg(theme.dimmed());
+    let plain = Style::default().fg(theme.text_primary());
     let mut lines = Vec::new();
     for (index, (label, facts)) in sections.iter().enumerate() {
         // Every later section keeps one line; this one may take the rest.
@@ -1268,7 +1297,7 @@ fn pack_facts(facts: &[String], width: usize, room: usize) -> Vec<String> {
     let mut lines: Vec<Vec<String>> = vec![Vec::new()];
     let mut placed = 0;
     for fact in facts {
-        let fact = fit(fact, width);
+        let fact = glyphs::fit(fact, width);
         let current = lines.last_mut().expect("one line at least");
         let mut joined = current.clone();
         joined.push(fact.clone());
@@ -1300,7 +1329,7 @@ fn pack_facts(facts: &[String], width: usize, room: usize) -> Vec<String> {
                 let room =
                     width.saturating_sub(glyphs::display_width(&format!("{sep}+{dropped} more")));
                 if room >= 8 {
-                    *only = fit(only, room);
+                    *only = glyphs::fit(only, room);
                     continue;
                 }
             }
@@ -1323,7 +1352,7 @@ pub(crate) fn rule_line(
         Span::styled(
             title.to_string(),
             Style::default()
-                .fg(theme.get("accent"))
+                .fg(theme.accent())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
@@ -1335,8 +1364,8 @@ pub(crate) fn rule_line(
         spans.push(Span::styled(
             chip,
             Style::default()
-                .bg(theme.get("controls_bg"))
-                .fg(theme.get("text_primary")),
+                .bg(theme.controls_bg())
+                .fg(theme.text_primary()),
         ));
         spans.push(Span::raw(" "));
     }
@@ -1344,7 +1373,7 @@ pub(crate) fn rule_line(
         glyphs::get()
             .rule_h
             .repeat((width as usize).saturating_sub(used)),
-        Style::default().fg(theme.get("table_column_separator")),
+        Style::default().fg(theme.table_column_separator()),
     ));
     Line::from(spans)
 }
@@ -1352,9 +1381,9 @@ pub(crate) fn rule_line(
 fn severity_mark(severity: Severity, theme: &Theme) -> Span<'static> {
     let g = glyphs::get();
     match severity {
-        Severity::Problem => Span::styled(g.warning, Style::default().fg(theme.get("warning"))),
-        Severity::Note => Span::styled(g.middot, Style::default().fg(theme.get("text_primary"))),
-        Severity::Clean => Span::styled(g.check, Style::default().fg(theme.get("success"))),
+        Severity::Problem => Span::styled(g.warning, Style::default().fg(theme.warning())),
+        Severity::Note => Span::styled(g.middot, Style::default().fg(theme.text_primary())),
+        Severity::Clean => Span::styled(g.check, Style::default().fg(theme.success())),
     }
 }
 
@@ -1436,13 +1465,13 @@ fn render_findings(
     // Ordered by a number, the number is on every row, right-aligned, so the order
     // can be read; the summary gives up the room.
     let ordered = config.findings.order != FindingOrder::Ranked;
-    let numbers = |finding: &crate::quality_report::Finding| {
+    let numbers = |finding: &crate::analysis::quality_report::Finding| {
         if finding.kind.is_none() {
             return (String::new(), String::new());
         }
         (
             numfmt::group_chrome(finding.affected_rows),
-            crate::quality_report::percent(finding.affected_rows, finding.evaluated_rows),
+            crate::numfmt::percent_of(finding.affected_rows, finding.evaluated_rows),
         )
     };
     let widest = |pick: fn((String, String)) -> String| {
@@ -1454,7 +1483,7 @@ fn render_findings(
     };
     let (count_width, rate_width) = (widest(|(count, _)| count), widest(|(_, rate)| rate));
     // The number the list is ordered by leads, each in its own aligned column.
-    let affected = |finding: &crate::quality_report::Finding| {
+    let affected = |finding: &crate::analysis::quality_report::Finding| {
         let (count, rate) = numbers(finding);
         match config.findings.order {
             FindingOrder::Rate => format!("{rate:>rate_width$}  {count:>count_width$}"),
@@ -1496,23 +1525,23 @@ fn render_findings(
             Item::Finding(position) => {
                 let finding = &report.findings[shown[*position]];
                 let is_selected = *position == selected;
-                let columns = fit(&finding.columns_label(columns_width), columns_width);
-                let summary = fit(&finding.summary, summary_width);
+                let columns = glyphs::fit(&finding.columns_label(columns_width), columns_width);
+                let summary = glyphs::fit(&finding.summary, summary_width);
                 let mut spans = vec![
                     Span::styled(
                         if is_selected { g.rail } else { " " },
-                        Style::default().fg(theme.get("accent")),
+                        Style::default().fg(theme.accent()),
                     ),
                     Span::raw(" "),
                     severity_mark(finding.severity, theme),
                     Span::raw(" "),
                     Span::styled(
                         format!("{:<title_width$}", finding.title),
-                        Style::default().fg(theme.get("text_primary")),
+                        Style::default().fg(theme.text_primary()),
                     ),
                     Span::styled(
                         format!("{columns:<columns_width$} "),
-                        Style::default().fg(theme.get("text_primary")),
+                        Style::default().fg(theme.text_primary()),
                     ),
                     Span::styled(
                         if ordered {
@@ -1520,13 +1549,13 @@ fn render_findings(
                         } else {
                             summary
                         },
-                        Style::default().fg(theme.get("dimmed")),
+                        Style::default().fg(theme.dimmed()),
                     ),
                 ];
                 if ordered {
                     spans.push(Span::styled(
                         format!("{:>affected_width$}", affected(finding)),
-                        Style::default().fg(theme.get("text_primary")),
+                        Style::default().fg(theme.text_primary()),
                     ));
                 }
                 let line = Line::from(spans);
@@ -1554,7 +1583,7 @@ fn check_lines(
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     let width = width as usize;
-    let dimmed = Style::default().fg(theme.get("dimmed"));
+    let dimmed = Style::default().fg(theme.dimmed());
     let g = glyphs::get();
     let shown = limit.unwrap_or(checks.len()).min(checks.len());
     let outcome = |check: &Check| match &check.outcome {
@@ -1563,9 +1592,8 @@ fn check_lines(
         Outcome::Skipped(reason) => format!("skipped: {reason}"),
         Outcome::Unavailable(reason) => format!("unavailable: {reason}"),
     };
-    // Each column as wide as its widest entry across every check, so showing all
-    // of them moves nothing; what a check looks for takes the rest, and wraps under
-    // itself rather than being cut.
+    // Each column as wide as its widest entry across checks, so showing all moves nothing;
+    // what a check looks for takes the rest, wrapping under itself.
     let column = |text: &dyn Fn(&Check) -> String| {
         checks
             .iter()
@@ -1593,12 +1621,12 @@ fn check_lines(
     for check in &checks[..shown] {
         let (mark, style) = match &check.outcome {
             Outcome::Passed => (
-                Span::styled(g.check, Style::default().fg(theme.get("success"))),
-                Style::default().fg(theme.get("text_primary")),
+                Span::styled(g.check, Style::default().fg(theme.success())),
+                Style::default().fg(theme.text_primary()),
             ),
             Outcome::Found { tier, .. } => (
                 severity_mark(*tier, theme),
-                Style::default().fg(theme.get("text_primary")),
+                Style::default().fg(theme.text_primary()),
             ),
             Outcome::Skipped(_) | Outcome::Unavailable(_) => (Span::styled(g.dash, dimmed), dimmed),
         };
@@ -1645,31 +1673,10 @@ fn check_lines(
     lines
 }
 
-/// `text` cut to `width` display columns, with the ellipsis glyph when anything was
-/// cut, so a truncated count never reads as a smaller one.
-/// A segment's label as the terminal draws it: the `∅` naming rows with no value
-/// is the null glyph, which `LANG=C` swaps for its ASCII twin. The label itself
-/// stays as it is, since evidence finds a segment's rows by it.
+/// A segment label as drawn: `∅` (no value) uses the null glyph (ASCII under `LANG=C`).
+/// The label itself is unchanged, since evidence finds rows by it.
 fn segment_text(label: &str) -> String {
     label.replace('∅', glyphs::get().null)
-}
-
-/// Text written with `·` between its parts, in the glyph set's middot: `-` on an
-/// ASCII terminal.
-pub(crate) fn dotted(text: &str) -> String {
-    text.replace('·', glyphs::get().middot)
-}
-
-pub(crate) fn fit(text: &str, width: usize) -> String {
-    if glyphs::display_width(text) <= width {
-        return text.to_string();
-    }
-    if width == 0 {
-        return String::new();
-    }
-    let ellipsis = glyphs::get().ellipsis;
-    let keep = width.saturating_sub(glyphs::display_width(ellipsis));
-    format!("{}{ellipsis}", glyphs::take_columns(text, keep))
 }
 
 /// The finding itself: what it is in one sentence with its numbers, why it matters,
@@ -1684,15 +1691,15 @@ fn render_finding_detail(
     let Some(results) = config.results else {
         return;
     };
-    let report = build_report(results);
+    let report = results.report();
     let Some(finding) = table_state
         .selected()
-        .and_then(|position| config.findings.selected(&report, position))
+        .and_then(|position| config.findings.selected(report, position))
     else {
         return;
     };
     let theme = config.theme;
-    let dimmed = Style::default().fg(theme.get("dimmed"));
+    let dimmed = Style::default().fg(theme.dimmed());
     let (headline, evidence) = describe(finding, results);
     // A reading surface: cap the measure on a wide terminal. The checks table on
     // the clean entry is a table, and may use more of the width.
@@ -1735,7 +1742,7 @@ fn render_finding_detail(
     if finding.kind.is_none() {
         lines.push(Line::raw(""));
         lines.extend(check_lines(
-            &checks(results, &report),
+            results.checks(),
             inner,
             (!config.checks_expanded).then_some(CHECKS_SHOWN),
             theme,
@@ -1766,7 +1773,7 @@ fn render_finding_detail(
         room
     };
     let below = rows.saturating_sub(scroll.offset + shown);
-    let popup = centered_rect(width, height, area);
+    let popup = dialog_in(area, width, height);
     let content = Surface::new(&title)
         .border_style(Style::default().fg(config.ctx.modal_border_active))
         .render(popup, buf, config.ctx);
@@ -1801,7 +1808,7 @@ fn render_finding_detail(
 /// kept, reads ones it did not keep once asked, or says why there are none.
 fn evidence_line(
     config: &DataQualityWidgetConfig<'_>,
-    finding: &crate::quality_report::Finding,
+    finding: &crate::analysis::quality_report::Finding,
     results: &DataQualityResults,
 ) -> String {
     let rows = match finding.evidence(results) {
@@ -1824,20 +1831,19 @@ fn evidence_line(
             if count == 1 { "row" } else { "rows" }
         )
     };
-    let what = match (finding.kind, finding.evidence_count(results)) {
+    let spec = finding.kind.map(ObservationKind::spec);
+    let what = match (spec, finding.evidence_count(results)) {
         // The measurement counts rows beyond one per value; the rows that share a
         // value are always more.
-        (Some(ObservationKind::KeyLike), _) => format!(
+        (Some(spec), _) if spec.evidence == Evidence::SharingValue => format!(
             "every {}row that shares a repeated value",
             if sampled { "sampled " } else { "" }
         ),
-        (Some(ObservationKind::DuplicateRows), Some(count)) => {
-            format!("the {} that have a copy", noun(count))
-        }
-        (Some(ObservationKind::ParseableText), Some(count)) => {
-            format!("the {} that do not parse", noun(count))
-        }
-        (_, Some(count)) => format!("the {}", noun(count)),
+        (spec, Some(count)) => format!(
+            "the {}{}",
+            noun(count),
+            spec.map_or("", |spec| spec.rows_are)
+        ),
         // Grouped columns: a row missing in any of them; the table counts them.
         (_, None) => format!(
             "the {}rows with any of them",
@@ -1884,7 +1890,7 @@ fn render_evidence_read(
         .unwrap_or(0)
         + 2;
     let lines = field_lines(&rows, label_width, width.saturating_sub(4) as usize, false);
-    let popup = centered_rect(width, lines.len() as u16 + 2, area);
+    let popup = dialog_in(area, width, lines.len() as u16 + 2);
     let content = Surface::new("Read Rows")
         .border_style(Style::default().fg(config.ctx.modal_border_active))
         .render(popup, buf, config.ctx);
@@ -1898,8 +1904,8 @@ fn render_time_roles(
     buf: &mut Buffer,
 ) {
     let theme = config.theme;
-    let dimmed = Style::default().fg(theme.get("dimmed"));
-    let accent = Style::default().fg(theme.get("accent"));
+    let dimmed = Style::default().fg(theme.dimmed());
+    let accent = Style::default().fg(theme.accent());
     let columns = config.setup.time_candidates;
     let roles = TemporalRole::ALL.len() as u16;
     let sections = Layout::default()
@@ -2003,11 +2009,11 @@ fn render_time_roles(
                     if is_chosen {
                         accent
                     } else {
-                        Style::default().fg(theme.get("text_primary"))
+                        Style::default().fg(theme.text_primary())
                     },
                 ),
                 Span::styled(format!("{dtype:<type_width$}"), dimmed),
-                Span::raw(fit(&values, values_width)),
+                Span::raw(glyphs::fit(&values, values_width)),
             ])
         })
         .collect::<Vec<_>>();
@@ -2024,7 +2030,7 @@ fn render_columns(
         render_run_prompt(area, config.theme, buf);
         return;
     };
-    let report = build_report(results);
+    let report = results.report();
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(2), Constraint::Fill(1)])
@@ -2044,7 +2050,7 @@ fn render_columns(
     } else {
         0
     };
-    let dimmed = Style::default().fg(config.theme.get("dimmed"));
+    let dimmed = Style::default().fg(config.theme.dimmed());
     let rows = results.columns.iter().enumerate().map(|(index, profile)| {
         let severity = report
             .column_status
@@ -2071,7 +2077,7 @@ fn render_columns(
             .map(|(value, count)| {
                 format!(
                     "{value} ({})",
-                    crate::quality_report::percent(count, profile.non_null_rows())
+                    crate::numfmt::percent_of(count, profile.non_null_rows())
                 )
             })
             .unwrap_or_else(|| "-".to_string());
@@ -2081,7 +2087,7 @@ fn render_columns(
             Cell::from(format!(
                 "{} ({})",
                 numfmt::group_chrome(profile.null_count),
-                crate::quality_report::percent(profile.null_count, profile.evaluated_rows)
+                crate::numfmt::percent_of(profile.null_count, profile.evaluated_rows)
             ))
         };
         let distinct = count_label(profile.distinct_count);
@@ -2164,7 +2170,7 @@ fn render_segments(
         return;
     };
     let theme = config.theme;
-    let dimmed = Style::default().fg(theme.get("dimmed"));
+    let dimmed = Style::default().fg(theme.dimmed());
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(2), Constraint::Fill(1)])
@@ -2174,11 +2180,11 @@ fn render_segments(
         Paragraph::new(rule_line("Segments", Some("1"), sections[0].width, theme))
             .render(sections[0], buf);
         Paragraph::new(
-            "The rows are one segment. Set Grain in Setup (e) to split them by file, \
+            "The rows are one segment. Set grain in Setup (e) to split them by file, \
              partition, row chunk or time window, and compare the parts.",
         )
         .wrap(Wrap { trim: true })
-        .style(Style::default().fg(theme.get("text_primary")))
+        .style(Style::default().fg(theme.text_primary()))
         .render(sections[1], buf);
         return;
     }
@@ -2222,18 +2228,17 @@ fn render_segments(
         );
     }
 
-    // What there is for every segment without choosing anything: its rows, how
-    // much of it is empty, and the one change against its comparison that moved
-    // most. Enter shows the rest.
-    let rows_label = |segment: &crate::data_quality::SegmentQualityProfile| match segment.total_rows
-    {
-        Some(total) if total != segment.evaluated_rows => format!(
-            "{} of {}",
-            numfmt::group_chrome(segment.evaluated_rows),
-            numfmt::group_chrome(total)
-        ),
-        _ => numfmt::group_chrome(segment.evaluated_rows),
-    };
+    // Per segment without choosing anything: rows, emptiness, and its largest move against
+    // its comparison. Enter shows the rest.
+    let rows_label =
+        |segment: &crate::analysis::data_quality::SegmentQualityProfile| match segment.total_rows {
+            Some(total) if total != segment.evaluated_rows => format!(
+                "{} of {}",
+                numfmt::group_chrome(segment.evaluated_rows),
+                numfmt::group_chrome(total)
+            ),
+            _ => numfmt::group_chrome(segment.evaluated_rows),
+        };
     let label_width = results
         .segments
         .iter()
@@ -2251,7 +2256,7 @@ fn render_segments(
         .max(4) as u16
         + 2;
     let compared = config.plan.comparison != QualityComparison::None;
-    let order = crate::data_quality::segment_order(results, config.segments_by_change);
+    let order = crate::analysis::data_quality::segment_order(results, config.segments_by_change);
     let rows = order
         .iter()
         .map(|&index| &results.segments[index])
@@ -2259,7 +2264,7 @@ fn render_segments(
             let mut cells = vec![
                 Cell::from(segment_text(&segment.label)),
                 Cell::from(rows_label(segment)),
-                Cell::from(format!("{:.1}%", segment.null_rate * 100.0)),
+                Cell::from(crate::numfmt::percent(segment.null_rate)),
             ];
             if compared {
                 cells.push(Cell::from(
@@ -2286,20 +2291,8 @@ fn render_segments(
     StatefulWidget::render(table, sections[1], buf, table_state);
 }
 
-/// A rate as the report writes one: two places below 1% so a small share never
-/// reads as none.
-fn rate_label(value: f64) -> String {
-    let percent = value * 100.0;
-    if percent > 0.0 && percent < 1.0 {
-        format!("{percent:.2}%")
-    } else {
-        format!("{percent:.1}%")
-    }
-}
-
-/// One segment's columns, every measure beside the segment it is compared with,
-/// the largest move first: the answer to "what changed here" without choosing a
-/// column or a measure first.
+/// One segment's columns with every measure beside its comparison, largest move first:
+/// "what changed here" without choosing a column or measure.
 fn render_segment_detail(
     config: &DataQualityWidgetConfig<'_>,
     table_state: &mut TableState,
@@ -2315,8 +2308,8 @@ fn render_segment_detail(
         return;
     };
     let theme = config.theme;
-    let dimmed = Style::default().fg(theme.get("dimmed"));
-    let changes = crate::data_quality::segment_changes(results, segment_index);
+    let dimmed = Style::default().fg(theme.dimmed());
+    let changes = crate::analysis::data_quality::segment_changes(results, segment_index);
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(2), Constraint::Fill(1)])
@@ -2365,11 +2358,11 @@ fn render_segment_detail(
             cells.push(Cell::from(
                 change
                     .before
-                    .map(rate_label)
+                    .map(crate::numfmt::percent)
                     .unwrap_or_else(|| "-".to_string()),
             ));
         }
-        cells.push(Cell::from(rate_label(change.now)));
+        cells.push(Cell::from(crate::numfmt::percent(change.now)));
         if other.is_some() {
             cells.push(match change.change() {
                 Some(points) => Cell::from(Span::styled(format!("{points:+.1} pp"), style)),
@@ -2415,7 +2408,7 @@ fn render_trends(
         .constraints([Constraint::Fill(1)])
         .margin(1)
         .areas(area);
-    if crate::data_quality::shows_trend(config.plan, results) {
+    if crate::analysis::data_quality::shows_trend(config.plan, results) {
         render_trend_table(config, results, table_state, area, buf);
         return;
     }
@@ -2431,16 +2424,16 @@ fn render_trends(
     ))
     .render(title, buf);
     let mut text = vec![Line::raw(
-        "Set Grain in Setup (e) to a partition column, to days, weeks or months of a \
+        "Set grain in Setup (e) to a partition column, to days, weeks or months of a \
          date, or to chunks of rows, to follow each column from one to the next.",
     )];
     // One window found is no trend, but the windows expected around it still are.
-    if let Some(gaps) = crate::quality_trends::expected_gaps(config.plan, results) {
+    if let Some(gaps) = crate::analysis::quality_trends::expected_gaps(config.plan, results) {
         text.extend([Line::raw(""), Line::raw(gaps_summary(config.plan, &gaps))]);
     }
     Paragraph::new(text)
         .wrap(Wrap { trim: true })
-        .style(Style::default().fg(config.theme.get("text_primary")))
+        .style(Style::default().fg(config.theme.text_primary()))
         .render(body, buf);
 }
 
@@ -2457,24 +2450,13 @@ fn share(count: usize, of: usize) -> String {
             "{} of {} ({})",
             numfmt::group_chrome(count),
             numfmt::group_chrome(of),
-            rate_label(count as f64 / of as f64)
+            crate::numfmt::percent(count as f64 / of as f64)
         )
     }
 }
 
-/// The rate of `count` in `of`, or a dash with nothing to take it over.
-fn share_rate(count: usize, of: usize) -> String {
-    // A dash as `duration_label` has it, beside which it sits.
-    if of == 0 {
-        "-".to_string()
-    } else {
-        rate_label(count as f64 / of as f64)
-    }
-}
-
-/// Each interval in each segment, one row each: which, where, and the counts a
-/// glance needs. Enter opens every count it took, so nothing is lost to a narrow
-/// terminal.
+/// One row per interval per segment: which, where, and the key counts; Enter opens
+/// every count, so nothing is lost to a narrow terminal.
 fn render_intervals(
     config: &DataQualityWidgetConfig<'_>,
     table_state: &mut TableState,
@@ -2487,7 +2469,7 @@ fn render_intervals(
     };
     let theme = config.theme;
     let plan = config.plan;
-    let dimmed = Style::default().fg(theme.get("dimmed"));
+    let dimmed = Style::default().fg(theme.dimmed());
     let [title, note, body] = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -2526,9 +2508,9 @@ fn render_intervals(
         } else {
             "No time roles · Time roles in Setup (e)"
         };
-        Paragraph::new(dotted(message))
+        Paragraph::new(glyphs::dotted(message))
             .wrap(Wrap { trim: true })
-            .style(Style::default().fg(theme.get("text_primary")))
+            .style(Style::default().fg(theme.text_primary()))
             .render(
                 Rect {
                     height: body.height + 1,
@@ -2543,11 +2525,15 @@ fn render_intervals(
     let over = match threshold {
         Some(_) => format!(
             "Over: duration > {}, of rows with both ends",
-            crate::analysis_modal::threshold_label(threshold)
+            crate::analysis::analysis_modal::threshold_label(threshold)
         ),
         None => "Negative: end before start, of rows with both ends".to_string(),
     };
-    Paragraph::new(Line::styled(fit(&over, note.width as usize), dimmed)).render(note, buf);
+    Paragraph::new(Line::styled(
+        glyphs::fit(&over, note.width as usize),
+        dimmed,
+    ))
+    .render(note, buf);
 
     let segmented = profiles
         .iter()
@@ -2563,7 +2549,7 @@ fn render_intervals(
             Some(count) if threshold.is_some() => count,
             _ => profile.negative_count,
         };
-        let rate = share_rate(count, profile.paired_rows);
+        let rate = crate::numfmt::percent_of(count, profile.paired_rows);
         if counted && profile.paired_rows > 0 {
             format!("{} ({rate})", numfmt::group_chrome(count))
         } else {
@@ -2599,9 +2585,12 @@ fn render_intervals(
             + fixed.iter().map(|width| *width as usize + 1).sum::<usize>(),
     );
     let rows = profiles.iter().map(|profile| {
-        let mut cells = vec![fit(&profile.label(), interval_width)];
+        let mut cells = vec![glyphs::fit(&profile.label(), interval_width)];
         if segmented && (wide || medium) {
-            cells.push(fit(&segment_text(&profile.segment), segment_width as usize));
+            cells.push(glyphs::fit(
+                &segment_text(&profile.segment),
+                segment_width as usize,
+            ));
         }
         if wide {
             cells.extend([
@@ -2611,11 +2600,11 @@ fn render_intervals(
                     numfmt::group_chrome(profile.missing_start),
                     numfmt::group_chrome(profile.missing_end)
                 ),
-                duration_label(profile.p50_seconds),
-                duration_label(profile.p95_seconds),
+                crate::numfmt::duration_or_dash(profile.p50_seconds),
+                crate::numfmt::duration_or_dash(profile.p95_seconds),
             ]);
         } else {
-            cells.push(duration_label(profile.p50_seconds));
+            cells.push(crate::numfmt::duration_or_dash(profile.p50_seconds));
         }
         cells.push(last(profile, wide));
         Row::new(cells)
@@ -2631,11 +2620,9 @@ fn render_intervals(
     StatefulWidget::render(table, body, buf, table_state);
 }
 
-/// One interval in one segment: its endpoints and every count it took, each out
-/// of what it is out of. Missing ends, text a format did not read, and negative
-/// durations are separate rows, never folded together. The counts with rows
-/// behind them take the cursor; Enter opens those rows. From the measurements the
-/// report holds: nothing here reads.
+/// One interval in one segment: endpoints and every count with its denominator.
+/// Missing ends, unparsed text and negative durations stay separate. Counts with rows
+/// take the cursor; Enter opens them. Reads nothing.
 fn render_interval_detail(
     config: &DataQualityWidgetConfig<'_>,
     table_state: &mut TableState,
@@ -2705,7 +2692,7 @@ fn render_interval_detail(
             _ => share(count, of),
         };
         let mark = (selected == Some(fact))
-            .then(|| Span::styled(glyphs::get().rail, Style::default().fg(theme.get("accent"))));
+            .then(|| Span::styled(glyphs::get().rail, Style::default().fg(theme.accent())));
         Some((
             FieldRow {
                 mark,
@@ -2743,7 +2730,11 @@ fn render_interval_detail(
         .filter_map(fact_row),
     );
     let pair = |left: Option<i64>, right: Option<i64>| {
-        format!("{}, {}", duration_label(left), duration_label(right))
+        format!(
+            "{}, {}",
+            crate::numfmt::duration_or_dash(left),
+            crate::numfmt::duration_or_dash(right)
+        )
     };
     rows.push(plain(
         "p50, p90",
@@ -2753,13 +2744,16 @@ fn render_interval_detail(
         "p95, p99",
         pair(profile.p95_seconds, profile.p99_seconds),
     ));
-    rows.push(plain("Maximum", duration_label(profile.max_seconds)));
+    rows.push(plain(
+        "Maximum",
+        crate::numfmt::duration_or_dash(profile.max_seconds),
+    ));
     rows.push(plain(
         "Threshold",
         match profile.threshold_seconds {
             Some(_) => format!(
                 "duration > {}, strictly",
-                crate::analysis_modal::threshold_label(profile.threshold_seconds)
+                crate::analysis::analysis_modal::threshold_label(profile.threshold_seconds)
             ),
             None => "none: set Latency over in Setup".to_string(),
         },
@@ -2785,11 +2779,11 @@ fn render_interval_detail(
             _ => "a row chunk",
         };
         Line::styled(
-            fit(
+            glyphs::fit(
                 &format!("  Rows do not open: {what} is not a filter value"),
                 width,
             ),
-            Style::default().fg(theme.get("dimmed")),
+            Style::default().fg(theme.dimmed()),
         )
     });
     for (row, fact) in &rows {
@@ -2800,7 +2794,7 @@ fn render_interval_detail(
         if fact.is_some() && *fact == selected {
             for line in &mut row_lines {
                 if let Some(label) = line.spans.get_mut(2) {
-                    label.style = Style::default().fg(theme.get("accent"));
+                    label.style = Style::default().fg(theme.accent());
                 }
             }
         }
@@ -2832,7 +2826,7 @@ fn render_interval_pairs(
 ) {
     let theme = config.theme;
     let plan = config.plan;
-    let dimmed = Style::default().fg(theme.get("dimmed"));
+    let dimmed = Style::default().fg(theme.dimmed());
     let [title, body] = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(2), Constraint::Fill(1)])
@@ -2853,7 +2847,7 @@ fn render_interval_pairs(
     .render(title, buf);
     if candidates.is_empty() {
         Paragraph::new(Span::styled(
-            dotted("Needs 2 time roles · Time roles in Setup (e)"),
+            glyphs::dotted("Needs 2 time roles · Time roles in Setup (e)"),
             dimmed,
         ))
         .wrap(Wrap { trim: true })
@@ -2880,7 +2874,7 @@ fn render_interval_pairs(
         Row::new(vec![
             Cell::from(if on { g.checkbox_on } else { g.checkbox_off }),
             Cell::from(interval_label(*pair)),
-            Cell::from(Span::styled(fit(&columns, columns_width), dimmed)),
+            Cell::from(Span::styled(glyphs::fit(&columns, columns_width), dimmed)),
         ])
     });
     table_state.select(Some(
@@ -2902,9 +2896,8 @@ fn render_interval_pairs(
 /// The width of the Trends table's range column.
 const TREND_RANGE: u16 = 20;
 
-/// The Trends table's name column and how many bars fit beside it and the range,
-/// in `width`, past the selector and the gaps between columns. The table and a
-/// bar's detail lay out the same, so a bar there is the bar the table drew.
+/// The Trends name column width and how many bars fit in `width`; shared with a bar's
+/// detail so both lay out the same.
 fn trend_layout(results: &DataQualityResults, width: u16) -> (u16, usize) {
     let name_width = results
         .columns
@@ -2949,10 +2942,9 @@ fn counted_unit(count: usize, unit: &str) -> String {
     format!("{} {unit}", numfmt::group_chrome(count))
 }
 
-/// A bar's mark in `line`: its level, the unsampled mark where the sample drew no
-/// row (so a bar of missed segments is never a short bar or a blank), and a blank
-/// where the measure has nothing to apply to. The exact rows line has a level for
-/// every bar.
+/// A bar's mark in `line`: its level, the unsampled mark where the sample drew no row
+/// (never a short or blank bar), or blank where the measure does not apply. The exact
+/// rows line has a level for every bar.
 fn bar_mark(line: &TrendRow, bar: &TrendBar, index: usize, g: &glyphs::Glyphs) -> &'static str {
     if bar.evaluated == 0 && line.measure != TrendMeasure::Rows {
         return g.unsampled;
@@ -2975,9 +2967,13 @@ fn trend_range(line: &TrendRow) -> String {
             numfmt::group_chrome(line.high.round() as usize)
         )
     } else if (line.high - line.low).abs() < 1e-9 {
-        rate_label(line.high)
+        crate::numfmt::percent(line.high)
     } else {
-        format!("{} to {}", rate_label(line.low), rate_label(line.high))
+        format!(
+            "{} to {}",
+            crate::numfmt::percent(line.low),
+            crate::numfmt::percent(line.high)
+        )
     }
 }
 
@@ -3029,7 +3025,7 @@ fn trend_notes(
             reach.push(format!(
                 "{} under {} sampled rows",
                 numfmt::group_chrome(thin),
-                crate::quality_report::THIN_SEGMENT_ROWS
+                crate::analysis::quality_report::THIN_SEGMENT_ROWS
             ));
         }
         let mut note = reach.join(", ");
@@ -3038,7 +3034,7 @@ fn trend_notes(
         }
         notes.push(note);
     }
-    if let Some(gaps) = crate::quality_trends::expected_gaps(plan, results) {
+    if let Some(gaps) = crate::analysis::quality_trends::expected_gaps(plan, results) {
         notes.push(gaps_summary(plan, &gaps));
     }
     notes
@@ -3064,7 +3060,7 @@ fn gaps_summary(plan: &DataQualityPlan, gaps: &Gaps) -> String {
         Gaps::TooMany { windows } => format!(
             "Expected {cadence}: {} in range, over {} {dot} narrow in Setup (e)",
             counted_unit(*windows, unit),
-            numfmt::group_chrome(crate::quality_trends::MAX_EXPECTED_WINDOWS),
+            numfmt::group_chrome(crate::analysis::quality_trends::MAX_EXPECTED_WINDOWS),
             dot = glyphs::get().middot,
         ),
         // From typed past the last window found, with Before blank.
@@ -3098,10 +3094,9 @@ fn gap_counts(check: &GapCheck) -> String {
     .join(", ")
 }
 
-/// Each column's measure across the segments as a line of bars, the rows each
-/// segment holds first. The whole range fits the width: a bar pools as many
-/// consecutive segments as it takes. Segments the sample missed are bars of their
-/// own mark, and the notes say how many, and what expected windows have no rows.
+/// Each column's measure across segments as a line of bars, segment rows first. The
+/// whole range fits: a bar pools consecutive segments. Missed segments get their own
+/// mark; notes count them and empty expected windows.
 fn render_trend_table(
     config: &DataQualityWidgetConfig<'_>,
     results: &DataQualityResults,
@@ -3110,7 +3105,7 @@ fn render_trend_table(
     buf: &mut Buffer,
 ) {
     let theme = config.theme;
-    let dimmed = Style::default().fg(theme.get("dimmed"));
+    let dimmed = Style::default().fg(theme.dimmed());
     let (name_width, bars) = trend_layout(results, area.width);
     let view = trend_view(results, config.metric, bars);
     let notes = trend_notes(config, results, &view)
@@ -3144,12 +3139,12 @@ fn render_trend_table(
     Paragraph::new(
         notes
             .iter()
-            .map(|text| Line::styled(fit(text, note.width as usize), dimmed))
+            .map(|text| Line::styled(glyphs::fit(text, note.width as usize), dimmed))
             .collect::<Vec<_>>(),
     )
     .render(note, buf);
     let g = glyphs::get();
-    let accent = Style::default().fg(theme.get("accent"));
+    let accent = Style::default().fg(theme.accent());
     let lines = view.lines.iter().map(|row| {
         let spark = view
             .bars
@@ -3160,7 +3155,8 @@ fn render_trend_table(
                 Span::styled(mark, if mark == g.unsampled { dimmed } else { accent })
             })
             .collect::<Vec<_>>();
-        let name = crate::quality_report::columns_label(&row.names, name_width as usize - 2);
+        let name =
+            crate::analysis::quality_report::columns_label(&row.names, name_width as usize - 2);
         Row::new(vec![
             Cell::from(if row.rows() {
                 Span::styled(name, dimmed)
@@ -3186,11 +3182,9 @@ fn render_trend_table(
     StatefulWidget::render(table, table_area, buf, table_state);
 }
 
-/// One bar of one Trends line, the line drawn above it with a pointer under the
-/// bar: what it spans, how many segments it pools and how much of them the run
-/// read, its value with what it is out of, how sure a sample is of it, and how it
-/// stands against the bar it is compared with. From the report's measurements:
-/// nothing here reads. ↑↓ walk the bars.
+/// One bar of a Trends line, drawn under the line with a pointer: its span, segments
+/// pooled and read, value and denominator, sample confidence, and comparison. Reads
+/// nothing; ↑↓ walk the bars.
 fn render_trend_detail(
     config: &DataQualityWidgetConfig<'_>,
     table_state: &mut TableState,
@@ -3203,8 +3197,8 @@ fn render_trend_detail(
     };
     let theme = config.theme;
     let g = glyphs::get();
-    let dimmed = Style::default().fg(theme.get("dimmed"));
-    let accent = Style::default().fg(theme.get("accent"));
+    let dimmed = Style::default().fg(theme.dimmed());
+    let accent = Style::default().fg(theme.accent());
     let [area] = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Fill(1)])
@@ -3213,8 +3207,8 @@ fn render_trend_detail(
     let (name_width, bars) = trend_layout(results, area.width);
     let view = trend_view(results, config.metric, bars);
     let (Some(line), false) = (view.lines.get(config.trend_line), view.bars.is_empty()) else {
-        Paragraph::new(dotted("No bars · Esc Trends"))
-            .style(Style::default().fg(theme.get("text_primary")))
+        Paragraph::new(glyphs::dotted("No bars · Esc Trends"))
+            .style(Style::default().fg(theme.text_primary()))
             .render(area, buf);
         return;
     };
@@ -3249,7 +3243,7 @@ fn render_trend_detail(
     .render(title, buf);
 
     // The line as Trends drew it, its selected bar pointed at from below.
-    let name = crate::quality_report::columns_label(&line.names, name_width as usize - 2);
+    let name = crate::analysis::quality_report::columns_label(&line.names, name_width as usize - 2);
     let lead = |text: String, width: u16| {
         format!(
             "{text}{}",
@@ -3314,7 +3308,11 @@ fn trend_bar_fields(
     };
     let mut rows = vec![row(
         "Span",
-        segment_text(&crate::quality_trends::bar_span(view, bar, &plan.grain)),
+        segment_text(&crate::analysis::quality_trends::bar_span(
+            view,
+            bar,
+            &plan.grain,
+        )),
     )];
     // How much of the bar the run reached, before any number taken from it.
     let mut reach = vec![counted_unit(bar.segments(), unit)];
@@ -3329,7 +3327,7 @@ fn trend_bar_fields(
             reach.push(format!(
                 "{} under {} sampled rows",
                 numfmt::group_chrome(bar.thin),
-                crate::quality_report::THIN_SEGMENT_ROWS
+                crate::analysis::quality_report::THIN_SEGMENT_ROWS
             ));
         }
         if bar.unsampled + bar.thin == 0 {
@@ -3349,7 +3347,7 @@ fn trend_bar_fields(
                 "{} sampled of {} ({})",
                 numfmt::group_chrome(bar.evaluated),
                 numfmt::group_chrome(eligible),
-                share_rate(bar.evaluated, eligible)
+                crate::numfmt::percent_of(bar.evaluated, eligible)
             ),
             (true, None) => format!(
                 "{} sampled, total not counted",
@@ -3357,7 +3355,7 @@ fn trend_bar_fields(
             ),
         },
     ));
-    let compared = crate::quality_trends::compared_bar(view, index, plan);
+    let compared = crate::analysis::quality_trends::compared_bar(view, index, plan);
     let against = if plan.comparison == QualityComparison::Baseline {
         "Baseline bar"
     } else {
@@ -3422,7 +3420,7 @@ fn trend_bar_fields(
                 "{} of {} {noun} ({})",
                 numfmt::group_chrome(count.round() as usize),
                 numfmt::group_chrome(of.round() as usize),
-                rate_label(count / of)
+                crate::numfmt::percent(count / of)
             )
         } else if bar.evaluated == 0 {
             "none: no row sampled".to_string()
@@ -3439,12 +3437,16 @@ fn trend_bar_fields(
     } else if config.metric == QualityMetric::DistinctShare {
         Some("none: a distinct share does not stand for the whole".to_string())
     } else {
-        crate::quality_trends::wilson_interval(count, of).map(|(low, high)| {
-            let mut text = format!("{} to {}", rate_label(low), rate_label(high));
-            if (of as usize) < crate::quality_report::THIN_SEGMENT_ROWS {
+        crate::analysis::quality_trends::wilson_interval(count, of).map(|(low, high)| {
+            let mut text = format!(
+                "{} to {}",
+                crate::numfmt::percent(low),
+                crate::numfmt::percent(high)
+            );
+            if (of as usize) < crate::analysis::quality_report::THIN_SEGMENT_ROWS {
                 text.push_str(&format!(
                     ", from under {} {noun}",
-                    crate::quality_report::THIN_SEGMENT_ROWS
+                    crate::analysis::quality_report::THIN_SEGMENT_ROWS
                 ));
             }
             text
@@ -3459,11 +3461,11 @@ fn trend_bar_fields(
             || (every_row && other_bar.eligible == Some(other_bar.evaluated));
         rows.push(row(
             against,
-            match crate::quality_trends::bar_change(line, index, other, exact) {
+            match crate::analysis::quality_trends::bar_change(line, index, other, exact) {
                 Some(change) => format!(
                     "{} to {}, {:+.1} points: {}",
-                    rate_label(change.before),
-                    rate_label(change.now),
+                    crate::numfmt::percent(change.before),
+                    crate::numfmt::percent(change.now),
                     change.points(),
                     // Segments never judge a distinct share: it falls as a segment
                     // grows, so bars of different sizes differ by it whatever the data.
@@ -3471,7 +3473,9 @@ fn trend_bar_fields(
                         "not judged for a distinct share"
                     } else if change.clear {
                         "a clear change"
-                    } else if change.points().abs() < crate::data_quality::MATERIAL_CHANGE_PP {
+                    } else if change.points().abs()
+                        < crate::analysis::data_quality::MATERIAL_CHANGE_PP
+                    {
                         "under a point"
                     } else {
                         "within sampling noise"
@@ -3498,19 +3502,19 @@ fn render_gaps(
     };
     let theme = config.theme;
     let plan = config.plan;
-    let dimmed = Style::default().fg(theme.get("dimmed"));
+    let dimmed = Style::default().fg(theme.dimmed());
     let [area] = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Fill(1)])
         .margin(1)
         .areas(area);
-    let Some(gaps) = crate::quality_trends::expected_gaps(plan, results) else {
+    let Some(gaps) = crate::analysis::quality_trends::expected_gaps(plan, results) else {
         Paragraph::new(
             "No expected windows: set Expected in Setup (e) to say which windows rows \
              belong in.",
         )
         .wrap(Wrap { trim: true })
-        .style(Style::default().fg(theme.get("text_primary")))
+        .style(Style::default().fg(theme.text_primary()))
         .render(area, buf);
         return;
     };
@@ -3519,23 +3523,20 @@ fn render_gaps(
         _ => {
             Paragraph::new(gaps_summary(plan, &gaps))
                 .wrap(Wrap { trim: true })
-                .style(Style::default().fg(theme.get("text_primary")))
+                .style(Style::default().fg(theme.text_primary()))
                 .render(area, buf);
             return;
         }
     };
     let unit = trend_unit(&plan.grain);
     let every = check.every.as_str();
-    let sampled = matches!(
-        results.precision,
-        QualityPrecision::Sampled | QualityPrecision::Estimated
-    );
+    let sampled = matches!(results.precision, QualityPrecision::Sampled);
     let mut notes = vec![format!(
         "{}, {}: {} of {} {}",
         check.column,
-        crate::quality_trends::calendar_span(
+        crate::analysis::quality_trends::calendar_span(
             check.from,
-            crate::quality_trends::floor_window(
+            crate::analysis::quality_trends::floor_window(
                 check.before - chrono::Duration::microseconds(1),
                 every
             ),
@@ -3611,13 +3612,13 @@ fn render_gaps(
     Paragraph::new(
         notes
             .iter()
-            .map(|text| Line::styled(fit(text, note.width as usize), dimmed))
+            .map(|text| Line::styled(glyphs::fit(text, note.width as usize), dimmed))
             .collect::<Vec<_>>(),
     )
     .render(note, buf);
     if check.runs.is_empty() {
         Paragraph::new("Every expected window has rows")
-            .style(Style::default().fg(theme.get("text_primary")))
+            .style(Style::default().fg(theme.text_primary()))
             .render(body, buf);
         return;
     }
@@ -3630,7 +3631,7 @@ fn render_gaps(
         .iter()
         .map(|run| {
             let mut cells = vec![
-                Cell::from(crate::quality_trends::calendar_span(
+                Cell::from(crate::analysis::quality_trends::calendar_span(
                     run.first, run.last, every,
                 )),
                 Cell::from(run.kind.label()),
@@ -3722,7 +3723,10 @@ fn render_expected_windows(config: &DataQualityWidgetConfig<'_>, area: Rect, buf
     );
     put_line(Line::raw(""), area, &mut y, buf);
     let cadence = form.cadence_label(every);
-    for (field, label) in crate::analysis_modal::EXPECTED_ROWS.iter().enumerate() {
+    for (field, label) in crate::analysis::analysis_modal::EXPECTED_ROWS
+        .iter()
+        .enumerate()
+    {
         let row_area = Rect {
             y,
             height: 1,
@@ -3740,12 +3744,14 @@ fn render_expected_windows(config: &DataQualityWidgetConfig<'_>, area: Rect, buf
                 label_width: 10,
             }
             .render(row_area, buf, ctx);
-            crate::pointer::record_field::<crate::analysis_modal::ExpectedForm>(row_area, field);
+            crate::app::pointer::record_field::<crate::analysis::analysis_modal::ExpectedForm>(
+                row_area, field,
+            );
         }
         y += 1;
     }
     put_line(Line::raw(""), area, &mut y, buf);
-    let dimmed = Style::default().fg(theme.get("dimmed"));
+    let dimmed = Style::default().fg(theme.dimmed());
     for note in &notes {
         for text in crate::widgets::info::wrap_to(note, width.saturating_sub(2)) {
             put_line(Line::styled(format!("  {text}"), dimmed), area, &mut y, buf);
@@ -3754,7 +3760,10 @@ fn render_expected_windows(config: &DataQualityWidgetConfig<'_>, area: Rect, buf
     if let Some(error) = &form.error {
         put_line(Line::raw(""), area, &mut y, buf);
         put_line(
-            Line::styled(fit(error, width), Style::default().fg(theme.get("warning"))),
+            Line::styled(
+                glyphs::fit(error, width),
+                Style::default().fg(theme.warning()),
+            ),
             area,
             &mut y,
             buf,
@@ -3775,23 +3784,6 @@ fn put_line(line: Line<'static>, area: Rect, y: &mut u16, buf: &mut Buffer) {
         );
     }
     *y += 1;
-}
-
-fn duration_label(seconds: Option<i64>) -> String {
-    let Some(seconds) = seconds else {
-        return "-".to_string();
-    };
-    let sign = if seconds < 0 { "-" } else { "" };
-    let seconds = seconds.unsigned_abs();
-    if seconds >= 86_400 {
-        format!("{sign}{:.1}d", seconds as f64 / 86_400.0)
-    } else if seconds >= 3_600 {
-        format!("{sign}{:.1}h", seconds as f64 / 3_600.0)
-    } else if seconds >= 60 {
-        format!("{sign}{:.1}m", seconds as f64 / 60.0)
-    } else {
-        format!("{sign}{seconds}s")
-    }
 }
 
 /// One column's findings, then its measurements, as aligned label and value rows
@@ -3823,7 +3815,7 @@ fn render_detail(
 
     // The column's findings first, in the report's own words; the measurements
     // under them are the evidence.
-    let report = build_report(results);
+    let report = results.report();
     let mut findings = report
         .findings
         .iter()
@@ -3871,9 +3863,9 @@ struct FieldRow {
     value: String,
 }
 
-/// Rows in two aligned columns: the label padded to `label_width`, and the value
-/// in what is left, wrapped under itself; a value of several lines keeps each on
-/// its own. With `marks`, a two-column lead holds each row's mark, or nothing.
+/// Rows in two aligned columns: label padded to `label_width`, value wrapped under
+/// itself (multi-line values keep their lines). With `marks`, a two-column lead holds
+/// each row's mark.
 fn field_lines(
     rows: &[FieldRow],
     label_width: usize,
@@ -3911,14 +3903,14 @@ fn field_lines(
         spans.extend(
             values
                 .next()
-                .map(|value| Span::raw(fit(&value, value_width))),
+                .map(|value| Span::raw(glyphs::fit(&value, value_width))),
         );
         lines.push(Line::from(spans));
         lines.extend(values.map(|value| {
             Line::raw(format!(
                 "{}{}",
                 " ".repeat(lead + label_width),
-                fit(&value, value_width)
+                glyphs::fit(&value, value_width)
             ))
         }));
     }
@@ -3934,15 +3926,14 @@ fn render_counted(mut lines: Vec<Line<'static>>, area: Rect, theme: &Theme, buf:
         lines.truncate(height - 1);
         lines.push(Line::styled(
             format!("  {} {below} more", glyphs::get().ellipsis),
-            Style::default().fg(theme.get("dimmed")),
+            Style::default().fg(theme.dimmed()),
         ));
     }
     Paragraph::new(lines).render(area, buf);
 }
 
-/// What was measured on a column, in the table's own formatting. A measurement
-/// that does not apply to its type is left out rather than shown as a dash, and
-/// what the header says (the rows checked, whether sampled) is not repeated.
+/// What was measured on a column, table-formatted. Measures not applying to its type
+/// are omitted (not dashed); header facts are not repeated.
 fn detail_measurements(
     ctx: &RenderContext,
     results: &DataQualityResults,
@@ -3950,7 +3941,7 @@ fn detail_measurements(
 ) -> Vec<FieldRow> {
     // Long text is cut, so both ends of a range and a count after a value stay
     // in view.
-    let value = |text: &str| fit(&table_value(ctx, profile, text), END_WIDTH);
+    let value = |text: &str| glyphs::fit(&table_value(ctx, profile, text), END_WIDTH);
     let row = |label: &str, value: String| FieldRow {
         mark: None,
         label: label.to_string(),
@@ -3966,7 +3957,7 @@ fn detail_measurements(
                 format!(
                     "{} ({})",
                     numfmt::group_chrome(profile.null_count),
-                    crate::quality_report::percent(profile.null_count, profile.evaluated_rows)
+                    crate::numfmt::percent_of(profile.null_count, profile.evaluated_rows)
                 )
             },
         ),
@@ -4067,7 +4058,7 @@ fn detail_measurements(
                 .map(|(variant, count)| {
                     format!(
                         "{} ({})",
-                        crate::quality_report::quoted(variant, END_WIDTH),
+                        crate::analysis::quality_report::quoted(variant, END_WIDTH),
                         numfmt::group_chrome(*count)
                     )
                 })
@@ -4137,7 +4128,7 @@ fn render_narrow_tool_picker(
         "Correlation Matrix",
         "Data Quality",
     ];
-    let popup = centered_rect(28, tools.len() as u16 + 2, area);
+    let popup = dialog_in(area, 28, tools.len() as u16 + 2);
     let content = Surface::new("Analysis Tools").render(popup, buf, config.ctx);
     Picker::new(tools, sidebar_state.selected(), true)
         .on_click(crate::widgets::ui::Clicks::Tool)
@@ -4150,7 +4141,6 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
     let plan = config.plan;
     let remote = state.is_remote_source();
     let copy = config.setup.copy;
-    let format_bytes = crate::widgets::info::format_bytes;
     let row = |label: &str, value: String| FieldRow {
         mark: None,
         label: label.to_string(),
@@ -4180,14 +4170,14 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
         row(
             "Value reads",
             match copy {
-                CopyPlan::Fetch { bytes, .. } => format!(
+                CopyPlan::Fetch { bytes, .. } => crate::glyphs::dotted(&format!(
                     "{}, fetched once · passes read the copy",
-                    format_bytes(bytes)
-                ),
+                    crate::numfmt::bytes(bytes)
+                )),
                 CopyPlan::Kept { bytes, .. } => {
                     format!(
                         "none: every pass reads the local copy ({})",
-                        format_bytes(bytes)
+                        crate::numfmt::bytes(bytes)
                     )
                 }
                 _ if remote => "unknown".to_string(),
@@ -4216,17 +4206,19 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
                 reads if plan.compute == QualityCompute::Full => {
                     format!("{reads} extra one-column file reads")
                 }
-                reads => format!("not read · full scan adds {reads} one-column file reads"),
+                reads => crate::glyphs::dotted(&format!(
+                    "not read · full scan adds {reads} one-column file reads"
+                )),
             },
         ),
         row("Remote writes", "none".to_string()),
         row(
             "Local file writes",
             match copy {
-                CopyPlan::Fetch { bytes, .. } => format!(
+                CopyPlan::Fetch { bytes, .. } => crate::glyphs::dotted(&format!(
                     "{} copy in the cache directory · kept until d, reopen or exit",
-                    format_bytes(bytes)
-                ),
+                    crate::numfmt::bytes(bytes)
+                )),
                 _ => "none".to_string(),
             },
         ),
@@ -4243,7 +4235,7 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
                     .iter()
                     .map(|line| line.strip_prefix("Column intent: ").unwrap_or(line))
                     .collect::<Vec<_>>()
-                    .join(" · ")
+                    .join(&format!(" {} ", glyphs::get().middot))
             }
         }),
         row(
@@ -4264,10 +4256,6 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
             },
         ),
     ];
-    let rows = rows.map(|row| FieldRow {
-        value: dotted(&row.value),
-        ..row
-    });
     let width = 72.min(area.width.saturating_sub(2));
     let label_width = rows
         .iter()
@@ -4277,7 +4265,7 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
         + 2;
     // The frame and its gutters take four columns of the width.
     let lines = field_lines(&rows, label_width, width.saturating_sub(4) as usize, false);
-    let popup = centered_rect(width, lines.len() as u16 + 2, area);
+    let popup = dialog_in(area, width, lines.len() as u16 + 2);
     let content = Surface::new("Access Plan").render(popup, buf, config.ctx);
     render_counted(lines, content, config.theme, buf);
 }
@@ -4321,9 +4309,9 @@ fn passes_label(config: &DataQualityWidgetConfig<'_>) -> String {
 }
 
 fn render_run_prompt(area: Rect, theme: &Theme, buf: &mut Buffer) {
-    Paragraph::new(dotted("No report · e Setup, then Enter"))
+    Paragraph::new(glyphs::dotted("No report · e Setup, then Enter"))
         .alignment(Alignment::Center)
-        .style(Style::default().fg(theme.get("text_primary")))
+        .style(Style::default().fg(theme.text_primary()))
         .render(area, buf);
 }
 
@@ -4361,10 +4349,11 @@ fn planned_read_bytes(state: &DataTableState, plan: &DataQualityPlan) -> Option<
     }
     let rows = match plan.compute {
         QualityCompute::Metadata => 0,
-        // The head reads what it keeps. Anything else is a ceiling: a spread sample
-        // is one Parquet or IPC file's few dozen short runs or one stream of the
-        // scope, and a per-partition one streams the scope.
-        QualityCompute::Sample if plan.method == crate::sampling::SampleMethod::FirstRows => {
+        // The head reads what it keeps; otherwise a ceiling: a spread sample is a few dozen
+        // runs of one file or one stream, and per-partition streams the scope.
+        QualityCompute::Sample
+            if plan.method == crate::analysis::sampling::SampleMethod::FirstRows =>
+        {
             planned_scope_rows(state, plan)?.min(dataset_rows(plan))
         }
         QualityCompute::Sample => planned_scope_rows(state, plan)?,
@@ -4390,14 +4379,12 @@ fn planned_scope_rows(state: &DataTableState, plan: &DataQualityPlan) -> Option<
 pub(crate) fn planned_read_label(state: &DataTableState, plan: &DataQualityPlan) -> String {
     let bytes = planned_read_bytes(state, plan);
     let sampled = plan.compute == QualityCompute::Sample
-        && plan.method != crate::sampling::SampleMethod::FirstRows
+        && plan.method != crate::analysis::sampling::SampleMethod::FirstRows
         && planned_scope_rows(state, plan).is_some_and(|rows| rows > dataset_rows(plan));
     match bytes {
-        Some(bytes) if sampled => format!(
-            "up to {}",
-            approximate_bytes(bytes).trim_start_matches("about ")
-        ),
-        other => approximate_bytes_option(other),
+        Some(bytes) if sampled => format!("up to {}", crate::numfmt::bytes(bytes as u64)),
+        Some(bytes) => format!("about {}", crate::numfmt::bytes(bytes as u64)),
+        None => "unknown".to_string(),
     }
 }
 
@@ -4410,17 +4397,10 @@ pub(crate) fn scope_read_label(state: &DataTableState, plan: &DataQualityPlan) -
     match planned_scope_rows(state, plan) {
         Some(rows) => format!(
             "up to {}",
-            approximate_bytes(rows.saturating_mul(state.estimated_row_bytes()))
-                .trim_start_matches("about ")
+            crate::numfmt::bytes(rows.saturating_mul(state.estimated_row_bytes()) as u64)
         ),
         None => "unknown".to_string(),
     }
-}
-
-fn approximate_bytes_option(bytes: Option<usize>) -> String {
-    bytes
-        .map(approximate_bytes)
-        .unwrap_or_else(|| "unknown".to_string())
 }
 
 /// Rows a dataset-grain run keeps: the shared sample's size.
@@ -4441,1589 +4421,13 @@ pub(crate) fn compute_label(plan: &DataQualityPlan) -> String {
     }
 }
 
-fn approximate_bytes(bytes: usize) -> String {
-    const KIB: f64 = 1024.0;
-    const MIB: f64 = KIB * 1024.0;
-    const GIB: f64 = MIB * 1024.0;
-    let bytes = bytes as f64;
-    if bytes >= GIB {
-        format!("about {:.1} GiB", bytes / GIB)
-    } else if bytes >= MIB {
-        format!("about {:.1} MiB", bytes / MIB)
-    } else if bytes >= KIB {
-        format!("about {:.1} KiB", bytes / KIB)
-    } else {
-        format!("about {} B", bytes as usize)
-    }
-}
-
-pub(crate) fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
-    let width = width.min(area.width.saturating_sub(2)).max(1);
-    let height = height.min(area.height.saturating_sub(2)).max(1);
-    Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    }
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn byte_estimates_use_binary_units() {
-        assert_eq!(approximate_bytes(512), "about 512 B");
-        assert_eq!(approximate_bytes(2 * 1024), "about 2.0 KiB");
-        assert_eq!(approximate_bytes(3 * 1024 * 1024), "about 3.0 MiB");
-    }
-
-    /// A value that fits keeps its spaces; one that does not wraps under itself.
-    #[test]
-    fn field_values_keep_their_spaces_and_wrap_under_themselves() {
-        let row = |value: &str| FieldRow {
-            mark: None,
-            label: "Range".to_string(),
-            value: value.to_string(),
-        };
-        let text = |lines: Vec<Line<'static>>| {
-            lines
-                .iter()
-                .map(|line| line.to_string())
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(
-            text(field_lines(&[row(" South to New  York")], 7, 40, false)),
-            ["Range   South to New  York"]
-        );
-        assert_eq!(
-            text(field_lines(&[row("one two three four")], 7, 17, false)),
-            ["Range  one two", "       three four"]
-        );
-    }
-
-    use crate::data_quality::compute_data_quality;
-    use polars::prelude::*;
-
-    fn fixture() -> LazyFrame {
-        df!(
-            "id" => &[1i64, 2, 3, 4, 5, 6, 7, 8],
-            "region" => &[
-                Some("West"), Some("west"), Some("West"), Some("West "),
-                Some("East"), None, Some("North"), Some("West"),
-            ],
-            "amount" => &[1.5f64, 2.0, 3.25, 4.0, 5.0, 6.0, 7.0, 8.0],
-        )
-        .unwrap()
-        .lazy()
-    }
-
-    struct Screen {
-        state: DataTableState,
-        plan: DataQualityPlan,
-        results: DataQualityResults,
-        findings: FindingsView,
-        theme: Theme,
-        ctx: RenderContext,
-    }
-
-    impl Screen {
-        fn new() -> Self {
-            let lf = fixture();
-            let schema = Arc::new((*lf.clone().collect_schema().unwrap()).clone());
-            let state = DataTableState::from_schema_and_lazyframe(
-                schema,
-                lf.clone(),
-                &crate::OpenOptions::default(),
-                None,
-            )
-            .unwrap();
-            let plan = DataQualityPlan {
-                compute: QualityCompute::Full,
-                ..DataQualityPlan::default()
-            };
-            let results = compute_data_quality(&lf, Some(8), &plan, None, false).unwrap();
-            Self {
-                state,
-                plan,
-                results,
-                findings: FindingsView::default(),
-                theme: Theme::from_config(&crate::config::ThemeConfig::default()).unwrap(),
-                ctx: RenderContext::for_test(),
-            }
-        }
-
-        fn config(&self, page: QualityPage) -> DataQualityWidgetConfig<'_> {
-            DataQualityWidgetConfig {
-                checks_expanded: false,
-                state: &self.state,
-                plan: &self.plan,
-                measured: &self.plan,
-                results: Some(&self.results),
-                from_cache: false,
-                metric: QualityMetric::NullRate,
-                column_index: 0,
-                segment_index: 0,
-                interval_index: 0,
-                trend_line: 0,
-                expected_form: None,
-                segments_by_change: false,
-                page,
-                setup: SetupView::default(),
-                plan_field: 0,
-                show_access: false,
-                observation_detail: false,
-                findings: &self.findings,
-                rows_kept: false,
-                evidence_read: None,
-                focus: AnalysisFocus::Main,
-                theme: &self.theme,
-                ctx: &self.ctx,
-                intent_form: None,
-                export_form: None,
-            }
-        }
-
-        fn draw(
-            &self,
-            config: DataQualityWidgetConfig<'_>,
-            selected: usize,
-            width: u16,
-            height: u16,
-        ) -> Vec<String> {
-            let area = Rect::new(0, 0, width, height);
-            let mut buf = Buffer::empty(area);
-            let mut table = TableState::default();
-            table.select(Some(selected));
-            let mut sidebar = TableState::default();
-            sidebar.select(Some(3));
-            render(
-                config,
-                &mut table,
-                &mut sidebar,
-                &mut DetailScroll::default(),
-                area,
-                &mut buf,
-            );
-            (0..height)
-                .map(|y| {
-                    (0..width)
-                        .map(|x| buf[(x, y)].symbol().to_string())
-                        .collect::<String>()
-                })
-                .collect()
-        }
-    }
-
-    /// The column Detail page: the column on a rule, its findings, then its
-    /// measurements as label and value rows whose values start in one column.
-    /// No frame, no Rust debug quotes, nothing the header already says.
-    #[test]
-    fn column_detail_is_aligned_rows_without_a_box() {
-        let screen = Screen::new();
-        let region = screen
-            .results
-            .columns
-            .iter()
-            .position(|column| column.name == "region")
-            .unwrap();
-        // Narrow enough that the tool list gives way; the page is the whole width.
-        let rows = screen.draw(screen.config(QualityPage::Detail), region, 70, 24);
-        let text = rows.join("\n");
-        let g = glyphs::get();
-        let b = g.border;
-        for corner in [
-            b.top_left,
-            b.top_right,
-            b.bottom_left,
-            b.bottom_right,
-            b.vertical_left,
-        ] {
-            assert!(!text.contains(corner), "no box on the page:\n{text}");
-        }
-        let rule = format!("region {}", g.rule_h);
-        assert!(
-            rows.iter().any(|row| row.trim_start().starts_with(&rule)),
-            "the column is named on a rule:\n{text}"
-        );
-        assert!(
-            text.contains("Mixed spellings"),
-            "the column's findings are on the page:\n{text}"
-        );
-        let findings_end = rows
-            .iter()
-            .position(|row| row.contains("Mixed spellings"))
-            .unwrap();
-        let type_row = rows.iter().position(|row| row.contains("Type")).unwrap();
-        assert!(findings_end < type_row, "findings first:\n{text}");
-
-        // Every measurement's value starts where the first one's does.
-        let value_column = |label: &str| {
-            let row = rows
-                .iter()
-                .find(|row| row.trim_start().starts_with(label))
-                .unwrap_or_else(|| panic!("{label} row:\n{text}"));
-            let after = row.find(label).unwrap() + label.len();
-            after + row[after..].len() - row[after..].trim_start().len()
-        };
-        let column = value_column("Type");
-        for label in ["Missing", "Distinct", "Range", "Most common", "Spellings"] {
-            assert_eq!(value_column(label), column, "{label} aligned:\n{text}");
-        }
-
-        let spellings = rows
-            .iter()
-            .position(|row| row.contains("Spellings"))
-            .unwrap();
-        let measurements = rows[type_row..spellings].join("\n");
-        assert!(
-            !measurements.contains('"'),
-            "values as the table shows them, not debug quoted:\n{text}"
-        );
-        assert!(measurements.contains("West, 3 rows"), "{text}");
-        // Spellings differ by what the table cannot show; quoted, they read apart.
-        let spellings = rows[spellings..].join("\n");
-        for spelling in ["\"West\" (3)", "\"West \" (1)", "\"west\" (1)"] {
-            assert!(spellings.contains(spelling), "{spelling}:\n{text}");
-        }
-        assert!(
-            !text.contains("Evaluated") && !text.contains("sampled"),
-            "the header says what was evaluated:\n{text}"
-        );
-    }
-
-    /// Section titles are words on a rule, never SCREAMING.
-    #[test]
-    fn no_page_has_an_uppercase_title() {
-        let screen = Screen::new();
-        for page in [
-            QualityPage::Setup,
-            QualityPage::Overview,
-            QualityPage::Columns,
-            QualityPage::Segments,
-            QualityPage::Trends,
-            QualityPage::Detail,
-        ] {
-            for (width, height) in [(120, 32), (80, 24), (60, 20)] {
-                let rows = screen.draw(screen.config(page), 1, width, height);
-                for row in &rows {
-                    let shouting = row.split(|c: char| !c.is_alphabetic()).find(|word| {
-                        word.chars().count() >= 4 && word.chars().all(|c| c.is_uppercase())
-                    });
-                    assert!(
-                        shouting.is_none(),
-                        "{page:?} at {width}x{height} shouts {shouting:?}: {row:?}"
-                    );
-                }
-            }
-        }
-    }
-
-    /// Each dialog is one Surface: one frame, its title on it, nothing boxed
-    /// inside, at the smallest size datui supports.
-    #[test]
-    fn dialogs_are_one_surface() {
-        let screen = Screen::new();
-        for title in ["Access Plan", "Mixed spellings", "Analysis Tools"] {
-            for (width, height) in [(80, 24), (60, 20)] {
-                let mut config = screen.config(QualityPage::Setup);
-                match title {
-                    "Access Plan" => config.show_access = true,
-                    // The first finding on the Overview.
-                    "Mixed spellings" => {
-                        config.page = QualityPage::Overview;
-                        config.observation_detail = true;
-                    }
-                    _ => config.focus = AnalysisFocus::Sidebar,
-                }
-                let rows = screen.draw(config, 0, width, height);
-                let text = rows.join("\n");
-                let corners = glyphs::frame_corners(&rows).len();
-                // At 80 columns the tool list keeps its own frame beside the page.
-                let expected = if width >= 76 && title != "Analysis Tools" {
-                    2
-                } else {
-                    1
-                };
-                assert_eq!(corners, expected, "{title} at {width}x{height}:\n{text}");
-                let border = glyphs::get().border;
-                let titled = format!("{}{title}", border.top_left);
-                let frame = rows
-                    .iter()
-                    .find(|row| row.contains(&titled))
-                    .unwrap_or_else(|| panic!("{title} on its frame:\n{text}"));
-                let after = &frame[frame.find(&titled).unwrap() + titled.len()..];
-                assert!(after.contains(border.top_right), "{title}:\n{text}");
-            }
-        }
-    }
-
-    /// Coverage sits under the verdict whether the report found problems or none, at
-    /// the baseline size and the smallest, with the findings still on screen below
-    /// it and every character outside ASCII a glyph slot.
-    #[test]
-    fn coverage_accompanies_every_verdict_at_80x24_and_60x20() {
-        let screen = Screen::new();
-        let g = glyphs::get();
-        let slots = [
-            g.rail, g.rule_h, g.middot, g.ellipsis, g.warning, g.check, g.dash,
-        ]
-        .concat();
-        // The same rows sampled, and found clean: a report with nothing to fix.
-        let mut clean = screen.results.clone();
-        clean.observations.clear();
-        clean.precision = QualityPrecision::Sampled;
-        clean.total_rows = Some(80);
-        clean.reads = Some(crate::data_quality::ObservedReads {
-            reads: 1,
-            counted: 1,
-            rows: 80,
-            copy: None,
-        });
-        for (results, verdict) in [(&screen.results, "problem"), (&clean, "No problems found")] {
-            for (width, height) in [(80, 24), (60, 20)] {
-                let mut config = screen.config(QualityPage::Overview);
-                config.results = Some(results);
-                let rows = screen.draw(config, 0, width, height);
-                let text = rows.join("\n");
-                let at = rows
-                    .iter()
-                    .position(|row| row.contains(verdict))
-                    .unwrap_or_else(|| panic!("verdict at {width}x{height}:\n{text}"));
-                assert!(
-                    rows[at + 1].trim_start().starts_with("Checks"),
-                    "coverage under the verdict at {width}x{height}:\n{text}"
-                );
-                assert!(
-                    text.contains("Problems") || text.contains("Clean"),
-                    "findings still on screen at {width}x{height}:\n{text}"
-                );
-                if results.precision == QualityPrecision::Exact {
-                    assert!(
-                        rows[at + 1].contains("exact") && text.contains("all 8 read, exact"),
-                        "{text}"
-                    );
-                } else {
-                    // Clean, and not everything could be looked at: it says so.
-                    assert!(rows[at + 1].contains("1 unavailable"), "{text}");
-                    assert!(text.contains("8 of 80 sampled (10.0%)"), "{text}");
-                    assert!(
-                        text.contains("Nearly unique: needs every row checked"),
-                        "{text}"
-                    );
-                }
-                for c in text.chars().filter(|c| !c.is_ascii()) {
-                    assert!(
-                        slots.contains(c) || "╭╮╰╯│─".contains(c),
-                        "{c:?} is not a glyph slot at {width}x{height}:\n{text}"
-                    );
-                }
-            }
-        }
-    }
-
-    /// A finding says where its rows come from before Enter: the rows the run kept,
-    /// a sample no longer kept, or a full scan that kept none. A staged read lists
-    /// what it reads, at the baseline size and the smallest, in glyph slots.
-    #[test]
-    fn evidence_says_where_its_rows_come_from() {
-        let screen = Screen::new();
-        let mut sampled = screen.results.clone();
-        sampled.precision = QualityPrecision::Sampled;
-        let report = build_report(&sampled);
-        let position = FindingsView::default()
-            .shown(&report)
-            .iter()
-            .position(|index| report.findings[*index].title == "Missing values")
-            .unwrap();
-        let detail = |results: &DataQualityResults, kept: bool, width, height| {
-            let mut config = screen.config(QualityPage::Overview);
-            config.results = Some(results);
-            config.observation_detail = true;
-            config.rows_kept = kept;
-            screen.draw(config, position, width, height).join("\n")
-        };
-        assert!(detail(&sampled, true, 80, 24).contains("Enter: the 1 sampled row"));
-        assert!(detail(&sampled, false, 80, 24).contains("sample released, asks first"));
-        assert!(
-            detail(&screen.results, false, 80, 24).contains("full scan keeps none, asks first")
-        );
-        // A sample that held every row is exact, but it was no full scan.
-        let whole_sample = DataQualityPlan {
-            compute: QualityCompute::Sample,
-            ..screen.plan.clone()
-        };
-        let mut config = screen.config(QualityPage::Overview);
-        config.measured = &whole_sample;
-        config.observation_detail = true;
-        let text = screen.draw(config, position, 80, 24).join("\n");
-        assert!(text.contains("rows released, asks first"), "{text}");
-
-        let read = EvidenceRead {
-            rows: EvidenceRows::Matching(polars::prelude::lit(true)),
-            label: String::new(),
-            sample: None,
-            scope: QualityScope::CurrentView,
-            summary: vec![
-                ("Rows", "Missing values · region".to_string()),
-                ("Why", "a full scan keeps no rows".to_string()),
-                (
-                    "Reads",
-                    "current view, as far as the table scrolls".to_string(),
-                ),
-                ("Shows", "1 row".to_string()),
-                ("Source", "local, read only".to_string()),
-            ],
-        };
-        let g = glyphs::get();
-        let slots = [g.rail, g.rule_h, g.middot, g.ellipsis, g.warning, g.check].concat();
-        for (width, height) in [(80, 24), (60, 20)] {
-            let mut config = screen.config(QualityPage::Overview);
-            config.observation_detail = true;
-            config.evidence_read = Some(&read);
-            let text = screen.draw(config, position, width, height).join("\n");
-            for label in ["Read Rows", "Why", "Reads", "Shows", "read only"] {
-                assert!(text.contains(label), "{label} at {width}x{height}:\n{text}");
-            }
-            for c in text.chars().filter(|c| !c.is_ascii()) {
-                assert!(
-                    slots.contains(c) || "╭╮╰╯│─·".contains(c),
-                    "{c:?} at {width}x{height}:\n{text}"
-                );
-            }
-        }
-    }
-
-    /// A line with room for one fact keeps it, cut short, beside the count of the
-    /// rest, rather than saying only how much it left out.
-    #[test]
-    fn a_lone_fact_is_cut_rather_than_dropped() {
-        let facts = [
-            "Nearly unique: needs every row checked".to_string(),
-            "key repeats among 10,000 sampled rows only".to_string(),
-        ];
-        let lines = pack_facts(&facts, 37, 1);
-        assert_eq!(lines.len(), 1);
-        assert!(lines[0].starts_with("Nearly unique"), "{lines:?}");
-        assert!(lines[0].ends_with("+1 more"), "{lines:?}");
-        assert!(glyphs::display_width(&lines[0]) <= 37, "{lines:?}");
-    }
-
-    /// Facts wrap between facts, never inside one, and what does not fit is counted.
-    #[test]
-    fn coverage_facts_wrap_whole_and_count_the_rest() {
-        let facts = ["one fact", "another fact", "a third fact", "a fourth"]
-            .map(String::from)
-            .to_vec();
-        let dot = glyphs::get().middot;
-        assert_eq!(
-            pack_facts(&facts, 24, 2),
-            [
-                format!("one fact {dot} another fact"),
-                format!("a third fact {dot} a fourth")
-            ]
-        );
-        assert_eq!(
-            pack_facts(&facts, 24, 1),
-            [format!("one fact {dot} +3 more")]
-        );
-    }
-
-    /// Setup at the baseline size and the smallest: every row in its section, the
-    /// focused one on screen with the rail whichever it is, and every character
-    /// outside ASCII a glyph slot, which has an ASCII twin under `LANG=C`.
-    #[test]
-    fn setup_fits_80x24_and_60x20_in_glyph_slots() {
-        let screen = Screen::new();
-        let g = glyphs::get();
-        let slots = [
-            g.rail,
-            g.rule_h,
-            g.rule_h_focused,
-            g.middot,
-            g.ellipsis,
-            g.selector,
-        ]
-        .concat();
-        for (width, height) in [(80, 24), (60, 20)] {
-            for row in SetupRow::ALL {
-                let mut config = screen.config(QualityPage::Setup);
-                config.plan_field = row.index();
-                let rows = screen.draw(config, 0, width, height);
-                let text = rows.join("\n");
-                assert!(
-                    rows.iter()
-                        .any(|line| line.contains(&format!("{}{}", g.rail, row.label()))),
-                    "{row:?} focused at {width}x{height}:\n{text}"
-                );
-                for other in SetupRow::ALL {
-                    assert!(
-                        text.contains(other.label()),
-                        "{other:?} on screen at {width}x{height}:\n{text}"
-                    );
-                }
-                for section in ["Rows & sample", "Columns", "Study", "Read"] {
-                    assert!(
-                        text.contains(section),
-                        "{section} at {width}x{height}:\n{text}"
-                    );
-                }
-                for c in text.chars().filter(|c| !c.is_ascii()) {
-                    assert!(
-                        slots.contains(c) || "╭╮╰╯│─".contains(c),
-                        "{c:?} is not a glyph slot at {width}x{height}:\n{text}"
-                    );
-                }
-            }
-        }
-    }
-
-    /// Setup says what a run will read before it runs, and says it honestly: a full
-    /// run counts its passes rather than promising one read, and Setup's own line
-    /// says why Enter waits.
-    #[test]
-    fn setup_states_the_read_and_why_run_waits() {
-        let screen = Screen::new();
-        let mut config = screen.config(QualityPage::Setup);
-        config.show_access = true;
-        let text = screen.draw(config, 0, 100, 30).join("\n");
-        assert!(!text.contains("at most one read"), "{text}");
-        assert!(text.contains("one per check"), "{text}");
-
-        let config = screen.config(QualityPage::Setup);
-        let text = screen.draw(config, 0, 100, 30).join("\n");
-        assert!(text.contains("passes over the scope"), "{text}");
-
-        let mut config = screen.config(QualityPage::Setup);
-        config.setup.cancelling = Some(Cancelling {
-            since: std::time::Instant::now(),
-            read_runs_out: true,
-        });
-        config.setup.note = Some("Run waits: the cancelled run is still stopping");
-        let rows = screen.draw(config, 0, 100, 30);
-        let text = rows.join("\n");
-        assert!(
-            rows[0].contains("Cancelling: source read finishing"),
-            "the header keeps the state: {text}"
-        );
-        assert!(
-            text.contains("Run waits: source read finishing"),
-            "Setup says why Enter did not run: {text}"
-        );
-
-        // A run that should have stopped at its next batch and has not says so,
-        // without claiming a read it cannot stop.
-        let mut config = screen.config(QualityPage::Setup);
-        config.setup.cancelling = Some(Cancelling {
-            since: std::time::Instant::now(),
-            read_runs_out: false,
-        });
-        let rows = screen.draw(config, 0, 100, 30);
-        assert!(
-            rows[0].contains("Cancelling: run stopping"),
-            "{}",
-            rows.join("\n")
-        );
-        assert!(!rows.join("\n").contains("source read finishing"));
-    }
-}
+mod tests;
 
 /// Intervals on screen: the report's list and one interval's detail, and what
 /// Setup says about roles and zones before a run.
 #[cfg(test)]
-mod interval_tests {
-    use super::*;
-    use crate::data_quality::{TemporalRoleAssignment, TimeInterpretation, TimeKind};
-    use polars::prelude::*;
-
-    const HOUR: i64 = 3_600_000_000;
-
-    /// Two days of sends and receipts, with a receipt missing, one early and one
-    /// over an hour; and validity periods, one open and one that ends first.
-    fn frame() -> LazyFrame {
-        let day = 1_704_067_200_000_000i64; // 2024-01-01
-        let sent = (0..8)
-            .map(|row| Some(day + (row / 4) * 24 * HOUR + row * HOUR))
-            .collect::<Vec<_>>();
-        let seen = sent
-            .iter()
-            .enumerate()
-            .map(|(row, at)| match row {
-                1 => None,
-                2 => at.map(|at| at - 60_000_000),
-                5 => at.map(|at| at + 2 * HOUR),
-                _ => at.map(|at| at + 600_000_000),
-            })
-            .collect::<Vec<_>>();
-        let datetimes = |name: &str, values: Vec<Option<i64>>| -> Column {
-            Series::new(name.into(), values)
-                .cast(&DataType::Datetime(TimeUnit::Microseconds, None))
-                .unwrap()
-                .into()
-        };
-        let days = |name: &str, values: [Option<i32>; 8]| -> Column {
-            Series::new(name.into(), values)
-                .cast(&DataType::Date)
-                .unwrap()
-                .into()
-        };
-        DataFrame::new(
-            8,
-            vec![
-                datetimes("sent", sent),
-                datetimes("seen", seen),
-                Column::new("stamp".into(), vec!["2024-01-01T00:10:00Z"; 8]),
-                days("from", [Some(19_723); 8]),
-                days(
-                    "to",
-                    [
-                        Some(19_730),
-                        None,
-                        Some(19_720),
-                        Some(19_730),
-                        Some(19_730),
-                        Some(19_730),
-                        Some(19_730),
-                        Some(19_723),
-                    ],
-                ),
-            ],
-        )
-        .unwrap()
-        .lazy()
-    }
-
-    fn role(role: TemporalRole, column: &str) -> TemporalRoleAssignment {
-        TemporalRoleAssignment {
-            role,
-            column: column.to_string(),
-            timezone: None,
-        }
-    }
-
-    struct Screen {
-        state: DataTableState,
-        plan: DataQualityPlan,
-        /// What Setup offers roles: the frame's date and time columns, and text.
-        candidates: Vec<String>,
-        results: DataQualityResults,
-        theme: Theme,
-        ctx: RenderContext,
-    }
-
-    impl Screen {
-        fn new(plan: DataQualityPlan) -> Self {
-            let lf = frame();
-            let schema = Arc::new((*lf.clone().collect_schema().unwrap()).clone());
-            let state = DataTableState::from_schema_and_lazyframe(
-                schema,
-                lf.clone(),
-                &crate::OpenOptions::default(),
-                None,
-            )
-            .unwrap();
-            let results =
-                crate::data_quality::compute_data_quality(&lf, Some(8), &plan, None, false)
-                    .unwrap();
-            Self {
-                state,
-                plan,
-                candidates: ["sent", "seen", "from", "to", "stamp"]
-                    .map(String::from)
-                    .to_vec(),
-                results,
-                theme: Theme::from_config(&crate::config::ThemeConfig::default()).unwrap(),
-                ctx: RenderContext::for_test(),
-            }
-        }
-
-        fn studied() -> Self {
-            Self::new(DataQualityPlan {
-                compute: QualityCompute::Full,
-                temporal_roles: vec![
-                    role(TemporalRole::Event, "sent"),
-                    role(TemporalRole::Received, "seen"),
-                    role(TemporalRole::ValidFrom, "from"),
-                    role(TemporalRole::ValidTo, "to"),
-                ],
-                latency_threshold_seconds: Some(3_600),
-                grain: QualityGrain::TimeWindows {
-                    column: "sent".to_string(),
-                    every: "1d".to_string(),
-                },
-                ..DataQualityPlan::default()
-            })
-        }
-
-        fn draw(
-            &self,
-            page: QualityPage,
-            interval: usize,
-            selected: usize,
-            size: (u16, u16),
-        ) -> String {
-            let config = DataQualityWidgetConfig {
-                checks_expanded: false,
-                state: &self.state,
-                plan: &self.plan,
-                measured: &self.plan,
-                results: Some(&self.results),
-                from_cache: false,
-                metric: QualityMetric::NullRate,
-                column_index: 0,
-                segment_index: 0,
-                interval_index: interval,
-                trend_line: 0,
-                expected_form: None,
-                segments_by_change: false,
-                page,
-                setup: SetupView {
-                    time_candidates: &self.candidates,
-                    ..SetupView::default()
-                },
-                plan_field: selected,
-                show_access: false,
-                observation_detail: false,
-                findings: &FindingsView {
-                    column: None,
-                    check: None,
-                    order: FindingOrder::Ranked,
-                },
-                rows_kept: false,
-                evidence_read: None,
-                focus: AnalysisFocus::Main,
-                theme: &self.theme,
-                ctx: &self.ctx,
-                intent_form: None,
-                export_form: None,
-            };
-            let (width, height) = size;
-            let area = Rect::new(0, 0, width, height);
-            let mut buf = Buffer::empty(area);
-            let mut table = TableState::default();
-            table.select(Some(selected));
-            let mut sidebar = TableState::default();
-            render(
-                config,
-                &mut table,
-                &mut sidebar,
-                &mut DetailScroll::default(),
-                area,
-                &mut buf,
-            );
-            (0..height)
-                .map(|y| {
-                    (0..width)
-                        .map(|x| buf[(x, y)].symbol().to_string())
-                        .collect::<String>()
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-    }
-
-    /// Every character outside ASCII is a glyph slot, which `LANG=C` swaps for its
-    /// ASCII twin.
-    fn assert_glyph_slots(text: &str) {
-        let g = glyphs::get();
-        let slots = [
-            g.rail,
-            g.rule_h,
-            g.rule_h_focused,
-            g.middot,
-            g.ellipsis,
-            g.selector,
-            g.checkbox_on,
-            g.checkbox_off,
-        ]
-        .concat();
-        for c in text.chars().filter(|c| !c.is_ascii()) {
-            assert!(
-                slots.contains(c) || "╭╮╰╯│─".contains(c),
-                "{c:?} is not a glyph slot:\n{text}"
-            );
-        }
-    }
-
-    /// The list says what its last column counts and out of what; each row names
-    /// its interval and segment where there is room, and the selected row has the
-    /// selector at every size.
-    #[test]
-    fn the_interval_list_fits_80x24_and_60x20() {
-        let screen = Screen::studied();
-        let intervals = &screen.results.temporal;
-        assert_eq!(intervals.len(), 4, "two intervals over two days");
-        for size in [(120, 32), (80, 24), (60, 20)] {
-            for (selected, interval) in intervals.iter().enumerate() {
-                let text = screen.draw(QualityPage::Intervals, 0, selected, size);
-                assert!(text.contains("Time between dates"), "{text}");
-                assert!(
-                    text.contains("Over: duration > 1 hour, of rows with both ends"),
-                    "{size:?}: {text}"
-                );
-                let row = text
-                    .lines()
-                    // Leading: the ASCII selector, `> `, is also in "duration > 1 hour".
-                    .find(|line| line.trim_start().starts_with(glyphs::get().selector))
-                    .unwrap_or_else(|| panic!("a selected row at {size:?}:\n{text}"));
-                // In full, or cut with an ellipsis where the width runs out.
-                let label = interval.label();
-                assert!(
-                    row.contains(&label)
-                        || row.contains(&label[..12]) && row.contains(glyphs::get().ellipsis),
-                    "{size:?}: {row}"
-                );
-                if size.0 >= 80 {
-                    assert!(row.contains(&interval.segment), "{row}");
-                }
-                assert_glyph_slots(&text);
-            }
-        }
-        // Wide enough, the list adds the denominator and each end's missing count.
-        let wide = screen.draw(QualityPage::Intervals, 0, 0, (160, 32));
-        assert!(
-            wide.contains("Both ends") && wide.contains("Missing s/e"),
-            "{wide}"
-        );
-    }
-
-    /// An interval's detail at 80x24 holds every count at once; at 60x20 it scrolls
-    /// to the count under the cursor. Missing ends, unread text and negative
-    /// durations are rows of their own, and each count says what it is out of.
-    #[test]
-    fn an_interval_detail_keeps_every_count_at_80x24_and_60x20() {
-        let screen = Screen::studied();
-        let first = &screen.results.temporal[0];
-        assert_eq!(first.label(), "event to received");
-        assert_eq!(
-            (first.evaluated_rows, first.paired_rows, first.missing_end),
-            (4, 3, 1)
-        );
-        let labels = [
-            "Start",
-            "End",
-            "Segment",
-            "Rows",
-            "Both ends",
-            "Missing start",
-            "Missing end",
-            "Negative",
-            "Zero",
-            "p50, p90",
-            "p95, p99",
-            "Maximum",
-            "Threshold",
-            "Over 1 hour",
-        ];
-        let text = screen.draw(QualityPage::IntervalDetail, 0, 0, (80, 24));
-        for label in labels {
-            assert!(text.contains(label), "{label}:\n{text}");
-        }
-        assert!(
-            text.contains("3 of 4 (75.0%)"),
-            "both ends out of rows:\n{text}"
-        );
-        assert!(
-            text.contains("1 of 3 (33.3%) with both ends"),
-            "negative out of both ends:\n{text}"
-        );
-        assert!(text.contains("duration > 1 hour, strictly"), "{text}");
-        assert!(!text.contains("more"), "nothing cut at 80x24:\n{text}");
-        let facts = IntervalFact::ALL
-            .into_iter()
-            .filter(|fact| first.count(*fact, &screen.plan).is_some())
-            .collect::<Vec<_>>();
-        // 60x17 is what a 60x20 terminal leaves the page under its bars.
-        for size in [(80, 24), (60, 20), (60, 17)] {
-            for (selected, fact) in facts.iter().enumerate() {
-                let text = screen.draw(QualityPage::IntervalDetail, 0, selected, size);
-                let rail = format!("{} {}", glyphs::get().rail, fact.label(first));
-                assert!(
-                    text.contains(&rail),
-                    "{fact:?} under the cursor at {size:?}:\n{text}"
-                );
-                assert_glyph_slots(&text);
-                // Scrolled, the page ends on its last line or the count of what
-                // is below, never on blank lines.
-                if !text.contains("Start") {
-                    let lines = text.lines().collect::<Vec<_>>();
-                    let last = lines.iter().rposition(|line| !line.trim().is_empty());
-                    assert_eq!(last, Some(lines.len() - 2), "{fact:?}:\n{text}");
-                }
-            }
-        }
-    }
-
-    /// Where Enter cannot help, the page says why: a report of file metadata reads
-    /// no times, and a row chunk's rows are not a value a count can open.
-    #[test]
-    fn intervals_say_why_nothing_opens() {
-        let roles = vec![
-            role(TemporalRole::Event, "sent"),
-            role(TemporalRole::Received, "seen"),
-        ];
-        let screen = Screen::new(DataQualityPlan {
-            compute: QualityCompute::Metadata,
-            temporal_roles: roles.clone(),
-            ..DataQualityPlan::default()
-        });
-        assert!(screen.results.temporal.is_empty());
-        let text = screen.draw(QualityPage::Intervals, 0, 0, (80, 24));
-        assert!(
-            text.contains("File metadata only · no values read"),
-            "{text}"
-        );
-
-        let screen = Screen::new(DataQualityPlan {
-            compute: QualityCompute::Full,
-            temporal_roles: roles,
-            grain: QualityGrain::RowChunks(4),
-            ..DataQualityPlan::default()
-        });
-        for size in [(80, 24), (60, 20)] {
-            let text = screen.draw(QualityPage::IntervalDetail, 0, 0, size);
-            assert!(text.contains("Rows do not open: a row chunk"), "{text}");
-        }
-    }
-
-    /// Windowing intervals by their ends groups once per end column, and on a full
-    /// scan Setup says how many of its passes that is before Run.
-    #[test]
-    fn setup_counts_the_passes_a_window_clock_takes() {
-        let mut plan = DataQualityPlan {
-            compute: QualityCompute::Full,
-            temporal_roles: vec![
-                role(TemporalRole::Event, "sent"),
-                role(TemporalRole::Received, "seen"),
-                role(TemporalRole::Processed, "to"),
-            ],
-            grain: QualityGrain::TimeWindows {
-                column: "sent".to_string(),
-                every: "1d".to_string(),
-            },
-            interval_clock: IntervalClock::End,
-            ..DataQualityPlan::default()
-        };
-        let text = Screen::new(plan.clone()).draw(QualityPage::Setup, 0, 0, (120, 40));
-        assert!(
-            text.contains("Window by each interval's end: 2 of those passes, 1 per column"),
-            "{text}"
-        );
-        plan.interval_clock = IntervalClock::Grain;
-        let text = Screen::new(plan).draw(QualityPage::Setup, 0, 0, (120, 40));
-        assert!(!text.contains("of those passes"), "{text}");
-    }
-
-    /// A full scan's Read says how it gets the rows of a remote source before Run:
-    /// one fetch into a copy, a copy fetched earlier, or the source in every pass
-    /// with the reason there is no copy.
-    #[test]
-    fn setup_says_how_a_full_scan_reads_a_remote_source() {
-        const MIB: u64 = 1024 * 1024;
-        let lines = |copy: CopyPlan, copy_released: bool| {
-            let view = SetupView {
-                copy,
-                copy_released,
-                ..SetupView::default()
-            };
-            copy_lines(&view, 7).join("\n")
-        };
-        let fetch = CopyPlan::Fetch {
-            bytes: 17 * MIB,
-            objects: 8,
-        };
-        let text = lines(fetch, false);
-        assert!(
-            text.starts_with(
-                "1 fetch of 8 objects (17.0 MiB) to a local copy · up to 7 passes over it"
-            ),
-            "{text}"
-        );
-        assert!(
-            text.contains("Local copy kept for later full scans · d releases"),
-            "{text}"
-        );
-        assert!(!text.contains("Released since"), "{text}");
-        assert!(lines(fetch, true).contains("Released since last copy · fetched again"));
-        let one = CopyPlan::Fetch {
-            bytes: MIB,
-            objects: 1,
-        };
-        assert!(lines(one, false).starts_with("1 fetch of 1 object (1.0 MiB)"));
-        assert_eq!(
-            lines(
-                CopyPlan::Kept {
-                    bytes: 17 * MIB,
-                    objects: 8
-                },
-                false
-            ),
-            "Every eligible row · up to 7 passes over the local copy (17.0 MiB) · no source read"
-        );
-        assert!(lines(CopyPlan::NotApplicable, false).contains("passes over the scope"));
-        for (why, says) in [
-            (NoCopy::Off, "No local copy: quality_local_copy = 0"),
-            (NoCopy::SizeUnknown, "No local copy: object sizes unknown"),
-            (
-                NoCopy::Unusable,
-                "No local copy: copy did not read as the source",
-            ),
-            (
-                NoCopy::PartOfTheSource,
-                "No local copy: scope reads part of the source",
-            ),
-            (
-                NoCopy::TooLarge {
-                    bytes: 3 * 1024 * MIB,
-                    limit: 2 * 1024 * MIB,
-                },
-                "No local copy: 3.0 GiB over the 2.0 GiB limit",
-            ),
-            (
-                NoCopy::NoRoom {
-                    bytes: 17 * MIB,
-                    free: Some(MIB),
-                },
-                "No local copy: 17.0 MiB needed, 1.0 MiB free on disk",
-            ),
-            (
-                NoCopy::NoRoom {
-                    bytes: 17 * MIB,
-                    free: None,
-                },
-                "No local copy: free disk space unknown",
-            ),
-        ] {
-            let text = lines(CopyPlan::Passes(why), false);
-            assert!(
-                text.starts_with("Every eligible row · up to 7 passes over the source"),
-                "{text}"
-            );
-            assert!(text.ends_with(says), "{text}");
-        }
-    }
-
-    /// The Read rule names a kept copy beside kept rows, or alone.
-    #[test]
-    fn the_read_rule_names_a_kept_copy() {
-        let rows = KeptRows {
-            samples: 1,
-            rows: 100_000,
-            bytes: 13 * 1024 * 1024,
-            copy_bytes: 0,
-        };
-        let middot = glyphs::get().middot;
-        assert_eq!(rows.label(), format!("100,000 rows kept {middot} 13.0 MiB"));
-        let both = KeptRows {
-            copy_bytes: 17 * 1024 * 1024,
-            ..rows
-        };
-        assert_eq!(
-            both.label(),
-            format!("100,000 rows kept {middot} 13.0 MiB, local copy {middot} 17.0 MiB")
-        );
-        let copy = KeptRows {
-            samples: 0,
-            rows: 0,
-            bytes: 0,
-            ..both
-        };
-        assert_eq!(copy.label(), format!("local copy {middot} 17.0 MiB"));
-    }
-
-    /// Valid from to valid to is a validity period: no end is open, an end before
-    /// the start ends first.
-    #[test]
-    fn a_validity_period_reads_as_one() {
-        let screen = Screen::studied();
-        let index = screen
-            .results
-            .temporal
-            .iter()
-            .position(|interval| interval.is_validity())
-            .unwrap();
-        let text = screen.draw(QualityPage::IntervalDetail, index, 0, (80, 24));
-        assert!(text.contains("Open, no end"), "{text}");
-        assert!(text.contains("Ends first"), "{text}");
-        assert!(!text.contains("Negative"), "{text}");
-    }
-
-    /// Before a run, Setup names roles no interval uses and says how a time with
-    /// no zone meets one with an offset; the pairs editor lists every start and end.
-    #[test]
-    fn setup_names_unpaired_roles_and_how_zones_compare() {
-        let screen = Screen::new(DataQualityPlan {
-            temporal_roles: vec![
-                role(TemporalRole::Event, "sent"),
-                role(TemporalRole::Received, "stamp"),
-                role(TemporalRole::Created, "from"),
-            ],
-            time_formats: vec![TimeInterpretation {
-                column: "stamp".to_string(),
-                kind: TimeKind::Datetime,
-                format: "%Y-%m-%dT%H:%M:%S%.f%#z".to_string(),
-            }],
-            ..DataQualityPlan::default()
-        });
-        let text = screen.draw(QualityPage::Setup, 0, 0, (120, 32));
-        assert!(
-            text.contains("In no interval: created · set Intervals"),
-            "{text}"
-        );
-        assert!(text.contains("No time zone, read as UTC: sent"), "{text}");
-        assert!(text.contains("event to received"), "{text}");
-
-        let text = screen.draw(QualityPage::IntervalPairs, 0, 0, (80, 24));
-        assert!(text.contains("Intervals  1 of 6"), "{text}");
-        let g = glyphs::get();
-        assert!(
-            text.contains(&format!("{} event to received", g.checkbox_on)),
-            "{text}"
-        );
-        assert!(
-            text.contains(&format!("{} created to event", g.checkbox_off)),
-            "{text}"
-        );
-        assert_glyph_slots(&text);
-    }
-}
+mod interval_tests;
 
 #[cfg(test)]
-mod trend_tests {
-    use super::*;
-    use crate::analysis_modal::ExpectedForm;
-    use crate::data_quality::{ExpectedWindows, compute_data_quality};
-    use polars::prelude::{DataType, IntoLazy, LazyFrame, col, df};
-    use ratatui::style::Color;
-    use std::sync::Arc;
-
-    /// Weekday rows over eight weeks, forty a day, the second week missing and a
-    /// third of the amounts null.
-    fn frame() -> LazyFrame {
-        let days = (0..56)
-            .filter(|day| day % 7 < 5 && !(7..14).contains(day))
-            .collect::<Vec<i32>>();
-        let day = days
-            .iter()
-            .flat_map(|day| std::iter::repeat_n(19_723 + day, 40))
-            .collect::<Vec<_>>();
-        let rows = day.len();
-        df!(
-            "day" => day,
-            "amount" => (0..rows).map(|row| (row % 3 != 0).then_some(row as f64)).collect::<Vec<_>>(),
-        )
-        .unwrap()
-        .lazy()
-        .with_column(col("day").cast(DataType::Date))
-    }
-
-    struct Screen {
-        state: DataTableState,
-        plan: DataQualityPlan,
-        results: DataQualityResults,
-        metric: QualityMetric,
-        theme: Theme,
-        ctx: RenderContext,
-    }
-
-    impl Screen {
-        /// A daily study of a 30-row sample, weekdays expected through March 3.
-        fn sampled() -> Self {
-            let lf = frame();
-            let schema = Arc::new((*lf.clone().collect_schema().unwrap()).clone());
-            let state = DataTableState::from_schema_and_lazyframe(
-                schema,
-                lf.clone(),
-                &crate::OpenOptions::default(),
-                None,
-            )
-            .unwrap();
-            let plan = DataQualityPlan {
-                dataset_rows: 30,
-                sample_seed: 415,
-                grain: QualityGrain::TimeWindows {
-                    column: "day".to_string(),
-                    every: "1d".to_string(),
-                },
-                expected: Some(ExpectedWindows {
-                    weekdays: true,
-                    from: Some("2024-01-01".to_string()),
-                    before: Some("2024-03-04".to_string()),
-                }),
-                ..DataQualityPlan::default()
-            };
-            let results = compute_data_quality(&lf, Some(1_400), &plan, None, false).unwrap();
-            assert!(!results.unsampled_segments.is_empty());
-            Self {
-                state,
-                plan,
-                results,
-                metric: QualityMetric::NullRate,
-                theme: Theme::from_config(&crate::config::ThemeConfig::default()).unwrap(),
-                ctx: RenderContext::for_test(),
-            }
-        }
-
-        fn draw_with(
-            &self,
-            theme: &Theme,
-            page: QualityPage,
-            line: usize,
-            selected: usize,
-            form: Option<&ExpectedForm>,
-            (width, height): (u16, u16),
-        ) -> Buffer {
-            let config = DataQualityWidgetConfig {
-                checks_expanded: false,
-                state: &self.state,
-                plan: &self.plan,
-                measured: &self.plan,
-                results: Some(&self.results),
-                from_cache: false,
-                metric: self.metric,
-                column_index: 0,
-                segment_index: 0,
-                interval_index: 0,
-                trend_line: line,
-                expected_form: form,
-                segments_by_change: false,
-                page,
-                setup: SetupView::default(),
-                plan_field: SetupRow::Expected.index(),
-                show_access: false,
-                observation_detail: false,
-                focus: AnalysisFocus::Main,
-                theme,
-                ctx: &self.ctx,
-                findings: &FindingsView::default(),
-                rows_kept: false,
-                evidence_read: None,
-                intent_form: None,
-                export_form: None,
-            };
-            let area = Rect::new(0, 0, width, height);
-            let mut buf = Buffer::empty(area);
-            let mut table = TableState::default();
-            table.select(Some(selected));
-            render(
-                config,
-                &mut table,
-                &mut TableState::default(),
-                &mut DetailScroll::default(),
-                area,
-                &mut buf,
-            );
-            buf
-        }
-
-        fn draw(
-            &self,
-            page: QualityPage,
-            line: usize,
-            selected: usize,
-            size: (u16, u16),
-        ) -> String {
-            text(&self.draw_with(&self.theme, page, line, selected, None, size))
-        }
-
-        /// The Trends line of the amount column.
-        fn amount(&self) -> usize {
-            trend_view(&self.results, self.metric, 1)
-                .lines
-                .iter()
-                .position(|line| line.names == ["amount"])
-                .unwrap()
-        }
-    }
-
-    fn text(buf: &Buffer) -> String {
-        let area = buf.area;
-        (0..area.height)
-            .map(|y| {
-                (0..area.width)
-                    .map(|x| buf[(x, y)].symbol().to_string())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    /// Every character outside ASCII is a glyph slot, which `LANG=C` swaps for its
-    /// ASCII twin.
-    fn assert_glyph_slots(text: &str) {
-        let g = glyphs::get();
-        let slots = [
-            g.rail,
-            g.rule_h,
-            g.middot,
-            g.ellipsis,
-            g.selector,
-            g.unsampled,
-            g.pointer,
-            g.updown,
-        ]
-        .concat()
-            + &g.mini_bars.concat();
-        for c in text.chars().filter(|c| !c.is_ascii()) {
-            assert!(
-                slots.contains(c) || "╭╮╰╯│─".contains(c),
-                "{c:?} is not a glyph slot:\n{text}"
-            );
-        }
-    }
-
-    /// A bar the sample drew nothing from has a mark of its own in both glyph sets:
-    /// not a bar level, and not the blank of a measure with nothing to apply to. So
-    /// neither a C locale nor a 16-color terminal loses it.
-    #[test]
-    fn a_missed_bar_has_its_own_mark_in_both_glyph_sets() {
-        let screen = Screen::sampled();
-        let view = trend_view(&screen.results, QualityMetric::NullRate, 100);
-        let missed = view
-            .bars
-            .iter()
-            .position(|bar| bar.evaluated == 0)
-            .expect("a day with no sampled row");
-        let amount = &view.lines[screen.amount()];
-        for g in [glyphs::unicode(), glyphs::ascii()] {
-            let mark = bar_mark(amount, &view.bars[missed], missed, g);
-            assert_eq!(mark, g.unsampled);
-            assert!(!g.mini_bars.contains(&mark) && mark != " ", "{mark:?}");
-            assert_ne!(g.pointer, " ");
-            assert_eq!(glyphs::display_width(g.unsampled), 1);
-            assert_eq!(glyphs::display_width(g.pointer), 1);
-        }
-        // The exact count still has every day's rows.
-        let rows = &view.lines[0];
-        assert_eq!(rows.names, ["rows"]);
-        assert_eq!(rows.bars[missed], Some(40.0));
-    }
-
-    /// Trends says how much of the scope the sample reached, offers a coarser window,
-    /// and sums up the expected windows, at 80x24 and 60x20.
-    #[test]
-    fn trends_say_their_coverage_and_gaps_at_80x24_and_60x20() {
-        let screen = Screen::sampled();
-        for size in [(80, 24), (60, 20)] {
-            let text = screen.draw(QualityPage::Trends, 0, 0, size);
-            assert!(text.contains("not sampled"), "{size:?}:\n{text}");
-            assert!(text.contains("stages weekly"), "{size:?}:\n{text}");
-            assert!(text.contains("Expected weekdays"), "{size:?}:\n{text}");
-            assert!(text.contains("sampled rows"), "{size:?}:\n{text}");
-            assert!(text.contains("amount"), "{size:?}:\n{text}");
-            assert_glyph_slots(&text);
-        }
-    }
-
-    /// A bar's detail holds every fact at 80x24 and 60x20, the pointer under the bar
-    /// selected, and walks to the last bar without running past it.
-    #[test]
-    fn a_trend_bar_states_its_facts_at_80x24_and_60x20() {
-        let screen = Screen::sampled();
-        let amount = screen.amount();
-        for size in [(80, 24), (60, 20)] {
-            let first = screen.draw(QualityPage::TrendDetail, amount, 0, size);
-            for label in ["Span", "Segments", "Rows", "Null rate", "95% interval"] {
-                assert!(first.contains(label), "{label} at {size:?}:\n{first}");
-            }
-            assert!(first.contains("bar 1 of"), "{first}");
-            assert!(!first.contains("Previous bar"), "nothing before the first");
-            let second = screen.draw(QualityPage::TrendDetail, amount, 1, size);
-            assert!(second.contains("Previous bar"), "{size:?}:\n{second}");
-            // Past the end, the last bar; the pointer sits on the spark's last mark.
-            let last = screen.draw(QualityPage::TrendDetail, amount, 10_000, size);
-            let lines = last.lines().collect::<Vec<_>>();
-            let spark = lines
-                .iter()
-                .position(|line| line.contains("amount"))
-                .unwrap();
-            let pointer = lines[spark + 1]
-                .find(glyphs::get().pointer)
-                .expect("a pointer");
-            // Up to the tool list's frame, where there is one.
-            let side = format!(" {}", glyphs::get().border.vertical_left);
-            let marks =
-                lines[spark][..lines[spark].find(&side).unwrap_or(lines[spark].len())].trim_end();
-            assert_eq!(
-                glyphs::display_width(marks) - 1,
-                glyphs::display_width(&lines[spark + 1][..pointer]),
-                "{last}"
-            );
-            assert_glyph_slots(&last);
-        }
-        // A rows line says rows per segment, not a rate.
-        let rows = screen.draw(QualityPage::TrendDetail, 0, 0, (80, 24));
-        assert!(rows.contains("Rows per segment"), "{rows}");
-        assert!(rows.contains("Per segment"), "{rows}");
-        assert!(!rows.contains("95% interval"), "{rows}");
-    }
-
-    /// Nothing on these pages is said by color alone: drawn with every color gone,
-    /// and with the 16 a basic terminal has, every cell holds the same symbol.
-    #[test]
-    fn trends_and_gaps_read_the_same_without_color() {
-        let screen = Screen::sampled();
-        let mono = Theme {
-            colors: screen
-                .theme
-                .colors
-                .keys()
-                .map(|key| (key.clone(), Color::Reset))
-                .collect(),
-        };
-        let sixteen = Theme {
-            colors: screen
-                .theme
-                .colors
-                .iter()
-                .map(|(key, color)| {
-                    let color = match *color {
-                        Color::Rgb(r, g, b) => crate::config::rgb_to_basic_ansi(r, g, b),
-                        Color::Indexed(index) => Color::Indexed(index % 16),
-                        other => other,
-                    };
-                    (key.clone(), color)
-                })
-                .collect(),
-        };
-        for (page, line) in [
-            (QualityPage::Trends, 0),
-            (QualityPage::TrendDetail, screen.amount()),
-            (QualityPage::Gaps, 0),
-        ] {
-            let full = text(&screen.draw_with(&screen.theme, page, line, 1, None, (80, 24)));
-            for theme in [&mono, &sixteen] {
-                assert_eq!(
-                    text(&screen.draw_with(theme, page, line, 1, None, (80, 24))),
-                    full,
-                    "{page:?}"
-                );
-            }
-        }
-    }
-
-    /// Gaps list each run of windows by why it has no rows: empty by the exact
-    /// count, not sampled, with the weekends not expected said apart.
-    #[test]
-    fn gaps_list_each_kind_at_80x24_and_60x20() {
-        let screen = Screen::sampled();
-        for size in [(80, 24), (60, 20)] {
-            let text = screen.draw(QualityPage::Gaps, 0, 0, size);
-            assert!(text.contains("Expected weekdays"), "{size:?}:\n{text}");
-            assert!(text.contains("2024-01-08 to 2024-01-12 empty"), "{text}");
-            assert!(text.contains("not sampled"), "{text}");
-            assert!(text.contains("on weekends, not expected"), "{text}");
-            assert!(text.contains("gaps"), "{text}");
-            assert_glyph_slots(&text);
-        }
-        // Wide enough, each missed run says the rows the scope holds there.
-        let wide = screen.draw(QualityPage::Gaps, 0, 0, (120, 30));
-        assert!(wide.contains("40 rows"), "{wide}");
-    }
-
-    /// Setup's Expected row says what is stated, and its editor lays out at 60x20.
-    #[test]
-    fn setup_states_the_expected_windows() {
-        let mut screen = Screen::sampled();
-        let setup = screen.draw(QualityPage::Setup, 0, 0, (100, 30));
-        assert!(
-            setup.contains("Expected       weekdays, 2024-01-01 to before 2024-03-04"),
-            "{setup}"
-        );
-        assert!(
-            setup.contains("Expected windows: from the segment counts · no read"),
-            "{setup}"
-        );
-        let form = ExpectedForm::new(&screen.plan, &screen.theme);
-        let editor = text(&screen.draw_with(
-            &screen.theme,
-            QualityPage::ExpectedWindows,
-            0,
-            0,
-            Some(&form),
-            (60, 20),
-        ));
-        for text in [
-            "Windows",
-            "weekdays, Monday to Friday",
-            "From",
-            "2024-01-01",
-            "Before",
-        ] {
-            assert!(editor.contains(text), "{text}:\n{editor}");
-        }
-        screen.plan.expected = None;
-        let none = screen.draw(QualityPage::Setup, 0, 0, (100, 30));
-        assert!(none.contains("none: no window is a gap"), "{none}");
-        screen.plan.grain = QualityGrain::Dataset;
-        let none = screen.draw(QualityPage::Setup, 0, 0, (100, 30));
-        assert!(
-            none.contains("Expected       needs a time-window grain"),
-            "{none}"
-        );
-    }
-
-    /// A distinct share is shown against the bar before but never judged, as
-    /// Segments never judges one: it falls as a segment grows.
-    #[test]
-    fn a_distinct_share_is_not_judged_between_bars() {
-        let mut screen = Screen::sampled();
-        screen.metric = QualityMetric::DistinctShare;
-        let second = screen.draw(QualityPage::TrendDetail, screen.amount(), 1, (100, 30));
-        assert!(second.contains("Previous bar"), "{second}");
-        assert!(second.contains("+0.0 points: not judged"), "{second}");
-        assert!(second.contains("none: a distinct share"), "{second}");
-    }
-
-    /// One day found is no trend, but the week expected around it still has its
-    /// gaps: Trends sums them up beside the way to a grain.
-    #[test]
-    fn one_window_found_still_sums_up_the_expected_ones() {
-        let mut screen = Screen::sampled();
-        screen.plan = DataQualityPlan {
-            compute: crate::data_quality::QualityCompute::Full,
-            expected: Some(ExpectedWindows {
-                weekdays: false,
-                from: Some("2024-01-01".to_string()),
-                before: Some("2024-01-08".to_string()),
-            }),
-            ..screen.plan.clone()
-        };
-        let one_day = frame().filter(
-            col("day")
-                .cast(DataType::Int32)
-                .eq(polars::prelude::lit(19_724)),
-        );
-        screen.results = compute_data_quality(&one_day, None, &screen.plan, None, false).unwrap();
-        assert!(!crate::data_quality::shows_trend(
-            &screen.plan,
-            &screen.results
-        ));
-        let text = screen.draw(QualityPage::Trends, 0, 0, (80, 24));
-        assert!(text.contains("Set Grain"), "{text}");
-        assert!(
-            text.contains("Expected every day, 7 days: 6 empty"),
-            "{text}"
-        );
-    }
-
-    /// From past the last window found, Before blank: no window is in range, and
-    /// Trends says that rather than that every window has rows.
-    #[test]
-    fn a_range_with_no_window_says_so() {
-        let mut screen = Screen::sampled();
-        screen.plan.expected = Some(ExpectedWindows {
-            weekdays: false,
-            from: Some("2025-01-01".to_string()),
-            before: None,
-        });
-        for page in [QualityPage::Trends, QualityPage::Gaps] {
-            let text = screen.draw(page, 0, 0, (80, 24));
-            assert!(
-                text.contains("Expected every day: no window in range"),
-                "{page:?}:\n{text}"
-            );
-        }
-    }
-}
+mod trend_tests;

@@ -34,6 +34,7 @@ pub enum CursorMove {
     /// Down by `n` lines, clamped at the last line.
     DownBy(usize),
     /// An absolute position, clamped into the buffer.
+    #[cfg(test)]
     Jump(usize, usize),
 }
 

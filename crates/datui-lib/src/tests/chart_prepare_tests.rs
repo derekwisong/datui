@@ -1,5 +1,7 @@
-use crate::chart_jobs::ChartCacheXY;
-use crate::chart_modal::{Aggregate, ChartFocus, Mark};
+use crate::chart::chart_export::ChartExportFormat;
+use crate::chart::chart_jobs::ChartCache;
+use crate::chart::chart_modal::{Aggregate, ChartFocus, ChartModal, Mark};
+use crate::chart::chart_plot::{LinesData, PlotData};
 use crate::*;
 use std::sync::mpsc;
 
@@ -17,8 +19,8 @@ fn histogram_request(column: &str) -> ChartRequest {
     ChartRequest::from_modal(&modal).unwrap()
 }
 
-fn prepared_histogram(column: &str) -> ChartPrepared {
-    ChartPrepared::Histogram(chart_data::HistogramData {
+fn prepared_histogram(column: &str) -> PlotData {
+    PlotData::Histogram(chart::chart_data::HistogramData {
         column: column.to_string(),
         bins: Vec::new(),
         groups: Vec::new(),
@@ -27,43 +29,66 @@ fn prepared_histogram(column: &str) -> ChartPrepared {
         x_min: 0.0,
         x_max: 1.0,
         max_count: 0.0,
-        rows: chart_data::RowsRead::default(),
+        rows: chart::chart_data::RowsRead::default(),
         clipped: None,
     })
 }
 
-fn inflight(request: &ChartRequest) -> ChartInflight {
-    ChartInflight {
-        dataset: None,
+/// A preparation of `request` for `dataset`, started as a job a test ends by hand.
+fn start_prep(app: &mut App, request: &ChartRequest, dataset: Option<u64>) -> app::jobs::Started {
+    let prep = app::jobs::ChartPrep {
         request: request.clone(),
-        stale: false,
+        dataset,
         cancel: Arc::default(),
+    };
+    app.job_for_tests(Job::ChartPrepare(Box::new(prep)), None)
+}
+
+/// End `started` with `outcome` and hand the end to the app.
+fn end_prep(app: &mut App, started: app::jobs::Started, outcome: Result<PlotData, (&str, bool)>) {
+    let ticket = started.ticket();
+    started.end(match outcome {
+        Ok(data) => Outcome::answered(Answer::ChartPrepared(Box::new((data, None)))),
+        Err((message, panicked)) => Outcome::Failed {
+            message: message.to_string(),
+            panicked,
+        },
+    });
+    app.event(AppEvent::JobEnded(ticket));
+}
+
+fn is_chart_prep(job: &Job) -> bool {
+    matches!(job, Job::ChartPrepare(_))
+}
+
+/// Whether the preparation running is told to stop.
+fn cancelled(app: &App) -> bool {
+    match app.jobs.current(is_chart_prep) {
+        Some((_, Job::ChartPrepare(prep))) => {
+            prep.cancel.load(std::sync::atomic::Ordering::Relaxed)
+        }
+        _ => panic!("a preparation is running"),
     }
 }
 
 /// A result computed against a dataset that is no longer the one open is dropped
-/// even when the record is still current.
+/// even when the job is still current.
 #[test]
 fn a_result_for_another_dataset_is_dropped() {
     let (tx, _rx) = mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
     let request = histogram_request("a");
-    app.chart_inflight = Some(ChartInflight {
-        dataset: Some(12345),
-        ..inflight(&request)
-    });
-
-    *app.pending_chart_result.lock().unwrap() = Some(Ok((prepared_histogram("a"), None)));
-    app.event(&AppEvent::BackgroundChartReady);
-    assert!(!app.chart_cache.satisfies(&request));
-    assert!(app.chart_inflight.is_none());
+    let started = start_prep(&mut app, &request, Some(12345));
+    end_prep(&mut app, started, Ok(prepared_histogram("a")));
+    assert!(!app.chart.cache.satisfies(&request));
+    assert!(!app.jobs.running(is_chart_prep));
 }
 
 fn chart_request(path: &str) -> ChartExportRequest {
     ChartExportRequest {
         path: PathBuf::from(path),
         format: ChartExportFormat::Png,
-        options: chart_export::ExportOptions::default(),
+        options: chart::chart_export::ExportOptions::default(),
         overwrite: Overwrite::Forbid,
         recipe: false,
     }
@@ -78,27 +103,25 @@ fn leaving_the_dataset_resets_chart_state() {
     let (tx, _rx) = mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
     let request = histogram_request("a");
-    app.chart_inflight = Some(inflight(&request));
-    app.chart_export_waiting = Some(chart_request("/tmp/x.png"));
+    let started = start_prep(&mut app, &request, None);
+    app.chart.export_waiting = Some(chart_request("/tmp/x.png"));
     app.busy = true;
 
     app.abandon_load();
     assert!(!app.chart_preparing(), "nothing spins on the home screen");
     assert!(
-        app.chart_inflight.as_ref().is_some_and(|i| i.stale),
-        "the worker cannot be cancelled, so it is remembered as stale"
+        app.jobs.running(is_chart_prep) && app.jobs.current(is_chart_prep).is_none(),
+        "the worker cannot be stopped mid-read, so it runs on, superseded"
     );
-    assert!(app.pending_chart_result.lock().unwrap().is_none());
-    assert!(app.chart_export_waiting.is_none());
+    assert!(app.chart.export_waiting.is_none());
     assert!(!app.is_busy());
 
-    *app.pending_chart_result.lock().unwrap() = Some(Ok((prepared_histogram("a"), None)));
-    app.event(&AppEvent::BackgroundChartReady);
+    end_prep(&mut app, started, Ok(prepared_histogram("a")));
     assert!(
-        !app.chart_cache.satisfies(&request),
-        "stale result is dropped"
+        !app.chart.cache.satisfies(&request),
+        "a superseded answer is dropped"
     );
-    assert!(app.chart_inflight.is_none(), "and the slot is free again");
+    assert!(!app.jobs.running(is_chart_prep), "and the next may start");
 }
 
 /// Going home in the one-frame window between `ChartExport` arming `busy` and the
@@ -109,15 +132,15 @@ fn a_chart_export_deferred_past_the_chart_view_releases_busy() {
     let (tx, _rx) = mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
     let next = app
-        .event(&AppEvent::ChartExport(chart_request("/tmp/x.png")))
+        .event(AppEvent::ChartExport(chart_request("/tmp/x.png")))
         .expect("ChartExport defers to DoChartExport");
     assert!(app.is_busy());
 
     app.enter_home();
-    app.event(&next);
+    app.event(next);
     assert!(!app.is_busy());
     assert!(app.nothing_loading());
-    assert!(app.chart_export_waiting.is_none());
+    assert!(app.chart.export_waiting.is_none());
 }
 
 /// Going home while the export file is being written: the app stops being busy,
@@ -135,11 +158,7 @@ fn leaving_the_dataset_abandons_an_export_write() {
         },
         Some("Exporting chart..."),
     );
-    app.export_progress = Some(crate::ExportProgress {
-        file_path: path,
-        current_phase: "Exporting chart".to_string(),
-        written: None,
-    });
+    app.export_progress = Some(crate::ExportProgress::new(&path, "Exporting chart"));
     let task_generation = app.task_generation();
 
     app.abandon_load();
@@ -152,9 +171,9 @@ fn leaving_the_dataset_abandons_an_export_write() {
         message: "disk full".to_string(),
         panicked: false,
     });
-    app.event(&AppEvent::JobEnded(ticket));
+    app.event(AppEvent::JobEnded(ticket));
     assert!(!app.error_modal.active);
-    assert!(!app.chart_export_modal.active);
+    assert_ne!(app.overlay, Overlay::ChartExport);
     assert!(!app.is_busy());
 }
 
@@ -178,11 +197,10 @@ fn an_export_counts_the_bytes_it_has_written() {
     );
     let export = app.job_for_tests(Job::Export, Some("Exporting..."));
     let ticket = export.ticket();
-    app.export_progress = Some(crate::ExportProgress {
-        file_path: PathBuf::from("/tmp/out.csv"),
-        current_phase: "Collecting data".to_string(),
-        written: None,
-    });
+    app.export_progress = Some(crate::ExportProgress::new(
+        &PathBuf::from("/tmp/out.csv"),
+        "Collecting data",
+    ));
     // An export that has ended.
     let older = app.job_for_tests(Job::Export, None);
     let passed = older.ticket();
@@ -205,15 +223,15 @@ fn an_export_counts_the_bytes_it_has_written() {
             bytes,
         },
     };
-    app.event(&writing(ticket, 1_572_864));
+    app.event(writing(ticket, 1_572_864));
     assert!(
-        bar(&mut app).contains("Writing file...  out.csv  1.5 MB"),
+        bar(&mut app).contains("Writing file...  out.csv  1.5 MiB"),
         "{}",
         bar(&mut app)
     );
-    app.event(&writing(passed, 9_999_999));
+    app.event(writing(passed, 9_999_999));
     assert!(
-        bar(&mut app).contains("out.csv  1.5 MB"),
+        bar(&mut app).contains("out.csv  1.5 MiB"),
         "{}",
         bar(&mut app)
     );
@@ -222,8 +240,8 @@ fn an_export_counts_the_bytes_it_has_written() {
     export.end(Outcome::answered(Answer::Exported(PathBuf::from(
         "/tmp/out.csv",
     ))));
-    app.event(&AppEvent::JobEnded(ticket));
-    app.event(&writing(ticket, 2_000_000));
+    app.event(AppEvent::JobEnded(ticket));
+    app.event(writing(ticket, 2_000_000));
     assert!(app.nothing_loading());
     assert!(!app.is_busy());
     assert!(bar(&mut app).contains("Exported to"), "{}", bar(&mut app));
@@ -236,22 +254,19 @@ fn a_failed_preparation_is_remembered_not_retried() {
     let (tx, _rx) = mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
     let request = histogram_request("a");
-    app.chart_inflight = Some(inflight(&request));
-
-    *app.pending_chart_result.lock().unwrap() = Some(Err("duplicate column".into()));
-    app.event(&AppEvent::BackgroundChartReady);
-    assert!(app.chart_inflight.is_none());
+    let started = start_prep(&mut app, &request, None);
+    end_prep(&mut app, started, Err(("duplicate column", false)));
+    assert!(!app.jobs.running(is_chart_prep));
     assert!(matches!(
-        app.chart_cache.get(&request),
+        app.chart.cache.get(&request),
         Some(Err(m)) if m == "duplicate column"
     ));
-    assert!(!app.chart_cache.satisfies(&request));
+    assert!(!app.chart.cache.satisfies(&request));
 
     // With that selection on screen, nothing more is wanted.
-    app.input_mode = InputMode::Chart;
-    app.chart_modal.active = true;
-    histogram_modal(&mut app.chart_modal, "a");
-    assert_eq!(ChartRequest::from_modal(&app.chart_modal), Some(request));
+    app.overlay = Overlay::Chart;
+    histogram_modal(&mut app.chart.modal, "a");
+    assert_eq!(ChartRequest::from_modal(&app.chart.modal), Some(request));
     assert!(!app.chart_request_pending(), "not asked for again");
 }
 
@@ -263,49 +278,39 @@ fn moving_on_cancels_the_preparation_in_flight() {
     let (tx, _rx) = mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
     let a = histogram_request("a");
-    app.input_mode = InputMode::Chart;
-    app.chart_modal.active = true;
-    histogram_modal(&mut app.chart_modal, "a");
-    app.chart_inflight = Some(inflight(&a));
-    let cancelled = |app: &App| {
-        app.chart_inflight
-            .as_ref()
-            .unwrap()
-            .cancel
-            .load(std::sync::atomic::Ordering::Relaxed)
-    };
+    app.overlay = Overlay::Chart;
+    histogram_modal(&mut app.chart.modal, "a");
+    let started = start_prep(&mut app, &a, None);
 
     app.ensure_chart_data();
     assert!(!cancelled(&app), "still the selection on screen");
-    app.chart_modal.spec.encoding.x.field = Some("b".to_string());
+    app.chart.modal.spec.encoding.x.field = Some("b".to_string());
     app.ensure_chart_data();
     assert!(cancelled(&app), "moved past");
 
-    *app.pending_chart_result.lock().unwrap() = Some(Err("count cancelled".into()));
-    app.event(&AppEvent::BackgroundChartReady);
+    end_prep(&mut app, started, Err(("count cancelled", false)));
     assert!(
-        app.chart_cache.get(&a).is_none(),
+        app.chart.cache.get(&a).is_none(),
         "not remembered as failed"
     );
 
-    app.chart_inflight = Some(inflight(&a));
+    let started = start_prep(&mut app, &a, None);
     app.ensure_chart_data();
-    *app.pending_chart_result.lock().unwrap() = Some(Ok((prepared_histogram("a"), None)));
-    app.event(&AppEvent::BackgroundChartReady);
-    assert!(app.chart_cache.satisfies(&a), "a finished read is kept");
+    end_prep(&mut app, started, Ok(prepared_histogram("a")));
+    assert!(app.chart.cache.satisfies(&a), "a finished read is kept");
 
     // A count is of the whole view: another order or sample size of the same
     // category waits for the pass rather than starting it over.
-    app.chart_modal.spec.mark = Mark::Bar;
-    app.chart_modal.spec.encoding.x.field = Some("carrier".to_string());
-    app.chart_modal.spec.encoding.y.aggregate = Aggregate::Count;
-    let count = ChartRequest::from_modal(&app.chart_modal).unwrap();
-    app.chart_inflight = Some(inflight(&count));
-    app.chart_modal.bar_order = chart_data::BarOrder::Label;
-    app.chart_modal.row_limit = Some(100);
+    app.chart.modal.spec.mark = Mark::Bar;
+    app.chart.modal.spec.encoding.x.field = Some("carrier".to_string());
+    app.chart.modal.spec.encoding.y.aggregate = Aggregate::Count;
+    let count = ChartRequest::from_modal(&app.chart.modal).unwrap();
+    let _counting = start_prep(&mut app, &count, None);
+    app.chart.modal.bar_order = chart::chart_data::BarOrder::Label;
+    app.chart.modal.row_limit = Some(100);
     app.ensure_chart_data();
     assert!(!cancelled(&app), "the same count");
-    app.chart_modal.spec.encoding.x.field = Some("origin".to_string());
+    app.chart.modal.spec.encoding.x.field = Some("origin".to_string());
     app.ensure_chart_data();
     assert!(cancelled(&app), "another category");
 }
@@ -349,25 +354,18 @@ fn xy_request(x: &str) -> ChartRequest {
     ChartRequest::from_modal(&modal).unwrap()
 }
 
-fn prepared_xy(x: &str) -> ChartPrepared {
-    ChartPrepared::XY(ChartCacheXY {
-        other: false,
-        x_column: x.to_string(),
-        names: vec!["y".to_string()],
-        series: vec![vec![(0.0, 1.0)]],
-        breaks: vec![Vec::new()],
-        series_log: None,
-        x_axis_kind: chart_data::XAxisTemporalKind::Numeric,
-        rows: chart_data::RowsRead::default(),
-        rows_note: None,
-    })
-}
-
-fn has_log_series(cache: &ChartCache, request: &ChartRequest) -> bool {
-    matches!(
-        cache.prepared(request),
-        Some(ChartPrepared::XY(xy)) if xy.series_log.is_some()
-    )
+fn prepared_xy() -> PlotData {
+    PlotData::Lines(LinesData::new(
+        chart::chart_data::GroupedSeries {
+            names: vec!["y".to_string()],
+            series: vec![vec![(0.0, 1.0)]],
+            breaks: vec![Vec::new()],
+            x_axis_kind: chart::chart_data::XAxisTemporalKind::Numeric,
+            rows: chart::chart_data::RowsRead::default(),
+            other: false,
+        },
+        None,
+    ))
 }
 
 /// XY series are the payload that grows with the data, so fewer of them are kept
@@ -375,15 +373,28 @@ fn has_log_series(cache: &ChartCache, request: &ChartRequest) -> bool {
 /// only the one on screen carries a log-scale copy.
 #[test]
 fn xy_entries_are_few_and_the_one_on_screen_stays() {
+    let has_log = |cache: &ChartCache, request: &ChartRequest| {
+        matches!(
+            cache.prepared(request),
+            Some(PlotData::Lines(xy)) if xy.series_log.is_some()
+        )
+    };
     let mut cache = ChartCache::default();
     let (a, b, c) = (xy_request("a"), xy_request("b"), xy_request("c"));
-    cache.insert(a.clone(), Ok(prepared_xy("a")));
-    cache.insert(b.clone(), Ok(prepared_xy("b")));
+    cache.insert(a.clone(), Ok(prepared_xy()));
+    cache.insert(b.clone(), Ok(prepared_xy()));
+    assert!(
+        !has_log(&cache, &a) && !has_log(&cache, &b),
+        "made when wanted"
+    );
     cache.touch(&a, true);
-    assert!(has_log_series(&cache, &a));
-    assert!(!has_log_series(&cache, &b));
+    assert!(matches!(
+        cache.prepared(&a),
+        Some(PlotData::Lines(xy)) if xy.series_log.as_deref() == Some(&[vec![(0.0, 2f64.ln())]][..])
+    ));
+    assert!(!has_log(&cache, &b));
 
-    cache.insert(c.clone(), Ok(prepared_xy("c")));
+    cache.insert(c.clone(), Ok(prepared_xy()));
     assert!(cache.satisfies(&a), "on screen, so kept");
     assert!(!cache.satisfies(&b), "least recently used XY went");
     assert!(cache.satisfies(&c));
@@ -394,11 +405,13 @@ fn xy_entries_are_few_and_the_one_on_screen_stays() {
     assert_eq!(cache.entries.len(), 3);
 
     cache.touch(&c, true);
-    assert!(has_log_series(&cache, &c));
+    assert!(has_log(&cache, &c));
     assert!(
-        !has_log_series(&cache, &a),
+        !has_log(&cache, &a),
         "only the one on screen keeps its log copy"
     );
+    cache.touch(&c, false);
+    assert!(!has_log(&cache, &c), "a linear scale keeps none");
 }
 
 /// Writes a CSV with columns x and y where y = x * factor, so two datasets share a
@@ -424,7 +437,7 @@ pub(super) fn pump(
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
     loop {
         while let Ok(ev) = rx.try_recv() {
-            if let Some(next) = app.event(&ev) {
+            if let Some(next) = app.event(ev) {
                 let _ = tx.send(next);
             }
         }
@@ -438,7 +451,7 @@ pub(super) fn pump(
             "app never reached the expected state"
         );
         if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(50))
-            && let Some(next) = app.event(&ev)
+            && let Some(next) = app.event(ev)
         {
             let _ = tx.send(next);
         }
@@ -453,7 +466,7 @@ pub(super) fn open(
 ) {
     // As `home_open_path` does before it emits the `Open`.
     app.input_mode = InputMode::Normal;
-    if let Some(next) = app.event(&AppEvent::Open(vec![path], OpenOptions::default())) {
+    if let Some(next) = app.event(AppEvent::Open(vec![path], OpenOptions::default())) {
         let _ = tx.send(next);
     }
     pump(app, rx, tx, |a| {
@@ -462,15 +475,15 @@ pub(super) fn open(
 }
 
 fn select_xy(app: &mut App) {
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('c'),
         KeyModifiers::NONE,
     )));
-    assert_eq!(app.input_mode, InputMode::Chart);
-    app.chart_modal.set_mark(Mark::Line);
-    app.chart_modal.spec.encoding.x.field = Some("x".to_string());
-    app.chart_modal.spec.encoding.y.field = vec!["y".to_string()];
-    app.event(&AppEvent::Resize(80, 24));
+    assert_eq!(app.overlay, Overlay::Chart);
+    app.chart.modal.set_mark(Mark::Line);
+    app.chart.modal.spec.encoding.x.field = Some("x".to_string());
+    app.chart.modal.spec.encoding.y.field = vec!["y".to_string()];
+    app.event(AppEvent::Resize(80, 24));
 }
 
 /// A chart still being prepared when the user goes home and opens another file with
@@ -489,7 +502,7 @@ fn a_prepare_from_the_previous_dataset_does_not_land_in_the_next() {
     select_xy(&mut app);
     assert!(app.chart_preparing());
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('o'),
         KeyModifiers::CONTROL,
     )));
@@ -500,32 +513,33 @@ fn a_prepare_from_the_previous_dataset_does_not_land_in_the_next() {
     select_xy(&mut app);
     pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
 
-    let request = ChartRequest::from_modal(&app.chart_modal).unwrap();
-    let Some(ChartPrepared::XY(xy)) = app.chart_cache.prepared(&request) else {
+    let request = ChartRequest::from_modal(&app.chart.modal).unwrap();
+    let Some(PlotData::Lines(xy)) = app.chart.cache.prepared(&request) else {
         panic!("an XY chart is prepared");
     };
     assert_eq!(xy.series[0][4], (4.0, 400.0), "the second dataset's values");
     assert!(!app.chart_preparing());
 }
 
-/// A worker that dies without a result (a panic in the preparation) must not leave
-/// the in-flight record standing for the rest of the session: the `Ready` event is
-/// sent regardless, and an empty slot is recorded as a failure.
+/// A preparation that panics ends its job like any other: the selection is
+/// remembered as failed, with a message that names no internals, and the next
+/// preparation may start.
 #[test]
-fn a_ready_event_with_no_result_clears_the_inflight_record() {
+fn a_panicked_preparation_is_remembered_and_frees_the_next() {
     let (tx, _rx) = mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
     let request = histogram_request("a");
-    app.chart_inflight = Some(inflight(&request));
-    assert!(app.pending_chart_result.lock().unwrap().is_none());
-
-    app.event(&AppEvent::BackgroundChartReady);
-    assert!(app.chart_inflight.is_none());
-    assert!(matches!(app.chart_cache.get(&request), Some(Err(_))));
+    let started = start_prep(&mut app, &request, None);
+    end_prep(&mut app, started, Err(("see the log", true)));
+    assert!(!app.jobs.running(is_chart_prep));
+    assert!(matches!(
+        app.chart.cache.get(&request),
+        Some(Err(m)) if m == "Chart preparation panicked"
+    ));
 }
 
 fn key(app: &mut App, code: KeyCode) {
-    app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
 }
 
 fn screen(app: &mut App) -> String {
@@ -548,17 +562,17 @@ fn a_sort_or_filter_keeps_the_chart_columns() {
     select_xy(&mut app);
     pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
     key(&mut app, KeyCode::Esc);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
 
-    app.event(&AppEvent::Sort(vec!["y".to_string()], vec![true]));
+    app.event(AppEvent::Sort(vec!["y".to_string()], vec![true]));
     pump(&mut app, &rx, &tx, |a| !a.is_busy());
     key(&mut app, KeyCode::Char('c'));
-    assert_eq!(app.input_mode, InputMode::Chart);
-    assert_eq!(app.chart_modal.x().map(String::as_str), Some("x"));
-    assert_eq!(app.chart_modal.y(), ["y"]);
+    assert_eq!(app.overlay, Overlay::Chart);
+    assert_eq!(app.chart.modal.x().map(String::as_str), Some("x"));
+    assert_eq!(app.chart.modal.y(), ["y"]);
     pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
-    let request = ChartRequest::from_modal(&app.chart_modal).unwrap();
-    let Some(ChartPrepared::XY(xy)) = app.chart_cache.prepared(&request) else {
+    let request = ChartRequest::from_modal(&app.chart.modal).unwrap();
+    let Some(PlotData::Lines(xy)) = app.chart.cache.prepared(&request) else {
         panic!("an XY chart is prepared");
     };
     assert_eq!(
@@ -574,8 +588,8 @@ fn a_sort_or_filter_keeps_the_chart_columns() {
     );
     key(&mut app, KeyCode::Esc);
 
-    use crate::filter_modal::{FilterOperator, LogicalOperator};
-    app.event(&AppEvent::Filter(vec![FilterStatement {
+    use crate::app::modals::filter_modal::{FilterOperator, LogicalOperator};
+    app.event(AppEvent::Filter(vec![FilterStatement {
         columns: Vec::new(),
         column: "x".to_string(),
         operator: FilterOperator::Lt,
@@ -584,11 +598,11 @@ fn a_sort_or_filter_keeps_the_chart_columns() {
     }]));
     pump(&mut app, &rx, &tx, |a| !a.is_busy());
     key(&mut app, KeyCode::Char('c'));
-    assert_eq!(app.chart_modal.x().map(String::as_str), Some("x"));
-    assert_eq!(app.chart_modal.y(), ["y"]);
+    assert_eq!(app.chart.modal.x().map(String::as_str), Some("x"));
+    assert_eq!(app.chart.modal.y(), ["y"]);
     pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
-    let request = ChartRequest::from_modal(&app.chart_modal).unwrap();
-    let Some(ChartPrepared::XY(xy)) = app.chart_cache.prepared(&request) else {
+    let request = ChartRequest::from_modal(&app.chart.modal).unwrap();
+    let Some(PlotData::Lines(xy)) = app.chart.cache.prepared(&request) else {
         panic!("an XY chart is prepared");
     };
     assert_eq!(xy.series[0].len(), 3, "drawn from the filtered view");
@@ -614,22 +628,22 @@ fn quick_aggregate_steps_group_only_where_they_stop() {
         Aggregate::Sum,
         Aggregate::Mean,
     ] {
-        app.chart_modal.spec.encoding.y.aggregate = aggregate;
-        app.event(&AppEvent::Wake);
+        app.chart.modal.spec.encoding.y.aggregate = aggregate;
+        app.event(AppEvent::Wake);
         assert!(
-            app.chart_inflight.is_none(),
+            !app.jobs.running(is_chart_prep),
             "{aggregate:?} waits for the next"
         );
         assert!(app.chart_preparing(), "and says it is coming");
     }
     pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
-    let request = ChartRequest::from_modal(&app.chart_modal).unwrap();
+    let request = ChartRequest::from_modal(&app.chart.modal).unwrap();
     assert_eq!(request.spec.encoding.y.aggregate, Aggregate::Mean);
     let mut passed = request.clone();
     for aggregate in [Aggregate::Count, Aggregate::Distinct, Aggregate::Sum] {
         passed.spec.encoding.y.aggregate = aggregate;
         assert!(
-            app.chart_cache.get(&passed).is_none(),
+            app.chart.cache.get(&passed).is_none(),
             "{aggregate:?} never ran"
         );
     }
@@ -646,13 +660,13 @@ fn a_failed_preparation_shows_its_error() {
     let mut app = App::new(tx.clone(), crate::tests::test_runtime());
     open(&mut app, &rx, &tx, path);
     select_xy(&mut app);
-    app.chart_modal.spec.encoding.y.field = vec!["gone".to_string()];
-    app.event(&AppEvent::Resize(100, 24));
-    let request = ChartRequest::from_modal(&app.chart_modal).unwrap();
+    app.chart.modal.spec.encoding.y.field = vec!["gone".to_string()];
+    app.event(AppEvent::Resize(100, 24));
+    let request = ChartRequest::from_modal(&app.chart.modal).unwrap();
     pump(&mut app, &rx, &tx, |a| {
-        a.chart_cache.get(&request).is_some()
+        a.chart.cache.get(&request).is_some()
     });
-    assert!(matches!(app.chart_cache.get(&request), Some(Err(_))));
+    assert!(matches!(app.chart.cache.get(&request), Some(Err(_))));
     let text = screen(&mut app);
     assert!(text.contains("gone"), "the error names the column: {text}");
 }
@@ -680,7 +694,7 @@ fn a_bar_chart_draws_a_grouped_string_column() {
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx.clone(), crate::tests::test_runtime());
     open(&mut app, &rx, &tx, path);
-    if let Some(next) = app.event(&AppEvent::QQuery(
+    if let Some(next) = app.event(AppEvent::QQuery(
         "select delay: avg arr_delay by carrier".to_string(),
     )) {
         let _ = tx.send(next);
@@ -694,22 +708,22 @@ fn a_bar_chart_draws_a_grouped_string_column() {
 
     // `c` on carrier, text: a bar of its counts. Y takes delay, as it is.
     key(&mut app, KeyCode::Char('c'));
-    assert_eq!(app.chart_modal.mark(), Mark::Bar);
-    assert_eq!(app.chart_modal.x().map(String::as_str), Some("carrier"));
-    app.chart_modal.focus = ChartFocus::Y;
+    assert_eq!(app.chart.modal.mark(), Mark::Bar);
+    assert_eq!(app.chart.modal.x().map(String::as_str), Some("carrier"));
+    app.chart.modal.focus = ChartFocus::Y;
     key(&mut app, KeyCode::Enter);
     assert_eq!(
-        app.chart_modal.picker.as_ref().unwrap().items(),
+        app.chart.modal.picker.as_ref().unwrap().items(),
         ["delay"],
         "a number to measure"
     );
     key(&mut app, KeyCode::Enter);
     key(&mut app, KeyCode::Tab);
-    assert_eq!(app.chart_modal.focus, ChartFocus::Aggregate);
+    assert_eq!(app.chart.modal.focus, ChartFocus::Aggregate);
     key(&mut app, KeyCode::Left);
-    assert_eq!(app.chart_modal.aggregate(), Aggregate::None);
-    assert_eq!(app.chart_modal.y(), ["delay"]);
-    app.event(&AppEvent::Resize(100, 24));
+    assert_eq!(app.chart.modal.aggregate(), Aggregate::None);
+    assert_eq!(app.chart.modal.y(), ["delay"]);
+    app.event(AppEvent::Resize(100, 24));
     pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
 
     let rows = |app: &mut App| -> Vec<String> {
@@ -754,9 +768,12 @@ fn a_bar_chart_draws_a_grouped_string_column() {
         "the largest bar is long: {f9:?}"
     );
 
-    app.chart_modal.focus = ChartFocus::Order;
+    app.chart.modal.focus = ChartFocus::Order;
     key(&mut app, KeyCode::Right);
-    assert_eq!(app.chart_modal.bar_order, chart_data::BarOrder::Label);
+    assert_eq!(
+        app.chart.modal.bar_order,
+        chart::chart_data::BarOrder::Label
+    );
     pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
     assert_eq!(
         starts(&rows(&mut app)),
@@ -804,10 +821,10 @@ fn a_bar_chart_counts_rows_per_category() {
 
     // `c` on species, text: a bar of its counts, exact whatever the sample size.
     key(&mut app, KeyCode::Char('c'));
-    assert_eq!(app.chart_modal.mark(), Mark::Bar);
-    assert_eq!(app.chart_modal.aggregate(), Aggregate::Count);
-    app.chart_modal.row_limit = Some(100);
-    app.event(&AppEvent::Resize(100, 24));
+    assert_eq!(app.chart.modal.mark(), Mark::Bar);
+    assert_eq!(app.chart.modal.aggregate(), Aggregate::Count);
+    app.chart.modal.row_limit = Some(100);
+    app.event(AppEvent::Resize(100, 24));
     pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
 
     let area = ratatui::layout::Rect::new(0, 0, 100, 24);
@@ -853,18 +870,18 @@ fn a_reselection_behind_a_stale_worker_counts_as_preparing() {
 
     select_xy(&mut app);
     assert!(app.chart_preparing());
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
     assert!(
         !app.chart_preparing(),
         "nothing is wanted while the chart is closed"
     );
     assert!(
-        app.chart_inflight.as_ref().is_some_and(|i| i.stale),
-        "the orphaned worker is still remembered"
+        app.jobs.running(is_chart_prep) && app.jobs.current(is_chart_prep).is_none(),
+        "the superseded worker is still running"
     );
 
     select_xy(&mut app);

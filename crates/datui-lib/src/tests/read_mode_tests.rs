@@ -1,3 +1,4 @@
+use crate::loading::scan::Scan;
 use crate::*;
 use polars::prelude::*;
 use std::io::Write;
@@ -31,7 +32,7 @@ fn opened(path: &Path) -> (Option<crate::ReadMode>, Option<bool>) {
 /// still reads them converted. IPC files read in place beside nothing else are lazy.
 #[test]
 fn a_converted_stream_scanned_again_is_converted() {
-    use crate::ipc_stream::Part;
+    use crate::formats::ipc_stream::Part;
     let scan = Scan::from(df!("a" => [1i64]).unwrap().lazy());
     let with = |parts: Vec<Part>| OpenOptions {
         arrow_parts: Some(Arc::new(parts)),
@@ -88,7 +89,7 @@ fn every_reader_reads_as_its_format_says() {
         .finish(&mut df)
         .unwrap();
     files.push((path, FileFormat::Avro, Stored::Plain));
-    let stream = crate::ipc_stream::tests::stream(&df, None, false);
+    let stream = crate::formats::ipc_stream::tests::stream(&df, None, false);
     files.push((
         write("stream.arrow", &stream),
         FileFormat::Arrow,
@@ -146,7 +147,7 @@ fn every_reader_reads_as_its_format_says() {
     files.push((
         write(
             "t.safetensors",
-            &crate::model_files::tests::safetensors_bytes(header, 4),
+            &crate::formats::model_files::tests::safetensors_bytes(header, 4),
         ),
         FileFormat::Safetensors,
         Stored::Plain,
@@ -173,7 +174,7 @@ fn every_reader_reads_as_its_format_says() {
     files.push((write("t.wav", &wav), FileFormat::Audio, Stored::Plain));
     // One note on and off, then the end of the track.
     let track = b"\0\x90\x3c\x40\x10\x80\x3c\0\0\xff\x2f\0";
-    let midi = crate::midi::tests::smf(0, 96, &[track]);
+    let midi = crate::tests::fixtures::smf(0, 96, &[track]);
     files.push((write("t.mid", &midi), FileFormat::Midi, Stored::Plain));
     #[cfg(feature = "sqlite")]
     {

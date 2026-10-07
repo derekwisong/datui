@@ -1,22 +1,14 @@
-//! Recall of previously submitted values for [`super::TextInput`].
-//!
-//! Each history has an id, which is also the name of the cache file it is
-//! persisted to, so the query, SQL and fuzzy inputs each keep their own list.
-//! Loading is lazy: nothing touches the disk until the user actually walks back
-//! through the history or submits a value.
-//!
-//! Reading and writing go through [`CacheManager`], which holds a lock across
-//! the whole read-modify-write. Two datui instances submitting a query at the
-//! same moment then merge instead of one overwriting the other.
+//! Recall of submitted values for [`super::TextInput`]. Each history's id names its
+//! cache file (query, SQL and fuzzy keep separate lists); loaded lazily on first use.
+//! Reads and writes go through [`CacheManager`] under a lock across read-modify-write,
+//! so concurrent instances merge.
 
 use color_eyre::Result;
 
 use crate::cache::CacheManager;
 
-/// Append an entry, skipping it when it repeats the previous one.
-///
-/// Only consecutive duplicates are dropped: a value the user returns to after
-/// trying something else is worth its own slot in the list.
+/// Append an entry unless it repeats the previous one (only consecutive duplicates are
+/// dropped).
 pub fn push_entry(entries: &mut Vec<String>, entry: String) {
     if entries.last() == Some(&entry) {
         return;
@@ -73,6 +65,7 @@ impl InputHistory {
         self.id.is_some()
     }
 
+    #[cfg(test)]
     pub fn entries(&self) -> &[String] {
         &self.entries
     }
@@ -93,10 +86,8 @@ impl InputHistory {
         Ok(())
     }
 
-    /// Record `value` as the newest entry and persist the list.
-    ///
-    /// The persisted copy is re-derived from whatever is on disk, so an entry
-    /// added by another running instance survives this write.
+    /// Record `value` as newest and persist, merged with what is on disk so other instances'
+    /// entries survive.
     pub fn remember(&mut self, value: &str, cache: &CacheManager) -> Result<()> {
         let Some(id) = self.id.clone() else {
             return Ok(());
@@ -129,10 +120,8 @@ impl InputHistory {
         self.stash = None;
     }
 
-    /// Step to an older entry, returning the value to show.
-    ///
-    /// `current` is stashed on the first step so that walking back down returns
-    /// to it.
+    /// Step to an older entry, returning it; `current` is stashed on the first step so
+    /// walking back returns to it.
     pub fn older(&mut self, current: &str, cache: Option<&CacheManager>) -> Option<String> {
         self.id.as_ref()?;
         if !self.loaded {

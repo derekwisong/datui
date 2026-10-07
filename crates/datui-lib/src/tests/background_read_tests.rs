@@ -25,7 +25,7 @@ fn app() -> (
 #[test]
 fn r_reverses_in_the_background() {
     let (mut app, rx, tx, _dir) = app();
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('r'),
         KeyModifiers::NONE,
     )));
@@ -45,7 +45,7 @@ fn r_reverses_in_the_background() {
 #[test]
 fn a_column_order_is_read_in_the_background() {
     let (mut app, rx, tx, _dir) = app();
-    app.event(&AppEvent::ColumnOrder(
+    app.event(AppEvent::ColumnOrder(
         vec!["b".to_string(), "a".to_string()],
         1,
     ));
@@ -68,8 +68,8 @@ fn a_column_order_is_read_in_the_background() {
 #[test]
 fn a_column_order_does_not_wait_on_a_read_of_other_columns() {
     let (mut app, rx, tx, _dir) = app();
-    app.event(&AppEvent::ColumnOrder(vec!["a".to_string()], 0));
-    app.event(&AppEvent::ColumnOrder(
+    app.event(AppEvent::ColumnOrder(vec!["a".to_string()], 0));
+    app.event(AppEvent::ColumnOrder(
         vec!["b".to_string(), "a".to_string()],
         0,
     ));
@@ -83,4 +83,74 @@ fn a_column_order_does_not_wait_on_a_read_of_other_columns() {
         .map(|name| name.to_string())
         .collect();
     assert_eq!(shown, ["b", "a"]);
+}
+
+/// One Apply in the sort and filter sidebar reads the page once, however much it
+/// changed: a filter and a sort together are one view, not two reads.
+#[test]
+fn one_sidebar_apply_reads_one_page() {
+    use crate::app::modals::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+    let (mut app, rx, tx, _dir) = app();
+    app.sync_sort_filter_modal();
+    let before = app.home_app.reads.pages;
+    app.sort_filter_modal.filter.statements = vec![FilterStatement {
+        columns: Vec::new(),
+        column: "a".to_string(),
+        operator: FilterOperator::Gt,
+        value: "3".to_string(),
+        logical_op: LogicalOperator::And,
+    }];
+    let b = app
+        .sort_filter_modal
+        .sort
+        .columns
+        .iter_mut()
+        .find(|c| c.name == "b")
+        .unwrap();
+    b.sort_order = Some(1);
+    b.sort_descending = true;
+    if let Some(next) = app.apply_sort_filter() {
+        let _ = tx.send(next);
+    }
+    super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !crate::tests::work_pending(a));
+    assert_eq!(
+        app.home_app.reads.pages - before,
+        1,
+        "one read for one apply"
+    );
+    let state = app.data_table_state.as_ref().unwrap();
+    let shown = state.display_df().unwrap().column("a").unwrap().get(0);
+    assert_eq!(shown.unwrap(), AnyValue::Int64(29), "filtered and sorted");
+}
+
+/// A sidebar apply says what it does: sorting, filtering, or only reading the
+/// page again for a change of columns.
+#[test]
+fn a_sidebar_apply_says_what_it_does() {
+    use crate::app::modals::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+    let (mut app, rx, tx, _dir) = app();
+    let filter = FilterStatement {
+        columns: Vec::new(),
+        column: "a".to_string(),
+        operator: FilterOperator::Gt,
+        value: "3".to_string(),
+        logical_op: LogicalOperator::And,
+    };
+    let order = vec!["b".to_string(), "a".to_string()];
+    for (filters, sort, says) in [
+        (vec![], vec![], App::LOADING_BUFFER),
+        (vec![filter.clone()], vec![], "Filtering..."),
+        (vec![filter], vec!["b".to_string()], "Sorting..."),
+    ] {
+        let descending = vec![false; sort.len()];
+        app.event(AppEvent::ApplyView(
+            order.clone(),
+            0,
+            filters,
+            sort,
+            descending,
+        ));
+        assert_eq!(app.status_message.as_deref(), Some(says));
+        super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !crate::tests::work_pending(a));
+    }
 }

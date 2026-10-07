@@ -13,6 +13,7 @@
 use std::borrow::Cow;
 
 use crate::render::context::RenderContext;
+use datui_cli::keys::{Context, Key};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -32,7 +33,7 @@ pub struct Hint {
 }
 
 impl Hint {
-    pub fn new(key: impl Into<Cow<'static, str>>, label: impl Into<Cow<'static, str>>) -> Self {
+    fn new(key: impl Into<Cow<'static, str>>, label: impl Into<Cow<'static, str>>) -> Self {
         Self {
             key: key.into(),
             label: label.into(),
@@ -40,33 +41,87 @@ impl Hint {
         }
     }
 
+    /// The same key, its label padded to `width` columns: a slot whose neighbors do
+    /// not move as its word changes.
+    pub fn padded(mut self, width: usize) -> Self {
+        self.label = format!("{:<width$}", self.label).into();
+        self
+    }
+
+    /// The slot with nothing in it: blanks as wide as the key, and `width` for the
+    /// label, so what follows does not move.
+    pub fn blank(self, width: usize) -> Self {
+        Self::new(
+            " ".repeat(crate::glyphs::display_width(&self.key)),
+            " ".repeat(width),
+        )
+    }
+
+    /// The same key with its label in the accent.
+    pub fn accented(mut self) -> Self {
+        self.accented = true;
+        self
+    }
+
     fn width(&self) -> usize {
         crate::glyphs::display_width(&self.key) + 1 + crate::glyphs::display_width(&self.label)
     }
 }
 
-/// A key from the key registry, as a hint: the keys written compactly (`n / N` is
-/// `n/N`) beside the entry's label. The registry is the one place a label is
-/// spelled, so the footer and the help cannot disagree.
-pub fn registry_hint(context: datui_cli::keys::Context, keys: &str) -> Hint {
+/// A key from the key registry, as a hint: the keys as the hint names them, written
+/// compactly, beside the entry's label. The registry is the one place a label is
+/// spelled, so the footers and the help cannot disagree: there is no other way to
+/// build a hint.
+///
+/// `keys` names the entry as written (`n / N`) or some of its keys (`d` of `d /
+/// Del`, `↑ / ↓` of `↑ / ↓ (j/k)`).
+pub fn registry_hint(context: Context, keys: &str) -> Hint {
     registry_hint_in(context, None, keys)
 }
 
 /// [`registry_hint`] for the entry in one group of the screen, where the screen
 /// lists the keys twice (Find's `Esc`: Cancel in the prompt, Clear at the table).
-pub fn registry_hint_in(
-    context: datui_cli::keys::Context,
+pub fn registry_hint_in(context: Context, group: Option<&str>, keys: &str) -> Hint {
+    let label = entry(context, group, keys).map_or("", |k| k.label);
+    Hint::new(chip_keys(keys), label)
+}
+
+/// [`registry_hint_in`] saying `label`, which must be one of the entry's words: what
+/// the key does there turns on the screen's state.
+pub fn registry_hint_as(
+    context: Context,
     group: Option<&str>,
     keys: &str,
+    label: &'static str,
 ) -> Hint {
+    let entry = entry(context, group, keys);
+    debug_assert!(
+        entry.is_none_or(|k| k.says(label)),
+        "{keys:?} in the {context:?} registry does not say {label:?}"
+    );
+    Hint::new(chip_keys(keys), label)
+}
+
+fn entry(context: Context, group: Option<&str>, keys: &str) -> Option<&'static Key> {
     let entry = datui_cli::keys::lookup(context, group, keys);
     debug_assert!(
         entry.is_some(),
         "{keys:?} is not in the {context:?} registry"
     );
-    let label = entry.map_or("", |k| k.label);
-    // `^G` in a hint, as in the dialogs' footers; `Ctrl+G` in prose.
-    Hint::new(keys.replace(" / ", "/").replace("Ctrl+", "^"), label)
+    entry
+}
+
+/// Keys as a hint writes them: `↑↓` for `↑ / ↓` in the glyph set in use, `n/N` for
+/// `n / N`, `^G` for `Ctrl+G`, `type` for `(type)`.
+fn chip_keys(keys: &str) -> String {
+    let g = crate::glyphs::get();
+    match keys {
+        "↑ / ↓" => g.updown.to_string(),
+        "← / →" => g.updown_lr.to_string(),
+        "(type)" => "type".to_string(),
+        "Delete" => "Del".to_string(),
+        _ => keys.replace(" / ", "/").replace("Ctrl+", "^"),
+    }
 }
 
 /// What the footer says about a followed file.
@@ -137,13 +192,13 @@ enum PositionForm {
 impl Position {
     fn text(&self, form: PositionForm, spinner: &str) -> Option<(String, String)> {
         let total = |short: bool| match self.total {
-            Total::Known(n) if short => crate::discover::format_rows(n),
+            Total::Known(n) if short => crate::home::discover::format_rows(n),
             Total::Known(n) => crate::numfmt::group_chrome(n),
-            Total::Partial(n) if short => format!("{}+", crate::discover::format_rows(n)),
+            Total::Partial(n) if short => format!("{}+", crate::home::discover::format_rows(n)),
             Total::Partial(n) => format!("{}+", crate::numfmt::group_chrome(n)),
             // As precise as a sample is, whatever the room.
-            Total::Estimated(n) if short => format!("~{}", crate::discover::format_rows(n)),
-            Total::Estimated(n) => format!("~{} (est.)", crate::discover::format_rows(n)),
+            Total::Estimated(n) if short => format!("~{}", crate::home::discover::format_rows(n)),
+            Total::Estimated(n) => format!("~{} (est.)", crate::home::discover::format_rows(n)),
             Total::Pending => spinner.to_string(),
             Total::Unknown => "?".to_string(),
         };
@@ -248,7 +303,7 @@ impl ProgressCount {
 
     fn number(&self, n: u64) -> String {
         if self.in_bytes {
-            crate::discover::format_size(n)
+            crate::numfmt::bytes(n)
         } else {
             crate::numfmt::group_chrome(n as usize)
         }
@@ -571,7 +626,10 @@ impl Footer {
         // Left: the pipeline.
         let mut steps: Vec<Vec<Span>> = Vec::new();
         if let (Some(w), Some(name)) = (fit.dataset, &self.dataset) {
-            steps.push(vec![Span::styled(elide_middle(name, w), label)]);
+            steps.push(vec![Span::styled(
+                crate::glyphs::fit_middle(name, w),
+                label,
+            )]);
         }
         // The steps a click presses a key on, by their place among the steps.
         let mut step_keys: Vec<(usize, &'static str)> = Vec::new();
@@ -746,38 +804,20 @@ impl Footer {
 pub const QUERY_STAGE: &str = "query";
 
 /// A message in `width` columns. One that ends in a path keeps what it says and
-/// the path's end, `Exported to ...daily/out.csv`; any other is cut at its end.
+/// the path's end, `Exported to …daily/out.csv`; any other is cut at its end.
 pub fn cut_message(message: &str, path_from: Option<usize>, width: usize) -> String {
-    if crate::glyphs::display_width(message) <= width {
+    use crate::glyphs::{display_width, fit, fit_start, get};
+    if display_width(message) <= width {
         return message.to_string();
     }
     if let Some((prefix, path)) = path_from.and_then(|at| message.split_at_checked(at)) {
-        let mark = "...";
-        let lead = crate::glyphs::display_width(prefix) + mark.len();
+        let room = width.saturating_sub(display_width(prefix));
         // Room for a file name's worth of the path, or the plain cut.
-        if width >= lead + 8 {
-            let tail = crate::glyphs::take_columns_end(path, width - lead);
-            return format!("{prefix}{mark}{tail}");
+        if room >= display_width(get().ellipsis) + 8 {
+            return format!("{prefix}{}", fit_start(path, room));
         }
     }
-    crate::glyphs::fit_cells(message, width, "...").into_owned()
-}
-
-/// `text` in `width` columns, cut from the middle: `weather/…/daily`.
-pub fn elide_middle(text: &str, width: usize) -> String {
-    let full = crate::glyphs::display_width(text);
-    if full <= width {
-        return text.to_string();
-    }
-    let mark = crate::glyphs::get().ellipsis;
-    let mark_w = crate::glyphs::display_width(mark);
-    if width <= mark_w {
-        return crate::glyphs::take_columns(mark, width).to_string();
-    }
-    let room = width - mark_w;
-    let head = crate::glyphs::take_columns(text, room.div_ceil(2));
-    let tail = crate::glyphs::take_columns_end(text, room - crate::glyphs::display_width(head));
-    format!("{head}{mark}{tail}")
+    fit(message, width)
 }
 
 /// Draw the rule above the footer: the table's column separator color, no fill.
@@ -873,6 +913,29 @@ fn bar(fraction: f64, width: usize) -> String {
 mod tests {
     use super::*;
 
+    /// A hint says the registry's word for its key, or one of the other words the
+    /// entry lists for it: the footers and the help are written from one place.
+    #[test]
+    fn a_hint_says_the_registrys_words() {
+        let arrows = registry_hint(Context::Inspector, "↑ / ↓");
+        let entry = datui_cli::keys::lookup(Context::Inspector, None, "↑ / ↓ (j/k)").unwrap();
+        assert_eq!(arrows.label, entry.label);
+        assert_eq!(arrows.key, crate::glyphs::get().updown);
+        let differ = registry_hint_as(Context::Inspector, None, "f", "Differ");
+        assert_eq!(
+            (differ.key.as_ref(), differ.label.as_ref()),
+            ("f", "Differ")
+        );
+        assert_eq!(registry_hint(Context::Global, "Ctrl+O").key, "^O");
+    }
+
+    /// A word of the footer's own is refused, wherever the footer is drawn.
+    #[test]
+    #[should_panic(expected = "does not say")]
+    fn a_word_of_the_footers_own_is_refused() {
+        registry_hint_as(Context::Inspector, None, "f", "Hidden");
+    }
+
     fn line(footer: &Footer, width: u16) -> String {
         let area = Rect::new(0, 0, width, 1);
         let mut buf = Buffer::empty(area);
@@ -902,7 +965,10 @@ mod tests {
                 total: Total::Known(1_204_331),
                 column: None,
             }),
-            hints: vec![Hint::new("n/N", "Next"), Hint::new("Esc", "Clear")],
+            hints: vec![
+                registry_hint_in(Context::Find, Some("At the table"), "n / N"),
+                registry_hint_in(Context::Find, Some("At the table"), "Esc"),
+            ],
             help: Some("?"),
             query_key: None,
             view_key: None,
@@ -1012,12 +1078,13 @@ mod tests {
     fn a_path_flash_keeps_its_file_name() {
         let message = "Exported to /home/someone/projects/weather/daily/out.csv";
         let cut = super::cut_message(message, Some("Exported to ".len()), 32);
-        assert!(cut.starts_with("Exported to ..."), "{cut}");
+        let mark = crate::glyphs::get().ellipsis;
+        assert!(cut.starts_with(&format!("Exported to {mark}")), "{cut}");
         assert!(cut.ends_with("/out.csv"), "{cut}");
         assert_eq!(crate::glyphs::display_width(&cut), 32);
         let plain = super::cut_message("Copied 3 rows to the clipboard", None, 12);
         assert!(
-            plain.starts_with("Copied") && plain.ends_with("..."),
+            plain.starts_with("Copied") && plain.ends_with(mark),
             "{plain}"
         );
         assert_eq!(super::cut_message(message, Some(12), 200), message);
@@ -1049,8 +1116,8 @@ mod tests {
 
     #[test]
     fn a_long_name_is_cut_in_the_middle() {
-        assert_eq!(elide_middle("abcdefghij", 10), "abcdefghij");
-        let cut = elide_middle("weather/stations/daily", 12);
+        assert_eq!(crate::glyphs::fit_middle("abcdefghij", 10), "abcdefghij");
+        let cut = crate::glyphs::fit_middle("weather/stations/daily", 12);
         assert_eq!(crate::glyphs::display_width(&cut), 12);
         assert!(cut.starts_with("weath") && cut.ends_with("daily"), "{cut}");
     }
@@ -1063,7 +1130,10 @@ mod tests {
                 total: Total::Known(1_204_331),
                 column: None,
             }),
-            hints: vec![Hint::new("+/-", "Filter"), Hint::new("F", "Counts")],
+            hints: vec![
+                registry_hint(Context::Table, "+ / -"),
+                registry_hint(Context::Table, "F"),
+            ],
             help: Some("?"),
             spinner: "|",
             ..Footer::default()

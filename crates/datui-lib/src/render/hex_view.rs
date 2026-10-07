@@ -1,9 +1,9 @@
 //! The hex view: a takeover of the main area. A header line names the file, a header
 //! row numbers the bytes, then a row of bytes per line (offset, hex, ASCII), with the
 //! byte inspector beside them when there is room, and a status line at the foot. The
-//! keys are on the control bar.
+//! keys are on the footer.
 
-use crate::hex_view::{ByteClass, Geometry, HexView, PromptKind, class, hex_x, readings};
+use crate::app::hex_view::{ByteClass, Geometry, HexView, PromptKind, class, hex_x, readings};
 use crate::render::context::RenderContext;
 use crate::widgets::ui::Surface;
 use ratatui::buffer::Buffer;
@@ -14,7 +14,7 @@ use ratatui::widgets::{Clear, Paragraph, Widget};
 
 pub fn render(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderContext) {
     let has_specs = app.has_format_specs();
-    if let Some(view) = app.hex.as_mut() {
+    if let Some(view) = app.hex.view.as_mut() {
         draw(area, buf, view, ctx, has_specs);
     }
 }
@@ -68,7 +68,8 @@ pub fn draw(
     // Without room beside the bytes, an open inspector takes the rows under them, up
     // to half: the bytes keep the other half, and what does not fit is counted.
     let below = if !view.panel_fits(area.width) && view.inspector_open && !view.is_empty() {
-        let lines = readings(view.slice(view.cursor, crate::hex_view::INSPECTED)).len() as u16 + 2;
+        let lines =
+            readings(view.slice(view.cursor, crate::app::hex_view::INSPECTED)).len() as u16 + 2;
         lines.min(body_height / 2)
     } else {
         0
@@ -87,9 +88,10 @@ pub fn draw(
     let bytes_area = if geometry.panel {
         // The panel sits against the bytes, not at the far edge: on a wide screen the
         // readings stay next to the bytes they read.
-        let used = crate::hex_view::row_width(geometry.shown, geometry.digits, geometry.ascii) + 2;
+        let used =
+            crate::app::hex_view::row_width(geometry.shown, geometry.digits, geometry.ascii) + 2;
         Rect {
-            width: (used as u16).min(body.width - crate::hex_view::PANEL_WIDTH - 1),
+            width: (used as u16).min(body.width - crate::app::hex_view::PANEL_WIDTH - 1),
             ..body
         }
     } else {
@@ -133,7 +135,7 @@ pub fn draw(
         }
         let panel = Rect {
             x: x + 1,
-            width: crate::hex_view::PANEL_WIDTH,
+            width: crate::app::hex_view::PANEL_WIDTH,
             ..body
         };
         inspector(panel, buf, view, ctx);
@@ -141,7 +143,7 @@ pub fn draw(
         let under = Rect {
             y: body.y + body.height - below,
             height: below,
-            width: body.width.min(crate::hex_view::PANEL_WIDTH + 12),
+            width: body.width.min(crate::app::hex_view::PANEL_WIDTH + 12),
             ..body
         };
         inspector(under, buf, view, ctx);
@@ -170,7 +172,11 @@ pub fn draw(
             area,
             buf,
             picker,
-            ("Format", "Read", "No spec matches"),
+            (
+                "Format",
+                datui_cli::keys::Context::FormatPicker,
+                "No spec matches",
+            ),
             ctx,
         );
     }
@@ -260,7 +266,7 @@ fn byte_rows(
     let select_style = ctx.highlight_style();
     let hex_start = area.x + geometry.digits as u16 + 2;
     let base = hex_x(geometry.first_col);
-    let ascii_start = hex_start as usize + crate::hex_view::hex_width(geometry.shown) + 2;
+    let ascii_start = hex_start as usize + crate::app::hex_view::hex_width(geometry.shown) + 2;
     let right = (area.x + area.width) as usize;
     let cursor_row = view.cursor / per;
     for r in 0..rows {
@@ -363,7 +369,7 @@ fn inspector(area: Rect, buf: &mut Buffer, view: &HexView, ctx: &RenderContext) 
         );
         y += 1;
     }
-    let readings = readings(view.slice(view.cursor, crate::hex_view::INSPECTED));
+    let readings = readings(view.slice(view.cursor, crate::app::hex_view::INSPECTED));
     let fit = |text: &str, w: usize| crate::glyphs::fit_cells(text, w, g.ellipsis).into_owned();
     let marked = usize::from(view.selection().is_some());
     for (i, reading) in readings.iter().enumerate() {
@@ -573,8 +579,8 @@ fn status(area: Rect, buf: &mut Buffer, view: &HexView, has_specs: bool, ctx: &R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fixed_records::Bytes;
-    use crate::hex_view::{HexSource, Origin};
+    use crate::app::hex_view::{HexSource, Origin};
+    use crate::formats::fixed_records::Bytes;
     use std::path::PathBuf;
     use std::sync::Arc;
 

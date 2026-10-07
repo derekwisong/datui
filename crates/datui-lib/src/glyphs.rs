@@ -1,20 +1,11 @@
-//! Terminal glyphs, with an ASCII fallback.
+//! Terminal glyphs, with an ASCII fallback for terminals not doing UTF-8 (SSH, a C
+//! locale), where Unicode would render as replacement boxes.
 //!
-//! datui runs on a modern desktop terminal *and* over SSH on a plain server with a
-//! bitmap font and a C locale. Neither should be the one that suffers: on a capable
-//! terminal the box-drawing and arrow characters carry real meaning, and on a
-//! limited one they turn into replacement boxes that make the UI harder to read
-//! rather than prettier.
-//!
-//! Nothing here is a Nerd Font glyph. Every Unicode character has passed the
-//! font-coverage audit (`scripts/code/audit_glyphs.py`): present in JetBrainsMono
-//! Nerd Font, and never an `Emoji=Yes, Emoji_Presentation=No` codepoint that
-//! Liberation Mono and Noto Sans Mono don't also carry, because a terminal whose
-//! font lacks one of those falls back to the *color emoji* font and renders a
-//! blank cell or a clipped blob (#325). Nerd Font icons appear only in the Omarchy
-//! menu definition, where the font is guaranteed — and in a user's own `[glyphs]`
-//! overrides, where the risk is theirs. The ASCII fallback exists for terminals
-//! that are not doing UTF-8 at all.
+//! No Nerd Font glyphs. Every Unicode character passes the font-coverage audit
+//! (`scripts/code/audit_glyphs.py`): present in JetBrainsMono Nerd Font, and never an
+//! `Emoji=Yes, Emoji_Presentation=No` codepoint missing from Liberation Mono or Noto Sans
+//! Mono (those fall back to the color-emoji font and draw blank or clipped). Nerd Font
+//! icons appear only in the Omarchy menu and in users' own `[glyphs]` overrides.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -27,9 +18,7 @@ use unicode_width::UnicodeWidthStr;
 /// Symbols used by the UI, in whichever alphabet the terminal can render.
 #[derive(Debug, Clone, Copy)]
 pub struct Glyphs {
-    /// Whether this is the Unicode set. `UNICODE` and `ASCII` are consts, so
-    /// every use instantiates fresh promoted statics — neither the set's address
-    /// nor its fields' can identify it. The set says itself.
+    /// Whether this is the Unicode set: the sets are consts, so no address identifies them.
     pub unicode: bool,
     /// Marks the selected row — the one thing that must be findable instantly.
     pub selector: &'static str,
@@ -41,18 +30,19 @@ pub struct Glyphs {
     pub prompt: &'static str,
     /// Vertical rule between panes.
     pub rule: &'static str,
-    /// The frozen-columns separator while the window is too narrow for every frozen
-    /// column: the rest scroll after it until there is room. One column wide, like
-    /// `rule`, and visibly not it.
+    /// The frozen-columns separator while too narrow for every frozen column (the rest
+    /// scroll after it). One column wide, like `rule`, and visibly different.
     pub rule_broken: &'static str,
     /// Truncation marker.
     pub ellipsis: &'static str,
+    /// The home screen's row up a level.
+    pub up: &'static str,
     /// Between row and column counts: `2.4M × 18`.
     pub times: &'static str,
     /// Section collapse markers; both must be the same display width.
     pub collapsed: &'static str,
     pub expanded: &'static str,
-    /// Keycap names for the control bar. Named keys are spelled out there, matching
+    /// Keycap names for the footer. Named keys are spelled out there, matching
     /// the rest of datui, so only the arrows need a fallback.
     pub updown: &'static str,
     /// Left/right pair, for the fold hint.
@@ -71,13 +61,8 @@ pub struct Glyphs {
     /// Spinner frames, cycled while something is loading. Every frame must be the
     /// same display width, or the text beside it jitters.
     pub spinner: &'static [&'static str],
-    /// Where a row's data lives, shown beside its name.
-    ///
-    /// Beside the name on purpose. The detail pane has said this for a long time, but
-    /// on a full-screen ultrawide the pane is a foot away from the row the cursor is
-    /// on, and "is this one in the cloud?" is a question you ask about the row you are
-    /// looking at. All five must be the same display width or every name after them
-    /// shifts by a column.
+    /// Where a row's data lives, beside its name (on an ultrawide the details pane is too
+    /// far from the row). All five must share a display width, or names shift.
     pub here: &'static str,
     pub in_memory: &'static str,
     pub over_network: &'static str,
@@ -86,9 +71,8 @@ pub struct Glyphs {
     /// A null cell. Blank is what a null used to be, and blank is also what an empty
     /// string is, so the two were indistinguishable.
     pub null: &'static str,
-    /// A cell whose file has no such column: not a null the data holds, but a column
-    /// that file was written without. One character wide, like `null`, so a column of
-    /// them lines up.
+    /// A cell whose file was written without this column (not a null in the data). One
+    /// column wide, like `null`.
     pub absent: &'static str,
     /// A cell whose file stores the column in a type the column cannot hold, so it was
     /// not read from that file. A value is there; it is not this type.
@@ -96,10 +80,9 @@ pub struct Glyphs {
     /// After a column's name in the header: this column is not in every file, or the
     /// files disagree on its type. A footnote mark, and the Info panel is the note.
     pub drift_mark: &'static str,
-    /// After a column's name in the header: the view is sorted by this column, and
-    /// which way. The header width arithmetic counts these like `drift_mark`, so both
-    /// must be one column wide in both sets. Triangles, not `arrow_left`/`arrow_right`,
-    /// which already mean "columns off-screen" in the same header row.
+    /// After a sorted column's name in the header, giving the direction. One column wide in
+    /// both sets (header arithmetic counts it like `drift_mark`); triangles, since arrows
+    /// mean off-screen columns in that row.
     pub sort_asc: &'static str,
     pub sort_desc: &'static str,
     /// The rail down the left edge of the row the cursor is on.
@@ -144,9 +127,8 @@ pub struct Glyphs {
     pub scroll_track: &'static str,
     /// Stands in for a value that is bytes, not text.
     pub binary_stub: &'static str,
-    /// In a one-line preview of text, where the value has a line break, a tab, or
-    /// another control character, which a terminal cell cannot draw. One column
-    /// wide in both sets. The inspector shows the characters themselves.
+    /// Marks for a line break, tab or other control character in a one-line preview (a cell
+    /// cannot draw them); one column wide in both sets. The inspector shows them as is.
     pub newline_mark: &'static str,
     pub tab_mark: &'static str,
     pub control_mark: &'static str,
@@ -174,9 +156,8 @@ pub struct Glyphs {
     pub plot: PlotMarks,
 }
 
-/// The marks ratatui's `Chart`, `Canvas` and `BarChart` put on a plot, and the lines
-/// of its axes and legend frame. ratatui picks none of these from the locale, so each
-/// set names its own.
+/// The marks ratatui's `Chart`, `Canvas` and `BarChart` draw, and their axis and legend
+/// lines; ratatui ignores the locale, so each set names its own.
 #[derive(Debug, Clone, Copy)]
 pub struct PlotMarks {
     /// A line: an XY line, a density curve, a fit drawn over bars, a dense Q-Q plot.
@@ -230,13 +211,10 @@ impl PlotMarks {
         }
     }
 
-    /// ratatui's `Chart` draws its axes and legend frame from `line::NORMAL`
-    /// whatever the set, and exposes neither; this finds them by shape and redraws
-    /// them from the set's own `axis` lines. The axes are the `└` with `│` above it
-    /// and a `─` run to its right that no `┘` closes; the legend is a closed box.
-    /// A label, title or name holding the same characters is left alone. A chart
-    /// too small for both axes has no corner to find them by, so there every line
-    /// cell changes. Nothing changes under the Unicode set.
+    /// Redraw ratatui `Chart` axes and legend frame (always `line::NORMAL`) in this set's
+    /// `axis` lines, found by shape: the axes are the `└` with `│` above and an unclosed
+    /// `─` run to its right; the legend is a closed box. Labels with those characters stay.
+    /// A chart too small for both axes changes every line cell. A no-op under Unicode.
     pub fn redraw_axes(&self, area: Rect, buf: &mut Buffer) {
         let (from, to) = (line::NORMAL, self.axis);
         if from == to {
@@ -329,6 +307,7 @@ const UNICODE: Glyphs = Glyphs {
     rule: "│",
     rule_broken: "┆",
     ellipsis: "…",
+    up: "..",
     times: "×",
     collapsed: "▸ ",
     expanded: "▾ ",
@@ -340,13 +319,10 @@ const UNICODE: Glyphs = Glyphs {
     r_squared: "R²",
     rho: "ρ",
     spinner: &["⣷", "⣯", "⣟", "⡿", "⢿", "⣻", "⣽", "⣾"],
-    // Plain Unicode from blocks the common coding fonts actually cover — checked
-    // against JetBrainsMono Nerd Font, Liberation Mono and Noto Sans Mono per
-    // codepoint (`fc-list "<font>:charset=<hex>"`). A slot the terminal font lacks
-    // is worse than absent: an `Emoji=Yes, Emoji_Presentation=No` codepoint (☁, ☑)
-    // falls back to the *color emoji* font and renders a blank cell or a clipped
-    // blob, and no font the user picks fixes that. That audit retired ☁ U+2601,
-    // ⇅ U+21C5, ☑/☐ U+2611/U+2610 and ◐/◑ U+25D0/U+25D1 from this set (#325).
+    // Plain Unicode from blocks the common coding fonts cover, checked per codepoint
+    // (`fc-list "<font>:charset=<hex>"`) against JetBrainsMono Nerd Font, Liberation Mono
+    // and Noto Sans Mono. Emoji-class codepoints (☁, ⇅, ☑/☐, ◐/◑) were retired: they fall
+    // back to the color-emoji font.
     here: "◦",
     in_memory: "▪",
     over_network: "↕",
@@ -377,9 +353,8 @@ const UNICODE: Glyphs = Glyphs {
     dot_empty: "○",
     score_marks: &["○", "◔", "◕", "◉", "●"],
     check: "✓",
-    // Not ⚠ U+26A0: emoji-class, and absent from Liberation Mono and Noto Sans
-    // Mono, so those setups hit the color-emoji fallback. The caution triangle's
-    // shape, from a codepoint all three floor fonts carry.
+    // Not ⚠ U+26A0 (emoji-class, missing from Liberation and Noto): the triangle's shape
+    // from a codepoint all three carry.
     warning: "▲",
     scroll_thumb: "█",
     scroll_track: "░",
@@ -422,6 +397,7 @@ const ASCII: Glyphs = Glyphs {
     rule: "|",
     rule_broken: ":",
     ellipsis: "...",
+    up: "..",
     times: "x",
     collapsed: "+ ",
     expanded: "- ",
@@ -534,10 +510,8 @@ pub enum SlotOverride {
     Many(Vec<String>),
 }
 
-/// The overridable single-string slots, passed to a callback macro so the name
-/// list, the default lookup and the assignment cannot drift apart. The wordmark
-/// is deliberately absent: it is the brand, and it already yields to the
-/// one-line title wherever it cannot be drawn.
+/// The overridable single-string slots, via a callback macro so names, defaults and
+/// assignment cannot drift. The wordmark is excluded: it is the brand.
 macro_rules! with_string_slots {
     ($callback:ident) => {
         $callback!(
@@ -548,6 +522,7 @@ macro_rules! with_string_slots {
             rule,
             rule_broken,
             ellipsis,
+            up,
             times,
             collapsed,
             expanded,
@@ -601,10 +576,8 @@ macro_rules! with_string_slots {
     };
 }
 
-/// Instructional text with its Unicode characters mapped to ASCII, for the
-/// help overlay on a terminal that is not doing UTF-8. Applied at the render
-/// boundary only — user data is never transliterated. The pairs cover what
-/// the help files actually contain; the audit that counts them is
+/// Instructional text mapped to ASCII for the help overlay on a non-UTF-8 terminal, at
+/// the render boundary only (user data is never transliterated). Coverage is checked by
 /// `every_help_screen_is_ascii_clean`.
 pub fn asciify_instructions(text: &str) -> std::borrow::Cow<'_, str> {
     if get().unicode || text.is_ascii() {
@@ -613,12 +586,9 @@ pub fn asciify_instructions(text: &str) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Owned(instructions_in_ascii(text))
 }
 
-/// `text` with every instructional character replaced by its ASCII twin,
-/// whatever the terminal. The twins are wider (`↑` is `Up`), so help rows
-/// laid out as key, two or more spaces, description are re-padded one
-/// section (a run of non-blank lines) at a time: descriptions stay at the
-/// columns they were authored at, and when an ASCII key no longer fits, the
-/// whole section moves right together rather than that one row.
+/// `text` with every instructional character replaced by its (wider) ASCII twin. Help
+/// rows (key, two+ spaces, description) are re-padded per section, so descriptions
+/// stay aligned and a section shifts right together when a key outgrows its column.
 pub fn instructions_in_ascii(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + text.len() / 8);
     let mut section: Vec<&str> = Vec::new();
@@ -681,10 +651,9 @@ fn ascii_width(text: &str) -> usize {
     ascii.len()
 }
 
-/// Where a help row's key ends and its description starts: the first run of
-/// two or more spaces after the indent, with text after it. `None` for a
-/// line without one (prose, a heading, a blank line). Help prose takes one
-/// space between sentences, so the first double space is always a key gap.
+/// Where a help row's key ends and its description starts: the first run of two or
+/// more spaces after the indent, with text after. `None` for prose, headings or blanks
+/// (help prose uses single spaces).
 pub(crate) fn key_gap(line: &str) -> Option<(usize, usize)> {
     let lead = line.len() - line.trim_start_matches(' ').len();
     let key_end = lead + line[lead..].find("  ")?;
@@ -710,17 +679,14 @@ fn push_ascii(text: &str, out: &mut String) {
         match ascii_twin(c) {
             Some(twin) => out.push_str(twin),
             None if c.is_ascii() => out.push(c),
-            // A character the map does not know is marked rather than
-            // shipped to a terminal that cannot draw it; the audit test
-            // keeps this case from ever being reachable from a help file.
+            // An unknown character is marked, never sent raw; the audit test keeps this
+            // unreachable from help files.
             None => out.push('?'),
         }
     }
 }
 
-/// Display columns `text` will occupy, as the terminal draws it. Scalar
-/// counts undercount CJK and overcount combining marks; layout math that
-/// budgets cells must use this.
+/// Display columns `text` occupies; scalar counts get CJK and combining marks wrong.
 pub fn display_width(text: &str) -> usize {
     UnicodeWidthStr::width(text)
 }
@@ -768,10 +734,8 @@ fn drawn_graphemes<'a>(span: &'a ratatui::text::Span<'a>) -> impl Iterator<Item 
         .map(|g| g.symbol)
 }
 
-/// Cells `text` takes when a table cell draws it, grapheme by grapheme at
-/// ratatui's own widths. Unlike [`display_width`], an emoji sequence joined
-/// into one grapheme counts once, and control characters count nothing,
-/// because ratatui draws nothing for them.
+/// Cells `text` takes in a table cell, grapheme by grapheme at ratatui's widths: unlike
+/// [`display_width`], a joined emoji sequence counts once and control characters zero.
 pub fn cell_width(text: &str) -> usize {
     use ratatui::buffer::CellWidth;
     if plain_ascii(text) {
@@ -783,12 +747,9 @@ pub fn cell_width(text: &str) -> usize {
         .sum()
 }
 
-/// `text` as it fits in `width` cells: whole when it fits, otherwise cut at a
-/// grapheme boundary and closed with `marker`, so a clipped value never passes
-/// for a whole one. A wide character that would straddle the edge goes, never
-/// half of it. Control characters are dropped, as ratatui would drop them, so
-/// the result is exactly what is drawn. When even `marker` does not fit, as much
-/// of it as fits.
+/// `text` fitted to `width` cells: whole if it fits, else cut at a grapheme boundary
+/// and closed with `marker` (never half a wide character). Control characters are
+/// dropped, as ratatui drops them. If `marker` itself does not fit, as much as does.
 pub fn fit_cells<'a>(text: &'a str, width: usize, marker: &str) -> Cow<'a, str> {
     use ratatui::buffer::CellWidth;
     let marker_width = cell_width(marker);
@@ -873,12 +834,8 @@ fn unicode_default(slot: &str) -> Option<&'static str> {
     with_string_slots!(lookup)
 }
 
-/// Check a `[glyphs]` override map without touching the active set, so a bad
-/// config fails at load time with the slot named, not mid-draw.
-///
-/// An override must keep the display width of the glyph it replaces: every
-/// width invariant in the layout arithmetic — the locality markers, the header
-/// marks, the equal-width spinner frames — holds automatically that way.
+/// Check a `[glyphs]` override map at load time, naming the bad slot. Each override
+/// must keep its glyph's display width, so every layout width invariant holds.
 pub fn validate_overrides(overrides: &BTreeMap<String, SlotOverride>) -> Result<(), String> {
     let same_width = |slot: &str, text: &str, default: &str| -> Result<(), String> {
         if text.width() == default.width() {
@@ -1000,13 +957,9 @@ impl Environment {
         }
     }
 
-    /// The rule. A locale variable decides when one is set, on every OS, so
-    /// `LANG=C` means ASCII everywhere and MSYS2 shells on Windows count as
-    /// they do on Unix. Windows itself sets none, and its console takes
-    /// Unicode whatever the code page: Rust writes to it in UTF-16. Neither
-    /// `WT_SESSION` nor the code page is a usable signal there: Windows
-    /// Terminal opened as the default terminal sets no `WT_SESSION`, and every
-    /// console starts on an OEM code page.
+    /// The rule: a set locale variable decides on every OS (`LANG=C` is ASCII; MSYS2 as on
+    /// Unix). Windows sets none and its console takes Unicode regardless of code page;
+    /// `WT_SESSION` and the code page are unusable signals there.
     fn is_utf8(&self) -> bool {
         match &self.locale {
             Some(value) => {
@@ -1018,26 +971,16 @@ impl Environment {
     }
 }
 
-/// Whether the terminal can be trusted with UTF-8.
-///
-/// `LC_ALL` beats `LC_CTYPE` beats `LANG`, as in POSIX. With none of them set,
-/// Windows counts as UTF-8 and anything else does not. A terminal that is not
-/// doing UTF-8 renders multi-byte characters as replacement boxes, so this is
-/// the signal that matters, not terminal capability, which says nothing about
-/// the font.
+/// Whether the terminal can be trusted with UTF-8: `LC_ALL` over `LC_CTYPE` over `LANG`,
+/// as POSIX; with none set, only Windows counts. The locale, not terminal capability,
+/// decides whether multi-byte characters render.
 pub fn environment_is_utf8() -> bool {
     Environment::current().is_utf8()
 }
 
-/// Choose the glyph set for this run. Later calls are ignored, so this is safe to
-/// call once from startup and never think about again.
-pub fn init(mode: UnicodeMode) {
-    init_with_overrides(mode, &BTreeMap::new());
-}
-
-/// [`init`], with the config's `[glyphs]` overrides laid over the Unicode set.
-/// The ASCII set is never touched: it is the tested floor a C locale falls back
-/// to, and an override written for a rich font would garble exactly there.
+/// Choose the glyph set for this run, with `[glyphs]` overrides over the Unicode set.
+/// Never over the ASCII set: it is the tested floor, where rich-font overrides would
+/// garble. Later calls are ignored.
 pub fn init_with_overrides(mode: UnicodeMode, overrides: &BTreeMap<String, SlotOverride>) {
     let mut chosen = match mode {
         UnicodeMode::Always => UNICODE,
@@ -1056,7 +999,7 @@ pub fn init_with_overrides(mode: UnicodeMode, overrides: &BTreeMap<String, SlotO
     let _ = GLYPHS.set(chosen);
 }
 
-/// The active glyph set. Falls back to detection when [`init`] was never
+/// The active glyph set. Falls back to detection when [`init_with_overrides`] was never
 /// called, so library users and tests get sensible symbols without ceremony.
 pub fn get() -> &'static Glyphs {
     GLYPHS.get_or_init(|| {
@@ -1068,9 +1011,7 @@ pub fn get() -> &'static Glyphs {
     })
 }
 
-/// Whether the active set is the Unicode one. `get` hands out a copy of a
-/// const, so no address — the set's nor a field's — can identify it; the flag
-/// on the set can.
+/// Whether the active set is Unicode (copies of consts have no identifying address).
 pub fn active_is_unicode() -> bool {
     get().unicode
 }
@@ -1080,12 +1021,9 @@ pub fn unicode() -> &'static Glyphs {
     &UNICODE
 }
 
-/// Each bordered box drawn in `rows` (one string per screen row), as the
-/// (column, row) of its bottom-left corner, in the active set.
-///
-/// For tests that count frames. The ASCII set draws every corner as `+`, so
-/// counting the corner glyph finds four per box there; a bottom-left corner
-/// is the one with the left side above it and the bottom edge after it.
+/// Each bordered box in `rows` as the (column, row) of its bottom-left corner, for
+/// tests counting frames (ASCII corners are all `+`, so the corner is found by its
+/// left side above and bottom edge after).
 #[cfg(test)]
 pub(crate) fn frame_corners(rows: &[String]) -> Vec<(usize, usize)> {
     let b = get().border;
@@ -1132,6 +1070,50 @@ pub fn ascii() -> &'static Glyphs {
     &ASCII
 }
 
+/// `text` in `width` columns, cut at its end and marked with the ellipsis.
+pub fn fit(text: &str, width: usize) -> String {
+    fit_cells(text, width, get().ellipsis).into_owned()
+}
+
+/// `text` in `width` columns, cut at its start: a path keeps its leaf. The ellipsis is
+/// measured, since it is three columns on an ASCII terminal.
+pub fn fit_start(text: &str, width: usize) -> String {
+    if display_width(text) <= width {
+        return text.to_string();
+    }
+    let ellipsis = get().ellipsis;
+    let ellipsis_width = display_width(ellipsis);
+    if width <= ellipsis_width {
+        return take_columns_end(text, width).to_string();
+    }
+    format!(
+        "{ellipsis}{}",
+        take_columns_end(text, width - ellipsis_width)
+    )
+}
+
+/// `text` in `width` columns, cut from the middle: `weather/…/daily`.
+pub fn fit_middle(text: &str, width: usize) -> String {
+    if display_width(text) <= width {
+        return text.to_string();
+    }
+    let mark = get().ellipsis;
+    let mark_w = display_width(mark);
+    if width <= mark_w {
+        return take_columns(mark, width).to_string();
+    }
+    let room = width - mark_w;
+    let head = take_columns(text, room.div_ceil(2));
+    let tail = take_columns_end(text, room - display_width(head));
+    format!("{head}{mark}{tail}")
+}
+
+/// Text written with `·` between its parts, in the glyph set's middot: `-` on an ASCII
+/// terminal. A `·` in a UI string is this template, drawn through here.
+pub fn dotted(text: &str) -> String {
+    text.replace('·', get().middot)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1146,6 +1128,7 @@ mod tests {
         let mut texts: Vec<&str> = Vec::new();
         for (screen, group, key) in keys::entries() {
             texts.extend([group.name, key.keys, key.label, key.line, key.long()]);
+            texts.extend(key.also);
             if let Some(screen) = screen {
                 texts.push(screen.title);
             }
@@ -1360,18 +1343,6 @@ mod tests {
         buf
     }
 
-    fn buffer_text(buf: &Buffer) -> String {
-        let a = buf.area;
-        (a.top()..a.bottom())
-            .map(|y| {
-                (a.left()..a.right())
-                    .map(|x| buf[(x, y)].symbol())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
     /// The swap finds the axes and the legend frame by shape: a title or a legend
     /// name holding the same characters keeps them, and Unicode changes nothing.
     #[test]
@@ -1382,7 +1353,7 @@ mod tests {
         assert_eq!(buf, before);
 
         ascii().plot.redraw_axes(buf.area, &mut buf);
-        let text = buffer_text(&buf);
+        let text = crate::tests::buffer_text(&buf);
         let rows: Vec<&str> = text.lines().collect();
         assert!(rows[0].ends_with("+----+"), "the legend frame:\n{text}");
         assert!(rows[1].ends_with("|x─│y|"), "the legend name:\n{text}");
@@ -1398,9 +1369,9 @@ mod tests {
     #[test]
     fn redraw_axes_in_a_chart_too_small_for_both_axes() {
         let mut buf = chart_buffer(20, 2, "", "");
-        assert!(!buffer_text(&buf).is_ascii());
+        assert!(!crate::tests::buffer_text(&buf).is_ascii());
         ascii().plot.redraw_axes(buf.area, &mut buf);
-        let text = buffer_text(&buf);
+        let text = crate::tests::buffer_text(&buf);
         assert!(text.is_ascii() && text.contains('|'), "{text}");
     }
 

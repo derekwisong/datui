@@ -2,10 +2,11 @@
 
 use crate::render::context::RenderContext;
 use crate::render::datatable_view::{ActiveSidebar, DatatableLayout};
-use crate::widgets::datatable::DataTable;
 use crate::widgets::info::{DataTableInfo, InfoContext};
+use crate::widgets::table::DataTable;
 use crate::widgets::ui::{HintBar, Working};
 use crate::widgets::{copy, export, pivot_melt};
+use datui_cli::keys::Context;
 use ratatui::layout::Rect;
 use ratatui::prelude::StatefulWidget;
 use ratatui::style::{Modifier, Style};
@@ -20,9 +21,9 @@ pub fn render(
     ctx: &RenderContext,
 ) {
     let active_sidebar = ActiveSidebar::from_modals(
-        app.info_modal.active,
-        app.sort_filter_modal.active,
-        app.view_modal.active,
+        app.overlay.shows(&crate::Overlay::Info),
+        app.overlay == crate::Overlay::SortFilter,
+        app.overlay == crate::Overlay::View,
     );
 
     let datatable_layout = DatatableLayout::compute(
@@ -33,7 +34,7 @@ pub fn render(
     let data_area = datatable_layout.content_area;
     let sort_area = datatable_layout.sidebar_area.unwrap_or_default();
 
-    let evidence_label = app.quality_evidence_label.clone();
+    let evidence_label = app.quality.evidence_label.clone();
     // Asked before the table is borrowed: the job records are the app's.
     let facts_reading = app.file_facts_reading();
     let facts_tab = app.info_facts_tab();
@@ -127,7 +128,7 @@ pub fn render(
             StatefulWidget::render(dt, table_area, buf, state);
             if let Some(status) = &query_reading {
                 // Drawn still, so the table keeps its size: the rows are the view the
-                // query replaces, under columns it may have changed. The control bar's
+                // query replaces, under columns it may have changed. The footer's
                 // words, so the two say one thing.
                 Working {
                     text: status,
@@ -135,11 +136,14 @@ pub fn render(
                 }
                 .render_centered(table_area, buf, ctx);
             }
-            if app.info_modal.active {
-                let facts =
-                    crate::App::facts_shown(&app.file_facts, app.dataset_generation, facts_reading);
+            if app.overlay.shows(&crate::Overlay::Info) {
+                let facts = crate::App::facts_shown(
+                    &app.info.file_facts,
+                    app.dataset_generation,
+                    facts_reading,
+                );
                 let info_ctx = InfoContext {
-                    format: app.original_file_format,
+                    format: app.source.original_file_format,
                     declared_types,
                     facts,
                     facts_tab,
@@ -148,12 +152,13 @@ pub fn render(
                 let mut info_widget = DataTableInfo::new(state, info_ctx, &mut app.info_modal, ctx);
                 info_widget.hex = hex;
                 info_widget.header_toggle = header_toggle;
-                info_widget.codebook = app.codebook.as_deref();
+                info_widget.codebook = app.info.codebook.as_deref();
                 info_widget.estimate = estimate;
                 info_widget.documentation = app
+                    .info
                     .info_documentation
                     .is_open()
-                    .then_some(&mut app.info_documentation);
+                    .then_some(&mut app.info.info_documentation);
                 info_widget.render(sort_area, buf);
             }
         }
@@ -164,34 +169,33 @@ pub fn render(
         }
     }
 
-    if app.sort_filter_modal.active {
+    if app.overlay == crate::Overlay::SortFilter {
         crate::render::sort_filter_sidebar::render(sort_area, buf, &mut app.sort_filter_modal, ctx);
     }
 
-    if app.view_modal.active {
+    if app.overlay == crate::Overlay::View {
         crate::render::view_sidebar::render(
             sort_area,
             buf,
             &mut app.view_modal,
-            app.active_view_id.as_deref(),
+            app.views.active_id.as_deref(),
             ctx,
         );
     }
 
     // A takeover: the form beside a preview of the reshaped rows.
-    if app.pivot_melt_modal.active {
+    if app.overlay == crate::Overlay::PivotMelt {
         pivot_melt::render(main_area, buf, &mut app.pivot_melt_modal, ctx);
     }
 
-    if app.export_modal.active {
+    if matches!(app.overlay, crate::Overlay::Export { .. }) {
         // A commitment, so a compact centered dialog that never scales with
         // the terminal.
         let modal_area = export::dialog_area(area);
         export::render_export_modal(modal_area, buf, &mut app.export_modal, ctx);
     }
 
-    if app.inspector_modal.active
-        && app.input_mode == crate::InputMode::Inspect
+    if app.overlay == crate::Overlay::Inspect
         && let Some(state) = app.data_table_state.as_ref()
     {
         // A takeover: the row's fields want the width a long value reads at, and
@@ -201,47 +205,47 @@ pub fn render(
             buf,
             &mut app.inspector_modal,
             state,
-            app.codebook.as_deref(),
+            app.info.codebook.as_deref(),
             ctx,
         );
     }
 
-    if app.input_mode == crate::InputMode::GoToColumn {
-        render_go_to_column(data_area, buf, &app.go_to_column, ctx);
+    if app.overlay == crate::Overlay::GoToColumn {
+        render_go_to_column(data_area, buf, &app.pickers.go_to_column, ctx);
     }
 
-    if app.input_mode == crate::InputMode::PickFormat {
+    if app.overlay == crate::Overlay::PickFormat {
         render_picker(
             data_area,
             buf,
-            &app.format_picker,
-            ("Format", "Read", "No format matches"),
+            &app.pickers.format_picker,
+            ("Format", Context::FormatPicker, "No format matches"),
             ctx,
         );
     }
 
-    if app.input_mode == crate::InputMode::Retype
-        && let Some(modal) = &app.retype
+    if matches!(app.overlay, crate::Overlay::Retype { .. })
+        && let Some(modal) = &app.column_forms.retype
     {
         crate::widgets::retype::render_retype(area, buf, modal, ctx);
     }
 
-    if app.input_mode == crate::InputMode::Combine
-        && let Some(modal) = &app.combine
+    if matches!(app.overlay, crate::Overlay::Combine { .. })
+        && let Some(modal) = &app.column_forms.combine
     {
         crate::widgets::retype::render_combine(area, buf, modal, ctx);
     }
 
-    if app.input_mode == crate::InputMode::Sample
-        && let Some(form) = &app.sample_form
+    if app.overlay == crate::Overlay::Sample
+        && let Some(form) = &app.sample.form
     {
         // A dialog over the table: what it covers takes no clicks.
-        crate::pointer::record(data_area, crate::pointer::Hit::Modal);
+        crate::app::pointer::record(data_area, crate::app::pointer::Hit::Modal);
         crate::widgets::sample_form::render(form, true, data_area, buf, ctx);
     }
 
-    if app.input_mode == crate::InputMode::PickTable
-        && let Some(tables) = app.table_choices.as_ref()
+    if app.overlay == crate::Overlay::PickTable
+        && let Some(tables) = app.pickers.table_choices.as_ref()
     {
         let details: Vec<String> = tables
             .tables
@@ -258,14 +262,14 @@ pub fn render(
         render_picker_with(
             data_area,
             buf,
-            &app.table_picker,
-            ("Table", "Open", "No table matches"),
+            &app.pickers.table_picker,
+            ("Table", Context::TablePicker, "No table matches"),
             Some(&details),
             ctx,
         );
     }
 
-    if app.copy_modal.active {
+    if app.overlay == crate::Overlay::Copy {
         // A commitment like export: compact and centered. The dialog holds
         // the most rows any scope offers, so stepping the scope moves nothing,
         // the spec and the footer; an open Picker earns the room it drops into.
@@ -273,15 +277,10 @@ pub fn render(
         let wanted = if app.copy_modal.picker.is_some() {
             15
         } else {
-            crate::copy_modal::CopyModal::MOST_ROWS + 6
+            crate::app::modals::copy_modal::CopyModal::MOST_ROWS + 6
         };
         let modal_height = wanted.min(area.height);
-        let modal_area = Rect {
-            x: (area.width.saturating_sub(modal_width)) / 2,
-            y: (area.height.saturating_sub(modal_height)) / 2,
-            width: modal_width,
-            height: modal_height,
-        };
+        let modal_area = crate::render::layout::centered_rect(area, modal_width, modal_height);
         copy::render_copy_modal(modal_area, buf, &mut app.copy_modal, ctx);
     }
 }
@@ -301,10 +300,10 @@ pub(crate) fn render_breadcrumb(
     // tool's result.
     let style = Style::default().bg(ctx.controls_bg).fg(ctx.table_header);
     buf.set_style(area, style);
-    let back = HintBar::from_ctx(ctx).hint("Esc", "Back");
+    let back = HintBar::from_ctx(ctx).screen(Context::Table).key("Esc");
     let chip_w = back.flush_width_in(area.width.saturating_sub(12));
     let text_w = area.width.saturating_sub(chip_w + 1);
-    Paragraph::new(crate::render::loading_view::truncate(text, text_w as usize))
+    Paragraph::new(crate::glyphs::fit(text, text_w as usize))
         .style(style.add_modifier(Modifier::BOLD))
         .render(
             Rect {
@@ -339,18 +338,18 @@ fn render_go_to_column(
         area,
         buf,
         picker,
-        ("Go to Column", "Go", "No column matches"),
+        ("Go to Column", Context::GoToColumn, "No column matches"),
         ctx,
     );
 }
 
-/// A short pick-one list over the table: `(title, what Enter does, what an empty
-/// narrowing says)`.
+/// A short pick-one list over the table: `(title, the screen whose keys it takes, what
+/// an empty narrowing says)`.
 pub(crate) fn render_picker(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
     picker: &crate::widgets::ui::PickerState,
-    words: (&str, &str, &str),
+    words: (&str, Context, &str),
     ctx: &RenderContext,
 ) {
     render_picker_with(area, buf, picker, words, None, ctx);
@@ -361,7 +360,7 @@ pub(crate) fn render_picker_with(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
     picker: &crate::widgets::ui::PickerState,
-    (title, enter, none): (&str, &str, &str),
+    (title, keys, none): (&str, Context, &str),
     details: Option<&[String]>,
     ctx: &RenderContext,
 ) {
@@ -392,7 +391,7 @@ pub(crate) fn render_picker_with(
         width,
         height,
     };
-    let footer = HintBar::from_ctx(ctx).hints(&[("Enter", enter), ("Esc", "Cancel")]);
+    let footer = HintBar::from_ctx(ctx).screen(keys).key("Enter").key("Esc");
     let inner = crate::widgets::ui::Surface::new(title)
         .footer(&footer)
         .render(popup, buf, ctx);
@@ -431,17 +430,6 @@ mod tests {
     use super::*;
     use ratatui::buffer::Buffer;
 
-    fn rows(buf: &Buffer) -> Vec<String> {
-        let area = buf.area;
-        (0..area.height)
-            .map(|y| {
-                (0..area.width)
-                    .map(|x| buf[(x, y)].symbol().to_string())
-                    .collect::<String>()
-            })
-            .collect()
-    }
-
     /// One line, no box: the text on the left, the way back on the right, and
     /// nothing drawn on the row below it.
     #[test]
@@ -455,7 +443,7 @@ mod tests {
             "<- Group: department=Engineering",
             &ctx,
         );
-        let rows = rows(&buf);
+        let rows = crate::tests::buffer_lines(&buf);
         assert!(
             rows[0].starts_with("<- Group: department=Engineering"),
             "{rows:?}"
@@ -486,7 +474,7 @@ mod tests {
         let mut buf = Buffer::empty(area);
         let long = format!("<- Group: {}", "x".repeat(80));
         render_breadcrumb(area, &mut buf, &long, &ctx);
-        let row = &rows(&buf)[0];
+        let row = &crate::tests::buffer_lines(&buf)[0];
         assert!(row.contains(crate::glyphs::get().ellipsis), "{row:?}");
         assert!(row.contains("Esc") && row.contains("Back"), "{row:?}");
     }

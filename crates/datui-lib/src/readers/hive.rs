@@ -2,9 +2,8 @@
 //! one scan, with the keys as columns.
 
 use std::collections::HashSet;
-use std::fs::{self, File};
+use std::fs;
 use std::path::Path;
-use std::sync::Arc;
 
 use color_eyre::Result;
 use polars::io::HiveOptions;
@@ -21,114 +20,6 @@ pub fn scan_parquet_hive(path: &Path) -> Result<LazyFrame> {
         ..Default::default()
     };
     LazyFrame::scan_parquet(pl_path, args).map_err(Into::into)
-}
-
-/// Build a LazyFrame for hive-partitioned Parquet with a pre-computed schema (avoids slow collect_schema across all files).
-pub fn scan_parquet_hive_with_schema(path: &Path, schema: Arc<Schema>) -> Result<LazyFrame> {
-    let is_glob = crate::source::expands_as_glob(path);
-    let pl_path = PlRefPath::try_from_path(path)?;
-    let args = ScanArgsParquet {
-        schema: Some(schema),
-        hive_options: HiveOptions::new_enabled(),
-        glob: is_glob,
-        ..Default::default()
-    };
-    LazyFrame::scan_parquet(pl_path, args).map_err(Into::into)
-}
-
-/// The first Parquet file along one spine of a hive directory (as partition discovery
-/// walks); `None` if there is none.
-fn first_parquet_file_in_hive_dir(path: &Path) -> Option<std::path::PathBuf> {
-    const MAX_DEPTH: usize = 64;
-    first_parquet_file_spine(path, 0, MAX_DEPTH)
-}
-
-fn first_parquet_file_spine(
-    path: &Path,
-    depth: usize,
-    max_depth: usize,
-) -> Option<std::path::PathBuf> {
-    if depth >= max_depth {
-        return None;
-    }
-    let entries = fs::read_dir(path).ok()?;
-    let mut first_partition_child: Option<std::path::PathBuf> = None;
-    for entry in entries.flatten() {
-        let child = entry.path();
-        if child.is_file() {
-            if crate::discover::is_parquet_path(&child) {
-                return Some(child);
-            }
-        } else if child.is_dir()
-            && let Some(name) = child.file_name().and_then(|n| n.to_str())
-            && name.contains('=')
-            && first_partition_child.is_none()
-        {
-            first_partition_child = Some(child);
-        }
-    }
-    first_partition_child.and_then(|p| first_parquet_file_spine(&p, depth + 1, max_depth))
-}
-
-/// Read schema from a single parquet file (metadata only, no data scan). Used to avoid collect_schema() over many files.
-fn read_schema_from_single_parquet(path: &Path) -> Result<Arc<Schema>> {
-    let file = File::open(path)?;
-    let mut reader = ParquetReader::new(file);
-    let arrow_schema = reader.schema()?;
-    let schema = Schema::from_arrow_schema(arrow_schema.as_ref());
-    Ok(Arc::new(schema))
-}
-
-/// The schema of one Parquet file in a hive directory (not a glob) merged with the
-/// partition columns, returned with them; spares `collect_schema()` when used with
-/// `scan_parquet_hive_with_schema`. Errors if no file is found or it fails to read.
-pub fn schema_from_one_hive_parquet(path: &Path) -> Result<(Arc<Schema>, Vec<String>)> {
-    let partition_columns = discover_hive_partition_columns(path);
-    let one_file = first_parquet_file_in_hive_dir(path)
-        .ok_or_else(|| color_eyre::eyre::eyre!("No parquet file found in hive directory"))?;
-    let file_schema = read_schema_from_single_parquet(&one_file)?;
-    let values = hive_partition_values(path, &one_file);
-    let part_set: HashSet<&str> = partition_columns.iter().map(String::as_str).collect();
-    let mut merged = Schema::with_capacity(partition_columns.len() + file_schema.len());
-    for name in &partition_columns {
-        merged.with_column(
-            name.clone().into(),
-            partition_dtype(name, &file_schema, &values),
-        );
-    }
-    for (name, dtype) in file_schema.iter() {
-        if !part_set.contains(name.as_str()) {
-            merged.with_column(name.clone(), dtype.clone());
-        }
-    }
-    Ok((Arc::new(merged), partition_columns))
-}
-
-/// `key=value` names of the partition directories beside each one on the path to `file`.
-fn hive_partition_values(root: &Path, file: &Path) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    let Some(rel) = file.strip_prefix(root).ok().and_then(Path::parent) else {
-        return out;
-    };
-    let mut dir = root.to_path_buf();
-    for component in rel.components() {
-        let Some(segment) = component.as_os_str().to_str() else {
-            break;
-        };
-        if let Some((key, _)) = segment.split_once('=') {
-            for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
-                let name = entry.file_name();
-                let Some((k, v)) = name.to_str().and_then(|n| n.split_once('=')) else {
-                    continue;
-                };
-                if k == key && entry.path().is_dir() {
-                    out.push((k.to_string(), v.to_string()));
-                }
-            }
-        }
-        dir.push(segment);
-    }
-    out
 }
 
 /// Discover hive partition column names (public for phased loading). Directory: single-spine walk; glob: parse pattern.

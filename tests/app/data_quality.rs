@@ -2696,7 +2696,7 @@ fn test_data_quality_source_file_scope_uses_loaded_file_order() {
     );
 }
 
-/// The one-file schema types partition columns the way a full scan does.
+/// An opened hive directory types its partition columns the way a full scan does.
 #[test]
 fn test_hive_partition_types_match_full_scan() {
     let dir = tempfile::tempdir().unwrap();
@@ -2712,8 +2712,13 @@ fn test_hive_partition_types_match_full_scan() {
             .unwrap();
     }
 
-    let (fast, parts) = datui::readers::hive::schema_from_one_hive_parquet(dir.path()).unwrap();
-    assert_eq!(parts, ["region", "year", "day"]);
+    let app = open_local_dataset(dir.path());
+    let mut lf = app.data_table_state.as_ref().unwrap().lf_clone();
+    let fast = lf.collect_schema().unwrap();
+    let parts = ["region", "year", "day"];
+    for name in parts {
+        assert!(fast.contains(name), "{name}");
+    }
     let mut full = LazyFrame::scan_parquet(
         PlRefPath::try_from_path(dir.path()).unwrap(),
         ScanArgsParquet {
@@ -2724,11 +2729,10 @@ fn test_hive_partition_types_match_full_scan() {
     .unwrap();
     let full = full.collect_schema().unwrap();
     for name in parts {
-        assert_eq!(fast.get(&name), full.get(&name), "{name}");
+        assert_eq!(fast.get(name), full.get(name), "{name}");
     }
     assert_eq!(fast.get("year"), Some(&DataType::Int64));
 
-    let lf = datui::readers::hive::scan_parquet_hive_with_schema(dir.path(), fast).unwrap();
     let df = lf.filter(col("year").gt(lit(2020))).collect().unwrap();
     assert_eq!(df.height(), 2);
 }

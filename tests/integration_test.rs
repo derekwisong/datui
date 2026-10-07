@@ -11963,7 +11963,6 @@ fn test_sql_after_pivot_sees_the_pivoted_columns() {
         pivot_column: "key".to_string(),
         value_column: "val".to_string(),
         aggregation: PivotAggregation::First,
-        sort_columns: None,
     }));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 10);
@@ -12057,7 +12056,6 @@ fn test_query_after_pivot_drops_the_reshape_for_sql() {
         pivot_column: "key".to_string(),
         value_column: "val".to_string(),
         aggregation: PivotAggregation::First,
-        sort_columns: None,
     }));
     pump_until_idle(&mut app, &rx, &tx);
     assert!(
@@ -20506,7 +20504,6 @@ fn test_a_view_replays_the_query_before_the_pivot() {
             pivot_column: "key".to_string(),
             value_column: "val".to_string(),
             aggregation: PivotAggregation::First,
-            sort_columns: None,
         }),
     ];
     let (view, applied, expected) = view_and_steps_on_the_next_file("view_query_pivot", &steps);
@@ -20534,7 +20531,6 @@ fn test_a_view_replays_sql_on_the_pivot_after_it() {
             pivot_column: "key".to_string(),
             value_column: "val".to_string(),
             aggregation: PivotAggregation::First,
-            sort_columns: None,
         }),
         AppEvent::SqlQuery("SELECT id, k2 FROM df WHERE k1 > 12".to_string()),
     ];
@@ -20586,7 +20582,6 @@ fn test_a_view_of_a_melted_pivot_fails_to_apply_and_changes_nothing() {
             pivot_column: "key".to_string(),
             value_column: "val".to_string(),
             aggregation: PivotAggregation::First,
-            sort_columns: None,
         }),
         AppEvent::Melt(MeltSpec {
             index: vec!["id".to_string()],
@@ -24734,7 +24729,6 @@ fn test_copy_as_python_scripts_compute_the_rows_datui_shows() {
                     pivot_column: "customer".into(),
                     value_column: "amount".into(),
                     aggregation: PivotAggregation::Avg,
-                    sort_columns: None,
                 })
                 .unwrap();
                 s.sort_by(vec!["region".into()], vec![true]);
@@ -24750,7 +24744,6 @@ fn test_copy_as_python_scripts_compute_the_rows_datui_shows() {
                     pivot_column: "customer".into(),
                     value_column: "qty".into(),
                     aggregation: PivotAggregation::Count,
-                    sort_columns: None,
                 })
                 .unwrap();
             }),

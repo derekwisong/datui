@@ -113,7 +113,6 @@ fn anything_built_on_the_scan_holds_the_arriving_columns_off() {
             pivot_column: "name".to_string(),
             value_column: "v".to_string(),
             aggregation: PivotAggregation::First,
-            sort_columns: None,
         })
         .expect("the pivot runs");
     assert!(
@@ -814,7 +813,6 @@ fn test_pivot_basic() {
         pivot_column: "key".to_string(),
         value_column: "value".to_string(),
         aggregation: PivotAggregation::Last,
-        sort_columns: None,
     };
     state.pivot(&spec).unwrap();
     let df = state.view.lf.clone().collect().unwrap();
@@ -836,7 +834,6 @@ fn test_pivot_aggregation_last() {
         pivot_column: "key".to_string(),
         value_column: "value".to_string(),
         aggregation: PivotAggregation::Last,
-        sort_columns: None,
     };
     state.pivot(&spec).unwrap();
     let df = state.view.lf.clone().collect().unwrap();
@@ -856,7 +853,6 @@ fn test_pivot_aggregation_first() {
         pivot_column: "key".to_string(),
         value_column: "value".to_string(),
         aggregation: PivotAggregation::First,
-        sort_columns: None,
     };
     state.pivot(&spec).unwrap();
     let df = state.view.lf.clone().collect().unwrap();
@@ -875,7 +871,6 @@ fn test_pivot_aggregation_min_max() {
             pivot_column: "key".to_string(),
             value_column: "value".to_string(),
             aggregation: PivotAggregation::Min,
-            sort_columns: None,
         })
         .unwrap();
     let df_min = state_min.view.lf.clone().collect().unwrap();
@@ -891,7 +886,6 @@ fn test_pivot_aggregation_min_max() {
             pivot_column: "key".to_string(),
             value_column: "value".to_string(),
             aggregation: PivotAggregation::Max,
-            sort_columns: None,
         })
         .unwrap();
     let df_max = state_max.view.lf.clone().collect().unwrap();
@@ -911,7 +905,6 @@ fn test_pivot_aggregation_avg_count() {
             pivot_column: "key".to_string(),
             value_column: "value".to_string(),
             aggregation: PivotAggregation::Avg,
-            sort_columns: None,
         })
         .unwrap();
     let df_avg = state_avg.view.lf.clone().collect().unwrap();
@@ -929,7 +922,6 @@ fn test_pivot_aggregation_avg_count() {
             pivot_column: "key".to_string(),
             value_column: "value".to_string(),
             aggregation: PivotAggregation::Count,
-            sort_columns: None,
         })
         .unwrap();
     let df_count = state_count.view.lf.clone().collect().unwrap();
@@ -952,7 +944,6 @@ fn test_pivot_string_first_last() {
         pivot_column: "key".to_string(),
         value_column: "value".to_string(),
         aggregation: PivotAggregation::Last,
-        sort_columns: None,
     };
     state.pivot(&spec).unwrap();
     let out = state.view.lf.clone().collect().unwrap();
@@ -1004,7 +995,6 @@ fn a_pivot_on_a_date_past_the_calendar_names_it_by_its_stored_number() {
                     pivot_column: on.to_string(),
                     value_column: "s".to_string(),
                     aggregation: PivotAggregation::First,
-                    sort_columns: None,
                 })
                 .unwrap();
             let df = state.view.lf.clone().collect().unwrap();
@@ -1172,7 +1162,6 @@ fn test_pivot_on_current_view_after_filter() {
         pivot_column: "key".to_string(),
         value_column: "value".to_string(),
         aggregation: PivotAggregation::Last,
-        sort_columns: None,
     };
     state.pivot(&spec).unwrap();
     let df = state.view.lf.clone().collect().unwrap();
@@ -1263,7 +1252,6 @@ fn a_pivot_in_one_pass_matches_the_lazy_pivot() {
                 pivot_column: "key".to_string(),
                 value_column: "v".to_string(),
                 aggregation,
-                sort_columns: None,
             };
             let expected = lazy_pivot(&spec);
             for streaming in [false, true] {

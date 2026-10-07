@@ -695,7 +695,6 @@ mod tests {
             pivot_column: "job".to_string(),
             value_column: "salary".to_string(),
             aggregation: PivotAggregation::Avg,
-            sort_columns: None,
         }
     }
 

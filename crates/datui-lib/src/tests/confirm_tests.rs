@@ -183,11 +183,11 @@ fn a_declined_overwrite_returns_to_its_form() {
         assert!(app.export_modal.active);
 
         let mut app = new_app();
-        app.chart_export_modal.suspend();
+        app.chart.export_modal.suspend();
         app.confirmation_modal
             .show("?".into(), Confirm::ChartExport(Box::new(chart_request())));
         decline(&mut app);
-        assert!(app.chart_export_modal.active);
+        assert!(app.chart.export_modal.active);
     }
 }
 

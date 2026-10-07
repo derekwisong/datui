@@ -149,7 +149,7 @@ pub fn mode_hints(app: &crate::App, content: MainViewContent) -> Vec<Hint> {
             }
             let state = app.data_table_state.as_ref();
             // A view's chart waits: `c` draws it.
-            if app.chart_modal.restored {
+            if app.chart.modal.restored {
                 keys.push(registry_hint(Context::Table, "c"));
             }
             // Read through a format spec: `b` reads it with another.
@@ -909,13 +909,13 @@ fn value_counts_control_keys(app: &crate::App) -> Vec<Hint> {
 fn chart_hints(app: &crate::App) -> Vec<Hint> {
     let in_group = |group, keys| registry_hint_in(Context::Chart, Some(group), keys);
     let say = |group, keys, label| registry_hint_as(Context::Chart, Some(group), keys, label);
-    if app.chart_export_modal.active {
+    if app.chart.export_modal.active {
         return ["Enter", "Tab", "Esc"]
             .into_iter()
             .map(|keys| in_group("Export dialog", keys))
             .collect();
     }
-    let modal = &app.chart_modal;
+    let modal = &app.chart.modal;
     if modal.picker.is_some() {
         return if modal.picker_multi() {
             vec![

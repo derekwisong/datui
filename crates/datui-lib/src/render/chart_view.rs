@@ -19,23 +19,23 @@ pub fn render(
     ctx: &RenderContext,
 ) {
     Clear.render(chart_area, buf);
-    app.chart_modal.units = app
+    app.chart.modal.units = app
         .data_table_state
         .as_ref()
         .map(|state| state.units())
         .unwrap_or_default();
 
-    let request = ChartRequest::from_modal(&app.chart_modal);
+    let request = ChartRequest::from_modal(&app.chart.modal);
     let outcome = request
         .as_ref()
-        .and_then(|request| app.chart_cache.get(request));
+        .and_then(|request| app.chart.cache.get(request));
     let error = outcome.and_then(|o| o.as_ref().err()).map(String::as_str);
     // Chosen but not here yet: it is being prepared (`App::ensure_chart_data` runs
     // after every event). The chart of the same columns before an option changed
     // stays up meanwhile.
     let computing = request.is_some() && outcome.is_none();
     let prepared = match &request {
-        Some(request) if computing => app.chart_cache.standing_in(request),
+        Some(request) if computing => app.chart.cache.standing_in(request),
         _ => outcome.and_then(|o| o.as_ref().ok()),
     };
     let notes = prepared
@@ -53,14 +53,14 @@ pub fn render(
     let spec = match &request {
         Some(request) => &request.spec,
         None => {
-            unrequested = app.chart_modal.effective_spec();
+            unrequested = app.chart.modal.effective_spec();
             &unrequested
         }
     };
     let plot = crate::chart_plot::plot(
         prepared,
         &PlotContext {
-            modal: &app.chart_modal,
+            modal: &app.chart.modal,
             spec,
             numbers: &ctx.number_format,
             schema,
@@ -78,7 +78,7 @@ pub fn render(
     widgets::chart::render_chart_view(
         chart_area,
         buf,
-        &mut app.chart_modal,
+        &mut app.chart.modal,
         &app.theme,
         ctx,
         ChartView {
@@ -93,18 +93,18 @@ pub fn render(
         },
     );
 
-    if app.chart_export_modal.active {
+    if app.chart.export_modal.active {
         // A commitment, so a compact centered dialog, never scaling with the
         // terminal; it scrolls inside its frame on a short one.
         let modal_width = (chart_area.width * 3 / 4).min(66);
         let modal_height =
-            widgets::chart_export_modal::height(&app.chart_export_modal).min(chart_area.height);
+            widgets::chart_export_modal::height(&app.chart.export_modal).min(chart_area.height);
         let modal_area =
             crate::render::layout::centered_rect(chart_area, modal_width, modal_height);
         widgets::chart_export_modal::render_chart_export_modal(
             modal_area,
             buf,
-            &mut app.chart_export_modal,
+            &mut app.chart.export_modal,
             ctx,
         );
     }

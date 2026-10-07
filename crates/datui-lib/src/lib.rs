@@ -1058,8 +1058,8 @@ pub struct App {
     pub sample: sample_draw::SampleState,
     /// What Data Quality runs keep within the memory budget.
     quality: quality_runs::QualityRuns,
-    pub chart_modal: ChartModal,
-    pub chart_export_modal: ChartExportModal,
+    /// The chart view, its export form, and the preparations it keeps or waits on.
+    pub chart: chart_jobs::Charts,
     pub export_modal: ExportModal,
     pub copy_modal: copy_modal::CopyModal,
     pub inspector_modal: inspector_modal::InspectorModal,
@@ -1075,13 +1075,6 @@ pub struct App {
     pub column_forms: retype_keys::ColumnForms,
     /// The hex view, and the number its next read is tagged with.
     pub hex_view: hex_keys::HexState,
-    pub(crate) chart_cache: ChartCache,
-    /// The selection the chart last asked for, and, when it stepped the aggregate of
-    /// the one before, until when it waits for the next step before it is prepared.
-    chart_asked: Option<(ChartRequest, Option<std::time::Instant>)>,
-    /// A chart export that asked for data still being prepared. The preparation's end
-    /// picks it up; `busy` stays set until then.
-    chart_export_waiting: Option<ChartExportRequest>,
     error_modal: ErrorModal,
     flash: Option<Flash>,
     pub confirmation_modal: ConfirmationModal,
@@ -1896,8 +1889,8 @@ impl App {
         // that keeps the rows it was opened on, read the new ones.
         let refreshes = self.input_mode == InputMode::ValueCounts
             || (self.input_mode == InputMode::Chart
-                && self.chart_modal.picker.is_none()
-                && !self.chart_export_modal.active)
+                && self.chart.modal.picker.is_none()
+                && !self.chart.export_modal.active)
             || (self.analysis_modal.active && self.analysis_modal.current_results().is_some());
         let key = if self.in_normal_table_view() {
             Some(match follow.standing {
@@ -2325,14 +2318,15 @@ impl App {
                         .is_text_row(self.pivot_melt_modal.focus)
             }
             InputMode::Chart => {
-                if self.chart_export_modal.active {
+                if self.chart.export_modal.active {
                     // Every row is a choice or a text field.
-                    self.chart_export_modal
-                        .choice(self.chart_export_modal.focus)
+                    self.chart
+                        .export_modal
+                        .choice(self.chart.export_modal.focus)
                         .is_none()
                 } else {
                     // The open column Picker narrows by typing, so it types.
-                    self.chart_modal.picker.is_some()
+                    self.chart.modal.picker.is_some()
                 }
             }
             InputMode::Normal => {
@@ -3135,8 +3129,13 @@ impl App {
                 evidence_return: None,
                 evidence_label: None,
             },
-            chart_modal: ChartModal::new(),
-            chart_export_modal,
+            chart: chart_jobs::Charts {
+                modal: ChartModal::new(),
+                export_modal: chart_export_modal,
+                cache: ChartCache::default(),
+                asked: None,
+                export_waiting: None,
+            },
             export_modal: ExportModal::new(),
             copy_modal: copy_modal::CopyModal::new(),
             inspector_modal: inspector_modal::InspectorModal::new(),
@@ -3162,9 +3161,6 @@ impl App {
                 combine: None,
                 retype_from_info: false,
             },
-            chart_cache: ChartCache::default(),
-            chart_asked: None,
-            chart_export_waiting: None,
             error_modal: ErrorModal::new(),
             flash: None,
             confirmation_modal: ConfirmationModal::new(),
@@ -3432,7 +3428,7 @@ impl App {
     /// were.
     fn declined(&mut self) -> Option<AppEvent> {
         match self.confirmation_modal.take() {
-            Some(Confirm::ChartExport(_)) => self.chart_export_modal.resume(),
+            Some(Confirm::ChartExport(_)) => self.chart.export_modal.resume(),
             Some(Confirm::Export(_)) => {
                 self.export_modal.resume();
                 self.input_mode = InputMode::Export;
@@ -4139,10 +4135,10 @@ impl App {
                         })
                         .map(|(name, _)| name.to_string())
                         .collect();
-                    self.chart_modal.series_cap = Some(self.theme.series_colors().len());
-                    self.chart_modal.row_order = self.view_state().sort;
+                    self.chart.modal.series_cap = Some(self.theme.series_colors().len());
+                    self.chart.modal.row_order = self.view_state().sort;
                     let sampled = state.sampled().is_some();
-                    self.chart_modal.open(
+                    self.chart.modal.open(
                         ChartColumns {
                             numeric: &numeric_columns,
                             datetime: &datetime_columns,
@@ -4156,12 +4152,12 @@ impl App {
                     );
                     // A view's sample is read whole: the chart has no sample of its own.
                     if sampled {
-                        self.chart_modal.row_limit = None;
-                    } else if self.chart_modal.view_sampled {
-                        self.chart_modal.row_limit = Some(self.chart_modal.sample_rows);
+                        self.chart.modal.row_limit = None;
+                    } else if self.chart.modal.view_sampled {
+                        self.chart.modal.row_limit = Some(self.chart.modal.sample_rows);
                     }
-                    self.chart_modal.view_sampled = sampled;
-                    self.chart_cache.clear();
+                    self.chart.modal.view_sampled = sampled;
+                    self.chart.cache.clear();
                     self.input_mode = InputMode::Chart;
                 }
                 None
@@ -6110,7 +6106,7 @@ impl App {
         match built {
             Ok(built) => {
                 self.theme = built;
-                self.chart_modal.series_cap = Some(self.theme.series_colors().len());
+                self.chart.modal.series_cap = Some(self.theme.series_colors().len());
                 self.app_config.theme = next;
                 // The prompts live as long as the app and keep the colors they were
                 // given; a dialog's fields take the theme each time it opens.

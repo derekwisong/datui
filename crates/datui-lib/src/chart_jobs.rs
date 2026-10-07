@@ -17,6 +17,19 @@ use crate::{
 };
 use chart_export::{ChartExportFormat, ChartExportRequest, ExportOptions, Figure};
 
+/// The chart view, its export form, and the preparations it keeps or waits on.
+pub struct Charts {
+    pub modal: ChartModal,
+    pub export_modal: crate::chart_export_modal::ChartExportModal,
+    pub(crate) cache: ChartCache,
+    /// The selection the chart last asked for, and, when it stepped the aggregate of
+    /// the one before, until when it waits for the next step before it is prepared.
+    pub(crate) asked: Option<(ChartRequest, Option<std::time::Instant>)>,
+    /// A chart export that asked for data still being prepared. The preparation's end
+    /// picks it up; `busy` stays set until then.
+    pub(crate) export_waiting: Option<ChartExportRequest>,
+}
+
 /// Outcomes of chart preparation keyed by the request that produced them, least
 /// recently used first. A failure is remembered too, so a selection that cannot be
 /// charted is not retried after every event; the chart shows its message.
@@ -497,7 +510,8 @@ impl App {
     /// Whether the selection on screen is a step through the aggregates still waiting
     /// for the next step.
     fn chart_settling(&self) -> bool {
-        self.chart_asked
+        self.chart
+            .asked
             .as_ref()
             .and_then(|(_, until)| *until)
             .is_some_and(|until| std::time::Instant::now() < until)
@@ -506,11 +520,11 @@ impl App {
     /// Whether the chart view wants data it does not have and cannot be told it will
     /// never get.
     pub(crate) fn chart_request_pending(&self) -> bool {
-        if self.input_mode != InputMode::Chart || !self.chart_modal.active {
+        if self.input_mode != InputMode::Chart || !self.chart.modal.active {
             return false;
         }
-        ChartRequest::from_modal(&self.chart_modal)
-            .is_some_and(|request| self.chart_cache.get(&request).is_none())
+        ChartRequest::from_modal(&self.chart.modal)
+            .is_some_and(|request| self.chart.cache.get(&request).is_none())
     }
 
     /// Forget everything chart-related that belongs to the view or dataset on its way
@@ -521,8 +535,8 @@ impl App {
     /// the chart view closes and whenever the dataset changes or is left for the home
     /// screen.
     pub(crate) fn reset_chart_state(&mut self) {
-        self.chart_cache.clear();
-        self.chart_asked = None;
+        self.chart.cache.clear();
+        self.chart.asked = None;
         if let Some(prep) = self.chart_prep() {
             prep.cancel
                 .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -530,11 +544,11 @@ impl App {
         self.jobs.supersede(is_chart_prep);
         // A failed export reopens its modal; it must not follow the user to the next
         // dataset.
-        self.chart_export_modal.close();
+        self.chart.export_modal.close();
         let writing = self
             .jobs
             .supersede(|job| matches!(job, Job::ChartExport { .. }));
-        let waiting = self.chart_export_waiting.take().is_some();
+        let waiting = self.chart.export_waiting.take().is_some();
         if writing || waiting {
             self.export_progress = None;
             self.status_message = None;
@@ -548,7 +562,7 @@ impl App {
         let aggregating = self
             .chart_prep()
             .map(|prep| prep.request.aggregates())
-            .or_else(|| ChartRequest::from_modal(&self.chart_modal).map(|r| r.aggregates()))
+            .or_else(|| ChartRequest::from_modal(&self.chart.modal).map(|r| r.aggregates()))
             .unwrap_or(false);
         if !aggregating {
             return "Preparing chart...".to_string();
@@ -566,8 +580,8 @@ impl App {
     /// The series of the line or scatter chart on screen, by name, once prepared:
     /// its Y columns or its color groups.
     pub fn chart_names(&self) -> Option<Vec<String>> {
-        let request = ChartRequest::from_modal(&self.chart_modal)?;
-        match self.chart_cache.prepared(&request)? {
+        let request = ChartRequest::from_modal(&self.chart.modal)?;
+        match self.chart.cache.prepared(&request)? {
             PlotData::Lines(xy) => Some(xy.names.clone()),
             _ => None,
         }
@@ -575,7 +589,7 @@ impl App {
 
     /// True when the chart cache holds the data for the modal's current selection.
     pub fn chart_data_ready(&self) -> bool {
-        ChartRequest::from_modal(&self.chart_modal).is_some_and(|r| self.chart_cache.satisfies(&r))
+        ChartRequest::from_modal(&self.chart.modal).is_some_and(|r| self.chart.cache.satisfies(&r))
     }
 
     /// Start preparing the chart the modal currently asks for, unless the cache already
@@ -584,15 +598,15 @@ impl App {
     /// of column or option is noticed as soon as it is made and render only ever draws.
     pub(crate) fn ensure_chart_data(&mut self) {
         const CHART_AGGREGATE_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
-        if self.input_mode != InputMode::Chart || !self.chart_modal.active {
+        if self.input_mode != InputMode::Chart || !self.chart.modal.active {
             return;
         }
         // What Every row costs, as the table counted it.
-        self.chart_modal.view_rows = self
+        self.chart.modal.view_rows = self
             .data_table_state
             .as_ref()
             .and_then(|state| state.num_rows_if_valid());
-        let request = ChartRequest::from_modal(&self.chart_modal);
+        let request = ChartRequest::from_modal(&self.chart.modal);
         if let Some(prep) = self.chart_prep()
             && !request.as_ref().is_some_and(|r| r.reads_as(&prep.request))
         {
@@ -607,7 +621,7 @@ impl App {
         // Stepping none, count, distinct, sum, mean grouped every row at each step, and
         // drew each: a step waits a moment for the next, and only where it stops is
         // prepared. A Wake when the wait ends prepares it.
-        let settle = match self.chart_asked.take() {
+        let settle = match self.chart.asked.take() {
             Some((asked, until)) if asked == request => until,
             Some((asked, _)) if request.steps_aggregate_from(&asked) => {
                 let tx = self.events.clone();
@@ -619,9 +633,9 @@ impl App {
             }
             _ => None,
         };
-        self.chart_asked = Some((request.clone(), settle));
-        if self.chart_cache.get(&request).is_some() {
-            self.chart_cache.touch(&request);
+        self.chart.asked = Some((request.clone(), settle));
+        if self.chart.cache.get(&request).is_some() {
+            self.chart.cache.touch(&request);
             // A cached chart's colors were counted with it.
             if let Some(colors) = request
                 .spec
@@ -629,9 +643,9 @@ impl App {
                 .color
                 .field
                 .as_deref()
-                .and_then(|c| self.chart_cache.colors(c))
+                .and_then(|c| self.chart.cache.colors(c))
             {
-                self.chart_modal.color_counts = Some(colors.clone());
+                self.chart.modal.color_counts = Some(colors.clone());
             }
             return;
         }
@@ -658,7 +672,7 @@ impl App {
             seed: self.analysis_modal.sample.seed,
             streaming: self.app_config.performance.streaming,
             full_passes: !state.is_remote_source(),
-            held: self.chart_cache.held_rows(dataset),
+            held: self.chart.cache.held_rows(dataset),
             cancel: Arc::default(),
         };
         let prep = ChartPrep {
@@ -697,17 +711,17 @@ impl App {
         }
         let outcome = outcome.map(|(prepared, colors)| {
             if let Some(colors) = colors {
-                self.chart_cache.hold_colors(colors.clone());
-                self.chart_modal.color_counts = Some(colors);
+                self.chart.cache.hold_colors(colors.clone());
+                self.chart.modal.color_counts = Some(colors);
             }
             prepared
         });
-        self.chart_cache.insert(prep.request, outcome);
+        self.chart.cache.insert(prep.request, outcome);
         // An export parked on chart data resumes against the *current* selection,
         // whatever just landed: it is written if that selection is now prepared, fails
         // with the reason if that is the one that failed, and otherwise waits for the
         // next result (which `ensure_chart_data` starts once this event is handled).
-        if let Some(request) = self.chart_export_waiting.take() {
+        if let Some(request) = self.chart.export_waiting.take() {
             self.start_chart_export(request);
         }
     }
@@ -725,7 +739,7 @@ impl App {
                 // first. A Ctrl-O in that window has already left the chart view, and
                 // there is nothing to export any more: release the app rather than park
                 // an export that no view would ever prepare.
-                if self.input_mode != InputMode::Chart || !self.chart_modal.active {
+                if self.input_mode != InputMode::Chart || !self.chart.modal.active {
                     self.export_progress = None;
                     self.status_message = None;
                     self.busy = false;
@@ -744,13 +758,13 @@ impl App {
         let Some(state) = self.data_table_state.as_ref() else {
             return Err(color_eyre::eyre::eyre!("No data loaded"));
         };
-        let modal = &self.chart_modal;
+        let modal = &self.chart.modal;
         let Some(request) = ChartRequest::from_modal(modal).filter(|r| !r.x_only) else {
             return Err(color_eyre::eyre::eyre!(
                 "Pick the columns the chart needs first"
             ));
         };
-        let prepared = match self.chart_cache.get(&request) {
+        let prepared = match self.chart.cache.get(&request) {
             Some(Ok(prepared)) => prepared,
             // A selection known not to chart is never retried, so waiting for its data
             // would wait forever: fail the export now with the reason.
@@ -796,7 +810,7 @@ impl App {
         };
         match self.build_chart_figure() {
             Ok(Some(figure)) => {
-                self.chart_export_waiting = None;
+                self.chart.export_waiting = None;
                 let write = Job::ChartExport {
                     path: request.path.clone(),
                     format: request.format,
@@ -816,7 +830,7 @@ impl App {
                 });
             }
             // Still being prepared; its job's end comes back here.
-            Ok(None) => self.chart_export_waiting = Some(request),
+            Ok(None) => self.chart.export_waiting = Some(request),
             Err(e) => {
                 let message = Self::format_export_error(&e);
                 self.finish_chart_export(&request.path, request.format, Err(message));
@@ -830,19 +844,19 @@ impl App {
         format: ChartExportFormat,
         result: Result<(), String>,
     ) {
-        self.chart_export_waiting = None;
+        self.chart.export_waiting = None;
         self.export_progress = None;
         self.status_message = None;
         self.busy = false;
         match result {
             Ok(()) => {
                 self.flash_path("Chart exported to ", path);
-                self.chart_export_modal.close();
+                self.chart.export_modal.close();
             }
             // The form comes back as it was, the reason on its status line.
             Err(message) => {
-                self.chart_export_modal.reopen_with_path(path, format);
-                self.chart_export_modal.error = Some(message);
+                self.chart.export_modal.reopen_with_path(path, format);
+                self.chart.export_modal.error = Some(message);
             }
         }
     }

@@ -124,6 +124,53 @@ pub struct Source {
 }
 
 impl Source {
+    /// A source of `kind` with nothing known of it but where it was found.
+    pub fn new(
+        kind: ProviderKind,
+        id: impl Into<String>,
+        tier: Tier,
+        origin: impl Into<String>,
+    ) -> Self {
+        Source {
+            id: id.into(),
+            label: String::new(),
+            kind,
+            tier,
+            origin: origin.into(),
+            s3: S3Settings::default(),
+            azure: Default::default(),
+            project: None,
+            profile: None,
+            buckets: Vec::new(),
+            problem: None,
+            gcloud: None,
+            secret_command: None,
+            google_credentials: None,
+        }
+    }
+
+    /// The default login for `kind`, as the config and the environment give it.
+    fn default_for(
+        kind: ProviderKind,
+        config: &CloudConfig,
+        tier: Tier,
+        origin: impl Into<String>,
+    ) -> Self {
+        let id = match kind {
+            ProviderKind::S3 => DEFAULT_S3,
+            ProviderKind::Gcs => DEFAULT_GCS,
+            ProviderKind::Azure => DEFAULT_AZURE_LOGIN,
+        };
+        let s3 = match kind {
+            ProviderKind::S3 => S3Settings::from_config(config),
+            ProviderKind::Gcs | ProviderKind::Azure => S3Settings::default(),
+        };
+        Source {
+            s3,
+            ..Source::new(kind, id, tier, origin)
+        }
+    }
+
     /// Whether URLs from this source carry its ID. Only an S3-compatible server other
     /// than the default one needs to: its buckets are named only within its endpoint.
     pub fn named_in_urls(&self) -> bool {
@@ -207,28 +254,8 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
                 _ => Tier::Environment,
             };
             let mut source = Source {
-                id: match provider.kind {
-                    ProviderKind::S3 => DEFAULT_S3,
-                    ProviderKind::Gcs => DEFAULT_GCS,
-                    ProviderKind::Azure => DEFAULT_AZURE_LOGIN,
-                }
-                .to_string(),
-                label: String::new(),
-                kind: provider.kind,
-                tier,
-                origin: provider.note.clone(),
-                s3: match provider.kind {
-                    ProviderKind::S3 => S3Settings::from_config(config),
-                    ProviderKind::Gcs | ProviderKind::Azure => S3Settings::default(),
-                },
                 project: provider.project,
-                profile: None,
-                buckets: Vec::new(),
-                problem: None,
-                gcloud: None,
-                secret_command: None,
-                google_credentials: None,
-                azure: Default::default(),
+                ..Source::default_for(provider.kind, config, tier, provider.note.clone())
             };
             // Found through a profile rather than keys: the active profile supplies the
             // keys, and its endpoint and region fill whatever the config and the
@@ -243,11 +270,12 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
                 }
             }
             source.label = match source.kind {
-                ProviderKind::S3 if source.s3.endpoint.is_none() => "Amazon S3".to_string(),
-                ProviderKind::S3 => "S3-compatible".to_string(),
-                ProviderKind::Gcs => "Google Cloud".to_string(),
-                ProviderKind::Azure => "Azure".to_string(),
-            };
+                ProviderKind::S3 if source.s3.endpoint.is_none() => "Amazon S3",
+                ProviderKind::S3 => "S3-compatible",
+                ProviderKind::Gcs => "Google Cloud",
+                ProviderKind::Azure => "Azure",
+            }
+            .to_string();
             source
         })
         .collect();
@@ -266,79 +294,7 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
     {
         s3.s3.session_token = (env.var)("AWS_SESSION_TOKEN");
     }
-
-    // Google through `gcloud`: the active configuration is the default login when
-    // object_store has none of its own, or one it cannot read; every configuration
-    // with another account is a source of its own.
-    let configurations = crate::gcloud::configurations(env);
-    let active_name = crate::gcloud::active_name(env);
-    let active_configuration = configurations
-        .iter()
-        .find(|c| c.name == active_name && c.account.is_some());
-    match sources.iter_mut().find(|s| s.id == DEFAULT_GCS) {
-        Some(default) => {
-            if let Some(kind) = crate::cloud_browse::unreadable_google_login(env) {
-                match active_configuration {
-                    Some(configuration) => {
-                        default.gcloud = Some(configuration.name.clone());
-                        default.origin = "gcloud".to_string();
-                    }
-                    None => default.problem = Some(format!("unsupported login: {kind}")),
-                }
-            }
-            if default.project.is_none() {
-                default.project = active_configuration.and_then(|c| c.project.clone());
-            }
-        }
-        None => {
-            if let Some(configuration) = active_configuration {
-                sources.push(Source {
-                    id: DEFAULT_GCS.to_string(),
-                    label: "Google Cloud".to_string(),
-                    kind: ProviderKind::Gcs,
-                    tier: Tier::Tools,
-                    origin: "gcloud".to_string(),
-                    s3: S3Settings::default(),
-                    azure: Default::default(),
-                    project: crate::cloud_browse::gcp_project(env)
-                        .or_else(|| configuration.project.clone()),
-                    profile: None,
-                    buckets: Vec::new(),
-                    problem: None,
-                    gcloud: Some(configuration.name.clone()),
-                    secret_command: None,
-                    google_credentials: None,
-                });
-            }
-        }
-    }
-    let default_account = active_configuration.and_then(|c| c.account.clone());
-    let mut accounts_seen: Vec<String> = default_account.into_iter().collect();
-    for configuration in &configurations {
-        let Some(account) = &configuration.account else {
-            continue;
-        };
-        if accounts_seen.contains(account) {
-            continue;
-        }
-        accounts_seen.push(account.clone());
-        sources.push(Source {
-            id: slug_id("gcloud", &configuration.name),
-            label: configuration.name.clone(),
-            kind: ProviderKind::Gcs,
-            tier: Tier::Tools,
-            origin: "gcloud configuration".to_string(),
-            s3: S3Settings::default(),
-            azure: Default::default(),
-            project: configuration.project.clone(),
-            profile: None,
-            buckets: Vec::new(),
-            problem: None,
-            gcloud: Some(configuration.name.clone()),
-            secret_command: None,
-            google_credentials: None,
-        });
-    }
+    gcloud_sources(&mut sources, env);
 
     // Every other profile that can log in is a source of its own. The active one is
     // already the default source when that is how the default logs in.
@@ -349,122 +305,23 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
         let mut s3 = S3Settings::default();
         fill_from_profile(&mut s3, profile, env.var);
         sources.push(Source {
-            id: profile_source_id(&profile.name),
             label: profile.name.clone(),
-            kind: ProviderKind::S3,
-            tier: Tier::Tools,
-            origin: "aws profile".to_string(),
             s3,
-            project: None,
             profile: Some(profile.name.clone()),
-            buckets: Vec::new(),
-            problem: None,
-            gcloud: None,
-            secret_command: None,
-            google_credentials: None,
-            azure: Default::default(),
+            ..Source::new(
+                ProviderKind::S3,
+                profile_source_id(&profile.name),
+                Tier::Tools,
+                "aws profile",
+            )
         });
     }
-
-    // S3-compatible servers other tools describe. An `MC_HOST_<alias>` in the
-    // environment replaces the alias of the same name in `mc`'s config, as it does
-    // for `mc` itself.
-    let mut tool_sources: Vec<Source> = Vec::new();
-    for path in crate::s3_tools::mc_config_paths(env) {
-        if let Some(text) = (env.read)(&path) {
-            for server in crate::s3_tools::parse_mc_config(&text) {
-                tool_sources.push(tool_source(server, Tier::Tools));
-            }
-        }
-    }
-    for server in crate::s3_tools::mc_hosts(&(env.all_vars)()) {
-        let source = tool_source(server, Tier::Environment);
-        tool_sources.retain(|s| s.id != source.id);
-        tool_sources.push(source);
-    }
-    if let Some(server) = crate::s3_tools::s3cfg_path(env)
-        .and_then(|path| (env.read)(&path))
-        .and_then(|text| crate::s3_tools::parse_s3cfg(&text))
-    {
-        tool_sources.push(tool_source(server, Tier::Tools));
-    }
-    for source in tool_sources {
+    for source in tool_sources(env) {
         if !sources.iter().any(|s| s.id == source.id) {
             sources.push(source);
         }
     }
-
-    // Azure: an account or a service principal named in the environment, and a
-    // signed-in `az` or Azure PowerShell, which reaches every account it can see.
-    let from_environment = crate::azure::from_environment(env.var).or_else(|| {
-        crate::cloud_browse::instance_identity(config, env)
-            .azure
-            .then(|| {
-                (
-                    crate::azure::AzureSettings {
-                        account: (env.var)("AZURE_STORAGE_ACCOUNT_NAME"),
-                        auth: crate::azure::AzureAuth::ManagedIdentity,
-                        ..Default::default()
-                    },
-                    "managed identity".to_string(),
-                )
-            })
-    });
-    if let Some((settings, origin)) = from_environment {
-        sources.push(Source {
-            id: DEFAULT_AZURE_ENV.to_string(),
-            label: settings
-                .account
-                .clone()
-                .unwrap_or_else(|| "Azure".to_string()),
-            kind: ProviderKind::Azure,
-            tier: Tier::Environment,
-            origin,
-            s3: S3Settings::default(),
-            project: None,
-            profile: None,
-            buckets: Vec::new(),
-            problem: None,
-            gcloud: None,
-            secret_command: None,
-            google_credentials: None,
-            azure: settings,
-        });
-    }
-    let az = crate::azure::az_login_evidence(env);
-    let powershell = crate::azure::powershell_login_evidence(env);
-    let not_signed_in = crate::azure::not_signed_in(env);
-    if az || powershell || not_signed_in.is_some() {
-        let auth = if az || !powershell {
-            crate::azure::AzureAuth::AzCli
-        } else {
-            crate::azure::AzureAuth::PowerShell
-        };
-        sources.push(Source {
-            id: DEFAULT_AZURE_LOGIN.to_string(),
-            label: "Azure".to_string(),
-            kind: ProviderKind::Azure,
-            tier: Tier::Tools,
-            origin: if not_signed_in.is_some() {
-                "not signed in".to_string()
-            } else {
-                auth.describe().to_string()
-            },
-            s3: S3Settings::default(),
-            project: None,
-            profile: None,
-            buckets: Vec::new(),
-            problem: not_signed_in,
-            gcloud: None,
-            secret_command: None,
-            google_credentials: None,
-            azure: crate::azure::AzureSettings {
-                auth,
-                ..Default::default()
-            },
-        });
-    }
-
+    sources.extend(azure_sources(config, env));
     for configured in &config.connections {
         let source = configured_source(configured, env);
         match sources.iter_mut().find(|s| s.id == source.id) {
@@ -504,6 +361,157 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
     kept
 }
 
+/// Google through `gcloud`: the active configuration is the default login when
+/// object_store has none of its own, or one it cannot read; every configuration with
+/// another account is a source of its own.
+fn gcloud_sources(sources: &mut Vec<Source>, env: &Environment<'_>) {
+    let configurations = crate::gcloud::configurations(env);
+    let active_name = crate::gcloud::active_name(env);
+    let active_configuration = configurations
+        .iter()
+        .find(|c| c.name == active_name && c.account.is_some());
+    match sources.iter_mut().find(|s| s.id == DEFAULT_GCS) {
+        Some(default) => {
+            if let Some(kind) = crate::cloud_browse::unreadable_google_login(env) {
+                match active_configuration {
+                    Some(configuration) => {
+                        default.gcloud = Some(configuration.name.clone());
+                        default.origin = "gcloud".to_string();
+                    }
+                    None => default.problem = Some(format!("unsupported login: {kind}")),
+                }
+            }
+            if default.project.is_none() {
+                default.project = active_configuration.and_then(|c| c.project.clone());
+            }
+        }
+        None => {
+            if let Some(configuration) = active_configuration {
+                sources.push(Source {
+                    label: "Google Cloud".to_string(),
+                    project: crate::cloud_browse::gcp_project(env)
+                        .or_else(|| configuration.project.clone()),
+                    gcloud: Some(configuration.name.clone()),
+                    ..Source::new(ProviderKind::Gcs, DEFAULT_GCS, Tier::Tools, "gcloud")
+                });
+            }
+        }
+    }
+    let mut accounts_seen: Vec<String> = active_configuration
+        .and_then(|c| c.account.clone())
+        .into_iter()
+        .collect();
+    for configuration in &configurations {
+        let Some(account) = &configuration.account else {
+            continue;
+        };
+        if accounts_seen.contains(account) {
+            continue;
+        }
+        accounts_seen.push(account.clone());
+        sources.push(Source {
+            label: configuration.name.clone(),
+            project: configuration.project.clone(),
+            gcloud: Some(configuration.name.clone()),
+            ..Source::new(
+                ProviderKind::Gcs,
+                slug_id("gcloud", &configuration.name),
+                Tier::Tools,
+                "gcloud configuration",
+            )
+        });
+    }
+}
+
+/// S3-compatible servers other tools describe. An `MC_HOST_<alias>` in the environment
+/// replaces the alias of the same name in `mc`'s config, as it does for `mc` itself.
+fn tool_sources(env: &Environment<'_>) -> Vec<Source> {
+    let mut sources: Vec<Source> = Vec::new();
+    for path in crate::s3_tools::mc_config_paths(env) {
+        if let Some(text) = (env.read)(&path) {
+            for server in crate::s3_tools::parse_mc_config(&text) {
+                sources.push(tool_source(server, Tier::Tools));
+            }
+        }
+    }
+    for server in crate::s3_tools::mc_hosts(&(env.all_vars)()) {
+        let source = tool_source(server, Tier::Environment);
+        sources.retain(|s| s.id != source.id);
+        sources.push(source);
+    }
+    if let Some(server) = crate::s3_tools::s3cfg_path(env)
+        .and_then(|path| (env.read)(&path))
+        .and_then(|text| crate::s3_tools::parse_s3cfg(&text))
+    {
+        sources.push(tool_source(server, Tier::Tools));
+    }
+    sources
+}
+
+/// Azure: an account or a service principal named in the environment, and a signed-in
+/// `az` or Azure PowerShell, which reaches every account it can see.
+fn azure_sources(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
+    use crate::azure::{AzureAuth, AzureSettings};
+    let mut sources = Vec::new();
+    let from_environment = crate::azure::from_environment(env.var).or_else(|| {
+        crate::cloud_browse::instance_identity(config, env)
+            .azure
+            .then(|| {
+                let settings = AzureSettings {
+                    account: (env.var)("AZURE_STORAGE_ACCOUNT_NAME"),
+                    auth: AzureAuth::ManagedIdentity,
+                    ..Default::default()
+                };
+                (settings, "managed identity".to_string())
+            })
+    });
+    if let Some((settings, origin)) = from_environment {
+        sources.push(Source {
+            label: settings
+                .account
+                .clone()
+                .unwrap_or_else(|| "Azure".to_string()),
+            azure: settings,
+            ..Source::new(
+                ProviderKind::Azure,
+                DEFAULT_AZURE_ENV,
+                Tier::Environment,
+                origin,
+            )
+        });
+    }
+    let az = crate::azure::az_login_evidence(env);
+    let powershell = crate::azure::powershell_login_evidence(env);
+    let not_signed_in = crate::azure::not_signed_in(env);
+    if az || powershell || not_signed_in.is_some() {
+        let auth = if az || !powershell {
+            AzureAuth::AzCli
+        } else {
+            AzureAuth::PowerShell
+        };
+        let origin = match not_signed_in {
+            Some(_) => "not signed in",
+            None => auth.describe(),
+        };
+        let login = Source::new(
+            ProviderKind::Azure,
+            DEFAULT_AZURE_LOGIN,
+            Tier::Tools,
+            origin,
+        );
+        sources.push(Source {
+            label: "Azure".to_string(),
+            problem: not_signed_in,
+            azure: AzureSettings {
+                auth,
+                ..Default::default()
+            },
+            ..login
+        });
+    }
+    sources
+}
+
 fn normalized_endpoint(s3: &S3Settings) -> String {
     s3.endpoint
         .as_deref()
@@ -529,11 +537,7 @@ fn tool_source(server: crate::s3_tools::ToolServer, tier: Tier) -> Source {
         server.name.clone()
     };
     Source {
-        id,
         label,
-        kind: ProviderKind::S3,
-        tier,
-        origin: server.origin,
         s3: S3Settings {
             endpoint: server.endpoint,
             access_key_id: Some(server.access_key_id),
@@ -544,14 +548,7 @@ fn tool_source(server: crate::s3_tools::ToolServer, tier: Tier) -> Source {
             from_env: false,
             skip_signature: false,
         },
-        project: None,
-        profile: None,
-        buckets: Vec::new(),
-        problem: None,
-        gcloud: None,
-        secret_command: None,
-        google_credentials: None,
-        azure: Default::default(),
+        ..Source::new(ProviderKind::S3, id, tier, server.origin)
     }
 }
 
@@ -648,27 +645,25 @@ fn configured_source(configured: &CloudConnectionConfig, env: &Environment<'_>) 
             .and_then(|path| (env.read)(path))
             .and_then(|text| google_file_project(&text));
         return Source {
-            id: configured.name.clone(),
             label: configured
                 .label
                 .clone()
                 .unwrap_or_else(|| configured.name.clone()),
-            kind: ProviderKind::Gcs,
-            tier: Tier::Config,
-            origin: "datui config".to_string(),
-            s3: S3Settings::default(),
-            azure: Default::default(),
             project: configured
                 .project
                 .clone()
                 .or(file_project)
                 .or_else(|| crate::cloud_browse::gcp_project(env)),
-            profile: None,
             buckets: configured.buckets.clone(),
             problem,
             gcloud: configured.configuration.clone(),
-            secret_command: None,
             google_credentials,
+            ..Source::new(
+                ProviderKind::Gcs,
+                configured.name.clone(),
+                Tier::Config,
+                "datui config".to_string(),
+            )
         };
     }
     let var = env.var;
@@ -711,23 +706,21 @@ fn configured_source(configured: &CloudConnectionConfig, env: &Environment<'_>) 
         }
     }
     Source {
-        id: configured.name.clone(),
         label: configured
             .label
             .clone()
             .unwrap_or_else(|| configured.name.clone()),
-        kind,
-        tier: Tier::Config,
-        origin: "datui config".to_string(),
         s3,
-        project: None,
         profile: configured.profile.clone(),
         buckets: configured.buckets.clone(),
         problem,
-        azure: Default::default(),
-        gcloud: None,
         secret_command: configured.secret_command.clone(),
-        google_credentials: None,
+        ..Source::new(
+            kind,
+            configured.name.clone(),
+            Tier::Config,
+            "datui config".to_string(),
+        )
     }
 }
 
@@ -801,23 +794,18 @@ fn configured_azure_source(configured: &CloudConnectionConfig, env: &Environment
         settings.auth = AzureAuth::PowerShell;
     }
     Source {
-        id: configured.name.clone(),
         label: configured
             .label
             .clone()
             .unwrap_or_else(|| configured.name.clone()),
-        kind: ProviderKind::Azure,
-        tier: Tier::Config,
-        origin: "datui config".to_string(),
-        s3: S3Settings::default(),
         azure: settings,
-        project: None,
-        profile: None,
-        buckets: Vec::new(),
         problem,
-        gcloud: None,
-        secret_command: None,
-        google_credentials: None,
+        ..Source::new(
+            ProviderKind::Azure,
+            configured.name.clone(),
+            Tier::Config,
+            "datui config".to_string(),
+        )
     }
 }
 
@@ -1282,35 +1270,13 @@ fn resolve_among(
         {
             Some(source) => source,
             None => {
-                let default_id = match kind {
-                    ProviderKind::S3 => DEFAULT_S3,
-                    ProviderKind::Gcs => DEFAULT_GCS,
-                    ProviderKind::Azure => DEFAULT_AZURE_LOGIN,
-                };
                 // The default source as discovered, when it was: that is what carries
                 // the active profile. Otherwise there is no login for this provider, and
                 // the settings are only where to send an unsigned request.
+                let default = Source::default_for(kind, config, Tier::Environment, "");
                 owned = false;
-                no_login = find(default_id).is_none();
-                find(default_id).unwrap_or_else(|| Source {
-                    id: default_id.to_string(),
-                    label: String::new(),
-                    kind,
-                    tier: Tier::Environment,
-                    origin: String::new(),
-                    s3: match kind {
-                        ProviderKind::S3 => S3Settings::from_config(config),
-                        ProviderKind::Gcs | ProviderKind::Azure => S3Settings::default(),
-                    },
-                    project: None,
-                    profile: None,
-                    buckets: Vec::new(),
-                    problem: None,
-                    gcloud: None,
-                    secret_command: None,
-                    google_credentials: None,
-                    azure: Default::default(),
-                })
+                no_login = find(&default.id).is_none();
+                find(&default.id).unwrap_or(default)
             }
         },
     };

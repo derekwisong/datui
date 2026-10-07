@@ -978,14 +978,9 @@ pub fn environment_is_utf8() -> bool {
     Environment::current().is_utf8()
 }
 
-/// Choose the glyph set for this run. Later calls are ignored, so this is safe to
-/// call once from startup and never think about again.
-pub fn init(mode: UnicodeMode) {
-    init_with_overrides(mode, &BTreeMap::new());
-}
-
-/// [`init`] with `[glyphs]` overrides over the Unicode set. Never the ASCII set: it is
-/// the tested floor, where rich-font overrides would garble.
+/// Choose the glyph set for this run, with `[glyphs]` overrides over the Unicode set.
+/// Never over the ASCII set: it is the tested floor, where rich-font overrides would
+/// garble. Later calls are ignored.
 pub fn init_with_overrides(mode: UnicodeMode, overrides: &BTreeMap<String, SlotOverride>) {
     let mut chosen = match mode {
         UnicodeMode::Always => UNICODE,
@@ -1004,7 +999,7 @@ pub fn init_with_overrides(mode: UnicodeMode, overrides: &BTreeMap<String, SlotO
     let _ = GLYPHS.set(chosen);
 }
 
-/// The active glyph set. Falls back to detection when [`init`] was never
+/// The active glyph set. Falls back to detection when [`init_with_overrides`] was never
 /// called, so library users and tests get sensible symbols without ceremony.
 pub fn get() -> &'static Glyphs {
     GLYPHS.get_or_init(|| {

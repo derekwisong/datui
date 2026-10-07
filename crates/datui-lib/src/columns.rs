@@ -165,14 +165,6 @@ impl Builder {
         self.len == 0
     }
 
-    pub fn names(&self) -> &[String] {
-        &self.names
-    }
-
-    pub fn position(&self, name: &str) -> Option<usize> {
-        self.names.iter().position(|n| n == name)
-    }
-
     /// A column added after rows were: null in each of them.
     pub fn add_column(&mut self, name: &str, kind: Kind) -> usize {
         let mut values = Values::new(kind);

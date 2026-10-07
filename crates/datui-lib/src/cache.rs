@@ -66,15 +66,6 @@ impl CacheManager {
         Ok(())
     }
 
-    /// Clear a specific cache file
-    pub fn clear_file(&self, filename: &str) -> Result<()> {
-        let file_path = self.cache_file(filename);
-        if file_path.exists() {
-            fs::remove_file(&file_path)?;
-        }
-        Ok(())
-    }
-
     /// Remove every cache kind's directory and line-file list (recents, histories,
     /// hidden sources, remembered places). Not lock files (another instance may hold
     /// them), the log, Data Quality copies (owned by their sessions), or views (config).

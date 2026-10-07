@@ -162,10 +162,6 @@ pub struct Match {
 }
 
 impl Match {
-    pub fn is_empty(&self) -> bool {
-        self.sender.is_none() && self.target.is_none() && self.begin_string.is_none()
-    }
-
     /// Whether a message of this sender, target and begin string is one of its.
     pub fn matches(&self, sender: Option<&str>, target: Option<&str>, begin: Option<&str>) -> bool {
         let one = |want: &Option<String>, have: Option<&str>| {

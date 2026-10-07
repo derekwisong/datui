@@ -93,20 +93,6 @@ pub fn refusal(format: Option<FileFormat>, options: &OpenOptions) -> Option<Stri
     None
 }
 
-/// Whether `path`'s format, as `options` say or its name does, is one `--follow` reads.
-pub fn followable_path(path: &Path, options: &OpenOptions) -> bool {
-    let format = options.format.or_else(|| {
-        path.extension()
-            .and_then(|e| e.to_str())
-            .and_then(FileFormat::from_extension)
-    });
-    let compression = options
-        .compression
-        .or_else(|| CompressionFormat::from_extension(path));
-    compression.is_none()
-        && (refusal(format, options).is_none() || followed_stream(path, format, options))
-}
-
 /// Whether `path`, read as `format`, is an Arrow IPC stream `--follow` reads as it grows,
 /// by its contents.
 pub(crate) fn followed_stream(

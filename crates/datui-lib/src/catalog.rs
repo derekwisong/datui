@@ -682,13 +682,6 @@ impl Dataset {
             _ => crate::config::DatasetAuth::Auto,
         })
     }
-
-    /// Whether this is an HTTP(S) file.
-    pub fn is_web_file(&self) -> bool {
-        self.url
-            .as_deref()
-            .is_some_and(|url| dataset_url_place(url) == Some(UrlPlace::Http))
-    }
 }
 
 impl Catalog {
@@ -931,11 +924,6 @@ impl NewDataset {
     pub fn check(&self) -> Result<(), String> {
         check_dataset(&self.as_dataset(None))
             .map_err(|e| e.strip_prefix("[new]: ").map(str::to_string).unwrap_or(e))
-    }
-
-    /// Where it is, as a place key.
-    pub fn place_key(&self) -> String {
-        self.as_dataset(None).place_key()
     }
 }
 

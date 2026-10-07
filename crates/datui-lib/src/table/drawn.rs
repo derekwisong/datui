@@ -86,17 +86,6 @@ impl DataTableState {
         (*to >= drawn.area.right() && x + 1 == *to).then(|| name.clone())
     }
 
-    /// The column drawn across `x`, whatever the row: where a header dragged sideways
-    /// is over.
-    pub fn drawn_column_across(&self, x: u16) -> Option<String> {
-        let drawn = self.drawn.as_ref()?;
-        drawn
-            .columns
-            .iter()
-            .find(|(from, to, _)| (*from..*to).contains(&x))
-            .map(|(_, _, name)| name.clone())
-    }
-
     /// The header rows as drawn and each column's cells across, `[from, to)`: where a
     /// header drag draws its drop mark.
     pub fn drawn_header(&self) -> Option<(Rect, DrawnColumns)> {

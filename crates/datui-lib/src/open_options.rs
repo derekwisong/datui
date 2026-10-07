@@ -304,30 +304,10 @@ impl OpenOptions {
         self
     }
 
-    pub fn with_skip_rows(mut self, skip_rows: usize) -> Self {
-        self.skip_rows = Some(skip_rows);
-        self
-    }
-
-    pub fn with_delimiter(mut self, delimiter: u8) -> Self {
-        self.delimiter = Some(delimiter);
-        self
-    }
-
-    pub fn with_has_header(mut self, has_header: bool) -> Self {
-        self.has_header = Some(has_header);
-        self
-    }
-
     /// The separator a delimited file is read with: `--delimiter` when given, else
     /// the one its format implies (`FileFormat::separator`).
     pub fn separator_or(&self, format_default: u8) -> u8 {
         self.delimiter.unwrap_or(format_default)
-    }
-
-    pub fn with_compression(mut self, compression: CompressionFormat) -> Self {
-        self.compression = Some(compression);
-        self
     }
 
     /// The lines `--header-rows` named, unless the file is being read without a

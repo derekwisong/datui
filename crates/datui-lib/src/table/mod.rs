@@ -348,10 +348,6 @@ impl Sampled {
         self.drawn.is_none()
     }
 
-    pub fn drawn(&self) -> Option<&crate::table_sample::Drawn> {
-        self.drawn.as_ref()
-    }
-
     /// How a random sample of a stream is drawn: what draws the same rows again.
     pub fn path(&self) -> Option<crate::table_sample::DrawPath> {
         self.path
@@ -366,16 +362,6 @@ impl Sampled {
     /// Rows the view has taken of the sample.
     pub fn rows(&self) -> usize {
         self.frame.height()
-    }
-
-    /// Bytes the sample's rows take.
-    pub fn bytes(&self) -> usize {
-        self.rows.bytes()
-    }
-
-    /// Why memory stopped the draw, if it did.
-    pub fn stopped(&self) -> Option<String> {
-        self.rows.stopped()
     }
 
     /// The footer segment: `sample 100,000 of 36.8M`, `sample 1,234+` while drawing,

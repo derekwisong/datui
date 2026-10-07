@@ -679,11 +679,7 @@ pub struct Disagreement {
     pub headerless: bool,
 }
 
-impl Disagreement {
-    pub fn any(&self) -> bool {
-        self.columns || self.types || self.headerless
-    }
-}
+impl Disagreement {}
 
 /// Read a spread of `files` (the ends and the middle, since sorted names group each
 /// table's files) and say what they are. Bounded reads whatever the size: this runs

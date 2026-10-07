@@ -954,19 +954,7 @@ pub enum RowNumbers {
     Off,
 }
 
-impl RowNumbers {
-    /// Whether a file read as `format` opens with them.
-    pub fn for_format(self, format: Option<crate::FileFormat>) -> bool {
-        match self {
-            Self::On => true,
-            Self::Off => false,
-            Self::Auto => matches!(
-                format,
-                Some(crate::FileFormat::Text | crate::FileFormat::Journal)
-            ),
-        }
-    }
-}
+impl RowNumbers {}
 
 impl From<bool> for RowNumbers {
     fn from(on: bool) -> Self {
@@ -1677,14 +1665,6 @@ impl QueryMode {
             self
         } else {
             QueryMode::Q
-        }
-    }
-
-    /// The command line's prefix for it: `sql`, `q`.
-    pub fn prefix(self) -> &'static str {
-        match self {
-            QueryMode::Sql => "sql",
-            QueryMode::Q => "q",
         }
     }
 
@@ -2484,12 +2464,8 @@ fn merge_by_name(lower: &mut Vec<toml::Value>, upper: Vec<toml::Value>) {
 
 // Configuration loading and layering
 impl AppConfig {
-    /// Load configuration from all layers (default → imports → user config)
-    pub fn load(app_name: &str) -> Result<Self> {
-        Self::load_with(app_name, &[])
-    }
-
-    /// [`Self::load`], with `-c KEY=VALUE` over the files.
+    /// Load configuration from all layers (default, imports, user config), with
+    /// `-c KEY=VALUE` over the files.
     pub fn load_with(app_name: &str, overrides: &[datui_cli::settings::Override]) -> Result<Self> {
         match ConfigManager::new(app_name) {
             Ok(manager) => {

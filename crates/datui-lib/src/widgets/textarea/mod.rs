@@ -194,16 +194,6 @@ impl TextArea {
         &self.yank
     }
 
-    /// Overwrite the yank buffer, for example from an external paste.
-    pub fn set_yank(&mut self, text: impl Into<String>) {
-        self.yank = text.into();
-    }
-
-    /// Style applied to the text.
-    pub fn style(&self) -> Style {
-        self.style
-    }
-
     pub fn set_style(&mut self, style: Style) {
         self.style = style;
     }
@@ -221,17 +211,9 @@ impl TextArea {
         self.cursor_visible = visible;
     }
 
-    pub fn cursor_visible(&self) -> bool {
-        self.cursor_visible
-    }
-
     /// Width of a tab stop, in columns. Tab keys insert this many spaces.
     pub fn set_tab_len(&mut self, len: usize) {
         self.tab_len = len.max(1);
-    }
-
-    pub fn tab_len(&self) -> usize {
-        self.tab_len
     }
 
     /// Scroll position as `(first visible row, first visible terminal column)`

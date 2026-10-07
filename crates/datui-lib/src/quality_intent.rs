@@ -31,8 +31,6 @@ pub enum NumberReading {
 }
 
 impl NumberReading {
-    pub const ALL: [Self; 2] = [Self::Whole, Self::Decimal];
-
     pub fn label(self) -> &'static str {
         match self {
             Self::Whole => "whole number",

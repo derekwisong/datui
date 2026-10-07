@@ -884,10 +884,6 @@ impl FixedRecords {
         self.schema.clone()
     }
 
-    pub fn columns(&self) -> &[ColumnLayout] {
-        &self.columns
-    }
-
     /// The bytes the columns read, for a reader of the raw bytes.
     pub fn sources(&self) -> &[Arc<Bytes>] {
         &self.sources

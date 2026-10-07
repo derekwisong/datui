@@ -1387,23 +1387,6 @@ pub fn is_category_dtype(dtype: &DataType) -> bool {
     ) || dtype.is_integer()
 }
 
-/// What sets a bar's length: a numeric column, one row per category, or how many rows
-/// each category has.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum BarValue {
-    Count,
-    Column(String),
-}
-
-impl BarValue {
-    pub fn label(&self) -> &str {
-        match self {
-            Self::Count => "Count",
-            Self::Column(column) => column,
-        }
-    }
-}
-
 /// Categories a count keeps before it stops: past this the column is an identifier,
 /// not a category, and a count per value would hold as much as the table.
 pub const COUNT_CATEGORY_CAP: usize = 100_000;

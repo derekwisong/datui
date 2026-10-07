@@ -194,31 +194,6 @@ impl Fitted {
         }
     }
 
-    /// The parameters, as a reader would write them: `μ 4.91, σ 0.43`.
-    pub fn describe(&self) -> String {
-        let g = |x: f64| format_param(x);
-        match *self {
-            Self::Normal { mean, sd } => format!("mean {}, sd {}", g(mean), g(sd)),
-            Self::LogNormal { mu, sigma } => format!("log mean {}, log sd {}", g(mu), g(sigma)),
-            Self::Uniform { low, high } => format!("{} to {}", g(low), g(high)),
-            Self::Exponential { rate } => format!("rate {}", g(rate)),
-            Self::Gamma { shape, scale } => format!("shape {}, scale {}", g(shape), g(scale)),
-            Self::ChiSquared { df } => format!("df {}", g(df)),
-            Self::Beta { alpha, beta } => format!("a {}, b {}", g(alpha), g(beta)),
-            Self::StudentsT {
-                df,
-                location,
-                scale,
-            } => format!("df {}, at {}, scale {}", g(df), g(location), g(scale)),
-            Self::Weibull { shape, scale } => format!("shape {}, scale {}", g(shape), g(scale)),
-            Self::PowerLaw { xmin, alpha } => format!("from {}, exponent {}", g(xmin), g(alpha)),
-            Self::Poisson { rate } => format!("rate {}", g(rate)),
-            Self::Bernoulli { p } => format!("p {}", g(p)),
-            Self::Binomial { trials, p } => format!("{trials} trials, p {}", g(p)),
-            Self::Geometric { p, start } => format!("p {}, from {start}", g(p)),
-        }
-    }
-
     /// `P(X <= x)`.
     pub fn cdf(&self, x: f64) -> f64 {
         match *self {
@@ -1062,16 +1037,6 @@ pub fn qq_quantiles(fitted: &Fitted, n: usize) -> Vec<f64> {
     (1..=n)
         .map(|i| fitted.quantile(i as f64 / (n as f64 + 1.0)))
         .collect()
-}
-
-fn format_param(x: f64) -> String {
-    if x != 0.0 && (x.abs() >= 1e5 || x.abs() < 1e-3) {
-        format!("{x:.3e}")
-    } else if x.abs() >= 100.0 {
-        format!("{x:.1}")
-    } else {
-        format!("{x:.3}")
-    }
 }
 
 const LN_2PI: f64 = 1.837_877_066_409_345_5;

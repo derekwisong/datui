@@ -1906,10 +1906,6 @@ pub enum Probe {
 pub struct Probes(std::collections::HashMap<PathBuf, Probe>);
 
 impl Probes {
-    pub fn get(&self, place: &Path) -> Option<&Probe> {
-        self.0.get(place)
-    }
-
     /// The rows of a listing that has answered.
     pub fn listed(&self, place: &Path) -> Option<&[Entry]> {
         match self.0.get(place)? {

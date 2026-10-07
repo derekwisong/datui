@@ -54,7 +54,10 @@ fn the_normality_p_value_is_calibrated() {
             })
             .collect()
     };
-    let below = |values: Vec<f64>| approximate_shapiro_wilk(&values).1.unwrap() < 0.05;
+    let below = |mut values: Vec<f64>| {
+        values.sort_by(f64::total_cmp);
+        approximate_shapiro_wilk(&values).1.unwrap() < 0.05
+    };
     let false_alarms = (0..400).filter(|_| below(sample(false))).count();
     assert!(
         (8..=36).contains(&false_alarms),
@@ -69,10 +72,14 @@ fn the_normality_p_value_is_calibrated() {
 #[test]
 fn non_finite_values_are_left_out() {
     let series = Series::new("x".into(), &[3.0, f64::NAN, 1.0, f64::INFINITY, 2.0]);
-    assert_eq!(get_numeric_values_as_f64(&series), vec![3.0, 1.0, 2.0]);
-    assert_eq!(finite_values(&series), vec![3.0, 1.0, 2.0]);
+    let column = NumericColumn::of(&series).unwrap();
+    assert_eq!(column.spread(), vec![3.0, 1.0, 2.0]);
+    assert_eq!(column.finite, vec![3.0, 1.0, 2.0]);
     let integers = Series::new("i".into(), &[Some(4i16), None, Some(-2)]);
-    assert_eq!(finite_values(&integers), vec![4.0, -2.0]);
+    assert_eq!(
+        NumericColumn::of(&integers).unwrap().finite,
+        vec![4.0, -2.0]
+    );
 }
 
 /// One value throughout, even one a float cannot hold exactly, has no skew; and a

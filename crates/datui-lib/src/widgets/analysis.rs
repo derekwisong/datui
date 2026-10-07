@@ -2323,7 +2323,6 @@ mod tests {
             column_name: "close".into(),
             distribution_type: DistributionType::Normal,
             confidence: 0.0,
-            fit_quality: 0.0,
             characteristics: DistributionCharacteristics {
                 shapiro_wilk_stat: None,
                 shapiro_wilk_pvalue: None,

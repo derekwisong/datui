@@ -338,7 +338,7 @@ fn spearman_of_a_constant_column_is_undefined() {
 #[test]
 fn a_constant_column_is_constant_and_a_hopeless_one_has_no_clear_fit() {
     let constant = Series::new("c".into(), vec![2020.0f64; 500]);
-    let info = infer_distribution(&constant, 500, false);
+    let info = infer_distribution(&NumericColumn::of(&constant).unwrap().spread(), 500);
     assert_eq!(info.distribution_type, DistributionType::Constant);
 
     // Two far-apart clusters of non-integers: every candidate is rejected.
@@ -353,7 +353,7 @@ fn a_constant_column_is_constant_and_a_hopeless_one_has_no_clear_fit() {
         })
         .collect();
     let bimodal = Series::new("b".into(), values);
-    let info = infer_distribution(&bimodal, 2_000, false);
+    let info = infer_distribution(&NumericColumn::of(&bimodal).unwrap().spread(), 2_000);
     assert_eq!(info.distribution_type, DistributionType::Unknown);
     assert_eq!(info.distribution_type.to_string(), "No clear fit");
 
@@ -369,7 +369,7 @@ fn a_constant_column_is_constant_and_a_hopeless_one_has_no_clear_fit() {
         })
         .collect();
     let integers = Series::new("i".into(), values);
-    let info = infer_distribution(&integers, 2_000, false);
+    let info = infer_distribution(&NumericColumn::of(&integers).unwrap().spread(), 2_000);
     assert!(
         !matches!(
             info.distribution_type,

@@ -94,7 +94,6 @@ pub struct ColumnStatistics {
     pub numeric_stats: Option<NumericStatistics>,
     pub categorical_stats: Option<CategoricalStatistics>,
     pub temporal_stats: Option<TemporalStatistics>,
-    pub distribution_info: Option<DistributionInfo>,
 }
 
 #[derive(Clone)]
@@ -135,28 +134,20 @@ pub struct TemporalStatistics {
 }
 
 #[derive(Clone)]
-pub struct DistributionInfo {
-    pub distribution_type: DistributionType,
-    pub confidence: f64,
-    pub sample_size: usize,
-    pub is_sampled: bool,
-    pub fit_quality: Option<f64>, // 0.0-1.0, how well data fits detected type
-    /// Every family's fit and test, or why it does not apply.
-    pub fits: Vec<(DistributionType, crate::distribution_fit::FitOutcome)>,
-}
-
-#[derive(Clone)]
 pub struct DistributionAnalysis {
     pub column_name: String,
     pub distribution_type: DistributionType,
-    pub confidence: f64,  // 0.0-1.0
-    pub fit_quality: f64, // 0.0-1.0, how well data fits detected type
+    /// The chosen family's p-value; with no clear fit, the best any family managed.
+    pub confidence: f64,
     pub characteristics: DistributionCharacteristics,
     pub outliers: OutlierAnalysis,
     pub percentiles: PercentileBreakdown,
-    pub sorted_sample_values: Vec<f64>, // Sorted data values for Q-Q plot (all data if < threshold, sampled if >= threshold)
-    pub is_sampled: bool,               // Whether data was sampled
-    pub sample_size: usize,             // Actual number of values used
+    /// At most five thousand of the column's finite values, spread across it, sorted.
+    pub sorted_sample_values: Vec<f64>,
+    /// Whether the rows analyzed were a sample of the table.
+    pub is_sampled: bool,
+    /// How many values `sorted_sample_values` holds.
+    pub sample_size: usize,
     /// Every family's fit and test, or why it does not apply.
     pub fits: Vec<(DistributionType, crate::distribution_fit::FitOutcome)>,
     /// Each fitted family's quantiles at the plotting positions of
@@ -389,6 +380,8 @@ pub struct AnalysisContext {
 
 #[derive(Debug, Clone, Copy)]
 pub struct ComputeOptions {
+    /// Fit distributions to the numeric columns. Analyses need this and
+    /// `include_distribution_analyses` both.
     pub include_distribution_info: bool,
     pub include_distribution_analyses: bool,
     pub include_correlation_matrix: bool,
@@ -494,6 +487,7 @@ pub fn compute_statistics_for_sample(
     let df = rows.df;
 
     let mut column_statistics = Vec::new();
+    let mut distribution_analyses = Vec::new();
 
     for (name, dtype) in schema.iter() {
         let col = df.column(name)?;
@@ -501,14 +495,15 @@ pub fn compute_statistics_for_sample(
         let count = series.len();
         let null_count = series.null_count();
 
-        let numeric_stats = if is_numeric_type(dtype) {
-            Some(compute_numeric_stats(
-                series,
-                options.include_skewness_kurtosis_outliers,
-            )?)
+        let numeric = if is_numeric_type(dtype) {
+            Some(NumericColumn::of(series)?)
         } else {
             None
         };
+        let numeric_stats = numeric
+            .as_ref()
+            .map(|column| compute_numeric_stats(column, options.include_skewness_kurtosis_outliers))
+            .transpose()?;
 
         let categorical_stats = if is_categorical_type(dtype) {
             Some(compute_categorical_stats(series)?)
@@ -516,17 +511,19 @@ pub fn compute_statistics_for_sample(
             None
         };
 
-        let distribution_info =
-            if options.include_distribution_info && is_numeric_type(dtype) && null_count < count {
-                // Get sample for distribution inference
-                Some(infer_distribution(
-                    series,
-                    actual_sample_size.unwrap_or(count),
-                    should_sample,
-                ))
-            } else {
-                None
-            };
+        if options.include_distribution_info
+            && options.include_distribution_analyses
+            && null_count < count
+            && let (Some(column), Some(stats)) = (&numeric, &numeric_stats)
+        {
+            distribution_analyses.push(distribution_analysis(
+                name,
+                column,
+                stats,
+                actual_sample_size.unwrap_or(count),
+                should_sample,
+            ));
+        }
 
         column_statistics.push(ColumnStatistics {
             name: name.to_string(),
@@ -536,37 +533,8 @@ pub fn compute_statistics_for_sample(
             numeric_stats,
             categorical_stats,
             temporal_stats: temporal_stats_of(series)?,
-            distribution_info,
         });
     }
-
-    let distribution_analyses = if options.include_distribution_analyses {
-        column_statistics
-            .iter()
-            .filter_map(|col_stat| {
-                if let (Some(numeric_stats), Some(dist_info)) =
-                    (&col_stat.numeric_stats, &col_stat.distribution_info)
-                {
-                    if let Ok(series_col) = df.column(&col_stat.name) {
-                        let series = series_col.as_materialized_series();
-                        Some(compute_advanced_distribution_analysis(
-                            &col_stat.name,
-                            series,
-                            numeric_stats,
-                            dist_info,
-                            should_sample,
-                        ))
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
 
     let correlation_matrix = if options.include_correlation_matrix {
         compute_correlation_matrix(&df).ok()
@@ -754,7 +722,6 @@ fn parse_describe_agg_row(agg_df: &DataFrame, schema: &Schema) -> Vec<ColumnStat
             numeric_stats,
             categorical_stats,
             temporal_stats,
-            distribution_info: None,
         });
     }
     column_statistics
@@ -1379,95 +1346,42 @@ pub(crate) fn sample_rank(seed: u64, position: u64) -> u64 {
     value ^ (value >> 31)
 }
 
-/// Up to ten thousand of a column's values, spread across it, as `f64`. NaN and
-/// infinities are left out: no distribution has them, and one NaN is enough to leave
-/// a sort by `partial_cmp` out of order.
-fn get_numeric_values_as_f64(series: &Series) -> Vec<f64> {
-    let max_len = 10000;
-    // Every k-th value, not the first ten thousand: a sample is spread across the
-    // table, and its head is one stretch of it.
-    let limited_series = if series.len() > max_len {
-        let step = series.len().div_ceil(max_len);
-        series
-            .gather_every(step, 0)
-            .unwrap_or_else(|_| series.slice(0, max_len))
-    } else {
-        series.clone()
-    };
+/// A numeric column cast to `f64` once, for everything the analysis computes from it.
+struct NumericColumn {
+    floats: Float64Chunked,
+    /// Every finite value: nulls, NaN and infinities left out. No distribution has
+    /// NaN, and one is enough to leave a sort by `partial_cmp` out of order.
+    finite: Vec<f64>,
+}
 
-    if let Ok(f64_series) = limited_series.f64() {
-        f64_series
+impl NumericColumn {
+    fn of(series: &Series) -> Result<Self> {
+        let floats = series.cast(&DataType::Float64)?.f64()?.clone();
+        let finite = floats.iter().flatten().filter(|v| v.is_finite()).collect();
+        Ok(Self { floats, finite })
+    }
+
+    /// Up to ten thousand finite values, every k-th row's rather than the first ten
+    /// thousand: a sample is spread across the table, and its head is one stretch of it.
+    fn spread(&self) -> Vec<f64> {
+        const MAX_VALUES: usize = 10_000;
+        let step = self.floats.len().div_ceil(MAX_VALUES).max(1);
+        self.floats
             .iter()
+            .step_by(step)
             .flatten()
             .filter(|v| v.is_finite())
-            .take(max_len)
             .collect()
-    } else if let Ok(i64_series) = limited_series.i64() {
-        i64_series
-            .iter()
-            .filter_map(|v| v.map(|x| x as f64))
-            .take(max_len)
-            .collect()
-    } else if let Ok(i32_series) = limited_series.i32() {
-        i32_series
-            .iter()
-            .filter_map(|v| v.map(|x| x as f64))
-            .take(max_len)
-            .collect()
-    } else if let Ok(u64_series) = limited_series.u64() {
-        u64_series
-            .iter()
-            .filter_map(|v| v.map(|x| x as f64))
-            .take(max_len)
-            .collect()
-    } else if let Ok(u32_series) = limited_series.u32() {
-        u32_series
-            .iter()
-            .filter_map(|v| v.map(|x| x as f64))
-            .take(max_len)
-            .collect()
-    } else if let Ok(f32_series) = limited_series.f32() {
-        f32_series
-            .iter()
-            .flatten()
-            .filter(|v| v.is_finite())
-            .map(f64::from)
-            .take(max_len)
-            .collect()
-    } else {
-        match limited_series.cast(&DataType::Float64) {
-            Ok(cast_series) => {
-                if let Ok(f64_series) = cast_series.f64() {
-                    f64_series
-                        .iter()
-                        .flatten()
-                        .filter(|v| v.is_finite())
-                        .take(max_len)
-                        .collect()
-                } else {
-                    Vec::new()
-                }
-            }
-            Err(_) => Vec::new(),
-        }
     }
 }
 
-/// Every finite value of a numeric column as `f64`: nulls, NaN and infinities left out.
-fn finite_values(series: &Series) -> Vec<f64> {
-    let Ok(floats) = series.cast(&DataType::Float64) else {
-        return Vec::new();
-    };
-    let Ok(floats) = floats.f64() else {
-        return Vec::new();
-    };
-    floats.iter().flatten().filter(|v| v.is_finite()).collect()
-}
-
-fn compute_numeric_stats(series: &Series, include_advanced: bool) -> Result<NumericStatistics> {
+fn compute_numeric_stats(
+    column: &NumericColumn,
+    include_advanced: bool,
+) -> Result<NumericStatistics> {
     // Cast and aggregate as Describe does (`build_describe_aggregation_exprs`), so a
     // sample's median is one number wherever it is shown.
-    let floats = series.cast(&DataType::Float64)?;
+    let floats = column.floats.clone().into_series();
     let mean = floats.mean().unwrap_or(f64::NAN);
     let std = floats.std(1).unwrap_or(f64::NAN);
     let min = floats.min::<f64>()?.unwrap_or(f64::NAN);
@@ -1491,12 +1405,11 @@ fn compute_numeric_stats(series: &Series, include_advanced: bool) -> Result<Nume
     let q75 = percentiles[&75];
 
     let (skewness, kurtosis, outliers_iqr, outliers_zscore) = if include_advanced {
-        let values = finite_values(series);
-        let (skewness, kurtosis) = skewness_and_kurtosis(&values);
-        let (out_iqr, out_zscore) = detect_outliers(&values, q25, q75);
+        let (skewness, kurtosis) = skewness_and_kurtosis(&column.finite);
+        let (out_iqr, out_zscore) = detect_outliers(&column.finite, q25, q75);
         (skewness, kurtosis, out_iqr, out_zscore)
     } else {
-        (0.0, 3.0, 0, 0) // Default values when not computed
+        (0.0, 3.0, 0, 0)
     };
 
     Ok(NumericStatistics {
@@ -1675,35 +1588,22 @@ fn compute_categorical_stats(series: &Series) -> Result<CategoricalStatistics> {
 /// Seeds the fit tests' simulations, so the same values get the same p-values.
 const FIT_SEED: u64 = 0x5eed_d157;
 
-fn infer_distribution(sample: &Series, sample_size: usize, is_sampled: bool) -> DistributionInfo {
-    if sample_size < 3 {
-        return DistributionInfo {
-            distribution_type: DistributionType::Unknown,
-            confidence: 0.0,
-            sample_size,
-            is_sampled,
-            fit_quality: None,
-            fits: Vec::new(),
-        };
-    }
+/// The family a column's values follow, its p-value and every family's fit. `rows`
+/// is how many rows the column was read from.
+struct ColumnFit {
+    distribution_type: DistributionType,
+    confidence: f64,
+    fits: Vec<(DistributionType, crate::distribution_fit::FitOutcome)>,
+}
 
-    let max_convert = 10000.min(sample.len());
-    let values: Vec<f64> = if sample.len() > max_convert {
-        let all_values = get_numeric_values_as_f64(sample);
-        all_values.into_iter().take(max_convert).collect()
-    } else {
-        get_numeric_values_as_f64(sample)
+fn infer_distribution(values: &[f64], rows: usize) -> ColumnFit {
+    let unknown = ColumnFit {
+        distribution_type: DistributionType::Unknown,
+        confidence: 0.0,
+        fits: Vec::new(),
     };
-
-    if values.is_empty() {
-        return DistributionInfo {
-            distribution_type: DistributionType::Unknown,
-            confidence: 0.0,
-            sample_size,
-            is_sampled,
-            fit_quality: None,
-            fits: Vec::new(),
-        };
+    if rows < 3 || values.is_empty() {
+        return unknown;
     }
 
     let mean: f64 = values.iter().sum::<f64>() / values.len() as f64;
@@ -1714,21 +1614,16 @@ fn infer_distribution(sample: &Series, sample_size: usize, is_sampled: bool) -> 
     // One value throughout fits every distribution's degenerate case and none of
     // them usefully; a year column in a partitioned table is the usual one.
     if std == 0.0 {
-        return DistributionInfo {
+        return ColumnFit {
             distribution_type: DistributionType::Constant,
             confidence: 1.0,
-            sample_size,
-            is_sampled,
-            fit_quality: None,
             fits: Vec::new(),
         };
     }
 
     // Counts are described by a count distribution when one holds.
-    let counts = values
-        .iter()
-        .all(|v| *v >= 0.0 && *v == v.floor() && v.is_finite());
-    let fits = crate::distribution_fit::test_all(&values, FIT_SEED);
+    let counts = values.iter().all(|v| *v >= 0.0 && *v == v.floor());
+    let fits = crate::distribution_fit::test_all(values, FIT_SEED);
     let distribution_type = crate::distribution_fit::select(&fits, counts);
     // The figure beside the name is that family's p-value; with no clear fit, the best
     // any family managed, so the table can say how far from fitting it was.
@@ -1742,32 +1637,28 @@ fn infer_distribution(sample: &Series, sample_size: usize, is_sampled: bool) -> 
                 .max_by(f64::total_cmp)
         })
         .unwrap_or(0.0);
-    DistributionInfo {
+    ColumnFit {
         distribution_type,
         confidence,
-        sample_size,
-        is_sampled,
-        fit_quality: Some(confidence),
         fits,
     }
 }
 
-fn approximate_shapiro_wilk(values: &[f64]) -> (Option<f64>, Option<f64>) {
-    let n = values.len();
+/// The Shapiro-Francia statistic of `sorted` against normal scores at Blom's plotting
+/// positions `(i + 1 - 3/8) / (n + 1/4)`, and its p-value.
+fn approximate_shapiro_wilk(sorted: &[f64]) -> (Option<f64>, Option<f64>) {
+    let n = sorted.len();
     if n < 3 {
         return (None, None);
     }
 
-    let mean: f64 = values.iter().sum::<f64>() / n as f64;
-    let variance: f64 = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n - 1) as f64;
+    let mean: f64 = sorted.iter().sum::<f64>() / n as f64;
+    let variance: f64 = sorted.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n - 1) as f64;
     let std = variance.sqrt();
 
     if std == 0.0 {
         return (None, None);
     }
-
-    let mut sorted = values.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
     let mut sum_expected_sq = 0.0;
     let mut sum_data_sq = 0.0;
@@ -1815,41 +1706,33 @@ fn shapiro_francia_pvalue(w: f64, n: usize) -> Option<f64> {
     Some((1.0 - crate::distribution_fit::normal_cdf(z)).clamp(0.0, 1.0))
 }
 
-// Advanced distribution analysis computation
-fn compute_advanced_distribution_analysis(
+/// One numeric column's distribution: its fits, normality, outliers and the sorted
+/// values its Q-Q plot draws. `rows` is how many rows the column was read from.
+fn distribution_analysis(
     column_name: &str,
-    series: &Series,
+    column: &NumericColumn,
     numeric_stats: &NumericStatistics,
-    dist_info: &DistributionInfo,
+    rows: usize,
     is_sampled: bool,
 ) -> DistributionAnalysis {
+    let spread = column.spread();
+    let fit = infer_distribution(&spread, rows);
     // At most five thousand, spread across the rows: the head of a table sorted by
     // date is its first few years.
     const MAX_VALUES: usize = 5_000;
-    let mut values = get_numeric_values_as_f64(series);
-    if values.len() > MAX_VALUES {
-        let step = values.len().div_ceil(MAX_VALUES);
-        values = values.into_iter().step_by(step).collect();
-    }
-
-    // Sort values for Q-Q plot (all data if not sampled, or sampled data if >= threshold)
-    values.sort_by(f64::total_cmp);
-    let sorted_sample_values = values.clone();
+    let step = spread.len().div_ceil(MAX_VALUES).max(1);
+    let mut sorted_sample_values: Vec<f64> = spread.into_iter().step_by(step).collect();
+    sorted_sample_values.sort_by(f64::total_cmp);
     let actual_sample_size = sorted_sample_values.len();
 
-    // Compute distribution characteristics
-    let (sw_stat, sw_pvalue) = if values.len() >= 3 {
-        approximate_shapiro_wilk(&values)
-    } else {
-        (None, None)
-    };
+    let (sw_stat, sw_pvalue) = approximate_shapiro_wilk(&sorted_sample_values);
     let coefficient_of_variation = if numeric_stats.mean != 0.0 {
         numeric_stats.std / numeric_stats.mean.abs()
     } else {
         0.0
     };
 
-    let mode = compute_mode(&values);
+    let mode = compute_mode(&sorted_sample_values);
 
     let characteristics = DistributionCharacteristics {
         shapiro_wilk_stat: sw_stat,
@@ -1864,8 +1747,7 @@ fn compute_advanced_distribution_analysis(
         mode,
     };
 
-    let fit_quality = dist_info.fit_quality.unwrap_or(dist_info.confidence);
-    let qq = dist_info
+    let qq = fit
         .fits
         .iter()
         .filter_map(|(family, outcome)| {
@@ -1877,7 +1759,7 @@ fn compute_advanced_distribution_analysis(
         })
         .collect();
 
-    let outliers = compute_outlier_analysis(&finite_values(series), numeric_stats);
+    let outliers = compute_outlier_analysis(&column.finite, numeric_stats);
 
     let percentiles = PercentileBreakdown {
         p1: numeric_stats
@@ -1907,16 +1789,15 @@ fn compute_advanced_distribution_analysis(
 
     DistributionAnalysis {
         column_name: column_name.to_string(),
-        distribution_type: dist_info.distribution_type,
-        confidence: dist_info.confidence,
-        fit_quality,
+        distribution_type: fit.distribution_type,
+        confidence: fit.confidence,
         characteristics,
         outliers,
         percentiles,
         sorted_sample_values,
         is_sampled,
         sample_size: actual_sample_size,
-        fits: dist_info.fits.clone(),
+        fits: fit.fits,
         qq,
     }
 }

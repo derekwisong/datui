@@ -30,7 +30,7 @@ the executables Cargo builds.
 | `./scripts/dev/test.sh integration data statistics::` | Data integration executable; only its statistics module executes |
 | `./scripts/dev/test.sh cli` | CLI library tests |
 | `./scripts/dev/test.sh fmt` | Format the workspace, the fuzz targets and `crates/datui-pyo3` (`--check` only checks) |
-| `./scripts/dev/test.sh lint` | Formatting check and clippy with all targets, in the workspace, the fuzz targets and `crates/datui-pyo3`; `preflight` is the same |
+| `./scripts/dev/test.sh lint` | Formatting check and clippy with all targets, in the workspace, the fuzz targets and `crates/datui-pyo3`; then `ruff check`, `shellcheck` and `typos`, each skipped with a note when not installed; `preflight` is the same |
 | `./scripts/dev/test.sh clippy` | Workspace clippy alone, as the pre-commit hook runs it |
 | `./scripts/dev/test.sh msrv` | `cargo +<rust-version> check --workspace`, with the version from `Cargo.toml` |
 | `./scripts/dev/test.sh docs` | The [documentation checks](documentation.md#run-the-checks) and the docs and demo scripts' tests |
@@ -139,11 +139,11 @@ to the generator:
 
 | Key part | Input |
 |---|---|
-| `scripts/generate_sample_data.py` | The generator; it reads no other file but the next one, for the stamp |
+| `scripts/generate_sample_data.py` | The generator; it reads only itself and the next one, for the stamp |
 | `scripts/requirements-fixtures.txt` | Every package it imports, and their dependencies, at exact versions |
 | Python version | As `setup-python` resolved it |
 | Runner OS and arch | |
-| `sample-data-v1` | Schema version; bump it in `ci.yml` to discard every entry |
+| `sample-data-v1` | Schema version; bump it in `.github/actions/setup/action.yml` to discard every entry |
 
 A restored copy is checked against the SHA-256 manifest saved with it, and
 regenerated if anything differs. Only runs on `main` save an entry. If the

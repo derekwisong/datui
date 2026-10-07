@@ -14,6 +14,11 @@ on:
 permissions:
   contents: read
 
+env:
+  # scripts/dev/test.sh queues heavy runs behind a machine-wide lock for shared
+  # machines; a runner is one job's alone.
+  DATUI_TEST_HEAVY_SLOTS: "0"
+
 jobs:
   linux:
     runs-on: ubuntu-latest
@@ -298,15 +303,13 @@ jobs:
         timeout-minutes: 40
         run: cargo build --workspace --tests --locked
 
-      # nextest kills a test that hangs (.config/nextest.toml), so one hung test
-      # fails alone instead of running the job into its timeout.
+      # As CI's linux job runs them: nextest's `ci` profile, then the doctests. nextest
+      # kills a test that hangs (.config/nextest.toml), so it fails alone instead of
+      # running the job into its timeout.
       - name: Run tests
-        timeout-minutes: 15
-        run: cargo nextest run --workspace --locked --no-fail-fast
-
-      - name: Run doctests
-        timeout-minutes: 10
-        run: cargo test --doc --workspace --locked
+        timeout-minutes: 25
+        shell: bash
+        run: scripts/dev/test.sh ci
 
       - name: Bundle CLI for wheel
         run: |
@@ -435,15 +438,13 @@ jobs:
         timeout-minutes: 40
         run: cargo build --workspace --tests --locked
 
-      # nextest kills a test that hangs (.config/nextest.toml), so one hung test
-      # fails alone instead of running the job into its timeout.
+      # As CI's linux job runs them: nextest's `ci` profile, then the doctests. nextest
+      # kills a test that hangs (.config/nextest.toml), so it fails alone instead of
+      # running the job into its timeout.
       - name: Run tests
-        timeout-minutes: 15
-        run: cargo nextest run --workspace --locked --no-fail-fast
-
-      - name: Run doctests
-        timeout-minutes: 10
-        run: cargo test --doc --workspace --locked
+        timeout-minutes: 25
+        shell: bash
+        run: scripts/dev/test.sh ci
 
       - name: Bundle CLI for wheel
         run: |

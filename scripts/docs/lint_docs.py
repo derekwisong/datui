@@ -108,7 +108,7 @@ def lint() -> list[str]:
         text = page.read_text(encoding="utf-8")
         if rel not in titles:
             problems.append(f"docs/{rel}: not in SUMMARY.md")
-        h1 = next((m.group(2) for _, l in outside_fences(text) if (m := HEADING.match(l)) and len(m.group(1)) == 1), None)
+        h1 = next((m.group(2) for _, row in outside_fences(text) if (m := HEADING.match(row)) and len(m.group(1)) == 1), None)
         if rel in titles and h1 != titles[rel] and rel != "introduction.md":
             problems.append(f"docs/{rel}: H1 `{h1}` differs from SUMMARY.md's `{titles[rel]}`")
         for n, line in outside_fences(text):

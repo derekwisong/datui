@@ -4,7 +4,7 @@
 
 ## What ran locally
 
-<!-- The exact commands and their results, e.g. `./scripts/dev/test.sh preflight`
+<!-- The exact commands and their results, e.g. `./scripts/dev/test.sh lint`
 and the scoped tests for what you changed. See docs/for-developers/contributing.md. -->
 
 ## Checklist

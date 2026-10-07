@@ -579,7 +579,7 @@ def generate_charting_demo():
     for _ in range(12):
         idx = random.randint(0, days - 1)
         lam[idx] = 8.0 + random.uniform(0, 5)
-    shark_sightings = [np.random.poisson(l) for l in lam]
+    shark_sightings = [np.random.poisson(rate) for rate in lam]
 
     data = {
         "date": dates,
@@ -1516,7 +1516,9 @@ def generate_elf():
     strtab_at = place(strtab)
     shstr_at = place(shstr)
     shoff = 64 + len(body)
-    name = lambda n: shstr.index(n + b"\0")
+    def name(n):
+        return shstr.index(n + b"\0")
+
     sections = [
         (0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
         (name(b".text"), 1, 0x6, 0x1000, text_at, len(text), 0, 0, 16, 0),
@@ -1616,12 +1618,16 @@ def generate_dataflash(path):
     log += _df_fmt(133, "MSG", "QZ", "TimeUS,Message")
     log += _df_fmt(140, "ATT", "QccC", "TimeUS,Roll,Pitch,Yaw")
     log += _df_fmt(141, "GPS", "QBLLeI", "TimeUS,Status,Lat,Lng,Alt,Ms")
-    head = lambda t: bytes([0xA3, 0x95, t])
+    def head(t):
+        return bytes([0xA3, 0x95, t])
+
     for uid, label in [(b"s", "s"), (b"d", "deg"), (b"D", "deglatitude"), (b"U", "deglongitude"), (b"m", "m")]:
         log += head(129) + struct.pack("<Q", 0) + uid + label.encode().ljust(64, b"\0")
     for mid, mult in [(b"-", 0.0), (b"0", 1.0), (b"B", 0.01), (b"C", 0.001)]:
         log += head(130) + struct.pack("<Q", 0) + mid + struct.pack("<d", mult)
-    fmtu = lambda t, units, mults: head(131) + struct.pack("<QB", 0, t) + units.encode().ljust(16, b"\0") + mults.encode().ljust(16, b"\0")
+    def fmtu(t, units, mults):
+        return head(131) + struct.pack("<QB", 0, t) + units.encode().ljust(16, b"\0") + mults.encode().ljust(16, b"\0")
+
     log += fmtu(140, "sddd", "F000")
     log += fmtu(141, "s-DUm-", "F-GGB-")
     log += head(132) + struct.pack("<Q", 0) + b"ARMING_CHECK".ljust(16, b"\0") + struct.pack("<f", 1.0)

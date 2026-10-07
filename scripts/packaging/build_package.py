@@ -31,7 +31,6 @@ import gzip
 import hashlib
 import shutil
 import tarfile
-import os
 import subprocess
 import sys
 import tomllib

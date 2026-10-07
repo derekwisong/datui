@@ -1529,3 +1529,75 @@ fn the_offscreen_hint_takes_a_heading_cell_not_a_value_cell() {
         }
     }
 }
+
+/// A frame whose page did not change formats no cell; a change to the rows, their
+/// order, their side of the rule or how they read draws what changed.
+#[test]
+fn an_unchanged_page_is_drawn_from_the_cells_kept() {
+    let formatted = || crate::widgets::table::tests::FORMATTED.with(std::cell::Cell::get);
+    let df = df!(
+        "n" => (0..100i64).map(|i| i * 1000).collect::<Vec<_>>(),
+        "s" => (0..100).map(|i| format!("v{i}")).collect::<Vec<_>>(),
+    )
+    .unwrap();
+    let mut state = state_of(&df, 5);
+    let first = draw(DataTable::new(), &mut state, 40, 8);
+    assert!(first[2].contains("1000"), "{first:?}");
+    let before = formatted();
+    assert_eq!(draw(DataTable::new(), &mut state, 40, 8), first);
+    assert_eq!(formatted(), before, "nothing formatted again");
+    // The cursor moving within the page draws from the cells kept.
+    state.select_next();
+    draw(DataTable::new(), &mut state, 40, 8);
+    assert_eq!(formatted(), before);
+
+    let thousands = || {
+        DataTable::new().with_number_format(crate::numfmt::NumberFormatSettings {
+            format: crate::numfmt::NumberFormat::preset("thousands").unwrap(),
+            enabled: true,
+            exclude: Vec::new(),
+            align_numeric_right: true,
+        })
+    };
+    let grouped = draw(thousands(), &mut state, 40, 8);
+    assert!(grouped[2].contains("1,000"), "{grouped:?}");
+    assert!(formatted() > before, "a new format formats again");
+
+    let narrow = draw(thousands(), &mut state, 12, 8);
+    assert!(
+        narrow.iter().all(|row| row.chars().count() <= 12),
+        "{narrow:?}"
+    );
+
+    let typed = draw(thousands().with_dtype_row(true), &mut state, 40, 8);
+    assert!(typed[1].contains("i64"), "{typed:?}");
+
+    state.set_column_order(vec!["s".to_string(), "n".to_string()]);
+    state.collect();
+    let moved = draw(thousands(), &mut state, 40, 8);
+    assert!(moved[0].find('s') < moved[0].find('n'), "{moved:?}");
+    assert!(moved[2].find("v1") < moved[2].find("1,000"), "{moved:?}");
+
+    state.set_locked_columns(1);
+    state.collect();
+    let frozen = draw(thousands(), &mut state, 40, 8);
+    assert!(
+        frozen[2].contains("v1") && frozen[2].contains("1,000"),
+        "{frozen:?}"
+    );
+
+    state.scroll_to(50);
+    state.collect();
+    let later = draw(thousands(), &mut state, 40, 8);
+    assert!(
+        later[1].contains("50,000") && !later.iter().any(|r| r.contains(" 1,000")),
+        "{later:?}"
+    );
+
+    state.query("select where n < 3000".to_string());
+    let queried = draw(thousands(), &mut state, 40, 8);
+    assert!(
+        queried[1].contains("v0") && !queried.iter().any(|r| r.contains("v50")),
+        "{queried:?}"
+    );
+}

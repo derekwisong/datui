@@ -2,6 +2,36 @@
 
 use std::path::{Path, PathBuf};
 
+/// Which API a provider speaks. Not which company runs it: MinIO, Ceph, R2 and AWS
+/// itself are all [`ProviderKind::S3`], and are told apart by their endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProviderKind {
+    Gcs,
+    #[default]
+    S3,
+    Azure,
+}
+
+impl ProviderKind {
+    /// The URL scheme datui opens this provider's objects with.
+    pub fn scheme(self) -> &'static str {
+        match self {
+            ProviderKind::Gcs => "gs",
+            ProviderKind::S3 => "s3",
+            ProviderKind::Azure => "abfss",
+        }
+    }
+
+    /// The word for the API, as the config and the home screen write it.
+    pub fn name(self) -> &'static str {
+        match self {
+            ProviderKind::Gcs => "gcs",
+            ProviderKind::S3 => "s3",
+            ProviderKind::Azure => "azure",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InputSource {
     Local(PathBuf),

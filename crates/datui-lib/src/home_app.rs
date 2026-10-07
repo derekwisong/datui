@@ -52,15 +52,7 @@ pub(crate) fn home_cloud_source(
 ) -> home::CloudSource {
     let mut details: Vec<(String, String)> = vec![
         ("source".to_string(), source.id.clone()),
-        (
-            "api".to_string(),
-            match source.kind {
-                crate::cloud_browse::ProviderKind::S3 => "s3",
-                crate::cloud_browse::ProviderKind::Gcs => "gcs",
-                crate::cloud_browse::ProviderKind::Azure => "azure",
-            }
-            .to_string(),
-        ),
+        ("api".to_string(), source.kind.name().to_string()),
     ];
     if let Some(endpoint) = &source.s3.endpoint {
         details.push(("endpoint".to_string(), endpoint.clone()));
@@ -131,12 +123,7 @@ pub(crate) fn home_cloud_source(
     home::CloudSource {
         id: source.id.clone(),
         label: source.label.clone(),
-        api: match source.kind {
-            crate::cloud_browse::ProviderKind::S3 => "s3",
-            crate::cloud_browse::ProviderKind::Gcs => "gcs",
-            crate::cloud_browse::ProviderKind::Azure => "azure",
-        }
-        .to_string(),
+        api: source.kind,
         note,
         buckets: names
             .iter()

@@ -966,8 +966,8 @@ pub struct CloudSource {
     pub id: String,
     /// The row's name.
     pub label: String,
-    /// The API spoken: `s3`, `gcs` or `azure`.
-    pub api: String,
+    /// The API spoken.
+    pub api: crate::source::ProviderKind,
     /// The account, endpoint or project, and where the login came from.
     pub note: String,
     /// Bucket URLs, most useful first: `s3://bucket`, `s3://<id>@bucket`, `gs://bucket`.
@@ -994,12 +994,10 @@ impl CloudSource {
             CloudStatus::Listing if self.buckets.is_empty() => String::new(),
             CloudStatus::Unlisted if self.buckets.is_empty() => "not listed".to_string(),
             _ => {
-                let (one, many) = if self.api == "azure" {
-                    ("account", "accounts")
-                } else if self.api == "gcs" {
-                    ("project", "projects")
-                } else {
-                    ("bucket", "buckets")
+                let (one, many) = match self.api {
+                    crate::source::ProviderKind::Azure => ("account", "accounts"),
+                    crate::source::ProviderKind::Gcs => ("project", "projects"),
+                    crate::source::ProviderKind::S3 => ("bucket", "buckets"),
                 };
                 match self.buckets.len() {
                     0 => format!("no {many}"),
@@ -3688,7 +3686,7 @@ impl HomeState {
             return self
                 .cloud
                 .iter()
-                .any(|s| s.id == id && s.api == "gcs")
+                .any(|s| s.id == id && s.api == crate::source::ProviderKind::Gcs)
                 .then_some("project");
         }
         // A bookmark inside a catalog dataset opens whole, as a dataset does.
@@ -3810,7 +3808,7 @@ impl HomeState {
                             crate::glyphs::get().trail,
                             entry.name
                         );
-                        entry.cost.source = Some(source.api.clone());
+                        entry.cost.source = Some(source.api.name().to_string());
                         entry
                     })
                 })

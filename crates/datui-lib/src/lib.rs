@@ -98,8 +98,6 @@ pub mod terminal_input;
 pub mod themes;
 pub mod typed_value;
 pub mod view;
-mod view_apply;
-mod view_keys;
 pub mod widgets;
 
 pub use cache::CacheManager;
@@ -883,7 +881,7 @@ pub struct App {
     /// The recent and the shape an open writes, which the home listing waits on.
     cache_writes: CacheWrites,
     /// Saved views, and the one applied to the dataset on screen.
-    views: view_apply::SavedViews,
+    views: view::view_apply::SavedViews,
     /// An export under way, which the footer reports.
     export_progress: Option<ExportProgress>,
     theme: Theme, // Color theme for UI rendering
@@ -2746,7 +2744,7 @@ impl App {
             context_menu: None,
             cache,
             cache_writes: CacheWrites::default(),
-            views: view_apply::SavedViews {
+            views: view::view_apply::SavedViews {
                 manager: view_manager,
                 active_id: None,
             },

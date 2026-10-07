@@ -1,3 +1,6 @@
+pub(crate) mod view_apply;
+pub(crate) mod view_keys;
+
 use color_eyre::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;

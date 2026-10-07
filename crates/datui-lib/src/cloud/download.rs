@@ -152,6 +152,19 @@ fn receive<B: AsRef<[u8]>>(
     }
 }
 
+/// Write each chunk `fill` hands its writer into `file`, then flush it. Returns what
+/// `fill` counted; a failed write or flush is a [`StreamError::Write`] of `unwritable`.
+pub(crate) fn fill_file(
+    file: &mut impl std::io::Write,
+    unwritable: impl Fn(std::io::Error) -> color_eyre::Report,
+    fill: impl FnOnce(&mut dyn FnMut(&[u8]) -> Result<()>) -> std::result::Result<u64, StreamError>,
+) -> std::result::Result<u64, StreamError> {
+    let written = fill(&mut |chunk| file.write_all(chunk).map_err(&unwritable))?;
+    file.flush()
+        .map_err(|e| StreamError::Write(unwritable(e)))?;
+    Ok(written)
+}
+
 /// A new file in `dir` (named as [`TempDownload::create`] does) filled by `fill`. Any
 /// failure or stop removes the partial file before returning. Claimed via `writer` from
 /// creation until its last holder drops it, so quitting removes it mid-write (see
@@ -162,8 +175,6 @@ fn fill_temp(
     writer: &Writer,
     fill: impl FnOnce(&mut dyn FnMut(&[u8]) -> Result<()>) -> std::result::Result<u64, StreamError>,
 ) -> std::result::Result<TempDownload, StreamError> {
-    use std::io::Write;
-
     let Some((mut file, claim)) = writer
         .create(|| TempDownload::create(dir, extension))
         .map_err(StreamError::Write)?
@@ -171,9 +182,7 @@ fn fill_temp(
         return Err(StreamError::Cut);
     };
     let unwritable = |e: std::io::Error| eyre!("Could not write the downloaded file: {e}");
-    let filled = fill(&mut |chunk| file.write_all(chunk).map_err(unwritable))
-        .and_then(|_| file.flush().map_err(|e| StreamError::Write(unwritable(e))));
-    match filled {
+    match fill_file(&mut file, unwritable, fill) {
         Ok(_) => Ok(TempDownload::held(file, Some(claim))),
         Err(e) => {
             // The file before the claim, so a sweep never finds it let go but there.

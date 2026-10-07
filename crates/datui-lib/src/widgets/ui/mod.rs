@@ -15,7 +15,7 @@ mod surface;
 mod working;
 
 pub use form_row::{FormRow, FormValue};
-pub use form_view::FormView;
+pub use form_view::{FormLine, FormView};
 pub use hintbar::HintBar;
 pub use picker::{Clicks, Picker, PickerState};
 pub use section_rule::SectionRule;

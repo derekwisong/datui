@@ -85,7 +85,8 @@ rows, as a LazyFrame even for DataFrame input. `None` when no dataset was open
 at quit.
 
 **Collecting runs the returned plan again**, with Python's own Polars; the
-rows datui showed are not cached.
+rows datui showed are not cached. A `polars` that cannot read the plan gets
+rows instead; see [Compatibility](#compatibility).
 
 | Source | What collecting the result does |
 |---|---|
@@ -98,22 +99,26 @@ Without `capture`, exporting with <kbd>e</kbd> is the way to get data out.
 
 ## Compatibility
 
-A frame is handed over as a serialized Polars plan, which the wheel reads with
-its own embedded Polars (0.55). The two need to agree on the plan format:
+A DataFrame crosses into datui as Arrow data, which works with any `polars` the
+wheel accepts. A LazyFrame crosses as a serialized Polars plan, read by the
+wheel's embedded Polars (0.55), and a captured view comes back as a plan the
+same way. Both sides must agree on the plan format:
 
-| Python `polars` | Frames |
-|---|---|
-| 1.43 | The release Polars pairs with Rust 0.55; fully tested |
-| 1.38 to 1.42 | Read in testing (scan, filter, group by, join, cast, sort, unique) |
-| 1.44 | Most plans read; 1.44 writes joins 0.55 cannot read |
-| 1.37 and earlier | Refused: older path format |
+| Python `polars` | LazyFrames | Captured views |
+|---|---|---|
+| 2.0 | Most plans read; joins are refused | Rows, with a warning |
+| 1.44 | Most plans read; joins are refused | Plans |
+| 1.43 | The release Polars pairs with Rust 0.55; fully tested | Plans |
+| 1.38 to 1.42 | Read in testing (scan, filter, group by, join, cast, sort, unique) | Plans |
 
 The wheel declares `polars>=1.38` and never downgrades the `polars` you have. A
 plan the wheel cannot read raises `ValueError` before the TUI opens, naming the
-release it is built for. Paths do not go through the plan and work with any
-`polars` version — though a view captured with `capture=True` always comes back
-as a plan, and one your `polars` cannot read raises `RuntimeError` after the
-TUI closes.
+release it is built for; pass `lf.collect()` or a path instead. Paths do not go
+through a plan and work with any `polars` version.
+
+When your `polars` cannot read the captured plan, `view()` returns the view's
+rows instead, with a `UserWarning`: datui collects them at quit and holds every
+row in memory, and collecting the result reads nothing again.
 
 ## Build from source
 

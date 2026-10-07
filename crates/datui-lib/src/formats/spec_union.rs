@@ -1,123 +1,58 @@
 //! Several files read through a delimited spec as one table: a family of logs whose
 //! columns change between writer versions, stacked by column name.
 //!
-//! Each file's header pass reads on through the lines its scan infers types from (the
-//! window, [`crate::formats::csv_dialect::window`]), so a column that is blank there, which the
+//! Each file's header pass ([`crate::formats::csv_dialect::head`]) reads on through the
+//! lines its scan infers types from (the window), so a column that is blank there, which the
 //! scan can only call text, takes the type the other files give it rather than making
 //! the column text in all of them. Units come from the first file that has the column;
 //! the notes say which columns not every file has, and where the units disagree.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use color_eyre::Result;
 use polars::prelude::*;
 
 use crate::OpenOptions;
-use crate::formats::delimited_spec::Delimited;
+use crate::formats::csv_dialect::FileHead;
 use crate::notes::Note;
 
-/// What a file's header pass read: its names, its units, and its window.
-pub(crate) struct FileHead {
-    pub file: PathBuf,
-    /// The names its header lines give, when the spec names header lines.
-    pub names: Option<Vec<String>>,
-    pub units: Vec<(String, String)>,
-    /// The data lines the scan infers types from, split and trimmed.
-    pub window: Vec<Vec<String>>,
-    /// Whether the lines read hold bytes that are not UTF-8, which read as U+FFFD.
-    pub lossy: bool,
-}
-
-/// The rows Polars infers a CSV's types from when nothing says how many.
-const POLARS_INFER_ROWS: usize = 100;
-
-/// The header lines, units and window of the file at `file`, in one pass over its top.
-pub(crate) fn read_head(file: &Path, options: &OpenOptions, spec: &Delimited) -> Result<FileHead> {
-    use crate::formats::csv_dialect::{named_lines, names_of, skip_lines, window, window_of};
-    let separator = options.separator_or(b',');
-    let comment = options.comment_char.as_deref();
-    let rows = options.header_rows();
-    let mut wanted: Vec<usize> = rows.unwrap_or_default().to_vec();
-    wanted.extend(spec.head_lines());
-    wanted.sort_unstable();
-    wanted.dedup();
-    let mut source = crate::formats::readers::csv::text_source(file, None)?;
-    let lines = named_lines(&mut source, &wanted)?;
-    let names = rows.map(|rows| {
-        names_of(
-            &lines,
-            &wanted,
-            rows,
-            &options.header_join,
-            separator,
-            comment,
-        )
-    });
-    let units = spec
-        .facts_of(&wanted, &lines, separator, &options.header_join)
-        .units;
-    // On to the data: past the lines skipped beyond the header, and Polars' own header
-    // line when the spec names none.
-    let read = wanted.last().copied().unwrap_or(0);
-    skip_lines(
-        &mut source,
-        options.skip_lines.unwrap_or(0).saturating_sub(read),
-    )?;
-    if rows.is_none() {
-        window(&mut source, 1, separator, comment)?;
+/// What the files' windows say of the text column `name`, at `at` in each row, as the
+/// read's string inference ([`infer_string_type`]) would type it: `None` when every
+/// value is blank or a null value, so the window says nothing of its type.
+///
+/// [`infer_string_type`]: crate::formats::readers::csv::infer_string_type
+fn seen(
+    window: &[Vec<String>],
+    at: usize,
+    name: &str,
+    options: &OpenOptions,
+) -> Result<Option<DataType>> {
+    let nulls = crate::formats::readers::csv::csv_null_values_for(options, name);
+    // As the read samples them: trimmed (the window already is), blanks null.
+    let values = StringChunked::from_iter_options(
+        name.into(),
+        window.iter().map(|row| {
+            row.get(at)
+                .map(String::as_str)
+                .filter(|v| !v.is_empty() && !nulls.iter().any(|n| n == v))
+        }),
+    );
+    if values.null_count() == values.len() {
+        return Ok(None);
     }
-    if let Some(n) = options.skip_rows {
-        window(&mut source, n, separator, comment)?;
+    if !typed_by_inference(options, name) {
+        return Ok(Some(DataType::String));
     }
-    let infer = options.infer_schema_length.unwrap_or(POLARS_INFER_ROWS);
-    let (window, lossy) = window_of(&mut source, infer, separator, comment)?;
-    let lossy = lossy || lines.iter().any(|line| std::str::from_utf8(line).is_err());
-    Ok(FileHead {
-        file: file.to_path_buf(),
-        names,
-        units,
-        window,
-        lossy,
-    })
-}
-
-/// The first data rows of the file at `file`, as [`read_head`] reads them, for a read
-/// with or without a spec: the rows a scan infers its types from.
-pub(crate) fn head_window(file: &Path, options: &OpenOptions) -> Result<Vec<Vec<String>>> {
-    Ok(read_head(file, options, &Delimited::default())?.window)
-}
-
-/// What a column's values in a file's window are, after trimming.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Seen {
-    /// Every value blank or a null value: the window says nothing of its type.
-    Blank,
-    Int,
-    Float,
-    Text,
-}
-
-fn seen(window: &[Vec<String>], at: usize, nulls: &[String]) -> Seen {
-    let mut seen = Seen::Blank;
-    for row in window {
-        let Some(value) = row.get(at) else { continue };
-        if value.is_empty() || nulls.iter().any(|n| n == value) {
-            continue;
-        }
-        let this = if value.parse::<i64>().is_ok() {
-            Seen::Int
-        } else if value.parse::<f64>().is_ok() {
-            Seen::Float
-        } else {
-            return Seen::Text;
-        };
-        seen = match (seen, this) {
-            (Seen::Blank, this) => this,
-            (Seen::Int, Seen::Int) => Seen::Int,
-            _ => Seen::Float,
-        };
-    }
-    seen
+    let types = crate::formats::readers::csv::StringTypes {
+        dates: options.parse_dates,
+        numbers: true,
+    };
+    let inferred = crate::formats::readers::csv::infer_string_type(&values.into_column(), types)?;
+    // Only a number is lined up across files; any other type is typed once stacked.
+    Ok(Some(match inferred.map(|ty| ty.dtype) {
+        Some(dtype @ (DataType::Int64 | DataType::Float64)) => dtype,
+        _ => DataType::String,
+    }))
 }
 
 /// The type two files' columns take together: the wider of two numbers, text when
@@ -181,19 +116,14 @@ pub(crate) fn line_up(
     }
     // What each file says of each column it has: its type, or nothing for a column
     // the scan could only call text because its window is blank.
-    let says = |file: usize, name: &PlSmallStr| -> Option<Option<DataType>> {
-        let schema = &schemas[file];
-        let (at, _, dtype) = schema.get_full(name)?;
+    let says = |file: usize, name: &PlSmallStr| -> Result<Option<DataType>> {
+        let Some((at, _, dtype)) = schemas[file].get_full(name) else {
+            return Ok(None);
+        };
         if *dtype != DataType::String {
-            return Some(Some(dtype.clone()));
+            return Ok(Some(dtype.clone()));
         }
-        let nulls = crate::formats::readers::csv::csv_null_values_for(options, name);
-        Some(match seen(&heads[file].window, at, &nulls) {
-            Seen::Blank => None,
-            Seen::Int if typed_by_inference(options, name) => Some(DataType::Int64),
-            Seen::Float if typed_by_inference(options, name) => Some(DataType::Float64),
-            _ => Some(DataType::String),
-        })
+        seen(&heads[file].window, at, name, options)
     };
     // A column the spec types is read as text in every file and typed once stacked.
     let declared: Vec<&str> = options
@@ -209,9 +139,12 @@ pub(crate) fn line_up(
         .unwrap_or_default();
     let mut targets: Vec<(PlSmallStr, DataType)> = Vec::new();
     for name in columns.iter().filter(|n| !declared.contains(&n.as_str())) {
-        let target = (0..frames.len())
-            .filter_map(|file| says(file, name).flatten())
-            .reduce(|a, b| wider(&a, &b));
+        let mut target: Option<DataType> = None;
+        for file in 0..frames.len() {
+            if let Some(dtype) = says(file, name)? {
+                target = Some(target.map_or_else(|| dtype.clone(), |t| wider(&t, &dtype)));
+            }
+        }
         if let Some(target) = target.filter(|t| *t != DataType::String) {
             targets.push((name.clone(), target));
         }
@@ -373,20 +306,39 @@ mod tests {
     }
 
     #[test]
-    fn a_window_says_what_a_column_holds() {
-        let window = rows(&[&["", "1", "1.5", "x"], &["NA", "2", "2", ""]]);
-        let nulls = ["NA".to_string()];
-        assert_eq!(seen(&window, 0, &nulls), Seen::Blank);
-        assert_eq!(seen(&window, 1, &nulls), Seen::Int);
-        assert_eq!(seen(&window, 2, &nulls), Seen::Float);
-        assert_eq!(seen(&window, 3, &nulls), Seen::Text);
-        assert_eq!(seen(&window, 9, &nulls), Seen::Blank, "past a short row");
+    fn a_window_says_what_string_inference_would() {
+        let window = rows(&[
+            &["", "1", "1.5", "x", "007", "2024-01-02"],
+            &["NA", "2", "2", "", "008", "2024-01-03"],
+        ]);
+        let options = OpenOptions {
+            null_values: Some(vec!["NA".to_string()]),
+            parse_strings: Some(crate::ParseStringsTarget::All),
+            parse_dates: true,
+            ..OpenOptions::default()
+        };
+        let seen = |at: usize| seen(&window, at, &format!("c{at}"), &options).unwrap();
+        assert_eq!(seen(0), None);
+        assert_eq!(seen(1), Some(DataType::Int64));
+        assert_eq!(seen(2), Some(DataType::Float64));
+        assert_eq!(seen(3), Some(DataType::String));
+        assert_eq!(seen(4), Some(DataType::String), "a leading zero stays text");
+        assert_eq!(seen(5), Some(DataType::String), "typed once stacked");
+        assert_eq!(seen(9), None, "past a short row");
+        let untyped = OpenOptions {
+            parse_strings: None,
+            ..options.clone()
+        };
+        assert_eq!(
+            super::seen(&window, 1, "c1", &untyped).unwrap(),
+            Some(DataType::String)
+        );
     }
 
     #[test]
     fn units_come_from_the_first_file_and_disagreements_are_kept() {
         let head = |units: &[(&str, &str)]| FileHead {
-            file: PathBuf::new(),
+            file: std::path::PathBuf::new(),
             names: None,
             units: units
                 .iter()

@@ -57,7 +57,10 @@ fn a_copy_that_does_not_read_as_the_source_is_let_go() {
                 root,
                 objects,
                 &analysis::sampling::ReadWatch::default(),
-                |_, write| write(b"abc"),
+                |_, write| {
+                    write(b"abc").map_err(crate::cloud::download::StreamError::Write)?;
+                    Ok(3)
+                },
             )
         },
         |copy| heard = Some(copy.is_some()),

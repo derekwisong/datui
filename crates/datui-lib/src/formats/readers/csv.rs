@@ -141,7 +141,7 @@ pub(crate) fn configure_csv_reader(
         .with_separator(options.separator_or(b','))
         .with_comment_prefix(options.comment_char.as_deref().map(PlSmallStr::from));
     if let Some(rows) = options.header_rows() {
-        // The header lines are read apart (`csv_header_names`); Polars starts
+        // The header lines are read apart (`csv_dialect::head`); Polars starts
         // after the last of them, with `--skip-lines` counted from the same top
         // and `--skip-rows` counted after.
         let last = rows.iter().copied().max().unwrap_or(0);
@@ -296,24 +296,6 @@ pub(crate) fn csv_null_values_for(options: &OpenOptions, column: &str) -> Vec<St
     values
 }
 
-/// The names `--header-rows` gives the columns of the CSV `source` holds, or
-/// `None` when it is not in effect.
-fn csv_header_names<R: std::io::BufRead>(
-    options: &OpenOptions,
-    source: impl FnOnce() -> std::io::Result<R>,
-) -> Result<Option<Vec<String>>> {
-    let Some(rows) = options.header_rows() else {
-        return Ok(None);
-    };
-    Ok(Some(crate::formats::csv_dialect::header_names(
-        source()?,
-        rows,
-        &options.header_join,
-        options.separator_or(b','),
-        options.comment_char.as_deref(),
-    )?))
-}
-
 /// A lazy CSV reader of the file at `path`, by its path; or, when the file ends in
 /// a run of NULs, of its text before them, mapped and read in place.
 pub(crate) fn csv_reader_of(path: &Path) -> Result<LazyCsvReader> {
@@ -327,16 +309,6 @@ pub(crate) fn csv_reader_of(path: &Path) -> Result<LazyCsvReader> {
         ));
     }
     Ok(LazyCsvReader::new(PlRefPath::try_from_path(path)?).with_glob(glob))
-}
-
-/// [`csv_header_names`] for a file on disk, compressed with `compression`
-/// or not.
-pub(crate) fn csv_header_names_of(
-    options: &OpenOptions,
-    path: &Path,
-    compression: Option<CompressionFormat>,
-) -> Result<Option<Vec<String>>> {
-    csv_header_names(options, || text_source(path, compression))
 }
 
 /// The text of the file at `path`, through its decompressor when it has one.
@@ -478,16 +450,17 @@ fn declare_types(
     Ok(lf.with_columns(exprs))
 }
 
-/// `reader` (the scan of `path`) reading some columns as text: those a spec types (via
-/// [`declare_types`], misfits null rather than failing), and, while `read.infer_types`
-/// types text, those with a leading-zero number in their first rows (`02134`, which an
-/// integer read would lose). `window` is those rows if already read.
+/// `reader` (the scan of the file `head` was read from) reading some columns as text:
+/// those a spec types (via [`declare_types`], misfits null rather than failing), and,
+/// while `read.infer_types` types text, those with a leading-zero number in their
+/// first rows (`02134`, which an integer read would lose): `head`'s window, which a
+/// read inferring types asks [`csv_dialect::head`] for.
+///
+/// [`csv_dialect::head`]: crate::formats::csv_dialect::head
 pub(crate) fn scan_some_as_text(
     reader: LazyCsvReader,
     options: &OpenOptions,
-    header: Option<&[String]>,
-    path: &Path,
-    window: Option<&[Vec<String>]>,
+    head: &crate::formats::csv_dialect::FileHead,
     text: &mut Vec<String>,
 ) -> Result<LazyCsvReader> {
     if options.has_header == Some(false) {
@@ -507,15 +480,7 @@ pub(crate) fn scan_some_as_text(
     let zeros: Vec<usize> = match &options.parse_strings {
         None => Vec::new(),
         Some(_) => {
-            let read;
-            let window = match window {
-                Some(window) => window,
-                None => {
-                    read =
-                        crate::formats::spec_union::head_window(path, options).unwrap_or_default();
-                    &read
-                }
-            };
+            let window = &head.window;
             let width = window.iter().map(Vec::len).max().unwrap_or(0);
             (0..width)
                 .filter(|&at| {
@@ -530,7 +495,7 @@ pub(crate) fn scan_some_as_text(
     if names.is_empty() && zeros.is_empty() {
         return Ok(reader);
     }
-    let header = header.map(<[String]>::to_vec);
+    let header = head.names.clone();
     let target = options.parse_strings.clone();
     let read_as_text = Arc::new(std::sync::Mutex::new(Vec::new()));
     let said = read_as_text.clone();
@@ -740,7 +705,6 @@ pub(crate) fn type_string_columns(
     if target_cols.is_empty() {
         return Ok(lf);
     }
-    use polars::datatypes::TimeUnit;
     let whitespace_pat = lit(PlSmallStr::from_static(" \t\n\r"));
     let sample_df = string_inference_sample(lf.clone(), &target_cols, sample_rows)?;
     log::debug!(
@@ -756,109 +720,7 @@ pub(crate) fn type_string_columns(
     let mut python = Vec::with_capacity(target_cols.len());
     for col_name in &target_cols {
         let name = PlSmallStr::from(col_name.as_str());
-        let s = sample_df.column(col_name.as_str())?;
-        let null_before = s.null_count();
-        let len = s.len();
-        // Accept type if we didn't introduce new nulls (null_after <= null_before).
-        let accept_type = |null_after: usize| null_after <= null_before;
-        // Inference order: Date → Datetime → Time → Duration → Int64 → Float64 → String.
-        enum InferredType {
-            Date,
-            Datetime,
-            Time,
-            Duration,
-            Int64,
-            Float64,
-            String,
-        }
-        let (inferred, date_fmt, datetime_fmt, time_fmt) = if null_before == len {
-            // Column is all null (including blanks treated as null): leave as string.
-            (InferredType::String, None, None, None)
-        } else {
-            match s.str() {
-                Err(_) => (InferredType::String, None, None, None),
-                Ok(str_ca) => {
-                    let first_val: Option<&str> = str_ca
-                        .iter()
-                        .find_map(|o: Option<&str>| o.filter(|s: &&str| !s.is_empty()));
-                    // `02134`, `007`: a ZIP code or an ID, not a number.
-                    let zeros = str_ca
-                        .iter()
-                        .flatten()
-                        .any(crate::formats::column_types::has_leading_zero);
-                    let (mut t, mut date_fmt, mut datetime_fmt, mut time_fmt) =
-                        match str_ca.as_date(None, true) {
-                            Ok(as_date) if types.dates && accept_type(as_date.null_count()) => {
-                                let fmt = first_val.and_then(infer_date_format_from_sample);
-                                if fmt.is_some() {
-                                    (InferredType::Date, fmt.map(String::from), None, None)
-                                } else {
-                                    (InferredType::String, None, None, None)
-                                }
-                            }
-                            _ => (InferredType::String, None, None, None),
-                        };
-                    if matches!(t, InferredType::String)
-                        && types.dates
-                        && let Some(fmt) = first_val.and_then(infer_datetime_format_from_sample)
-                    {
-                        // Judged by the expression the table will run, so a column
-                        // whose values disagree (an offset on some, none on others)
-                        // fails here and stays text.
-                        let parsed = sample_df
-                            .clone()
-                            .lazy()
-                            .select([datetime_from_str(col(name.clone()), fmt)])
-                            .collect()?;
-                        if accept_type(parsed.column(col_name.as_str())?.null_count()) {
-                            (t, date_fmt, datetime_fmt, time_fmt) =
-                                (InferredType::Datetime, None, Some(fmt.to_string()), None);
-                        }
-                    }
-                    if matches!(t, InferredType::String) {
-                        (t, date_fmt, datetime_fmt, time_fmt) = match str_ca.as_time(None, true) {
-                            Ok(as_time) if accept_type(as_time.null_count()) => {
-                                let fmt = first_val.and_then(infer_time_format_from_sample);
-                                if fmt.is_some() {
-                                    (InferredType::Time, None, None, fmt.map(String::from))
-                                } else {
-                                    (InferredType::String, None, None, None)
-                                }
-                            }
-                            _ => (InferredType::String, None, None, None),
-                        };
-                    }
-                    if matches!(t, InferredType::String) && types.numbers {
-                        let duration_ca = string_chunked_to_duration_ns(str_ca);
-                        (t, date_fmt, datetime_fmt, time_fmt) =
-                            if accept_type(duration_ca.null_count()) {
-                                (InferredType::Duration, None, None, None)
-                            } else {
-                                (InferredType::String, None, None, None)
-                            };
-                    }
-                    if matches!(t, InferredType::String) && types.numbers && !zeros {
-                        (t, date_fmt, datetime_fmt, time_fmt) =
-                            match s.strict_cast(&DataType::Int64) {
-                                Ok(as_int) if accept_type(as_int.null_count()) => {
-                                    (InferredType::Int64, None, None, None)
-                                }
-                                _ => (InferredType::String, None, None, None),
-                            };
-                    }
-                    if matches!(t, InferredType::String) && types.numbers && !zeros {
-                        (t, date_fmt, datetime_fmt, time_fmt) =
-                            match s.strict_cast(&DataType::Float64) {
-                                Ok(as_float) if accept_type(as_float.null_count()) => {
-                                    (InferredType::Float64, None, None, None)
-                                }
-                                _ => (InferredType::String, None, None, None),
-                            };
-                    }
-                    (t, date_fmt, datetime_fmt, time_fmt)
-                }
-            }
-        };
+        let inferred = infer_string_type(sample_df.column(col_name.as_str())?, types)?;
         let base = col(PlSmallStr::from(col_name.as_str()))
             .str()
             .strip_chars(whitespace_pat.clone());
@@ -872,51 +734,35 @@ pub(crate) fn type_string_columns(
             None => String::new(),
         };
         python.push(match &inferred {
-            InferredType::Date => format!(
-                "{blank_null}.str.to_date({}strict=False)",
-                format_arg(&date_fmt)
-            ),
-            InferredType::Datetime => format!(
-                "{blank_null}.str.to_datetime({}time_unit=\"us\", strict=False)",
-                format_arg(&datetime_fmt)
-            ),
-            InferredType::Time => format!(
-                "{blank_null}.str.to_time({}strict=False)",
-                format_arg(&time_fmt)
-            ),
-            InferredType::Duration => crate::export::python_script::py_comment(&format!(
-                "{col_name}: datui reads these as durations (\"1d2h\"); Polars has no parser for them"
-            )),
-            InferredType::Int64 => {
-                format!("{blank_null}.cast(pl.Int64, strict=False)")
-            }
-            InferredType::Float64 => {
-                format!("{blank_null}.cast(pl.Float64, strict=False)")
-            }
-            InferredType::String if types.numbers => trimmed.clone(),
-            InferredType::String => String::new(),
+            Some(ty) => match &ty.dtype {
+                DataType::Date => format!(
+                    "{blank_null}.str.to_date({}strict=False)",
+                    format_arg(&ty.format)
+                ),
+                DataType::Datetime(..) => format!(
+                    "{blank_null}.str.to_datetime({}time_unit=\"us\", strict=False)",
+                    format_arg(&ty.format)
+                ),
+                DataType::Time => format!(
+                    "{blank_null}.str.to_time({}strict=False)",
+                    format_arg(&ty.format)
+                ),
+                DataType::Duration(_) => crate::export::python_script::py_comment(&format!(
+                    "{col_name}: datui reads these as durations (\"1d2h\"); Polars has no parser for them"
+                )),
+                DataType::Int64 => format!("{blank_null}.cast(pl.Int64, strict=False)"),
+                _ => format!("{blank_null}.cast(pl.Float64, strict=False)"),
+            },
+            None if types.numbers => trimmed.clone(),
+            None => String::new(),
         });
-        // The one way a column is given a type: the spec's and the table's too.
-        let ty = |dtype: DataType, format: Option<String>| {
-            crate::formats::column_types::ColumnType { dtype, format }
-        };
-        let ty = match inferred {
-            InferredType::Date => ty(DataType::Date, date_fmt),
-            InferredType::Datetime => ty(
-                DataType::Datetime(TimeUnit::Microseconds, None),
-                datetime_fmt,
-            ),
-            InferredType::Time => ty(DataType::Time, time_fmt),
-            InferredType::Duration => ty(DataType::Duration(TimeUnit::Nanoseconds), None),
-            InferredType::Int64 => ty(DataType::Int64, None),
-            InferredType::Float64 => ty(DataType::Float64, None),
-            // Trimmed where every column is text; left as read where the
-            // writer chose a string.
-            InferredType::String if types.numbers => {
+        let Some(ty) = inferred else {
+            // Trimmed where every column is text; left as read where the writer chose
+            // a string.
+            if types.numbers {
                 exprs.push(base.alias(name));
-                continue;
             }
-            InferredType::String => continue,
+            continue;
         };
         let expr = ty.expr(col_name, &DataType::String).alias(name);
         typed.push(crate::formats::column_types::Typed {
@@ -939,6 +785,87 @@ pub(crate) fn type_string_columns(
         read.push(")".to_string());
     }
     Ok(lf.with_columns(exprs))
+}
+
+/// The type string inference gives the sampled column `s` (trimmed, blanks null): the
+/// first of Date, Datetime, Time, Duration, Int64 and Float64 (as `types` allows) that
+/// reads every value, or `None` to stay text. A column of nulls stays text, and so do
+/// numbers with a leading zero (`02134`, `007`: a ZIP code or an ID).
+pub(crate) fn infer_string_type(
+    s: &Column,
+    types: StringTypes,
+) -> PolarsResult<Option<crate::formats::column_types::ColumnType>> {
+    use crate::formats::column_types::ColumnType;
+    let null_before = s.null_count();
+    if null_before == s.len() {
+        return Ok(None);
+    }
+    let Ok(str_ca) = s.str() else {
+        return Ok(None);
+    };
+    // A type is taken only if it makes no new nulls.
+    let fits = |null_after: usize| null_after <= null_before;
+    let ty = |dtype: DataType, format: Option<&str>| {
+        Some(ColumnType {
+            dtype,
+            format: format.map(String::from),
+        })
+    };
+    let first_val = str_ca.iter().find_map(|o| o.filter(|s| !s.is_empty()));
+    if types.dates
+        && str_ca
+            .as_date(None, true)
+            .is_ok_and(|as_date| fits(as_date.null_count()))
+        && let Some(fmt) = first_val.and_then(infer_date_format_from_sample)
+    {
+        return Ok(ty(DataType::Date, Some(fmt)));
+    }
+    if types.dates
+        && let Some(fmt) = first_val.and_then(infer_datetime_format_from_sample)
+    {
+        // Judged by the expression the table will run, so a column whose values
+        // disagree (an offset on some, none on others) fails here and stays text.
+        let parsed = s
+            .clone()
+            .into_frame()
+            .lazy()
+            .select([datetime_from_str(col(s.name().clone()), fmt)])
+            .collect()?;
+        if fits(parsed.column(s.name().as_str())?.null_count()) {
+            return Ok(ty(
+                DataType::Datetime(TimeUnit::Microseconds, None),
+                Some(fmt),
+            ));
+        }
+    }
+    if str_ca
+        .as_time(None, true)
+        .is_ok_and(|as_time| fits(as_time.null_count()))
+        && let Some(fmt) = first_val.and_then(infer_time_format_from_sample)
+    {
+        return Ok(ty(DataType::Time, Some(fmt)));
+    }
+    if !types.numbers {
+        return Ok(None);
+    }
+    if fits(string_chunked_to_duration_ns(str_ca).null_count()) {
+        return Ok(ty(DataType::Duration(TimeUnit::Nanoseconds), None));
+    }
+    if str_ca
+        .iter()
+        .flatten()
+        .any(crate::formats::column_types::has_leading_zero)
+    {
+        return Ok(None);
+    }
+    for dtype in [DataType::Int64, DataType::Float64] {
+        if s.strict_cast(&dtype)
+            .is_ok_and(|cast| fits(cast.null_count()))
+        {
+            return Ok(ty(dtype, None));
+        }
+    }
+    Ok(None)
 }
 
 /// `path` decompressed to a temporary copy in `temp_dir`, written through `writer`:
@@ -982,7 +909,9 @@ pub(crate) fn read_delimited(
             // Eager read: decompress into memory, then CSV read
             let (df, header) = match compression {
                 CompressionFormat::Gzip | CompressionFormat::Zstd => {
-                    let header = csv_header_names_of(options, path, Some(compression))?;
+                    let header =
+                        crate::formats::csv_dialect::head(path, options, Some(compression), false)?
+                            .names;
                     let nv = build_null_values_for_csv(options, path, header.as_deref())?;
                     let read_options = eager_csv_read_options(options, nv.as_ref());
                     let df = crate::formats::csv_dialect::read_after_header(
@@ -1002,9 +931,13 @@ pub(crate) fn read_delimited(
                         xz2::read::XzDecoder::new(file).read_to_end(&mut decompressed)?;
                     }
                     crate::formats::nul_tail::trim(&mut decompressed);
-                    let header = csv_header_names(options, || {
-                        Ok(std::io::Cursor::new(decompressed.as_slice()))
-                    })?;
+                    let header = crate::formats::csv_dialect::head_of(
+                        decompressed.as_slice(),
+                        path,
+                        options,
+                        false,
+                    )?
+                    .names;
                     // Column names for per-column null values come from the bytes: the file on
                     // disk is still compressed.
                     let nv = build_null_values_with(options, header.as_deref(), || {
@@ -1095,20 +1028,14 @@ pub(crate) fn from_lines_decompressed(
 /// One uncompressed delimited file, scanned lazily. The frame is finished before
 /// the state is made from it, so the column order is of the names shown.
 fn scan_csv_file(path: &Path, options: &OpenOptions) -> Result<Read> {
-    let header = csv_header_names_of(options, path, None)?;
+    let head =
+        crate::formats::csv_dialect::head(path, options, None, options.parse_strings.is_some())?;
+    let header = head.names.clone();
     let nv = build_null_values_for_csv(options, path, header.as_deref())?;
     let reader = csv_reader_of(path)?;
     let reader = configure_csv_reader(reader, options, nv.as_ref());
     let mut typing = Typing::default();
-    let lf = scan_some_as_text(
-        reader,
-        options,
-        header.as_deref(),
-        path,
-        None,
-        &mut typing.text,
-    )?
-    .finish()?;
+    let lf = scan_some_as_text(reader, options, &head, &mut typing.text)?.finish()?;
     let mut read = Vec::new();
     let lf = finish_csv_frame(lf, options, header.as_deref(), &mut read, &mut typing)?;
     Ok(Read {
@@ -1135,40 +1062,27 @@ pub(crate) fn from_csv_paths(paths: &[impl AsRef<Path>], options: &OpenOptions) 
     let mut no_header: Vec<&Path> = Vec::new();
     // Read through a spec, each file's header pass reads its units and the lines its
     // types are inferred from too, for lining the files up by name.
-    let spec = options.delimited.as_ref().map(|read| read.delimited());
+    let spec = options.delimited.is_some();
+    let window = spec || options.parse_strings.is_some();
     let mut heads = Vec::new();
     let mut read_text = Vec::new();
     for p in paths {
         let p = p.as_ref();
         let in_file = |e: color_eyre::Report| crate::error_display::in_file(p, e);
-        let head_read = match spec {
-            Some(spec) => crate::formats::spec_union::read_head(p, options, spec).map(Some),
-            None => Ok(None),
-        };
-        let head = match head_read {
+        let head = match crate::formats::csv_dialect::head(p, options, None, window) {
             Err(e) if crate::formats::csv_dialect::is_blank_file(&e) => {
                 no_header.push(p);
                 continue;
             }
             head => head.map_err(in_file)?,
         };
-        let header = match &head {
-            Some(head) => head.names.clone(),
-            None => match csv_header_names_of(options, p, None) {
-                Err(e) if crate::formats::csv_dialect::is_blank_file(&e) => {
-                    no_header.push(p);
-                    continue;
-                }
-                header => header.map_err(in_file)?,
-            },
-        };
+        let header = head.names.clone();
         let nv = build_null_values_for_csv(options, p, header.as_deref()).map_err(in_file)?;
         let reader = csv_reader_of(p).map_err(in_file)?;
         let reader = configure_csv_reader(reader, options, nv.as_ref());
-        let window = head.as_ref().map(|head| head.window.as_slice());
         // Python reads the files as one scan: the first file's columns stand for all.
         let mut text = Vec::new();
-        let lf = scan_some_as_text(reader, options, header.as_deref(), p, window, &mut text)
+        let lf = scan_some_as_text(reader, options, &head, &mut text)
             .map_err(in_file)?
             .finish()
             .map_err(|e| in_file(e.into()))?;
@@ -1195,7 +1109,7 @@ pub(crate) fn from_csv_paths(paths: &[impl AsRef<Path>], options: &OpenOptions) 
         }
         let named = name_csv_columns(lf, header.as_deref(), record).map_err(in_file)?;
         lazy_frames.push(named);
-        heads.extend(head);
+        heads.push(head);
     }
     if lazy_frames.is_empty() {
         return Err(color_eyre::eyre::eyre!(
@@ -1206,7 +1120,7 @@ pub(crate) fn from_csv_paths(paths: &[impl AsRef<Path>], options: &OpenOptions) 
     let mut notes: Vec<crate::notes::Note> =
         crate::notes::no_header(&no_header).into_iter().collect();
     let mut units = None;
-    if spec.is_some() && lazy_frames.len() > 1 {
+    if spec && lazy_frames.len() > 1 {
         let lined = crate::formats::spec_union::line_up(lazy_frames, &heads, options)?;
         lazy_frames = lined.frames;
         notes.extend(lined.notes);

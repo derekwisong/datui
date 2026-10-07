@@ -427,7 +427,6 @@ impl InfoTab {
 /// Modal state for the Info panel: focus, tab, schema table selection/scroll.
 #[derive(Default)]
 pub struct InfoModal {
-    pub active: bool,
     pub active_tab: InfoTab,
     pub schema_selected_index: usize,
     pub schema_scroll_offset: usize,
@@ -462,7 +461,6 @@ impl InfoModal {
     /// Open with `tab` in front. The accented `i` chip promises unread notes;
     /// arriving on the Schema tab instead made the reader hunt for them.
     pub fn open_on(&mut self, tab: InfoTab) {
-        self.active = true;
         self.active_tab = tab;
         self.schema_selected_index = 0;
         self.schema_scroll_offset = 0;
@@ -471,10 +469,6 @@ impl InfoModal {
         self.notes_scroll_offset = 0;
         self.detail_scroll = 0;
         self.detail_selected = 0;
-    }
-
-    pub fn close(&mut self) {
-        self.active = false;
     }
 
     /// Switch to the next of the tabs on offer.

@@ -86,7 +86,6 @@ impl App {
     pub(crate) fn close_overlay(&mut self) {
         match self.overlay {
             Overlay::Copy => self.copy_modal.close(),
-            Overlay::Info => self.info_modal.close(),
             Overlay::Inspect => self.inspector_modal.close(),
             Overlay::SortFilter => self.sort_filter_modal.close(),
             Overlay::PivotMelt => self.pivot_melt_modal.close(),

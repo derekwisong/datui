@@ -197,7 +197,10 @@ fn enter_on_the_excel_tab_opens_the_worksheet_under_the_cursor() {
 
     press(&mut app, KeyCode::Down);
     open_picked(&mut app, &rx, &tx);
-    assert!(!app.info_modal.active, "the panel closes for the open");
+    assert!(
+        !app.overlay.shows(&Overlay::Info),
+        "the panel closes for the open"
+    );
     assert_eq!(column_names(&app), ["month", "total", "note"]);
     assert_eq!(app.open_path(), Some(book.join("2023").as_path()));
 }

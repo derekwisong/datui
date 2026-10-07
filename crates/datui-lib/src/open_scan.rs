@@ -440,7 +440,7 @@ impl App {
             self.source.original_file_delimiter = None;
         }
         // A panel still up says what it says about the dataset on screen.
-        if self.info_modal.active {
+        if self.overlay.shows(&crate::Overlay::Info) {
             self.read_file_facts();
             self.count_unfit();
         }

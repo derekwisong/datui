@@ -21,7 +21,7 @@ pub fn render(
     ctx: &RenderContext,
 ) {
     let active_sidebar = ActiveSidebar::from_modals(
-        app.info_modal.active,
+        app.overlay.shows(&crate::Overlay::Info),
         app.sort_filter_modal.active,
         app.view_modal.active,
     );
@@ -136,7 +136,7 @@ pub fn render(
                 }
                 .render_centered(table_area, buf, ctx);
             }
-            if app.info_modal.active {
+            if app.overlay.shows(&crate::Overlay::Info) {
                 let facts = crate::App::facts_shown(
                     &app.info.file_facts,
                     app.dataset_generation,
@@ -270,7 +270,7 @@ pub fn render(
         );
     }
 
-    if app.copy_modal.active {
+    if app.overlay == crate::Overlay::Copy {
         // A commitment like export: compact and centered. The dialog holds
         // the most rows any scope offers, so stepping the scope moves nothing,
         // the spec and the footer; an open Picker earns the room it drops into.

@@ -90,7 +90,6 @@ impl App {
         view.record_size = record_size.map(|n| n.clamp(1, MAX_RECORD_SIZE));
         view.input = crate::widgets::text_input::TextInput::new().with_theme(&self.theme);
         self.hex_view.view = Some(view);
-        self.info_modal.close();
         self.open_overlay(Overlay::Hex);
     }
 
@@ -139,7 +138,6 @@ impl App {
                 }
                 // Back to the panel it was opened from, on the tab it was on.
                 if origin == Origin::Info && self.data_table_state.is_some() {
-                    self.info_modal.active = true;
                     self.open_overlay(Overlay::Info);
                 }
                 None

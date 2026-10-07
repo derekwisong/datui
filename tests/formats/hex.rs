@@ -339,7 +339,7 @@ fn the_info_panel_shows_the_file_as_hex_and_esc_comes_back_to_it() {
     // Esc goes back where x was pressed: the panel, then the table.
     press(&mut app, KeyCode::Esc);
     assert_eq!(app.overlay, Overlay::Info);
-    assert!(app.info_modal.active);
+    assert!(app.overlay.shows(&Overlay::Info));
     assert!(app.hex_view.view.is_none());
     press(&mut app, KeyCode::Esc);
     assert!(app.at_table());

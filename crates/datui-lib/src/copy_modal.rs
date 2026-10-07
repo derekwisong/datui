@@ -55,7 +55,6 @@ pub struct CopyContext {
 }
 
 pub struct CopyModal {
-    pub active: bool,
     pub focus: CopyFocus,
     pub scope: CopyScope,
     pub format: CopyFormat,
@@ -118,7 +117,6 @@ impl crate::form::Form for CopyModal {
 impl Default for CopyModal {
     fn default() -> Self {
         Self {
-            active: false,
             focus: CopyFocus::Scope,
             scope: CopyScope::default(),
             format: CopyFormat::default(),
@@ -142,7 +140,6 @@ impl CopyModal {
     /// Open over the current table. Scope, format and headers are sticky; the
     /// cell scope's column is the column cursor's, `current`.
     pub fn open(&mut self, columns: Vec<String>, current: Option<&str>, context: CopyContext) {
-        self.active = true;
         self.focus = CopyFocus::Scope;
         self.picker = None;
         self.attention = false;
@@ -154,7 +151,6 @@ impl CopyModal {
     }
 
     pub fn close(&mut self) {
-        self.active = false;
         self.picker = None;
     }
 

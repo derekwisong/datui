@@ -2361,7 +2361,7 @@ fn modified_letters_are_not_table_feature_keys() {
         KeyCode::Char('y'),
         KeyModifiers::CONTROL,
     )));
-    assert!(!app.copy_modal.active, "Ctrl+Y is not y");
+    assert_ne!(app.overlay, Overlay::Copy, "Ctrl+Y is not y");
 
     // And the plain letter still works. (Paging keeps Ctrl+F/B/D/U: those
     // four are the guard's explicit exceptions, matching their declared arms.)
@@ -17952,7 +17952,7 @@ fn copy_format(app: &mut App, format: datui::clipboard::CopyFormat) {
 fn test_copy_dialog_keeps_its_size_across_scopes() {
     let (mut app, _rx, _tx) = open_query_filter_fixture("copy_fixed_height.csv");
     press(&mut app, KeyCode::Char('y'));
-    assert!(app.copy_modal.active);
+    assert_eq!(app.overlay, Overlay::Copy);
     let mut frames = std::collections::HashSet::new();
     for scope in datui::copy_modal::CopyScope::ALL {
         copy_scope(&mut app, scope);
@@ -19041,7 +19041,7 @@ fn every_dialog_moves_between_fields_with_the_arrows_on_open() {
     press(&mut app, KeyCode::Down);
     assert_eq!(app.copy_modal.focus, CopyFocus::Format);
     press(&mut app, KeyCode::Esc);
-    assert!(!app.copy_modal.active);
+    assert_ne!(app.overlay, Overlay::Copy);
 
     // Pivot & Melt opens on its tab bar, a choice: → is Melt, ↓ the first row.
     press(&mut app, KeyCode::Char('p'));
@@ -19356,7 +19356,7 @@ fn test_info_panel_arrows_switch_tabs_from_the_body() {
     let (mut app, _rx, _tx) = open_query_filter_fixture("info_arrows.csv");
 
     press(&mut app, KeyCode::Char('i'));
-    assert!(app.info_modal.active);
+    assert!(app.overlay.shows(&Overlay::Info));
     assert_eq!(app.info_modal.active_tab, InfoTab::Schema);
 
     press(&mut app, KeyCode::Right);
@@ -20082,7 +20082,6 @@ fn test_copy_dialog_sends_each_scope_to_the_destination() {
     // Row scope is the default, header off: the current row as bare TSV.
     key(&mut app, KeyCode::Char('y'));
     assert_eq!(app.overlay, Overlay::Copy);
-    assert!(app.copy_modal.active);
     key(&mut app, KeyCode::Enter);
     assert!(app.at_table());
     assert_eq!(copies.lock().unwrap()[0].text, "Oslo\t700000");

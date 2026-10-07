@@ -680,80 +680,60 @@ fn test_new_color_fields() {
     }
 }
 
+/// Names, hex and indexed colors validate in any slot; a bad one names its slot.
 #[test]
-fn test_new_color_fields_custom_values() {
-    use datui::config::AppConfig;
-
-    let mut config = AppConfig::default();
-    config.theme.colors.chart_1 = "#00ff00".to_string();
-    config.theme.colors.dimmed = "#ff00ff".to_string();
-    config.theme.colors.table_header_bg = "indexed(240)".to_string();
-    config.theme.colors.table_column_separator = "bright_blue".to_string();
-    config.theme.colors.sidebar_border = "bright_red".to_string();
-
-    // Should validate successfully
-    let result = config.validate();
-    assert!(result.is_ok());
-}
-
-#[test]
-fn test_validate_config_with_invalid_chart_series_color() {
-    // SAFETY: test-only. Tests run on parallel threads, so this can race another test
-    // reading the environment; accepted in tests and never done outside them.
-    unsafe { std::env::remove_var("NO_COLOR") };
-    let mut config = AppConfig::default();
-    config.theme.colors.chart_1 = "invalid_color_name".to_string();
-    let result = config.validate();
-    assert!(result.is_err());
-    let err = result.unwrap_err().to_string();
-    assert!(err.contains("theme.colors.chart_1"), "{}", err);
-}
-
-#[test]
-fn test_validate_config_with_invalid_color() {
-    // Clear NO_COLOR for this test
-    // SAFETY: test-only. Tests run on parallel threads, so this can race another test
-    // reading the environment; accepted in tests and never done outside them.
+fn test_validate_config_colors() {
+    use datui::config::ColorConfig;
+    // NO_COLOR makes every value parse as no color. SAFETY: test-only. Tests run on
+    // parallel threads, so this can race another test reading the environment;
+    // accepted in tests and never done outside them.
     unsafe { std::env::remove_var("NO_COLOR") };
 
-    let mut config = AppConfig::default();
-    config.theme.colors.chip_key = "not_a_valid_color".to_string();
-
-    let result = config.validate();
-    assert!(result.is_err());
-    let err = result.unwrap_err().to_string();
-    assert!(err.contains("theme.colors.chip_key"), "{}", err);
-}
-
-#[test]
-fn test_validate_config_with_valid_hex_color() {
-    // Clear NO_COLOR for this test
-    // SAFETY: test-only. Tests run on parallel threads, so this can race another test
-    // reading the environment; accepted in tests and never done outside them.
-    unsafe { std::env::remove_var("NO_COLOR") };
-
-    let mut config = AppConfig::default();
-    config.theme.colors.chip_key = "#ff0000".to_string();
-    config.theme.colors.chip_label = "#00ff00".to_string();
-
-    let result = config.validate();
-    assert!(result.is_ok());
-}
-
-#[test]
-fn test_validate_config_with_mixed_colors() {
-    // Clear NO_COLOR for this test
-    // SAFETY: test-only. Tests run on parallel threads, so this can race another test
-    // reading the environment; accepted in tests and never done outside them.
-    unsafe { std::env::remove_var("NO_COLOR") };
-
-    let mut config = AppConfig::default();
-    config.theme.colors.chip_key = "cyan".to_string();
-    config.theme.colors.error = "#ff0000".to_string();
-    config.theme.colors.success = "bright_green".to_string();
-
-    let result = config.validate();
-    assert!(result.is_ok());
+    type Set = fn(&mut ColorConfig);
+    let cases: [(Set, Option<&str>); 5] = [
+        (
+            |c| {
+                c.chip_key = "#ff0000".into();
+                c.chip_label = "#00ff00".into();
+            },
+            None,
+        ),
+        (
+            |c| {
+                c.chip_key = "cyan".into();
+                c.error = "#ff0000".into();
+                c.success = "bright_green".into();
+            },
+            None,
+        ),
+        (
+            |c| {
+                c.chart_1 = "#00ff00".into();
+                c.dimmed = "#ff00ff".into();
+                c.table_header_bg = "indexed(240)".into();
+                c.table_column_separator = "bright_blue".into();
+                c.sidebar_border = "bright_red".into();
+            },
+            None,
+        ),
+        (
+            |c| c.chip_key = "not_a_valid_color".into(),
+            Some("theme.colors.chip_key"),
+        ),
+        (
+            |c| c.chart_1 = "invalid_color_name".into(),
+            Some("theme.colors.chart_1"),
+        ),
+    ];
+    for (i, (set, error)) in cases.into_iter().enumerate() {
+        let mut config = AppConfig::default();
+        set(&mut config.theme.colors);
+        match (config.validate(), error) {
+            (Ok(()), None) => {}
+            (Err(e), Some(slot)) => assert!(e.to_string().contains(slot), "case {i}: {e}"),
+            (result, _) => panic!("case {i}: {result:?}"),
+        }
+    }
 }
 
 #[test]
@@ -896,6 +876,8 @@ float_precision = 2
 exclude_columns = ["*_id", "year"]
 "#;
     let config: AppConfig = toml::from_str(toml_str).expect("table form should parse");
+    // Every key is known: the unknown-key capture swallows none of them.
+    config.validate().expect("all known keys validate");
     let settings = config.display.number_format.resolve(false).unwrap();
 
     assert_eq!(settings.format.grouping, Grouping::Thousands);
@@ -933,44 +915,28 @@ fn test_number_format_unknown_preset_is_rejected() {
     assert!(err.contains("system"), "got: {err}");
 }
 
+/// Values that parse as TOML but make no format fail validation, which names the
+/// config file, rather than falling back at render time.
 #[test]
-fn test_number_format_separator_conflict_is_rejected() {
-    let toml_str = r#"
-
-[display.number_format]
-grouping = "thousands"
-group_separator = "."
-decimal_separator = "."
-"#;
-    let config: AppConfig = toml::from_str(toml_str).unwrap();
-    let err = config.validate().unwrap_err().to_string();
-    assert!(err.contains("must differ"), "got: {err}");
-}
-
-#[test]
-fn test_number_format_multichar_separator_is_rejected() {
-    let toml_str = r#"
-
-[display.number_format]
-group_separator = ", "
-"#;
-    let config: AppConfig = toml::from_str(toml_str).unwrap();
-    let err = config.validate().unwrap_err().to_string();
-    assert!(err.contains("single character"), "got: {err}");
-}
-
-#[test]
-fn test_number_format_bad_value_fails_validation_not_parsing() {
-    // A bad preset name is a valid TOML string, so it must be caught by
-    // validate() (which reports the config file path) rather than silently
-    // falling back at render time.
-    let toml_str = r#"
-
-[display]
-number_format = "nonsense"
-"#;
-    let config: AppConfig = toml::from_str(toml_str).expect("should parse as a string");
-    assert!(config.validate().is_err());
+fn test_number_format_bad_values_fail_validation() {
+    for (toml_str, expected) in [
+        (
+            "[display.number_format]\ngrouping = \"thousands\"\ngroup_separator = \".\"\ndecimal_separator = \".\"\n",
+            "must differ",
+        ),
+        (
+            "[display.number_format]\ngroup_separator = \", \"\n",
+            "single character",
+        ),
+        (
+            "[display]\nnumber_format = \"nonsense\"\n",
+            "unknown value 'nonsense'",
+        ),
+    ] {
+        let config: AppConfig = toml::from_str(toml_str).expect("parses");
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains(expected), "{toml_str}: {err}");
+    }
 }
 
 #[test]
@@ -1054,43 +1020,15 @@ groupng = "thousands"
     // The message must say what IS accepted.
     assert!(err.contains("grouping"), "got: {err}");
     assert!(err.contains("exclude_columns"), "got: {err}");
-}
 
-#[test]
-fn test_number_format_reports_every_unknown_key() {
-    let toml_str = r#"
-
-[display.number_format]
-groupng = "thousands"
-floatz = true
-"#;
-    let config: AppConfig = toml::from_str(toml_str).unwrap();
+    // Every one, not the first.
+    let config: AppConfig =
+        toml::from_str("[display.number_format]\ngroupng = \"thousands\"\nfloatz = true\n")
+            .unwrap();
     let err = config.validate().unwrap_err().to_string();
     assert!(err.contains("unknown keys"), "should pluralise: {err}");
     assert!(err.contains("'groupng'"), "got: {err}");
     assert!(err.contains("'floatz'"), "got: {err}");
-}
-
-#[test]
-fn test_number_format_known_keys_are_not_flagged_as_unknown() {
-    // Guard against the unknown-key capture swallowing real fields.
-    let toml_str = r#"
-
-[display.number_format]
-grouping = "thousands"
-group_separator = "_"
-decimal_separator = "."
-floats = false
-float_precision = 3
-exclude_columns = ["year"]
-"#;
-    let config: AppConfig = toml::from_str(toml_str).unwrap();
-    config.validate().expect("all known keys must validate");
-    let settings = config.display.number_format.resolve(true).unwrap();
-    assert_eq!(settings.format.group_sep, '_');
-    assert_eq!(settings.format.float_precision, Some(3));
-    assert!(!settings.format.floats);
-    assert_eq!(settings.exclude.len(), 1);
 }
 
 #[test]

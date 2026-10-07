@@ -1,22 +1,9 @@
-//! Display-time number formatting: digit grouping (thousands separators),
-//! decimal separator choice, and optional fixed float precision.
-//!
-//! **This is display-only.** Exports, queries, filter values, views, and
-//! group-by key strings always use raw values — see [`format_any_value`] call
-//! sites. Nothing here is ever fed back into Polars.
-//!
-//! # Performance
-//!
-//! Formatting runs once per *visible* cell per frame (roughly
-//! `visible_rows * visible_cols`), so the hot path is deliberately allocation
-//! free beyond the destination `String` the caller already needs:
-//!
-//! - Integers are written digit-by-digit into a stack buffer with separators
-//!   emitted inline — one pass, no intermediate string.
-//! - [`NumberFormat::width_i64`] computes display width arithmetically, so the
-//!   locked-column measurement pass never builds a string it throws away.
-//! - Per-column decisions (dtype eligibility, exclude globs) resolve to a
-//!   [`CellFormatter`] once per column per frame, never per cell.
+//! Display-time number formatting: digit grouping, decimal separator, optional fixed
+//! float precision. Display only: exports, queries, filters, views and group-by keys use
+//! raw values. Runs per visible cell per frame, so it allocates nothing beyond the
+//! caller's `String`: integers are written digit by digit with inline separators,
+//! [`NumberFormat::width_i64`] measures arithmetically, and per-column decisions resolve
+//! to a [`CellFormatter`] once per column per frame.
 
 use std::borrow::Cow;
 use std::fmt::Write as _;
@@ -96,10 +83,8 @@ impl NumberFormat {
         float_precision: None,
     };
 
-    /// Look up a named preset. Presets cover the common locale conventions
-    /// without pulling in ICU/CLDR data — see `docs/user-guide/configuration.md`
-    /// for why formatting is explicit rather than auto-detected from the
-    /// environment.
+    /// A named preset covering common locale conventions without ICU/CLDR data (see
+    /// `docs/user-guide/configuration.md` on why formatting is explicit).
     pub fn preset(name: &str) -> Option<Self> {
         let base = Self::PLAIN;
         Some(match name {
@@ -178,12 +163,8 @@ impl NumberFormat {
         self.grouping == Grouping::None && self.decimal_sep == '.' && self.float_precision.is_none()
     }
 
-    /// Whether values get digit grouping at all.
-    ///
-    /// Every value in a formatted column is grouped, with no magnitude
-    /// threshold: within a table, uniform treatment of a column reads better
-    /// than the prose convention of leaving four-digit numbers alone. Columns
-    /// holding identifiers rather than quantities are named in `exclude`.
+    /// Whether values are grouped: every value in a formatted column, without a magnitude
+    /// threshold, for uniform columns; identifier columns belong in `exclude`.
     #[inline]
     fn groups(&self) -> bool {
         self.grouping != Grouping::None
@@ -263,18 +244,13 @@ impl NumberFormat {
                 out.push_str(s);
                 width
             }
-            // Unreachable. Report zero rather than `width` anyway: callers size
-            // table columns from this return value, so a width that does not
-            // match what was actually pushed would corrupt the layout instead
-            // of failing visibly.
+            // Unreachable; zero rather than `width`, since a width not matching what was pushed
+            // would corrupt column sizing silently.
             Err(_) => 0,
         }
     }
 
-    /// Append `v` to `out`, returning the display width in characters.
-    ///
-    /// `scratch` is a caller-owned reusable buffer; after the first call in a
-    /// render pass it has enough capacity and no longer allocates.
+    /// Append `v` to `out`, returning its display width; `scratch` is a reused buffer.
     pub fn write_f64(&self, v: f64, scratch: &mut String, out: &mut String) -> usize {
         scratch.clear();
         match self.float_precision {
@@ -288,13 +264,9 @@ impl NumberFormat {
         self.regroup_decimal(scratch, out)
     }
 
-    /// Insert group separators into the integer part of an already-rendered
-    /// decimal string and apply `decimal_sep`. Returns the display width.
-    ///
-    /// Used for floats so Polars' own rendering is preserved and only the
-    /// grouping is layered on — toggling formatting never changes how many
-    /// decimal places a value shows. Anything that is not a plain decimal
-    /// (`NaN`, `inf`, scientific notation) is copied through unchanged.
+    /// Group the integer part of an already-rendered decimal and apply `decimal_sep`,
+    /// returning the width. Keeps Polars' rendering (decimal places never change with
+    /// formatting); non-plain decimals (`NaN`, `inf`, scientific) pass through.
     pub fn regroup_decimal(&self, src: &str, out: &mut String) -> usize {
         let body = src.strip_prefix('-').unwrap_or(src);
         let negative = body.len() != src.len();
@@ -411,13 +383,9 @@ pub fn percent_of(count: usize, of: usize) -> String {
     percent(count as f64 / of as f64)
 }
 
-/// Comma-group a count for the application's own chrome — the footer's
-/// row count, info-panel totals, and similar labels.
-///
-/// Deliberately unconditional: these are datui's labels, not the user's data,
-/// so they stay readable regardless of `display.number_format` or the `,`
-/// toggle. Keeping the distinction means turning formatting off to read exact
-/// data values never makes the surrounding UI harder to read.
+/// Comma-group a count for datui's own chrome (footer count, info totals), regardless
+/// of `display.number_format` or `,`: turning formatting off for exact data never makes
+/// the UI harder to read.
 pub fn group_chrome(n: usize) -> String {
     let mut out = String::new();
     NumberFormat::CHROME.write_u64(n as u64, &mut out);
@@ -463,11 +431,7 @@ pub fn is_numeric_dtype(dtype: &DataType) -> bool {
     )
 }
 
-/// True for dtypes that should render flush-right in the data table.
-///
-/// Temporal types are deliberately excluded: they render fixed-width, so
-/// alignment buys nothing, and moving them would be a change unrelated to
-/// number formatting.
+/// Dtypes rendered flush right; temporals excluded (fixed-width already).
 pub fn is_right_aligned_dtype(dtype: &DataType) -> bool {
     is_numeric_dtype(dtype)
 }
@@ -519,10 +483,7 @@ impl NumberFormatSettings {
     }
 }
 
-/// Format one Polars value for display.
-///
-/// Returns `Cow::Borrowed` whenever no formatting applies, so unformatted
-/// columns cost exactly what they cost today.
+/// Format one value for display; `Cow::Borrowed` when no formatting applies.
 pub fn format_any_value<'v>(
     fmt: &CellFormatter,
     value: &'v AnyValue<'v>,
@@ -561,10 +522,8 @@ pub fn format_any_value<'v>(
     Cow::Owned(out)
 }
 
-/// Cells a value takes on screen without building its string, where possible.
-///
-/// Integers take the arithmetic path; everything else is rendered and measured in
-/// terminal cells, as the table measures it. For a pass that needs widths only.
+/// A value's on-screen cells without building its string where possible (integers);
+/// others are rendered and measured as the table measures them.
 pub fn display_width(fmt: &CellFormatter, value: &AnyValue, scratch: &mut String) -> usize {
     if matches!(value, AnyValue::Null) {
         return 0;
@@ -585,10 +544,8 @@ pub fn display_width(fmt: &CellFormatter, value: &AnyValue, scratch: &mut String
     crate::glyphs::cell_width(&format_any_value(fmt, value, scratch))
 }
 
-/// Minimal glob matcher supporting `*` (any run) and `?` (one character).
-///
-/// A dependency would be overkill for matching column names; this is the whole
-/// feature surface the config documents.
+/// Minimal glob matcher: `*` (any run) and `?` (one character), all column-name
+/// matching needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Glob {
     pattern: String,
@@ -615,10 +572,8 @@ impl Glob {
         let (mut pi, mut ni) = (0usize, 0usize);
         let (mut star, mut mark) = (usize::MAX, 0usize);
         while ni < n.len() {
-            // `*` is tested before the literal comparison, not after. With the order
-            // reversed a `*` in the pattern matched a literal `*` in the name and then
-            // stopped being a wildcard, so `*` failed to match a name like "a*b".
-            // Found by the `glob_match` fuzz target.
+            // `*` before the literal comparison, or a literal `*` in the name would consume it as
+            // a wildcard (found by the `glob_match` fuzz target).
             if pi < p.len() && p[pi] == '*' {
                 star = pi;
                 mark = ni;
@@ -641,12 +596,8 @@ impl Glob {
     }
 }
 
-/// Map a POSIX locale / language tag to the preset whose conventions match.
-///
-/// Only consulted when the user explicitly opts in with `grouping = "system"`.
-/// Deliberately a small static table rather than ICU/CLDR: locale data is
-/// multiple megabytes, and a single-binary TUI should not carry it to choose a
-/// separator character.
+/// Map a POSIX locale tag to its preset, only for an explicit `grouping = "system"`. A
+/// small static table rather than megabytes of ICU/CLDR to pick a separator.
 pub fn preset_for_locale_tag(tag: &str) -> &'static str {
     // Strip encoding/modifier suffixes: "de_DE.UTF-8@euro" -> "de_DE"
     let base = tag

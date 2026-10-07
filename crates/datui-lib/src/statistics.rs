@@ -566,17 +566,10 @@ pub fn compute_statistics(
     compute_statistics_with_options(lf, sample_size, seed, ComputeOptions::default())
 }
 
-/// Computes comprehensive statistics for a LazyFrame.
-///
-/// Main entry point for statistical analysis. Computes:
-/// - Basic statistics (count, nulls, min, max, mean) for all columns
-/// - Numeric statistics (percentiles, skewness, kurtosis, outliers) for numeric columns
-/// - Categorical statistics (unique count, mode, top values) for categorical columns
-/// - Distribution detection and analysis for numeric columns (if enabled)
-/// - Correlation matrix for numeric columns (if enabled)
-///
-/// A table with more than `sample_size` rows is analyzed from a sample of that many;
-/// see [`crate::sampling::analysis_rows`]. `None` reads every row.
+/// Statistics for a LazyFrame: basic ones for every column, percentiles, skewness,
+/// kurtosis and outliers for numeric columns, unique counts and top values for
+/// categorical ones, and optionally distributions and correlations. Tables over
+/// `sample_size` rows are sampled ([`crate::sampling::analysis_rows`]); `None` reads all.
 pub fn compute_statistics_with_options(
     lf: &LazyFrame,
     sample_size: Option<usize>,
@@ -1321,13 +1314,9 @@ fn approximate_shapiro_wilk(sorted: &[f64]) -> (Option<f64>, Option<f64>) {
     (Some(sw_stat), shapiro_francia_pvalue(sw_stat, n))
 }
 
-/// The p-value of a normality statistic computed as above: the squared correlation of
-/// the sorted values with normal scores, which is the Shapiro-Francia form of the
-/// Shapiro-Wilk test. Royston's (1993) approximation, `ln(1 - W')` being close to
-/// normal, for 5 to 5,000 values; `None` outside them.
-///
-/// It replaces a blend of W with skew and kurtosis penalties that was not a p-value:
-/// 2,590 prices with W' = 0.929 read p = 0.855, "normal", where the test says p < 1e-20.
+/// The p-value of the Shapiro-Francia W' computed above (squared correlation of sorted
+/// values with normal scores), by Royston's (1993) approximation for 5 to 5,000 values;
+/// `None` outside.
 fn shapiro_francia_pvalue(w: f64, n: usize) -> Option<f64> {
     if !(5..=5_000).contains(&n) {
         return None;
@@ -1532,11 +1521,8 @@ fn compute_outlier_analysis(values: &[f64], numeric_stats: &NumericStatistics) -
     analysis
 }
 
-// Correlation matrix computation
-/// Computes pairwise Pearson correlation matrix for all numeric columns.
-///
-/// Returns correlations, p-values, and sample sizes for each pair.
-/// Requires at least 2 numeric columns.
+/// Pairwise Pearson correlations of all numeric columns, with p-values and sample
+/// sizes; needs at least two numeric columns.
 pub fn compute_correlation_matrix(df: &DataFrame) -> Result<CorrelationMatrix> {
     let columns = df
         .schema()
@@ -1585,10 +1571,8 @@ fn correlation_matrix_in_bands(df: &DataFrame, band: usize) -> Result<Correlatio
     let rows = df.height();
     let band = band.clamp(1, rows.max(1));
 
-    // Each column's mean first, then a band of rows of every column at a time, less
-    // those means. Each pair's sums run on from one band to the next in row order:
-    // the same sums as one pass over whole columns, with every column converted once
-    // and no more than a band of them held.
+    // Means first, then bands of rows of every column, less those means; each pair's sums
+    // run across bands in row order, converting each column once and holding one band.
     let mut shifts = vec![Shift::default(); n];
     across_threads(
         series.iter().zip(shifts.iter_mut()).collect(),
@@ -1740,11 +1724,9 @@ impl Ranked {
     }
 }
 
-/// Spearman's ρ for every pair of `series`, with its p-values: Pearson's r of the
-/// ranks, each pair ranked over the rows where both hold a finite value, as Pearson
-/// pairs them. Where neither column misses a value the column's own ranks are the
-/// pair's, and no pair needs ranking again. Holds four bytes of rank and four of
-/// order per value, about what the sample's own values take.
+/// Spearman's ρ for every pair of `series` with p-values: Pearson's r of ranks, each
+/// pair ranked over rows where both are finite. Columns with no missing values reuse
+/// their own ranks. Holds about the sample's size in ranks and order.
 fn rank_correlation_matrix(
     series: &[&Series],
     sample_sizes: &[Vec<usize>],
@@ -1963,12 +1945,9 @@ fn compute_correlation_p_value(correlation: f64, n: usize) -> f64 {
         .clamp(0.0, 1.0)
 }
 
-/// Computes correlation statistics for a pair of columns.
-///
-/// Returns Pearson correlation coefficient, p-value, covariance, and sample size,
-/// over the rows where both columns hold a finite value. Requires at least 3 such
-/// rows. Two passes over the columns as they are, a rough mean first and then the
-/// sums about it, as the matrix's: no list of the pairs is built.
+/// Pearson r, p-value, covariance and sample size for a column pair over rows where
+/// both are finite (at least 3), in two passes (rough mean, then sums about it), as the
+/// matrix does.
 pub fn compute_correlation_pair(
     df: &DataFrame,
     col1_name: &str,

@@ -17,6 +17,11 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 ./scripts/dev/test.sh integration fuzz_corpus_test  # fast fuzz corpus replay; run if you touched a parser or matcher
 ```
 
+A `cargo build` binary needs the building machine's glibc or newer, so one built
+on a rolling distro will not start on a current LTS or in a VM. To run a build
+elsewhere, link it as the release does: `cargo zigbuild --release -p datui
+--target x86_64-unknown-linux-gnu.2.28` (see `docs/for-developers/packaging.md`).
+
 CI rejects unformatted code and any clippy warning. `pre-commit install` runs
 the same checks before each commit (`.pre-commit-config.yaml`). Never add
 `#[allow(clippy::…)]` to get past a lint; fix it.

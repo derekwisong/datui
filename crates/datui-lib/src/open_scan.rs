@@ -98,7 +98,7 @@ impl App {
     /// [`Self::footers_this_frame`], one number taken once a frame, so they cannot say
     /// two different things about one wait.
     pub(crate) fn loading_phase<'a>(&self, phase: &'a str) -> std::borrow::Cow<'a, str> {
-        match self.footers_this_frame {
+        match self.counting.footers_this_frame {
             Some((read, total)) => std::borrow::Cow::Owned(format!(
                 "Reading footers: {} of {}",
                 crate::numfmt::group_chrome(read),
@@ -158,8 +158,9 @@ impl App {
         // The meter needs no equivalent: it belongs to the dataset rather than to the
         // app, so a load that never reaches the screen never has one installed. See
         // `DataTableState::measurements`.
-        self.footer_progress.cancel();
+        self.counting.footer_progress.cancel();
         *self
+            .counting
             .pending_footers_result
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = None;
@@ -211,7 +212,7 @@ impl App {
                 }
                 #[cfg(test)]
                 {
-                    self.first_rows_asked += 1;
+                    self.counting.first_rows_asked += 1;
                 }
                 if !self.spawn_async_collect(Self::LOADING_BUFFER) {
                     // Nothing to read: the buffer already serves the view.
@@ -311,27 +312,12 @@ impl App {
             footers,
         } = loaded;
         let options = &options;
-        // A key pressed at the dataset being replaced belongs to it, not to this one.
-        self.end_when_the_footers_land = None;
-        // Its companion, for the same reason. This one keys itself to a
-        // `len_generation`, which says nothing about which dataset it belonged to, so
-        // without clearing it here an End pressed on the directory the user walked away
-        // from is still live against the one they opened next.
-        self.end_after_count = None;
+        self.counting.reset_for_dataset();
         // One per dataset that reaches the screen, rather than one per open started:
         // an open that fails leaves the last dataset up, and the pass still reading its
         // footers has to be able to finish into it.
         self.dataset_generation = self.dataset_generation.wrapping_add(1);
-        self.quality_cache.clear();
-        self.quality_samples.clear();
-        self.quality_released.clear();
-        // The objects may have changed since they were copied; a run on the dataset
-        // opened now fetches them again.
-        self.quality_copies.clear();
-        self.quality_copy_released = None;
-        self.quality_copy_unusable = None;
-        self.quality_evidence_return = None;
-        self.quality_evidence_label = None;
+        self.quality.reset_for_dataset();
         // The findings narrowed to the last dataset's columns would hide this one's.
         self.analysis_modal.data_quality_findings = quality_report::FindingsView::default();
         self.analysis_modal.data_quality_evidence_read = None;
@@ -384,8 +370,8 @@ impl App {
             .and_then(|p| home::catalog_entry_for(&shown, p));
         // The footers it still has to read are counted on the open's counter, which is
         // the dataset's now; the last dataset's pass, if any is left, stops.
-        self.footer_progress.cancel();
-        self.footer_progress = footers;
+        self.counting.footer_progress.cancel();
+        self.counting.footer_progress = footers;
         self.data_table_state = Some(state);
         // A followed file's watcher starts with its dataset and stops with it.
         if options.follow

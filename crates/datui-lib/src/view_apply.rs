@@ -390,9 +390,7 @@ impl App {
             },
             frame: state.len_generation(),
             rollback,
-            len_count_inflight: self.len_count_inflight,
-            count_after_paint: self.count_after_paint,
-            len_count_failed: self.len_count_failed,
+            counts: self.counting.markers(),
             rows: None,
         });
         if !self.spawn_async_collect(Self::APPLYING_VIEW) {

@@ -379,7 +379,7 @@ fn end_pressed_while_the_footers_are_coming_jumps_when_they_land() {
     // End, while the footers are still on their way.
     let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
     assert!(
-        app.len_count_inflight.is_none(),
+        app.counting.len_count_inflight.is_none(),
         "no second pass over the footers already being read"
     );
 
@@ -410,7 +410,7 @@ fn end_pressed_while_the_footers_are_coming_jumps_when_they_land() {
         "with nothing left saying it is counting rows that have been counted"
     );
     assert!(
-        app.end_when_the_footers_land.is_none(),
+        app.counting.end_when_the_footers_land.is_none(),
         "and the key is spent, not left waiting on the next dataset"
     );
 }
@@ -525,7 +525,7 @@ fn a_sampled_dataset_shows_an_estimate_until_it_is_counted() {
     });
     assert_eq!(total(&app), Some(Total::Estimated(120)));
     assert!(
-        app.len_count_inflight.is_none(),
+        app.counting.len_count_inflight.is_none(),
         "too many files to count unasked"
     );
 
@@ -545,7 +545,7 @@ fn a_sampled_dataset_shows_an_estimate_until_it_is_counted() {
     assert_eq!((line.counts[0].done, line.counts[0].total), (1, Some(3)));
     key(&mut app, KeyCode::Esc);
     go.send(()).unwrap();
-    pump(&mut app, &|app| app.len_count_inflight.is_none());
+    pump(&mut app, &|app| app.counting.len_count_inflight.is_none());
     assert_eq!(
         total(&app),
         Some(Total::Estimated(120)),
@@ -803,14 +803,14 @@ fn end_pressed_at_one_dataset_does_not_move_the_next() {
     app.install_for_tests(staged(), None, &OpenOptions::default(), None);
     let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
     assert!(
-        app.end_when_the_footers_land.is_some(),
+        app.counting.end_when_the_footers_land.is_some(),
         "the key is waiting on this dataset's footers"
     );
 
     // The user goes elsewhere before they land.
     app.install_for_tests(staged(), None, &OpenOptions::default(), None);
     assert!(
-        app.end_when_the_footers_land.is_none(),
+        app.counting.end_when_the_footers_land.is_none(),
         "and does not take the key with them"
     );
     assert_eq!(
@@ -917,7 +917,7 @@ fn a_staged_open_does_not_leave_a_count_running_that_never_ran() {
         "the pass brought the count with it"
     );
     assert!(
-        app.len_count_inflight.is_none(),
+        app.counting.len_count_inflight.is_none(),
         "so nothing is still counting, and the row count is a number rather than a \
          spinner for the rest of the session"
     );
@@ -1208,12 +1208,12 @@ fn end_on_a_sorted_dataset_still_reading_its_footers_waits_for_the_pass() {
 
     let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
     assert_eq!(
-        app.end_when_the_footers_land,
+        app.counting.end_when_the_footers_land,
         Some(app.dataset_generation),
         "so End waits for the pass rather than starting a count the join will orphan"
     );
     assert!(
-        app.end_after_count.is_none(),
+        app.counting.end_after_count.is_none(),
         "and nothing is left waiting on a count that will never be matched"
     );
 }
@@ -1301,7 +1301,7 @@ fn a_count_the_join_orphaned_does_not_strand_end_or_speak_for_a_later_one() {
     // End, which takes that count rather than waiting for the pass.
     let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
     assert_eq!(
-        app.end_after_count,
+        app.counting.end_after_count,
         Some(orphaned),
         "the jump is waiting on the query's own count"
     );
@@ -1312,11 +1312,11 @@ fn a_count_the_join_orphaned_does_not_strand_end_or_speak_for_a_later_one() {
         .data_table_state
         .as_ref()
         .and_then(|state| state.footers_pending())
-        .and_then(|pass| pass(&app.footer_progress));
-    App::record_footers(&app.pending_footers_result, live, found);
+        .and_then(|pass| pass(&app.counting.footer_progress));
+    App::record_footers(&app.counting.pending_footers_result, live, found);
     let _ = app.handle(&AppEvent::BackgroundFootersJoined { generation: live });
     assert!(
-        app.footers_held.is_some(),
+        app.counting.footers_held.is_some(),
         "held rather than joined, because a query is the root"
     );
 
@@ -1338,7 +1338,7 @@ fn a_count_the_join_orphaned_does_not_strand_end_or_speak_for_a_later_one() {
         file_row_groups: None,
     });
     assert_eq!(
-        app.end_after_count, None,
+        app.counting.end_after_count, None,
         "the jump is not left waiting on a generation nothing will ever match"
     );
     assert_ne!(
@@ -1403,7 +1403,7 @@ fn a_count_that_failed_for_another_frame_does_not_answer_for_this_end() {
     let live = app.data_table_state.as_ref().unwrap().len_generation();
     let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
     assert_eq!(
-        app.end_after_count,
+        app.counting.end_after_count,
         Some(live),
         "the jump is waiting on this frame's count"
     );
@@ -1415,7 +1415,7 @@ fn a_count_that_failed_for_another_frame_does_not_answer_for_this_end() {
     });
 
     assert_eq!(
-        app.end_after_count,
+        app.counting.end_after_count,
         Some(live),
         "the End is still waiting on its own count, which has not failed"
     );
@@ -1860,7 +1860,7 @@ fn a_failed_count_for_a_frame_that_is_gone_retires_its_end_quietly() {
     let (mut app, _rx) = uncounted_remote_app();
     let waiting = app.data_table_state.as_ref().unwrap().len_generation();
     let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
-    assert_eq!(app.end_after_count, Some(waiting));
+    assert_eq!(app.counting.end_after_count, Some(waiting));
     assert_eq!(
         app.status_message.as_deref(),
         Some(crate::App::COUNTING_FOR_END),
@@ -1881,7 +1881,7 @@ fn a_failed_count_for_a_frame_that_is_gone_retires_its_end_quietly() {
     });
 
     assert_eq!(
-        app.end_after_count, None,
+        app.counting.end_after_count, None,
         "the End it belonged to is retired"
     );
     let bar = control_bar(&mut app);
@@ -1981,7 +1981,7 @@ fn an_end_pressed_on_the_dataset_they_left_does_not_move_the_next_one() {
     // End on the first directory, before its count lands.
     let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
     assert_eq!(
-        app.end_after_count,
+        app.counting.end_after_count,
         Some(theirs),
         "the jump is waiting on that directory's count"
     );
@@ -1989,7 +1989,7 @@ fn an_end_pressed_on_the_dataset_they_left_does_not_move_the_next_one() {
     // And they open another one instead.
     app.install_for_tests(remote_state(500), None, &OpenOptions::default(), None);
     assert_eq!(
-        app.end_after_count, None,
+        app.counting.end_after_count, None,
         "the key they pressed in the directory they left does not come with them"
     );
 
@@ -2004,7 +2004,7 @@ fn an_end_pressed_on_the_dataset_they_left_does_not_move_the_next_one() {
     }
     let next = app.data_table_state.as_ref().unwrap().len_generation();
     assert_ne!(
-        app.end_after_count,
+        app.counting.end_after_count,
         Some(next),
         "and the directory on screen has not inherited it"
     );
@@ -2670,11 +2670,11 @@ fn a_count_answers_however_its_worker_ends() {
     let generation = state.len_generation();
     let owed = || OwedCount::new(LenCount::for_state(&state), tx.clone());
     let answer = |app: &mut App| {
-        app.len_count_inflight = Some(generation);
+        app.counting.len_count_inflight = Some(generation);
         let event = recv(&rx);
         app.event(&event);
         assert_eq!(
-            app.len_count_inflight, None,
+            app.counting.len_count_inflight, None,
             "the count is no longer waited on"
         );
         assert!(rx.try_recv().is_err(), "once");
@@ -3233,7 +3233,7 @@ fn a_count_landing_during_a_load_does_not_bump_the_generation() {
     // End on a dataset whose rows are not counted yet: the jump waits for the count.
     let waiting = app.data_table_state.as_ref().unwrap().len_generation();
     let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
-    assert_eq!(app.end_after_count, Some(waiting));
+    assert_eq!(app.counting.end_after_count, Some(waiting));
 
     // Meanwhile the user opens something else, which is waiting on this generation.
     let lease = app.hold_the_generation();
@@ -3332,10 +3332,10 @@ fn a_dataset_owed_a_re_read_does_not_print_its_partial_as_the_total() {
     ));
     let _lease = app.hold_the_generation();
     let live = app.dataset_generation;
-    App::record_footers(&app.pending_footers_result, live, None);
+    App::record_footers(&app.counting.pending_footers_result, live, None);
     let _ = app.handle(&AppEvent::BackgroundFootersJoined { generation: live });
     assert!(
-        app.reread_owed.is_some(),
+        app.counting.reread_owed.is_some(),
         "the fixture is a dataset owed a re-read it cannot have yet"
     );
 
@@ -3399,7 +3399,7 @@ fn a_query_over_a_dataset_still_reading_its_footers_is_counted() {
 
     app.spawn_async_collect(App::LOADING_BUFFER);
     assert!(
-        app.len_count_inflight.is_some(),
+        app.counting.len_count_inflight.is_some(),
         "so it is taken, rather than the row count spinning while the query is open"
     );
 }
@@ -3478,7 +3478,7 @@ fn a_pass_from_the_dataset_before_this_one_joins_nothing_to_it() {
         "the directory on screen does not gain a column from the directory before it"
     );
     assert!(
-        app.footers_held.is_none(),
+        app.counting.footers_held.is_none(),
         "and they are not kept waiting for a dataset that is gone"
     );
 }
@@ -3537,7 +3537,7 @@ fn a_pass_that_failed_waits_for_work_already_asked_for() {
 
     // The pass comes back empty-handed for the dataset on screen.
     let live = app.dataset_generation;
-    App::record_footers(&app.pending_footers_result, live, None);
+    App::record_footers(&app.counting.pending_footers_result, live, None);
     let _ = app.handle(&AppEvent::BackgroundFootersJoined { generation: live });
 
     assert_eq!(
@@ -3546,7 +3546,7 @@ fn a_pass_that_failed_waits_for_work_already_asked_for() {
         "the export is still waiting on the answer this app would have thrown away"
     );
     assert_eq!(
-        app.reread_owed,
+        app.counting.reread_owed,
         Some(live),
         "and the re-read the dataset is owed is remembered, not dropped"
     );
@@ -3563,7 +3563,7 @@ fn a_pass_that_failed_waits_for_work_already_asked_for() {
          generation — without it, it never counts itself at all"
     );
     assert!(
-        app.reread_owed.is_none(),
+        app.counting.reread_owed.is_none(),
         "and the errand is done rather than run again on every event"
     );
 }
@@ -3642,7 +3642,7 @@ fn columns_arriving_during_work_already_asked_for_wait_for_it() {
     for (what, start) in under_way {
         let lease = start(&mut app);
         let waiting_on = app.task_generation();
-        app.footers_held = Some((
+        app.counting.footers_held = Some((
             app.dataset_generation,
             FootersFound {
                 estimate: None,
@@ -3662,7 +3662,7 @@ fn columns_arriving_during_work_already_asked_for_wait_for_it() {
             "{what} is still waiting on the answer this app would have thrown away"
         );
         assert!(
-            app.footers_held.is_some(),
+            app.counting.footers_held.is_some(),
             "and the columns wait their turn behind {what}"
         );
         put_away(&mut app, lease);
@@ -3730,7 +3730,7 @@ fn columns_held_for_one_dataset_are_not_given_to_the_next() {
         .as_mut()
         .unwrap()
         .query("select doubled: id * 2".to_string());
-    app.footers_held = Some((
+    app.counting.footers_held = Some((
         app.dataset_generation,
         FootersFound {
             estimate: None,
@@ -3743,7 +3743,10 @@ fn columns_held_for_one_dataset_are_not_given_to_the_next() {
         },
     ));
     let _ = app.handle(&AppEvent::Update);
-    assert!(app.footers_held.is_some(), "waiting, as they should be");
+    assert!(
+        app.counting.footers_held.is_some(),
+        "waiting, as they should be"
+    );
 
     // And instead of clearing the query, the user opens something else.
     app.install_for_tests(state_of(second()), None, &OpenOptions::default(), None);
@@ -3755,7 +3758,7 @@ fn columns_held_for_one_dataset_are_not_given_to_the_next() {
         "the directory now on screen is not given the last one's columns"
     );
     assert!(
-        app.footers_held.is_none(),
+        app.counting.footers_held.is_none(),
         "and they are let go rather than waiting on for a third dataset"
     );
 }
@@ -3804,7 +3807,7 @@ fn a_late_event_from_an_old_pass_does_not_throw_away_the_live_answer() {
     // This dataset's own pass has finished and put its answer in the slot.
     let live = app.dataset_generation;
     App::record_footers(
-        &app.pending_footers_result,
+        &app.counting.pending_footers_result,
         live,
         Some(FootersFound {
             estimate: None,
@@ -3957,7 +3960,7 @@ fn columns_arriving_under_a_query_wait_rather_than_break_it() {
 
     // And the rest of the footers land underneath it.
     let generation = app.dataset_generation;
-    app.footers_held = Some((
+    app.counting.footers_held = Some((
         generation,
         crate::table::FootersFound {
             estimate: None,
@@ -3983,7 +3986,7 @@ fn columns_arriving_under_a_query_wait_rather_than_break_it() {
         table.error()
     );
     assert!(
-        app.footers_held.is_some(),
+        app.counting.footers_held.is_some(),
         "the columns are kept, not thrown away"
     );
 
@@ -4001,7 +4004,10 @@ fn columns_arriving_under_a_query_wait_rather_than_break_it() {
         Some("oops"),
         "the columns join once the view is back on the data"
     );
-    assert!(app.footers_held.is_none(), "with nothing left waiting");
+    assert!(
+        app.counting.footers_held.is_none(),
+        "with nothing left waiting"
+    );
 }
 
 /// A dataset that opened from two footers gets the rest, through the app.

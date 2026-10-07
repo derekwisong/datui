@@ -84,7 +84,7 @@ fn open_with_view(
     app.startup_view = Some(view.name.clone());
     let path = dir.path().join("long.csv");
     let mut next = app.event(&AppEvent::Open(vec![path], OpenOptions::default()));
-    let asked = app.first_rows_asked;
+    let asked = app.counting.first_rows_asked;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
         while let Some(event) = next.take() {
@@ -93,7 +93,7 @@ fn open_with_view(
             }
         }
         if app.data_table_state.is_some() && !app.is_busy() && !app.awaiting_dataset() {
-            return app.first_rows_asked - asked;
+            return app.counting.first_rows_asked - asked;
         }
         assert!(std::time::Instant::now() < deadline, "the open never ended");
         next = rx.recv_timeout(std::time::Duration::from_millis(50)).ok();
@@ -1103,7 +1103,7 @@ fn a_count_that_lands_while_a_query_runs_comes_back_with_the_view() {
     let state = app.data_table_state.as_mut().unwrap();
     state.invalidate_num_rows();
     let counting = state.len_generation();
-    app.len_count_inflight = Some(counting);
+    app.counting.len_count_inflight = Some(counting);
 
     app.event(&AppEvent::SqlQuery(
         "SELECT CAST(name AS INT) AS n FROM df".to_string(),
@@ -1121,7 +1121,11 @@ fn a_count_that_lands_while_a_query_runs_comes_back_with_the_view() {
     assert_eq!(state.len_generation(), counting, "the view is back");
     assert!(state.is_num_rows_valid(), "with its count");
     assert_eq!(state.num_rows(), 40);
-    assert_ne!(app.len_count_inflight, Some(counting), "not left counting");
+    assert_ne!(
+        app.counting.len_count_inflight,
+        Some(counting),
+        "not left counting"
+    );
 }
 
 /// A view whose SQL groups another way and then fails leaves the grouped view it

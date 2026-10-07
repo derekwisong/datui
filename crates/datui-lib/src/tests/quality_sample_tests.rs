@@ -83,7 +83,7 @@ fn a_copy_that_does_not_read_as_the_source_is_let_go() {
         dataset_generation: generation,
         copy: None,
     });
-    assert_eq!(app.quality_copy_unusable, Some(generation));
+    assert_eq!(app.quality.copy_unusable, Some(generation));
 }
 
 fn key(app: &mut App, code: KeyCode) -> Option<AppEvent> {

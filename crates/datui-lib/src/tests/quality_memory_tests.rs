@@ -26,8 +26,8 @@ fn a_cached_report_serves_other_expected_windows() {
         app.analysis_modal.data_quality_last_plan.as_ref(),
         Some(&expecting)
     );
-    assert_eq!(app.quality_cache.len(), 1);
-    assert_eq!(app.quality_cache[0].plan, expecting);
+    assert_eq!(app.quality.cache.len(), 1);
+    assert_eq!(app.quality.cache[0].plan, expecting);
 }
 
 /// Past the budget a report that retained rows can remake goes first, then the
@@ -77,7 +77,7 @@ fn the_budget_releases_remakeable_reports_then_the_oldest_rows() {
     let report = first_report.estimated_bytes();
     assert!(rows > 0 && report > 0);
     // Room for two samples and one report and a half.
-    app.quality_memory_budget = 2 * rows + report + report / 2;
+    app.quality.memory_budget = 2 * rows + report + report / 2;
 
     app.retain_quality_sample(&first);
     app.cache_quality_result(&first_report, plan(1));

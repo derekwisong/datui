@@ -33,7 +33,7 @@ pub fn render(
     let data_area = datatable_layout.content_area;
     let sort_area = datatable_layout.sidebar_area.unwrap_or_default();
 
-    let evidence_label = app.quality_evidence_label.clone();
+    let evidence_label = app.quality.evidence_label.clone();
     // Asked before the table is borrowed: the job records are the app's.
     let facts_reading = app.file_facts_reading();
     let facts_tab = app.info_facts_tab();

@@ -533,8 +533,8 @@ impl App {
             }
         };
         if let Some(original) = self.data_table_state.replace(view) {
-            self.quality_evidence_return = Some(Box::new(original));
-            self.quality_evidence_label = Some(label);
+            self.quality.evidence_return = Some(Box::new(original));
+            self.quality.evidence_label = Some(label);
             self.analysis_modal.active = false;
             self.forget_the_rows_read();
             self.spawn_async_collect("Loading the sample...");

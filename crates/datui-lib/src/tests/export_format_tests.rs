@@ -122,7 +122,7 @@ fn a_short_read_on_a_remote_scan_is_the_count() {
     let dataset = state.len_generation();
     app.data_table_state = Some(state);
     assert!(app.spawn_async_collect("Filtering..."));
-    assert_eq!(app.len_count_inflight, Some(dataset));
+    assert_eq!(app.counting.len_count_inflight, Some(dataset));
 
     let wait = std::time::Duration::from_secs(20);
     let first = rx.recv_timeout(wait).expect("the collect lands");
@@ -146,7 +146,7 @@ fn a_short_read_on_a_remote_scan_is_the_count() {
     app.event(&second);
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.num_rows_if_valid(), Some(50));
-    assert_eq!(app.len_count_inflight, None);
+    assert_eq!(app.counting.len_count_inflight, None);
 }
 
 #[test]
@@ -187,8 +187,8 @@ fn end_on_an_uncounted_remote_dataset_waits_for_the_count() {
     // No jump to a guess: the count starts, and nothing is busy.
     assert!(app.jump_key(Scroll::End).is_none());
     assert!(!app.is_busy());
-    assert_eq!(app.end_after_count, Some(dataset));
-    assert_eq!(app.len_count_inflight, Some(dataset));
+    assert_eq!(app.counting.end_after_count, Some(dataset));
+    assert_eq!(app.counting.len_count_inflight, Some(dataset));
     assert_eq!(app.data_table_state.as_ref().unwrap().start_row(), 0);
 
     let counted = rx
@@ -208,7 +208,7 @@ fn end_on_an_uncounted_remote_dataset_waits_for_the_count() {
         matches!(next, Some(AppEvent::Scroll(Scroll::End))),
         "the jump follows the count"
     );
-    assert_eq!(app.end_after_count, None);
+    assert_eq!(app.counting.end_after_count, None);
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.num_rows_if_valid(), Some(1_000));
 }
@@ -277,38 +277,42 @@ fn until_counted(
 fn a_local_count_waits_for_its_page_to_be_painted() {
     let (mut app, rx, dataset) = filtered_local(100_000, 50_000);
     assert!(app.spawn_async_collect("Filtering..."));
-    assert_eq!(app.len_count_inflight, Some(dataset), "a count is coming");
-    assert_eq!(app.count_after_paint, Some(dataset));
+    assert_eq!(
+        app.counting.len_count_inflight,
+        Some(dataset),
+        "a count is coming"
+    );
+    assert_eq!(app.counting.count_after_paint, Some(dataset));
     assert!(app.row_count_pending());
     // Frames painted, and the view asking again, while the page is read.
     app.frame_painted();
     assert!(app.spawn_async_collect("Filtering..."));
     app.frame_painted();
     assert!(!app.count_waits_for_a_frame());
-    assert_eq!(app.counts_spawned.get(), 0);
+    assert_eq!(app.counting.counts_spawned.get(), 0);
 
     let ready = recv(&rx);
     assert!(matches!(ready, AppEvent::JobEnded(t) if t.kind() == crate::JobKind::Rows));
     app.event(&ready);
     assert_eq!(
-        app.counts_spawned.get(),
+        app.counting.counts_spawned.get(),
         0,
         "the rows are in, not yet painted"
     );
     assert!(app.count_waits_for_a_frame());
 
     app.frame_painted();
-    assert_eq!(app.counts_spawned.get(), 1);
+    assert_eq!(app.counting.counts_spawned.get(), 1);
     // Scrolling and painting again do not start another.
     for _ in 0..3 {
         app.handle_scroll(|state| state.half_page_down());
         app.frame_painted();
     }
-    assert_eq!(app.counts_spawned.get(), 1);
+    assert_eq!(app.counting.counts_spawned.get(), 1);
     assert_eq!(until_counted(&mut app, &rx, dataset).0, 50_000);
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.num_rows_if_valid(), Some(50_000));
-    assert_eq!(app.len_count_inflight, None);
+    assert_eq!(app.counting.len_count_inflight, None);
     assert!(!app.row_count_pending());
 }
 
@@ -325,11 +329,11 @@ fn a_short_first_page_is_the_count_of_a_local_frame() {
         let state = app.data_table_state.as_ref().unwrap();
         assert_eq!(state.len_generation(), dataset);
         assert_eq!(state.num_rows_if_valid(), Some(keep as usize));
-        assert_eq!(app.count_after_paint, None);
-        assert_eq!(app.len_count_inflight, None);
+        assert_eq!(app.counting.count_after_paint, None);
+        assert_eq!(app.counting.len_count_inflight, None);
         assert!(!app.row_count_pending());
         app.frame_painted();
-        assert_eq!(app.counts_spawned.get(), 0, "{keep} rows");
+        assert_eq!(app.counting.counts_spawned.get(), 0, "{keep} rows");
     }
 }
 
@@ -351,7 +355,7 @@ fn a_page_that_fills_exactly_is_still_counted() {
     );
     assert!(app.count_waits_for_a_frame());
     app.frame_painted();
-    assert_eq!(app.counts_spawned.get(), 1);
+    assert_eq!(app.counting.counts_spawned.get(), 1);
     assert_eq!(until_counted(&mut app, &rx, dataset).0, page);
 }
 
@@ -363,18 +367,18 @@ fn end_before_the_paint_starts_the_count_and_waits_for_it() {
     let (mut app, rx, dataset) = filtered_local(100_000, 50_000);
     app.spawn_async_collect("Filtering...");
     app.event(&recv(&rx));
-    assert_eq!(app.counts_spawned.get(), 0);
+    assert_eq!(app.counting.counts_spawned.get(), 0);
 
     assert!(app.jump_key(Scroll::End).is_none());
-    assert_eq!(app.end_after_count, Some(dataset));
-    assert_eq!(app.counts_spawned.get(), 1, "started for the End");
+    assert_eq!(app.counting.end_after_count, Some(dataset));
+    assert_eq!(app.counting.counts_spawned.get(), 1, "started for the End");
     assert_eq!(app.status_message.as_deref(), Some(App::COUNTING_FOR_END));
     assert!(app.row_count_pending(), "the bar spins while it counts");
     assert_eq!(app.data_table_state.as_ref().unwrap().start_row(), 0);
     // The paint that follows, and End again, do not start a second.
     app.frame_painted();
     assert!(app.jump_key(Scroll::End).is_none());
-    assert_eq!(app.counts_spawned.get(), 1);
+    assert_eq!(app.counting.counts_spawned.get(), 1);
 
     let (rows, next) = until_counted(&mut app, &rx, dataset);
     assert_eq!(rows, 50_000);
@@ -382,7 +386,7 @@ fn end_before_the_paint_starts_the_count_and_waits_for_it() {
         matches!(next, Some(AppEvent::Scroll(Scroll::End))),
         "the jump follows"
     );
-    assert_eq!(app.end_after_count, None);
+    assert_eq!(app.counting.end_after_count, None);
 }
 
 /// A held count that End starts is marked running, whatever cleared the marker
@@ -393,12 +397,12 @@ fn a_count_end_starts_is_marked_running() {
     let (mut app, rx, dataset) = filtered_local(100_000, 50_000);
     app.spawn_async_collect("Filtering...");
     app.event(&recv(&rx));
-    app.len_count_inflight = None;
+    app.counting.len_count_inflight = None;
     assert!(app.jump_key(Scroll::End).is_none());
-    assert_eq!(app.len_count_inflight, Some(dataset));
+    assert_eq!(app.counting.len_count_inflight, Some(dataset));
     assert!(app.jump_key(Scroll::End).is_none());
     app.frame_painted();
-    assert_eq!(app.counts_spawned.get(), 1);
+    assert_eq!(app.counting.counts_spawned.get(), 1);
     assert_eq!(until_counted(&mut app, &rx, dataset).0, 50_000);
 }
 
@@ -407,22 +411,22 @@ fn a_count_end_starts_is_marked_running() {
 #[test]
 fn a_failed_count_is_retried_by_end_not_by_scrolling() {
     let (mut app, rx, dataset) = filtered_local(100_000, 50_000);
-    app.len_count_failed = Some(dataset);
+    app.counting.len_count_failed = Some(dataset);
     app.spawn_async_collect("Filtering...");
-    assert_eq!(app.len_count_inflight, None);
-    assert_eq!(app.count_after_paint, None);
+    assert_eq!(app.counting.len_count_inflight, None);
+    assert_eq!(app.counting.count_after_paint, None);
     app.event(&recv(&rx));
     app.frame_painted();
     app.handle_scroll(|state| state.half_page_down());
     app.frame_painted();
-    assert_eq!(app.counts_spawned.get(), 0);
+    assert_eq!(app.counting.counts_spawned.get(), 0);
     assert!(!app.row_count_pending());
 
     assert!(app.jump_key(Scroll::End).is_none());
-    assert_eq!(app.counts_spawned.get(), 1);
+    assert_eq!(app.counting.counts_spawned.get(), 1);
     let (rows, _) = until_counted(&mut app, &rx, dataset);
     assert_eq!(rows, 50_000);
-    assert_eq!(app.len_count_failed, None);
+    assert_eq!(app.counting.len_count_failed, None);
 }
 
 /// A page that fails to read takes the count waiting on it down with it, marked
@@ -452,15 +456,15 @@ fn a_page_that_fails_fails_the_count_waiting_on_it() {
     app.data_table_state = Some(state);
 
     app.spawn_async_collect(App::LOADING_BUFFER);
-    assert_eq!(app.count_after_paint, Some(dataset));
+    assert_eq!(app.counting.count_after_paint, Some(dataset));
     let failed = recv(&rx);
     assert!(matches!(failed, AppEvent::JobEnded(t) if t.kind() == crate::JobKind::Rows));
     app.event(&failed);
-    assert_eq!(app.count_after_paint, None);
-    assert_eq!(app.len_count_inflight, None);
-    assert_eq!(app.len_count_failed, Some(dataset));
+    assert_eq!(app.counting.count_after_paint, None);
+    assert_eq!(app.counting.len_count_inflight, None);
+    assert_eq!(app.counting.len_count_failed, Some(dataset));
     app.frame_painted();
-    assert_eq!(app.counts_spawned.get(), 0);
+    assert_eq!(app.counting.counts_spawned.get(), 0);
 }
 
 /// A page whose worker dies takes the count waiting on it down too, as a page that
@@ -470,19 +474,19 @@ fn a_page_whose_worker_dies_fails_the_count_waiting_on_it() {
     let (mut app, rx, dataset) = filtered_local(100_000, 50_000);
     app.jobs.worker_dies = crate::tests::worker_dies_once(|job| matches!(job, Job::Rows(_)));
     app.spawn_async_collect(App::LOADING_BUFFER);
-    assert_eq!(app.count_after_paint, Some(dataset));
+    assert_eq!(app.counting.count_after_paint, Some(dataset));
     let died = recv(&rx);
     assert!(matches!(
         died,
         AppEvent::JobEnded(t) if t.kind() == crate::JobKind::Rows
     ));
     app.event(&died);
-    assert_eq!(app.count_after_paint, None);
-    assert_eq!(app.len_count_inflight, None);
-    assert_eq!(app.len_count_failed, Some(dataset));
+    assert_eq!(app.counting.count_after_paint, None);
+    assert_eq!(app.counting.len_count_inflight, None);
+    assert_eq!(app.counting.len_count_failed, Some(dataset));
     assert!(!app.count_waits_for_a_frame());
     app.frame_painted();
-    assert_eq!(app.counts_spawned.get(), 0);
+    assert_eq!(app.counting.counts_spawned.get(), 0);
 }
 
 /// A count waiting on a paint for a frame the view has left is never started:
@@ -492,7 +496,7 @@ fn a_count_for_a_replaced_frame_never_starts() {
     use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
     let (mut app, rx, first) = filtered_local(100_000, 50_000);
     app.spawn_async_collect("Filtering...");
-    assert_eq!(app.count_after_paint, Some(first));
+    assert_eq!(app.counting.count_after_paint, Some(first));
     app.event(&AppEvent::Filter(vec![FilterStatement {
         columns: Vec::new(),
         column: "a".to_string(),
@@ -502,14 +506,14 @@ fn a_count_for_a_replaced_frame_never_starts() {
     }]));
     let second = app.data_table_state.as_ref().unwrap().len_generation();
     assert_ne!(second, first);
-    assert_eq!(app.count_after_paint, Some(second));
-    assert_eq!(app.len_count_inflight, Some(second));
+    assert_eq!(app.counting.count_after_paint, Some(second));
+    assert_eq!(app.counting.len_count_inflight, Some(second));
     while !app.count_waits_for_a_frame() {
         let event = recv(&rx);
         app.event(&event);
     }
     app.frame_painted();
-    assert_eq!(app.counts_spawned.get(), 1);
+    assert_eq!(app.counting.counts_spawned.get(), 1);
     assert_eq!(until_counted(&mut app, &rx, second).0, 40_000);
 
     // Another dataset put on screen retires a count still waiting on the last.
@@ -521,11 +525,11 @@ fn a_count_for_a_replaced_frame_never_starts() {
     )
     .unwrap();
     app.install_for_tests(other, None, &opts(), None);
-    assert_ne!(app.count_after_paint, Some(dataset));
-    assert_ne!(app.len_count_inflight, Some(dataset));
+    assert_ne!(app.counting.count_after_paint, Some(dataset));
+    assert_ne!(app.counting.len_count_inflight, Some(dataset));
     app.frame_painted();
     assert_eq!(
-        app.counts_spawned.get(),
+        app.counting.counts_spawned.get(),
         0,
         "the old dataset is not counted"
     );
@@ -554,8 +558,12 @@ fn a_footer_count_starts_with_the_page() {
     app.data_table_state = Some(state);
 
     app.spawn_async_collect(App::LOADING_BUFFER);
-    assert_eq!(app.counts_spawned.get(), 1, "started beside the page");
-    assert_eq!(app.count_after_paint, None);
+    assert_eq!(
+        app.counting.counts_spawned.get(),
+        1,
+        "started beside the page"
+    );
+    assert_eq!(app.counting.count_after_paint, None);
     assert_eq!(until_counted(&mut app, &rx, dataset).0, 700);
 }
 

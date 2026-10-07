@@ -125,7 +125,7 @@ impl App {
         let pending = self.row_count_pending();
         let unknown = !pending
             && !state.is_num_rows_valid()
-            && self.len_count_failed == Some(state.len_generation());
+            && self.counting.len_count_failed == Some(state.len_generation());
         // A pipe still being read, or a sample still being drawn: what is here is
         // a part of what is coming.
         let arriving = state
@@ -325,7 +325,7 @@ impl App {
                 let phase = self.loading_phase(phase);
                 // A flat percentage beside a real count reads as the count's.
                 let counting =
-                    self.footers_this_frame.is_some() || self.listed_this_frame.is_some();
+                    self.counting.footers_this_frame.is_some() || self.listed_this_frame.is_some();
                 if percent > 0 && !counting {
                     Some(format!("{phase}... ({percent}%)"))
                 } else {
@@ -457,6 +457,7 @@ impl App {
             });
         }
         if let Some((read, total)) = self
+            .counting
             .footers_this_frame
             .filter(|_| self.dataset_is_still_reading_its_footers())
         {

@@ -50,9 +50,7 @@ impl App {
         if let Some(state) = self.data_table_state.as_mut() {
             state.roll_back(run.rollback);
         }
-        self.len_count_inflight = run.len_count_inflight;
-        self.count_after_paint = run.count_after_paint;
-        self.len_count_failed = run.len_count_failed;
+        self.counting.restore(run.counts);
         if let RunOrigin::View { previous, .. } = &run.origin {
             self.active_view_id = previous.clone();
         }
@@ -227,9 +225,7 @@ impl App {
             origin: RunOrigin::Query(mode),
             frame: state.len_generation(),
             rollback,
-            len_count_inflight: self.len_count_inflight,
-            count_after_paint: self.count_after_paint,
-            len_count_failed: self.len_count_failed,
+            counts: self.counting.markers(),
             rows,
         });
         if !self.spawn_async_collect(status) {

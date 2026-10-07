@@ -459,18 +459,18 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<Hint> {
     if modal.computing.is_some() {
         return vec![dq_as("Report", "Esc", "Cancel")];
     }
-    if modal.data_quality_show_access {
+    if modal.quality.show_access {
         return vec![dq("Popups", "Enter"), dq_as("Popups", "Esc", "Close")];
     }
-    if modal.data_quality_evidence_read.is_some() {
+    if modal.quality.evidence_read.is_some() {
         return vec![
             dq_as("Popups", "Enter", "Read"),
             dq_as("Popups", "Esc", "Cancel"),
         ];
     }
-    if modal.data_quality_observation_detail {
+    if modal.quality.observation_detail {
         let enter = if modal.quality_selected_is_clean() {
-            if modal.data_quality_checks_expanded {
+            if modal.quality.checks_expanded {
                 "Fewer checks"
             } else {
                 "All checks"
@@ -479,7 +479,7 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<Hint> {
             // Enter shows the rows the run kept, asks to read rows it did not keep,
             // and otherwise only closes the popup; the chip says which.
             let rows = modal.selected_finding().and_then(|(_, finding)| {
-                let results = modal.data_quality_results.as_ref()?;
+                let results = modal.quality.results.as_ref()?;
                 let rows = finding.evidence(results).ok()?;
                 Some(
                     !matches!(rows, crate::quality_report::EvidenceRows::Files(_))
@@ -493,13 +493,13 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<Hint> {
             }
         };
         let mut keys = vec![dq_as("Popups", "Enter", enter)];
-        if modal.data_quality_detail_scroll.max > 0 {
+        if modal.quality.detail_scroll.max > 0 {
             keys.push(dq("Popups", "↑ / ↓"));
         }
         keys.push(dq("Popups", "Esc"));
         return keys;
     }
-    if modal.data_quality_picker.is_some() {
+    if modal.quality.picker.is_some() {
         return vec![
             dq_as("Popups", "Enter", "Choose"),
             dq_as("Popups", "↑ / ↓", "Move"),
@@ -518,10 +518,10 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<Hint> {
             dq_as("Setup lists", "Esc", "Cancel"),
         ]
     };
-    if modal.data_quality_page == QualityPage::TimeRoles {
+    if modal.quality.page == QualityPage::TimeRoles {
         return [lists("Role", Some("Column")), done()].concat();
     }
-    if let Some(form) = modal.data_quality_export.as_ref() {
+    if let Some(form) = modal.quality.export.as_ref() {
         let mut keys = vec![dq_as("Forms", "Enter", "Export"), dq("Forms", "Tab")];
         if form.on_format {
             keys.push(dq_as("Forms", "← / →", "Format"));
@@ -529,10 +529,11 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<Hint> {
         keys.push(dq("Forms", "Esc"));
         return keys;
     }
-    if modal.data_quality_page == QualityPage::ExpectedWindows {
+    if modal.quality.page == QualityPage::ExpectedWindows {
         let mut keys = vec![dq("Setup lists", "Enter")];
         if modal
-            .data_quality_expected_form
+            .quality
+            .expected_form
             .as_ref()
             .is_some_and(|form| !form.typing())
         {
@@ -546,7 +547,7 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<Hint> {
     }
     // The intent form over the list owns the keys: the rows, and what the focused
     // one takes.
-    if let Some(form) = modal.data_quality_intent_form.as_ref() {
+    if let Some(form) = modal.quality.intent_form.as_ref() {
         use crate::intent_modal::IntentField;
         let mut keys = vec![dq("Forms", "Enter"), dq("Forms", "Tab")];
         match form.field {
@@ -559,7 +560,7 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<Hint> {
         keys.push(dq("Forms", "Esc"));
         return keys;
     }
-    if modal.data_quality_page == QualityPage::Intent {
+    if modal.quality.page == QualityPage::Intent {
         return [
             vec![
                 dq_as("Setup lists", "Space", "Declare"),
@@ -570,9 +571,9 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<Hint> {
         ]
         .concat();
     }
-    if modal.data_quality_page == QualityPage::IntervalPairs {
+    if modal.quality.page == QualityPage::IntervalPairs {
         let mut keys = Vec::new();
-        if !modal.data_quality_plan.candidate_pairs().is_empty() {
+        if !modal.quality.plan.candidate_pairs().is_empty() {
             keys.push(dq("Setup lists", "Space"));
             keys.extend(lists("Pair", None));
         }
@@ -590,15 +591,15 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<Hint> {
             dq_as("Report", "Esc", "Close"),
         ];
     }
-    if modal.data_quality_page == QualityPage::Setup {
+    if modal.quality.page == QualityPage::Setup {
         return setup_control_keys(app);
     }
     // One shape on every page: what this page is for, then the keys every page
     // shares in one order (Setup first: the plan is what a report is read
     // against), then the rest of this page's, Tab, and the way out last. The
     // footer keeps the first three with Esc; the tabs on screen name the pages.
-    let page = modal.data_quality_page;
-    let results = modal.data_quality_results.as_ref();
+    let page = modal.quality.page;
+    let results = modal.quality.results.as_ref();
     // Column and metric pick what the segments show; with nothing split they would
     // change nothing, so they are not offered.
     let measured = modal.quality_result_plan();
@@ -620,11 +621,7 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<Hint> {
             dq("Report", "Enter"),
             dq_as("Report", "c", "Column"),
             dq_as("Report", "t", "Type"),
-            dq_as(
-                "Report",
-                "o",
-                modal.data_quality_findings.order.next().chip(),
-            ),
+            dq_as("Report", "o", modal.quality.findings.order.next().chip()),
         ]),
         QualityPage::Columns if results.is_some() => own.push(dq_as("Report", "Enter", "Inspect")),
         QualityPage::Detail => own.push(dq_as("Report", "Enter", "Columns")),
@@ -633,7 +630,7 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<Hint> {
             dq_as(
                 "Segments",
                 "o",
-                if modal.data_quality_segments_by_change {
+                if modal.quality.segments_by_change {
                     "In order"
                 } else {
                     "By change"
@@ -669,7 +666,7 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<Hint> {
     let mut own = own.into_iter();
     // A narrowed list is the first thing Esc undoes; a drill-in goes back to its
     // page, and a page to the tools.
-    let narrowed = page == QualityPage::Overview && modal.data_quality_findings.narrowed();
+    let narrowed = page == QualityPage::Overview && modal.quality.findings.narrowed();
     let top = matches!(
         page,
         QualityPage::Overview
@@ -702,7 +699,7 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<Hint> {
 /// segments came out thin or unsampled; the gaps, where windows are expected.
 fn trend_keys(modal: &crate::analysis_modal::AnalysisModal) -> Vec<Hint> {
     let mut keys = Vec::new();
-    let Some(results) = modal.data_quality_results.as_ref() else {
+    let Some(results) = modal.quality.results.as_ref() else {
         return keys;
     };
     let plan = modal.quality_result_plan();
@@ -732,7 +729,7 @@ fn setup_control_keys(app: &crate::App) -> Vec<Hint> {
         keys.push(key("Enter"));
     }
     let row = modal.setup_row();
-    let choices = !modal.data_quality_plan.interval_pairs().is_empty();
+    let choices = !modal.quality.plan.interval_pairs().is_empty();
     match row {
         SetupRow::Sample => keys.push(say("Space", "Sample")),
         SetupRow::TextAsTime => keys.push(say("Space", "Choose")),
@@ -740,13 +737,13 @@ fn setup_control_keys(app: &crate::App) -> Vec<Hint> {
             keys.push(say("Space", "Time roles"));
         }
         SetupRow::TimeRoles => {}
-        SetupRow::Intervals if !modal.data_quality_plan.candidate_pairs().is_empty() => {
+        SetupRow::Intervals if !modal.quality.plan.candidate_pairs().is_empty() => {
             keys.push(say("Space", "Intervals"));
         }
         SetupRow::Intervals => {}
         SetupRow::Expected
             if matches!(
-                modal.data_quality_plan.grain,
+                modal.quality.plan.grain,
                 crate::data_quality::QualityGrain::TimeWindows { .. }
             ) =>
         {
@@ -755,7 +752,7 @@ fn setup_control_keys(app: &crate::App) -> Vec<Hint> {
         SetupRow::Expected => {}
         SetupRow::Intent => keys.push(say("Space", "Intent")),
         SetupRow::Latency if !choices => {}
-        SetupRow::WindowBy if !modal.data_quality_plan.windows_intervals() => {}
+        SetupRow::WindowBy if !modal.quality.plan.windows_intervals() => {}
         SetupRow::Grain
         | SetupRow::Compare
         | SetupRow::Values
@@ -1033,7 +1030,7 @@ mod tests {
             QualityPage::Intervals,
             QualityPage::IntervalDetail,
         ] {
-            app.analysis_modal.data_quality_page = page;
+            app.analysis_modal.quality.page = page;
             let keys = super::analysis_control_keys(&app);
             assert!(
                 keys.iter().any(|hint| hint.key == "Esc"),

@@ -42,7 +42,7 @@ impl App {
         // name other rows.
         if event.code == KeyCode::Char('v')
             && self.analysis_modal.sample_key_opens_form()
-            && !(quality && self.analysis_modal.data_quality_page.is_setup())
+            && !(quality && self.analysis_modal.quality.page.is_setup())
         {
             return self.read_sample_view();
         }
@@ -172,12 +172,12 @@ impl App {
                                 // The plan's rows are the shared sample's, whatever
                                 // the last plan here read.
                                 // A draft staged in Setup stays as it is.
-                                let draft = self.analysis_modal.data_quality_setup_before.is_some();
+                                let draft = self.analysis_modal.quality.setup_before.is_some();
                                 if !draft {
                                     self.sync_quality_plan();
                                 }
                                 (!draft && self.restore_cached_quality())
-                                    || self.analysis_modal.data_quality_results.is_some()
+                                    || self.analysis_modal.quality.results.is_some()
                             }
                             None => true,
                         };

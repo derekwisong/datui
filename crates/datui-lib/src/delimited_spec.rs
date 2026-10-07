@@ -254,22 +254,8 @@ impl Delimited {
         if let Some(rows) = &self.header_rows
             && let Some(unit) = rows.unit
         {
-            let mut pieces: Vec<Vec<String>> = Vec::new();
-            for &row in &rows.name {
-                for (i, field) in
-                    crate::csv_dialect::header_fields(line(row), row, separator, comment)
-                        .into_iter()
-                        .enumerate()
-                {
-                    if pieces.len() <= i {
-                        pieces.resize_with(i + 1, Vec::new);
-                    }
-                    if !field.is_empty() {
-                        pieces[i].push(field);
-                    }
-                }
-            }
-            let names: Vec<String> = pieces.into_iter().map(|p| p.join(join)).collect();
+            let names =
+                crate::csv_dialect::names_of(lines, wanted, &rows.name, join, separator, comment);
             let raw: Vec<PlSmallStr> = (1..=names.len())
                 .map(|i| format!("column_{i}").into())
                 .collect();

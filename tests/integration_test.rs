@@ -473,9 +473,7 @@ fn test_chart_crosshair_keys_and_click() {
     let draw = |app: &mut App| {
         let mut buf = Buffer::empty(area);
         Widget::render(&mut *app, area, &mut buf);
-        (0..area.height)
-            .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol()).collect())
-            .collect::<Vec<String>>()
+        common::buffer_lines(&buf)
     };
     let press = |app: &mut App, code: KeyCode| {
         app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
@@ -5554,13 +5552,7 @@ fn an_empty_scope_is_never_a_clean_report() {
             .show_quality_tab(datui::data_quality::QualityPage::Columns);
         let mut buffer = Buffer::empty(area);
         app.render(area, &mut buffer);
-        let lines = (0..area.height)
-            .map(|y| {
-                (0..area.width)
-                    .map(|x| buffer[(x, y)].symbol())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>();
+        let lines = common::buffer_lines(&buffer);
         let check = datui::glyphs::get().check;
         for column in ["id", "name", "value", "date"] {
             let line = lines
@@ -8080,13 +8072,7 @@ fn test_the_control_bar_counts_the_footers_the_loading_screen_does() {
     let area = Rect::new(0, 0, 100, 24);
     let mut buf = ratatui::buffer::Buffer::empty(area);
     app.render(area, &mut buf);
-    let rows: Vec<String> = (0..area.height)
-        .map(|y| {
-            (0..area.width)
-                .map(|x| buf[(x, y)].symbol().to_string())
-                .collect()
-        })
-        .collect();
+    let rows: Vec<String> = common::buffer_lines(&buf);
 
     let body = rows.iter().find(|r| r.contains("Reading footers"));
     assert!(body.is_some(), "the body counts them:\n{}", rows.join("\n"));
@@ -8119,13 +8105,7 @@ fn test_the_control_bar_counts_a_listing_without_a_percentage() {
     let area = Rect::new(0, 0, 100, 24);
     let mut buf = ratatui::buffer::Buffer::empty(area);
     app.render(area, &mut buf);
-    let rows: Vec<String> = (0..area.height)
-        .map(|y| {
-            (0..area.width)
-                .map(|x| buf[(x, y)].symbol().to_string())
-                .collect()
-        })
-        .collect();
+    let rows: Vec<String> = common::buffer_lines(&buf);
     assert!(
         rows.iter().any(|r| r.contains("Listing files: 1,500")),
         "the body counts them:\n{}",
@@ -8268,13 +8248,7 @@ fn test_one_frame_says_one_number_while_the_footers_are_still_arriving() {
     for frame in 0..200 {
         let mut buf = ratatui::buffer::Buffer::empty(area);
         app.render(area, &mut buf);
-        let rows: Vec<String> = (0..area.height)
-            .map(|y| {
-                (0..area.width)
-                    .map(|x| buf[(x, y)].symbol().to_string())
-                    .collect()
-            })
-            .collect();
+        let rows: Vec<String> = common::buffer_lines(&buf);
         let body = rows
             .iter()
             .find(|r| r.contains("Reading footers"))
@@ -10136,13 +10110,7 @@ fn test_the_export_options_panel_reads_as_one_for_every_format() {
 
         let mut buf = Buffer::empty(area);
         app.render(area, &mut buf);
-        let rows: Vec<String> = (0..area.height)
-            .map(|y| {
-                (0..area.width)
-                    .map(|x| buf[(x, y)].symbol().to_string())
-                    .collect::<String>()
-            })
-            .collect();
+        let rows: Vec<String> = common::buffer_lines(&buf);
         match rows.iter().position(|r| r.contains("Source file:")) {
             None => wrong.push(format!("{format:?}: no Source file row at all")),
             Some(checkbox) if !rows[checkbox - 1].contains(last_of_its_own) => wrong.push(format!(
@@ -11435,14 +11403,7 @@ fn test_remote_listing_shows_progress_until_it_arrives() {
     let screen = |app: &mut App| {
         let mut buf = Buffer::empty(area);
         app.render(area, &mut buf);
-        (0..area.height)
-            .map(|y| {
-                (0..area.width)
-                    .map(|x| buf[(x, y)].symbol())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        common::buffer_text(&buf)
     };
 
     let waiting = screen(&mut app);
@@ -13284,13 +13245,7 @@ fn test_an_aggregation_counts_an_absent_column_as_null() {
 
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
-    let rows: Vec<String> = (0..area.height)
-        .map(|y| {
-            (0..area.width)
-                .map(|x| buf[(x, y)].symbol())
-                .collect::<String>()
-        })
-        .collect();
+    let rows: Vec<String> = common::buffer_lines(&buf);
 
     // That the Describe table is the thing on screen, before reading figures off it.
     // Without this the fallback is the data table, whose header also begins with a
@@ -14397,14 +14352,7 @@ fn test_a_delta_table_is_labelled_and_not_opened_as_one_table() {
     let screen = |app: &mut App| {
         let mut buf = Buffer::empty(area);
         app.render(area, &mut buf);
-        (0..area.height)
-            .map(|y| {
-                (0..area.width)
-                    .map(|x| buf[(x, y)].symbol())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        common::buffer_text(&buf)
     };
     let listing = screen(&mut app);
     assert!(
@@ -14497,14 +14445,7 @@ fn test_a_directory_of_lake_tables_does_not_say_there_is_nothing_here() {
     let area = Rect::new(0, 0, 120, 24);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
-    let screen: String = (0..area.height)
-        .map(|y| {
-            (0..area.width)
-                .map(|x| buf[(x, y)].symbol())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let screen: String = common::buffer_text(&buf);
 
     assert!(screen.contains("orders"), "the tables are listed: {screen}");
     assert!(
@@ -14612,14 +14553,7 @@ fn test_a_sampled_column_count_is_marked_on_screen() {
     let area = Rect::new(0, 0, 160, 24);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
-    let screen: String = (0..area.height)
-        .map(|y| {
-            (0..area.width)
-                .map(|x| buf[(x, y)].symbol())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let screen: String = common::buffer_text(&buf);
 
     assert!(
         screen.contains("39+"),
@@ -16432,14 +16366,7 @@ fn test_the_pane_only_promises_a_door_that_exists() {
         // The pane wraps and pads, so a sentence spans rows with a border and a run of
         // spaces in the middle. Flattened to single spaces so the text can be looked
         // for as it reads.
-        let raw = (0..area.height)
-            .map(|y| {
-                (0..area.width)
-                    .map(|x| buf[(x, y)].symbol())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
+        let raw = common::buffer_lines(&buf).join(" ");
         // `|` is the border in the ASCII glyph set.
         raw.replace(['│', '|'], " ")
             .split_whitespace()
@@ -18908,13 +18835,7 @@ fn test_sort_filter_sidebar_is_one_surface() {
     let area = Rect::new(0, 0, 100, 28);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
-    let rows: Vec<String> = (0..area.height)
-        .map(|y| {
-            (0..area.width)
-                .map(|x| buf[(x, y)].symbol().to_string())
-                .collect::<String>()
-        })
-        .collect();
+    let rows: Vec<String> = common::buffer_lines(&buf);
 
     assert!(rows.iter().any(|r| r.contains("Sort & Filter")));
     let frames = common::frame_bottoms(&rows);
@@ -19113,9 +19034,7 @@ fn export_format_steps_along_its_row() {
         let area = Rect::new(0, 0, 100, 24);
         let mut buf = Buffer::empty(area);
         app.render(area, &mut buf);
-        let rows: Vec<String> = (0..area.height)
-            .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol()).collect())
-            .collect();
+        let rows: Vec<String> = common::buffer_lines(&buf);
         let at = rows
             .iter()
             .position(|r| r.contains("Format:"))
@@ -19353,13 +19272,7 @@ fn test_export_modal_is_one_surface() {
     let area = Rect::new(0, 0, 80, 24);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
-    let rows: Vec<String> = (0..area.height)
-        .map(|y| {
-            (0..area.width)
-                .map(|x| buf[(x, y)].symbol().to_string())
-                .collect::<String>()
-        })
-        .collect();
+    let rows: Vec<String> = common::buffer_lines(&buf);
 
     assert!(
         rows.iter().any(|r| r.contains("Export Data")),
@@ -20731,14 +20644,7 @@ fn draw_inspector(app: &mut App) -> String {
     let area = Rect::new(0, 0, 100, 30);
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
-    (0..area.height)
-        .map(|y| {
-            (0..area.width)
-                .map(|x| buffer[(x, y)].symbol().to_string())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    common::buffer_text(&buffer)
 }
 
 fn inspected_field(app: &App) -> String {
@@ -21841,14 +21747,7 @@ fn draw_wide(app: &mut App, what: &str) -> String {
     let area = Rect::new(0, 0, 300, 30);
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
-    let screen = (0..area.height)
-        .map(|y| {
-            (0..area.width)
-                .map(|x| buffer[(x, y)].symbol().to_string())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let screen = common::buffer_text(&buffer);
     assert_eq!(app.error_message(), None, "{what}:\n{screen}");
     screen
 }

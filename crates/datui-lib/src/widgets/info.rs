@@ -2179,14 +2179,7 @@ mod tests {
                 &theme,
             );
             panel.render_schema_summary(area, &mut buf);
-            (0..area.height)
-                .map(|y| {
-                    (0..area.width)
-                        .map(|x| buf[(x, y)].symbol().to_string())
-                        .collect::<String>()
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
+            crate::tests::buffer_text(&buf)
         };
 
         let uncounted = painted(&state);
@@ -2249,14 +2242,7 @@ mod tests {
             &theme,
         );
         (&mut panel).render(area, &mut buf);
-        let text = (0..area.height)
-            .map(|y| {
-                (0..area.width)
-                    .map(|x| buf[(x, y)].symbol().to_string())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+        let text = crate::tests::buffer_text(&buf);
         assert!(
             text.contains("below"),
             "the hidden columns are counted: {text}"
@@ -2304,14 +2290,7 @@ mod tests {
             );
             panel.header_toggle = header_toggle;
             (&mut panel).render(area, &mut buf);
-            (0..area.height)
-                .map(|y| {
-                    (0..area.width)
-                        .map(|x| buf[(x, y)].symbol().to_string())
-                        .collect::<String>()
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
+            crate::tests::buffer_text(&buf)
         };
         let shown = footer(true, InfoTab::Schema);
         assert!(shown.contains("Header"), "{shown}");
@@ -2387,13 +2366,7 @@ mod tests {
                 &theme,
             )
             .render_resources_tab(area, &mut buf);
-            (0..area.height)
-                .map(|y| {
-                    (0..area.width)
-                        .map(|x| buf[(x, y)].symbol())
-                        .collect::<String>()
-                })
-                .collect::<Vec<_>>()
+            crate::tests::buffer_lines(&buf)
         };
         let lines = painted(Some(crate::ReadMode::InMemory));
         assert!(
@@ -2458,14 +2431,7 @@ mod tests {
                 &theme,
             );
             panel.render_resources_tab(area, &mut buf);
-            (0..area.height)
-                .map(|y| {
-                    (0..area.width)
-                        .map(|x| buf[(x, y)].symbol().to_string())
-                        .collect::<String>()
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
+            crate::tests::buffer_text(&buf)
         };
 
         // Nothing measured: no heading, and above all no row of zeroes standing in for
@@ -2654,13 +2620,7 @@ mod tests {
                 &theme,
             );
             (&mut panel).render(area, &mut buf);
-            (0..area.height)
-                .map(|y| {
-                    (0..area.width)
-                        .map(|x| buf[(x, y)].symbol().to_string())
-                        .collect::<String>()
-                })
-                .collect::<Vec<_>>()
+            crate::tests::buffer_lines(&buf)
         };
         let middot = crate::glyphs::get().middot;
         let text = paint(vec!["GSV 9".into(), "sentences".into()]);
@@ -2728,13 +2688,7 @@ mod tests {
             &theme,
         );
         (&mut panel).render(area, &mut buf);
-        let text: Vec<String> = (0..area.height)
-            .map(|y| {
-                (0..area.width)
-                    .map(|x| buf[(x, y)].symbol().to_string())
-                    .collect()
-            })
-            .collect();
+        let text: Vec<String> = crate::tests::buffer_lines(&buf);
         let has = |needle: &str| text.iter().any(|row| row.contains(needle));
         assert!(has("VCD") && !has("Format"), "{text:#?}");
         assert!(has("Version: Icarus"), "{text:#?}");
@@ -2786,13 +2740,7 @@ mod tests {
                 &theme,
             );
             (&mut panel).render(area, &mut buf);
-            let text: Vec<String> = (0..area.height)
-                .map(|y| {
-                    (0..area.width)
-                        .map(|x| buf[(x, y)].symbol().to_string())
-                        .collect()
-                })
-                .collect();
+            let text: Vec<String> = crate::tests::buffer_lines(&buf);
             (buf, text)
         };
         let find = |text: &[String], needle: &str| {

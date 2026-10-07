@@ -527,9 +527,7 @@ fn other_is_the_legends_last_entry() {
         },
         crate::glyphs::unicode(),
     );
-    let rows: Vec<String> = (0..area.height)
-        .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol()).collect())
-        .collect();
+    let rows: Vec<String> = crate::tests::buffer_lines(&buf);
     let at = |name: &str| {
         rows.iter()
             .position(|r| r.contains(&format!("█ {name}")))
@@ -905,14 +903,7 @@ fn plot_text_with(
         .expect("default theme colors must resolve");
     let mut buf = Buffer::empty(area);
     render_plot(area, &mut buf, modal, &theme, ctx, data, g);
-    (0..area.height)
-        .map(|y| {
-            (0..area.width)
-                .map(|x| buf[(x, y)].symbol())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    crate::tests::buffer_text(&buf)
 }
 
 /// At 40, 60 and 80 columns, in both glyph sets, every plot's x labels stand a

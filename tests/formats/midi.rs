@@ -59,14 +59,7 @@ fn screen(app: &mut App) -> String {
     let area = Rect::new(0, 0, 120, 30);
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
-    (0..area.height)
-        .map(|y| {
-            (0..area.width)
-                .map(|x| buffer[(x, y)].symbol())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    common::buffer_text(&buffer)
 }
 
 /// The MIDI tab of the dataset on screen.

@@ -196,9 +196,7 @@ fn the_views_surface_saves_applies_and_deletes() {
     let area = Rect::new(0, 0, 100, 30);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
-    let rows: Vec<String> = (0..area.height)
-        .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol()).collect())
-        .collect();
+    let rows: Vec<String> = common::buffer_lines(&buf);
     assert!(
         rows.iter().any(|r| r.contains("^J") && r.contains("Save")),
         "the footer names the chord that saves from the description"

@@ -5,7 +5,7 @@ use polars::prelude::{DataFrame, LazyFrame, col};
 use std::collections::HashMap;
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, mpsc::Sender};
+use std::sync::{Arc, mpsc::Sender};
 use widgets::info::{FileFacts, InfoModal};
 
 use ratatui::style::{Color, Style};

@@ -1,6 +1,7 @@
 use crate::table::DataTableState;
 use crate::*;
 use polars::prelude::{IntoLazy, ParquetWriter};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 

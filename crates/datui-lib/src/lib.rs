@@ -268,9 +268,6 @@ pub(crate) const UNSUPPORTED: &str =
 pub use cli::{CompressionFormat, FileFormat, ReadMode, RemoteRead, Stored, Summary};
 
 #[cfg(test)]
-mod text_input_flows;
-
-#[cfg(test)]
 pub mod tests;
 
 pub enum AppEvent {

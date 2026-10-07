@@ -442,7 +442,6 @@ impl OpenOptions {
 
 impl From<&cli::Args> for OpenOptions {
     fn from(args: &cli::Args) -> Self {
-        // Use default config if creating from args alone
         let config = AppConfig::default();
         Self::from_args_and_config(args, &config)
     }

@@ -1228,11 +1228,9 @@ impl DataTable {
         }
 
         let number = |row_idx: usize| params.numbers.get(row_idx).copied().unwrap_or_default();
-        // Calculate width needed for largest row number
         let max_row_num = (0..rows_to_render).map(number).max().unwrap_or_default();
         let max_width = max_row_num.to_string().len();
 
-        // Render row numbers
         for row_idx in 0..rows_to_render.min(area.height.saturating_sub(header_h) as usize) {
             let row_num_text = number(row_idx).to_string();
 

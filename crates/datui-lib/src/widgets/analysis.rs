@@ -163,7 +163,6 @@ impl<'a> AnalysisWidget<'a> {
             .style(header_row_style)
             .render(layout[0], buf);
 
-        // Split main area into content area and sidebar
         let main_layout = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
@@ -261,7 +260,6 @@ impl<'a> AnalysisWidget<'a> {
     }
 
     fn render_distribution_detail(self, area: Rect, buf: &mut Buffer) {
-        // Get selected distribution
         let selected_idx = self.distribution_table_state.selected();
         let dist_analysis: Option<&DistributionAnalysis> = self.results.and_then(|results| {
             selected_idx.and_then(|idx| results.distribution_analyses.get(idx))
@@ -319,7 +317,6 @@ impl<'a> AnalysisWidget<'a> {
                 ])
                 .split(content_layout[0]);
 
-            // Add padding around chart areas for better visual separation
             let chart_padding = 1u16; // 1 character padding on all sides
             let right_padding_extra = 1u16; // Extra padding on right side to separate from distribution box
             let top_padding_extra = 1u16; // Extra padding at top to separate title from chart
@@ -720,7 +717,6 @@ impl StatisticsTable<'_> {
 
         let mut constraints = vec![Constraint::Length(locked_col_width)];
         for &stat_idx in &visible_stats {
-            // Use minimum width needed (ratatui will add spacing between columns)
             constraints.push(Constraint::Length(min_col_widths[stat_idx]));
         }
 
@@ -890,7 +886,6 @@ fn render_distribution_table(
         .map(|name| crate::glyphs::display_width(name) as u16) // header length (no extra padding - table handles spacing)
         .collect();
 
-    // Calculate column name width (for locked column)
     let header_text = "Column";
     let header_len = crate::glyphs::display_width(header_text) as u16;
     let max_col_name_len = results
@@ -958,7 +953,6 @@ fn render_distribution_table(
             Style::default()
         };
 
-        // Get skewness and kurtosis values for styling
         let skewness_value = dist_analysis.characteristics.skewness.abs();
         let kurtosis_value = dist_analysis.characteristics.kurtosis;
 
@@ -1253,7 +1247,6 @@ fn render_correlation_matrix(
 
     let n = correlation_matrix.columns.len();
 
-    // Calculate column widths - ensure they're wide enough for content
     let row_header_width = 20u16;
     let cell_width = 12u16; // Wide enough for "-0.999" and most names
     let column_spacing = 1u16; // Table widget adds 1 space between columns
@@ -1302,7 +1295,6 @@ fn render_correlation_matrix(
     // But we render all rows and let Table widget handle vertical scrolling
     let mut rows = Vec::new();
     for (i, col_name) in correlation_matrix.columns.iter().enumerate() {
-        // Determine if this is the selected row
         let is_selected_row = selected_cell.is_some() && i == selected_row;
 
         // Row header cell - dim highlight if selected row
@@ -1360,7 +1352,6 @@ fn render_correlation_matrix(
         rows.push(Row::new(cells).style(row_style));
     }
 
-    // Build constraints - fixed widths to prevent clipping
     let mut constraints = vec![Constraint::Length(row_header_width)];
     for _ in 0..visible_cols {
         constraints.push(Constraint::Length(cell_width));
@@ -1644,8 +1635,6 @@ pub(crate) fn render_sidebar(
 }
 
 fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffer) {
-    // Use BarChart widget to show histogram comparing data vs theoretical distribution
-    // Use fixed-width bins that span both data range and theoretical distribution range
     let DistributionPlotConfig {
         dist,
         dist_type,
@@ -1713,7 +1702,6 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
             // Use actual data min/max for log scale to avoid issues with padding or theoretical bounds
             let actual_min = sorted_data[0];
             let actual_max = sorted_data[sorted_data.len() - 1];
-            // Ensure minimum is positive for log scale
             if actual_min > 0.0 {
                 (actual_min, actual_max)
             } else {
@@ -1858,8 +1846,6 @@ fn render_qq_plot(config: DistributionPlotConfig, buf: &mut Buffer) {
         values,
         ..
     } = config;
-    // Use Chart widget for Q-Q plot: Data quantiles vs Theoretical quantiles
-    // Use sorted_sample_values and position-based quantiles (not just 5 percentiles)
     let sorted_data = &dist.sorted_sample_values;
 
     if sorted_data.is_empty() || sorted_data.len() < 3 {
@@ -1929,7 +1915,6 @@ fn render_qq_plot(config: DistributionPlotConfig, buf: &mut Buffer) {
     // Otherwise, handle case where all theoretical quantiles are the same (theory_range = 0)
     let (theory_min_plot, theory_max_plot) =
         if let Some((unified_min, unified_max)) = unified_x_range {
-            // Use unified range to align with histogram
             (unified_min, unified_max)
         } else if theory_range <= 0.0 || !theory_min.is_finite() || !theory_max.is_finite() {
             // Fallback: use data range (no padding)
@@ -1975,8 +1960,6 @@ fn render_qq_plot(config: DistributionPlotConfig, buf: &mut Buffer) {
         vec![(theory_min_plot, y_median), (theory_max_plot, y_median)]
     };
 
-    // Create datasets
-    // Use appropriate marker based on point density
     let marker = if qq_data.len() > 100 {
         g.plot.line
     } else {

@@ -129,7 +129,6 @@ impl ConfigManager {
             ));
         }
 
-        // Ensure config directory exists
         self.ensure_config_dir()?;
 
         // Generate and write default config
@@ -2963,7 +2962,6 @@ impl AppConfig {
             ));
         }
 
-        // Validate all colors can be parsed
         let parser = ColorParser::new();
         self.theme.colors.validate(&parser)?;
 
@@ -3209,7 +3207,6 @@ pub fn rgb_to_basic_ansi(r: u8, g: u8, b: u8) -> Color {
         return if avg < 64 { Color::Black } else { Color::White };
     }
 
-    // Map to primary/secondary colors
     match (r_bright, g_bright, b_bright) {
         (false, false, false) => Color::Black,
         (true, false, false) => Color::Red,

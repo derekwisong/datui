@@ -475,7 +475,6 @@ impl ViewManager {
         self.views.clear();
         self.broken_views.clear();
 
-        // Load all view files
         if !self.views_dir.exists() {
             return Ok(());
         }
@@ -634,7 +633,6 @@ impl ViewManager {
             })
             .collect();
 
-        // Sort by relevance score (highest first)
         results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         results
@@ -722,7 +720,6 @@ impl ViewManager {
             settings,
         };
 
-        // Save the view
         self.save_view(&view)?;
 
         // Reload views to include the new one
@@ -776,7 +773,6 @@ impl ViewManager {
             })?;
         }
 
-        // Clear in-memory list
         self.views.clear();
 
         Ok(())

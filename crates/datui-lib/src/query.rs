@@ -136,7 +136,6 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
                 chars.next();
             }
             '"' => {
-                // Parse string literal with escape sequences
                 chars.next(); // consume opening quote
                 let mut string_val = String::new();
                 let mut found_closing_quote = false;
@@ -1343,7 +1342,6 @@ fn is_agg_function(name: &str) -> bool {
     AGG_FUNCTIONS.contains(&name.to_lowercase().as_str())
 }
 
-// Check if an identifier is a known function name
 fn is_function_name(name: &str) -> bool {
     // `wavg` is infix (`w wavg x`), so it never opens an expression.
     let name = name.to_lowercase();
@@ -1360,7 +1358,7 @@ fn parse_call(name: &str, args: &[Token]) -> Result<Node, String> {
     }
 }
 
-// Parse aggregation function like avg[a], min[b], etc.
+/// An aggregate call: `avg[a]`, `min[b]`.
 fn parse_agg_function(name: &str, args: &[Token]) -> Result<Node, String> {
     if args.is_empty() {
         return Err(format!(
@@ -1396,7 +1394,7 @@ fn parse_agg_function(name: &str, args: &[Token]) -> Result<Node, String> {
     }
 }
 
-// Parse function like not[a=b], null[col], len[x], upper[x], etc.
+/// A scalar call: `not[a=b]`, `null[col]`, `len[x]`, `upper[x]`.
 fn parse_function(name: &str, args: &[Token]) -> Result<Node, String> {
     if args.is_empty() {
         return Err(format!("Function {} requires an argument", name));
@@ -1673,7 +1671,6 @@ fn parse_term(tokens: &[Token]) -> Result<(Node, &[Token]), String> {
         Token::Identifier(name) => {
             // Check if it's col[...] syntax for column names with spaces
             if name == "col" && tokens.len() > 1 && tokens[1] == Token::LBracket {
-                // Find matching closing bracket
                 let mut depth = 1;
                 let mut i = 2;
                 while i < tokens.len() && depth > 0 {
@@ -1687,7 +1684,6 @@ fn parse_term(tokens: &[Token]) -> Result<(Node, &[Token]), String> {
                 if depth > 0 {
                     return Err("Unmatched bracket in col[]".to_string());
                 }
-                // Extract column name from inside brackets
                 let col_name_tokens = &tokens[2..i - 1];
                 if col_name_tokens.len() != 1 {
                     return Err("col[] must contain a single string or identifier".to_string());
@@ -1703,7 +1699,6 @@ fn parse_term(tokens: &[Token]) -> Result<(Node, &[Token]), String> {
             }
             // Check if it's a function call (using square brackets)
             else if tokens.len() > 1 && tokens[1] == Token::LBracket {
-                // Find matching closing bracket
                 let mut depth = 1;
                 let mut i = 2;
                 while i < tokens.len() && depth > 0 {
@@ -1828,7 +1823,6 @@ fn parse_node(tokens: &[Token]) -> Result<Node, String> {
         return parse_call(name, &tokens[1..]);
     }
 
-    // Find the leftmost operator for right-to-left evaluation
     let mut op_pos = None;
     let mut depth = 0;
     let mut bracket_depth = 0;
@@ -1849,7 +1843,6 @@ fn parse_node(tokens: &[Token]) -> Result<Node, String> {
     }
 
     if let Some(pos) = op_pos {
-        // Split at the operator
         let left_tokens = &tokens[..pos];
         let right_tokens = &tokens[pos + 1..];
 
@@ -2112,7 +2105,6 @@ pub(crate) fn parse_nodes(query: &str) -> Result<QueryNodes, String> {
     let body = strip_from(&tokens[if distinct { 2 } else { 1 }..])?;
     let body = &body[..];
 
-    // Split by "where" first
     let mut parts = split_tokens(body, &Token::Where);
     let select_by_tokens = parts.remove(0);
     let where_tokens = if !parts.is_empty() {
@@ -2148,7 +2140,6 @@ pub(crate) fn parse_nodes(query: &str) -> Result<QueryNodes, String> {
         }
     }
 
-    // Split select/by part
     let mut select_by_parts = split_tokens(&select_by_tokens, &Token::By);
     let cols_tokens = select_by_parts.remove(0);
     let by_tokens = if !select_by_parts.is_empty() {

@@ -967,7 +967,6 @@ pub(crate) fn read_delimited(
         ..options.clone()
     };
 
-    // Determine compression format: explicit option, or auto-detect from extension
     let compression = options
         .compression
         .or_else(|| CompressionFormat::from_extension(path));

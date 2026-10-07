@@ -1454,7 +1454,6 @@ fn compute_mode(values: &[f64]) -> Option<f64> {
         bin_sums[bin] += v;
     }
 
-    // Find bin with maximum count
     let max_bin = bin_counts
         .iter()
         .enumerate()
@@ -1548,7 +1547,6 @@ const CAST_ROWS: usize = 16 * 1024;
 
 /// [`compute_correlation_matrix`] converting `band` rows of every column at a time.
 fn correlation_matrix_in_bands(df: &DataFrame, band: usize) -> Result<CorrelationMatrix> {
-    // Get all numeric columns
     let schema = df.schema();
     let numeric_cols: Vec<String> = schema
         .iter()

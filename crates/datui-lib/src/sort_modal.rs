@@ -373,7 +373,6 @@ impl SortModal {
                     }
 
                     self.has_unapplied_changes = true;
-                    // Update selection to follow the moved item
                     if let Some(new_selected_idx) = self
                         .filtered_columns()
                         .iter()
@@ -431,7 +430,6 @@ impl SortModal {
                     }
 
                     self.has_unapplied_changes = true;
-                    // Update selection to follow the moved item
                     if let Some(new_selected_idx) = self
                         .filtered_columns()
                         .iter()
@@ -490,7 +488,6 @@ impl SortModal {
                     }
                     self.columns[real_idx].sort_order = Some(current_order - 1);
                     self.has_unapplied_changes = true;
-                    // Update selection to follow the moved item
                     if let Some(new_selected_idx) = self
                         .filtered_columns()
                         .iter()
@@ -524,7 +521,6 @@ impl SortModal {
                         }
                     }
                     self.columns[real_idx].sort_order = Some(current_order + 1);
-                    // Update selection to follow the moved item
                     if let Some(new_selected_idx) = self
                         .filtered_columns()
                         .iter()
@@ -539,7 +535,6 @@ impl SortModal {
     }
 
     pub fn clear_selection(&mut self) {
-        // Reset all column state: clear sorting, unlock all, reset display order
         for (idx, col) in self.columns.iter_mut().enumerate() {
             col.sort_order = None;
             col.sort_descending = false;
@@ -648,7 +643,6 @@ impl SortModal {
                         col.sort_order = Some(i + 1);
                     }
 
-                    // Update selection to follow the moved item
                     if let Some(new_selected_idx) = self
                         .filtered_columns()
                         .iter()

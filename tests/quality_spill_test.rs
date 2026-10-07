@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 fn press(app: &mut App, code: KeyCode) -> Option<AppEvent> {
-    app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+    app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
 }
 
 /// Handle `first` and what follows until nothing is owed, abandoned work included.
@@ -29,7 +29,7 @@ fn settle(app: &mut App, rx: &mpsc::Receiver<AppEvent>, first: Option<AppEvent>)
     let mut next = first;
     loop {
         if let Some(event) = next.take() {
-            next = app.event(&event);
+            next = app.event(event);
             continue;
         }
         match rx.recv_timeout(std::time::Duration::from_millis(50)) {
@@ -147,7 +147,7 @@ fn a_full_scan_leaves_no_temporary_files() {
     let Some(run) = run else {
         panic!("the scan was dispatched");
     };
-    app.event(&run);
+    app.event(run);
     assert!(app.is_busy());
     press(&mut app, KeyCode::Esc);
     settle(&mut app, &rx, None);

@@ -21,7 +21,7 @@ fn pump_open_until_done(
                     saw_crash = true;
                     break;
                 }
-                next = app.event(&ev);
+                next = app.event(ev);
             }
             _ => match rx.try_recv() {
                 Ok(ev) => next = Some(ev),

@@ -201,7 +201,7 @@ fn a_query_filters_lines() {
     let (mut app, rx) = open(vec![path], OpenOptions::default());
     let mut next = Some(AppEvent::QQuery("select where line <> \"\"".to_string()));
     while let Some(event) = next {
-        next = app.event(&event);
+        next = app.event(event);
     }
     drain_events(&mut app, &rx);
     assert_eq!(lines(&app), ["started", "warn: disk, 91% full", "stopped"]);
@@ -218,7 +218,7 @@ fn row_numbers_are_the_source_row_through_sort_and_filter() {
     let run = |app: &mut App, event: AppEvent| {
         let mut next = Some(event);
         while let Some(event) = next {
-            next = app.event(&event);
+            next = app.event(event);
         }
         drain_events(app, &rx);
     };
@@ -245,7 +245,7 @@ fn row_numbers_are_the_source_row_through_sort_and_filter() {
     let run = |app: &mut App, event: AppEvent| {
         let mut next = Some(event);
         while let Some(event) = next {
-            next = app.event(&event);
+            next = app.event(event);
         }
         drain_events(app, &rx);
     };
@@ -294,7 +294,7 @@ fn a_followed_log_shows_its_lines_as_they_arrive() {
             if let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
                 let mut next = Some(event);
                 while let Some(event) = next {
-                    next = app.event(&event);
+                    next = app.event(event);
                 }
                 drain_events(app, &rx);
             }
@@ -362,13 +362,13 @@ fn a_large_log_is_indexed_behind_its_first_rows() {
     let mut next = Some(AppEvent::Open(vec![path], OpenOptions::default()));
     while app.data_table_state.is_none() || app.is_busy() {
         match next.take() {
-            Some(event) => next = app.event(&event),
+            Some(event) => next = app.event(event),
             None => next = common::next_event(&app, &rx),
         }
     }
     let mut next = press(&mut app, KeyCode::End);
     while let Some(event) = next {
-        next = app.event(&event);
+        next = app.event(event);
     }
     drain_events(&mut app, &rx);
     let state = app.data_table_state.as_ref().unwrap();
@@ -420,7 +420,7 @@ fn a_pipe_shows_rows_as_they_arrive() {
         if let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
             let mut next = Some(event);
             while let Some(event) = next {
-                next = app.event(&event);
+                next = app.event(event);
             }
             drain_events(&mut app, &rx);
         }
@@ -456,7 +456,7 @@ fn open_first_rows(path: PathBuf) -> (App, mpsc::Receiver<AppEvent>) {
     let mut next = Some(AppEvent::Open(vec![path], OpenOptions::default()));
     while app.data_table_state.is_none() || app.is_busy() {
         match next.take() {
-            Some(event) => next = app.event(&event),
+            Some(event) => next = app.event(event),
             None => next = common::next_event(&app, &rx),
         }
     }
@@ -470,9 +470,9 @@ fn go_to_a_row_waits_for_the_lines_to_be_indexed() {
     let dir = tempfile::tempdir().unwrap();
     let (mut app, rx) = open_first_rows(large_log(dir.path(), 1_500_000));
     let _ = screen(&mut app);
-    let mut next = app.event(&AppEvent::GoToLine(1_400_000));
+    let mut next = app.event(AppEvent::GoToLine(1_400_000));
     while let Some(event) = next {
-        next = app.event(&event);
+        next = app.event(event);
     }
     // While the lines are still coming, the footer's progress line says how far.
     if app.data_table_state.as_ref().unwrap().indexing().is_some() {
@@ -506,12 +506,12 @@ fn home_pauses_the_indexing_and_the_app_gone_stops_it() {
     app.enter_home();
     assert_eq!(app.input_mode, InputMode::Home);
     // Back at the table: a frame drawn takes the indexing up again.
-    let mut next = app.event(&AppEvent::Key(KeyEvent::new(
+    let mut next = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
     while let Some(event) = next {
-        next = app.event(&event);
+        next = app.event(event);
     }
     assert_eq!(app.input_mode, InputMode::Normal);
     let _ = screen(&mut app);

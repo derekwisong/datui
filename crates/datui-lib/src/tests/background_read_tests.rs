@@ -25,7 +25,7 @@ fn app() -> (
 #[test]
 fn r_reverses_in_the_background() {
     let (mut app, rx, tx, _dir) = app();
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('r'),
         KeyModifiers::NONE,
     )));
@@ -45,7 +45,7 @@ fn r_reverses_in_the_background() {
 #[test]
 fn a_column_order_is_read_in_the_background() {
     let (mut app, rx, tx, _dir) = app();
-    app.event(&AppEvent::ColumnOrder(
+    app.event(AppEvent::ColumnOrder(
         vec!["b".to_string(), "a".to_string()],
         1,
     ));
@@ -68,8 +68,8 @@ fn a_column_order_is_read_in_the_background() {
 #[test]
 fn a_column_order_does_not_wait_on_a_read_of_other_columns() {
     let (mut app, rx, tx, _dir) = app();
-    app.event(&AppEvent::ColumnOrder(vec!["a".to_string()], 0));
-    app.event(&AppEvent::ColumnOrder(
+    app.event(AppEvent::ColumnOrder(vec!["a".to_string()], 0));
+    app.event(AppEvent::ColumnOrder(
         vec!["b".to_string(), "a".to_string()],
         0,
     ));

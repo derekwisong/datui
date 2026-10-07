@@ -128,11 +128,11 @@ fn charts_draw_and_export_as_their_goldens() {
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx.clone(), crate::tests::test_runtime());
     open(&mut app, &rx, &tx, table(dir.path()));
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('c'),
         KeyModifiers::NONE,
     )));
-    app.event(&AppEvent::Resize(80, 24));
+    app.event(AppEvent::Resize(80, 24));
     let options = ExportOptions {
         width: 480,
         height: 320,
@@ -150,7 +150,7 @@ fn charts_draw_and_export_as_their_goldens() {
         (scenario.set)(&mut app.chart.modal);
         app.chart.modal.row_limit = None;
         let request = ChartRequest::from_modal(&app.chart.modal).expect(scenario.name);
-        app.event(&AppEvent::Resize(80, 24));
+        app.event(AppEvent::Resize(80, 24));
         pump(&mut app, &rx, &tx, |a| a.chart.cache.satisfies(&request));
         let area = ratatui::layout::Rect::new(0, 0, 80, 24);
         let mut buf = ratatui::buffer::Buffer::empty(area);

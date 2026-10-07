@@ -284,7 +284,7 @@ fn a_glob_match_reads_the_file_and_a_tie_is_said_and_picked_from() {
     let reopen = press(&mut app, KeyCode::Enter).expect("Enter reads the file again");
     let mut next = Some(reopen);
     while let Some(event) = next.take() {
-        next = app.event(&event);
+        next = app.event(event);
     }
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();

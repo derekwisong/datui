@@ -85,9 +85,9 @@ fn listed(app: &App) -> Vec<String> {
 }
 
 fn key(app: &mut App, rx: &mpsc::Receiver<AppEvent>, code: KeyCode) {
-    let mut next = app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    let mut next = app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
     while let Some(event) = next {
-        next = app.event(&event);
+        next = app.event(event);
     }
     drain_events(app, rx);
 }
@@ -99,7 +99,7 @@ fn settle_home(app: &mut App, rx: &mpsc::Receiver<AppEvent>) {
         while let Ok(event) = rx.try_recv() {
             let mut next = Some(event);
             while let Some(event) = next {
-                next = app.event(&event);
+                next = app.event(event);
             }
         }
         let listed = app
@@ -128,7 +128,7 @@ fn settle_home(app: &mut App, rx: &mpsc::Receiver<AppEvent>) {
         if let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(20)) {
             let mut next = Some(event);
             while let Some(event) = next {
-                next = app.event(&event);
+                next = app.event(event);
             }
         }
     }

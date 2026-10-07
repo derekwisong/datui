@@ -4228,23 +4228,23 @@ impl App {
     /// not dropped either: it comes back as `Err(key)` for the caller to hold until the
     /// app is idle. The main loop ([`event_pump::EventPump`]) does exactly that;
     /// [`App::event`] is the same call for callers that have nowhere to hold a key.
-    pub fn handle(&mut self, event: &AppEvent) -> EventOutcome {
+    pub fn handle(&mut self, event: AppEvent) -> EventOutcome {
         let started = std::time::Instant::now();
         let outcome = self.handle_event(event);
         self.debug.times.handler(started.elapsed());
         outcome
     }
 
-    fn handle_event(&mut self, event: &AppEvent) -> EventOutcome {
+    fn handle_event(&mut self, event: AppEvent) -> EventOutcome {
         // Without the pump to offer it as typed, a pressed key is a key.
         if let AppEvent::Press(key) = event {
-            return self.handle_event(&AppEvent::Key(*key));
+            return self.handle_event(AppEvent::Key(key));
         }
         if let AppEvent::Key(key) = event
             && self.is_busy()
-            && !self.key_acts_while_busy(key)
+            && !self.key_acts_while_busy(&key)
         {
-            return Err(*key);
+            return Err(key);
         }
         let out = self.dispatch_event(event);
         // Not while this handler is returning a continuation. A follow-up is the rest of
@@ -4280,24 +4280,24 @@ impl App {
         self.collect_when_the_work_allows();
     }
 
-    pub fn event(&mut self, event: &AppEvent) -> Option<AppEvent> {
+    pub fn event(&mut self, event: AppEvent) -> Option<AppEvent> {
         self.handle(event).unwrap_or(None)
     }
 
-    fn dispatch_event(&mut self, event: &AppEvent) -> Option<AppEvent> {
+    fn dispatch_event(&mut self, event: AppEvent) -> Option<AppEvent> {
         self.debug.num_events += 1;
 
         match event {
             AppEvent::Key(key) => {
                 // Leaving while standard input is still being recorded asks first.
-                if let Some(leaving) = self.leaves(key)
+                if let Some(leaving) = self.leaves(&key)
                     && !self.confirmation_modal.active
                     && self.recording().is_some_and(|spool| spool.live())
                 {
                     self.ask_about_recording(leaving);
                     return None;
                 }
-                self.key(key)
+                self.key(&key)
             }
             AppEvent::Open(paths, options) => {
                 if paths.is_empty() {
@@ -4326,13 +4326,12 @@ impl App {
                     Err(message) => return Some(AppEvent::Crash(message)),
                 };
                 #[cfg(feature = "cloud")]
-                if &expanded != paths {
-                    return Some(AppEvent::Open(expanded, options.clone()));
+                if expanded != paths {
+                    return Some(AppEvent::Open(expanded, options));
                 }
                 // Asks the filesystem for the size the loading screen shows, and whether
                 // the path is there to be a recent.
-                let mut request =
-                    loading::OpenRequest::named(paths.clone(), options.clone(), &self.formats);
+                let mut request = loading::OpenRequest::named(paths, options, &self.formats);
                 request.warn_in_memory_above = self.app_config.read.memory_warning();
                 self.begin_new_dataset();
                 let step = self.loading.open(request);
@@ -4340,7 +4339,7 @@ impl App {
             }
             AppEvent::OpenLazyFrame(lf, options) => {
                 self.begin_new_dataset();
-                let step = self.loading.open_frame((**lf).clone(), options.clone());
+                let step = self.loading.open_frame(*lf, options);
                 self.run_load_step(step)
             }
             AppEvent::HomeListingReady { .. }
@@ -4377,7 +4376,6 @@ impl App {
             }
             AppEvent::Scroll(scroll) => self.handle_scroll(|s| scroll.run(s)),
             AppEvent::GoToLine(n) => {
-                let n = *n;
                 // Past the lines indexed so far: gone to once they all are.
                 if let Some(state) = self.data_table_state.as_ref()
                     && state.indexing().is_some()
@@ -4393,27 +4391,27 @@ impl App {
                 }
                 self.handle_scroll(|s| s.scroll_to_row_centered(n))
             }
-            AppEvent::AnalysisCompute(tool) => self.spawn_analysis(*tool),
+            AppEvent::AnalysisCompute(tool) => self.spawn_analysis(tool),
             AppEvent::BackgroundLenReady { .. }
             | AppEvent::FramePainted
             | AppEvent::BackgroundLenFailed { .. }
             | AppEvent::LinesIndexed { .. } => self.counting_event(event),
             AppEvent::BackgroundQualitySampleKept { kept } => {
-                self.retain_quality_sample(kept);
+                self.retain_quality_sample(&kept);
                 None
             }
             AppEvent::BackgroundQualityCopyKept {
                 dataset_generation,
                 copy,
             } => {
-                self.retain_quality_copy(*dataset_generation, copy.clone());
+                self.retain_quality_copy(dataset_generation, copy);
                 None
             }
             AppEvent::OpenNamed(paths, options) => {
-                if let Some(event) = Self::route_named_without_looking(paths, options) {
+                if let Some(event) = Self::route_named_without_looking(&paths, &options) {
                     return Some(event);
                 }
-                let (paths, options) = (paths.clone(), options.clone());
+                let (paths, options) = (paths, options);
                 let formats = self.formats.clone();
                 // The open's first phase. Unleased, as the look is: an answer for an open
                 // the user has left (Ctrl+O) is thrown away by the loader, not waited for.
@@ -4444,8 +4442,8 @@ impl App {
                 // looked at rather than sitting blank. `spawn_job` puts the throbber up
                 // and the keys that survive it — Ctrl+C, Ctrl+O — keep working, which
                 // is the whole of what doing this on the event thread cost.
-                let looking = dir.clone();
-                let options = options.clone();
+                let looking = dir;
+                let options = options;
                 self.make_way_for_an_open();
                 let load = self.loading.look_at_directory(looking.clone());
                 // A newer look replaces an older one.
@@ -4517,12 +4515,12 @@ impl App {
                 // reachable, and the newer look is the one the user is waiting for — and
                 // refusing meant a look at a share that never answers killed the feature
                 // for the rest of the session, silently.
-                let looking = path.clone();
+                let looking = path;
                 self.jobs.supersede(|job| matches!(job, Job::Classify(_)));
                 let look = Job::Classify(jobs::Classify {
                     path: looking.clone(),
                     browsing: self.home.browsing.clone(),
-                    jump: *jump,
+                    jump,
                 });
                 let name = looking
                     .file_name()
@@ -4544,17 +4542,17 @@ impl App {
                 });
                 None
             }
-            AppEvent::JobEnded(ticket) => self.job_ended(*ticket),
+            AppEvent::JobEnded(ticket) => self.job_ended(ticket),
             AppEvent::JobProgress { ticket, progress } => {
-                self.job_progress(*ticket, progress);
+                self.job_progress(ticket, &progress);
                 None
             }
             AppEvent::QQuery(query) => {
-                self.run_query(QueryMode::Q, query, "Applying query...");
+                self.run_query(QueryMode::Q, &query, "Applying query...");
                 None
             }
             AppEvent::SqlQuery(sql) => {
-                self.run_query(QueryMode::Sql, sql, "Applying SQL query...");
+                self.run_query(QueryMode::Sql, &sql, "Applying SQL query...");
                 None
             }
             AppEvent::Filter(statements) => {
@@ -4596,7 +4594,7 @@ impl App {
                     state.deferred(|s| {
                         s.apply_view(
                             order.clone(),
-                            *locked,
+                            locked,
                             filters.clone(),
                             columns.clone(),
                             descending.clone(),
@@ -4610,7 +4608,7 @@ impl App {
                 if let Some(state) = &mut self.data_table_state {
                     state.deferred(|s| {
                         s.set_column_order(order.clone());
-                        s.set_locked_columns(*locked_count);
+                        s.set_locked_columns(locked_count);
                     });
                     self.spawn_async_collect(Self::LOADING_BUFFER);
                 }
@@ -4619,8 +4617,7 @@ impl App {
             AppEvent::Pivot(spec) => {
                 // The modal stays up until the result is in, so a pivot that fails
                 // leaves the spec there to fix.
-                let job = self.data_table_state.as_ref()?.plan_pivot(spec);
-                let spec = spec.clone();
+                let job = self.data_table_state.as_ref()?.plan_pivot(&spec);
                 self.spawn_job(Job::Pivot, Some(Self::COMPUTING_PIVOT), move |_| {
                     let pivoted = job
                         .run()
@@ -4632,7 +4629,7 @@ impl App {
             AppEvent::Melt(spec) => {
                 self.busy = true;
                 if let Some(state) = &mut self.data_table_state {
-                    let result = state.deferred(|s| s.melt(spec));
+                    let result = state.deferred(|s| s.melt(&spec));
                     match result {
                         Ok(()) => {
                             self.pivot_melt_modal.close();
@@ -4657,7 +4654,7 @@ impl App {
                 // the writer: the file is built from memory and nothing is read.
                 let results = self.analysis_modal.quality.results.clone()?;
                 let plan = self.analysis_modal.quality_result_plan().clone();
-                let (path, format, overwrite) = (path.clone(), *format, *overwrite);
+                let (path, format, overwrite) = (path, format, overwrite);
                 self.spawn_job(
                     Job::QualityReport,
                     Some("Writing the report..."),
@@ -4676,13 +4673,13 @@ impl App {
                     self.export_progress =
                         Some(ExportProgress::new(&request.path, "Preparing export"));
                     // Drawn before the export starts.
-                    Some(AppEvent::DoExport(request.clone()))
+                    Some(AppEvent::DoExport(request))
                 } else {
                     None
                 }
             }
             AppEvent::Followed(news) => {
-                self.followed(news);
+                self.followed(&news);
                 None
             }
             AppEvent::DoExport(request) => {
@@ -4702,11 +4699,11 @@ impl App {
                 // One job from plan to commit: it holds the generation throughout,
                 // and the rows it collects, if it collects, die with it.
                 let phase = match request.route(streaming) {
-                    crate::export::Route::Streamed => Self::export_write_phase(request),
+                    crate::export::Route::Streamed => Self::export_write_phase(&request),
                     crate::export::Route::Collected => "Collecting data",
                 };
                 self.export_progress = Some(ExportProgress::new(&request.path, phase));
-                let writing = Self::export_write_phase(request);
+                let writing = Self::export_write_phase(&request);
                 let request = request.clone();
                 self.spawn_job(Job::Export, Some("Exporting..."), move |worker| {
                     let report = worker.reporter();
@@ -4729,7 +4726,7 @@ impl App {
             AppEvent::OpenLink(url) => {
                 // Started, not waited on; a browser that will not start is a line,
                 // not an error to acknowledge.
-                if link_open::open(url).is_err() {
+                if link_open::open(&url).is_err() {
                     self.flash_note("Couldn't open the link; y copies it".to_string());
                 }
                 None
@@ -4746,7 +4743,7 @@ impl App {
                 if let Some(state) = &self.data_table_state {
                     let lf = state.visible_lf();
                     let streaming = state.polars_streaming();
-                    let (format, header) = (*format, *header);
+                    let (format, header) = (format, header);
                     self.spawn_job(Job::Copy, Some("Collecting data for copy..."), move |_| {
                         // A capped destination's copy is read in batches and given
                         // up at the cap; any other is collected and built whole.
@@ -4784,7 +4781,7 @@ impl App {
                 None
             }
             AppEvent::TerminalBackground(mode) => {
-                self.terminal_answered(*mode);
+                self.terminal_answered(mode);
                 None
             }
             AppEvent::TerminalFocused => {

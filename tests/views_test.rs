@@ -18,7 +18,7 @@ mod common;
 use common::{drain_events, pump_open_until_loaded};
 
 fn press(app: &mut App, code: KeyCode) {
-    app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
 }
 
 /// One sequential walk through the surface, so the views it saves never race
@@ -201,7 +201,7 @@ fn the_views_surface_saves_applies_and_deletes() {
         rows.iter().any(|r| r.contains("^J") && r.contains("Save")),
         "the footer names the chord that saves from the description"
     );
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('j'),
         KeyModifiers::CONTROL,
     )));
@@ -390,7 +390,7 @@ fn a_view_draws_its_sample_again_from_the_seed() {
     form.seed.set_value("31");
     press(&mut app, KeyCode::Enter);
     drain_events(&mut app, &rx);
-    app.event(&AppEvent::QQuery("select where sv_group = 2".to_string()));
+    app.event(AppEvent::QQuery("select where sv_group = 2".to_string()));
     drain_events(&mut app, &rx);
     let ids = |app: &App| -> Vec<i64> {
         let state = app.data_table_state.as_ref().unwrap();
@@ -438,11 +438,11 @@ fn a_view_draws_its_sample_again_from_the_seed() {
     assert_eq!(chart.histogram_bins, 17);
 
     // Back to the table as opened, then the view again.
-    if let Some(reset) = app.event(&AppEvent::Key(KeyEvent::new(
+    if let Some(reset) = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('R'),
         KeyModifiers::NONE,
     ))) {
-        app.event(&reset);
+        app.event(reset);
     }
     drain_events(&mut app, &rx);
     assert!(app.data_table_state.as_ref().unwrap().sampled().is_none());
@@ -533,11 +533,11 @@ fn a_view_keeps_the_sorted_view_its_row_range_was_drawn_through() {
         Some(vec!["rv_id".to_string()]),
         "the sort it was drawn through is kept"
     );
-    if let Some(reset) = app.event(&AppEvent::Key(KeyEvent::new(
+    if let Some(reset) = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('R'),
         KeyModifiers::NONE,
     ))) {
-        app.event(&reset);
+        app.event(reset);
     }
     drain_events(&mut app, &rx);
     press(&mut app, KeyCode::Char('V'));

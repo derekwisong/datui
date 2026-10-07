@@ -127,7 +127,7 @@ fn level_filters_and_sorts_by_severity() {
         "select level, MESSAGE where level <= \"err\"".to_string(),
     ));
     while let Some(event) = next {
-        next = app.event(&event);
+        next = app.event(event);
     }
     drain_events(&mut app, &rx);
     let df = frame(&app);
@@ -264,7 +264,7 @@ fn a_followed_journal_from_a_pipe_keeps_its_columns() {
         if let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
             let mut next = Some(event);
             while let Some(event) = next {
-                next = app.event(&event);
+                next = app.event(event);
             }
             drain_events(&mut app, &rx);
         }
@@ -308,7 +308,7 @@ fn follow_until(app: &mut App, rx: &mpsc::Receiver<AppEvent>, done: impl Fn(&App
         if let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
             let mut next = Some(event);
             while let Some(event) = next {
-                next = app.event(&event);
+                next = app.event(event);
             }
             drain_events(app, rx);
         }
@@ -553,7 +553,7 @@ fn new_fields_wait_for_a_query_to_be_cleared() {
     drain_events(&mut app, &rx);
     let mut next = Some(AppEvent::QQuery("select id where id < 10".to_string()));
     while let Some(event) = next {
-        next = app.event(&event);
+        next = app.event(event);
     }
     drain_events(&mut app, &rx);
     producer
@@ -571,7 +571,7 @@ fn new_fields_wait_for_a_query_to_be_cleared() {
     assert!(!has_extra(&app), "held under the query");
     let mut next = Some(AppEvent::QQuery(String::new()));
     while let Some(event) = next {
-        next = app.event(&event);
+        next = app.event(event);
     }
     follow_until(&mut app, &rx, |app| has_extra(app) && !app.is_busy());
     let df = frame(&app);
@@ -588,7 +588,7 @@ fn a_query_reads_ndjson_with_short_lines() {
     follow_until(&mut app, &rx, ended);
     let mut next = Some(AppEvent::QQuery("select a where a > 0".to_string()));
     while let Some(event) = next {
-        next = app.event(&event);
+        next = app.event(event);
     }
     drain_events(&mut app, &rx);
     assert!(app.error_message().is_none(), "{:?}", app.error_message());

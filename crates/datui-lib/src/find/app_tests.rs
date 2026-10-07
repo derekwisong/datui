@@ -8,9 +8,9 @@ fn key(app: &mut App, code: KeyCode) {
 }
 
 fn key_with(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
-    let mut next = app.event(&AppEvent::Key(KeyEvent::new(code, modifiers)));
+    let mut next = app.event(AppEvent::Key(KeyEvent::new(code, modifiers)));
     while let Some(event) = next {
-        next = app.event(&event);
+        next = app.event(event);
     }
 }
 
@@ -38,7 +38,7 @@ fn settle(app: &mut App, rx: &Receiver<AppEvent>) {
         };
         let mut next = Some(event);
         while let Some(event) = next {
-            next = app.event(&event);
+            next = app.event(event);
         }
     }
 }

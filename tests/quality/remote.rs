@@ -93,7 +93,7 @@ fn settle(
                 {
                     reads.push(phase.stage);
                 }
-                next = app.event(&event);
+                next = app.event(event);
             }
             None => match next_event(app, rx) {
                 Some(event) => next = Some(event),
@@ -104,7 +104,7 @@ fn settle(
 }
 
 fn press(app: &mut App, code: KeyCode) -> Option<AppEvent> {
-    app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+    app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
 }
 
 fn screen(app: &mut App) -> String {
@@ -640,7 +640,7 @@ fn until_the_worker_exits(app: &mut App, rx: &mpsc::Receiver<AppEvent>) {
         if let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(20)) {
             let mut next = Some(event);
             while let Some(event) = next.take() {
-                next = app.event(&event);
+                next = app.event(event);
             }
         }
     }
@@ -672,7 +672,7 @@ fn a_cancel_mid_fetch_leaves_no_copy() {
             AppEvent::JobProgress { ticket, progress: Progress::QualityPhase(phase) }
                 if app.job_is_current(*ticket) && phase.stage == QualityStage::CopyingSource
         );
-        next = app.event(&event);
+        next = app.event(event);
         if fetching {
             break;
         }

@@ -66,7 +66,7 @@ use common::{drain_events, next_event, pump_open_until_loaded, work_pending};
 /// Enter on a tool in the Analysis sidebar. A tool with no result yet shows its
 /// Sample form in the pane rather than running; the next Enter runs it.
 fn show_sample_form(app: &mut App) {
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
@@ -100,7 +100,7 @@ fn pump_until(
 ) {
     for _ in ticks() {
         while let Ok(ev) = rx.try_recv() {
-            if let Some(next) = app.event(&ev) {
+            if let Some(next) = app.event(ev) {
                 let _ = tx.send(next);
             }
         }
@@ -110,7 +110,7 @@ fn pump_until(
             return;
         }
         if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(50))
-            && let Some(next) = app.event(&ev)
+            && let Some(next) = app.event(ev)
         {
             let _ = tx.send(next);
         }
@@ -133,7 +133,7 @@ fn pump_open_until_error(
         match next.take() {
             Some(AppEvent::Crash(message)) => return Some(message),
             Some(ev) => {
-                next = app.event(&ev);
+                next = app.event(ev);
                 if let Some(message) = app.error_message() {
                     return Some(message.to_string());
                 }
@@ -222,7 +222,7 @@ fn test_full_workflow() {
 
     // 2. Filter the data (s = Sort & Filter, switch to Filter tab, configure, Apply)
     let key_event = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE);
-    app.event(&AppEvent::Key(key_event));
+    app.event(AppEvent::Key(key_event));
     assert!(app.sort_filter_modal.active);
 
     app.sort_filter_modal.switch_tab(); // Filter tab
@@ -241,8 +241,8 @@ fn test_full_workflow() {
         });
     // On the Filters tab Enter means add/edit; Ctrl+Enter is the apply.
     let key_event = KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL);
-    if let Some(next_event) = app.event(&AppEvent::Key(key_event)) {
-        app.event(&next_event);
+    if let Some(next_event) = app.event(AppEvent::Key(key_event)) {
+        app.event(next_event);
     }
     drain_events(&mut app, &rx);
     assert!(!app.sort_filter_modal.active);
@@ -252,7 +252,7 @@ fn test_full_workflow() {
 
     // 3. Sort the data (s = Sort & Filter, Sort tab, configure, Apply)
     let key_event = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE);
-    app.event(&AppEvent::Key(key_event));
+    app.event(AppEvent::Key(key_event));
     assert!(app.sort_filter_modal.active);
 
     app.sort_filter_modal.sort.columns = app
@@ -281,8 +281,8 @@ fn test_full_workflow() {
     app.sort_filter_modal.focus = datui::sort_filter_modal::SortFilterField::TabBar;
 
     let key_event = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-    if let Some(next_event) = app.event(&AppEvent::Key(key_event)) {
-        app.event(&next_event);
+    if let Some(next_event) = app.event(AppEvent::Key(key_event)) {
+        app.event(next_event);
     }
     drain_events(&mut app, &rx);
     assert!(!app.sort_filter_modal.active);
@@ -318,12 +318,12 @@ fn test_chart_open_and_esc_back() {
     assert_eq!(app.input_mode, InputMode::Normal);
 
     let key_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE);
-    app.event(&AppEvent::Key(key_c));
+    app.event(AppEvent::Key(key_c));
     assert_eq!(app.input_mode, InputMode::Chart);
     assert!(app.chart.modal.active);
 
     let key_esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-    app.event(&AppEvent::Key(key_esc));
+    app.event(AppEvent::Key(key_esc));
     assert_eq!(app.input_mode, InputMode::Normal);
     assert!(!app.chart.modal.active);
 }
@@ -341,7 +341,7 @@ fn test_chart_q_does_not_exit() {
     CsvWriter::new(&mut file).finish(&mut df).unwrap();
 
     pump_open_until_loaded(&mut app, &rx, vec![csv_path], OpenOptions::default());
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('c'),
         KeyModifiers::NONE,
     )));
@@ -349,7 +349,7 @@ fn test_chart_q_does_not_exit() {
 
     // q does nothing in chart view (no exit)
     let key_q = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
-    let out = app.event(&AppEvent::Key(key_q));
+    let out = app.event(AppEvent::Key(key_q));
     assert!(out.is_none());
     assert_eq!(app.input_mode, InputMode::Chart);
 }
@@ -361,7 +361,7 @@ fn test_chart_type_switches_from_anywhere() {
     use datui::chart_modal::{ChartFocus, Mark};
     let (mut app, _rx, _tx) = open_chart_view("chart_direct_type_test.csv");
     let press = |app: &mut App, c: char| {
-        app.event(&AppEvent::Key(KeyEvent::new(
+        app.event(AppEvent::Key(KeyEvent::new(
             KeyCode::Char(c),
             KeyModifiers::NONE,
         )));
@@ -370,7 +370,7 @@ fn test_chart_type_switches_from_anywhere() {
     press(&mut app, '6');
     assert_eq!(app.chart.modal.mark(), Mark::Kde);
     // Deep in the panel, a number key still switches.
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Tab,
         KeyModifiers::NONE,
     )));
@@ -395,7 +395,7 @@ fn test_chart_type_switches_from_anywhere() {
     press(&mut app, '3');
     assert_eq!(app.chart.modal.mark(), Mark::Line);
     assert_eq!(app.chart.modal.picker.as_ref().unwrap().filter, "3");
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
@@ -414,7 +414,7 @@ fn test_chart_g_toggles_the_grid() {
     use datui::chart_modal::{ChartFocus, Mark};
     let (mut app, _rx, _tx) = open_chart_view("chart_grid_key_test.csv");
     let press = |app: &mut App, code: KeyCode| {
-        app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+        app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
     };
     assert!(!app.chart.modal.grid, "off by default");
     press(&mut app, KeyCode::Char('g'));
@@ -467,7 +467,7 @@ fn test_chart_crosshair_keys_and_click() {
     let (mut app, rx, tx) = open_chart_view("chart_crosshair_test.csv");
     select_line(&mut app);
     app.chart.modal.focus = ChartFocus::Type;
-    app.event(&AppEvent::Resize(80, 24));
+    app.event(AppEvent::Resize(80, 24));
     pump_until_chart_ready(&mut app, &rx, &tx);
     // Wide enough for the bar to name x beside the rest.
     let area = Rect::new(0, 0, 120, 30);
@@ -477,7 +477,7 @@ fn test_chart_crosshair_keys_and_click() {
         common::buffer_lines(&buf)
     };
     let press = |app: &mut App, code: KeyCode| {
-        app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+        app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
     };
     let screen = draw(&mut app);
     assert!(screen.concat().contains("x Crosshair"), "{screen:#?}");
@@ -560,7 +560,7 @@ fn test_chart_columns_picked_through_the_picker() {
     use datui::chart_modal::{ChartFocus, Mark};
     let (mut app, _rx, _tx) = open_chart_view("chart_picker_test.csv");
     let press = |app: &mut App, code: KeyCode| {
-        app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+        app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
     };
     press(&mut app, KeyCode::Char('1'));
     assert_eq!(app.chart.modal.mark(), Mark::Line);
@@ -590,7 +590,7 @@ fn test_space_chooses_in_a_pick_one_chart_picker() {
     use datui::chart_modal::{ChartFocus, Mark};
     let (mut app, _rx, _tx) = open_chart_view("chart_space_chooses_test.csv");
     let press = |app: &mut App, code: KeyCode| {
-        app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+        app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
     };
     assert_eq!(app.chart.modal.mark(), Mark::Histogram);
     press(&mut app, KeyCode::Tab); // Type -> X
@@ -610,7 +610,7 @@ fn test_chart_export_path_expands_tilde() {
     let (mut app, _rx, _tx) = open_chart_view("chart_tilde_test.csv");
     select_line(&mut app);
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('e'),
         KeyModifiers::NONE,
     )));
@@ -619,7 +619,7 @@ fn test_chart_export_path_expands_tilde() {
         .export_modal
         .path_input
         .set_value("~/datui_tilde_test_dir/chart.png");
-    let out = app.event(&AppEvent::Key(KeyEvent::new(
+    let out = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
@@ -652,7 +652,7 @@ fn open_chart_view(name: &str) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<A
     pump_until_idle(&mut app, &rx, &tx);
     assert!(app.data_table_state.is_some());
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('c'),
         KeyModifiers::NONE,
     )));
@@ -684,7 +684,7 @@ fn test_chart_data_is_prepared_in_the_background() {
 
     // Another chart, then let any event go through so the selection is noticed.
     select_line(&mut app);
-    app.event(&AppEvent::Resize(80, 24));
+    app.event(AppEvent::Resize(80, 24));
     assert!(
         app.chart_preparing(),
         "a selection starts a background prepare"
@@ -703,7 +703,7 @@ fn test_chart_data_is_prepared_in_the_background() {
     Widget::render(&mut app, area, &mut buf);
 
     // Closing the chart drops the cache and any late result.
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
@@ -733,7 +733,7 @@ fn a_chart_being_computed_says_so() {
         app.chart.modal.spec.encoding.x.field = (mark != Mark::Box).then(|| "x".to_string());
         app.chart.modal.spec.encoding.y.field = vec!["y".to_string()];
         app.chart.modal.row_limit = Some(1_000 + i);
-        app.event(&AppEvent::Resize(area.width, area.height));
+        app.event(AppEvent::Resize(area.width, area.height));
         assert!(app.chart_preparing(), "{mark:?}");
         let text = screen(&mut app);
         assert!(text.contains("Computing chart..."), "{mark:?}: {text}");
@@ -745,7 +745,7 @@ fn a_chart_being_computed_says_so() {
 
         // Another sample size: the chart drawn stays, with the spinner over it.
         app.chart.modal.row_limit = Some(2_000 + i);
-        app.event(&AppEvent::Resize(area.width, area.height));
+        app.event(AppEvent::Resize(area.width, area.height));
         assert!(app.chart_preparing(), "{mark:?}");
         let text = screen(&mut app);
         assert!(text.contains("Computing chart..."), "{mark:?}: {text}");
@@ -767,13 +767,13 @@ fn a_chart_being_computed_says_so() {
 fn test_chart_prepares_one_selection_at_a_time() {
     let (mut app, rx, tx) = open_chart_view("chart_one_at_a_time_test.csv");
     // `c` on x suggested its histogram, which is being prepared.
-    app.event(&AppEvent::Resize(80, 24));
+    app.event(AppEvent::Resize(80, 24));
     assert!(app.chart_preparing());
 
     // Five more distinct requests while the first is still out.
     for _ in 0..5 {
         app.chart.modal.hist_bins += 1;
-        app.event(&AppEvent::Resize(80, 24));
+        app.event(AppEvent::Resize(80, 24));
     }
 
     let mut results = 0;
@@ -781,7 +781,7 @@ fn test_chart_prepares_one_selection_at_a_time() {
         if matches!(ev, AppEvent::JobEnded(t) if t.kind() == JobKind::ChartPrepare) {
             results += 1;
         }
-        if let Some(next) = app.event(&ev) {
+        if let Some(next) = app.event(ev) {
             let _ = tx.send(next);
         }
     };
@@ -832,21 +832,21 @@ fn test_chart_export_waits_for_the_current_selection_not_a_failed_one() {
     // A column the view does not have cannot be charted, and takes a moment to fail.
     select_line(&mut app);
     app.chart.modal.spec.encoding.y.field = vec!["gone".to_string()];
-    app.event(&AppEvent::Resize(80, 24));
+    app.event(AppEvent::Resize(80, 24));
     assert!(app.chart_preparing());
 
     // Move on to a valid selection while that one is still out, and ask for an export.
     app.chart.modal.spec.encoding.y.field = vec!["y".to_string()];
-    app.event(&AppEvent::Resize(80, 24));
+    app.event(AppEvent::Resize(80, 24));
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("chart.svg");
     let next = app
-        .event(&AppEvent::ChartExport(chart_export_request(
+        .event(AppEvent::ChartExport(chart_export_request(
             &path,
             ChartExportFormat::Svg,
         )))
         .expect("ChartExport defers to DoChartExport");
-    app.event(&next);
+    app.event(next);
 
     pump_until_idle(&mut app, &rx, &tx);
     assert!(
@@ -866,7 +866,7 @@ fn test_chart_export_waits_for_the_current_selection_not_a_failed_one() {
 fn test_chart_export_with_a_blank_path_says_why() {
     let (mut app, rx, tx) = open_chart_view("chart_export_blank_path_test.csv");
     select_line(&mut app);
-    app.event(&AppEvent::Resize(80, 24));
+    app.event(AppEvent::Resize(80, 24));
     pump_until_chart_ready(&mut app, &rx, &tx);
     press(&mut app, KeyCode::Char('e'));
     assert!(app.chart.export_modal.active);
@@ -887,7 +887,7 @@ fn test_chart_export_with_a_blank_path_says_why() {
 fn test_chart_footer_offers_export_only_when_there_is_a_chart() {
     let (mut app, rx, tx) = open_chart_view("chart_export_hint_test.csv");
     select_line(&mut app);
-    app.event(&AppEvent::Resize(120, 40));
+    app.event(AppEvent::Resize(120, 40));
     pump_until_chart_ready(&mut app, &rx, &tx);
     let footer = |app: &mut App| {
         draw_sized(app, (120, 40))
@@ -938,19 +938,19 @@ fn test_chart_export_waits_for_prepared_data_and_writes_in_background() {
     let (mut app, rx, tx) = open_chart_view("chart_export_bg_test.csv");
     pump_until_chart_ready(&mut app, &rx, &tx);
     select_line(&mut app);
-    app.event(&AppEvent::Resize(80, 24));
+    app.event(AppEvent::Resize(80, 24));
     assert!(app.chart_preparing());
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("chart.pdf");
     // Asked for while the data is still being prepared.
     let next = app
-        .event(&AppEvent::ChartExport(chart_export_request(
+        .event(AppEvent::ChartExport(chart_export_request(
             &path,
             ChartExportFormat::Pdf,
         )))
         .expect("ChartExport defers to DoChartExport");
-    app.event(&next);
+    app.event(next);
     assert!(
         app.is_busy(),
         "an export owns the busy state until it finishes"
@@ -977,7 +977,7 @@ fn test_chart_export_replaces_only_what_was_agreed() {
     use datui::output_file::Overwrite;
     let (mut app, rx, tx) = open_chart_view("chart_export_overwrite_test.csv");
     select_line(&mut app);
-    app.event(&AppEvent::Resize(80, 24));
+    app.event(AppEvent::Resize(80, 24));
     pump_until_idle(&mut app, &rx, &tx);
     pump_until_chart_ready(&mut app, &rx, &tx);
     let dir = tempfile::tempdir().unwrap();
@@ -1213,7 +1213,7 @@ fn chart_color_splits_and_the_value_picker_lists_by_rows() {
     pump_until_chart_ready(&mut app, &rx, &tx);
     press(&mut app, KeyCode::Left);
     app.chart.modal.spec.encoding.color.values = vec![Some("WN".to_string())];
-    app.event(&AppEvent::Resize(80, 24));
+    app.event(AppEvent::Resize(80, 24));
     assert!(app.chart_data_ready(), "cached");
     assert!(
         app.chart.modal.has_color_counts(),
@@ -1260,7 +1260,7 @@ fn chart_rows_are_read_on_enter() {
     app.chart.modal.spec.encoding.x.field = Some("delay".to_string());
     app.chart.modal.row_limit = Some(100);
     app.chart.modal.focus = ChartFocus::LimitRows;
-    app.event(&AppEvent::Resize(120, 30));
+    app.event(AppEvent::Resize(120, 30));
     pump_until_chart_ready(&mut app, &rx, &tx);
     let area = Rect::new(0, 0, 120, 30);
     let screen = |app: &mut App| {
@@ -1325,7 +1325,7 @@ fn chart_export_dialog_presets_and_legend() {
     app.chart.modal.focus = ChartFocus::ShowLegend;
     press(&mut app, KeyCode::Char(' '));
     assert!(!app.chart.modal.show_legend);
-    app.event(&AppEvent::Resize(80, 24));
+    app.event(AppEvent::Resize(80, 24));
     pump_until_chart_ready(&mut app, &rx, &tx);
 
     press(&mut app, KeyCode::Char('e'));
@@ -1410,7 +1410,7 @@ fn test_open_s3_url_returns_crash_or_loads() {
     let path = PathBuf::from("s3://my-bucket/path/to/file.parquet");
     // The scan is spawned, so this returns nothing; the outcome comes over the channel.
     assert!(
-        app.event(&AppEvent::Open(vec![path], OpenOptions::default()))
+        app.event(AppEvent::Open(vec![path], OpenOptions::default()))
             .is_none(),
         "scan should be spawned, not run inline"
     );
@@ -1421,7 +1421,7 @@ fn test_open_s3_url_returns_crash_or_loads() {
         "expected a scan outcome for an S3 URL"
     );
     // With cloud feature and valid credentials/bucket, the scan can succeed.
-    let _ = app.event(&ended);
+    let _ = app.event(ended);
     if let Some(message) = app.error_message() {
         // Either way, the error names the s3:// URL.
         assert!(
@@ -1438,7 +1438,7 @@ fn test_open_http_url_attempts_load_or_returns_friendly_error() {
     let path = PathBuf::from("https://example.com/data.csv");
     // The size is asked for, or the file scanned, on a worker: the open returns at once,
     // waiting on it.
-    let next = app.event(&AppEvent::Open(vec![path], OpenOptions::default()));
+    let next = app.event(AppEvent::Open(vec![path], OpenOptions::default()));
     assert!(next.is_none(), "nothing is read on the event thread");
     assert!(app.is_busy(), "the open is under way");
 }
@@ -1451,7 +1451,7 @@ fn test_multiple_remote_paths_returns_error() {
         PathBuf::from("s3://bucket/a.parquet"),
         PathBuf::from("s3://bucket/b.parquet"),
     ];
-    let next = app.event(&AppEvent::Open(paths, OpenOptions::default()));
+    let next = app.event(AppEvent::Open(paths, OpenOptions::default()));
     match next.as_ref() {
         Some(AppEvent::Crash(m)) => assert!(
             m.contains("one S3") || m.contains("one at a time"),
@@ -1466,7 +1466,7 @@ fn test_multiple_remote_paths_returns_error() {
         PathBuf::from("https://example.com/a.csv"),
         PathBuf::from("https://example.com/b.csv"),
     ];
-    let next = app.event(&AppEvent::Open(paths, OpenOptions::default()));
+    let next = app.event(AppEvent::Open(paths, OpenOptions::default()));
     match next.as_ref() {
         Some(AppEvent::Crash(m)) => assert!(
             m.contains("one") && (m.contains("HTTP") || m.contains("URL")),
@@ -1483,7 +1483,7 @@ fn test_open_gs_url_returns_friendly_error_or_attempts_load() {
     let mut app = App::new(tx, common::test_runtime());
     let path = PathBuf::from("gs://my-bucket/path/file.parquet");
     assert!(
-        app.event(&AppEvent::Open(vec![path], OpenOptions::default()))
+        app.event(AppEvent::Open(vec![path], OpenOptions::default()))
             .is_none(),
         "scan should be spawned, not run inline"
     );
@@ -1493,7 +1493,7 @@ fn test_open_gs_url_returns_friendly_error_or_attempts_load() {
         matches!(ended, AppEvent::JobEnded(t) if t.kind() == JobKind::Load),
         "expected a scan outcome for a gs:// URL"
     );
-    let _ = app.event(&ended);
+    let _ = app.event(ended);
     if let Some(message) = app.error_message() {
         assert!(
             message.contains("GCS") || message.contains("gs://") || message.contains("not enabled"),
@@ -1581,7 +1581,7 @@ fn test_startup_buffer_race_does_not_lose_rows() {
                 match rx.try_recv() {
                     Ok(AppEvent::Crash(msg)) => panic!("iteration {iteration}: Crash: {msg}"),
                     Ok(event) => {
-                        if let Some(next) = app.event(&event) {
+                        if let Some(next) = app.event(event) {
                             tx.send(next).unwrap();
                         }
                     }
@@ -1663,10 +1663,10 @@ fn test_esc_cancels_a_distribution_analysis_in_flight() {
         OpenOptions::default(),
     );
 
-    app.event(&key(KeyCode::Char('a')));
+    app.event(key(KeyCode::Char('a')));
     app.analysis_modal.sidebar_state.select(Some(1));
     show_sample_form(&mut app);
-    let next = app.event(&key(KeyCode::Enter));
+    let next = app.event(key(KeyCode::Enter));
     assert!(matches!(
         next,
         Some(AppEvent::AnalysisCompute(
@@ -1678,7 +1678,7 @@ fn test_esc_cancels_a_distribution_analysis_in_flight() {
         Some(AnalysisTool::DistributionAnalysis)
     );
     // The run starts on a worker.
-    app.event(&next.unwrap());
+    app.event(next.unwrap());
     assert!(app.analysis_modal.computing.is_some());
 
     let area = Rect::new(0, 0, 120, 24);
@@ -1690,7 +1690,7 @@ fn test_esc_cancels_a_distribution_analysis_in_flight() {
 
     let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
     assert!(app.hard_escape_while_busy(&esc), "Esc jumps the queue");
-    app.event(&AppEvent::Key(esc));
+    app.event(AppEvent::Key(esc));
     assert!(app.analysis_modal.computing.is_none());
     assert_eq!(app.analysis_modal.selected_tool, None);
     assert!(app.analysis_modal.active, "still on the analysis screen");
@@ -1719,24 +1719,24 @@ fn the_sample_size_is_typed_in_shorthand() {
     let mut app = App::new(tx, common::test_runtime());
     pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
 
-    app.event(&key(KeyCode::Char('a')));
+    app.event(key(KeyCode::Char('a')));
     app.analysis_modal.sidebar_state.select(Some(0));
     show_sample_form(&mut app);
     let form = app.analysis_modal.sample_form.as_mut().unwrap();
     assert!(datui::form::Form::focus(form, SampleField::Size));
     for c in "zz".chars() {
-        app.event(&key(KeyCode::Char(c)));
+        app.event(key(KeyCode::Char(c)));
     }
-    app.event(&key(KeyCode::Enter));
+    app.event(key(KeyCode::Enter));
     let form = app.analysis_modal.sample_form.as_ref().expect("stays open");
     assert!(form.error.as_deref().unwrap_or("").contains("50k"));
     for _ in 0..2 {
-        app.event(&key(KeyCode::Backspace));
+        app.event(key(KeyCode::Backspace));
     }
     for c in "5k".chars() {
-        app.event(&key(KeyCode::Char(c)));
+        app.event(key(KeyCode::Char(c)));
     }
-    app.event(&key(KeyCode::Enter));
+    app.event(key(KeyCode::Enter));
     assert!(app.analysis_modal.sample_form.is_none());
     assert_eq!(app.analysis_modal.sample.rows, 5_000);
 }
@@ -1759,15 +1759,15 @@ fn m_switches_the_correlation_matrix_between_pearson_and_spearman() {
     let mut app = App::new(tx, common::test_runtime());
     pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
 
-    app.event(&key(KeyCode::Char('a')));
+    app.event(key(KeyCode::Char('a')));
     app.analysis_modal.sidebar_state.select(Some(2));
     show_sample_form(&mut app);
-    let next = app.event(&key(KeyCode::Enter));
+    let next = app.event(key(KeyCode::Enter));
     assert!(matches!(
         next,
         Some(AppEvent::AnalysisCompute(AnalysisTool::CorrelationMatrix))
     ));
-    app.event(&next.unwrap());
+    app.event(next.unwrap());
     drain_events(&mut app, &rx);
     assert_eq!(
         app.analysis_modal.selected_tool,
@@ -1781,7 +1781,7 @@ fn m_switches_the_correlation_matrix_between_pearson_and_spearman() {
     assert!(screen.contains("0.9"), "three places: {screen}");
 
     assert!(
-        app.event(&key(KeyCode::Char('m'))).is_none(),
+        app.event(key(KeyCode::Char('m'))).is_none(),
         "nothing to read"
     );
     assert_eq!(
@@ -1793,7 +1793,7 @@ fn m_switches_the_correlation_matrix_between_pearson_and_spearman() {
     assert!(screen.contains(&format!("Spearman {rho}")), "{screen}");
     assert_eq!(screen.matches("1.000").count(), 4, "{screen}");
 
-    app.event(&key(KeyCode::Char('m')));
+    app.event(key(KeyCode::Char('m')));
     assert_eq!(
         app.analysis_modal.correlation_method,
         CorrelationMethod::Pearson
@@ -1815,7 +1815,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         OpenOptions::default(),
     );
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('a'),
         KeyModifiers::NONE,
     )));
@@ -1825,7 +1825,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     // default plan and leads with the result.
     assert_eq!(app.analysis_modal.quality.page, QualityPage::Setup);
     assert_eq!(app.analysis_modal.focus, AnalysisFocus::Main);
-    let mut next = app.event(&AppEvent::Key(KeyEvent::new(
+    let mut next = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
@@ -1834,7 +1834,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         Some(AppEvent::AnalysisCompute(AnalysisTool::DataQuality))
     ));
     while let Some(ev) = next {
-        next = app.event(&ev);
+        next = app.event(ev);
     }
     drain_events(&mut app, &rx);
     assert_eq!(
@@ -1846,14 +1846,14 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
 
     // A changed plan runs again from Setup, one e away, and e brings the cursor with
     // it, so the Enter that runs needs no Tab first.
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('e'),
         KeyModifiers::NONE,
     )));
     assert_eq!(app.analysis_modal.quality.page, QualityPage::Setup);
     assert_eq!(app.analysis_modal.focus, AnalysisFocus::Main);
     app.analysis_modal.quality.plan.sample_seed = 7_119;
-    let next = app.event(&AppEvent::Key(KeyEvent::new(
+    let next = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
@@ -1861,7 +1861,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         next,
         Some(AppEvent::AnalysisCompute(AnalysisTool::DataQuality))
     ));
-    app.event(&next.unwrap());
+    app.event(next.unwrap());
     drain_events(&mut app, &rx);
 
     assert!(app.analysis_modal.quality.results.is_some());
@@ -1886,7 +1886,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
             full_scale: None,
         });
     app.analysis_modal.quality.table_state.select(Some(0));
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
@@ -1903,7 +1903,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
             .contains("Check: clustered"),
         "the finding says what to check, not only its formula"
     );
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
@@ -1965,7 +1965,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         "Segments should name the column and measurement that moved"
     );
     // Enter shows a segment's every column and measure; Esc goes back to it.
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
@@ -1977,7 +1977,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         screen.contains("current view"),
         "the drill-in names its segment"
     );
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
@@ -2043,7 +2043,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     app.analysis_modal.quality.show_access = false;
 
     app.analysis_modal.set_quality_page(QualityPage::Segments);
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('b'),
         KeyModifiers::NONE,
     )));
@@ -2054,13 +2054,13 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     assert!(app.analysis_modal.quality.plan.baseline_segment.is_some());
     assert!(!app.is_busy());
     // Column and measure are the Trends chart's; Segments shows every column.
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('4'),
         KeyModifiers::NONE,
     )));
     assert_eq!(app.analysis_modal.quality.page, QualityPage::Trends);
     // The measure the Trends table draws; every column is on it at once.
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('m'),
         KeyModifiers::NONE,
     )));
@@ -2075,7 +2075,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     let fourth = app.analysis_modal.quality.results.as_ref().unwrap().columns[3]
         .name
         .clone();
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
@@ -2088,7 +2088,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         screen.contains(&fourth),
         "Detail should open the highlighted column {fourth}"
     );
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
@@ -2100,13 +2100,13 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     );
 
     app.analysis_modal.close();
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('a'),
         KeyModifiers::NONE,
     )));
     app.analysis_modal.sidebar_state.select(Some(3));
     show_sample_form(&mut app);
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
@@ -2116,7 +2116,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     assert!(!app.is_busy());
     // Selecting the tool no longer moves focus; cross into the result as the
     // user would, with Tab.
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Tab,
         KeyModifiers::NONE,
     )));
@@ -2192,13 +2192,13 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     }];
     results.derived = Default::default();
     app.analysis_modal.set_quality_page(QualityPage::Overview);
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
     assert!(app.analysis_modal.quality.observation_detail);
     // The run's rows are kept: they are cut in memory, off the UI thread.
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
@@ -2215,12 +2215,12 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
             .collect::<String>()
             .contains("Back")
     );
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('a'),
         KeyModifiers::NONE,
     )));
     assert!(!app.analysis_modal.active);
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
@@ -2234,13 +2234,13 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     app.analysis_modal.close();
     let state = app.data_table_state.as_mut().unwrap();
     state.deferred(|s| s.reverse());
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('a'),
         KeyModifiers::NONE,
     )));
     app.analysis_modal.sidebar_state.select(Some(3));
     show_sample_form(&mut app);
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
@@ -2266,18 +2266,18 @@ fn test_data_quality_scope_input_owns_question_mark() {
         OpenOptions::default(),
     );
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('a'),
         KeyModifiers::NONE,
     )));
     app.analysis_modal.sidebar_state.select(Some(3));
     show_sample_form(&mut app);
-    let mut next = app.event(&AppEvent::Key(KeyEvent::new(
+    let mut next = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
     while let Some(ev) = next {
-        next = app.event(&ev);
+        next = app.event(ev);
     }
     drain_events(&mut app, &rx);
     assert_eq!(
@@ -2287,11 +2287,11 @@ fn test_data_quality_scope_input_owns_question_mark() {
 
     // e to Setup, Space on the Sample row opens the Sample form, whose first row
     // is the scope typed as text.
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('e'),
         KeyModifiers::NONE,
     )));
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char(' '),
         KeyModifiers::NONE,
     )));
@@ -2301,7 +2301,7 @@ fn test_data_quality_scope_input_owns_question_mark() {
     // Rows from is a choice; a row range brings rows that are typed into.
     assert!(!app.text_field_focused());
     for code in [KeyCode::Right, KeyCode::Down] {
-        app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+        app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
     }
     assert_eq!(
         app.analysis_modal.sample_form.as_ref().unwrap().field,
@@ -2310,7 +2310,7 @@ fn test_data_quality_scope_input_owns_question_mark() {
     assert!(app.text_field_focused());
 
     // Ctrl-C quits from a text row too (#649).
-    let quit = app.event(&AppEvent::Key(KeyEvent::new(
+    let quit = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('c'),
         KeyModifiers::CONTROL,
     )));
@@ -2329,7 +2329,7 @@ fn test_data_quality_scope_input_owns_question_mark() {
             .to_string()
     };
     // The prefilled value is selected, so what is typed replaces it.
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('?'),
         KeyModifiers::NONE,
     )));
@@ -2354,13 +2354,13 @@ fn modified_letters_are_not_table_feature_keys() {
         OpenOptions::default(),
     );
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('e'),
         KeyModifiers::CONTROL,
     )));
     assert!(!app.export_modal.active, "Ctrl+E is not e");
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('y'),
         KeyModifiers::CONTROL,
     )));
@@ -2368,7 +2368,7 @@ fn modified_letters_are_not_table_feature_keys() {
 
     // And the plain letter still works. (Paging keeps Ctrl+F/B/D/U: those
     // four are the guard's explicit exceptions, matching their declared arms.)
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('e'),
         KeyModifiers::NONE,
     )));
@@ -2394,7 +2394,7 @@ fn declining_an_overwrite_keeps_the_export_form() {
     );
 
     let key =
-        |app: &mut App, code| app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+        |app: &mut App, code| app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
 
     key(&mut app, KeyCode::Char('e'));
     assert!(app.export_modal.active);
@@ -2461,9 +2461,9 @@ fn enter_on_a_tool_enters_its_pane_and_esc_steps_back() {
 
     let (mut app, rx, _tx) = open_query_filter_fixture("analysis_focus.csv");
     let press = |app: &mut App, code: KeyCode| {
-        let mut next = app.event(&key(code));
+        let mut next = app.event(key(code));
         while let Some(ev) = next {
-            next = app.event(&ev);
+            next = app.event(ev);
         }
     };
 
@@ -2558,9 +2558,9 @@ fn enter_on_a_tool_enters_its_pane_and_esc_steps_back() {
 fn the_correlation_matrix_starts_on_a_pair() {
     let (mut app, rx, _tx) = open_query_filter_fixture("analysis_pairs.csv");
     let press = |app: &mut App, code: KeyCode| {
-        let mut next = app.event(&key(code));
+        let mut next = app.event(key(code));
         while let Some(ev) = next {
-            next = app.event(&ev);
+            next = app.event(ev);
         }
     };
     press(&mut app, KeyCode::Char('a'));
@@ -2588,13 +2588,13 @@ fn data_quality_on_a_local_file_leads_with_the_result() {
 
     let (mut app, rx, _tx) = open_query_filter_fixture("dq_local_lead.csv");
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('a'),
         KeyModifiers::NONE,
     )));
     app.analysis_modal.sidebar_state.select(Some(3));
     show_sample_form(&mut app);
-    let mut next = app.event(&AppEvent::Key(KeyEvent::new(
+    let mut next = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
@@ -2606,7 +2606,7 @@ fn data_quality_on_a_local_file_leads_with_the_result() {
         "a local default plan runs without ceremony"
     );
     while let Some(ev) = next {
-        next = app.event(&ev);
+        next = app.event(ev);
     }
     drain_events(&mut app, &rx);
 
@@ -2623,7 +2623,7 @@ fn data_quality_on_a_local_file_leads_with_the_result() {
     // The run started from the form, so the cursor is on the result it made.
     assert_eq!(app.analysis_modal.focus, AnalysisFocus::Main);
     for expected in [AnalysisFocus::Sidebar, AnalysisFocus::Main] {
-        app.event(&AppEvent::Key(KeyEvent::new(
+        app.event(AppEvent::Key(KeyEvent::new(
             KeyCode::Tab,
             KeyModifiers::NONE,
         )));
@@ -2631,7 +2631,7 @@ fn data_quality_on_a_local_file_leads_with_the_result() {
     }
 
     // e from the result opens Setup.
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('e'),
         KeyModifiers::NONE,
     )));
@@ -2679,7 +2679,7 @@ fn data_quality_reads_as_a_report() {
     pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
     pump_until_idle(&mut app, &rx, &tx);
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('a'),
         KeyModifiers::NONE,
     )));
@@ -2704,7 +2704,7 @@ fn data_quality_reads_as_a_report() {
             "Setup shows {section:?}:\n{screen}"
         );
     }
-    let mut next = app.event(&AppEvent::Key(KeyEvent::new(
+    let mut next = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
@@ -2721,7 +2721,7 @@ fn data_quality_reads_as_a_report() {
         assert!(!screen.contains(gone), "{gone:?} shows during a run");
     }
     while let Some(ev) = next {
-        next = app.event(&ev);
+        next = app.event(ev);
     }
     drain_events(&mut app, &rx);
     assert_eq!(app.analysis_modal.quality.page, QualityPage::Overview);
@@ -2786,7 +2786,7 @@ fn data_quality_reads_as_a_report() {
         (QualityPage::Trends, "Enter Set grain"),
     ] {
         if page != QualityPage::Overview {
-            app.event(&AppEvent::Key(KeyEvent::new(
+            app.event(AppEvent::Key(KeyEvent::new(
                 KeyCode::Right,
                 KeyModifiers::NONE,
             )));
@@ -2803,7 +2803,7 @@ fn data_quality_reads_as_a_report() {
     app.render(area, &mut buffer);
     let screen = common::buffer_text(&buffer);
     assert!(screen.contains("Set grain") && !screen.contains("Metric"));
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
@@ -2830,11 +2830,11 @@ fn data_quality_reads_as_a_report() {
     assert!(bar_now(&mut app).contains("Choose"));
     // Choosing stages the edit; the report keeps the plan it was measured with, and
     // nothing runs.
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Down,
         KeyModifiers::NONE,
     )));
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
@@ -2851,20 +2851,20 @@ fn data_quality_reads_as_a_report() {
     app.render(area, &mut buffer);
     assert!(common::buffer_text(&buffer).contains("Enter runs, Esc discards"));
     // Esc discards the staged edit and goes back to the report.
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
     assert!(!app.analysis_modal.quality_plan_pending());
     assert_eq!(app.analysis_modal.quality.page, QualityPage::Trends);
     // Each row names what Space does with it.
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('e'),
         KeyModifiers::NONE,
     )));
     assert!(bar_now(&mut app).contains("Space Sample"));
     for _ in 0..2 {
-        app.event(&AppEvent::Key(KeyEvent::new(
+        app.event(AppEvent::Key(KeyEvent::new(
             KeyCode::Down,
             KeyModifiers::NONE,
         )));
@@ -2883,30 +2883,30 @@ fn data_quality_reads_as_a_report() {
     // Text columns can take a role, read through a format.
     assert!(bar_now(&mut app).contains("Time roles"));
     // Enter runs from any row; the plan is the one measured, so the report opens.
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('1'),
         KeyModifiers::NONE,
     )));
     assert_eq!(app.analysis_modal.quality.page, QualityPage::Overview);
     assert!(app.analysis_modal.quality.results.is_some());
     // With the tool list focused the bar names its keys, not the page's.
-    let tab = AppEvent::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-    app.event(&tab);
+    let tab = || AppEvent::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.event(tab());
     let bar = bar_now(&mut app);
     assert!(
         bar.contains("Enter Open") && !bar.contains("Details"),
         "{bar}"
     );
-    app.event(&tab);
+    app.event(tab());
     assert!(bar_now(&mut app).contains("Details"));
 
     // The clean entry lists what was checked: the most important few, then all.
     for code in [KeyCode::End, KeyCode::Enter] {
-        app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+        app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
     }
     assert!(app.analysis_modal.quality.observation_detail);
     let mut buffer = Buffer::empty(area);
@@ -2922,7 +2922,7 @@ fn data_quality_reads_as_a_report() {
         screen.contains("All checks"),
         "the bar says Enter shows the rest"
     );
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
@@ -2935,15 +2935,15 @@ fn data_quality_reads_as_a_report() {
     let screen = common::buffer_text(&buffer);
     assert!(screen.contains("Nearly unique") && screen.contains("Fewer checks"));
     for code in [KeyCode::Esc, KeyCode::Home] {
-        app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+        app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
     }
 
     // The grouped finding opens every row it counts, and only those.
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Down,
         KeyModifiers::NONE,
     )));
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
@@ -2964,7 +2964,7 @@ fn data_quality_reads_as_a_report() {
         screen.contains("Show rows"),
         "the bar names what Enter does"
     );
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
@@ -3006,9 +3006,9 @@ fn a_long_finding_scrolls() {
     pump_until_idle(&mut app, &rx, &tx);
 
     let press = |app: &mut App, code| {
-        let mut next = app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+        let mut next = app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
         while let Some(ev) = next {
-            next = app.event(&ev);
+            next = app.event(ev);
         }
     };
     press(&mut app, KeyCode::Char('a'));
@@ -3075,15 +3075,15 @@ fn a_sampled_finding_opens_its_sampled_rows() {
     app.analysis_modal.sample.rows = 1_000;
 
     let enter = || AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('a'),
         KeyModifiers::NONE,
     )));
     app.analysis_modal.sidebar_state.select(Some(3));
     show_sample_form(&mut app);
-    let mut next = app.event(&enter());
+    let mut next = app.event(enter());
     while let Some(ev) = next {
-        next = app.event(&ev);
+        next = app.event(ev);
     }
     drain_events(&mut app, &rx);
     assert_eq!(app.analysis_modal.quality.page, QualityPage::Overview);
@@ -3099,7 +3099,7 @@ fn a_sampled_finding_opens_its_sampled_rows() {
     assert!(expected > 0 && expected < 1_000);
 
     app.analysis_modal.quality.table_state.select(Some(index));
-    app.event(&enter());
+    app.event(enter());
     assert!(app.analysis_modal.quality.observation_detail);
     let area = Rect::new(0, 0, 110, 30);
     let mut buffer = Buffer::empty(area);
@@ -3112,9 +3112,9 @@ fn a_sampled_finding_opens_its_sampled_rows() {
     assert!(screen.contains("Show rows"));
     assert!(!screen.contains("full profile"));
 
-    let mut next = app.event(&enter());
+    let mut next = app.event(enter());
     while let Some(ev) = next {
-        next = app.event(&ev);
+        next = app.event(ev);
     }
     drain_events(&mut app, &rx);
     pump_until_idle(&mut app, &rx, &tx);
@@ -3125,7 +3125,7 @@ fn a_sampled_finding_opens_its_sampled_rows() {
         expected,
         "exactly the rows the finding counted"
     );
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
@@ -3357,7 +3357,7 @@ fn findings_narrow_order_and_open_kept_evidence_without_a_read() {
     assert_glyph_slots(&screen);
     let mut next = press(&mut app, KeyCode::Enter);
     while let Some(event) = next {
-        next = app.event(&event);
+        next = app.event(event);
     }
     drain_events(&mut app, &rx);
     pump_until_idle(&mut app, &rx, &tx);
@@ -3392,7 +3392,7 @@ fn findings_narrow_order_and_open_kept_evidence_without_a_read() {
     );
     let mut next = press(&mut app, KeyCode::Enter);
     while let Some(event) = next {
-        next = app.event(&event);
+        next = app.event(event);
     }
     drain_events(&mut app, &rx);
     pump_until_idle(&mut app, &rx, &tx);
@@ -3525,7 +3525,7 @@ fn full_scan_evidence_is_read_only_on_confirm() {
     press(&mut app, KeyCode::Enter);
     let mut next = press(&mut app, KeyCode::Enter);
     while let Some(event) = next {
-        next = app.event(&event);
+        next = app.event(event);
     }
     drain_events(&mut app, &rx);
     pump_until_idle(&mut app, &rx, &tx);
@@ -3593,7 +3593,7 @@ fn evidence_rows_over_a_decompressed_file_hold_it() {
     assert!(app.analysis_modal.quality.evidence_read.is_some());
     let mut next = press(&mut app, KeyCode::Enter);
     while let Some(event) = next {
-        next = app.event(&event);
+        next = app.event(event);
     }
     drain_events(&mut app, &rx);
     pump_until_idle(&mut app, &rx, &tx);
@@ -3644,11 +3644,11 @@ fn one_sample_serves_every_analysis_tool() {
     pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
     pump_until_idle(&mut app, &rx, &tx);
     let key =
-        |app: &mut App, code| app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+        |app: &mut App, code| app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
     let run = |app: &mut App, next: Option<AppEvent>| {
         let mut next = next;
         while let Some(ev) = next {
-            next = app.event(&ev);
+            next = app.event(ev);
         }
         drain_events(app, &rx);
     };
@@ -3811,7 +3811,7 @@ fn the_data_quality_ceremony_takes_the_cursor_with_it() {
 
     let (mut app, _rx, _tx) = open_query_filter_fixture("dq_ceremony_focus.csv");
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('a'),
         KeyModifiers::NONE,
     )));
@@ -3820,7 +3820,7 @@ fn the_data_quality_ceremony_takes_the_cursor_with_it() {
     app.analysis_modal.sample.method = datui::sampling::SampleMethod::EveryRow;
     app.analysis_modal.sidebar_state.select(Some(3));
     show_sample_form(&mut app);
-    let next = app.event(&AppEvent::Key(KeyEvent::new(
+    let next = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
@@ -3841,7 +3841,7 @@ fn the_data_quality_ceremony_takes_the_cursor_with_it() {
 
     // The run asked for confirmation, and Enter confirms — no Tab required.
     assert!(app.confirmation_modal.asks_full_scan());
-    let next = app.event(&AppEvent::Key(KeyEvent::new(
+    let next = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
@@ -3860,18 +3860,18 @@ fn e_moves_the_cursor_into_the_plan_editor() {
 
     let (mut app, rx, _tx) = open_query_filter_fixture("dq_editor_focus.csv");
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('a'),
         KeyModifiers::NONE,
     )));
     app.analysis_modal.sidebar_state.select(Some(3));
     show_sample_form(&mut app);
-    let mut next = app.event(&AppEvent::Key(KeyEvent::new(
+    let mut next = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
     while let Some(ev) = next {
-        next = app.event(&ev);
+        next = app.event(ev);
     }
     drain_events(&mut app, &rx);
     assert!(app.analysis_modal.quality.results.is_some());
@@ -3879,7 +3879,7 @@ fn e_moves_the_cursor_into_the_plan_editor() {
     app.analysis_modal.focus = AnalysisFocus::Sidebar;
 
     let tool_row = app.analysis_modal.sidebar_state.selected();
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('e'),
         KeyModifiers::NONE,
     )));
@@ -3893,7 +3893,7 @@ fn e_moves_the_cursor_into_the_plan_editor() {
         "e moves the cursor onto the plan"
     );
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Down,
         KeyModifiers::NONE,
     )));
@@ -3906,7 +3906,7 @@ fn e_moves_the_cursor_into_the_plan_editor() {
         tool_row,
         "the tool selector never moves"
     );
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Up,
         KeyModifiers::NONE,
     )));
@@ -3922,18 +3922,18 @@ fn r_from_the_sidebar_runs_a_sampled_report_again() {
 
     let (mut app, rx, _tx) = open_query_filter_fixture("dq_run_key_focus.csv");
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('a'),
         KeyModifiers::NONE,
     )));
     app.analysis_modal.sidebar_state.select(Some(3));
     show_sample_form(&mut app);
-    let mut next = app.event(&AppEvent::Key(KeyEvent::new(
+    let mut next = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
     while let Some(ev) = next {
-        next = app.event(&ev);
+        next = app.event(ev);
     }
     drain_events(&mut app, &rx);
     app.analysis_modal.focus = AnalysisFocus::Sidebar;
@@ -4030,7 +4030,7 @@ fn drain_quality(
             {
                 stages += 1
             }
-            next = app.event(&event);
+            next = app.event(event);
             // A run that failed says so; one that finished does not.
             if run && app.error_message().is_none() {
                 finished += 1;
@@ -4204,7 +4204,7 @@ fn run_quality_reads(
             {
                 reads.push(phase.stage);
             }
-            next = app.event(&event);
+            next = app.event(event);
         }
     };
     handle(app, first.unwrap());
@@ -4431,10 +4431,10 @@ fn data_quality_setup_names_every_count_pass_on_one_parquet_file() {
         let mut app = App::new(tx.clone(), common::test_runtime());
         pump_open_until_loaded(&mut app, &rx, vec![path.clone()], OpenOptions::default());
         pump_until_idle(&mut app, &rx, &tx);
-        if let Some(view) = &view {
+        if let Some(view) = view {
             let mut next = app.event(view);
             while let Some(event) = next {
-                next = app.event(&event);
+                next = app.event(event);
             }
             pump_until_idle(&mut app, &rx, &tx);
         }
@@ -4906,7 +4906,7 @@ fn intervals_are_chosen_in_setup_and_inspected_without_a_read() {
     std::fs::remove_file(&path).unwrap();
     let mut next = press(&mut app, KeyCode::Enter);
     while let Some(event) = next {
-        next = app.event(&event);
+        next = app.event(event);
     }
     drain_events(&mut app, &rx);
     pump_until_idle(&mut app, &rx, &tx);
@@ -5485,7 +5485,7 @@ fn conflict_evidence_is_read_only_by_a_full_scan() {
                 {
                     reads.push(phase.stage);
                 }
-                next = app.event(&event);
+                next = app.event(event);
             }
             None => match next_event(&app, &rx) {
                 Some(event) => next = Some(event),
@@ -5600,17 +5600,17 @@ fn test_data_quality_scope_editor_runs_selected_view_rows() {
         OpenOptions::default(),
     );
     let key =
-        |app: &mut App, code| app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+        |app: &mut App, code| app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
     key(&mut app, KeyCode::Char('a'));
     app.analysis_modal.sidebar_state.select(Some(3));
     show_sample_form(&mut app);
     // A run of the default plan settles before the scope edit.
-    let mut next = app.event(&AppEvent::Key(KeyEvent::new(
+    let mut next = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
     while let Some(ev) = next {
-        next = app.event(&ev);
+        next = app.event(ev);
     }
     drain_events(&mut app, &rx);
     assert_eq!(
@@ -5662,7 +5662,7 @@ fn test_data_quality_scope_editor_runs_selected_view_rows() {
         next,
         Some(AppEvent::AnalysisCompute(AnalysisTool::DataQuality))
     ));
-    app.event(&next.unwrap());
+    app.event(next.unwrap());
     drain_events(&mut app, &rx);
     assert_eq!(
         app.analysis_modal
@@ -5707,7 +5707,7 @@ fn test_data_quality_scope_editor_runs_selected_view_rows() {
         next,
         Some(AppEvent::AnalysisCompute(AnalysisTool::DataQuality))
     ));
-    app.event(&next.unwrap());
+    app.event(next.unwrap());
     drain_events(&mut app, &rx);
 
     // The earlier sample again is the session cache's, not another read.
@@ -5729,19 +5729,19 @@ fn test_data_quality_source_file_scope_uses_loaded_file_order() {
     write_parquet(dir.path(), "region=one", df!("id" => &[1i32, 2]).unwrap());
     write_parquet(dir.path(), "region=two", df!("id" => &[3i32, 4]).unwrap());
     let (mut app, rx, _) = open_local_dataset_with_channel(dir.path());
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('a'),
         KeyModifiers::NONE,
     )));
     app.analysis_modal.sidebar_state.select(Some(3));
     show_sample_form(&mut app);
     // A run of the default plan settles first.
-    let mut next = app.event(&AppEvent::Key(KeyEvent::new(
+    let mut next = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
     while let Some(ev) = next {
-        next = app.event(&ev);
+        next = app.event(ev);
     }
     drain_events(&mut app, &rx);
     assert_eq!(
@@ -5750,12 +5750,12 @@ fn test_data_quality_source_file_scope_uses_loaded_file_order() {
     );
     app.analysis_modal.focus = AnalysisFocus::Main;
     // e leaves the result for Setup; the scoped run starts there.
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('e'),
         KeyModifiers::NONE,
     )));
     app.analysis_modal.quality.plan.scope = QualityScope::SourceFiles(vec![2]);
-    let next = app.event(&AppEvent::Key(KeyEvent::new(
+    let next = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
@@ -5763,7 +5763,7 @@ fn test_data_quality_source_file_scope_uses_loaded_file_order() {
         next,
         Some(AppEvent::AnalysisCompute(AnalysisTool::DataQuality))
     ));
-    app.event(&next.unwrap());
+    app.event(next.unwrap());
     drain_events(&mut app, &rx);
     let results = app.analysis_modal.quality.results.as_ref().unwrap();
     assert_eq!(results.total_rows, Some(2));
@@ -5780,7 +5780,7 @@ fn test_data_quality_source_file_scope_uses_loaded_file_order() {
     let plan = &mut app.analysis_modal.quality.plan;
     plan.scope = QualityScope::WholeSource;
     plan.dataset_rows = 1;
-    app.event(&AppEvent::AnalysisCompute(AnalysisTool::DataQuality));
+    app.event(AppEvent::AnalysisCompute(AnalysisTool::DataQuality));
     drain_events(&mut app, &rx);
     let sampled = app.analysis_modal.quality.results.as_ref().unwrap();
     // The sampler counts the whole scope as it spreads the sample over it.
@@ -5794,7 +5794,7 @@ fn test_data_quality_source_file_scope_uses_loaded_file_order() {
     let plan = &mut app.analysis_modal.quality.plan;
     plan.method = datui::sampling::SampleMethod::EveryRow;
     plan.compute = datui::data_quality::QualityCompute::Full;
-    app.event(&AppEvent::AnalysisCompute(AnalysisTool::DataQuality));
+    app.event(AppEvent::AnalysisCompute(AnalysisTool::DataQuality));
     drain_events(&mut app, &rx);
     let full = app.analysis_modal.quality.results.as_ref().unwrap();
     assert_eq!(full.total_rows, Some(4));
@@ -5807,7 +5807,7 @@ fn test_data_quality_source_file_scope_uses_loaded_file_order() {
     plan.compute = datui::data_quality::QualityCompute::Sample;
     plan.dataset_rows = 3;
     plan.grain = datui::data_quality::QualityGrain::File;
-    app.event(&AppEvent::AnalysisCompute(AnalysisTool::DataQuality));
+    app.event(AppEvent::AnalysisCompute(AnalysisTool::DataQuality));
     drain_events(&mut app, &rx);
     let by_file = app.analysis_modal.quality.results.as_ref().unwrap();
     assert_eq!(by_file.total_rows, Some(4));
@@ -5872,7 +5872,7 @@ fn test_scroll_past_end_does_not_hang_busy() {
                 app.spawn_async_collect("Loading buffer...");
             }
             while let Ok(ev) = rx.try_recv() {
-                if let Some(next) = app.event(&ev) {
+                if let Some(next) = app.event(ev) {
                     let _ = tx.send(next);
                 }
             }
@@ -5890,7 +5890,7 @@ fn test_scroll_past_end_does_not_hang_busy() {
     // Jump to end via End key, then hammer PageDown a bunch — same sequence that
     // used to wedge the app. Each PageDown sets `busy=true` in the key handler;
     // the deferred scroll must clear it once the spawn no-ops past the bottom.
-    if let Some(next) = app.event(&AppEvent::Key(KeyEvent::new(
+    if let Some(next) = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::End,
         KeyModifiers::NONE,
     ))) {
@@ -5899,7 +5899,7 @@ fn test_scroll_past_end_does_not_hang_busy() {
     settle(&mut app, &rx, &tx);
 
     for i in 0..15 {
-        if let Some(next) = app.event(&AppEvent::Key(KeyEvent::new(
+        if let Some(next) = app.event(AppEvent::Key(KeyEvent::new(
             KeyCode::PageDown,
             KeyModifiers::NONE,
         ))) {
@@ -5949,7 +5949,7 @@ fn test_async_collect_handles_invalidated_num_rows() {
         value: "200".to_string(),
         logical_op: LogicalOperator::And,
     };
-    app.event(&AppEvent::Filter(vec![filter]));
+    app.event(AppEvent::Filter(vec![filter]));
 
     // Drain the count and the page.
     for _ in ticks() {
@@ -5969,7 +5969,7 @@ fn test_async_collect_handles_invalidated_num_rows() {
             app.spawn_async_collect("Loading buffer...");
         }
         while let Ok(ev) = rx.try_recv() {
-            if let Some(next) = app.event(&ev) {
+            if let Some(next) = app.event(ev) {
                 let _ = tx.send(next);
             }
         }
@@ -6037,7 +6037,7 @@ fn test_hive_dir_loads_and_counts_via_footers() {
             app.spawn_async_collect("Loading buffer...");
         }
         while let Ok(ev) = rx.try_recv() {
-            if let Some(next) = app.event(&ev) {
+            if let Some(next) = app.event(ev) {
                 let _ = tx.send(next);
             }
         }
@@ -6168,7 +6168,7 @@ fn test_a_local_hive_past_one_wave_opens_from_its_ends_and_reads_each_footer_onc
     let mut next = Some(AppEvent::Open(vec![dir.path().to_path_buf()], opts));
     loop {
         if let Some(event) = next.take() {
-            next = app.event(&event);
+            next = app.event(event);
             continue;
         }
         let opened = app
@@ -6532,7 +6532,7 @@ fn painted(
         let mut handled = false;
         while let Ok(ev) = rx.try_recv() {
             handled = true;
-            if let Some(next) = app.event(&ev) {
+            if let Some(next) = app.event(ev) {
                 let _ = tx.send(next);
             }
         }
@@ -6693,12 +6693,12 @@ fn test_the_notes_accent_reaches_the_footer_and_the_config_can_stop_it() {
     let (accented, accented_text) = bar_of(&mut app);
 
     // Opening the panel clears it, and the bar goes back to its ordinary colours.
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('i'),
         KeyModifiers::NONE,
     )));
     let _ = painted(&mut app, &rx, &tx, area);
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
@@ -7368,7 +7368,7 @@ fn test_the_notes_tab_offers_to_read_a_conflicting_column_as_text() {
     );
 
     // Open the Info panel and walk to the Notes tab.
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('i'),
         KeyModifiers::NONE,
     )));
@@ -7376,7 +7376,7 @@ fn test_the_notes_tab_offers_to_read_a_conflicting_column_as_text() {
     // the ones under test. Tab first: the panel opens on the body, where the arrows
     // move the schema table rather than the tab bar. The conflict note's own words say
     // when we have arrived.
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Tab,
         KeyModifiers::NONE,
     )));
@@ -7385,7 +7385,7 @@ fn test_the_notes_tab_offers_to_read_a_conflicting_column_as_text() {
         if panel.contains("and not read there") {
             break;
         }
-        app.event(&AppEvent::Key(KeyEvent::new(
+        app.event(AppEvent::Key(KeyEvent::new(
             KeyCode::Right,
             KeyModifiers::NONE,
         )));
@@ -7407,7 +7407,7 @@ fn test_the_notes_tab_offers_to_read_a_conflicting_column_as_text() {
     };
     let at = offered(&app).expect("the conflict note offers to read the column as text");
     for _ in 0..at {
-        app.event(&AppEvent::Key(KeyEvent::new(
+        app.event(AppEvent::Key(KeyEvent::new(
             KeyCode::Down,
             KeyModifiers::NONE,
         )));
@@ -7418,11 +7418,11 @@ fn test_the_notes_tab_offers_to_read_a_conflicting_column_as_text() {
         "the panel says the offer is there: {panel}"
     );
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
@@ -7537,11 +7537,11 @@ fn test_the_offer_and_the_hidden_count_do_not_overwrite_each_other() {
     // 44 this test is about.
     let area = Rect::new(0, 0, 74, 12);
     let _ = painted(&mut app, &rx, &tx, area);
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('i'),
         KeyModifiers::NONE,
     )));
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Tab,
         KeyModifiers::NONE,
     )));
@@ -7550,7 +7550,7 @@ fn test_the_offer_and_the_hidden_count_do_not_overwrite_each_other() {
         if panel.contains("and not read there") {
             break;
         }
-        app.event(&AppEvent::Key(KeyEvent::new(
+        app.event(AppEvent::Key(KeyEvent::new(
             KeyCode::Right,
             KeyModifiers::NONE,
         )));
@@ -7568,7 +7568,7 @@ fn test_the_offer_and_the_hidden_count_do_not_overwrite_each_other() {
     };
     let at = offered(&app).expect("a conflict note offers to read its column as text");
     for _ in 0..at {
-        app.event(&AppEvent::Key(KeyEvent::new(
+        app.event(AppEvent::Key(KeyEvent::new(
             KeyCode::Down,
             KeyModifiers::NONE,
         )));
@@ -7664,7 +7664,7 @@ fn test_reading_a_column_as_text_from_the_panel_reads_in_the_background() {
     let area = Rect::new(0, 0, 100, 24);
     let _ = painted(&mut app, &rx, &tx, area);
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('i'),
         KeyModifiers::NONE,
     )));
@@ -7676,7 +7676,7 @@ fn test_reading_a_column_as_text_from_the_panel_reads_in_the_background() {
         .position(|note| note.read_as_text.is_some())
         .expect("the conflict note offers to read n as text");
     assert!(state.is_num_rows_valid());
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
@@ -8610,7 +8610,7 @@ fn run_to_idle(
     tx: &mpsc::Sender<AppEvent>,
     first: AppEvent,
 ) {
-    if let Some(next) = app.event(&first) {
+    if let Some(next) = app.event(first) {
         let _ = tx.send(next);
     }
     pump_until_idle(app, rx, tx);
@@ -9169,7 +9169,7 @@ fn test_durations_export_and_copy_as_iso_8601() {
     copy_scope(&mut app, datui::copy_modal::CopyScope::Table);
     let mut next = press(&mut app, KeyCode::Enter);
     while let Some(ev) = next {
-        next = app.event(&ev);
+        next = app.event(ev);
     }
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(last(&copies).text, tsv.join("\n"));
@@ -9655,7 +9655,7 @@ fn test_a_drifting_dataset_has_notes_and_offers_them_once() {
     assert!(state.notes_unseen(), "not offered yet");
 
     // Pressing i opens the panel, which is the offer being taken up.
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('i'),
         KeyModifiers::NONE,
     )));
@@ -9715,7 +9715,7 @@ fn test_notes_past_the_fold_are_counted_and_reachable() {
     assert_eq!(app.data_table_state.as_ref().unwrap().notes().len(), 6);
 
     // Unread notes put their tab in front, so opening the panel is the whole walk.
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('i'),
         KeyModifiers::NONE,
     )));
@@ -9753,7 +9753,7 @@ fn test_notes_past_the_fold_are_counted_and_reachable() {
 
     // The cursor reaches the last note, which scrolls it into view.
     for _ in 0..6 {
-        app.event(&AppEvent::Key(KeyEvent::new(
+        app.event(AppEvent::Key(KeyEvent::new(
             KeyCode::Char('j'),
             KeyModifiers::NONE,
         )));
@@ -9842,7 +9842,7 @@ fn test_a_note_that_fills_the_panel_is_drawn_not_refused() {
 
     let mut app = open_local_dataset(dir.path());
     // Unread notes put their tab in front, so opening the panel is the whole walk.
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('i'),
         KeyModifiers::NONE,
     )));
@@ -10113,7 +10113,7 @@ fn test_the_export_options_panel_reads_as_one_for_every_format() {
     let mut app = open_local_dataset(dir.path());
     // The modal opens with focus on the path, where → does not change the format.
     for key in [KeyCode::Char('e'), KeyCode::BackTab] {
-        app.event(&AppEvent::Key(KeyEvent::new(key, KeyModifiers::NONE)));
+        app.event(AppEvent::Key(KeyEvent::new(key, KeyModifiers::NONE)));
     }
     assert!(app.export_modal.offer_source_file, "the files disagree");
     assert_eq!(
@@ -10156,7 +10156,7 @@ fn test_the_export_options_panel_reads_as_one_for_every_format() {
             Some(_) => {}
         }
         // Step to the next format.
-        app.event(&AppEvent::Key(KeyEvent::new(
+        app.event(AppEvent::Key(KeyEvent::new(
             KeyCode::Right,
             KeyModifiers::NONE,
         )));
@@ -10287,7 +10287,7 @@ fn drain_like_main_loop(
         match rx.try_recv() {
             Ok(AppEvent::Crash(msg)) => panic!("Crash during load: {msg}"),
             Ok(event) => {
-                if let Some(next) = app.event(&event) {
+                if let Some(next) = app.event(event) {
                     tx.send(next).unwrap();
                     steps += 1;
                     break;
@@ -10408,7 +10408,7 @@ fn test_abandoned_load_never_installs_itself_afterwards() {
             // load must be just as inert.
             let chain_done = !app.is_busy() && app.data_table_state.is_some();
             if abandoned_at.is_none() && (steps >= abandon_after || chain_done) {
-                app.event(&ctrl_o());
+                app.event(ctrl_o());
                 abandoned_at = Some((
                     app.open_path().map(Path::to_path_buf),
                     app.data_table_state.is_some(),
@@ -10475,7 +10475,7 @@ fn test_abandoned_load_does_not_corrupt_the_next_open() {
         let mut buf = Buffer::empty(area);
         app.render(area, &mut buf);
     }
-    app.event(&ctrl_o());
+    app.event(ctrl_o());
     assert_eq!(app.input_mode, InputMode::Home);
 
     tx.send(AppEvent::Open(vec![small.clone()], OpenOptions::default()))
@@ -10585,12 +10585,12 @@ fn test_escape_from_home_returns_to_the_dataset_that_was_open() {
     // drain of the channel could take the scan's and the schema's answers too, and a
     // fast machine installed the second dataset before Ctrl+O (#522).
     assert!(
-        app.event(&AppEvent::Open(vec![abandoned], OpenOptions::default()))
+        app.event(AppEvent::Open(vec![abandoned], OpenOptions::default()))
             .is_none(),
         "the scan goes to a worker"
     );
     assert!(app.is_busy(), "the second open is on its way");
-    app.event(&ctrl_o());
+    app.event(ctrl_o());
     assert_eq!(app.input_mode, InputMode::Home);
 
     // Until the abandoned load has reported everything it was going to.
@@ -10604,7 +10604,7 @@ fn test_escape_from_home_returns_to_the_dataset_that_was_open() {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
@@ -10692,7 +10692,7 @@ fn test_entering_home_clears_load_state_but_not_task_generation() {
     // channel, a fast read could have the table up before the keys below are typed.
     let mut next = Some(AppEvent::Open(vec![path], OpenOptions::default()));
     while let Some(event) = next {
-        next = pump.app.event(&event);
+        next = pump.app.event(event);
     }
     assert!(pump.app.is_busy(), "a load in flight should be busy");
     for code in [KeyCode::Char('j'), KeyCode::Enter] {
@@ -10750,12 +10750,12 @@ fn app_awaiting_open_confirmation() -> (App, mpsc::Receiver<AppEvent>) {
             );
         }
     });
-    let mut next = app.event(&AppEvent::Open(vec![url], OpenOptions::default()));
+    let mut next = app.event(AppEvent::Open(vec![url], OpenOptions::default()));
     while let Some(ev) = next {
         if matches!(ev, AppEvent::Crash(_)) {
             break;
         }
-        next = app.event(&ev);
+        next = app.event(ev);
     }
     // The size probe runs on a background thread now, so the modal arrives by event
     // rather than before the open call returns.
@@ -10769,8 +10769,8 @@ fn app_awaiting_open_confirmation() -> (App, mpsc::Receiver<AppEvent>) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while !app.awaiting_open_confirmation() && std::time::Instant::now() < deadline {
         while let Ok(ev) = rx.try_recv() {
-            if let Some(follow_up) = app.event(&ev) {
-                app.event(&follow_up);
+            if let Some(follow_up) = app.event(ev) {
+                app.event(follow_up);
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -10787,7 +10787,7 @@ fn test_declining_a_download_goes_home_instead_of_quitting() {
         "opening a remote URL should ask before downloading"
     );
 
-    let out = app.event(&AppEvent::Key(KeyEvent::new(
+    let out = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
@@ -10810,7 +10810,7 @@ fn test_ctrl_o_escapes_the_download_confirmation() {
     let (mut app, _rx) = app_awaiting_open_confirmation();
     assert!(app.awaiting_open_confirmation());
 
-    app.event(&ctrl_o());
+    app.event(ctrl_o());
 
     assert_eq!(
         app.input_mode,
@@ -10869,7 +10869,7 @@ fn test_len_generations_are_unique_across_datasets() {
 fn q_pops_to_home_only_when_home_is_in_the_stack() {
     // Launched straight onto a file: q quits.
     let (mut app, _rx, _tx) = open_query_filter_fixture("q_direct.csv");
-    let out = app.event(&AppEvent::Key(KeyEvent::new(
+    let out = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('q'),
         KeyModifiers::NONE,
     )));
@@ -10887,7 +10887,7 @@ fn q_pops_to_home_only_when_home_is_in_the_stack() {
     // As `home_open_path` does before it emits the `Open`.
     app.input_mode = InputMode::Normal;
 
-    let out = app.event(&AppEvent::Key(KeyEvent::new(
+    let out = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('q'),
         KeyModifiers::NONE,
     )));
@@ -10897,7 +10897,7 @@ fn q_pops_to_home_only_when_home_is_in_the_stack() {
     // Q stays unconditional, from the same stack.
     pump_open_until_loaded(&mut app, &rx, vec![path.clone()], OpenOptions::default());
     app.input_mode = InputMode::Normal;
-    let out = app.event(&AppEvent::Key(KeyEvent::new(
+    let out = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('Q'),
         KeyModifiers::SHIFT,
     )));
@@ -10961,7 +10961,7 @@ fn home_paging_moves_a_screenful() {
     let page = app.home.view_height;
     assert!(page > 10, "the fixture should give more than the old ten");
     let before = app.home.selected;
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::PageDown,
         KeyModifiers::NONE,
     )));
@@ -10970,7 +10970,7 @@ fn home_paging_moves_a_screenful() {
         (before + page).min(app.home.visible().len() - 1),
         "PgDn moves what one screen holds"
     );
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::PageUp,
         KeyModifiers::NONE,
     )));
@@ -11072,7 +11072,7 @@ fn pump_home(
         if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(500)) {
             let mut next = Some(ev);
             while let Some(ev) = next {
-                next = app.event(&ev);
+                next = app.event(ev);
             }
         }
     }
@@ -11097,7 +11097,7 @@ fn test_error_modal_over_home_is_dismissable() {
     );
     assert!(app.modal_showing(), "and says so over the home screen");
 
-    let out = app.event(&AppEvent::Key(KeyEvent::new(
+    let out = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
@@ -11108,7 +11108,7 @@ fn test_error_modal_over_home_is_dismissable() {
 
     // With the modal gone, Esc is home's again. An empty home has nowhere left to
     // back out to, so it does nothing; Ctrl+C is what quits.
-    let out = app.event(&AppEvent::Key(KeyEvent::new(
+    let out = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
@@ -11117,7 +11117,7 @@ fn test_error_modal_over_home_is_dismissable() {
         "Esc at the top of the home screen must not quit"
     );
     assert_eq!(app.input_mode, InputMode::Home);
-    let out = app.event(&AppEvent::Key(KeyEvent::new(
+    let out = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('c'),
         KeyModifiers::CONTROL,
     )));
@@ -11173,18 +11173,18 @@ fn test_opening_from_home_does_not_show_the_previous_dataset() {
 
     // Home, then open the second dataset the way a user does: through the path
     // prompt, so the real key path runs rather than a synthesised event.
-    app.event(&ctrl_o());
+    app.event(ctrl_o());
     assert_eq!(app.input_mode, InputMode::Home);
-    app.event(&key(KeyCode::Char('~')));
+    app.event(key(KeyCode::Char('~')));
     for c in second.to_str().unwrap().chars() {
-        app.event(&key(KeyCode::Char(c)));
+        app.event(key(KeyCode::Char(c)));
     }
     // Handled here, not sent, and the first frame drawn before the channel is read: a
     // drain could take every answer of the load, and the first frame would then show
     // it finished.
-    let mut next = app.event(&key(KeyCode::Enter));
+    let mut next = app.event(key(KeyCode::Enter));
     while let Some(event) = next {
-        next = app.event(&event);
+        next = app.event(event);
     }
     assert_eq!(
         app.input_mode,
@@ -11243,13 +11243,13 @@ fn a_file_datui_cannot_read_is_hidden_until_shown() {
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx.clone(), common::test_runtime());
     app.enter_home();
-    app.event(&key(KeyCode::Char('~')));
+    app.event(key(KeyCode::Char('~')));
     for c in dir.path().to_str().unwrap().chars() {
-        app.event(&key(KeyCode::Char(c)));
+        app.event(key(KeyCode::Char(c)));
     }
-    app.event(&key(KeyCode::Enter));
-    let ctrl_a = AppEvent::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
-    app.event(&ctrl_a);
+    app.event(key(KeyCode::Enter));
+    let ctrl_a = || AppEvent::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+    app.event(ctrl_a());
     assert!(app.home.filter.is_empty(), "Ctrl+A is not typed");
 
     let row_of = |app: &App, name: &str| {
@@ -11268,10 +11268,10 @@ fn a_file_datui_cannot_read_is_hidden_until_shown() {
     app.home.selected = model;
     // Enter does nothing: the row is dimmed and its pane says why.
     app.home.status = None;
-    assert!(app.event(&key(KeyCode::Enter)).is_none(), "nothing opened");
+    assert!(app.event(key(KeyCode::Enter)).is_none(), "nothing opened");
     assert_eq!(app.home.status, None);
 
-    app.event(&ctrl_a);
+    app.event(ctrl_a());
     assert!(row_of(&app, "model.onnx").is_none());
     assert!(row_of(&app, "sales.csv").is_some());
 }
@@ -11303,13 +11303,13 @@ fn a_load_chosen_at_home_fails_at_home() {
     }
     assert!(app.data_table_state.is_some());
 
-    app.event(&ctrl_o());
+    app.event(ctrl_o());
     let type_at_prompt = |app: &mut App, path: &std::path::Path| {
-        app.event(&key(KeyCode::Char('~')));
+        app.event(key(KeyCode::Char('~')));
         for c in path.to_str().unwrap().chars() {
-            app.event(&key(KeyCode::Char(c)));
+            app.event(key(KeyCode::Char(c)));
         }
-        if let Some(next) = app.event(&key(KeyCode::Enter)) {
+        if let Some(next) = app.event(key(KeyCode::Enter)) {
             tx.send(next).unwrap();
         }
     };
@@ -11351,7 +11351,7 @@ fn a_load_chosen_at_home_fails_at_home() {
 
     // Dismissed, it is not said a second time beside the prompt: the dialog said it
     // (#547 D8).
-    app.event(&key(KeyCode::Enter));
+    app.event(key(KeyCode::Enter));
     assert_eq!(app.input_mode, InputMode::Home);
     assert_eq!(app.home.status, None);
 
@@ -11416,7 +11416,7 @@ fn test_escape_from_a_bucket_returns_home() {
     app.enter_home();
     app.home.browsing = Some(PathBuf::from("gs://bucket"));
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
@@ -11463,7 +11463,7 @@ fn test_escape_stops_at_where_browsing_began() {
     let deeper = start.join("b");
     std::fs::create_dir_all(&deeper).unwrap();
     let key = |app: &mut App, code| {
-        app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+        app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
     };
 
     app.home.path_input_active = true;
@@ -11495,12 +11495,12 @@ fn test_escape_after_backspace_above_the_start_returns_home() {
     app.home.browsing = Some(start.clone());
     app.home.browse_start = Some(start);
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Backspace,
         KeyModifiers::NONE,
     )));
     assert_eq!(app.home.browsing.as_deref(), Some(tmp.path()));
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
@@ -11583,11 +11583,11 @@ fn test_sidebar_filter_applies_on_top_of_query() {
     use datui::filter_modal::FilterOperator;
     let (mut app, rx, tx) = open_query_filter_fixture("query_then_filter.csv");
 
-    app.event(&AppEvent::QQuery("select where a < 50".to_string()));
+    app.event(AppEvent::QQuery("select where a < 50".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 50);
 
-    app.event(&AppEvent::Filter(vec![filter_stmt(
+    app.event(AppEvent::Filter(vec![filter_stmt(
         "c",
         FilterOperator::Eq,
         "1",
@@ -11603,7 +11603,7 @@ fn test_sidebar_filter_applies_on_top_of_query() {
     assert_eq!(state.get_active_query(), "select where a < 50");
     assert_eq!(state.get_filters().len(), 1);
 
-    app.event(&AppEvent::Filter(vec![]));
+    app.event(AppEvent::Filter(vec![]));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(
         current_rows(&app),
@@ -11611,7 +11611,7 @@ fn test_sidebar_filter_applies_on_top_of_query() {
         "clearing filters returns to the query result"
     );
 
-    app.event(&AppEvent::Reset);
+    app.event(AppEvent::Reset);
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 100);
     assert!(
@@ -11629,19 +11629,19 @@ fn test_sidebar_filter_applies_on_top_of_query() {
 fn test_q_style_distinct_like_mod_and_xbar() {
     let (mut app, rx, tx) = open_query_filter_fixture("query_q_style_additions.csv");
 
-    app.event(&AppEvent::QQuery("select distinct c".to_string()));
+    app.event(AppEvent::QQuery("select distinct c".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     assert!(app.data_table_state.as_ref().unwrap().error().is_none());
     assert_eq!(current_rows(&app), 3);
 
     // alpha_0 .. alpha_8, then 0 = (a mod 4) keeps 0, 4 and 8.
-    app.event(&AppEvent::QQuery(
+    app.event(AppEvent::QQuery(
         "select where name like \"alpha_?\", 0 = a mod 4".to_string(),
     ));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 3);
 
-    app.event(&AppEvent::QQuery(
+    app.event(AppEvent::QQuery(
         "select n: count a by b: 10 xbar a".to_string(),
     ));
     pump_until_idle(&mut app, &rx, &tx);
@@ -11662,13 +11662,13 @@ fn test_sidebar_filter_keeps_sql_query() {
     use datui::filter_modal::FilterOperator;
     let (mut app, rx, tx) = open_query_filter_fixture("sql_then_filter.csv");
 
-    app.event(&AppEvent::SqlQuery(
+    app.event(AppEvent::SqlQuery(
         "SELECT * FROM df WHERE a < 30".to_string(),
     ));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 30);
 
-    app.event(&AppEvent::Filter(vec![filter_stmt(
+    app.event(AppEvent::Filter(vec![filter_stmt(
         "c",
         FilterOperator::Eq,
         "0",
@@ -11677,7 +11677,7 @@ fn test_sidebar_filter_keeps_sql_query() {
     // a in 0..30 with a % 3 == 0: 0, 3, ..., 27
     assert_eq!(current_rows(&app), 10);
 
-    app.event(&AppEvent::Filter(vec![]));
+    app.event(AppEvent::Filter(vec![]));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 30);
 }
@@ -11691,7 +11691,7 @@ fn test_sql_runs_against_the_loaded_data_not_the_filtered_view() {
     use datui::filter_modal::FilterOperator;
     let (mut app, rx, tx) = open_query_filter_fixture("filter_then_sql.csv");
 
-    app.event(&AppEvent::Filter(vec![filter_stmt(
+    app.event(AppEvent::Filter(vec![filter_stmt(
         "c",
         FilterOperator::Eq,
         "0",
@@ -11699,7 +11699,7 @@ fn test_sql_runs_against_the_loaded_data_not_the_filtered_view() {
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 34);
 
-    app.event(&AppEvent::SqlQuery(
+    app.event(AppEvent::SqlQuery(
         "SELECT * FROM df WHERE a < 30".to_string(),
     ));
     pump_until_idle(&mut app, &rx, &tx);
@@ -11712,7 +11712,7 @@ fn test_sql_runs_against_the_loaded_data_not_the_filtered_view() {
             .is_empty()
     );
 
-    app.event(&AppEvent::Filter(vec![]));
+    app.event(AppEvent::Filter(vec![]));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 30);
 }
@@ -11758,7 +11758,7 @@ fn test_skip_tail_rows_survives_a_sidebar_sort() {
     let (mut app, rx, tx) = open_csv_with("skip_tail_then_sort.csv", &csv, options);
     assert_eq!(current_rows(&app), 100);
 
-    app.event(&AppEvent::Sort(vec!["b".to_string()], vec![true]));
+    app.event(AppEvent::Sort(vec!["b".to_string()], vec![true]));
     pump_until_idle(&mut app, &rx, &tx);
     let df = app
         .data_table_state
@@ -11798,7 +11798,7 @@ fn test_parse_strings_survives_a_sidebar_filter() {
         );
     }
 
-    app.event(&AppEvent::Filter(vec![filter_stmt(
+    app.event(AppEvent::Filter(vec![filter_stmt(
         "amount",
         FilterOperator::Gt,
         "150",
@@ -11930,7 +11930,7 @@ fn test_sql_after_pivot_sees_the_pivoted_columns() {
     }
     let (mut app, rx, tx) = open_csv_with("pivot_then_sql.csv", &csv, OpenOptions::default());
 
-    app.event(&AppEvent::Pivot(PivotSpec {
+    app.event(AppEvent::Pivot(PivotSpec {
         index: vec!["id".to_string()],
         pivot_column: "key".to_string(),
         value_column: "val".to_string(),
@@ -11946,7 +11946,7 @@ fn test_sql_after_pivot_sees_the_pivoted_columns() {
             .contains("k1")
     );
 
-    app.event(&AppEvent::SqlQuery(
+    app.event(AppEvent::SqlQuery(
         "SELECT id, k2 FROM df WHERE k1 > 4".to_string(),
     ));
     pump_until_idle(&mut app, &rx, &tx);
@@ -11965,7 +11965,7 @@ fn test_sidebar_filter_and_sort_stay_inside_a_drill_down() {
     use datui::filter_modal::FilterOperator;
     let (mut app, rx, tx) = open_query_filter_fixture("drill_down_filter.csv");
 
-    app.event(&AppEvent::QQuery("select by c".to_string()));
+    app.event(AppEvent::QQuery("select by c".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 3, "one row per group");
 
@@ -11978,7 +11978,7 @@ fn test_sidebar_filter_and_sort_stay_inside_a_drill_down() {
     assert!(app.data_table_state.as_ref().unwrap().is_drilled_down());
     assert_eq!(current_rows(&app), 34, "c == 0: 0, 3, ..., 99");
 
-    app.event(&AppEvent::Filter(vec![filter_stmt(
+    app.event(AppEvent::Filter(vec![filter_stmt(
         "a",
         FilterOperator::Lt,
         "30",
@@ -11992,7 +11992,7 @@ fn test_sidebar_filter_and_sort_stay_inside_a_drill_down() {
     );
     assert_eq!(current_rows(&app), 10);
 
-    app.event(&AppEvent::Sort(vec!["a".to_string()], vec![true]));
+    app.event(AppEvent::Sort(vec!["a".to_string()], vec![true]));
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.is_drilled_down());
@@ -12023,7 +12023,7 @@ fn test_query_after_pivot_drops_the_reshape_for_sql() {
     }
     let (mut app, rx, tx) = open_csv_with("pivot_query_sql.csv", &csv, OpenOptions::default());
 
-    app.event(&AppEvent::Pivot(PivotSpec {
+    app.event(AppEvent::Pivot(PivotSpec {
         index: vec!["id".to_string()],
         pivot_column: "key".to_string(),
         value_column: "val".to_string(),
@@ -12038,7 +12038,7 @@ fn test_query_after_pivot_drops_the_reshape_for_sql() {
             .contains("k1")
     );
 
-    app.event(&AppEvent::QQuery("select id, key".to_string()));
+    app.event(AppEvent::QQuery("select id, key".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 20);
     assert!(
@@ -12049,7 +12049,7 @@ fn test_query_after_pivot_drops_the_reshape_for_sql() {
             .is_none()
     );
 
-    app.event(&AppEvent::SqlQuery("SELECT * FROM df".to_string()));
+    app.event(AppEvent::SqlQuery("SELECT * FROM df".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.error().is_none(), "{:?}", state.error());
@@ -12066,12 +12066,12 @@ fn test_drill_down_resyncs_the_sort_filter_sidebar() {
     use datui::filter_modal::FilterOperator;
     let (mut app, rx, tx) = open_query_filter_fixture("drill_sidebar.csv");
 
-    app.event(&AppEvent::QQuery("select by c".to_string()));
+    app.event(AppEvent::QQuery("select by c".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     let statement = filter_stmt("c", FilterOperator::Gt, "0");
-    app.event(&AppEvent::Filter(vec![statement.clone()]));
+    app.event(AppEvent::Filter(vec![statement.clone()]));
     pump_until_idle(&mut app, &rx, &tx);
-    app.event(&AppEvent::Sort(vec!["c".to_string()], vec![true]));
+    app.event(AppEvent::Sort(vec!["c".to_string()], vec![true]));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 2, "groups c = 1 and c = 2");
     // What Apply would have left in the sidebar.
@@ -12089,7 +12089,7 @@ fn test_drill_down_resyncs_the_sort_filter_sidebar() {
     }];
 
     // Enter on the highlighted group row drills in.
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
@@ -12111,7 +12111,7 @@ fn test_drill_down_resyncs_the_sort_filter_sidebar() {
         app.data_table_state.as_ref().unwrap().headers()
     );
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
@@ -12148,15 +12148,15 @@ fn test_view_getters_describe_the_grouped_view_while_drilled() {
     use datui::filter_modal::FilterOperator;
     let (mut app, rx, tx) = open_query_filter_fixture("drill_view_getters.csv");
 
-    app.event(&AppEvent::QQuery("select by c".to_string()));
+    app.event(AppEvent::QQuery("select by c".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
-    app.event(&AppEvent::Filter(vec![filter_stmt(
+    app.event(AppEvent::Filter(vec![filter_stmt(
         "c",
         FilterOperator::Gt,
         "0",
     )]));
     pump_until_idle(&mut app, &rx, &tx);
-    app.event(&AppEvent::Sort(vec!["c".to_string()], vec![true]));
+    app.event(AppEvent::Sort(vec!["c".to_string()], vec![true]));
     pump_until_idle(&mut app, &rx, &tx);
 
     let state = app.data_table_state.as_mut().unwrap();
@@ -12212,7 +12212,7 @@ fn test_esc_from_a_drill_down_shows_the_grouped_rows() {
     let area = Rect::new(0, 0, 100, 30);
     painted(&mut app, &rx, &tx, area);
 
-    app.event(&AppEvent::QQuery("select a by c".to_string()));
+    app.event(AppEvent::QQuery("select a by c".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     painted(&mut app, &rx, &tx, area);
     assert_eq!(on_screen(&app, "c"), ["0", "1", "2"]);
@@ -12253,7 +12253,7 @@ fn test_esc_from_a_drill_down_shows_the_grouped_rows() {
 fn test_drill_into_a_small_group_shows_its_rows() {
     let (mut app, rx, tx) = open_query_filter_fixture("drill_small_group.csv");
     let area = Rect::new(0, 0, 100, 30);
-    app.event(&AppEvent::QQuery("select name by a".to_string()));
+    app.event(AppEvent::QQuery("select name by a".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     painted(&mut app, &rx, &tx, area);
     assert_eq!(on_screen(&app, "a").len(), 26, "a screen of the 100 groups");
@@ -12273,7 +12273,7 @@ fn test_enter_drills_from_an_aggregated_result() {
     let (mut app, rx, tx) = open_query_filter_fixture("drill_aggregate.csv");
     let area = Rect::new(0, 0, 100, 30);
 
-    app.event(&AppEvent::QQuery(
+    app.event(AppEvent::QQuery(
         "select n: count a, total: sum a by c where a < 30".to_string(),
     ));
     pump_until_idle(&mut app, &rx, &tx);
@@ -12317,7 +12317,7 @@ fn test_drill_from_an_aggregate_by_a_computed_key_and_a_null_key() {
     let csv = "k,v\nx,1\n,2\ny,3\n,4\nx,5\n,6\n";
     let (mut app, rx, tx) = open_csv_with("drill_null_key.csv", csv, OpenOptions::default());
 
-    app.event(&AppEvent::QQuery("select n: count v by key: k".to_string()));
+    app.event(AppEvent::QQuery("select n: count v by key: k".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     // Nulls sort last.
     let state = app.data_table_state.as_mut().unwrap();
@@ -12328,7 +12328,7 @@ fn test_drill_from_an_aggregate_by_a_computed_key_and_a_null_key() {
     assert_eq!(df.column("v").unwrap().i64().unwrap().sum(), Some(12));
     state.drill_up().unwrap();
 
-    app.event(&AppEvent::QQuery(
+    app.event(AppEvent::QQuery(
         "select n: count v by big: v > 3".to_string(),
     ));
     pump_until_idle(&mut app, &rx, &tx);
@@ -12388,7 +12388,7 @@ fn test_drill_from_an_aggregate_by_typed_keys() {
     ));
 
     for key in ["f", "d", "t", "s", "f, s", "day: d, late: t > 5"] {
-        app.event(&AppEvent::QQuery(format!("select n: count v by {key}")));
+        app.event(AppEvent::QQuery(format!("select n: count v by {key}")));
         pump_until_idle(&mut app, &rx, &tx);
         let state = app.data_table_state.as_mut().unwrap();
         assert!(state.error().is_none(), "{key}: {:?}", state.error());
@@ -12419,7 +12419,7 @@ fn test_drill_from_an_aggregate_by_typed_keys() {
 fn test_enter_on_an_aggregate_drills_from_the_buffer_or_reads_the_row() {
     let (mut app, rx, tx) = open_query_filter_fixture("drill_from_buffer.csv");
     let area = Rect::new(0, 0, 100, 30);
-    app.event(&AppEvent::QQuery(
+    app.event(AppEvent::QQuery(
         "select n: count a, total: sum a by c".to_string(),
     ));
     pump_until_idle(&mut app, &rx, &tx);
@@ -12466,9 +12466,9 @@ fn test_enter_on_an_aggregate_drills_from_the_buffer_or_reads_the_row() {
 fn test_drill_from_a_sorted_aggregate_takes_the_row_on_screen() {
     let (mut app, rx, tx) = open_query_filter_fixture("drill_sorted_aggregate.csv");
     let area = Rect::new(0, 0, 100, 30);
-    app.event(&AppEvent::QQuery("select n: count a by c".to_string()));
+    app.event(AppEvent::QQuery("select n: count a by c".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
-    app.event(&AppEvent::Sort(vec!["c".to_string()], vec![true]));
+    app.event(AppEvent::Sort(vec!["c".to_string()], vec![true]));
     pump_until_idle(&mut app, &rx, &tx);
     painted(&mut app, &rx, &tx, area);
     assert_eq!(on_screen(&app, "c"), ["2", "1", "0"]);
@@ -12490,7 +12490,7 @@ fn test_drill_from_a_sorted_aggregate_takes_the_row_on_screen() {
 fn test_esc_restores_the_grouped_columns_changed_inside_the_drill() {
     let (mut app, rx, tx) = open_query_filter_fixture("drill_columns_restored.csv");
     let area = Rect::new(0, 0, 100, 30);
-    app.event(&AppEvent::QQuery(
+    app.event(AppEvent::QQuery(
         "select n: count a, total: sum a by c".to_string(),
     ));
     pump_until_idle(&mut app, &rx, &tx);
@@ -12516,7 +12516,7 @@ fn test_esc_restores_the_grouped_columns_changed_inside_the_drill() {
 fn test_drill_from_lists_keeps_a_null_key_and_names_only_keys() {
     let csv = "k,v\nx,1\n,2\ny,3\n,4\n";
     let (mut app, rx, tx) = open_csv_with("drill_list_null_key.csv", csv, OpenOptions::default());
-    app.event(&AppEvent::QQuery("select v, n: count v by k".to_string()));
+    app.event(AppEvent::QQuery("select v, n: count v by k".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_mut().unwrap();
     assert!(state.is_grouped());
@@ -12551,7 +12551,7 @@ fn test_enter_inspects_where_there_is_nothing_to_drill_into() {
     assert_eq!(app.input_mode, InputMode::Normal);
     assert!(!app.inspector_modal.active);
 
-    app.event(&AppEvent::QQuery("select n: count a by c".to_string()));
+    app.event(AppEvent::QQuery("select n: count a by c".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     let grouped = painted(&mut app, &rx, &tx, area);
     assert!(
@@ -12619,7 +12619,7 @@ fn test_enter_inspects_a_loaded_list_column_and_drills_a_by_view() {
     assert_eq!(state.lf().clone().collect_schema().unwrap(), schema);
     assert_eq!(current_rows(&app), 3);
 
-    app.event(&AppEvent::QQuery("select k by x".to_string()));
+    app.event(AppEvent::QQuery("select k by x".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     painted(&mut app, &rx, &tx, area);
     assert!(app.data_table_state.as_ref().unwrap().is_grouped());
@@ -12870,7 +12870,7 @@ fn open_salary_fixture(name: &str) -> (App, mpsc::Receiver<AppEvent>, mpsc::Send
 /// Run `sql` as the SQL prompt would and wait for its rows.
 #[cfg(feature = "sql")]
 fn run_sql(app: &mut App, rx: &mpsc::Receiver<AppEvent>, tx: &mpsc::Sender<AppEvent>, sql: &str) {
-    app.event(&AppEvent::SqlQuery(sql.to_string()));
+    app.event(AppEvent::SqlQuery(sql.to_string()));
     pump_until_idle(app, rx, tx);
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.error().is_none(), "{sql}: {:?}", state.error());
@@ -13187,7 +13187,7 @@ fn test_a_failed_group_by_leaves_the_grouped_view_drilling_by_its_keys() {
     let (mut app, rx, tx) = open_salary_fixture("sql_drill_rollback");
     let failing = "SELECT CAST(dept AS INT) AS dept, COUNT(*) AS n FROM df GROUP BY 1";
     // Over the rows as loaded, the failed statement leaves nothing to drill into.
-    app.event(&AppEvent::SqlQuery(failing.to_string()));
+    app.event(AppEvent::SqlQuery(failing.to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     assert!(app.modal_showing(), "the failure is said");
     assert!(!app.data_table_state.as_ref().unwrap().can_drill_down());
@@ -13197,7 +13197,7 @@ fn test_a_failed_group_by_leaves_the_grouped_view_drilling_by_its_keys() {
 
     let grouped = "SELECT dept, COUNT(*) AS n FROM df GROUP BY dept";
     run_sql(&mut app, &rx, &tx, grouped);
-    app.event(&AppEvent::SqlQuery(failing.to_string()));
+    app.event(AppEvent::SqlQuery(failing.to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     assert!(app.modal_showing(), "the failure is said");
     let state = app.data_table_state.as_mut().unwrap();
@@ -13217,7 +13217,7 @@ fn test_a_failed_group_by_leaves_the_grouped_view_drilling_by_its_keys() {
 fn test_sql_inside_a_drill_down_stays_in_the_group() {
     let (mut app, rx, tx) = open_query_filter_fixture("drill_sql.csv");
 
-    app.event(&AppEvent::QQuery("select by c".to_string()));
+    app.event(AppEvent::QQuery("select by c".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     app.data_table_state
         .as_mut()
@@ -13227,7 +13227,7 @@ fn test_sql_inside_a_drill_down_stays_in_the_group() {
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 34);
 
-    app.event(&AppEvent::SqlQuery(
+    app.event(AppEvent::SqlQuery(
         "SELECT * FROM df WHERE a < 30".to_string(),
     ));
     pump_until_idle(&mut app, &rx, &tx);
@@ -13267,11 +13267,11 @@ fn test_an_aggregation_counts_an_absent_column_as_null() {
 
     // `a` opens the analysis modal; Enter on Describe, where the sidebar starts,
     // shows its Sample form, and Enter again runs it.
-    if let Some(next) = app.event(&key(KeyCode::Char('a'))) {
+    if let Some(next) = app.event(key(KeyCode::Char('a'))) {
         let _ = tx.send(next);
     }
-    app.event(&key(KeyCode::Enter));
-    if let Some(next) = app.event(&key(KeyCode::Enter)) {
+    app.event(key(KeyCode::Enter));
+    if let Some(next) = app.event(key(KeyCode::Enter)) {
         let _ = tx.send(next);
     }
     pump_until_idle(&mut app, &rx, &tx);
@@ -13332,11 +13332,11 @@ fn test_describe_scrolls_to_its_last_statistic_and_back_in_one_press() {
         vec![PathBuf::from("tests/sample-data/people.parquet")],
         OpenOptions::default(),
     );
-    app.event(&key(KeyCode::Char('a')));
+    app.event(key(KeyCode::Char('a')));
     show_sample_form(&mut app);
-    let mut next = app.event(&key(KeyCode::Enter));
+    let mut next = app.event(key(KeyCode::Enter));
     while let Some(ev) = next {
-        next = app.event(&ev);
+        next = app.event(ev);
     }
     drain_events(&mut app, &rx);
     assert!(app.analysis_modal.describe_results.is_some());
@@ -13372,7 +13372,7 @@ fn test_describe_scrolls_to_its_last_statistic_and_back_in_one_press() {
     assert!(max > 0);
 
     for _ in 0..20 {
-        app.event(&key(KeyCode::Right));
+        app.event(key(KeyCode::Right));
         header(&mut app);
     }
     assert_eq!(app.analysis_modal.describe_columns.offset, max);
@@ -13383,7 +13383,7 @@ fn test_describe_scrolls_to_its_last_statistic_and_back_in_one_press() {
     );
     assert!(!counted(&end), "and nothing is counted past it: {end:?}");
 
-    app.event(&key(KeyCode::Left));
+    app.event(key(KeyCode::Left));
     let back = header(&mut app);
     assert_eq!(app.analysis_modal.describe_columns.offset, max - 1);
     assert_ne!(back, end, "one press back moves the table");
@@ -13421,7 +13421,7 @@ fn test_opening_a_directory_measures_it_and_the_info_panel_says_so() {
 
     // `i` opens the panel on the Schema tab; one step right is Resources.
     for k in [KeyCode::Char('i'), KeyCode::Right] {
-        if let Some(next) = app.event(&key(k)) {
+        if let Some(next) = app.event(key(k)) {
             let _ = tx.send(next);
         }
     }
@@ -13499,7 +13499,7 @@ fn test_a_route_that_gave_up_leaves_no_figures_on_the_dataset_that_opened() {
     );
 
     for k in [KeyCode::Char('i'), KeyCode::Right] {
-        if let Some(next) = app.event(&key(k)) {
+        if let Some(next) = app.event(key(k)) {
             let _ = tx.send(next);
         }
     }
@@ -13560,7 +13560,7 @@ fn test_a_dataset_polars_opened_reports_nothing_about_opening_it() {
     );
 
     for k in [KeyCode::Char('i'), KeyCode::Right] {
-        if let Some(next) = app.event(&key(k)) {
+        if let Some(next) = app.event(key(k)) {
             let _ = tx.send(next);
         }
     }
@@ -13719,7 +13719,7 @@ fn test_right_goes_inside_a_local_multi_file_directory() {
         "a directory of part files is offered as one dataset"
     );
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Right,
         KeyModifiers::NONE,
     )));
@@ -13802,7 +13802,7 @@ fn test_enter_on_a_place_row_browses_it() {
         .collect();
     assert!(bar.contains("Inside"), "the bar offers the door: {bar:?}");
 
-    app.event(&key(KeyCode::Enter));
+    app.event(key(KeyCode::Enter));
     assert_eq!(app.home.browsing.as_deref(), Some(here.as_path()));
     assert_eq!(
         app.home.browse_start.as_deref(),
@@ -13811,7 +13811,7 @@ fn test_enter_on_a_place_row_browses_it() {
     );
 
     // → is the other door to the same place.
-    app.event(&key(KeyCode::Esc));
+    app.event(key(KeyCode::Esc));
     assert_eq!(app.home.browsing, None);
     let row = app
         .home
@@ -13820,7 +13820,7 @@ fn test_enter_on_a_place_row_browses_it() {
         .position(|r| matches!(r, datui::home::Row::Place { path, .. } if *path == here))
         .expect("back at the listing");
     app.home.selected = row;
-    app.event(&key(KeyCode::Right));
+    app.event(key(KeyCode::Right));
     assert_eq!(app.home.browsing.as_deref(), Some(here.as_path()));
 }
 
@@ -13834,7 +13834,7 @@ fn test_delete_on_a_place_row_forgets_exactly_its_recents_after_confirming() {
         |cache: &datui::CacheManager, path: &Path| cache.load_recents().iter().any(|p| p == path);
     assert!(recents.iter().all(|p| holds(&cache, p)));
 
-    app.event(&key(KeyCode::Delete));
+    app.event(key(KeyCode::Delete));
     let area = Rect::new(0, 0, 120, 30);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
@@ -13849,11 +13849,11 @@ fn test_delete_on_a_place_row_forgets_exactly_its_recents_after_confirming() {
     );
 
     // Declined: the store is untouched, and a later confirmation is not armed.
-    app.event(&key(KeyCode::Esc));
+    app.event(key(KeyCode::Esc));
     assert!(recents.iter().all(|p| holds(&cache, p)));
 
-    app.event(&key(KeyCode::Delete));
-    app.event(&key(KeyCode::Enter));
+    app.event(key(KeyCode::Delete));
+    app.event(key(KeyCode::Enter));
     assert!(
         !holds(&cache, &recents[0]),
         "forgotten: {:?}",
@@ -13894,7 +13894,7 @@ fn test_ctrl_d_adds_to_the_catalog_and_forgets() {
     };
 
     // The cursor is on the place row for `here`.
-    app.event(&ctrl('d'));
+    app.event(ctrl('d'));
     assert!(listed(&here), "{:?}", std::fs::read_to_string(&catalog));
     assert!(
         app.flash_message()
@@ -13909,7 +13909,7 @@ fn test_ctrl_d_adds_to_the_catalog_and_forgets() {
         "a new catalog.toml says what it is"
     );
 
-    app.event(&ctrl('d'));
+    app.event(ctrl('d'));
     assert!(!listed(&here), "a second press forgets it");
     assert!(app.flash_message().is_some_and(|s| s.starts_with("Forgot")));
 
@@ -13923,7 +13923,7 @@ fn test_ctrl_d_adds_to_the_catalog_and_forgets() {
         )
         .expect("the recent in the other place is listed");
     app.home.selected = row;
-    app.event(&ctrl('d'));
+    app.event(ctrl('d'));
     assert!(listed(&recents[2]), "a file row adds the file");
 
     // Delete on the same file under Recent forgets the recent, not the catalog entry.
@@ -13938,7 +13938,7 @@ fn test_ctrl_d_adds_to_the_catalog_and_forgets() {
         })
         .expect("the recent is still listed");
     app.home.selected = row;
-    app.event(&key(KeyCode::Delete));
+    app.event(key(KeyCode::Delete));
     assert!(listed(&recents[2]), "the catalog keeps it");
 }
 
@@ -14004,14 +14004,14 @@ fn test_enter_on_the_hidden_row_shows_the_files() {
         .collect();
     assert!(bar.contains("Show"), "{bar:?}");
 
-    app.event(&key(KeyCode::Enter));
+    app.event(key(KeyCode::Enter));
     assert!(!app.home.hide_unreadable);
     assert!(matches!(
         app.home.selected_row(),
         Some(datui::home::Row::Entry { entry, .. }) if entry.name == "note0.md"
     ));
 
-    app.event(&ctrl('a'));
+    app.event(ctrl('a'));
     assert!(app.home.hide_unreadable);
     assert_eq!(app.home.status, None);
     assert_eq!(app.flash_message(), Some("Hiding files with no reader"));
@@ -14048,7 +14048,7 @@ fn test_the_place_of_an_http_recent_says_it_cannot_be_browsed() {
     let screen: String = buf.content().iter().map(|c| c.symbol()).collect();
     assert!(screen.contains("none over HTTP"), "{screen}");
 
-    app.event(&key(KeyCode::Enter));
+    app.event(key(KeyCode::Enter));
     assert_eq!(app.home.browsing, None);
     assert!(
         app.home
@@ -14059,7 +14059,7 @@ fn test_the_place_of_an_http_recent_says_it_cannot_be_browsed() {
         app.home.status
     );
     // The line answers the last key: the next one takes it down.
-    app.event(&key(KeyCode::Right));
+    app.event(key(KeyCode::Right));
     assert_eq!(app.home.browsing, None);
     assert_eq!(app.home.status, None, "gone at the next key");
 }
@@ -14265,7 +14265,7 @@ fn test_enter_on_the_more_row_expands_recent() {
         .position(|r| matches!(r, datui::home::Row::More { .. }))
         .expect("the more row is listed");
     app.home.selected = row;
-    app.event(&key(KeyCode::Enter));
+    app.event(key(KeyCode::Enter));
 
     assert_eq!(app.input_mode, InputMode::Home, "nothing was opened");
     assert_eq!(app.home.browsing, None);
@@ -14322,7 +14322,7 @@ fn test_right_does_not_browse_from_an_ordinary_row() {
         "a file is not a directory to go inside: {bar:?}"
     );
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Right,
         KeyModifiers::NONE,
     )));
@@ -14399,7 +14399,7 @@ fn test_a_delta_table_is_labelled_and_not_opened_as_one_table() {
     );
 
     // Enter goes inside rather than reading every file under it as one table.
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
@@ -14437,7 +14437,7 @@ fn test_a_lake_table_typed_as_a_path_is_gone_inside_not_opened() {
     app.home.path_input_active = true;
     app.home.path_input = table.to_string_lossy().into_owned();
 
-    let follow = app.event(&AppEvent::Key(KeyEvent::new(
+    let follow = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
@@ -14538,7 +14538,7 @@ fn test_right_goes_inside_a_lake_table() {
         "the key is offered here too: {bar:?}"
     );
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Right,
         KeyModifiers::NONE,
     )));
@@ -14647,7 +14647,7 @@ fn test_an_unexamined_lake_root_is_classified_before_it_is_opened() {
         "the row the cursor is on is the unexamined one"
     );
 
-    let follow = app.event(&AppEvent::Key(KeyEvent::new(
+    let follow = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
@@ -14690,7 +14690,7 @@ fn test_right_into_a_lake_table_says_why() {
     // here the same call does it on the spot.
     app.home.classify_now(8);
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Right,
         KeyModifiers::NONE,
     )));
@@ -14742,7 +14742,7 @@ fn test_an_unexamined_remote_lake_root_is_classified_off_the_event_thread() {
     );
 
     // The key itself decides nothing: it asks.
-    let asked = app.event(&AppEvent::Key(KeyEvent::new(
+    let asked = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
@@ -14752,7 +14752,7 @@ fn test_an_unexamined_remote_lake_root_is_classified_off_the_event_thread() {
     );
     let mut follow = asked;
     while let Some(event) = follow {
-        follow = app.event(&event);
+        follow = app.event(event);
     }
     assert!(app.is_busy(), "and says so while the worker is out");
 
@@ -14762,12 +14762,12 @@ fn test_an_unexamined_remote_lake_root_is_classified_off_the_event_thread() {
         if matches!(event, AppEvent::Open(..)) {
             opened = true;
         }
-        let mut follow = app.event(&event);
+        let mut follow = app.event(event);
         while let Some(next) = follow {
             if matches!(next, AppEvent::Open(..)) {
                 opened = true;
             }
-            follow = app.event(&next);
+            follow = app.event(next);
         }
         if !app.is_busy() {
             break;
@@ -14814,27 +14814,27 @@ fn test_a_probe_answering_does_not_cancel_an_open_in_flight() {
         .expect("the table is listed under Recent");
     app.home.selected = row;
 
-    let mut follow = app.event(&AppEvent::Key(KeyEvent::new(
+    let mut follow = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
     while let Some(event) = follow {
-        follow = app.event(&event);
+        follow = app.event(event);
     }
 
     // A listing the user did not ask for lands while the look is out. Through the event,
     // because it is the handler that refreshes the home screen — which is what the first
     // gate mistook for the user having navigated.
-    app.event(&AppEvent::HomeProbeReady {
+    app.event(AppEvent::HomeProbeReady {
         root: PathBuf::from("/mnt/somewhere-else"),
         rows: Some(Vec::new()),
         cut_short: false,
     });
 
     while let Some(event) = next_event(&app, &rx) {
-        let mut follow = app.event(&event);
+        let mut follow = app.event(event);
         while let Some(next) = follow {
-            follow = app.event(&next);
+            follow = app.event(next);
         }
         if !app.is_busy() {
             break;
@@ -14883,7 +14883,7 @@ fn test_a_hive_directory_from_home_still_opens_as_one_dataset() {
         Some(datui::discover::EntryKind::Hive)
     );
 
-    let opened = app.event(&AppEvent::Key(KeyEvent::new(
+    let opened = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
@@ -14909,7 +14909,7 @@ fn test_a_hive_directory_from_home_still_opens_as_one_dataset() {
         )
         .expect("the file is listed");
     app.home.selected = row;
-    match app.event(&AppEvent::Key(KeyEvent::new(
+    match app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     ))) {
@@ -14941,7 +14941,7 @@ fn test_a_hive_directory_from_home_still_opens_as_one_dataset() {
         Some(datui::discover::EntryKind::Hive),
         "the row still says hive"
     );
-    match app.event(&AppEvent::Key(KeyEvent::new(
+    match app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     ))) {
@@ -15164,7 +15164,7 @@ fn test_both_doors_are_open_on_a_directory_datui_cannot_name() {
     assert!(bar.contains("Inside"), "the bar offers the key: {bar:?}");
 
     // One key in.
-    app.event(&key(KeyCode::Right));
+    app.event(key(KeyCode::Right));
     assert_eq!(
         app.home.browsing.as_deref(),
         Some(directory.as_path()),
@@ -15235,7 +15235,7 @@ fn test_enter_on_the_whole_directory_row_opens_rather_than_descending() {
         !bar.contains("Inside"),
         "the bar offers a door to nowhere: {bar:?}"
     );
-    app.event(&key(KeyCode::Right));
+    app.event(key(KeyCode::Right));
     assert_eq!(
         app.home.browsing, was,
         "→ on the row that opens this directory must not re-enter it"
@@ -15246,7 +15246,7 @@ fn test_enter_on_the_whole_directory_row_opens_rather_than_descending() {
     );
 
     // Enter opens it.
-    let next = app.event(&key(KeyCode::Enter));
+    let next = app.event(key(KeyCode::Enter));
     assert!(
         matches!(next, Some(AppEvent::Open(..))),
         "Enter should open the directory rather than move the cursor"
@@ -15304,7 +15304,7 @@ fn test_the_door_into_a_lake_table_says_its_files_are_not_the_table() {
     );
 
     // It opens, and the open carries what it is.
-    let options = match app.event(&key(KeyCode::Enter)) {
+    let options = match app.event(key(KeyCode::Enter)) {
         Some(AppEvent::Open(_, options)) => options,
         _ => panic!("the door opens the directory it names, whatever the label says"),
     };
@@ -15342,7 +15342,7 @@ fn test_the_door_into_a_lake_table_says_its_files_are_not_the_table() {
         .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "events"))
         .expect("the directory is listed");
     up.home.selected = row;
-    assert!(up.event(&key(KeyCode::Enter)).is_none());
+    assert!(up.event(key(KeyCode::Enter)).is_none());
     assert_eq!(up.home.browsing.as_deref(), Some(events.as_path()));
     let said = lake_heading(&mut up);
     assert!(
@@ -15374,7 +15374,7 @@ fn test_the_door_opens_a_directory_by_the_directory_route() {
         .expect("the directory carries the row");
     app.home.selected = row;
 
-    match app.event(&key(KeyCode::Enter)) {
+    match app.event(key(KeyCode::Enter)) {
         Some(AppEvent::Open(paths, options)) => {
             assert_eq!(paths, vec![tmp.path().to_path_buf()]);
             assert!(
@@ -15420,7 +15420,7 @@ fn test_right_goes_inside_a_row_nothing_has_looked_into() {
         Some(datui::discover::EntryKind::Unknown),
     );
 
-    app.event(&key(KeyCode::Right));
+    app.event(key(KeyCode::Right));
     assert_eq!(
         app.home.browsing.as_deref(),
         Some(directory.as_path()),
@@ -15543,7 +15543,7 @@ fn test_the_cloud_door_reads_a_prefix_with_the_reader_its_listing_calls_for() {
             .position(|r| matches!(r, datui::home::Row::Door { .. }))
             .expect("the prefix carries the row");
         app.home.selected = row;
-        let event = app.event(&key(KeyCode::Enter));
+        let event = app.event(key(KeyCode::Enter));
         let options = match event {
             Some(AppEvent::Open(_, options)) => Some(options),
             _ => None,
@@ -15707,7 +15707,7 @@ fn test_a_directory_the_nesting_rule_turns_away_is_still_two_keys_from_one_table
     );
 
     // One key in.
-    app.event(&key(KeyCode::Right));
+    app.event(key(KeyCode::Right));
     assert_eq!(app.home.browsing.as_deref(), Some(sales.as_path()));
     app.home.rebuild(&[]);
 
@@ -15720,7 +15720,7 @@ fn test_a_directory_the_nesting_rule_turns_away_is_still_two_keys_from_one_table
         .expect("the directory carries the row");
     app.home.selected = row;
     assert!(
-        matches!(app.event(&key(KeyCode::Enter)), Some(AppEvent::Open(..))),
+        matches!(app.event(key(KeyCode::Enter)), Some(AppEvent::Open(..))),
         "the door opens what the rule declined to open in one key"
     );
 }
@@ -15771,7 +15771,7 @@ fn test_the_command_line_reads_a_directory_the_way_enter_does() {
                     Some(AppEvent::Open(paths, options)) => {
                         return Some(AppEvent::Open(paths, options));
                     }
-                    Some(ev) => next = app.event(&ev),
+                    Some(ev) => next = app.event(ev),
                     None => match next_event(app, rx) {
                         Some(ev) => next = Some(ev),
                         None => panic!("the chain stopped without settling on anything"),
@@ -16075,7 +16075,7 @@ fn test_a_directory_of_files_written_without_extensions_still_opens() {
         .expect("the directory carries the door");
     home.home.selected = door;
     assert!(
-        matches!(home.event(&key(KeyCode::Enter)), Some(AppEvent::Open(..))),
+        matches!(home.event(key(KeyCode::Enter)), Some(AppEvent::Open(..))),
         "the door opens it"
     );
 
@@ -16279,7 +16279,7 @@ fn test_the_bar_says_what_enter_will_really_do() {
         assert_eq!(predicted, expected, "prediction for {name}");
 
         let was = app.home.browsing.clone();
-        let opened = matches!(app.event(&key(KeyCode::Enter)), Some(AppEvent::Open(..)));
+        let opened = matches!(app.event(key(KeyCode::Enter)), Some(AppEvent::Open(..)));
         let went_inside = app.home.browsing != was;
         match expected {
             datui::WhatEnter::OpensDirectory | datui::WhatEnter::OpensFile => assert!(
@@ -16328,7 +16328,7 @@ fn test_the_bar_says_what_enter_will_really_do() {
     app.home.selected = door;
     assert_eq!(app.what_enter_does(), datui::WhatEnter::OpensDirectory);
     assert!(matches!(
-        app.event(&key(KeyCode::Enter)),
+        app.event(key(KeyCode::Enter)),
         Some(AppEvent::Open(..))
     ));
 }
@@ -16367,7 +16367,7 @@ fn test_a_place_row_says_inside_and_says_it_once() {
     );
 
     // And Enter really does browse, so the label is not a guess.
-    app.event(&key(KeyCode::Enter));
+    app.event(key(KeyCode::Enter));
     assert_eq!(app.home.browsing.as_deref(), Some(held.as_path()));
 }
 
@@ -16490,7 +16490,7 @@ fn test_looking_at_a_directory_happens_after_the_first_frame() {
 
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
-    let follow_up = app.event(&AppEvent::OpenNamed(
+    let follow_up = app.event(AppEvent::OpenNamed(
         vec![directory.clone()],
         OpenOptions::default(),
     ));
@@ -16507,7 +16507,7 @@ fn test_looking_at_a_directory_happens_after_the_first_frame() {
     let mut next = None;
     while next.is_none() {
         let event = next_event(&app, &rx).expect("the worker answers");
-        next = app.event(&event);
+        next = app.event(event);
     }
     match next {
         Some(AppEvent::LookThenOpenDirectory(dir, _)) => assert_eq!(dir, directory),
@@ -16531,7 +16531,7 @@ fn test_a_missing_named_path_is_found_on_a_worker() {
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
     assert!(
-        app.event(&AppEvent::OpenNamed(
+        app.event(AppEvent::OpenNamed(
             vec![missing.clone()],
             OpenOptions::default()
         ))
@@ -16543,7 +16543,7 @@ fn test_a_missing_named_path_is_found_on_a_worker() {
         while let Some(event) = next.take() {
             match event {
                 AppEvent::NamedPathMissing(path) => found = Some(path),
-                other => next = app.event(&other),
+                other => next = app.event(other),
             }
         }
     }
@@ -16579,7 +16579,7 @@ fn test_a_look_that_lands_after_the_user_left_is_dropped() {
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
     let event = App::route_named_paths(vec![directory.clone()], OpenOptions::default());
-    app.event(&event);
+    app.event(event);
 
     // Ctrl+O while the look is out: the user is at the home screen now.
     app.enter_home();
@@ -16591,7 +16591,7 @@ fn test_a_look_that_lands_after_the_user_left_is_dropped() {
         if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(50))
             && matches!(ev, AppEvent::JobEnded(t) if t.kind() == JobKind::LookAtDirectory)
         {
-            landed = Some(app.event(&ev));
+            landed = Some(app.event(ev));
             break;
         }
     }
@@ -16628,11 +16628,11 @@ fn test_going_home_during_the_look_at_named_paths_opens_nothing() {
     let mut app = App::new(tx, common::test_runtime());
     app.set_loading_phase("Scanning input", 10);
     assert!(
-        app.event(&AppEvent::OpenNamed(vec![file], OpenOptions::default()))
+        app.event(AppEvent::OpenNamed(vec![file], OpenOptions::default()))
             .is_none(),
         "the look goes to a worker"
     );
-    app.event(&ctrl_o());
+    app.event(ctrl_o());
     assert_eq!(app.input_mode, InputMode::Home);
     assert!(!app.is_busy(), "going home is immediate");
 
@@ -16640,9 +16640,9 @@ fn test_going_home_during_the_look_at_named_paths_opens_nothing() {
     for _ in ticks() {
         if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
             landed |= matches!(ev, AppEvent::JobEnded(t) if t.kind() == JobKind::OpenNamed);
-            let mut next = app.event(&ev);
+            let mut next = app.event(ev);
             while let Some(ev) = next {
-                next = app.event(&ev);
+                next = app.event(ev);
             }
             if landed {
                 break;
@@ -16673,7 +16673,7 @@ fn test_going_home_leaves_the_dataset_s_footer_pass_alone() {
     assert!(app.data_table_state.is_some());
     let counter = app.footer_progress().clone();
 
-    app.event(&ctrl_o());
+    app.event(ctrl_o());
     assert_eq!(app.input_mode, InputMode::Home);
     assert!(
         !counter.is_cancelled(),
@@ -16716,7 +16716,7 @@ fn test_a_setting_that_agrees_with_the_rule_changes_nothing() {
             }
             match next.take() {
                 Some(AppEvent::Open(paths, options)) => return Some((paths, options)),
-                Some(ev) => next = app.event(&ev),
+                Some(ev) => next = app.event(ev),
                 None => match next_event(&app, &rx) {
                     Some(ev) => next = Some(ev),
                     None => panic!("the chain stopped without settling"),
@@ -16803,7 +16803,7 @@ fn test_a_csv_setting_does_not_decide_a_directory_of_parquet() {
                 Some(AppEvent::Open(..)) => {
                     panic!("a CSV setting cannot make two Parquet tables into one")
                 }
-                Some(ev) => next = app.event(&ev),
+                Some(ev) => next = app.event(ev),
                 None => match next_event(&app, &rx) {
                     Some(ev) => next = Some(ev),
                     None => panic!("the chain stopped without settling"),
@@ -16844,7 +16844,7 @@ fn test_a_directory_with_no_data_is_not_forced_open() {
             Some(AppEvent::Open(..)) => {
                 panic!("a directory with nothing readable in it has no table to open")
             }
-            Some(ev) => next = app.event(&ev),
+            Some(ev) => next = app.event(ev),
             None => match next_event(&app, &rx) {
                 Some(ev) => next = Some(ev),
                 None => panic!("the chain stopped without settling"),
@@ -17045,7 +17045,7 @@ fn test_a_directory_of_one_compressed_delimited_file_opens() {
 
             let (tx, rx) = mpsc::channel();
             let mut app = App::new(tx, common::test_runtime());
-            let mut next = app.event(&AppEvent::OpenNamed(
+            let mut next = app.event(AppEvent::OpenNamed(
                 vec![dir.clone()],
                 OpenOptions {
                     hive: true,
@@ -17055,7 +17055,7 @@ fn test_a_directory_of_one_compressed_delimited_file_opens() {
             loop {
                 match next.take() {
                     Some(AppEvent::Crash(message)) => panic!("{case}: {message}"),
-                    Some(event) => next = app.event(&event),
+                    Some(event) => next = app.event(event),
                     None => match next_event(&app, &rx) {
                         Some(event) => next = Some(event),
                         None => break,
@@ -17091,7 +17091,7 @@ fn test_delimiter_flag_overrides_the_format_and_reaches_export() {
     std::fs::write(&tsv, "a;b\tc\n1;2\t3\n").unwrap();
 
     let export_default = |app: &mut App| {
-        app.event(&key(KeyCode::Char('e')));
+        app.event(key(KeyCode::Char('e')));
         app.export_modal.csv_delimiter_input.value().to_string()
     };
 
@@ -17163,7 +17163,7 @@ fn settle_from(app: &mut App, rx: &mpsc::Receiver<AppEvent>, first: AppEvent) {
     let mut next = Some(first);
     loop {
         match next.take() {
-            Some(ev) => next = app.event(&ev),
+            Some(ev) => next = app.event(ev),
             // A download is asked about first; Yes has the focus.
             None if app.awaiting_open_confirmation() => next = Some(key(KeyCode::Enter)),
             None => match next_event(app, rx) {
@@ -17188,13 +17188,13 @@ fn column_names(app: &App) -> Vec<String> {
 /// on Notes while there are unread ones, so this walks to Schema first.
 fn header_from_schema_tab(app: &mut App, rx: &mpsc::Receiver<AppEvent>) {
     use datui::widgets::info::InfoTab;
-    assert!(app.event(&key(KeyCode::Char('i'))).is_none());
+    assert!(app.event(key(KeyCode::Char('i'))).is_none());
     assert_eq!(app.input_mode, InputMode::Info);
     for _ in 0..16 {
         if app.info_modal.active_tab == InfoTab::Schema {
             break;
         }
-        app.event(&key(KeyCode::Right));
+        app.event(key(KeyCode::Right));
     }
     assert_eq!(app.info_modal.active_tab, InfoTab::Schema);
     settle_from(app, rx, key(KeyCode::Char('H')));
@@ -17262,8 +17262,8 @@ fn h_does_nothing_on_parquet() {
     );
     let before = column_names(&app);
     assert!(!app.header_toggle_offered());
-    assert!(app.event(&key(KeyCode::Char('i'))).is_none());
-    assert!(app.event(&key(KeyCode::Char('H'))).is_none());
+    assert!(app.event(key(KeyCode::Char('i'))).is_none());
+    assert!(app.event(key(KeyCode::Char('H'))).is_none());
     assert!(!app.is_busy());
     assert_eq!(
         app.input_mode,
@@ -17396,7 +17396,7 @@ fn an_unasked_download_past_its_limit_asks_once() {
     let mut next = Some(AppEvent::Open(vec![PathBuf::from(&url)], options));
     loop {
         match next.take() {
-            Some(ev) => next = app.event(&ev),
+            Some(ev) => next = app.event(ev),
             None if app.awaiting_open_confirmation() => {
                 asked.push((
                     app.confirmation_modal.message.clone(),
@@ -17457,7 +17457,7 @@ fn an_abandoned_http_download_stops_while_the_server_is_silent() {
     while files() != [1024] {
         assert!(Instant::now() < deadline, "the first KiB never landed");
         next = match next.take() {
-            Some(event) => app.event(&event),
+            Some(event) => app.event(event),
             None if app.awaiting_open_confirmation() => Some(key(KeyCode::Enter)),
             None => rx.recv_timeout(Duration::from_millis(10)).ok(),
         };
@@ -17466,7 +17466,7 @@ fn an_abandoned_http_download_stops_while_the_server_is_silent() {
     let began = Instant::now();
     let mut next = Some(ctrl_o());
     while let Some(event) = next {
-        next = app.event(&event);
+        next = app.event(event);
     }
     while !files().is_empty() {
         assert!(
@@ -17484,7 +17484,7 @@ fn an_abandoned_http_download_stops_while_the_server_is_silent() {
         let failed = matches!(event, AppEvent::JobEnded(t) if t.kind() == JobKind::Load);
         let mut next = Some(event);
         while let Some(event) = next {
-            next = app.event(&event);
+            next = app.event(event);
         }
         if failed {
             break;
@@ -17528,7 +17528,7 @@ fn quitting_mid_http_download_removes_the_partial_file() {
     while files() != [1024] {
         assert!(Instant::now() < deadline, "the first KiB never landed");
         next = match next.take() {
-            Some(event) => app.event(&event),
+            Some(event) => app.event(event),
             None if app.awaiting_open_confirmation() => Some(key(KeyCode::Enter)),
             None => rx.recv_timeout(Duration::from_millis(10)).ok(),
         };
@@ -17587,9 +17587,9 @@ fn quitting_mid_decompression_removes_the_partial_copy() {
     };
     let (tx, _rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
-    let mut next = app.event(&AppEvent::Open(vec![pipe], options));
+    let mut next = app.event(AppEvent::Open(vec![pipe], options));
     while let Some(event) = next {
-        next = app.event(&event);
+        next = app.event(event);
     }
     // The copy has stopped growing: the worker waits in a read for the rest.
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -17671,8 +17671,8 @@ fn a_compressed_csv_over_http_is_its_url() {
         .as_mut()
         .unwrap()
         .sort_by(vec!["column_1".to_string()], vec![true]);
-    app.event(&key(KeyCode::Char('v')));
-    app.event(&key(KeyCode::Char('s')));
+    app.event(key(KeyCode::Char('v')));
+    app.event(key(KeyCode::Char('s')));
     assert_eq!(app.view_modal.name_input.value(), "http_gz_location.csv");
     assert_eq!(app.view_modal.exact_path_input.value(), url);
 }
@@ -17765,7 +17765,7 @@ fn home_help_opens_with_question_mark_and_esc_closes_it() {
     app.enter_home();
     assert_eq!(app.input_mode, InputMode::Home);
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('?'),
         KeyModifiers::NONE,
     )));
@@ -17773,13 +17773,13 @@ fn home_help_opens_with_question_mark_and_esc_closes_it() {
     assert!(app.home.filter.is_empty(), "? must not land in the filter");
 
     // Keys reach the overlay, not the list underneath.
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Down,
         KeyModifiers::NONE,
     )));
     assert!(app.help_visible());
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
@@ -17802,7 +17802,7 @@ fn home_question_mark_types_into_a_started_filter() {
     app.enter_home();
     app.home.filter = "sal".to_string();
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('?'),
         KeyModifiers::NONE,
     )));
@@ -17820,13 +17820,13 @@ fn home_f1_opens_help_mid_filter() {
     app.enter_home();
     app.home.filter = "sal".to_string();
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::F(1),
         KeyModifiers::NONE,
     )));
     assert!(app.help_visible(), "F1 opens help mid-filter");
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
@@ -17846,7 +17846,7 @@ fn v_with_no_matching_view_opens_the_list() {
     let (mut app, _rx, _tx) = open_query_filter_fixture("t_fallback.csv");
     assert!(!app.view_modal.active);
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('V'),
         KeyModifiers::SHIFT,
     )));
@@ -17855,7 +17855,7 @@ fn v_with_no_matching_view_opens_the_list() {
         "V without a match shows what exists rather than staying silent"
     );
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
@@ -17869,7 +17869,7 @@ fn v_with_no_matching_view_opens_the_list() {
 fn view_modal_does_not_survive_going_home() {
     let (mut app, _rx, _tx) = open_query_filter_fixture("t_zombie.csv");
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('v'),
         KeyModifiers::NONE,
     )));
@@ -17881,7 +17881,7 @@ fn view_modal_does_not_survive_going_home() {
 
 /// A helper for the modal tests: one key press with no modifiers.
 fn press(app: &mut App, code: KeyCode) -> Option<AppEvent> {
-    app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+    app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
 }
 
 /// Step the open copy dialog's scope row (where it opens) with → until it reads
@@ -18078,7 +18078,7 @@ fn test_sort_filter_reopen_reflects_applied_state() {
     assert_eq!(state.headers(), vec!["c".to_string(), "name".to_string()]);
 
     // Sort by "c", applied through the event the modal would send.
-    app.event(&AppEvent::Sort(vec!["c".to_string()], vec![false]));
+    app.event(AppEvent::Sort(vec!["c".to_string()], vec![false]));
     pump_until_idle(&mut app, &rx, &tx);
 
     press(&mut app, KeyCode::Char('s'));
@@ -18187,7 +18187,7 @@ fn a_freeze_survives_a_narrow_window() {
 
     let g = datui::glyphs::get();
     let draw = |app: &mut App, width: u16, height: u16| {
-        app.event(&AppEvent::Resize(width, height));
+        app.event(AppEvent::Resize(width, height));
         let area = Rect::new(0, 0, width, height);
         let mut buf = Buffer::empty(area);
         app.render(area, &mut buf);
@@ -18292,7 +18292,7 @@ fn column_widths_from_the_sidebar() {
     // As the main loop draws: a frame that changes the rows on screen reads them,
     // and the next frame shows them.
     let draw = |app: &mut App, width: u16, height: u16| {
-        app.event(&AppEvent::Resize(width, height));
+        app.event(AppEvent::Resize(width, height));
         let area = Rect::new(0, 0, width, height);
         let mut buf = Buffer::empty(area);
         app.render(area, &mut buf);
@@ -18472,7 +18472,7 @@ fn a_change_of_view_relearns_widths() {
     let short_width = u16::try_from("short note 39".len()).unwrap();
     let long_width = u16::try_from(long(79).len()).unwrap();
 
-    app.event(&AppEvent::Resize(area.width, area.height));
+    app.event(AppEvent::Resize(area.width, area.height));
     draw(&mut app);
     assert_eq!(shown(&app, "status"), 6);
     app.data_table_state
@@ -18482,7 +18482,7 @@ fn a_change_of_view_relearns_widths() {
 
     // Same name, same type, other values. The frame drawn while the query reads
     // still holds the old values; they teach the new view nothing.
-    app.event(&AppEvent::QQuery(
+    app.event(AppEvent::QQuery(
         "select id, status: description".to_string(),
     ));
     draw(&mut app);
@@ -18510,7 +18510,7 @@ fn a_change_of_view_relearns_widths() {
 
     // The sidebar sends the sort again on every apply; unchanged, it is not a
     // change of view.
-    app.event(&AppEvent::Sort(Vec::new(), Vec::new()));
+    app.event(AppEvent::Sort(Vec::new(), Vec::new()));
     pump_until_idle(&mut app, &rx, &tx);
     let resent = draw(&mut app);
     assert_eq!(app.data_table_state.as_ref().unwrap().start_row(), start);
@@ -18518,13 +18518,13 @@ fn a_change_of_view_relearns_widths() {
 
     // A new sort keeps the row number; descending, the long values are there now,
     // and the width is learned from them.
-    app.event(&AppEvent::Sort(vec!["status".to_string()], vec![true]));
+    app.event(AppEvent::Sort(vec!["status".to_string()], vec![true]));
     pump_until_idle(&mut app, &rx, &tx);
     let sorted = draw(&mut app);
     assert_eq!(shown(&app, "status"), long_width, "{sorted}");
 
     // A new filter, viewed from the top, holds only the short ones.
-    app.event(&AppEvent::Filter(vec![filter_stmt(
+    app.event(AppEvent::Filter(vec![filter_stmt(
         "status",
         FilterOperator::Contains,
         "short",
@@ -18700,7 +18700,7 @@ fn test_filter_editor_keyboard_flow() {
     press(&mut app, KeyCode::Down); // add sort -> the statement
     press(&mut app, KeyCode::Delete); // Del deletes like d
     assert!(app.sort_filter_modal.filter.statements.is_empty());
-    let apply = app.event(&AppEvent::Key(KeyEvent::new(
+    let apply = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::CONTROL,
     )));
@@ -19233,7 +19233,7 @@ fn ctrl_p_recalls_the_last_export_path_and_up_moves_on() {
         "and recalls nothing"
     );
     press(&mut app, KeyCode::Down);
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('p'),
         KeyModifiers::CONTROL,
     )));
@@ -19242,7 +19242,7 @@ fn ctrl_p_recalls_the_last_export_path_and_up_moves_on() {
         out.to_str().unwrap(),
         "Ctrl+P recalls the path exported to"
     );
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('n'),
         KeyModifiers::CONTROL,
     )));
@@ -19256,7 +19256,7 @@ fn ctrl_p_recalls_the_last_export_path_and_up_moves_on() {
 fn sort_and_filter_edits_what_is_in_effect() {
     use datui::sort_filter_modal::SortFilterField;
     let (mut app, rx, tx) = open_query_filter_fixture("forms_in_effect.csv");
-    app.event(&AppEvent::Sort(
+    app.event(AppEvent::Sort(
         vec!["a".to_string(), "c".to_string()],
         vec![false, false],
     ));
@@ -19385,7 +19385,7 @@ fn test_info_panel_reads_the_file_facts_off_the_ui_thread() {
     );
 
     for k in [KeyCode::Char('i'), KeyCode::Right] {
-        if let Some(next) = app.event(&key(k)) {
+        if let Some(next) = app.event(key(k)) {
             let _ = tx.send(next);
         }
     }
@@ -19400,7 +19400,7 @@ fn test_info_panel_reads_the_file_facts_off_the_ui_thread() {
         text.contains("50 rows in 1 row group") && text.contains("Format version:"),
         "the Parquet tab says what its footer says; got:\n{text}"
     );
-    if let Some(next) = app.event(&key(KeyCode::Right)) {
+    if let Some(next) = app.event(key(KeyCode::Right)) {
         let _ = tx.send(next);
     }
     let mut buf = Buffer::empty(area);
@@ -19418,7 +19418,7 @@ fn test_info_panel_reads_the_file_facts_off_the_ui_thread() {
     let _ = painted(&mut app, &rx, &tx, area);
     std::fs::remove_file(&path).unwrap();
     for k in [KeyCode::Char('i'), KeyCode::Right, KeyCode::Right] {
-        if let Some(next) = app.event(&key(k)) {
+        if let Some(next) = app.event(key(k)) {
             let _ = tx.send(next);
         }
     }
@@ -19454,7 +19454,7 @@ fn test_total_rows_offered_only_under_a_subset() {
         "a pristine view offers no pair"
     );
 
-    app.event(&AppEvent::Filter(vec![filter_stmt(
+    app.event(AppEvent::Filter(vec![filter_stmt(
         "c",
         FilterOperator::Eq,
         "1",
@@ -19464,19 +19464,19 @@ fn test_total_rows_offered_only_under_a_subset() {
     assert_eq!(state.total_rows_when_subset(), Some(100));
 
     // A sort is not a subset: same rows, other order.
-    app.event(&AppEvent::Filter(vec![]));
-    app.event(&AppEvent::Sort(vec!["a".to_string()], vec![true]));
+    app.event(AppEvent::Filter(vec![]));
+    app.event(AppEvent::Sort(vec!["a".to_string()], vec![true]));
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.total_rows_when_subset(), None);
 
     // A query is.
-    app.event(&AppEvent::QQuery("select where a < 50".to_string()));
+    app.event(AppEvent::QQuery("select where a < 50".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.total_rows_when_subset(), Some(100));
 
-    app.event(&AppEvent::Reset);
+    app.event(AppEvent::Reset);
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.total_rows_when_subset(), None);
@@ -19499,7 +19499,7 @@ fn i_opens_on_notes_while_they_are_unread() {
     let mut app = open_local_dataset(dir.path());
     assert!(app.data_table_state.as_ref().unwrap().notes_unseen());
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('i'),
         KeyModifiers::NONE,
     )));
@@ -19509,11 +19509,11 @@ fn i_opens_on_notes_while_they_are_unread() {
         "unread notes put their tab in front"
     );
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('i'),
         KeyModifiers::NONE,
     )));
@@ -19531,9 +19531,9 @@ fn q_style_config() -> datui::AppConfig {
 }
 
 fn press_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
-    let mut next = app.event(&AppEvent::Key(KeyEvent::new(code, modifiers)));
+    let mut next = app.event(AppEvent::Key(KeyEvent::new(code, modifiers)));
     while let Some(ev) = next.take() {
-        next = app.event(&ev);
+        next = app.event(ev);
     }
 }
 
@@ -19543,9 +19543,9 @@ fn run_and_settle(
     rx: &mpsc::Receiver<AppEvent>,
     tx: &mpsc::Sender<AppEvent>,
 ) {
-    let mut next = app.event(&event);
+    let mut next = app.event(event);
     while let Some(ev) = next.take() {
-        next = app.event(&ev);
+        next = app.event(ev);
     }
     pump_until_idle(app, rx, tx);
 }
@@ -19949,43 +19949,43 @@ fn a_query_sent_without_the_prompt_that_fails_leaves_the_view() {
 fn reopening_the_query_prompt_selects_the_old_query() {
     let (mut app, rx, tx) = open_query_filter_fixture_with("reopen_query.csv", q_style_config());
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char(':'),
         KeyModifiers::NONE,
     )));
     for c in "select a where a > 10".chars() {
-        app.event(&AppEvent::Key(KeyEvent::new(
+        app.event(AppEvent::Key(KeyEvent::new(
             KeyCode::Char(c),
             KeyModifiers::NONE,
         )));
     }
-    let mut next = app.event(&AppEvent::Key(KeyEvent::new(
+    let mut next = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
     while let Some(ev) = next.take() {
-        next = app.event(&ev);
+        next = app.event(ev);
     }
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 89);
 
     // Reopen and type a fresh query: the first character replaces the old text.
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char(':'),
         KeyModifiers::NONE,
     )));
     for c in "select a where a > 50".chars() {
-        app.event(&AppEvent::Key(KeyEvent::new(
+        app.event(AppEvent::Key(KeyEvent::new(
             KeyCode::Char(c),
             KeyModifiers::NONE,
         )));
     }
-    let mut next = app.event(&AppEvent::Key(KeyEvent::new(
+    let mut next = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
     while let Some(ev) = next.take() {
-        next = app.event(&ev);
+        next = app.event(ev);
     }
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(
@@ -20068,7 +20068,7 @@ fn test_copy_dialog_sends_each_scope_to_the_destination() {
     app.set_clipboard_destination(Box::new(Capture(copies.clone())));
 
     let key =
-        |app: &mut App, code| app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+        |app: &mut App, code| app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
 
     // Row scope is the default, header off: the current row as bare TSV.
     key(&mut app, KeyCode::Char('y'));
@@ -20126,7 +20126,7 @@ fn test_copy_dialog_sends_each_scope_to_the_destination() {
     copy_scope(&mut app, datui::copy_modal::CopyScope::Table);
     let mut next = key(&mut app, KeyCode::Enter);
     while let Some(ev) = next {
-        next = app.event(&ev);
+        next = app.event(ev);
     }
     pump_until_idle(&mut app, &rx, &tx);
     {
@@ -20225,7 +20225,7 @@ fn test_a_capped_destination_gets_text_within_its_cap() {
 
 /// Press `c` with Ctrl held, as a text field receives it.
 fn press_ctrl(app: &mut App, c: char) -> Option<AppEvent> {
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char(c),
         KeyModifiers::CONTROL,
     )))
@@ -20409,11 +20409,11 @@ fn long_csv(scale: i64) -> String {
 #[cfg(feature = "sql")]
 fn view_and_steps_on_the_next_file(
     name: &str,
-    steps: &[AppEvent],
+    steps: &dyn Fn() -> Vec<AppEvent>,
 ) -> (datui::SavedView, DataFrame, DataFrame) {
     let next_path = common::fixture_dir().join(format!("{name}_next.csv"));
     let run = |app: &mut App, rx: &mpsc::Receiver<AppEvent>, tx: &mpsc::Sender<AppEvent>| {
-        for step in steps {
+        for step in steps() {
             app.event(step);
             pump_until_idle(app, rx, tx);
             let state = app.data_table_state.as_ref().unwrap();
@@ -20452,7 +20452,7 @@ fn view_and_steps_on_the_next_file(
         .unwrap();
     pump_open_until_loaded(&mut app, &rx, vec![next_path], OpenOptions::default());
     pump_until_idle(&mut app, &rx, &tx);
-    app.event(&key(KeyCode::Char('V')));
+    app.event(key(KeyCode::Char('V')));
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.error().is_none(), "{:?}", state.error());
@@ -20465,20 +20465,22 @@ fn view_and_steps_on_the_next_file(
 #[test]
 fn test_a_view_replays_the_query_before_the_pivot() {
     use datui::pivot_melt_modal::{PivotAggregation, PivotSpec};
-    let steps = [
-        AppEvent::SqlQuery("SELECT id, key, val FROM df WHERE id >= 4".to_string()),
-        AppEvent::Filter(vec![filter_stmt(
-            "id",
-            datui::filter_modal::FilterOperator::Lt,
-            "8",
-        )]),
-        AppEvent::Pivot(PivotSpec {
-            index: vec!["id".to_string()],
-            pivot_column: "key".to_string(),
-            value_column: "val".to_string(),
-            aggregation: PivotAggregation::First,
-        }),
-    ];
+    let steps = || {
+        vec![
+            AppEvent::SqlQuery("SELECT id, key, val FROM df WHERE id >= 4".to_string()),
+            AppEvent::Filter(vec![filter_stmt(
+                "id",
+                datui::filter_modal::FilterOperator::Lt,
+                "8",
+            )]),
+            AppEvent::Pivot(PivotSpec {
+                index: vec!["id".to_string()],
+                pivot_column: "key".to_string(),
+                value_column: "val".to_string(),
+                aggregation: PivotAggregation::First,
+            }),
+        ]
+    };
     let (view, applied, expected) = view_and_steps_on_the_next_file("view_query_pivot", &steps);
 
     let source = view.settings.reshape_source.as_ref().expect("the source");
@@ -20498,15 +20500,17 @@ fn test_a_view_replays_the_query_before_the_pivot() {
 #[test]
 fn test_a_view_replays_sql_on_the_pivot_after_it() {
     use datui::pivot_melt_modal::{PivotAggregation, PivotSpec};
-    let steps = [
-        AppEvent::Pivot(PivotSpec {
-            index: vec!["id".to_string()],
-            pivot_column: "key".to_string(),
-            value_column: "val".to_string(),
-            aggregation: PivotAggregation::First,
-        }),
-        AppEvent::SqlQuery("SELECT id, k2 FROM df WHERE k1 > 12".to_string()),
-    ];
+    let steps = || {
+        vec![
+            AppEvent::Pivot(PivotSpec {
+                index: vec!["id".to_string()],
+                pivot_column: "key".to_string(),
+                value_column: "val".to_string(),
+                aggregation: PivotAggregation::First,
+            }),
+            AppEvent::SqlQuery("SELECT id, k2 FROM df WHERE k1 > 12".to_string()),
+        ]
+    };
     let (view, applied, expected) = view_and_steps_on_the_next_file("view_pivot_sql", &steps);
 
     assert!(view.settings.reshape_source.is_none());
@@ -20522,15 +20526,19 @@ fn test_a_view_replays_sql_on_the_pivot_after_it() {
 #[test]
 fn test_a_view_replays_the_query_before_the_melt() {
     use datui::pivot_melt_modal::MeltSpec;
-    let steps = [
-        AppEvent::SqlQuery("SELECT id, val, val * 2 AS doubled FROM df WHERE id < 3".to_string()),
-        AppEvent::Melt(MeltSpec {
-            index: vec!["id".to_string()],
-            value_columns: vec!["val".to_string(), "doubled".to_string()],
-            variable_name: "variable".to_string(),
-            value_name: "value".to_string(),
-        }),
-    ];
+    let steps = || {
+        vec![
+            AppEvent::SqlQuery(
+                "SELECT id, val, val * 2 AS doubled FROM df WHERE id < 3".to_string(),
+            ),
+            AppEvent::Melt(MeltSpec {
+                index: vec!["id".to_string()],
+                value_columns: vec!["val".to_string(), "doubled".to_string()],
+                variable_name: "variable".to_string(),
+                value_name: "value".to_string(),
+            }),
+        ]
+    };
     let (view, applied, expected) = view_and_steps_on_the_next_file("view_query_melt", &steps);
 
     assert!(view.settings.reshape_source.is_some());
@@ -20570,7 +20578,7 @@ fn test_a_view_of_a_melted_pivot_fails_to_apply_and_changes_nothing() {
         &long_csv(1),
         OpenOptions::default(),
     );
-    for step in &steps {
+    for step in steps {
         app.event(step);
         pump_until_idle(&mut app, &rx, &tx);
         let state = app.data_table_state.as_ref().unwrap();
@@ -20603,7 +20611,7 @@ fn test_a_view_of_a_melted_pivot_fails_to_apply_and_changes_nothing() {
         .visible_lf()
         .collect()
         .unwrap();
-    app.event(&key(KeyCode::Char('V')));
+    app.event(key(KeyCode::Char('V')));
     pump_until_idle(&mut app, &rx, &tx);
 
     assert!(app.modal_showing(), "the view says it could not apply");
@@ -21102,7 +21110,7 @@ fn test_inspector_lists_a_short_row_whole_and_offers_only_keys_that_act() {
 #[test]
 fn test_inspector_title_names_the_group_inside_a_drill() {
     let (mut app, rx, tx) = open_query_filter_fixture("inspect_drill_title.csv");
-    app.event(&AppEvent::QQuery("select n: count a by c".to_string()));
+    app.event(AppEvent::QQuery("select n: count a by c".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     painted(&mut app, &rx, &tx, Rect::new(0, 0, 80, 24));
     press_and_send(&mut app, &tx, KeyCode::Enter);
@@ -21767,9 +21775,9 @@ fn open_out_of_range_dates(dir: &Path) -> (App, mpsc::Receiver<AppEvent>, mpsc::
 
 /// Press `code` and handle every event it chains to.
 fn press_through(app: &mut App, code: KeyCode) {
-    let mut next = app.event(&key(code));
+    let mut next = app.event(key(code));
     while let Some(event) = next {
-        next = app.event(&event);
+        next = app.event(event);
     }
 }
 
@@ -22075,7 +22083,7 @@ fn open_wide_table(
 /// Draw the app at `size`, as the run loop does after every key, and return the
 /// screen one line per row.
 fn draw_sized(app: &mut App, (width, height): (u16, u16)) -> String {
-    app.event(&AppEvent::Resize(width, height));
+    app.event(AppEvent::Resize(width, height));
     let area = Rect::new(0, 0, width, height);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
@@ -22480,7 +22488,7 @@ fn wide_table_paging_after_a_query_with_one_and_no_columns() {
     let (mut app, rx, tx) = open_wide_table("wide_nav_query.parquet", 40, size);
     press_and_draw(&mut app, KeyCode::Char('}'), size);
     assert_eq!(columns_shown(&app).unwrap().last, 40);
-    app.event(&AppEvent::QQuery("select id_000, price_001".to_string()));
+    app.event(AppEvent::QQuery("select id_000, price_001".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     draw_sized(&mut app, size);
     let state = app.data_table_state.as_ref().unwrap();
@@ -22488,7 +22496,7 @@ fn wide_table_paging_after_a_query_with_one_and_no_columns() {
     assert_eq!(state.termcol_index, 0, "the new schema starts at the left");
     assert_eq!(range_shown(&app), Some((1, 2)), "both on screen");
 
-    app.event(&AppEvent::QQuery("select id_000".to_string()));
+    app.event(AppEvent::QQuery("select id_000".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     for key in ['{', '}', 'l', 'h'] {
         let screen = press_and_draw(&mut app, KeyCode::Char(key), size);
@@ -22606,7 +22614,7 @@ fn run_query(
     tx: &mpsc::Sender<AppEvent>,
     query: &str,
 ) {
-    app.event(&AppEvent::QQuery(query.to_string()));
+    app.event(AppEvent::QQuery(query.to_string()));
     pump_until_idle(app, rx, tx);
     assert_eq!(app.error_message(), None, "{query}");
     let state = app.data_table_state.as_ref().unwrap();
@@ -23137,7 +23145,7 @@ fn test_value_counts_drill_breadcrumb_marks_a_tab() {
 #[test]
 fn test_value_counts_count_the_queried_view() {
     let (mut app, rx, tx) = open_query_filter_fixture("value_counts_query.csv");
-    app.event(&AppEvent::QQuery("select where a < 10".to_string()));
+    app.event(AppEvent::QQuery("select where a < 10".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     press_and_send(&mut app, &tx, KeyCode::Right);
     counts_key(&mut app, &rx, &tx, KeyCode::Char('F'));
@@ -23908,7 +23916,7 @@ fn a_hugging_face_cache_lists_its_splits_on_home() {
     let state = app.data_table_state.as_ref().expect("the test split opens");
     assert_eq!(state.other_tables(), ["train", "validation"]);
     // A directory has no footer of its own: no Arrow tab, once its facts are read.
-    if let Some(next) = app.event(&key(KeyCode::Char('i'))) {
+    if let Some(next) = app.event(key(KeyCode::Char('i'))) {
         let _ = tx.send(next);
     }
     pump_until(&mut app, &rx, &tx, |app| {
@@ -24551,7 +24559,7 @@ fn test_copy_as_python_writes_the_view_as_a_script() {
     let copies: Arc<Mutex<Vec<Payload>>> = Arc::new(Mutex::new(Vec::new()));
     app.set_clipboard_destination(Box::new(Capture(copies.clone())));
     let key =
-        |app: &mut App, code| app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+        |app: &mut App, code| app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
     key(&mut app, KeyCode::Char('y'));
     copy_scope(&mut app, datui::copy_modal::CopyScope::Python);
     assert_eq!(app.copy_modal.row_order().len(), 1, "no format or header");
@@ -24992,7 +25000,7 @@ fn test_a_footer_count_says_so_on_screen() {
         skip_tail_rows: Some(1),
         ..OpenOptions::default()
     };
-    let mut next = app.event(&AppEvent::Open(vec![path], options));
+    let mut next = app.event(AppEvent::Open(vec![path], options));
     let area = Rect::new(0, 0, 100, 24);
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
@@ -25002,7 +25010,7 @@ fn test_a_footer_count_says_so_on_screen() {
         "{screen}"
     );
     while let Some(event) = next.take().or_else(|| next_event(&app, &rx)) {
-        next = app.event(&event);
+        next = app.event(event);
     }
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 2);
@@ -25037,7 +25045,7 @@ fn test_a_large_in_memory_read_asks_first() {
                 .take()
                 .or_else(|| next_event(app, rx))
                 .expect("the open asks");
-            next = app.event(&event);
+            next = app.event(event);
         }
     };
 
@@ -25050,12 +25058,12 @@ fn test_a_large_in_memory_read_asks_first() {
         "{message}"
     );
     assert!(app.data_table_state.is_none(), "nothing was read");
-    let mut next = app.event(&AppEvent::Key(KeyEvent::new(
+    let mut next = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
     while let Some(event) = next.take().or_else(|| next_event(&app, &rx)) {
-        next = app.event(&event);
+        next = app.event(event);
     }
     pump_until_idle(&mut app, &rx, &tx);
     assert!(!app.confirmation_modal.active);
@@ -25063,7 +25071,7 @@ fn test_a_large_in_memory_read_asks_first() {
 
     let (mut app, rx, _tx) = app_with(1);
     ask(&mut app, &rx);
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
@@ -25103,7 +25111,7 @@ fn test_a_sniffed_file_copies_and_exports_as_the_format_read() {
         )),
         "{script}"
     );
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('e'),
         KeyModifiers::NONE,
     )));
@@ -25482,7 +25490,7 @@ fn a_running_query_says_so_in_the_table() {
     }
     let mut next = press(&mut app, KeyCode::Enter);
     while let Some(event) = next {
-        next = app.event(&event);
+        next = app.event(event);
     }
     // Its rows are not in until their job's end is handled.
     assert!(app.is_busy(), "the query is running");
@@ -25647,7 +25655,7 @@ fn test_terminal_background_switches_the_palette_under_auto() {
         (ThemeMode::Dark, ColorConfig::dark()),
         (ThemeMode::Light, ColorConfig::light()),
     ] {
-        app.event(&AppEvent::TerminalBackground(mode));
+        app.event(AppEvent::TerminalBackground(mode));
         assert_eq!(
             app.theme().table_header_bg(),
             hex(&stock.table_header_bg),
@@ -25661,7 +25669,7 @@ fn test_terminal_background_switches_the_palette_under_auto() {
     }
 
     assert!(!app.take_background_query());
-    app.event(&AppEvent::TerminalFocused);
+    app.event(AppEvent::TerminalFocused);
     assert!(app.take_background_query());
     assert!(!app.take_background_query(), "asked once");
 
@@ -25669,12 +25677,12 @@ fn test_terminal_background_switches_the_palette_under_auto() {
     let theme = Theme::from_config(&light.theme).expect("theme builds");
     let (tx, _rx) = mpsc::channel();
     let mut app = App::new_with_config(tx, common::test_runtime(), theme, light);
-    app.event(&AppEvent::TerminalBackground(ThemeMode::Dark));
+    app.event(AppEvent::TerminalBackground(ThemeMode::Dark));
     assert_eq!(
         app.theme().table_header_bg(),
         hex(&ColorConfig::light().table_header_bg)
     );
-    app.event(&AppEvent::TerminalFocused);
+    app.event(AppEvent::TerminalFocused);
     assert!(!app.take_background_query());
 }
 
@@ -25706,17 +25714,17 @@ fn test_first_frame_uses_the_terminals_last_answer() {
     let auto = "[theme]\nmode = \"auto\"\n";
     let mut app = start(auto, Some(ThemeMode::Dark));
     assert_eq!(header(&app), dark, "nothing remembered: dark");
-    app.event(&AppEvent::TerminalBackground(ThemeMode::Light));
+    app.event(AppEvent::TerminalBackground(ThemeMode::Light));
     assert_eq!(header(&app), light, "a late answer switches");
 
     let app = start(auto, None);
     assert_eq!(header(&app), light, "the last answer, before any new one");
     let mut app = start(auto, Some(ThemeMode::Dark));
     assert_eq!(header(&app), dark, "an answer already in wins");
-    app.event(&AppEvent::TerminalBackground(ThemeMode::Dark));
+    app.event(AppEvent::TerminalBackground(ThemeMode::Dark));
     assert_eq!(header(&start(auto, None)), dark, "remembered again");
 
-    app.event(&AppEvent::TerminalBackground(ThemeMode::Light));
+    app.event(AppEvent::TerminalBackground(ThemeMode::Light));
     let pinned = start("[theme]\nmode = \"dark\"\n", None);
     assert_eq!(header(&pinned), dark, "an explicit mode ignores it");
 }
@@ -25747,13 +25755,13 @@ fn test_terminal_background_switches_between_named_themes() {
     let mut app = App::new_with_config(tx, common::test_runtime(), theme, config);
 
     for _ in 0..2 {
-        app.event(&AppEvent::TerminalBackground(ThemeMode::Light));
+        app.event(AppEvent::TerminalBackground(ThemeMode::Light));
         let light = ColorConfig::light();
         assert_eq!(app.theme().accent(), hex(&light.accent));
         assert_eq!(app.theme().dimmed(), hex(&light.dimmed));
         assert_eq!(app.theme().find_match(), hex("#ff9e64"));
 
-        app.event(&AppEvent::TerminalBackground(ThemeMode::Dark));
+        app.event(AppEvent::TerminalBackground(ThemeMode::Dark));
         assert_eq!(app.theme().accent(), hex("#e0af68"));
         assert_eq!(app.theme().dimmed(), hex("#111111"));
         assert_eq!(
@@ -25791,7 +25799,7 @@ fn view_frame(app: &App) -> DataFrame {
 /// Type `text` into whatever has the keys, as typed.
 fn type_into(app: &mut App, text: &str) {
     for c in text.chars() {
-        app.event(&key(KeyCode::Char(c)));
+        app.event(key(KeyCode::Char(c)));
     }
 }
 
@@ -25799,7 +25807,7 @@ fn type_into(app: &mut App, text: &str) {
 fn retype_from_schema(app: &mut App, column: &str) {
     // Back from a type, the picker leaves the panel open.
     if app.input_mode != datui::InputMode::Info {
-        app.event(&key(KeyCode::Char('i')));
+        app.event(key(KeyCode::Char('i')));
     }
     assert_eq!(
         app.input_mode,
@@ -25818,15 +25826,15 @@ fn retype_from_schema(app: &mut App, column: &str) {
         if app.info_modal.active_tab == datui::widgets::info::InfoTab::Schema {
             break;
         }
-        app.event(&key(KeyCode::Left));
+        app.event(key(KeyCode::Left));
     }
     for _ in 0..8 {
-        app.event(&key(KeyCode::Up));
+        app.event(key(KeyCode::Up));
     }
     for _ in 0..at {
-        app.event(&key(KeyCode::Down));
+        app.event(key(KeyCode::Down));
     }
-    app.event(&key(KeyCode::Enter));
+    app.event(key(KeyCode::Enter));
     assert_eq!(app.input_mode, datui::InputMode::Retype);
 }
 
@@ -25861,7 +25869,7 @@ fn a_column_retyped_in_the_table() {
 
     retype_from_schema(&mut app, "code");
     type_into(&mut app, "i64");
-    app.event(&key(KeyCode::Enter));
+    app.event(key(KeyCode::Enter));
     assert_eq!(app.input_mode, datui::InputMode::Info, "back to the panel");
     pump_until(&mut app, &rx, &tx, |app| {
         !app.is_busy() && !app.unfit_count_pending()
@@ -25878,7 +25886,7 @@ fn a_column_retyped_in_the_table() {
     assert_eq!(state.retyped_columns(), ["code"]);
     let area = Rect::new(0, 0, 120, 30);
     let mut buf = Buffer::empty(area);
-    app.event(&key(KeyCode::Esc));
+    app.event(key(KeyCode::Esc));
     app.render(area, &mut buf);
     let shown = common::buffer_text(&buf);
     assert!(shown.contains("typed code"), "the footer says so: {shown}");
@@ -25886,8 +25894,8 @@ fn a_column_retyped_in_the_table() {
     // A date with the format that reads the column's first value.
     retype_from_schema(&mut app, "when");
     type_into(&mut app, "date");
-    app.event(&key(KeyCode::Enter));
-    app.event(&key(KeyCode::Enter));
+    app.event(key(KeyCode::Enter));
+    app.event(key(KeyCode::Enter));
     pump_until_idle(&mut app, &rx, &tx);
     let df = view_frame(&app);
     assert_eq!(df.column("when").unwrap().dtype(), &DataType::Date);
@@ -25904,7 +25912,7 @@ fn a_column_retyped_in_the_table() {
     // As read again.
     retype_from_schema(&mut app, "code");
     type_into(&mut app, "as read");
-    app.event(&key(KeyCode::Enter));
+    app.event(key(KeyCode::Enter));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(
         view_frame(&app).column("code").unwrap().dtype(),
@@ -25985,7 +25993,7 @@ fn a_retype_is_saved_in_a_view_and_exported() {
 
     pump_open_until_loaded(&mut app, &rx, vec![next], OpenOptions::default());
     pump_until_idle(&mut app, &rx, &tx);
-    app.event(&key(KeyCode::Char('V')));
+    app.event(key(KeyCode::Char('V')));
     pump_until_idle(&mut app, &rx, &tx);
     let df = view_frame(&app);
     assert_eq!(df.column("code").unwrap().dtype(), &DataType::UInt16);
@@ -26024,16 +26032,16 @@ fn combine_into_datetime_matches_the_specs_column() {
 
     // The cursor is on Lcl Date; the menu's last line combines.
     app.open_context_menu(ratatui::layout::Position { x: 2, y: 2 });
-    app.event(&key(KeyCode::Up));
-    app.event(&key(KeyCode::Enter));
+    app.event(key(KeyCode::Up));
+    app.event(key(KeyCode::Enter));
     assert_eq!(app.input_mode, datui::InputMode::Combine);
     // Date, Time, then the UTC offset: Space picks it.
-    app.event(&key(KeyCode::Tab));
-    app.event(&key(KeyCode::Tab));
-    app.event(&key(KeyCode::Char(' ')));
+    app.event(key(KeyCode::Tab));
+    app.event(key(KeyCode::Tab));
+    app.event(key(KeyCode::Char(' ')));
     type_into(&mut app, "UTC");
-    app.event(&key(KeyCode::Enter));
-    app.event(&key(KeyCode::Enter));
+    app.event(key(KeyCode::Enter));
+    app.event(key(KeyCode::Enter));
     assert_eq!(app.input_mode, datui::InputMode::Normal);
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();

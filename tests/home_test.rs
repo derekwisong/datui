@@ -5600,7 +5600,7 @@ mod coming_back {
     fn handle(app: &mut App, event: AppEvent) {
         let mut next = Some(event);
         while let Some(event) = next {
-            next = app.event(&event);
+            next = app.event(event);
         }
     }
 
@@ -5635,7 +5635,7 @@ mod coming_back {
     }
 
     pub(super) fn press(app: &mut App, code: KeyCode) -> Option<AppEvent> {
-        app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+        app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
     }
 
     pub(super) fn entries(app: &App) -> Vec<PathBuf> {
@@ -6313,7 +6313,7 @@ mod cloud_level_paging {
             if let Ok(event) = rx.recv_timeout(Duration::from_millis(20)) {
                 let mut next = Some(event);
                 while let Some(event) = next {
-                    next = app.event(&event);
+                    next = app.event(event);
                 }
             }
             app.request_what_the_frame_needs();
@@ -6414,7 +6414,7 @@ mod cloud_level_paging {
         // An answer for a key typed since, landing late, does not put the shorter
         // prefix back.
         let rows = app.home.narrowed.clone().expect("narrowed").rows;
-        app.event(&AppEvent::HomeNarrowed {
+        app.event(AppEvent::HomeNarrowed {
             dir: level.clone(),
             prefix: "STATION=P50".to_string(),
             listed: Some((rows, false)),
@@ -6526,7 +6526,7 @@ fn listed(
         let event = rx.recv_timeout(left).expect("the listing never landed");
         let mut next = Some(event);
         while let Some(event) = next {
-            next = app.event(&event);
+            next = app.event(event);
         }
     }
     cursor_line(app);
@@ -6559,7 +6559,7 @@ fn cursor_line(app: &mut datui::App) -> u16 {
 }
 
 fn press_and_draw(app: &mut datui::App, code: crossterm::event::KeyCode) -> u16 {
-    let _ = app.event(&datui::AppEvent::Key(crossterm::event::KeyEvent::new(
+    let _ = app.event(datui::AppEvent::Key(crossterm::event::KeyEvent::new(
         code,
         crossterm::event::KeyModifiers::NONE,
     )));
@@ -6751,7 +6751,7 @@ fn test_rows_arriving_above_the_cursor_leave_it_on_its_line() {
     for i in 0..5 {
         touch(tmp.path(), &format!("e{i}.csv"));
     }
-    let _ = app.event(&datui::AppEvent::Key(crossterm::event::KeyEvent::new(
+    let _ = app.event(datui::AppEvent::Key(crossterm::event::KeyEvent::new(
         KeyCode::Char('r'),
         crossterm::event::KeyModifiers::CONTROL,
     )));
@@ -6777,7 +6777,7 @@ fn test_the_view_never_leaves_blank_lines_below_the_last_row() {
     for i in 45..60 {
         fs::remove_file(tmp.path().join(format!("f{i:02}.csv"))).unwrap();
     }
-    let _ = app.event(&datui::AppEvent::Key(crossterm::event::KeyEvent::new(
+    let _ = app.event(datui::AppEvent::Key(crossterm::event::KeyEvent::new(
         KeyCode::Char('r'),
         crossterm::event::KeyModifiers::CONTROL,
     )));
@@ -6977,12 +6977,12 @@ mod landing {
         }
         select(&mut app, &same);
         enter_and_load(&mut app, &rx);
-        app.event(&AppEvent::Key(crossterm::event::KeyEvent::new(
+        app.event(AppEvent::Key(crossterm::event::KeyEvent::new(
             KeyCode::Char('o'),
             crossterm::event::KeyModifiers::CONTROL,
         )));
         let back_home = |app: &mut App| {
-            app.event(&AppEvent::Key(crossterm::event::KeyEvent::new(
+            app.event(AppEvent::Key(crossterm::event::KeyEvent::new(
                 KeyCode::Char('o'),
                 crossterm::event::KeyModifiers::CONTROL,
             )));
@@ -8034,7 +8034,7 @@ fn test_a_file_row_says_how_it_will_be_read() {
 
     // The pane, which draws at 200, says it in words for the row under the cursor.
     for c in "events".chars() {
-        let _ = app.event(&datui::AppEvent::Key(crossterm::event::KeyEvent::new(
+        let _ = app.event(datui::AppEvent::Key(crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::Char(c),
             crossterm::event::KeyModifiers::NONE,
         )));
@@ -8771,7 +8771,7 @@ mod frecency {
     /// written, not as the recents keep them.
     fn sales_in_catalog(mut app: App) -> Vec<String> {
         for c in "sales".chars() {
-            app.event(&AppEvent::Key(KeyEvent::new(
+            app.event(AppEvent::Key(KeyEvent::new(
                 KeyCode::Char(c),
                 KeyModifiers::NONE,
             )));
@@ -8846,7 +8846,7 @@ mod path_prompt {
             if let Ok(event) = rx.recv_timeout(Duration::from_millis(20)) {
                 let mut next = Some(event);
                 while let Some(event) = next {
-                    next = app.event(&event);
+                    next = app.event(event);
                 }
             }
         }
@@ -9129,7 +9129,7 @@ fn a_spec_file_opens_the_same_from_home_and_the_command_line() {
         let delta = index as isize - app.home.selected as isize;
         app.home.move_selection(delta);
         let Some(datui::AppEvent::Open(paths, options)) =
-            app.event(&datui::AppEvent::Key(crossterm::event::KeyEvent::new(
+            app.event(datui::AppEvent::Key(crossterm::event::KeyEvent::new(
                 crossterm::event::KeyCode::Enter,
                 crossterm::event::KeyModifiers::NONE,
             )))

@@ -2390,7 +2390,7 @@ impl App {
     }
 
     /// The home screen's worker answers.
-    pub(crate) fn home_event(&mut self, event: &AppEvent) -> Option<AppEvent> {
+    pub(crate) fn home_event(&mut self, event: AppEvent) -> Option<AppEvent> {
         match event {
             AppEvent::HomeListingReady {
                 generation,
@@ -2403,24 +2403,24 @@ impl App {
                 // Only the current listing's answer clears the flag: a stale one landing
                 // first said nothing was in flight while the listing for where the user
                 // is still ran. Every refresh asks again, so the newest always answers.
-                if *generation == self.home_app.generation {
+                if generation == self.home_app.generation {
                     self.home.listing_in_flight = false;
                 }
                 // Read fresh from the cache, so true whichever listing carried them:
                 // the facts fill in rows the recursive search finds the same way, and
                 // only the first listing after entering home carries the folds.
-                self.home.known = known.clone();
-                self.home.set_visits(visits.clone());
-                self.home.newest_recent = newest.clone();
+                self.home.known = known;
+                self.home.set_visits(visits);
+                self.home.newest_recent = newest;
                 if let Some(folds) = folds {
-                    self.home.folds = folds.clone();
+                    self.home.folds = folds;
                 }
                 // A listing from a superseded request describes somewhere the user has
                 // already left.
-                if *generation != self.home_app.generation {
+                if generation != self.home_app.generation {
                     return None;
                 }
-                self.home.apply_listing((**listing).clone());
+                self.home.apply_listing(*listing);
                 // Probes are chosen from the sections, so they can only be started
                 // once those exist — asking before the listing lands finds nothing.
                 self.spawn_home_probes();
@@ -2440,7 +2440,7 @@ impl App {
                     self.home.enriched.insert(path.clone(), m.clone());
                 }
                 self.home.apply_measurements();
-                if *done {
+                if done {
                     self.home.measure_in_flight = false;
                     self.request_home_measurements();
                 }
@@ -2448,17 +2448,17 @@ impl App {
             }
             AppEvent::HomeSized { path, measured } => {
                 // Only the size: a measurement that landed meanwhile keeps the rest.
-                match self.home.enriched.get_mut(path) {
+                match self.home.enriched.get_mut(&path) {
                     Some(known) => known.size = measured.size,
                     None => {
-                        self.home.enriched.insert(path.clone(), measured.clone());
+                        self.home.enriched.insert(path.clone(), measured);
                     }
                 }
                 self.home.apply_measurements();
                 None
             }
             AppEvent::HomeWebGone { path, gone } => {
-                self.home.web_gone.insert(path.clone(), gone.clone());
+                self.home.web_gone.insert(path, gone);
                 None
             }
             AppEvent::HomeClassified { measured, done } => {
@@ -2478,7 +2478,7 @@ impl App {
                 // The next batch is chosen from the viewport as it is now, so a page
                 // that scrolled past four hundred rows while this one was out asks
                 // about the forty it landed on, not the four hundred it left behind.
-                if *done {
+                if done {
                     self.home.classify_in_flight = false;
                     self.request_home_classifications();
                 }
@@ -2490,7 +2490,7 @@ impl App {
                 if self.home.path_input_active
                     && home::typed_dir(&self.home.path_input) == listing.dir
                 {
-                    self.home.path_listing = Some((**listing).clone());
+                    self.home.path_listing = Some(*listing);
                     if self.home.path_pick.is_none() {
                         self.home.pick_first_path();
                     }
@@ -2505,17 +2505,17 @@ impl App {
             } => {
                 // Discard if the user has typed since asking: completing onto a
                 // different string would scramble what they are in the middle of.
-                if *generation != self.home_app.generation || &self.home.path_input != typed {
+                if generation != self.home_app.generation || self.home.path_input != typed {
                     return None;
                 }
-                if *candidates == 0 {
+                if candidates == 0 {
                     self.home.status = Some("No such path".to_string());
                 } else {
                     self.home.status = None;
-                    if *candidates > 1 {
+                    if candidates > 1 {
                         self.flash_note(format!("{candidates} matches"));
                     }
-                    self.home.path_input = completed.clone();
+                    self.home.path_input = completed;
                     self.home.pick_first_path();
                 }
                 None
@@ -2542,10 +2542,10 @@ impl App {
                 }
                 let prepared = prepared.filter(|_| read_at.is_some());
                 self.home_app.previews.landed(
-                    path.clone(),
-                    *stamp,
-                    read_at.unwrap_or(*stamp),
-                    rows.clone(),
+                    path,
+                    stamp,
+                    read_at.unwrap_or(stamp),
+                    rows,
                     prepared,
                 );
                 None
@@ -2555,17 +2555,15 @@ impl App {
                 path,
                 preview,
             } => {
-                self.home_app.schema_inflight.retain(|p| p != path);
+                self.home_app.schema_inflight.retain(|p| p != &path);
                 // A preview's columns are not taken back by a metadata read that had none.
                 let known = self
                     .home_app
                     .schema_cache
-                    .get(path)
+                    .get(&path)
                     .is_some_and(Option::is_some);
-                if *generation == self.home_app.generation && (preview.is_some() || !known) {
-                    self.home_app
-                        .schema_cache
-                        .insert(path.clone(), preview.clone());
+                if generation == self.home_app.generation && (preview.is_some() || !known) {
+                    self.home_app.schema_cache.insert(path.clone(), preview);
                 }
                 None
             }
@@ -2579,8 +2577,8 @@ impl App {
                 // place the user has left. The walk is abandoned, not cancelled, so
                 // late batches are expected rather than exceptional. A refresh of the
                 // same place supersedes nothing: its end dropped kept it running.
-                if *generation == self.home_app.search_generation {
-                    self.home.search_batch(root, found.clone(), *scanned);
+                if generation == self.home_app.search_generation {
+                    self.home.search_batch(&root, found, scanned);
                 }
                 None
             }
@@ -2588,7 +2586,7 @@ impl App {
                 // A scoring that died is not asked again: the next would die the same
                 // way, and the matches already listed stand.
                 if let Some(matches) = matches {
-                    self.home.search_scored(*epoch, (**matches).clone());
+                    self.home.search_scored(epoch, *matches);
                 }
                 None
             }
@@ -2598,8 +2596,8 @@ impl App {
                 scanned,
                 limited,
             } => {
-                if *generation == self.home_app.search_generation {
-                    self.home.search_finished(root, *scanned, limited.clone());
+                if generation == self.home_app.search_generation {
+                    self.home.search_finished(&root, scanned, limited);
                 }
                 self.home_app.search_inflight = false;
                 // A walk abandoned by a browse held up the one the filter now asks for.
@@ -2610,7 +2608,7 @@ impl App {
             }
             #[cfg(feature = "cloud")]
             AppEvent::HomeCloudSources { sources } => {
-                self.home.cloud = sources.clone();
+                self.home.cloud = sources;
                 self.home_refresh();
                 None
             }
@@ -2622,7 +2620,7 @@ impl App {
                 failure,
                 listed_at,
             } => {
-                if let Some(source) = self.home.cloud.iter_mut().find(|s| &s.id == id) {
+                if let Some(source) = self.home.cloud.iter_mut().find(|s| s.id == id) {
                     source.refreshing = false;
                     for (place, lines) in details {
                         source.place_details.insert(place.clone(), lines.clone());
@@ -2632,19 +2630,16 @@ impl App {
                         // buckets are more use than none, and the row says it failed.
                         Some((short, detail)) => {
                             for bucket in buckets {
-                                if !source.buckets.contains(bucket) {
+                                if !source.buckets.contains(&bucket) {
                                     source.buckets.push(bucket.clone());
                                 }
                             }
-                            source.status = home::CloudStatus::Failed {
-                                short: short.clone(),
-                                detail: detail.clone(),
-                            };
+                            source.status = home::CloudStatus::Failed { short, detail };
                         }
                         None => {
-                            source.buckets = buckets.clone();
+                            source.buckets = buckets;
                             source.status = home::CloudStatus::Listed;
-                            source.listed_at = Some(*listed_at);
+                            source.listed_at = Some(listed_at);
                         }
                     }
                 }
@@ -2662,47 +2657,48 @@ impl App {
                     .home_app
                     .narrowing
                     .as_ref()
-                    .is_some_and(|(d, p, _)| d == dir && p == prefix);
+                    .is_some_and(|(d, p, _)| *d == dir && *p == prefix);
                 if asked {
                     self.home_app.narrowing = None;
                 }
                 // Only while it is still where the user is and what the filter asks.
                 let wanted = asked
-                    && self.home.browsing.as_ref() == Some(dir)
+                    && self.home.browsing.as_ref() == Some(&dir)
                     && !self.home.filter.is_empty();
                 if let (Some((rows, truncated)), true) = (listed, wanted) {
                     self.home.narrowed = Some(home::Narrowed {
-                        dir: dir.clone(),
-                        prefix: prefix.clone(),
-                        rows: rows.clone(),
-                        truncated: *truncated,
+                        dir,
+                        prefix,
+                        rows,
+                        truncated,
                     });
                     self.home_refresh();
                 }
                 None
             }
             AppEvent::HomeProbeCancelled { root } => {
-                self.home_app.probes_inflight.retain(|p| p != root);
-                self.home_app.listing_cancels.remove(root);
-                self.home.probes.stopped(root);
+                self.home_app.probes_inflight.retain(|p| p != &root);
+                self.home_app.listing_cancels.remove(&root);
+                self.home.probes.stopped(&root);
                 // Come back to after it had stopped: listed afresh.
-                if self.home.browsing.as_ref() == Some(root) {
+                if self.home.browsing.as_ref() == Some(&root) {
                     self.home_refresh();
                 }
                 None
             }
             AppEvent::HomeProbeFailed { root, message } => {
-                self.home_app.probes_inflight.retain(|p| p != root);
-                self.home_app.listing_cancels.remove(root);
-                self.home.probe_failed(root.clone(), Some(message.clone()));
+                self.home_app.probes_inflight.retain(|p| p != &root);
+                self.home_app.listing_cancels.remove(&root);
+                self.home.probe_failed(root.clone(), Some(message));
                 self.home_refresh();
                 None
             }
             AppEvent::HomeProbeProgress { root, rows } => {
                 // Only while that listing is still out: a late batch must not paint
                 // over the whole answer.
-                if self.home_app.probes_inflight.contains(root) && !self.home.probes.settled(root) {
-                    self.home.probes.read(root, rows);
+                if self.home_app.probes_inflight.contains(&root) && !self.home.probes.settled(&root)
+                {
+                    self.home.probes.read(&root, &rows);
                     // Listed once a frame, however many batches came in it.
                     self.home_app.refresh_owed = true;
                 }
@@ -2718,18 +2714,16 @@ impl App {
                 // good — a probe that answered is not one of those. Without this the
                 // list only grows, and after MAX_CONCURRENT_PROBES roots no further
                 // root is ever probed for the rest of the session.
-                self.home_app.probes_inflight.retain(|p| p != root);
-                self.home_app.listing_cancels.remove(root);
+                self.home_app.probes_inflight.retain(|p| p != &root);
+                self.home_app.listing_cancels.remove(&root);
                 let landed = rows.is_some();
                 match rows {
-                    Some(rows) => self
-                        .home
-                        .probe_ready(root.clone(), rows.clone(), *cut_short),
+                    Some(rows) => self.home.probe_ready(root.clone(), rows, cut_short),
                     None => self.home.probe_failed(root.clone(), None),
                 }
                 // A filter typed while it was listing asks the server too.
                 #[cfg(feature = "cloud")]
-                if *cut_short && !self.home.filter.is_empty() {
+                if cut_short && !self.home.filter.is_empty() {
                     self.narrow_cloud_listing();
                 }
                 // An account read with its keys because the sign-in has no data role
@@ -2773,7 +2767,7 @@ impl App {
             }
             AppEvent::HomeCloudKinds { kinds, failed } => {
                 for directory in failed {
-                    self.home.peeking.remove(directory);
+                    self.home.peeking.remove(&directory);
                     self.home.peek_failed.insert(directory.clone());
                 }
                 let roots: Vec<PathBuf> = self
@@ -2786,7 +2780,7 @@ impl App {
                     // Answered: out of the in-flight set and into the one the rows are
                     // labelled from. Every directory asked about comes back, so nothing
                     // stays in `peeking` and nothing is asked twice.
-                    self.home.peeking.remove(directory);
+                    self.home.peeking.remove(&directory);
                     self.home
                         .cloud_kinds
                         .insert(directory.clone(), kind.clone());

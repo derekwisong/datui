@@ -53,7 +53,7 @@ fn drain(app: &mut App, rx: &mpsc::Receiver<AppEvent>, first: Option<AppEvent>) 
         let mut next = Some(event);
         while let Some(event) = next {
             let run = matches!(event, AppEvent::JobEnded(t) if t.kind() == JobKind::Analysis);
-            next = app.event(&event);
+            next = app.event(event);
             // A run that failed says so; one that finished does not.
             if run && app.error_message().is_none() {
                 runs += 1;
@@ -70,7 +70,7 @@ fn drain(app: &mut App, rx: &mpsc::Receiver<AppEvent>, first: Option<AppEvent>) 
 }
 
 fn press(app: &mut App, code: KeyCode) -> Option<AppEvent> {
-    app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+    app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
 }
 
 fn type_text(app: &mut App, text: &str) {

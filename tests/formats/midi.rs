@@ -52,7 +52,7 @@ fn floats(df: &DataFrame, column: &str) -> Vec<Option<f64>> {
 }
 
 fn press(app: &mut App, code: KeyCode) {
-    app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
 }
 
 fn screen(app: &mut App) -> String {

@@ -72,9 +72,9 @@ fn test_pivot_via_events() {
         aggregation: PivotAggregation::Last,
     };
     let event = AppEvent::Pivot(spec);
-    let mut next = app.event(&event);
+    let mut next = app.event(event);
     while let Some(ev) = next.take() {
-        next = app.event(&ev);
+        next = app.event(ev);
     }
     drain_events(&mut app, &rx);
 
@@ -102,9 +102,9 @@ fn test_pivot_date_index_render_simulation() {
         value_column: "value".to_string(),
         aggregation: PivotAggregation::Last,
     };
-    let mut next = app.event(&AppEvent::Pivot(spec));
+    let mut next = app.event(AppEvent::Pivot(spec));
     while let Some(ev) = next.take() {
-        next = app.event(&ev);
+        next = app.event(ev);
     }
     // Drain async collect events from background buffer load.
     drain_events(&mut app, &rx);
@@ -144,9 +144,9 @@ fn test_pivot_long_string_via_events() {
         aggregation: PivotAggregation::Last,
     };
     let event = AppEvent::Pivot(spec);
-    let mut next = app.event(&event);
+    let mut next = app.event(event);
     while let Some(ev) = next.take() {
-        next = app.event(&ev);
+        next = app.event(ev);
     }
     drain_events(&mut app, &rx);
 
@@ -182,9 +182,9 @@ fn test_melt_via_events() {
         value_name: "value".to_string(),
     };
     let event = AppEvent::Melt(spec);
-    let mut next = app.event(&event);
+    let mut next = app.event(event);
     while let Some(ev) = next.take() {
-        next = app.event(&ev);
+        next = app.event(ev);
     }
 
     let state = app.data_table_state.as_ref().unwrap();
@@ -221,9 +221,9 @@ fn test_melt_wide_many_via_events() {
         value_name: "val".to_string(),
     };
     let event = AppEvent::Melt(spec);
-    let mut next = app.event(&event);
+    let mut next = app.event(event);
     while let Some(ev) = next.take() {
-        next = app.event(&ev);
+        next = app.event(ev);
     }
 
     let state = app.data_table_state.as_ref().unwrap();
@@ -258,7 +258,7 @@ fn test_pivot_on_current_view_after_filter() {
         value: "5".to_string(),
         logical_op: LogicalOperator::And,
     }];
-    let _ = app.event(&AppEvent::Filter(statements));
+    let _ = app.event(AppEvent::Filter(statements));
 
     let filtered_count = app
         .data_table_state
@@ -283,9 +283,9 @@ fn test_pivot_on_current_view_after_filter() {
         aggregation: PivotAggregation::Last,
     };
     let event = AppEvent::Pivot(spec);
-    let mut next = app.event(&event);
+    let mut next = app.event(event);
     while let Some(ev) = next.take() {
-        next = app.event(&ev);
+        next = app.event(ev);
     }
     drain_events(&mut app, &rx);
 
@@ -312,9 +312,9 @@ fn test_pivot_on_current_view_after_filter() {
 
 fn send_key(app: &mut App, code: KeyCode) {
     let ev = AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE));
-    let mut next = app.event(&ev);
+    let mut next = app.event(ev);
     while let Some(n) = next.take() {
-        next = app.event(&n);
+        next = app.event(n);
     }
 }
 
@@ -374,9 +374,9 @@ fn test_pivot_via_modal_apply() {
 
     // Enter applies from anywhere in the form.
     let ev = AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    let mut next = app.event(&ev);
+    let mut next = app.event(ev);
     while let Some(n) = next.take() {
-        next = app.event(&n);
+        next = app.event(n);
     }
     drain_events(&mut app, &rx);
 
@@ -414,9 +414,9 @@ fn test_melt_via_modal_apply() {
 
     // Enter applies from anywhere in the form.
     let ev = AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    let mut next = app.event(&ev);
+    let mut next = app.event(ev);
     while let Some(n) = next.take() {
-        next = app.event(&n);
+        next = app.event(n);
     }
 
     assert!(!app.pivot_melt_modal.active);
@@ -473,9 +473,9 @@ fn test_pivot_via_keys_only() {
 
     // Apply from the row the cursor is on.
     let ev = AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    let mut next = app.event(&ev);
+    let mut next = app.event(ev);
     while let Some(n) = next.take() {
-        next = app.event(&n);
+        next = app.event(n);
     }
     drain_events(&mut app, &rx);
 
@@ -548,9 +548,9 @@ fn test_view_save_and_apply_pivot() {
         value_column: "value".to_string(),
         aggregation: PivotAggregation::Last,
     };
-    let mut next = app.event(&AppEvent::Pivot(spec));
+    let mut next = app.event(AppEvent::Pivot(spec));
     while let Some(ev) = next.take() {
-        next = app.event(&ev);
+        next = app.event(ev);
     }
     drain_events(&mut app, &rx);
 
@@ -624,7 +624,7 @@ fn test_pivot_reads_in_the_background() {
         value_column: "value".to_string(),
         aggregation: PivotAggregation::Last,
     };
-    let next = app.event(&AppEvent::Pivot(spec));
+    let next = app.event(AppEvent::Pivot(spec));
     assert!(next.is_none(), "nothing more runs on this thread");
     assert!(app.is_busy(), "the footer shows the pivot running");
     let state = app.data_table_state.as_ref().unwrap();
@@ -669,7 +669,7 @@ fn test_a_stale_pivot_result_is_dropped() {
         aggregation: PivotAggregation::Last,
     };
     // The pivot is read on a worker; before it lands, the file is opened again.
-    app.event(&AppEvent::Pivot(spec));
+    app.event(AppEvent::Pivot(spec));
     load_file(
         &mut app,
         &rx,
@@ -684,7 +684,7 @@ fn test_a_stale_pivot_result_is_dropped() {
             "the pivot never landed"
         );
         if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
-            app.event(&ev);
+            app.event(ev);
         }
     }
     let state = app.data_table_state.as_ref().unwrap();
@@ -714,7 +714,7 @@ fn test_esc_stops_a_pivot_being_read() {
         value_column: "value".to_string(),
         aggregation: PivotAggregation::Last,
     };
-    app.event(&AppEvent::Pivot(spec));
+    app.event(AppEvent::Pivot(spec));
     assert!(app.is_busy());
     let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
     assert!(
@@ -737,11 +737,11 @@ fn test_esc_stops_a_pivot_being_read() {
             "the worker never ended"
         );
         if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
-            app.event(&ev);
+            app.event(ev);
         }
     }
     while let Ok(ev) = rx.try_recv() {
-        app.event(&ev);
+        app.event(ev);
     }
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.last_pivot_spec().is_none());
@@ -975,7 +975,7 @@ fn esc_closes_the_picker_then_the_builder_and_its_preview() {
 /// Draw the app at `size` and return the screen, one line per row.
 fn draw_app(app: &mut App, (width, height): (u16, u16)) -> Vec<String> {
     use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
-    app.event(&AppEvent::Resize(width, height));
+    app.event(AppEvent::Resize(width, height));
     let area = Rect::new(0, 0, width, height);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);

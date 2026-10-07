@@ -213,7 +213,7 @@ fn sql_keeps_units_only_on_columns_it_passes_through() {
     let (mut app, rx, tx) = app_with_spec();
     open(&mut app, &rx, path, OpenOptions::default());
     let sql = |app: &mut App, statement: &str| {
-        app.event(&AppEvent::SqlQuery(statement.to_string()));
+        app.event(AppEvent::SqlQuery(statement.to_string()));
         pump_until_idle(app, &rx, &tx);
         let state = app.data_table_state.as_ref().unwrap();
         assert!(state.error().is_none(), "{statement}: {:?}", state.error());
@@ -954,7 +954,7 @@ fn a_specs_types_read_its_columns() {
         !notes.iter().any(|n| n.starts_with("LogIdx:")),
         "not counted before the panel opens: {notes:?}"
     );
-    app.event(&AppEvent::Key(crossterm::event::KeyEvent::new(
+    app.event(AppEvent::Key(crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Char('i'),
         crossterm::event::KeyModifiers::NONE,
     )));
@@ -1118,7 +1118,7 @@ fn infer_types_counts_what_it_nulls() {
     let df = collected(&app);
     assert_eq!(df.column("volts").unwrap().dtype(), &DataType::Float64);
     assert_eq!(df.column("volts").unwrap().null_count(), 1);
-    app.event(&AppEvent::Key(crossterm::event::KeyEvent::new(
+    app.event(AppEvent::Key(crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Char('i'),
         crossterm::event::KeyModifiers::NONE,
     )));
@@ -1150,7 +1150,7 @@ fn a_specs_types_count_what_they_null_across_a_directory() {
     assert!(app.error_message().is_none(), "{:?}", app.error_message());
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(collected(&app).height(), 6);
-    app.event(&AppEvent::Key(crossterm::event::KeyEvent::new(
+    app.event(AppEvent::Key(crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Char('i'),
         crossterm::event::KeyModifiers::NONE,
     )));

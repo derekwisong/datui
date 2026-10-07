@@ -254,7 +254,7 @@ fn an_az_url_opens_as_abfss_or_says_which_account_is_missing() {
             ..Default::default()
         });
     let open = |app: &mut App, url: &str| {
-        app.event(&AppEvent::Open(
+        app.event(AppEvent::Open(
             vec![PathBuf::from(url)],
             OpenOptions::default(),
         ))

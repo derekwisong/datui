@@ -54,7 +54,7 @@ fn only_one_classification_pass_is_out_at_a_time() {
     assert!(app.home.classify_in_flight, "and still only the one");
 
     // It lands, and what follows it is about where the viewport is now.
-    app.event(&AppEvent::HomeClassified {
+    app.event(AppEvent::HomeClassified {
         measured: Vec::new(),
         done: true,
     });
@@ -75,7 +75,7 @@ fn an_answered_pass_frees_the_slot() {
     let mut app = App::new(tx, crate::tests::test_runtime());
     app.home.classify_in_flight = true;
 
-    app.event(&AppEvent::HomeClassified {
+    app.event(AppEvent::HomeClassified {
         measured: Vec::new(),
         done: true,
     });
@@ -97,7 +97,7 @@ fn a_pass_that_outlives_its_listing_still_counts() {
 
     // What a rebuild does to the generation while the pass is out.
     app.home_app.generation = app.home_app.generation.wrapping_add(1);
-    app.event(&AppEvent::HomeClassified {
+    app.event(AppEvent::HomeClassified {
         measured: vec![(
             path.clone(),
             home::Measured {
@@ -128,21 +128,21 @@ fn space_folds_a_header_and_types_only_mid_filter() {
     app.home.selected = 0;
     assert!(app.home.selection_is_header());
 
-    app.event(&space());
+    app.event(space());
     assert!(app.home.is_collapsed(0));
-    app.event(&space());
+    app.event(space());
     assert!(!app.home.is_collapsed(0));
 
     app.home.selected = 1;
-    app.event(&space());
+    app.event(space());
     assert_eq!(app.home.filter, "", "a space on a row is nothing");
     assert!(!app.home.is_collapsed(0));
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('d'),
         KeyModifiers::NONE,
     )));
-    app.event(&space());
+    app.event(space());
     assert_eq!(app.home.filter, "d ");
 }
 
@@ -156,7 +156,7 @@ fn a_label_lands_before_its_batch_is_done() {
     let path = PathBuf::from("/pretend/share/d0000");
     app.home.classify_in_flight = true;
 
-    app.event(&AppEvent::HomeClassified {
+    app.event(AppEvent::HomeClassified {
         measured: vec![(
             path.clone(),
             home::Measured {

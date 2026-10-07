@@ -57,7 +57,7 @@ fn pump(
         if let Ok(event) = rx.recv_timeout(Duration::from_millis(20)) {
             let mut next = Some(event);
             while let Some(event) = next {
-                next = app.event(&event);
+                next = app.event(event);
             }
         }
     }
@@ -219,7 +219,7 @@ fn a_source_is_listed_when_entered_not_when_the_home_screen_opens() {
 
     // Entering the source is the request.
     select(&mut app, "lab");
-    app.event(&key(crossterm::event::KeyCode::Enter));
+    app.event(key(crossterm::event::KeyCode::Enter));
     assert!(
         pump(&mut app, &rx, 10, |app| source(app, "lab").status
             == datui::home::CloudStatus::Listed),
@@ -233,23 +233,23 @@ fn a_source_is_listed_when_entered_not_when_the_home_screen_opens() {
     );
 
     // Once a session: back out and in again, and nothing more is asked.
-    app.event(&key(crossterm::event::KeyCode::Backspace));
+    app.event(key(crossterm::event::KeyCode::Backspace));
     assert!(pump(&mut app, &rx, 5, |app| app.home.browsing.is_none()
         && row_shown(app, "lab")));
     select(&mut app, "lab");
-    app.event(&key(crossterm::event::KeyCode::Enter));
+    app.event(key(crossterm::event::KeyCode::Enter));
     pump(&mut app, &rx, 1, |_| false);
     assert_eq!(requests.load(Ordering::SeqCst), 1, "listed once a session");
 
     // A source gone since its row was drawn says so, rather than waiting for good.
-    app.event(&key(crossterm::event::KeyCode::Backspace));
+    app.event(key(crossterm::event::KeyCode::Backspace));
     assert!(pump(&mut app, &rx, 5, |app| app.home.browsing.is_none()
         && row_shown(app, "gone")));
     datui::CacheManager::new("datui")
         .expect("isolated cache")
         .hide_cloud_source("gone");
     select(&mut app, "gone");
-    app.event(&key(crossterm::event::KeyCode::Enter));
+    app.event(key(crossterm::event::KeyCode::Enter));
     assert!(
         pump(&mut app, &rx, 5, |app| matches!(
             &source(app, "gone").status,

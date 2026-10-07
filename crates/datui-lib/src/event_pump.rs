@@ -494,7 +494,7 @@ impl EventPump {
                     progress_only &= event.is_progress();
                     self.since_key += 1;
                     self.app.pointer.changed();
-                    let follow_up = match self.app.handle(&event) {
+                    let follow_up = match self.app.handle(event) {
                         Ok(follow_up) => follow_up,
                         Err(deferred) => {
                             self.hold(deferred);
@@ -648,7 +648,7 @@ impl EventPump {
         // The key may change the screen: a click waits for the frame that shows it.
         self.app.pointer.changed();
         let gen_before = self.app.screen_generation();
-        match self.app.handle(&AppEvent::Key(key)) {
+        match self.app.handle(AppEvent::Key(key)) {
             Ok(Some(follow_up)) => self.queue_continuation(follow_up),
             Ok(None) => {}
             // Only reachable if the app went busy between the check and the call, which

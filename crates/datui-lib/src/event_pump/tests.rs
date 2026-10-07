@@ -1029,17 +1029,17 @@ fn a_key_while_busy_comes_back_deferred() {
     let mut p = pump();
     p.app.busy = true;
     assert!(matches!(
-        p.app.handle(&AppEvent::Key(plain(KeyCode::Char('j')))),
+        p.app.handle(AppEvent::Key(plain(KeyCode::Char('j')))),
         Err(k) if k.code == KeyCode::Char('j')
     ));
     assert!(
         p.app
-            .event(&AppEvent::Key(plain(KeyCode::Char('j'))))
+            .event(AppEvent::Key(plain(KeyCode::Char('j'))))
             .is_none()
     );
     p.app.busy = false;
     assert!(matches!(
-        p.app.handle(&AppEvent::Key(plain(KeyCode::Char('j')))),
+        p.app.handle(AppEvent::Key(plain(KeyCode::Char('j')))),
         Ok(None)
     ));
 }
@@ -1274,12 +1274,12 @@ fn ctrl_c_in_the_query_bar_quits() {
     p.terminal_key(plain(KeyCode::Char(':'))).unwrap();
     assert_eq!(p.app.input_mode, InputMode::Editing);
     assert!(matches!(
-        p.app.handle(&AppEvent::Key(ctrl('c'))),
+        p.app.handle(AppEvent::Key(ctrl('c'))),
         Ok(Some(AppEvent::Exit))
     ));
     let alt_w = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::ALT);
     assert!(!matches!(
-        p.app.handle(&AppEvent::Key(alt_w)),
+        p.app.handle(AppEvent::Key(alt_w)),
         Ok(Some(AppEvent::Exit))
     ));
     assert_eq!(
@@ -1306,7 +1306,7 @@ fn ctrl_c_quits_from_the_sort_and_chart_search_boxes() {
         "the sort search is a text field"
     );
     assert!(matches!(
-        p.app.handle(&AppEvent::Key(ctrl('c'))),
+        p.app.handle(AppEvent::Key(ctrl('c'))),
         Ok(Some(AppEvent::Exit))
     ));
 
@@ -1330,13 +1330,13 @@ fn ctrl_c_quits_from_the_sort_and_chart_search_boxes() {
         "the open Picker narrows by typing"
     );
     assert!(matches!(
-        p2.app.handle(&AppEvent::Key(ctrl('c'))),
+        p2.app.handle(AppEvent::Key(ctrl('c'))),
         Ok(Some(AppEvent::Exit))
     ));
 
     let (mut p3, _d3) = loaded_pump();
     assert!(matches!(
-        p3.app.handle(&AppEvent::Key(ctrl('c'))),
+        p3.app.handle(AppEvent::Key(ctrl('c'))),
         Ok(Some(AppEvent::Exit))
     ));
 }
@@ -1935,7 +1935,7 @@ fn ctrl_c_quits_from_chart_mode_while_busy() {
         p.app.chart.modal.active = true;
         p.app.busy = true;
         assert!(matches!(
-            p.app.handle(&AppEvent::Key(ctrl(c))),
+            p.app.handle(AppEvent::Key(ctrl(c))),
             Ok(Some(AppEvent::Exit))
         ));
         p.terminal_key(ctrl(c)).unwrap();

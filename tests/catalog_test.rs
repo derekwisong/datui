@@ -29,7 +29,7 @@ fn drive(app: &mut App, event: AppEvent) {
         if let AppEvent::Crash(message) = &event {
             panic!("{message}");
         }
-        next = app.event(&event);
+        next = app.event(event);
     }
 }
 
@@ -1099,7 +1099,7 @@ homepage = "https://user:pw@example.com/"
         .collect();
     assert!(shown.contains(&format!("Open{url}?")), "{shown}");
     // Enter hands the checked URL on; the run loop starts the browser.
-    let next = app.event(&key(KeyCode::Enter));
+    let next = app.event(key(KeyCode::Enter));
     match next {
         Some(AppEvent::OpenLink(sent)) => assert_eq!(sent, url),
         _ => panic!("Enter on Open hands the link on"),

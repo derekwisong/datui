@@ -42,7 +42,7 @@ fn a_collect_in_flight_serves_the_frame_but_not_a_changed_frame() {
     assert_eq!(app.task_generation(), generation);
 
     // A filter changes the data underneath; those rows no longer answer.
-    app.event(&AppEvent::Filter(vec![FilterStatement {
+    app.event(AppEvent::Filter(vec![FilterStatement {
         columns: Vec::new(),
         column: "a".to_string(),
         operator: FilterOperator::Lt,
@@ -143,8 +143,8 @@ fn a_short_read_on_a_remote_scan_is_the_count() {
         ),
         "the short read of 50 rows is the count"
     );
-    app.event(&first);
-    app.event(&second);
+    app.event(first);
+    app.event(second);
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.num_rows_if_valid(), Some(50));
     assert_eq!(app.counting.len_count_inflight, None);
@@ -204,7 +204,7 @@ fn end_on_an_uncounted_remote_dataset_waits_for_the_count() {
         }
     ));
     // With the count in, End goes.
-    let next = app.event(&counted);
+    let next = app.event(counted);
     assert!(
         matches!(next, Some(AppEvent::Scroll(Scroll::End))),
         "the jump follows the count"
@@ -265,7 +265,7 @@ fn until_counted(
             } if *len_generation == dataset => Some(*num_rows),
             _ => None,
         };
-        let next = app.event(&event);
+        let next = app.event(event);
         if let Some(rows) = counted {
             return (rows, next);
         }
@@ -294,7 +294,7 @@ fn a_local_count_waits_for_its_page_to_be_painted() {
 
     let ready = recv(&rx);
     assert!(matches!(ready, AppEvent::JobEnded(t) if t.kind() == crate::JobKind::Rows));
-    app.event(&ready);
+    app.event(ready);
     assert_eq!(
         app.counting.counts_spawned.get(),
         0,
@@ -326,7 +326,7 @@ fn a_short_first_page_is_the_count_of_a_local_frame() {
         assert!(app.spawn_async_collect("Filtering..."));
         let ready = recv(&rx);
         assert!(matches!(ready, AppEvent::JobEnded(t) if t.kind() == crate::JobKind::Rows));
-        app.event(&ready);
+        app.event(ready);
         let state = app.data_table_state.as_ref().unwrap();
         assert_eq!(state.len_generation(), dataset);
         assert_eq!(state.num_rows_if_valid(), Some(keep as usize));
@@ -349,7 +349,7 @@ fn a_page_that_fills_exactly_is_still_counted() {
 
     let (mut app, rx, dataset) = filtered_local(100_000, page as i32);
     app.spawn_async_collect("Filtering...");
-    app.event(&recv(&rx));
+    app.event(recv(&rx));
     assert_eq!(
         app.data_table_state.as_ref().unwrap().num_rows_if_valid(),
         None
@@ -367,7 +367,7 @@ fn a_page_that_fills_exactly_is_still_counted() {
 fn end_before_the_paint_starts_the_count_and_waits_for_it() {
     let (mut app, rx, dataset) = filtered_local(100_000, 50_000);
     app.spawn_async_collect("Filtering...");
-    app.event(&recv(&rx));
+    app.event(recv(&rx));
     assert_eq!(app.counting.counts_spawned.get(), 0);
 
     assert!(app.jump_key(Scroll::End).is_none());
@@ -397,7 +397,7 @@ fn end_before_the_paint_starts_the_count_and_waits_for_it() {
 fn a_count_end_starts_is_marked_running() {
     let (mut app, rx, dataset) = filtered_local(100_000, 50_000);
     app.spawn_async_collect("Filtering...");
-    app.event(&recv(&rx));
+    app.event(recv(&rx));
     app.counting.len_count_inflight = None;
     assert!(app.jump_key(Scroll::End).is_none());
     assert_eq!(app.counting.len_count_inflight, Some(dataset));
@@ -416,7 +416,7 @@ fn a_failed_count_is_retried_by_end_not_by_scrolling() {
     app.spawn_async_collect("Filtering...");
     assert_eq!(app.counting.len_count_inflight, None);
     assert_eq!(app.counting.count_after_paint, None);
-    app.event(&recv(&rx));
+    app.event(recv(&rx));
     app.frame_painted();
     app.handle_scroll(|state| state.half_page_down());
     app.frame_painted();
@@ -460,7 +460,7 @@ fn a_page_that_fails_fails_the_count_waiting_on_it() {
     assert_eq!(app.counting.count_after_paint, Some(dataset));
     let failed = recv(&rx);
     assert!(matches!(failed, AppEvent::JobEnded(t) if t.kind() == crate::JobKind::Rows));
-    app.event(&failed);
+    app.event(failed);
     assert_eq!(app.counting.count_after_paint, None);
     assert_eq!(app.counting.len_count_inflight, None);
     assert_eq!(app.counting.len_count_failed, Some(dataset));
@@ -481,7 +481,7 @@ fn a_page_whose_worker_dies_fails_the_count_waiting_on_it() {
         died,
         AppEvent::JobEnded(t) if t.kind() == crate::JobKind::Rows
     ));
-    app.event(&died);
+    app.event(died);
     assert_eq!(app.counting.count_after_paint, None);
     assert_eq!(app.counting.len_count_inflight, None);
     assert_eq!(app.counting.len_count_failed, Some(dataset));
@@ -498,7 +498,7 @@ fn a_count_for_a_replaced_frame_never_starts() {
     let (mut app, rx, first) = filtered_local(100_000, 50_000);
     app.spawn_async_collect("Filtering...");
     assert_eq!(app.counting.count_after_paint, Some(first));
-    app.event(&AppEvent::Filter(vec![FilterStatement {
+    app.event(AppEvent::Filter(vec![FilterStatement {
         columns: Vec::new(),
         column: "a".to_string(),
         operator: FilterOperator::Lt,
@@ -511,7 +511,7 @@ fn a_count_for_a_replaced_frame_never_starts() {
     assert_eq!(app.counting.len_count_inflight, Some(second));
     while !app.count_waits_for_a_frame() {
         let event = recv(&rx);
-        app.event(&event);
+        app.event(event);
     }
     app.frame_painted();
     assert_eq!(app.counting.counts_spawned.get(), 1);
@@ -591,7 +591,7 @@ fn a_filter_applied_from_the_end_shows_its_rows() {
     assert!(state.deferred(DataTableState::scroll_to_end));
     app.data_table_state = Some(state);
 
-    app.event(&AppEvent::Filter(vec![FilterStatement {
+    app.event(AppEvent::Filter(vec![FilterStatement {
         columns: Vec::new(),
         column: "a".to_string(),
         operator: FilterOperator::Lt,
@@ -601,7 +601,7 @@ fn a_filter_applied_from_the_end_shows_its_rows() {
     let wait = std::time::Duration::from_secs(20);
     for _ in 0..2 {
         let event = rx.recv_timeout(wait).expect("the collect, then the count");
-        app.event(&event);
+        app.event(event);
     }
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.num_rows_if_valid(), Some(100));

@@ -29,7 +29,7 @@ fn open(path: PathBuf) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>
 }
 
 fn key(app: &mut App, code: KeyCode) -> Option<AppEvent> {
-    app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+    app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
 }
 
 /// `S`, a size typed and a seed, then Enter: the draw starts.
@@ -80,9 +80,9 @@ fn s_draws_a_sample_the_table_shows_as_it_arrives() {
     assert!(app.sample_drawing());
     // A sort needs every row: it waits. Moving reads the rows on hand: it acts.
     let sort = AppEvent::Key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE));
-    assert!(app.handle(&sort).is_err(), "a sort waits for the sample");
+    assert!(app.handle(sort).is_err(), "a sort waits for the sample");
     let down = AppEvent::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    assert!(app.handle(&down).is_ok(), "moving acts while it is drawn");
+    assert!(app.handle(down).is_ok(), "moving acts while it is drawn");
 
     pump_until_idle(&mut app, &rx, &tx);
     assert!(!app.sample_drawing());
@@ -165,7 +165,7 @@ fn analysis_and_charts_read_the_views_sample() {
     let next = key(&mut app, KeyCode::Enter);
     let mut next = next;
     while let Some(ev) = next {
-        next = app.event(&ev);
+        next = app.event(ev);
     }
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(
@@ -264,7 +264,7 @@ fn reset_takes_the_sample_away() {
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(sampled_rows(&app), 100);
     if let Some(reset) = key(&mut app, KeyCode::Char('R')) {
-        app.event(&reset);
+        app.event(reset);
     }
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
@@ -340,7 +340,7 @@ fn the_same_seed_draws_the_same_rows_before_and_after_the_count() {
     let (mut app, rx, tx) = open(parquet("table_sample_path.parquet", 20_000));
     // A filter streams the rows, and its count is not in yet when the sample is
     // drawn: a reservoir.
-    let mut next = app.event(&AppEvent::Filter(vec![filter_stmt(
+    let mut next = app.event(AppEvent::Filter(vec![filter_stmt(
         "id",
         FilterOperator::Gt,
         "-1",
@@ -353,7 +353,7 @@ fn the_same_seed_draws_the_same_rows_before_and_after_the_count() {
                 .recv_timeout(common::HANG_GUARD)
                 .expect("the page is read"),
         };
-        next = app.event(&event);
+        next = app.event(event);
     }
     assert!(!app.data_table_state.as_ref().unwrap().is_num_rows_valid());
     draw(&mut app, "500");
@@ -412,7 +412,7 @@ fn a_pivot_is_refused_never_dropped() {
     let (mut app, rx, tx) = open(parquet("table_sample_pivot.parquet", 400));
     draw(&mut app, "100");
     pump_until_idle(&mut app, &rx, &tx);
-    app.event(&pivot());
+    app.event(pivot());
     pump_until_idle(&mut app, &rx, &tx);
     assert!(
         app.data_table_state
@@ -434,7 +434,7 @@ fn a_pivot_is_refused_never_dropped() {
     assert!(refused.contains("pivot"), "{refused}");
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.sampled().is_some() && state.last_pivot_spec().is_some());
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));

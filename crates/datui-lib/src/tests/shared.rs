@@ -2,9 +2,15 @@
 //! `tests/sample-data`, a drawn buffer as text, and the tokio runtime. `tests/common`
 //! includes this file.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Once;
+use std::sync::OnceLock;
+
+use sha2::{Digest, Sha256};
+
+/// What a contributor runs to set up the fixtures' Python environment.
+const SETUP: &str = "scripts/dev/test.sh setup (on Windows: python scripts\\setup_dev.py)";
 
 /// The repository: the nearest directory above the crate under test that holds the
 /// fixture generator.
@@ -16,129 +22,104 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// `tests/sample-data`, generated first when its key files are missing.
+/// `tests/sample-data`, generated first when missing or stale.
 pub fn sample_data_dir() -> PathBuf {
     ensure_sample_data();
     repo_root().join("tests/sample-data")
 }
 
-/// Ensures that sample data files are generated before tests run.
-/// This function uses `std::sync::Once` to ensure it only runs once,
-/// even if called from multiple tests.
+/// The digest the generator writes to `tests/sample-data/.generated`: SHA-256 over its
+/// inputs, in the order `INPUTS` in `generate_sample_data.py` lists them.
+fn inputs_digest(root: &Path) -> String {
+    let mut hasher = Sha256::new();
+    for input in [
+        "scripts/generate_sample_data.py",
+        "scripts/requirements-fixtures.txt",
+    ] {
+        let bytes =
+            std::fs::read(root.join(input)).unwrap_or_else(|e| panic!("reading {input}: {e}"));
+        hasher.update(&bytes);
+    }
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+fn is_current(dir: &Path, digest: &str) -> bool {
+    // The digest is the first line; the files the generator wrote follow it.
+    std::fs::read_to_string(dir.join(".generated"))
+        .is_ok_and(|stamp| stamp.lines().next().map(str::trim) == Some(digest))
+}
+
+/// Makes sure `tests/sample-data` was generated from the generator and pins in this
+/// checkout, generating it when not. Test processes run side by side (nextest starts
+/// one per test), so the generator checks again and generates under its lock file
+/// (beside the directory it writes, shared by every checkout that links it), and
+/// replaces each fixture by a rename: a process with one mapped keeps it. Every test
+/// in a process that could not generate them fails with the same message.
 pub fn ensure_sample_data() {
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        let root = repo_root();
-        let sample_data_dir = root.join("tests/sample-data");
+    static READY: OnceLock<Result<(), String>> = OnceLock::new();
+    if let Err(message) = READY.get_or_init(prepare) {
+        panic!("{message}");
+    }
+}
 
-        // Check if key files exist to determine if we need to generate data
-        // We check for a few representative files that should always be generated
-        let key_files = [
-            "people.parquet",
-            "sales.parquet",
-            "large_dataset.parquet",
-            "empty.parquet",
-            "pivot_long.parquet",
-            "melt_wide.parquet",
-            "models/tiny.gguf",
-            "people_stream.arrow",
-            "dialect_padded_log.csv",
-            "gps/drive.nmea",
-            "audio/loop.aiff",
-            "midi/song.mid",
-            "sqlite/shop.db",
-            "numpy/packed.npz",
-            "elf/tiny.elf",
-            "flight/00000042.BIN",
-            "can/dbc/body.toml",
-            "hf_cache/people-test.arrow",
-            "arrow_mixed/b.arrow",
-            "hf_dict/dataset_dict.json",
-            "sheets.xlsx",
-        ];
+fn prepare() -> Result<(), String> {
+    let root = repo_root();
+    let dir = root.join("tests/sample-data");
+    let digest = inputs_digest(&root);
+    if is_current(&dir, &digest) {
+        return Ok(());
+    }
+    generate(&root, &dir).map_err(|detail| {
+        format!(
+            "Could not generate the test fixtures in {}.\n\
+             Run {SETUP} to set up .venv and generate them.\n\n{detail}",
+            dir.display()
+        )
+    })
+}
 
-        let needs_generation = !sample_data_dir.exists()
-            || key_files
-                .iter()
-                .any(|file| !sample_data_dir.join(file).exists());
-
-        if needs_generation {
-            eprintln!("Sample data not found. Generating test data...");
-
-            // Get the path to the Python script
-            let script_path = root.join("scripts/generate_sample_data.py");
-            if !script_path.exists() {
-                panic!(
-                    "Sample data generation script not found at: {}. \
-                    Please ensure you're running tests from the repository root.",
-                    script_path.display()
-                );
-            }
-
-            // Prefer the project virtualenv: the generator needs Polars and friends,
-            // which a system Python almost never has. Falling straight through to
-            // `python3` produces a bare ImportError that tells nobody what to do.
-            let venv_python = if cfg!(windows) {
-                root.join(".venv/Scripts/python.exe")
-            } else {
-                root.join(".venv/bin/python")
-            };
-
-            let python_cmd = if venv_python.exists() {
-                venv_python.to_string_lossy().into_owned()
-            } else if Command::new("python3").arg("--version").output().is_ok() {
-                "python3".to_string()
-            } else if Command::new("python").arg("--version").output().is_ok() {
-                "python".to_string()
-            } else {
-                panic!(
-                    "Python not found, and no project virtualenv at {}.\n\
-                     Run ./scripts/dev/setup-test-data.sh to create one and generate \
-                     the fixtures these tests read.",
-                    venv_python.display()
-                );
-            };
-
-            // Run the generation script
-            let output = Command::new(python_cmd)
-                .arg(&script_path)
+fn generate(root: &Path, dir: &Path) -> Result<(), String> {
+    eprintln!(
+        "{} is missing or out of date; generating it...",
+        dir.display()
+    );
+    let venv_python = if cfg!(windows) {
+        root.join(".venv/Scripts/python.exe")
+    } else {
+        root.join(".venv/bin/python")
+    };
+    // The project virtualenv has the pinned dependencies; a system Python seldom does.
+    let pythons: Vec<OsString> = if venv_python.exists() {
+        vec![venv_python.into()]
+    } else {
+        vec!["python3".into(), "python".into()]
+    };
+    let output = pythons
+        .iter()
+        .find_map(|python| {
+            Command::new(python)
+                .arg(root.join("scripts/generate_sample_data.py"))
+                .arg("--out")
+                .arg(dir)
+                // Another process may generate them while this one waits on the lock.
+                .arg("--if-stale")
                 .output()
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "Failed to run sample data generation script: {}. \
-                        Make sure Python is installed and the script is executable.",
-                        e
-                    );
-                });
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let hint = if venv_python.exists() {
-                    String::new()
-                } else {
-                    format!(
-                        "\n\nNo virtualenv at {}. This usually means the generator's \
-                         dependencies (Polars, NumPy, pyarrow, fastavro, openpyxl) are \
-                         missing.\nRun ./scripts/dev/setup-test-data.sh to set it up.",
-                        venv_python.display()
-                    )
-                };
-                panic!(
-                    "Sample data generation failed!\n\
-                    Exit code: {:?}\n\
-                    stdout:\n{}\n\
-                    stderr:\n{}{}",
-                    output.status.code(),
-                    stdout,
-                    stderr,
-                    hint
-                );
-            }
-
-            eprintln!("Sample data generation complete!");
-        }
-    });
+                .ok()
+        })
+        .ok_or("No Python found.")?;
+    if !output.status.success() {
+        return Err(format!(
+            "generate_sample_data.py exited with {}:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim_end()
+        ));
+    }
+    eprintln!("Generated {}.", dir.display());
+    Ok(())
 }
 
 /// Each row of `buf` as drawn.

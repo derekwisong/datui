@@ -1297,8 +1297,8 @@ impl ExportForm {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analysis::data_quality::QualityCompute;
     use crate::analysis::data_quality::fixtures::measure;
+    use crate::analysis::data_quality::{ObservationKind, QualityCompute};
     use crate::analysis::quality_intent::{ColumnIntent, DeclaredIntent};
     use polars::prelude::*;
 
@@ -1351,11 +1351,18 @@ mod tests {
         );
         let key = file.intent.as_ref().unwrap().key.clone().unwrap();
         assert_eq!((key.groups, key.rows_involved), (1, 2));
-        assert!(
-            file.findings
-                .iter()
-                .any(|finding| finding.title == "Repeated key")
-        );
+        // The repeated key is written as the report lists it: by kind, not by its title.
+        let report = results.report();
+        let (at, repeated) = report
+            .findings
+            .iter()
+            .enumerate()
+            .find(|(_, finding)| finding.kind == Some(ObservationKind::KeyRepeated))
+            .expect("the report finds the repeated key");
+        let written = &file.findings[at];
+        assert_eq!(written.title, repeated.title);
+        assert_eq!(written.columns, ["id"]);
+        assert_eq!(written.affected_rows, 2);
         assert_eq!(file.checks[0].name, "Column intent");
         // A generic reader finds the version where the schema says.
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();

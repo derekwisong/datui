@@ -295,7 +295,12 @@ fn an_exported_chart_carries_its_recipe_unless_omitted() {
         let file = dir.path().join(format!("with.{}", format.extension()));
         let mut request = chart_export_request(&file, format);
         request.recipe = true;
-        run_to_idle(&mut app, &rx, &tx, AppEvent::ChartExport(request));
+        run_to_idle(
+            &mut app,
+            &rx,
+            &tx,
+            AppEvent::Applied(datui::Applied::ChartExport(request)),
+        );
         let recipe = recipe_in(&std::fs::read(&file).unwrap()).expect("a recipe");
         let json: serde_json::Value = serde_json::from_str(&recipe).unwrap();
         assert!(json["datui"].is_string(), "{json}");
@@ -320,7 +325,9 @@ fn an_exported_chart_carries_its_recipe_unless_omitted() {
             &mut app,
             &rx,
             &tx,
-            AppEvent::ChartExport(chart_export_request(&bare, format)),
+            AppEvent::Applied(datui::Applied::ChartExport(chart_export_request(
+                &bare, format,
+            ))),
         );
         let bytes = std::fs::read(&bare).unwrap();
         assert_eq!(recipe_in(&bytes), None);
@@ -340,11 +347,9 @@ fn the_same_seed_draws_the_same_rows_before_and_after_the_count() {
     let (mut app, rx, tx) = open(parquet("table_sample_path.parquet", 20_000));
     // A filter streams the rows, and its count is not in yet when the sample is
     // drawn: a reservoir.
-    let mut next = app.event(AppEvent::Filter(vec![filter_stmt(
-        "id",
-        FilterOperator::Gt,
-        "-1",
-    )]));
+    let mut next = app.event(AppEvent::Applied(datui::Applied::Filter(vec![
+        filter_stmt("id", FilterOperator::Gt, "-1"),
+    ])));
     // Its page read, and no frame painted: the count waits for one.
     while next.is_some() || app.is_busy() {
         let event = match next.take() {
@@ -402,12 +407,12 @@ fn ids(app: &App) -> Vec<i64> {
 fn a_pivot_is_refused_never_dropped() {
     use datui::app::modals::pivot_melt_modal::{PivotAggregation, PivotSpec};
     let pivot = || {
-        AppEvent::Pivot(PivotSpec {
+        AppEvent::Applied(datui::Applied::Pivot(PivotSpec {
             index: vec!["id".to_string()],
             pivot_column: "group".to_string(),
             value_column: "value".to_string(),
             aggregation: PivotAggregation::First,
-        })
+        }))
     };
     let (mut app, rx, tx) = open(parquet("table_sample_pivot.parquet", 400));
     draw(&mut app, "100");

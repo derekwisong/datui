@@ -13,8 +13,7 @@ use crate::chart::chart_modal::{Aggregate, ChartModal, ChartSpec, ColorCounts, M
 use crate::chart::chart_plot::{LinesData, PlotContext, PlotData, plot};
 use crate::export::output_file::Overwrite;
 use crate::{
-    App, AppEvent, ExportProgress, Overlay, analysis::sampling, chart::chart_export,
-    export::output_file, numfmt,
+    App, AppEvent, Overlay, analysis::sampling, chart::chart_export, export::output_file, numfmt,
 };
 use chart_export::{ChartExportFormat, ChartExportRequest, ExportOptions, Figure};
 
@@ -726,30 +725,6 @@ impl App {
         }
     }
 
-    /// The chart view's events: an export asked for, and then started.
-    pub(crate) fn chart_event(&mut self, event: AppEvent) -> Option<AppEvent> {
-        match event {
-            AppEvent::ChartExport(request) => {
-                self.busy = true;
-                self.export_progress = Some(ExportProgress::new(&request.path, "Exporting chart"));
-                Some(AppEvent::DoChartExport(request))
-            }
-            AppEvent::DoChartExport(request) => {
-                // `ChartExport` arms `busy` and defers here to draw its phase; a Ctrl-O meanwhile left
-                // the chart, so release rather than park an export nothing will prepare.
-                if !self.overlay.shows(&Overlay::Chart) {
-                    self.export_progress = None;
-                    self.status_message = None;
-                    self.busy = false;
-                    return None;
-                }
-                self.start_chart_export(request);
-                None
-            }
-            _ => unreachable!("not an event for chart_event"),
-        }
-    }
-
     /// The figure to export from the prepared chart for the current spec. `Ok(None)`
     /// means that chart is still being prepared and the caller should wait for it.
     pub(crate) fn build_chart_figure(&self) -> Result<Option<Figure>> {
@@ -798,7 +773,7 @@ impl App {
 
     /// Write the chart from the prepared data off-thread, or park the export until that
     /// data is ready. `busy` was set by `ChartExport` and stays set until the export ends.
-    fn start_chart_export(&mut self, mut request: ChartExportRequest) {
+    pub(crate) fn start_chart_export(&mut self, mut request: ChartExportRequest) {
         // How the chart was made, from the view and chart as they are now; none
         // when the dialog says Omit.
         request.options.recipe = if request.recipe {

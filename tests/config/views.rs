@@ -397,7 +397,9 @@ fn a_view_draws_its_sample_again_from_the_seed() {
     form.seed.set_value("31");
     press(&mut app, KeyCode::Enter);
     drain_events(&mut app, &rx);
-    app.event(AppEvent::QQuery("select where sv_group = 2".to_string()));
+    app.event(AppEvent::Applied(datui::Applied::QQuery(
+        "select where sv_group = 2".to_string(),
+    )));
     drain_events(&mut app, &rx);
     let ids = |app: &App| -> Vec<i64> {
         let state = app.data_table_state.as_ref().unwrap();

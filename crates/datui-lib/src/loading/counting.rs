@@ -86,12 +86,36 @@ impl Counting {
         &mut self,
         footers: Arc<crate::formats::schema_union::FooterProgress>,
     ) {
-        self.footer_progress.cancel();
+        self.stop_footer_pass();
         self.footer_progress = footers;
         self.end_when_the_footers_land = None;
         self.end_after_count = None;
         self.end_when_indexed = None;
         self.goto_when_indexed = None;
+    }
+
+    /// Stop the footer pass of the dataset on screen: unread beats read and dropped.
+    pub(crate) fn stop_footer_pass(&self) {
+        self.footer_progress.cancel();
+    }
+
+    /// Stop indexing the lines for good, so nothing holds the file.
+    pub(crate) fn stop_indexing(&mut self) {
+        self.indexing_stop
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(lines) = self.indexing_lines.take() {
+            lines.stop_indexing();
+        }
+    }
+
+    /// Home is up: indexing and the reads waiting on it pause until the table is back
+    /// ([`App::begin_frame`]).
+    pub(crate) fn pause_indexing(&mut self) {
+        if self.indexing_lines.is_some() {
+            self.indexing_stop
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            self.indexing_paused = true;
+        }
     }
 
     /// The markers a running query keeps for the view it may roll back to.
@@ -139,6 +163,24 @@ impl App {
                 .data_table_state
                 .as_ref()
                 .is_some_and(|state| state.counts_itself_later())
+            // The lines are all indexed but their answer, which brings the count, is not
+            // yet handled: the indexer marks them done before it answers.
+            || self.lines_answer_owed()
+    }
+
+    /// Whether the lines of the dataset on screen have an indexing answer still to be
+    /// handled. Not for a frame shown in their place (the quality evidence view).
+    fn lines_answer_owed(&self) -> bool {
+        let dataset = self.dataset_generation;
+        self.data_table_state
+            .as_ref()
+            .is_some_and(|state| state.lines_to_index().is_some())
+            && self
+                .jobs
+                .current(
+                    |job| matches!(job, Job::IndexLines { dataset: asked } if *asked == dataset),
+                )
+                .is_some()
     }
 
     pub(crate) fn dataset_is_still_reading_its_footers(&self) -> bool {
@@ -342,17 +384,6 @@ impl App {
         });
     }
 
-    /// Home is up: indexing and the reads waiting on it pause until the table is back
-    /// ([`Self::begin_frame`]).
-    pub(crate) fn pause_indexing(&mut self) {
-        if self.counting.indexing_lines.is_some() {
-            self.counting
-                .indexing_stop
-                .store(true, std::sync::atomic::Ordering::Relaxed);
-            self.counting.indexing_paused = true;
-        }
-    }
-
     /// More lines are indexed: the frames take them; once all are, the count and any
     /// waiting End follow.
     pub(crate) fn lines_indexed(&mut self, generation: u64, rows: usize) {
@@ -375,7 +406,9 @@ impl App {
             && goto == generation
         {
             self.take_down_the_counting_status();
-            let _ = self.events.send(AppEvent::GoToLine(row));
+            let _ = self
+                .events
+                .send(AppEvent::Applied(crate::Applied::GoToLine(row)));
         }
         if self.counting.end_when_indexed.take() == Some(generation) {
             self.take_down_the_counting_status();

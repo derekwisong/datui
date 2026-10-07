@@ -1,0 +1,34 @@
+name: Bug report
+description: Something datui does wrong.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what datui did instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The command you ran and the keys you pressed. Attach a small file if a particular input triggers it.
+      placeholder: |
+        datui data.parquet
+        /  then type ...
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The output of `datui --version`.
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: OS, terminal, and how you installed datui.
+      placeholder: Ubuntu 24.04, kitty, .deb
+    validations:
+      required: true

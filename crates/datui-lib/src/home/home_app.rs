@@ -1277,7 +1277,7 @@ impl App {
     }
 
     pub fn enter_home(&mut self) {
-        self.pause_indexing();
+        self.counting.pause_indexing();
         if self.return_from_quality_evidence(false) {
             self.analysis_modal.close();
         }
@@ -1285,7 +1285,7 @@ impl App {
         self.stop_find();
         // A count of the dataset being left is read for nobody.
         self.stop_value_count();
-        self.export_counts = None;
+        self.export_modal.forget_counts();
         self.abandon_load();
         // Nobody is watching the file any more.
         if let Some(state) = self.data_table_state.as_mut() {
@@ -1500,12 +1500,8 @@ impl App {
             .read_catalog_files(dir.as_deref())
             .map_err(|e| e.to_string())?;
         // The open dataset's notes and Documentation tab follow the file.
-        let shown = home::catalogs(&self.app_config);
-        let path = self.path.clone();
-        self.info.codebook = path.as_deref().and_then(|p| home::codebook_for(&shown, p));
-        self.info.catalog_entry = path
-            .as_deref()
-            .and_then(|p| home::catalog_entry_for(&shown, p));
+        self.info
+            .follow_catalogs(&self.app_config, self.path.as_deref());
         self.open_info_documentation();
         self.home_refresh();
         Ok(())

@@ -51,7 +51,7 @@ fn test_pivot_date_index_render_simulation() {
         value_column: "value".to_string(),
         aggregation: PivotAggregation::Last,
     };
-    let mut next = app.event(AppEvent::Pivot(spec));
+    let mut next = app.event(AppEvent::Applied(datui::Applied::Pivot(spec)));
     while let Some(ev) = next.take() {
         next = app.event(ev);
     }
@@ -92,7 +92,7 @@ fn test_pivot_long_string_via_events() {
         value_column: "value".to_string(),
         aggregation: PivotAggregation::Last,
     };
-    let event = AppEvent::Pivot(spec);
+    let event = AppEvent::Applied(datui::Applied::Pivot(spec));
     let mut next = app.event(event);
     while let Some(ev) = next.take() {
         next = app.event(ev);
@@ -130,7 +130,7 @@ fn test_melt_wide_many_via_events() {
         variable_name: "var".to_string(),
         value_name: "val".to_string(),
     };
-    let event = AppEvent::Melt(spec);
+    let event = AppEvent::Applied(datui::Applied::Melt(spec));
     let mut next = app.event(event);
     while let Some(ev) = next.take() {
         next = app.event(ev);
@@ -168,7 +168,7 @@ fn test_pivot_on_current_view_after_filter() {
         value: "5".to_string(),
         logical_op: LogicalOperator::And,
     }];
-    let _ = app.event(AppEvent::Filter(statements));
+    let _ = app.event(AppEvent::Applied(datui::Applied::Filter(statements)));
 
     let filtered_count = app
         .data_table_state
@@ -192,7 +192,7 @@ fn test_pivot_on_current_view_after_filter() {
         value_column: "value".to_string(),
         aggregation: PivotAggregation::Last,
     };
-    let event = AppEvent::Pivot(spec);
+    let event = AppEvent::Applied(datui::Applied::Pivot(spec));
     let mut next = app.event(event);
     while let Some(ev) = next.take() {
         next = app.event(ev);
@@ -388,7 +388,7 @@ fn test_view_save_and_apply_pivot() {
         value_column: "value".to_string(),
         aggregation: PivotAggregation::Last,
     };
-    let mut next = app.event(AppEvent::Pivot(spec));
+    let mut next = app.event(AppEvent::Applied(datui::Applied::Pivot(spec)));
     while let Some(ev) = next.take() {
         next = app.event(ev);
     }
@@ -464,7 +464,7 @@ fn test_pivot_reads_in_the_background() {
         value_column: "value".to_string(),
         aggregation: PivotAggregation::Last,
     };
-    let next = app.event(AppEvent::Pivot(spec));
+    let next = app.event(AppEvent::Applied(datui::Applied::Pivot(spec)));
     assert!(next.is_none(), "nothing more runs on this thread");
     assert!(app.is_busy(), "the footer shows the pivot running");
     let state = app.data_table_state.as_ref().unwrap();
@@ -510,7 +510,7 @@ fn test_a_stale_pivot_result_is_dropped() {
         aggregation: PivotAggregation::Last,
     };
     // The pivot is read on a worker; before it lands, the file is opened again.
-    app.event(AppEvent::Pivot(spec));
+    app.event(AppEvent::Applied(datui::Applied::Pivot(spec)));
     load_file(
         &mut app,
         &rx,
@@ -555,7 +555,7 @@ fn test_esc_stops_a_pivot_being_read() {
         value_column: "value".to_string(),
         aggregation: PivotAggregation::Last,
     };
-    app.event(AppEvent::Pivot(spec));
+    app.event(AppEvent::Applied(datui::Applied::Pivot(spec)));
     assert!(app.is_busy());
     let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
     assert!(

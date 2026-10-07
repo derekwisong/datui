@@ -559,7 +559,9 @@ fn test_inspector_lists_a_short_row_whole_and_offers_only_keys_that_act() {
 #[test]
 fn test_inspector_title_names_the_group_inside_a_drill() {
     let (mut app, rx, tx) = open_query_filter_fixture("inspect_drill_title.csv");
-    app.event(AppEvent::QQuery("select n: count a by c".to_string()));
+    app.event(AppEvent::Applied(datui::Applied::QQuery(
+        "select n: count a by c".to_string(),
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     painted(&mut app, &rx, &tx, Rect::new(0, 0, 80, 24));
     press_and_send(&mut app, &tx, KeyCode::Enter);

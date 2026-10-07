@@ -13,11 +13,12 @@ Open `http://localhost:8000` for the landing page and the book. Install the
 prerequisites first:
 
 ```bash,repo
-cargo install mdbook --version 0.5.2 --locked
+cargo install mdbook --locked --version "$(awk '$1 == "mdbook" { print $2 }' .github/tool-versions)"
 python3 -m pip install -r scripts/requirements.txt
 ```
 
-The scripts find mdBook on `PATH` or in `~/.cargo/bin/`.
+`.github/tool-versions` holds the mdBook version CI builds with. The scripts
+find mdBook on `PATH` or in `~/.cargo/bin/`.
 
 ## Where to edit
 
@@ -153,6 +154,10 @@ shows those of `datui-COMMAND.1`). Every command page needs one. Files a command
 `HOME` set to its own directory, so an example may install into `~`.
 
 ### Run the checks
+
+`./scripts/dev/test.sh docs` runs what CI's Python job checks without a
+binary: `lint_docs.py`, `doc_examples.py --lint`, `lint_manpages.py` and the
+docs and demo scripts' unit tests. Each, and the rest:
 
 | Command | Checks |
 |---|---|

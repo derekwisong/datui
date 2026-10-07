@@ -40,6 +40,13 @@ pub struct QueryPrompt {
     pub(crate) inline_failures: u64,
 }
 
+impl QueryPrompt {
+    /// A new dataset is on screen: a query running was over the one it replaced.
+    pub(crate) fn reset_for_dataset(&mut self) {
+        self.query_running = None;
+    }
+}
+
 impl App {
     /// A query or view whose first rows could not be read is not applied: put back
     /// what it replaced and say why where its origin says to.

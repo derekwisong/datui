@@ -1,23 +1,29 @@
 //! Python bindings for datui. Exposes `view_from_bytes` (binary-serialized LazyFrame),
-//! `view_from_json` (JSON, deprecated by Polars), `view_paths` (open by path strings),
-//! `DatuiOptions`, `CompressionFormat`, and `run_cli`. The Python package provides
-//! `view()` which accepts LazyFrame/DataFrame or path string(s) and dispatches accordingly.
+//! `view_from_json` (JSON, deprecated by Polars), `view_from_arrow` (a frame over the
+//! Arrow C stream), `view_paths` (open by path strings), `Captured`, `DatuiOptions`,
+//! `CompressionFormat`, and `run_cli`. The Python package provides `view()` which accepts
+//! LazyFrame/DataFrame or path string(s) and dispatches accordingly.
 //!
 //! Error classification lives in datui-lib; the binding only maps lib result to Python exceptions.
 
+use std::ffi::CStr;
 use std::panic;
 use std::path::{Path, PathBuf};
 
 use ::datui::cli::{Args, parse_args, settings};
 use ::datui::{ErrorKindForPython, RunInput, error_for_python, run, run_captured};
-use polars::prelude::LazyFrame;
+use polars::prelude::{
+    ArrayRef, ArrowDataType, ArrowField, CompatLevel, DataFrame, IntoLazy, LazyFrame, PolarsError,
+    Series,
+};
+use polars_arrow::array::StructArray;
+use polars_arrow::ffi::{ArrowArrayStream, ArrowArrayStreamReader, export_iterator};
 use polars_plan::dsl::DslPlan;
 use pyo3::exceptions::{
     PyFileNotFoundError, PyPermissionError, PyRuntimeError, PyTypeError, PyValueError,
 };
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
-use serde_json;
+use pyo3::types::{PyCapsule, PyDict};
 
 /// Every keyword `datui.view()` and `DatuiOptions` take: the open's own options and
 /// the config keys' keywords from the option registry, and `config`, a dict of any
@@ -39,8 +45,7 @@ fn option_text(value: &Bound<'_, PyAny>) -> PyResult<String> {
         return Ok(s);
     }
     if let Ok(items) = value.extract::<Vec<String>>() {
-        return serde_json::to_string(&items)
-            .map_err(|e| PyValueError::new_err(e.to_string()));
+        return serde_json::to_string(&items).map_err(|e| PyValueError::new_err(e.to_string()));
     }
     if let Ok(n) = value.extract::<i64>() {
         return Ok(n.to_string());
@@ -79,7 +84,11 @@ fn args_from_kwargs(kwargs: &Bound<'_, PyDict>) -> PyResult<Args> {
                 .map_err(|_| PyTypeError::new_err("config must be a dict of key to value"))?;
             for (name, value) in table.iter() {
                 argv.push("-c".into());
-                argv.push(format!("{}={}", name.extract::<String>()?, option_text(&value)?));
+                argv.push(format!(
+                    "{}={}",
+                    name.extract::<String>()?,
+                    option_text(&value)?
+                ));
             }
         } else if let Some(setting) = settings::by_kwarg(&key) {
             argv.push("-c".into());
@@ -162,7 +171,7 @@ fn datui_options_to_args(opts: Option<&Bound<'_, DatuiOptionsPy>>) -> PyResult<A
 }
 
 /// Compression format for data files (e.g. for use with DatuiOptions).
-#[pyclass(name = "CompressionFormat")]
+#[pyclass(name = "CompressionFormat", skip_from_py_object)]
 #[derive(Clone, Copy)]
 enum CompressionFormatPy {
     Gzip,
@@ -171,19 +180,14 @@ enum CompressionFormatPy {
     Xz,
 }
 
-/// Rewrite path-like objects from newer Polars JSON format to Rust 0.52 format.
-/// Newer Polars emits `{"inner": "/foo"}` (under "path" or other keys); polars-plan 0.52
-/// expects `{"Local": "/foo"}` or `{"Cloud": "..."}`. We recursively rewrite any object
-/// that is exactly `{"inner": "<string>"}` to `{"Local": "<string>"}`.
-fn run_tui(plan: DslPlan, args: Args, capture: bool) -> PyResult<Option<Vec<u8>>> {
-    let lf = LazyFrame::from(plan);
+fn run_tui(lf: LazyFrame, args: Args, capture: bool) -> PyResult<Option<Captured>> {
     let input = RunInput::Host(Box::new(args), Some(Box::new(lf)));
     run_input(input, capture)
 }
 
-/// Run the TUI on `input` and hand back the captured view's plan bytes, if one was
-/// asked for and a dataset was open at quit.
-fn run_input(input: RunInput, capture: bool) -> PyResult<Option<Vec<u8>>> {
+/// Run the TUI on `input` and hand back the captured view, if one was asked for and a
+/// dataset was open at quit.
+fn run_input(input: RunInput, capture: bool) -> PyResult<Option<Captured>> {
     let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
         if capture {
             run_captured(input, None)
@@ -192,8 +196,7 @@ fn run_input(input: RunInput, capture: bool) -> PyResult<Option<Vec<u8>>> {
         }
     }));
     match result {
-        Ok(Ok(None)) => Ok(None),
-        Ok(Ok(Some(lf))) => serialize_captured(lf).map(Some),
+        Ok(Ok(lf)) => Ok(lf.map(|lf| Captured { lf })),
         Ok(Err(e)) => {
             let (kind, msg) = error_for_python(&e);
             Err(match kind {
@@ -202,56 +205,141 @@ fn run_input(input: RunInput, capture: bool) -> PyResult<Option<Vec<u8>>> {
                 ErrorKindForPython::Other => PyRuntimeError::new_err(msg),
             })
         }
-        Err(panic_payload) => {
-            let msg: String = if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                s.to_string()
-            } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-                s.clone()
-            } else {
-                "datui panicked".to_string()
-            };
-            Err(PyRuntimeError::new_err(format!("datui panicked: {}", msg)))
-        }
+        Err(panic_payload) => Err(PyRuntimeError::new_err(format!(
+            "datui panicked: {}",
+            panic_text(panic_payload.as_ref())
+        ))),
     }
 }
 
-/// Serialize a captured view's plan for Python to deserialize. Always RuntimeError on
-/// failure, never ValueError: the wrapper retries a ValueError through the JSON input
-/// path, and a failure on the way *out* must not launch the TUI a second time.
-fn serialize_captured(lf: LazyFrame) -> PyResult<Vec<u8>> {
-    let mut buf = Vec::new();
-    lf.logical_plan
-        .serialize_versioned(&mut buf, Default::default())
-        .map_err(|e| {
-            PyRuntimeError::new_err(format!(
-                "datui could not serialize the captured view: {}",
-                e
-            ))
-        })?;
-    Ok(buf)
+/// What a caught panic said.
+fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        s.to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "datui panicked".to_string()
+    }
 }
 
-/// Launch the datui TUI with a LazyFrame logical plan given as binary (default Polars format).
-///
-/// The bytes must be the output of Polars Python `LazyFrame.serialize()` or
-/// `DataFrame.lazy().serialize()` (binary format, the default). This avoids passing
-/// LazyFrame objects across the Python/Rust boundary.
-///
-/// When the user exits the TUI (e.g. presses `q`), control returns to Python.
-/// Uses the same config as the CLI (~/.config/datui/config.toml).
-///
-/// Args:
-///     data: Bytes from LazyFrame.serialize() or df.lazy().serialize() (binary).
-///     options: Optional DatuiOptions; default when None.
-///     capture: When True, return the final view's plan as bytes on normal quit
-///         (None when no dataset was open); the wrapper deserializes them.
-///
-/// Raises:
-///     ValueError: If the bytes are not valid LazyFrame binary.
-///     FileNotFoundError: If a path is used and the file is not found (internal).
-///     PermissionError: If read access is denied (internal).
-///     RuntimeError: If the TUI fails or panics, or a captured view cannot be
-///         returned (temporary source files, serialization failure).
+/// The capsule name the Arrow PyCapsule interface gives a C stream.
+const ARROW_STREAM: &CStr = c"arrow_array_stream";
+
+/// A view captured at quit. The wrapper reads its plan when its polars can, and its
+/// rows, over the Arrow C stream, when it cannot. Failures here are RuntimeError.
+#[pyclass(name = "Captured")]
+struct Captured {
+    lf: LazyFrame,
+}
+
+#[pymethods]
+impl Captured {
+    /// The view's plan as `LazyFrame.serialize()` writes it, from the Rust polars this
+    /// wheel embeds.
+    fn plan(&self) -> PyResult<Vec<u8>> {
+        let mut buf = Vec::new();
+        self.lf
+            .logical_plan
+            .serialize_versioned(&mut buf, Default::default())
+            .map_err(|e| {
+                PyRuntimeError::new_err(format!(
+                    "datui could not serialize the captured view: {}",
+                    e
+                ))
+            })?;
+        Ok(buf)
+    }
+
+    /// The view's rows, collected now, as an Arrow C stream: what `pl.DataFrame(...)`
+    /// reads from any polars. The requested schema is ignored, as the interface allows.
+    #[pyo3(signature = (requested_schema=None))]
+    fn __arrow_c_stream__<'py>(
+        &self,
+        py: Python<'py>,
+        requested_schema: Option<Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyCapsule>> {
+        let _ = requested_schema;
+        let lf = self.lf.clone();
+        // A panic would otherwise reach Python as a PanicException, past `except Exception`.
+        let df = py
+            .detach(|| panic::catch_unwind(panic::AssertUnwindSafe(|| lf.collect())))
+            .map_err(|p| {
+                PyRuntimeError::new_err(format!(
+                    "datui panicked collecting the captured view: {}",
+                    panic_text(p.as_ref())
+                ))
+            })?
+            .map_err(|e| {
+                PyRuntimeError::new_err(format!("datui could not collect the captured view: {}", e))
+            })?;
+        PyCapsule::new_with_value(py, export_stream(df), ARROW_STREAM)
+    }
+}
+
+/// `df` as an Arrow C stream of struct arrays, one per chunk, built as each is read.
+fn export_stream(mut df: DataFrame) -> ArrowArrayStream {
+    df.align_chunks_par();
+    let compat = CompatLevel::newest();
+    let fields: Vec<ArrowField> = df
+        .columns()
+        .iter()
+        .map(|c| c.field().to_arrow(compat))
+        .collect();
+    let dtype = ArrowDataType::Struct(fields);
+    let columns: Vec<Series> = df
+        .columns()
+        .iter()
+        .map(|c| c.as_materialized_series().clone())
+        .collect();
+    let chunks = columns.first().map_or(0, |s| s.n_chunks());
+    let batch_dtype = dtype.clone();
+    let batches = (0..chunks).map(move |i| {
+        let values: Vec<ArrayRef> = columns.iter().map(|s| s.to_arrow(i, compat)).collect();
+        let len = values.first().map_or(0, |a| a.len());
+        StructArray::try_new(batch_dtype.clone(), len, values, None).map(|a| a.boxed())
+    });
+    export_iterator(Box::new(batches), ArrowField::new("".into(), dtype, false))
+}
+
+/// Read a frame from an object's Arrow C stream (`__arrow_c_stream__`).
+fn import_stream(data: &Bound<'_, PyAny>) -> PyResult<DataFrame> {
+    let refused =
+        |e: PolarsError| PyValueError::new_err(format!("datui cannot read this frame: {e}"));
+    let capsule = data.call_method0("__arrow_c_stream__")?;
+    let capsule = capsule.cast::<PyCapsule>().map_err(PyErr::from)?;
+    let ptr = capsule
+        .pointer_checked(Some(ARROW_STREAM))?
+        .cast::<ArrowArrayStream>();
+    // The C stream interface has the consumer move the stream out and leave a released
+    // one behind, which the capsule's destructor then skips.
+    // SAFETY: the capsule's name says it holds an ArrowArrayStream, and nothing else
+    // reads it while the GIL is held.
+    let stream = Box::new(unsafe { std::ptr::replace(ptr.as_ptr(), ArrowArrayStream::empty()) });
+    // SAFETY: the producer follows the C stream interface.
+    let mut reader = unsafe { ArrowArrayStreamReader::try_new(stream) }.map_err(refused)?;
+    let dtype = reader.field().dtype().clone();
+    if !matches!(dtype.to_storage(), ArrowDataType::Struct(_)) {
+        return Err(PyValueError::new_err(
+            "datui cannot read this frame: its Arrow stream is not a table",
+        ));
+    }
+    let mut df = DataFrame::try_from(StructArray::new_empty(dtype)).map_err(refused)?;
+    // SAFETY: as above.
+    while let Some(batch) = unsafe { reader.next() } {
+        let batch = batch.map_err(refused)?;
+        let Some(batch) = batch.as_any().downcast_ref::<StructArray>() else {
+            return Err(PyValueError::new_err(
+                "datui cannot read this frame: its Arrow stream is not a table",
+            ));
+        };
+        let batch = DataFrame::try_from(batch.clone()).map_err(refused)?;
+        df.vstack_mut_owned(batch).map_err(refused)?;
+    }
+    df.rechunk_mut_par();
+    Ok(df)
+}
+
 /// Where the schema hash sits in a versioned plan: after the `DSL_VERSION` magic bytes and
 /// the u16 major and minor version.
 const DSL_HASH_OFFSET: usize = b"DSL_VERSION".len() + 4;
@@ -262,7 +350,6 @@ const DSL_HASH_LEN: usize = 64;
 fn own_dsl_hash() -> &'static [u8] {
     static HASH: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
     HASH.get_or_init(|| {
-        use polars::prelude::IntoLazy;
         let mut header = Vec::new();
         let plan = polars::prelude::DataFrame::empty().lazy().logical_plan;
         if plan
@@ -293,6 +380,27 @@ fn with_own_dsl_hash(data: &[u8]) -> Box<dyn std::io::Read + '_> {
     )
 }
 
+/// Launch the datui TUI with a LazyFrame logical plan given as binary (default Polars format).
+///
+/// The bytes must be the output of Polars Python `LazyFrame.serialize()` or
+/// `DataFrame.lazy().serialize()` (binary format, the default). This avoids passing
+/// LazyFrame objects across the Python/Rust boundary.
+///
+/// When the user exits the TUI (e.g. presses `q`), control returns to Python.
+/// Uses the same config as the CLI (~/.config/datui/config.toml).
+///
+/// Args:
+///     data: Bytes from LazyFrame.serialize() or df.lazy().serialize() (binary).
+///     options: Optional DatuiOptions; default when None.
+///     capture: When True, return the final view as a Captured on normal quit
+///         (None when no dataset was open); the wrapper reads its plan or its rows.
+///
+/// Raises:
+///     ValueError: If the bytes are not valid LazyFrame binary.
+///     FileNotFoundError: If a path is used and the file is not found (internal).
+///     PermissionError: If read access is denied (internal).
+///     RuntimeError: If the TUI fails or panics, or a captured view cannot be
+///         returned (temporary source files).
 #[pyfunction]
 #[pyo3(signature = (data, *, options=None, capture=false))]
 fn view_from_bytes(
@@ -300,7 +408,7 @@ fn view_from_bytes(
     data: &[u8],
     options: Option<Bound<'_, DatuiOptionsPy>>,
     capture: bool,
-) -> PyResult<Option<Vec<u8>>> {
+) -> PyResult<Option<Captured>> {
     // Python `LazyFrame.serialize()` writes a DSL version and a schema hash ahead of the
     // plan. The version is checked. The hash is not comparable: it is the digest of a file
     // in the polars repository at the commit each release was cut from, and no PyPI wheel
@@ -318,7 +426,7 @@ fn view_from_bytes(
         ))
     })?;
     let args = datui_options_to_args(options.as_ref())?;
-    run_tui(plan, args, capture)
+    run_tui(LazyFrame::from(plan), args, capture)
 }
 
 /// Launch the datui TUI with a LazyFrame logical plan given as JSON.
@@ -344,7 +452,7 @@ fn view_from_json(
     json_str: &str,
     options: Option<Bound<'_, DatuiOptionsPy>>,
     capture: bool,
-) -> PyResult<Option<Vec<u8>>> {
+) -> PyResult<Option<Captured>> {
     let plan: DslPlan = serde_json::from_str(json_str).map_err(|e| {
         PyValueError::new_err(format!(
             "invalid LazyFrame JSON (use LazyFrame.serialize() or DataFrame.lazy().serialize()): {}",
@@ -352,7 +460,40 @@ fn view_from_json(
         ))
     })?;
     let args = datui_options_to_args(options.as_ref())?;
-    run_tui(plan, args, capture)
+    run_tui(LazyFrame::from(plan), args, capture)
+}
+
+/// Launch the datui TUI with a frame read from its Arrow C stream.
+///
+/// `data` is anything with `__arrow_c_stream__`, such as a `polars.DataFrame` of any
+/// version: the Arrow C stream interface does not change with polars, where a
+/// serialized plan does.
+///
+/// Args:
+///     data: An object with `__arrow_c_stream__` yielding a table.
+///     options: Optional DatuiOptions; default when None.
+///     capture: As for view_from_bytes.
+///
+/// Raises:
+///     ValueError: If the stream is not a table or cannot be read.
+///     RuntimeError: If the TUI fails or panics, or a captured view cannot be
+///         returned.
+#[pyfunction]
+#[pyo3(signature = (data, *, options=None, capture=false))]
+fn view_from_arrow(
+    data: &Bound<'_, PyAny>,
+    options: Option<Bound<'_, DatuiOptionsPy>>,
+    capture: bool,
+) -> PyResult<Option<Captured>> {
+    let df =
+        panic::catch_unwind(panic::AssertUnwindSafe(|| import_stream(data))).map_err(|p| {
+            PyValueError::new_err(format!(
+                "datui cannot read this frame: {}",
+                panic_text(p.as_ref())
+            ))
+        })??;
+    let args = datui_options_to_args(options.as_ref())?;
+    run_tui(df.lazy(), args, capture)
 }
 
 /// Launch the datui TUI with one or more paths (local files, S3, GCS, Azure, or HTTP/HTTPS URLs).
@@ -382,7 +523,7 @@ fn view_paths(
     paths: Vec<String>,
     options: Option<Bound<'_, DatuiOptionsPy>>,
     capture: bool,
-) -> PyResult<Option<Vec<u8>>> {
+) -> PyResult<Option<Captured>> {
     if paths.is_empty() {
         return Err(PyValueError::new_err("paths must not be empty"));
     }
@@ -460,17 +601,17 @@ fn run_cli(py: Python<'_>) -> PyResult<()> {
         }
     };
     // Refuse to run if the path is a script (e.g. venv bin/datui wrapper); prevents infinite loop.
-    if let Ok(prefix) =
-        std::fs::read(&binary).and_then(|b| Ok(b.get(0..2).unwrap_or_default().to_vec()))
-    {
-        if prefix == b"#!" {
-            return Err(PyRuntimeError::new_err(format!(
-                "datui CLI: {} is a script, not the datui binary. \
-                 Do not use the Python wrapper to run itself. \
-                 Copy the real binary to datui_bin/ or run the standalone datui from PATH.",
-                binary.display()
-            )));
-        }
+    let mut prefix = [0u8; 2];
+    let is_script = std::fs::File::open(&binary)
+        .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut prefix))
+        .is_ok_and(|()| &prefix == b"#!");
+    if is_script {
+        return Err(PyRuntimeError::new_err(format!(
+            "datui CLI: {} is a script, not the datui binary. \
+             Do not use the Python wrapper to run itself. \
+             Copy the real binary to datui_bin/ or run the standalone datui from PATH.",
+            binary.display()
+        )));
     }
     let status = std::process::Command::new(&binary)
         .args(&argv[1..])
@@ -483,14 +624,17 @@ fn run_cli(py: Python<'_>) -> PyResult<()> {
 
 /// Native extension module. The public `datui` package is provided by Python code
 /// (datui/__init__.py) which imports this as _datui and exposes view(), DatuiOptions,
-/// CompressionFormat, view_from_bytes(), view_from_json(), view_paths(), run_cli.
+/// CompressionFormat, view_from_bytes(), view_from_json(), view_from_arrow(), view_paths(),
+/// run_cli.
 #[pymodule]
 fn _datui(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<DatuiOptionsPy>()?;
     m.add("OPTION_NAMES", option_names())?;
     m.add_class::<CompressionFormatPy>()?;
+    m.add_class::<Captured>()?;
     m.add_function(wrap_pyfunction!(view_from_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(view_from_json, m)?)?;
+    m.add_function(wrap_pyfunction!(view_from_arrow, m)?)?;
     m.add_function(wrap_pyfunction!(view_paths, m)?)?;
     m.add_function(wrap_pyfunction!(run_cli, m)?)?;
     Ok(())

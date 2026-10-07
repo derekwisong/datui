@@ -1,9 +1,9 @@
-//! Chart export dialog rendering: one Surface, a FormRow per field, the actions in
-//! the footer.
+//! Chart export dialog rendering: a FormView, a row per field, the actions in the
+//! footer.
 
 use crate::chart::chart_export_modal::{ChartExportModal, FIELDS};
 use crate::render::context::RenderContext;
-use crate::widgets::ui::{FormRow, FormValue, HintBar, Surface};
+use crate::widgets::ui::{FormLine, FormValue, FormView, HintBar};
 use ratatui::layout::Rect;
 
 /// The value column's offset: past the longest label, "Description:", plus air.
@@ -34,69 +34,36 @@ pub fn render_chart_export_modal(
         .weight(1)
         .key("Esc")
         .weight(4);
-    crate::app::pointer::record(area, crate::app::pointer::Hit::Modal);
-    let content = Surface::new("Export Chart")
-        .footer(&footer)
-        .render(area, buf, ctx);
-    if content.height < 1 || content.width < 4 {
-        return;
-    }
     let focus = modal.focus;
     for (field, _) in FIELDS {
         if let Some(input) = modal.input_mut(field) {
             input.set_focused(field == focus);
         }
     }
-    // The status line keeps its place at the bottom while there is room for a
-    // field above it.
-    let status_rows = if content.height > STATUS_ROWS {
-        STATUS_ROWS
-    } else {
-        0
-    };
-    if status_rows > 0
-        && let Some(error) = modal.error.as_deref()
-    {
-        let width = content.width.saturating_sub(1);
-        ratatui::widgets::Widget::render(
-            ratatui::widgets::Paragraph::new(crate::glyphs::fit(error, width as usize))
-                .style(ratatui::style::Style::default().fg(ctx.warning)),
-            Rect {
-                x: content.x + 1,
-                y: content.bottom() - 1,
-                width,
-                height: 1,
-            },
-            buf,
-        );
+    let rows = modal
+        .shown()
+        .into_iter()
+        .filter_map(|field| {
+            let value = match modal.choice(field) {
+                Some(choice) => FormValue::Choice(choice),
+                None => FormValue::Input(modal.input(field)?),
+            };
+            Some(FormLine::Field(field, field.label(), value))
+        })
+        .collect();
+    let error = modal.error.clone().unwrap_or_default();
+    FormView {
+        title: "Export Chart",
+        screen: datui_cli::keys::Context::Chart,
+        footer: Some(footer),
+        label_width: LABEL_WIDTH,
+        rows,
+        focused: Some(focus),
+        picker: None,
+        status: Some((error, ratatui::style::Style::default().fg(ctx.warning))),
+        shields: true,
     }
-    // Overlays scroll inside a capped frame: keep the focused field on screen.
-    let rows = (content.height - status_rows) as usize;
-    let shown = modal.shown();
-    let at = shown.iter().position(|f| *f == focus).unwrap_or(0);
-    let first = at.saturating_sub(rows.saturating_sub(1));
-    for (i, field) in shown.iter().enumerate().skip(first).take(rows) {
-        let value = match modal.choice(*field) {
-            Some(choice) => FormValue::Choice(choice),
-            None => match modal.input_mut(*field) {
-                Some(input) => FormValue::Input(input),
-                None => continue,
-            },
-        };
-        let row = Rect {
-            y: content.y + (i - first) as u16,
-            height: 1,
-            ..content
-        };
-        FormRow {
-            label: field.label(),
-            value,
-            focused: *field == focus,
-            label_width: LABEL_WIDTH,
-        }
-        .render(row, buf, ctx);
-        crate::app::pointer::record_field::<ChartExportModal>(row, *field);
-    }
+    .render::<ChartExportModal>(area, buf, ctx);
 }
 
 #[cfg(test)]

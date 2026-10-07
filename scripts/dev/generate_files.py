@@ -1,4 +1,3 @@
-from operator import ge
 import polars as pl
 import numpy as np
 import os

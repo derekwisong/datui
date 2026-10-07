@@ -53,6 +53,8 @@ tempfile = "3.8"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 fs2 = "0.4"
 toml = "1.1"
+# The fixture stamp's digest (tests/shared.rs). Polars already builds it.
+sha2 = "0.11"
 # Writing compressed fixtures. Already `datui-lib`'s, so nothing new enters the tree.
 flate2 = "1.0"
 zstd = "0.14"

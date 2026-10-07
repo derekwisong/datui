@@ -1296,6 +1296,7 @@ version = "0.4.3-dev"
 dependencies = [
  "datui-lib",
  "polars",
+ "polars-arrow",
  "polars-plan",
  "pyo3",
  "serde_json",

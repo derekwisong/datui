@@ -3688,10 +3688,8 @@ fn test_a_match_in_the_file_name_outranks_one_in_a_directory() {
 fn test_a_parquet_footer_yields_what_the_file_will_weigh_open() {
     // The single most useful number the footer carries, and the one nothing else on
     // screen implies: compressed bytes on disk say nothing about bytes in memory.
+    common::ensure_sample_data();
     let path = std::path::Path::new("tests/sample-data/charting_demo.parquet");
-    if !path.exists() {
-        return; // sample data is generated; skip rather than fail a fresh checkout
-    }
     let mut entry = datui::home::discover::Entry::for_test(path, "charting_demo.parquet");
     entry.size = std::fs::metadata(path).ok().map(|m| m.len());
     datui::home::discover::enrich(&mut entry);

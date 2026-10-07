@@ -36,6 +36,7 @@ pub mod loading;
 pub mod logging;
 pub mod notes;
 pub mod numfmt;
+pub use app::applied::Applied;
 pub use app::overlay::Overlay;
 pub mod past_calendar;
 pub use app::run::{ended_by_signal, run, run_captured};
@@ -68,7 +69,7 @@ pub use app::feedback::{ConfirmationModal, ErrorModal, Flash};
 use app::jobs::{Answer, Job, Jobs, Outcome};
 pub use app::jobs::{JobKind, Progress, Ticket};
 use app::modals::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
-use app::modals::pivot_melt_modal::{MeltSpec, PivotMeltModal, PivotSpec};
+use app::modals::pivot_melt_modal::PivotMeltModal;
 use app::modals::sort_filter_modal::SortFilterModal;
 use app::modals::sort_modal::{SortColumn, order_with_hidden};
 pub use error_display::{ErrorKindForPython, error_for_python};
@@ -314,46 +315,18 @@ pub enum AppEvent {
         root: PathBuf,
         message: String,
     },
-    /// Run the export once the UI has drawn its progress.
-    DoExport(ExportRequest),
     /// A followed file's watcher found more rows, or that the file went.
     Followed(crate::loading::follow::News),
     Exit,
     Crash(String),
-    QQuery(String),
-    SqlQuery(String),
-    Filter(Vec<FilterStatement>),
-    Sort(Vec<String>, Vec<bool>), // Columns, and per column whether it runs descending
-    ColumnOrder(Vec<String>, usize), // Column order, locked columns count
-    /// The sidebar's Apply as one change: column order, locked count, filters, and the
-    /// sort's columns with whether each runs descending.
-    ApplyView(
-        Vec<String>,
-        usize,
-        Vec<FilterStatement>,
-        Vec<String>,
-        Vec<bool>,
-    ),
-    Pivot(PivotSpec),
-    Melt(MeltSpec),
-    Export(ExportRequest),
-    /// Collect and format the whole view off-thread for a table-scope copy.
-    CopyTable {
-        format: crate::clipboard::CopyFormat,
-        header: bool,
-    },
-    ChartExport(ChartExportRequest),
-    /// A confirmed documentation link, checked by `app::link_open::checked_url`.
-    OpenLink(String),
-    /// Deferred: run the chart export once its phase is drawn.
-    DoChartExport(ChartExportRequest),
+    /// A dialog or prompt answered: what it asks of the app. See [`Applied`].
+    Applied(Applied),
     Collect,
     Update,
     Reset,
     Resize(u16, u16), // resized (width, height)
     /// A scroll deferred one frame, so the spinner shows while its rows are read.
     Scroll(Scroll),
-    GoToLine(usize), // Deferred: jump to line number (when collect needed)
     /// Run an analysis tool off the UI thread; deferred so its progress shows first.
     AnalysisCompute(analysis::analysis_modal::AnalysisTool),
     /// The sample a stopped Data Quality run had read, kept for the next run.
@@ -383,12 +356,6 @@ pub enum AppEvent {
     /// A frame was painted. The run loop calls [`App::frame_painted`]; a harness
     /// sends this when [`App::count_waits_for_a_frame`].
     FramePainted,
-    /// Write the on-screen Data Quality report from memory; nothing is read.
-    QualityReportExport(
-        PathBuf,
-        crate::analysis::quality_export::ReportFormat,
-        Overwrite,
-    ),
     /// A directory named on the command line: look at it on a worker, then do what
     /// `Enter` on its row would. An event so the first frame, with a spinner and a
     /// way out, is drawn before a look that can take seconds.
@@ -810,8 +777,6 @@ pub struct App {
     pub pickers: app::keys::picker_keys::Pickers,
     /// The Value Counts screen (`F`).
     pub value_counts: analysis::value_counts_modal::ValueCountsModal,
-    /// The counts the export dialog writes, when it was opened from Value Counts.
-    export_counts: Option<polars::prelude::DataFrame>,
     /// The retype and combine forms.
     pub column_forms: app::keys::retype_keys::ColumnForms,
     /// The hex view, and the number its next read is tagged with.
@@ -1265,9 +1230,9 @@ impl App {
         };
         let dataset = self.dataset_generation;
         self.spawn_job(Job::JournalDetail { dataset }, None, move |_| {
-            Ok(Answer::JournalDescribed(
-                crate::formats::journal::summary(&lf).ok().map(Box::new),
-            ))
+            crate::formats::journal::summary(&lf)
+                .map(|detail| Answer::JournalDescribed(Box::new(detail)))
+                .map_err(|e| e.to_string())
         });
     }
 
@@ -1972,7 +1937,7 @@ impl App {
             let moving = applied.remove(i);
             applied.insert(j, moving);
         }
-        Some(AppEvent::ColumnOrder(order, locked))
+        Some(AppEvent::Applied(Applied::ColumnOrder(order, locked)))
     }
 
     /// Whether a text field owns typed characters, so the wheel and `?` leave it alone.
@@ -2681,7 +2646,6 @@ impl App {
             pickers: app::keys::picker_keys::Pickers::default(),
             value_counts: analysis::value_counts_modal::ValueCountsModal::default(),
             hex: app::keys::hex_keys::HexState::default(),
-            export_counts: None,
             column_forms: app::keys::retype_keys::ColumnForms::default(),
             error_modal: ErrorModal::new(),
             flash: None,
@@ -2886,7 +2850,7 @@ impl App {
                 };
                 self.apply_sample(sample)
             }
-            Confirm::OpenLink(url) => Some(AppEvent::OpenLink(url)),
+            Confirm::OpenLink(url) => Some(AppEvent::Applied(Applied::OpenLink(url))),
             Confirm::ClearRecents => {
                 self.cache.clear_recents();
                 self.home_refresh();
@@ -2914,20 +2878,22 @@ impl App {
                 None
             }
             // The overwrite was agreed to, for this export only.
-            Confirm::QualityExport(path, format) => Some(AppEvent::QualityReportExport(
-                path,
-                format,
-                Overwrite::Replace,
+            Confirm::QualityExport(path, format) => Some(AppEvent::Applied(
+                Applied::QualityReportExport(path, format, Overwrite::Replace),
             )),
-            Confirm::ChartExport(request) => Some(AppEvent::ChartExport(ChartExportRequest {
+            Confirm::ChartExport(request) => Some(AppEvent::Applied(Applied::ChartExport(
+                ChartExportRequest {
+                    overwrite: Overwrite::Replace,
+                    ..*request
+                },
+            ))),
+            Confirm::Export(request) => Some(AppEvent::Applied(Applied::Export(ExportRequest {
                 overwrite: Overwrite::Replace,
                 ..*request
-            })),
-            Confirm::Export(request) => Some(AppEvent::Export(ExportRequest {
-                overwrite: Overwrite::Replace,
-                ..*request
-            })),
-            Confirm::Copy(format, header) => Some(AppEvent::CopyTable { format, header }),
+            }))),
+            Confirm::Copy(format, header) => {
+                Some(AppEvent::Applied(Applied::CopyTable { format, header }))
+            }
             Confirm::Download => {
                 // The loader releases the generation as the download or read starts, and its job
                 // takes it at once.
@@ -3601,7 +3567,6 @@ impl App {
             }
             KeyCode::Char('e') => {
                 if self.data_table_state.is_some() && self.at_table() {
-                    self.export_counts = None;
                     self.export_modal.open(
                         self.source.original_file_format,
                         self.display.history_limit,
@@ -3818,22 +3783,6 @@ impl App {
                 None
             }
             AppEvent::Scroll(scroll) => self.handle_scroll(|s| scroll.run(s)),
-            AppEvent::GoToLine(n) => {
-                // Past the lines indexed so far: gone to once they all are.
-                if let Some(state) = self.data_table_state.as_ref()
-                    && state.indexing().is_some()
-                    && (n >= state.num_rows()
-                        || state.changes_rows()
-                        || !state.view_sort_columns().is_empty()
-                        || !state.view_sort_ascending())
-                {
-                    self.counting.goto_when_indexed = Some((self.dataset_generation, n));
-                    self.status_message = Some(Self::INDEXING_FOR_ROW.to_string());
-                    self.busy = false;
-                    return None;
-                }
-                self.handle_scroll(|s| s.scroll_to_row_centered(n))
-            }
             AppEvent::AnalysisCompute(tool) => self.spawn_analysis(tool),
             AppEvent::BackgroundLenReady { .. }
             | AppEvent::FramePainted
@@ -3966,30 +3915,9 @@ impl App {
                 None
             }
             AppEvent::JobEnded(ticket) => self.job_ended(ticket),
+            AppEvent::Applied(applied) => self.apply(applied),
             AppEvent::JobProgress { ticket, progress } => {
                 self.job_progress(ticket, &progress);
-                None
-            }
-            AppEvent::QQuery(query) => {
-                self.run_query(QueryMode::Q, &query, "Applying query...");
-                None
-            }
-            AppEvent::SqlQuery(sql) => {
-                self.run_query(QueryMode::Sql, &sql, "Applying SQL query...");
-                None
-            }
-            AppEvent::Filter(statements) => {
-                if let Some(state) = &mut self.data_table_state {
-                    state.deferred(|s| s.filter(statements.clone()));
-                }
-                self.spawn_async_collect("Filtering...");
-                None
-            }
-            AppEvent::Sort(columns, descending) => {
-                if let Some(state) = &mut self.data_table_state {
-                    state.deferred(|s| s.sort_by(columns.clone(), descending.clone()));
-                }
-                self.spawn_async_collect("Sorting...");
                 None
             }
             AppEvent::Reset => {
@@ -4012,189 +3940,8 @@ impl App {
                 self.views.active_id = None;
                 None
             }
-            AppEvent::ApplyView(order, locked, filters, columns, descending) => {
-                if let Some(state) = &mut self.data_table_state {
-                    let change = state
-                        .deferred(|s| s.apply_view(order, locked, filters, columns, descending));
-                    self.spawn_async_collect(match change {
-                        crate::table::ViewChange { sort: true, .. } => "Sorting...",
-                        crate::table::ViewChange { filters: true, .. } => "Filtering...",
-                        _ => Self::LOADING_BUFFER,
-                    });
-                }
-                None
-            }
-            AppEvent::ColumnOrder(order, locked_count) => {
-                if let Some(state) = &mut self.data_table_state {
-                    state.deferred(|s| {
-                        s.set_column_order(order);
-                        s.set_locked_columns(locked_count);
-                    });
-                    self.spawn_async_collect(Self::LOADING_BUFFER);
-                }
-                None
-            }
-            AppEvent::Pivot(spec) => {
-                // The modal stays up until the result is in, so a failed pivot leaves the spec to
-                // fix.
-                let job = self.data_table_state.as_ref()?.plan_pivot(&spec);
-                self.spawn_job(Job::Pivot, Some(Self::COMPUTING_PIVOT), move |_| {
-                    let pivoted = job
-                        .run()
-                        .map_err(|e| crate::error_display::user_message_from_report(&e, None))?;
-                    Ok(Answer::Pivoted { spec, pivoted })
-                });
-                None
-            }
-            AppEvent::Melt(spec) => {
-                self.busy = true;
-                if let Some(state) = &mut self.data_table_state {
-                    let result = state.deferred(|s| s.melt(&spec));
-                    match result {
-                        Ok(()) => {
-                            self.close_overlay();
-                            self.spawn_async_collect("Computing melt...");
-                            None
-                        }
-                        Err(e) => {
-                            self.busy = false;
-                            self.error_modal
-                                .show(crate::error_display::user_message_from_report(&e, None));
-                            None
-                        }
-                    }
-                } else {
-                    self.busy = false;
-                    None
-                }
-            }
-            AppEvent::QualityReportExport(path, format, overwrite) => {
-                // The report and the plan it was measured with, cloned to the writer: built from
-                // memory, nothing read.
-                let results = self.analysis_modal.quality.results.clone()?;
-                let plan = self.analysis_modal.quality_result_plan().clone();
-                self.spawn_job(
-                    Job::QualityReport,
-                    Some("Writing the report..."),
-                    move |_| {
-                        crate::analysis::quality_export::write(
-                            &path, &results, &plan, format, overwrite,
-                        )
-                        .map_err(|error| Self::format_export_error(&error))?;
-                        Ok(Answer::QualityReportWritten(path))
-                    },
-                );
-                None
-            }
-            AppEvent::ChartExport(..) | AppEvent::DoChartExport(..) => self.chart_event(event),
-            AppEvent::Export(request) => {
-                if self.data_table_state.is_some() {
-                    self.busy = true;
-                    self.export_progress =
-                        Some(ExportProgress::new(&request.path, "Preparing export"));
-                    // Drawn before the export starts.
-                    Some(AppEvent::DoExport(request))
-                } else {
-                    None
-                }
-            }
             AppEvent::Followed(news) => {
                 self.followed(&news);
-                None
-            }
-            AppEvent::DoExport(request) => {
-                let Some(state) = &self.data_table_state else {
-                    self.export_progress = None;
-                    self.busy = false;
-                    return None;
-                };
-                // Cloned, not taken: a failed write reopens the dialog on the same counts.
-                let frame = match self.export_counts.clone() {
-                    Some(counts) => {
-                        crate::table::ExportFrame::of(polars::prelude::IntoLazy::lazy(counts))
-                    }
-                    None => state.export_frame(request.options.source_file),
-                };
-                let streaming = state.polars_streaming();
-                // One job from plan to commit: it holds the generation throughout, and any rows
-                // it collects die with it.
-                let phase = match request.route(streaming) {
-                    crate::export::Route::Streamed => Self::export_write_phase(&request),
-                    crate::export::Route::Collected => "Collecting data",
-                };
-                self.export_progress = Some(ExportProgress::new(&request.path, phase));
-                let writing = Self::export_write_phase(&request);
-                self.spawn_job(Job::Export, Some("Exporting..."), move |worker| {
-                    let report = worker.reporter();
-                    let written = move |bytes| {
-                        report(Progress::ExportWriting {
-                            phase: writing,
-                            bytes,
-                        })
-                    };
-                    frame
-                        .into_lazy()
-                        .map_err(color_eyre::eyre::Report::from)
-                        .and_then(|lf| crate::export::run(lf, &request, streaming, written))
-                        .map_err(|e| Self::format_export_error(&e))?;
-                    // Success is reported only once the file is committed.
-                    Ok(Answer::Exported(request.path))
-                });
-                None
-            }
-            AppEvent::OpenLink(url) => {
-                // Not waited on; a browser that will not start gets a flash, not an error.
-                if app::link_open::open(&url).is_err() {
-                    self.flash_note("Couldn't open the link; y copies it".to_string());
-                }
-                None
-            }
-            AppEvent::CopyTable { format, header } => {
-                let accepts = match self.copy_destination() {
-                    Ok(destination) => destination.accepts(),
-                    Err(e) => {
-                        self.busy = false;
-                        self.error_modal.show(e);
-                        return None;
-                    }
-                };
-                if let Some(state) = &self.data_table_state {
-                    let lf = state.visible_lf();
-                    let streaming = state.polars_streaming();
-                    self.spawn_job(Job::Copy, Some("Collecting data for copy..."), move |_| {
-                        // A capped destination's copy is read in batches and abandoned at the cap; others
-                        // are collected whole.
-                        let (payload, rows) = match accepts.base64_limit {
-                            Some(limit) => crate::clipboard::bounded_table_text(
-                                lf, format, header, limit,
-                            )
-                            .map(|(text, rows)| (crate::clipboard::Payload::text(text), rows)),
-                            None => crate::analysis::statistics::collect_lazy(lf, streaming)
-                                .map_err(|e| crate::error_display::user_message_from_polars(&e))
-                                .and_then(|df| {
-                                    crate::clipboard::tabular_payload(
-                                        &df,
-                                        format,
-                                        header,
-                                        accepts.html,
-                                    )
-                                    .map(|payload| (payload, df.height()))
-                                }),
-                        }
-                        .map_err(|message| format!("Copy failed: {message}"))?;
-                        // Handed on whole, never copied.
-                        Ok(Answer::Copied {
-                            payload,
-                            message: format!(
-                                "Copied {} rows as {}",
-                                app::modals::copy_modal::thousands(rows),
-                                format.as_str()
-                            ),
-                        })
-                    });
-                } else {
-                    self.busy = false;
-                }
                 None
             }
             AppEvent::TerminalBackground(mode) => {
@@ -4283,7 +4030,7 @@ impl App {
         ) {
             applied.swap(i, j);
         }
-        Some(AppEvent::ColumnOrder(order, locked))
+        Some(AppEvent::Applied(Applied::ColumnOrder(order, locked)))
     }
 
     /// `[` / `]` at the table: sort by the cursor's column, replacing the sort in
@@ -4302,7 +4049,10 @@ impl App {
             self.spawn_async_collect("Sorting...");
             return None;
         }
-        Some(AppEvent::Sort(vec![column], vec![descending]))
+        Some(AppEvent::Applied(Applied::Sort(
+            vec![column],
+            vec![descending],
+        )))
     }
 }
 
@@ -4359,7 +4109,7 @@ impl App {
             return None;
         }
         statements.push(statement);
-        Some(AppEvent::Filter(statements))
+        Some(AppEvent::Applied(Applied::Filter(statements)))
     }
 
     /// Bring the sidebar in line with what is applied to the frame on screen (column
@@ -4487,13 +4237,13 @@ impl App {
         if view_unchanged {
             return None;
         }
-        Some(AppEvent::ApplyView(
+        Some(AppEvent::Applied(Applied::ApplyView(
             column_order,
             locked_count,
             statements,
             columns,
             descending,
-        ))
+        )))
     }
 
     /// Facts read for the dataset's single file stored as its format says (a stream or
@@ -4608,7 +4358,7 @@ impl App {
         answer: Answer,
     ) -> Option<AppEvent> {
         match (job, answer) {
-            (Job::JournalDetail { dataset }, Answer::JournalDescribed(Some(detail))) => {
+            (Job::JournalDetail { dataset }, Answer::JournalDescribed(detail)) => {
                 if dataset == self.dataset_generation
                     && let Some(state) = self.data_table_state.as_mut()
                 {
@@ -4749,7 +4499,7 @@ impl App {
                 None
             }
             (
-                _,
+                Job::Rows(_),
                 Answer::RowsFailed {
                     message,
                     conversion,
@@ -4758,7 +4508,7 @@ impl App {
                 self.rows_failed(current, waited, &message, conversion.as_deref());
                 None
             }
-            (_, Answer::Analysis(install, results)) => {
+            (Job::Analysis(_), Answer::Analysis(install, results)) => {
                 if current {
                     install(&mut self.analysis_modal, results);
                     self.analysis_modal.computing = None;
@@ -4766,7 +4516,7 @@ impl App {
                 None
             }
             (
-                _,
+                Job::Analysis(_),
                 Answer::DataQuality {
                     results,
                     kept,
@@ -4793,15 +4543,17 @@ impl App {
                 }
                 None
             }
-            (job, Answer::SampleDrawn(drawn)) => self.sample_drawn(job, current, drawn),
-            (_, Answer::Sample { df, label }) => {
+            (Job::SampleDraw(draw), Answer::SampleDrawn(drawn)) => {
+                self.sample_drawn(*draw, current, drawn)
+            }
+            (Job::SampleRows, Answer::Sample { df, label }) => {
                 if current {
                     self.analysis_modal.computing = None;
                     self.show_sample_view(df, label);
                 }
                 None
             }
-            (_, Answer::Pivoted { spec, pivoted }) => {
+            (Job::Pivot, Answer::Pivoted { spec, pivoted }) => {
                 // Superseded means something replaced the view, which owns the wait.
                 if !current {
                     return None;
@@ -4851,7 +4603,7 @@ impl App {
                 }
                 None
             }
-            (_, Answer::DrillRow { group_index, row }) => {
+            (Job::DrillRow, Answer::DrillRow { group_index, row }) => {
                 // Superseded means something replaced the view, which owns the wait.
                 if current {
                     self.drill_into(group_index, &row);
@@ -4917,29 +4669,29 @@ impl App {
                 }
                 None
             }
-            (_, Answer::ValueWritten(open)) => {
+            (Job::OpenValue, Answer::ValueWritten(open)) => {
                 if current && self.overlay == Overlay::Inspect {
                     self.external.open = Some(open);
                 }
                 None
             }
-            (_, Answer::Exported(path)) => {
+            (Job::Export, Answer::Exported(path)) => {
                 // Written: the dialog held for a failure is done with.
-                self.forget_export();
+                self.export_modal.close();
                 if current {
                     self.export_progress = None;
                     self.flash_path("Exported to ", &path);
                 }
                 None
             }
-            (_, Answer::Copied { payload, message }) => {
+            (Job::Copy, Answer::Copied { payload, message }) => {
                 if current {
                     self.export_progress = None;
                     self.finish_copy(payload, message);
                 }
                 None
             }
-            (_, Answer::QualityReportWritten(path)) => {
+            (Job::QualityReport, Answer::QualityReportWritten(path)) => {
                 self.analysis_modal.quality.export = None;
                 if current {
                     self.flash_path("Report written to ", &path);
@@ -4992,15 +4744,20 @@ impl App {
                     record_size,
                 },
                 Answer::HexOpened(source),
-            ) if current => {
-                self.hex_opened(origin, fallback, record_size, *source);
+            ) => {
+                // Superseded: another file, or the view was left.
+                if current {
+                    self.hex_opened(origin, fallback, record_size, *source);
+                }
                 None
             }
-            (Job::HexFind(run), Answer::HexFound(hit)) if current => {
-                self.hex_found(run, hit);
+            (Job::HexFind(run), Answer::HexFound(hit)) => {
+                if current {
+                    self.hex_found(run, hit);
+                }
                 None
             }
-            (_, Answer::ValueCounts(counts)) => {
+            (Job::ValueCounts, Answer::ValueCounts(counts)) => {
                 // Superseded: another column, a cancel, or a trip away.
                 if current {
                     self.value_counts.computing = None;
@@ -5008,16 +4765,16 @@ impl App {
                 }
                 None
             }
-            // What a test's answer carries goes with it.
+            // What a test's answer carries goes with it; it rides any job.
             #[cfg(test)]
             (_, Answer::Probe(held)) => {
                 drop(held);
                 None
             }
-            // An answer under another job than its own, a hex answer gone stale, or a
-            // journal that could not be read again: dropped with what it carries.
+            // An answer under another job than its own is a bug: dropped with what it
+            // carries. Every answer is named, so a new one needs its own arm above.
             (
-                _,
+                job,
                 Answer::Load(_)
                 | Answer::NamedPaths { .. }
                 | Answer::NamedPathMissing(_)
@@ -5039,14 +4796,29 @@ impl App {
                 | Answer::HexFound(_)
                 | Answer::FootersJoined(_)
                 | Answer::JournalDescribed(_)
-                | Answer::LinesIndexed(_),
-            ) => None,
+                | Answer::LinesIndexed(_)
+                | Answer::RowsFailed { .. }
+                | Answer::Analysis(..)
+                | Answer::DataQuality { .. }
+                | Answer::SampleDrawn(_)
+                | Answer::Sample { .. }
+                | Answer::Pivoted { .. }
+                | Answer::DrillRow { .. }
+                | Answer::ValueWritten(_)
+                | Answer::Exported(_)
+                | Answer::Copied { .. }
+                | Answer::QualityReportWritten(_)
+                | Answer::ValueCounts(_),
+            ) => {
+                log::error!(target: "datui", "a {:?} job got another job's answer; dropped", job.kind());
+                None
+            }
         }
     }
 
     /// Put down what a failed job started, and say why. [`Self::job_ended`] already
-    /// released its keys and line. Each arm clears only what that job started, and
-    /// only when it is current; a stale failure is dropped.
+    /// released its keys and line. Each arm clears only what that job started; most act
+    /// only when it is current, and the rest are judged by something of their own.
     fn background_failed(
         &mut self,
         job: &Job,
@@ -5055,19 +4827,24 @@ impl App {
         message: &str,
         panicked: bool,
     ) {
-        // Jobs judged by something of their own rather than by being current.
+        // With one line for the reason, a panic's message gives way to the log.
+        let could_not = |what: &str| {
+            if panicked {
+                format!("Could not {what}; see the log")
+            } else {
+                format!("Could not {what}: {message}")
+            }
+        };
         match job {
             // Judged by the open: one put down or replaced is not the one waited on.
             Job::Load(load) | Job::OpenNamed(load) | Job::LookAtDirectory { load, .. } => {
                 if let loading::Step::Failed(failed) = self.loading.failed(*load, message) {
                     self.load_failed(failed);
                 }
-                return;
             }
             // A pass that failed could not read them: the dataset stops waiting.
             Job::FootersJoin { dataset } => {
                 self.footers_joined(*dataset, None);
-                return;
             }
             Job::ChartPrepare(prep) => {
                 let message = if panicked {
@@ -5076,12 +4853,11 @@ impl App {
                     message.to_string()
                 };
                 self.chart_prepared(*prep.clone(), current, Err(message));
-                return;
             }
             Job::Rows(_) | Job::OwedRows { .. } => {
-                return self.rows_failed(current, waited, message, None);
+                self.rows_failed(current, waited, message, None);
             }
-            Job::SampleDraw(_) => return self.sample_draw_failed(job, current, message),
+            Job::SampleDraw(draw) => self.sample_draw_failed(draw, current, message),
             // The preview says why in its own pane; the log has a panic's details.
             Job::ReshapePreview { epoch, token } => {
                 let message = if panicked {
@@ -5090,7 +4866,6 @@ impl App {
                     message.to_string()
                 };
                 self.reshape_preview_ended(*epoch, *token, None, Err(message));
-                return;
             }
             Job::InspectPretty { token } => {
                 let modal = &mut self.inspector_modal;
@@ -5102,7 +4877,6 @@ impl App {
                         place: place.clone(),
                     });
                 }
-                return;
             }
             Job::InspectUnpack { token } => {
                 let modal = &mut self.inspector_modal;
@@ -5114,9 +4888,8 @@ impl App {
                         place: place.clone(),
                     });
                 }
-                return;
             }
-            Job::Find(_) => return self.find_failed(current, message),
+            Job::Find(_) => self.find_failed(current, message),
             // Judged by the dataset, as its answer is; the panel has one line for it.
             Job::FileFacts { dataset } => {
                 let why = if panicked {
@@ -5125,52 +4898,25 @@ impl App {
                     message.to_string()
                 };
                 self.file_facts_landed(*dataset, FileFacts::Failed(why));
-                return;
             }
             // The note is left unsaid; the log has why.
             Job::UnfitCount { .. } => {
                 log::warn!(target: "datui", "counting values that did not fit their type failed: {message}");
-                return;
             }
-            // The Info tab keeps what the open read.
-            Job::JournalDetail { .. } => return,
+            // The Info tab keeps what the open read; the log says why it has no more.
+            Job::JournalDetail { .. } => {
+                log::warn!(target: "datui", "reading the journal's detail failed: {message}");
+            }
             // Stopped: whoever stopped it says what becomes of the reads waiting on the
             // lines.
-            Job::IndexLines { .. } => return,
-            Job::Export if !current => {
-                self.forget_export();
-                return;
+            Job::IndexLines { .. } => {}
+            // The rest act only for the job still current; a stale failure is dropped.
+            _ if !current => {
+                if matches!(job, Job::Export) {
+                    // The dialog held for a failure is done with.
+                    self.export_modal.close();
+                }
             }
-            Job::Classify(_)
-            | Job::Analysis(_)
-            | Job::SampleRows
-            | Job::Pivot
-            | Job::ViewPivot(_)
-            | Job::DrillRow
-            | Job::InspectRow { .. }
-            | Job::InspectJson { .. }
-            | Job::OpenValue
-            | Job::Export
-            | Job::Copy
-            | Job::QualityReport
-            | Job::ChartExport { .. }
-            | Job::ValueCounts
-            | Job::HexOpen { .. }
-            | Job::HexFind(_) => {}
-        }
-        // The rest act only for the job still current.
-        if !current {
-            return;
-        }
-        // With one line for the reason, a panic's message gives way to the log.
-        let could_not = |what: &str| {
-            if panicked {
-                format!("Could not {what}; see the log")
-            } else {
-                format!("Could not {what}: {message}")
-            }
-        };
-        match job {
             Job::Classify(_) => {
                 self.home.status = None;
                 self.error_modal.show(message.to_string());
@@ -5242,23 +4988,6 @@ impl App {
                     self.value_counts.failed = Some((computing.column, why));
                 }
             }
-            // Handled above.
-            Job::Load(_)
-            | Job::OpenNamed(_)
-            | Job::LookAtDirectory { .. }
-            | Job::Rows(_)
-            | Job::OwedRows { .. }
-            | Job::SampleDraw(_)
-            | Job::ReshapePreview { .. }
-            | Job::InspectPretty { .. }
-            | Job::InspectUnpack { .. }
-            | Job::FileFacts { .. }
-            | Job::ChartPrepare(_)
-            | Job::Find(_)
-            | Job::UnfitCount { .. }
-            | Job::FootersJoin { .. }
-            | Job::JournalDetail { .. }
-            | Job::IndexLines { .. } => {}
         }
     }
 
@@ -5739,15 +5468,10 @@ impl Drop for App {
         // Stop the footer pass. The loader stops the open in flight as it drops (a running
         // download removes its partial file). In Drop to cover every exit: quit, error,
         // panic unwind, and the Python binding running again in-process.
-        self.counting.footer_progress.cancel();
+        self.counting.stop_footer_pass();
         // Stop indexing so nothing holds the file once the app is gone (the Python
         // binding runs on).
-        self.counting
-            .indexing_stop
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        if let Some(lines) = self.counting.indexing_lines.take() {
-            lines.stop_indexing();
-        }
+        self.counting.stop_indexing();
     }
 }
 

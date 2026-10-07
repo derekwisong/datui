@@ -187,7 +187,7 @@ FROM (
   )
 )
 ORDER BY time";
-    app.event(AppEvent::SqlQuery(sql.to_string()));
+    app.event(AppEvent::Applied(datui::Applied::SqlQuery(sql.to_string())));
     super::pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.error().is_none(), "{:?}", state.error());

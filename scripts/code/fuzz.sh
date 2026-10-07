@@ -20,8 +20,8 @@ set -euo pipefail
 # instead is deliberate: polars-ops has a build script that enables its own `nightly`
 # feature whenever it detects a nightly compiler, and that code path uses `core::unicode`
 # internals current nightly no longer exposes, so the dependency tree does not compile
-# there at all. RUSTC_BOOTSTRAP keeps the fuzzers on the same pinned stable toolchain as
-# the rest of CI.
+# there at all. RUSTC_BOOTSTRAP keeps the fuzzers on the stable toolchain
+# rust-toolchain.toml pins for the rest of the repository.
 export RUSTC_BOOTSTRAP=1
 
 # Sanitizer: off by default.
@@ -49,7 +49,12 @@ fi
 
 cd "$(dirname "$0")/../.."
 
-TARGETS=(parse_query sql_group_plan number_format fuzzy_match glob_match ipc_stream_head config_parse model_header format_spec gps_parse audio_header midi_file vcd_parse fix_parse fix_dict sdf_parse hex_input numpy_header elf_symbols flight_log can_parse text_lines)
+# Every [[bin]] in fuzz/Cargo.toml, so a new target is never left out.
+TARGETS=()
+while IFS= read -r t; do TARGETS+=("$t"); done < <(
+    awk '/^\[\[bin\]\]/ { bin = 1; next }
+         bin && /^name *=/ { gsub(/^name *= *"|".*$/, ""); print; bin = 0 }' fuzz/Cargo.toml
+)
 
 case "${1:-}" in
     list)

@@ -27,12 +27,14 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 dependencies = [
-    # A frame reaches the wheel as the plan `LazyFrame.serialize()` writes, read by the
-    # Rust polars the wheel embeds (0.55). Polars pairs rs-0.55 with Python 1.43, and 1.38
-    # through 1.43 decode in testing; 1.37 and earlier write an older path type. There is
-    # no upper bound: a newer polars reads most plans (1.44 refuses only joins), a plan it
-    # cannot read raises ValueError naming the paired release, and a path works with any
-    # polars. Pinning above would make `pip install datui` downgrade the user's polars.
+    # A LazyFrame reaches the wheel as the plan `LazyFrame.serialize()` writes, read by
+    # the Rust polars the wheel embeds (0.55). Polars pairs rs-0.55 with Python 1.43, and
+    # 1.38 through 1.43 decode in testing; 1.37 and earlier write an older path type. There
+    # is no upper bound: a newer polars reads most plans (1.44 refuses joins; 2.0 joins,
+    # rank and more), a plan it cannot read raises ValueError naming the paired release,
+    # and DataFrames (over Arrow) and paths work with any polars. A capture comes back as
+    # rows when the user's polars cannot read the plan (2.0). Pinning above would make
+    # `pip install datui` downgrade the user's polars.
     # Move the floor and PAIRED_POLARS in datui/__init__.py with the Rust polars bump.
     "polars>=1.38",
 ]

@@ -416,7 +416,7 @@ Where a dataset opens.
 | Key | Action |
 |---|---|
 | `(type)` | Narrow the column or operator list. The operators are those the column's type takes |
-| `Enter` | Pick the column (type to narrow, Enter chooses), the operator the same way, then type the value and Enter saves the row. Tab, → and Space also choose at the column and operator steps; Shift+Tab steps back; ↑ / ↓ move in the lists |
+| `Enter` | Pick the column (type to narrow, Enter chooses), the operator the same way, then type the value and Enter saves the row. Tab and → also choose at the column and operator steps, and so does Space until typing narrows the list (then it types a space); Shift+Tab steps back; ↑ / ↓ move in the lists |
 | `Esc` | End the edit, and only the edit |
 
 ## Pivot and melt
@@ -440,7 +440,7 @@ Where a dataset opens.
 | `(type)` | Narrow the column list |
 | `↑ / ↓` | Move; typing narrows |
 | `Enter` | Choose; on a several-choice row, done |
-| `Space` | Choose; toggle a column on a several-choice row |
+| `Space` | Choose, until typing narrows the list (then it types a space). On a several-choice row: toggle a column in or out |
 | `Esc` | Back out of the picker; the toggles made since it opened are undone (Enter keeps them) |
 
 ## Chart
@@ -482,7 +482,7 @@ Where a dataset opens.
 | Key | Action |
 |---|---|
 | `↑ / ↓` | Move; typing narrows |
-| `Enter / Space` | Choose; on a line or scatter chart's Y and on the Color values, Space toggles one in or out (up to 10, fewer on a terminal of fewer colors) |
+| `Enter / Space` | Choose; on a line or scatter chart's Y and on the Color values, Space toggles one in or out (up to 10, fewer on a terminal of fewer colors). Elsewhere Space chooses until typing narrows the list, then types a space |
 | `Tab / Shift+Tab` | Choose and move to the next or previous row |
 | `Esc` | Back out of the picker alone |
 
@@ -609,7 +609,7 @@ Data Quality in the Analysis sidebar.
 |---|---|
 | `↑ / ↓, Tab` | Move between rows |
 | `← / →` | Change a short list's choice |
-| `Space` | Open the row: the Sample form, a list (type to narrow), Time roles, Intervals, Column intent or Expected |
+| `Space` | Open the row: the Sample form, a list (type to narrow; Enter chooses, and Space until typing narrows it), Time roles, Intervals, Column intent or Expected |
 | `s` | The Sample form; its Enter applies to Setup and returns there |
 | `p` | The access plan: what a run reads |
 | `d` | Release the rows runs kept and a full scan's local copy, named on the Read rule; the next run that would reuse them reads again |
@@ -733,7 +733,7 @@ Data Quality in the Analysis sidebar.
 |---|---|
 | `(type)` | Narrow the list |
 | `↑ / ↓` | Move the cursor (j/k narrow the picker; only ↑/↓ move there) |
-| `Enter / Space` | Choose |
+| `Enter / Space` | Choose. Space chooses until typing narrows the list, then types a space, so a name of several words narrows |
 | `Tab / Shift+Tab` | Choose and move on |
 | `Esc` | Back to the form, the choice unchanged |
 
@@ -782,7 +782,7 @@ Data Quality in the Analysis sidebar.
 |---|---|
 | `(type)` | Narrow to the names that contain it |
 | `↑ / ↓` | Move |
-| `Enter` | Read the file again with the spec chosen. The query, filters and sort are cleared |
+| `Enter / Space` | Read the file again with the spec chosen. The query, filters and sort are cleared |
 | `Backspace` | Delete a character (Ctrl+W a word, Ctrl+U all) |
 | `Esc` | Close and keep the format |
 
@@ -898,7 +898,7 @@ Combine into datetime in the cell menu, on a text, date or time column.
 
 | Key | Action |
 |---|---|
-| `B` | Read the file with a format spec instead |
+| `B` | Read the file with a format spec instead: type to narrow the list of specs; Enter chooses, and Space until typing narrows it |
 | `Esc` | Back to the table, when opened from the Info panel; back home, when opened from there |
 | `q` | Home, when opened from there; else quit |
 <!-- end generated: keys -->

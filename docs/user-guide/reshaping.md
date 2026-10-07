@@ -36,8 +36,8 @@ SELECT year, name, n FROM df WHERE sex = 'F' AND name IN ('Emma', 'Jennifer', 'O
 | Aggregate | `last` | There is one value per year and name, so any aggregate keeps it |
 
 Use <kbd>↓</kbd> to move through settings. <kbd>Space</kbd> opens a column
-picker; type to narrow, <kbd>Space</kbd> to select and <kbd>Enter</kbd> to
-close it. <kbd>←</kbd> <kbd>→</kbd> step **Aggregate**.
+picker; type to narrow, <kbd>Space</kbd> to toggle a column where several
+can be chosen, and <kbd>Enter</kbd> to choose or close it. <kbd>←</kbd> <kbd>→</kbd> step **Aggregate**.
 
 ![The Pivot & Melt builder: Index year, Columns name, Values n, Aggregate last; the preview reads all 376 rows in, 138 rows × 4 columns out, with Jennifer null before 1916](../demos/screenshots/pivot-builder.png)
 
@@ -123,7 +123,7 @@ opens on its first row, Pivot or Melt.
 | <kbd>↓</kbd> <kbd>↑</kbd> or <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move between the rows |
 | <kbd>←</kbd> <kbd>→</kbd> | On the first row, switch Pivot and Melt; on Aggregate, Strategy or Type, the previous or next value; on Columns or Values, the previous or next column; in a text field, move the cursor |
 | <kbd>Space</kbd> | On a choice, its next value; on a column row, open its picker (type to narrow) |
-| <kbd>↑</kbd> <kbd>↓</kbd> in the picker | Move; <kbd>Space</kbd> chooses, or toggles where several can be chosen |
+| <kbd>↑</kbd> <kbd>↓</kbd> in the picker | Move; <kbd>Space</kbd> toggles where several can be chosen, and elsewhere chooses until you type (then it types a space) |
 | <kbd>Enter</kbd> | In the picker, choose; otherwise apply, from anywhere |
 | <kbd>Esc</kbd> | Stop a pivot being computed and keep the builder; close the picker alone, undoing the toggles made since it opened (<kbd>Enter</kbd> keeps them); otherwise close without applying |
 | <kbd>?</kbd> | Help |

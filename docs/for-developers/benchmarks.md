@@ -6,12 +6,12 @@
 [Performance](../reference/performance.md) reports them.
 
 ```bash,repo
-./scripts/dev/setup-test-data.sh
+./scripts/dev/test.sh setup
 cargo build --release --locked -p datui
 .venv/bin/python scripts/bench/startup.py table --datui target/release/datui --data ~/tmp/datui-bench --remote --compare
 ```
 
-`setup-test-data.sh` makes the `.venv` with Polars and NumPy, once.
+`setup` makes the `.venv` with Polars and NumPy, once.
 
 | Option | Default | Effect |
 |---|---|---|
@@ -23,7 +23,7 @@ cargo build --release --locked -p datui
 | `--json FILE` | | Write every run |
 
 The generated files are seeded (seed 561) and written once under `--data`. The
-default sizes take about 3 GB of disk. Linux only. On a platform without
+default sizes take about 2.8 GiB of disk. Linux only. On a platform without
 `posix_fadvise` the table has warm rows only.
 
 ## The first-rows hook
@@ -69,3 +69,54 @@ gh workflow run nightly.yml --ref main -f accept_baseline=true
 | Passes | Despite a slower or larger candidate, which is reported as a warning. A candidate that shows no rows, or whose hook writes nothing, still fails |
 | Becomes | The baseline for the following nights |
 | Record | The run's log: a notice naming who accepted it, and the summary's last line. Nothing is checked in |
+
+## Microbenchmarks
+
+`crates/datui-lib/benches/numfmt.rs` is a [Criterion](https://github.com/bheisler/criterion.rs)
+benchmark of number formatting. Criterion keeps the last run in
+`target/criterion` and reports the change against it.
+
+```bash,repo
+cargo bench -p datui-lib --bench numfmt
+```
+
+## Profile
+
+The release profile keeps symbol names but strips debug info. For a profile
+with source lines, build with line tables and without stripping, then record with
+[samply](https://github.com/mstange/samply) or
+[cargo-flamegraph](https://github.com/flamegraph-rs/flamegraph). Replace
+`<FILE>` with the dataset to open:
+
+```bash,template
+CARGO_PROFILE_RELEASE_DEBUG=line-tables-only CARGO_PROFILE_RELEASE_STRIP=none \
+    cargo build --release --locked -p datui
+samply record target/release/datui <FILE>
+```
+
+| Tool | Shows |
+|---|---|
+| `samply record` | Where CPU time goes, in the Firefox Profiler, threads apart |
+| `cargo flamegraph --release -p datui -- <FILE>`, with the same variables | The same as an SVG flame graph (Linux `perf`, macOS `dtrace`) |
+| `heaptrack target/release/datui <FILE>` | Allocations and peak heap, by call site (Linux) |
+
+Polars runs its work on its own thread pool, so look at those threads, not
+only the UI thread.
+
+## Link faster
+
+Every integration test executable links Polars, so linking is much of an edit
+loop. On x86_64 Linux, Rust links with LLD already;
+[mold](https://github.com/rui314/mold) is often faster still. With `clang` and
+`mold` installed:
+
+```bash,repo
+CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang \
+CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C link-arg=-fuse-ld=mold" \
+cargo build
+```
+
+To keep it, set `linker = "clang"` and
+`rustflags = ["-C", "link-arg=-fuse-ld=mold"]` under
+`[target.x86_64-unknown-linux-gnu]` in your own `~/.cargo/config.toml`, not in
+the repository. Changing the linker or flags rebuilds everything once.

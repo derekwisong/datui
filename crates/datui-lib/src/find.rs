@@ -924,7 +924,7 @@ impl App {
             return None;
         }
         statements.push(statement);
-        Some(AppEvent::Filter(statements))
+        Some(AppEvent::Applied(crate::Applied::Filter(statements)))
     }
 
     /// `n` / `N` at the table: the find in effect again, from the cursor's cell.

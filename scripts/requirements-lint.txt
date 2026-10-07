@@ -1,0 +1,3 @@
+# What CI's lint job and scripts/setup_dev.py install for `scripts/dev/test.sh lint`,
+# pinned so a new release cannot change its verdict; Dependabot bumps it.
+ruff==0.16.10

@@ -23,6 +23,9 @@ env:
   # job starts from a restored cache and builds once, so it is pure overhead: it
   # slows compilation and inflates target/ (and therefore the cache) for nothing.
   CARGO_INCREMENTAL: "0"
+  # scripts/dev/test.sh queues heavy runs behind a machine-wide lock for shared
+  # machines; a runner is one job's alone.
+  DATUI_TEST_HEAVY_SLOTS: "0"
 
 # Cache policy. rust-cache saves only from main: an entry written on a pull request
 # is readable by that pull request alone, and those entries pushed main's out of the
@@ -39,7 +42,8 @@ env:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Three workspaces' clippy, each with Polars; cold, well past the old 30.
+    timeout-minutes: 45
     outputs:
       is_dev_version: ${{ steps.version.outputs.is_dev_version }}
     env:
@@ -59,39 +63,26 @@ jobs:
             echo "is_dev_version=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # dtolnay regenerates the stable branch from master, so an old pin drops
-      # out of branch history and zizmor flags it as an impostor commit. To
-      # refresh: take `gh api repos/dtolnay/rust-toolchain/branches/stable`,
-      # check `compare/master...<sha>` adds only the default-toolchain commit,
-      # and pin that SHA in every workflow.
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - name: Set up the build
+        uses: ./.github/actions/setup
         with:
-          toolchain: stable
-      - name: Install system dependencies
-        timeout-minutes: 5
-        run: |
-          # The runner image ships third-party apt repositories datui does not use (Chrome, for one).
-          # When one of those serves a bad index, `apt-get update` exits non-zero and fails a build
-          # that had nothing to do with it. The install below is the real gate: if Ubuntu's own
-          # indexes did not fetch, it fails there, for the right reason. A stalled mirror
-          # gets 30s per connection and three retries, and the step five minutes, so a
-          # hang fails here rather than holding the job until its own timeout.
-          echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
-          sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
-          sudo apt-get install -y pkg-config
+          cache-key: clippy
+          python: true
 
-      - name: Cache cargo dependencies
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # lint runs ruff, shellcheck and typos when each is installed, so CI installs
+      # them all at pinned versions (the image ships shellcheck).
+      - name: Install ruff
+        run: pip install --disable-pip-version-check -r scripts/requirements-lint.txt
+
+      - name: Install typos
+        uses: ./.github/actions/install-tools
         with:
-          shared-key: clippy
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          tools: typos
 
-      - name: Check formatting
-        run: ./scripts/code/check_format.sh
-
-      - name: Run clippy
-        run: ./scripts/code/check_clippy.sh
+      # Formatting and clippy in the workspace, the fuzz targets and datui-pyo3: one
+      # target dir, so the three share what they build. Then ruff, shellcheck, typos.
+      - name: Lint
+        run: scripts/dev/test.sh lint
 
   # Every other job builds the default features, so code that only compiles or lints
   # cleanly with them goes unnoticed (#481). Clippy with --all-targets covers the tests
@@ -107,23 +98,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - name: Set up the build
+        uses: ./.github/actions/setup
         with:
-          toolchain: stable
-
-      - name: Install system dependencies
-        timeout-minutes: 5
-        run: |
-          echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
-          sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
-          sudo apt-get install -y pkg-config
-
-      - name: Cache cargo dependencies
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          shared-key: no-default-features
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-key: no-default-features
 
       - name: Run clippy without default features
         run: ./scripts/dev/test.sh features none
@@ -140,32 +118,19 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      # Its own cache key: fuzz/Cargo.lock is a separate lockfile.
+      - name: Set up the build
+        uses: ./.github/actions/setup
         with:
-          toolchain: stable
-
-      - name: Install system dependencies
-        timeout-minutes: 5
-        run: |
-          echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
-          sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
-          sudo apt-get install -y pkg-config
-
-      # Its own key: fuzz/Cargo.lock is a separate lockfile.
-      - name: Cache cargo dependencies
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          shared-key: fuzz-check
-          workspaces: fuzz
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-key: fuzz-check
+          cache-workspaces: fuzz
 
       - name: Check
         run: cargo check --manifest-path fuzz/Cargo.toml --locked
 
   # Build with the oldest Rust the manifests declare, so a newer language feature or
-  # std API cannot creep in unnoticed. A check is enough: stable runs clippy and the
-  # tests above; this job only proves the tree still compiles at the floor.
+  # std API cannot creep in unnoticed. A check is enough: the pinned toolchain runs
+  # clippy and the tests above; this job only proves the tree still compiles at the floor.
   msrv:
     name: MSRV
     runs-on: ubuntu-latest
@@ -181,27 +146,25 @@ jobs:
           VERSION=$(sed -n '/^\[package\]/,/^\[/p' Cargo.toml | grep -E '^\s*rust-version\s*=' | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - name: Set up the build
+        uses: ./.github/actions/setup
         with:
           toolchain: ${{ steps.msrv.outputs.version }}
 
-      - name: Install system dependencies
-        timeout-minutes: 5
-        run: |
-          echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
-          sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
-          sudo apt-get install -y pkg-config
-
       # Its own cache key: artifacts from a different compiler are not shareable.
+      # RUSTUP_TOOLCHAIN: rust-toolchain.toml outranks `rustup default`, and
+      # rust-cache keys the entry on the rustc it finds.
       - name: Cache cargo dependencies
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        env:
+          RUSTUP_TOOLCHAIN: ${{ steps.msrv.outputs.version }}
         with:
           shared-key: msrv
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # `cargo +VERSION`, which outranks rust-toolchain.toml.
       - name: Check
-        run: cargo check --workspace --locked
+        run: scripts/dev/test.sh msrv
 
   # No `needs: [check]`: nothing passes between the two, so waiting on clippy only
   # added its minute to every run.
@@ -219,23 +182,13 @@ jobs:
       - name: Show disk space before build
         run: df -h
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      # The fixtures go in before the tests run: a test that generated them itself
+      # would rewrite files other test processes have mapped.
+      - name: Set up the build
+        uses: ./.github/actions/setup
         with:
-          toolchain: stable
-
-      - name: Install system dependencies
-        timeout-minutes: 5
-        run: |
-          echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
-          sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
-          sudo apt-get install -y pkg-config
-
-      - name: Cache cargo dependencies
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          shared-key: tests
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-key: tests
+          fixtures: true
 
       # A prebuilt binary, checksum-verified by the action, rather than minutes of
       # `cargo install` on a cold cache.
@@ -244,76 +197,23 @@ jobs:
         with:
           tool: cargo-nextest
 
-      # The fixtures are cached under a key holding every input to the generator:
-      #   - scripts/generate_sample_data.py, which reads no other file
-      #   - scripts/requirements-fixtures.txt: every package it imports, and what
-      #     those pull in, at exact versions
-      #   - the Python version setup-python resolved, and the runner OS and arch
-      #   - sample-data-v1, a schema version to bump by hand to discard them all
-      # No restore-keys: a near match is a stale one. A restore is checked against
-      # the manifest saved with it (every file name and SHA-256) and regenerated if
-      # anything differs. Saved from main only, before the tests run.
-      - name: Set up Python
-        id: python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.x'
-
-      - name: Restore sample data
-        id: sample-data
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            tests/sample-data
-            ${{ runner.temp }}/sample-data.sha256
-          key: sample-data-v1-${{ runner.os }}-${{ runner.arch }}-py${{ steps.python.outputs.python-version }}-${{ hashFiles('scripts/generate_sample_data.py', 'scripts/requirements-fixtures.txt') }}
-
-      - name: Verify restored sample data
-        id: verify
-        if: steps.sample-data.outputs.cache-hit == 'true'
-        run: |
-          (cd tests/sample-data && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) > "$RUNNER_TEMP/sample-data.actual"
-          if [ -s "$RUNNER_TEMP/sample-data.sha256" ] && cmp -s "$RUNNER_TEMP/sample-data.sha256" "$RUNNER_TEMP/sample-data.actual"; then
-            echo "ok=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::Restored sample data does not match its manifest; regenerating"
-            diff "$RUNNER_TEMP/sample-data.sha256" "$RUNNER_TEMP/sample-data.actual" || true
-          fi
-
-      # The venv exists only for the generator. With the fixtures in place the tests
-      # never start Python.
-      - name: Generate sample data
-        id: generate
-        if: steps.verify.outputs.ok != 'true'
-        run: |
-          rm -rf tests/sample-data
-          python -m venv .venv
-          .venv/bin/pip install --disable-pip-version-check -r scripts/requirements-fixtures.txt
-          .venv/bin/python scripts/generate_sample_data.py
-          (cd tests/sample-data && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) > "$RUNNER_TEMP/sample-data.sha256"
-
-      - name: Save sample data
-        if: steps.generate.outcome == 'success' && github.ref == 'refs/heads/main'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            tests/sample-data
-            ${{ runner.temp }}/sample-data.sha256
-          key: ${{ steps.sample-data.outputs.cache-primary-key }}
-
       - name: Build
-        run: cargo nextest run --workspace --locked --no-run
+        run: cargo nextest run --workspace --locked --no-run --profile ci
 
-      # nextest runs each test in its own process, every binary at once. The
-      # fixtures are in place by now: a test that generated them itself would
-      # rewrite files other processes have mapped. --no-fail-fast so one failure
-      # does not hide the others; no retries, so a flaky test fails.
+      # nextest's `ci` profile (.config/nextest.toml), each test in its own process:
+      # every failure reported, none retried, so a flaky test fails. Then the
+      # doctests, which nextest does not run.
       - name: Run tests
-        run: cargo nextest run --workspace --locked --no-fail-fast
+        run: scripts/dev/test.sh ci
 
-      # nextest does not run doctests.
-      - name: Run doctests
-        run: cargo test --doc --workspace --locked
+      - name: Upload the test report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: junit-linux
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Verify binary exists
         run: test -f target/debug/datui || (echo "Binary not found" && exit 1)
@@ -337,57 +237,22 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-        with:
-          toolchain: stable
-
-      - name: Install system dependencies
-        timeout-minutes: 5
-        run: |
-          echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
-          sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
-          # mandoc and groff lint the manpages; man-db's lexgrog reads their NAME lines.
-          sudo apt-get install -y pkg-config python3-dev mandoc groff-base man-db
-
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.x'
-
+      # mandoc and groff lint the manpages; man-db's lexgrog reads their NAME lines.
       # The CLI and the extension build into one target/. The key hashes the root
       # Cargo.lock only, so a change to crates/datui-pyo3/Cargo.lock alone rebuilds
       # what moved until a root lockfile or toolchain change saves a fresh entry.
-      - name: Cache cargo dependencies
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Set up the build
+        uses: ./.github/actions/setup
         with:
-          shared-key: python
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          apt: pkg-config python3-dev mandoc groff-base man-db
+          cache-key: python
+          venv: scripts/requirements.txt scripts/requirements-wheel.txt
 
-      - name: Create virtual environment and install requirements
-        run: |
-          python -m venv .venv
-          .venv/bin/python -m pip install --upgrade pip
-          .venv/bin/pip install -r scripts/requirements.txt
-          .venv/bin/pip install -r scripts/requirements-wheel.txt
-
-      - name: Test documentation navigation and builds
-        run: .venv/bin/python -m unittest discover -s scripts/docs -p 'test_*.py'
-
-      - name: Test the capture harness
-        run: .venv/bin/python -m unittest discover -s scripts/demos -p 'test_*.py'
-
-      # The book's structure, and every code block labeled runnable, template or
-      # output (#683).
+      # The book's structure and every labeled code block (#683); zero mandoc and groff
+      # warnings and a NAME line whatis reads (#705); the docs and capture scripts'
+      # tests. The manpages' sections and completeness are datui-cli's tests.
       - name: Lint the docs
-        run: |
-          .venv/bin/python scripts/docs/lint_docs.py
-          .venv/bin/python scripts/docs/doc_examples.py --lint
-
-      # Zero mandoc and groff warnings, at 78 and 60 columns, and a NAME line whatis
-      # reads (#705). The pages' sections and completeness are datui-cli's tests.
-      - name: Lint the manpages
-        run: .venv/bin/python scripts/docs/lint_manpages.py --require
+        run: scripts/dev/test.sh docs --require
 
       - name: Build CLI
         run: cargo build -p datui --locked
@@ -397,21 +262,25 @@ jobs:
       - name: Run the docs' examples
         run: .venv/bin/python scripts/docs/doc_examples.py --bin target/debug/datui
 
-      - name: Bundle CLI for wheel
+      # The CLI bundled into the wheel, the wheel built into .venv, its tests and the
+      # docs' Python examples.
+      - name: Build and test the wheel
+        run: scripts/dev/test.sh python
+
+      # The wheel takes any polars>=1.38, and `pip install datui` now brings 2.x, which
+      # cannot read the plans the embedded Rust polars writes: frames go in as Arrow
+      # and captures come back as rows. Last, since they replace the pinned polars; the
+      # extension is not rebuilt.
+      - name: Run Python tests against the Polars floor
         run: |
-          mkdir -p python/datui_bin
-          mv target/debug/datui python/datui_bin/
-          chmod +x python/datui_bin/datui
-          cp LICENSE python/LICENSE
+          .venv/bin/pip install --disable-pip-version-check "polars==1.38.*"
+          . .venv/bin/activate && pytest python/tests/ -v
 
-      - name: Build and install Python package
-        run: . .venv/bin/activate && cd python && maturin develop
-
-      - name: Run Python tests
-        run: . .venv/bin/activate && pytest python/tests/ -v
-
-      - name: Run the docs' Python examples
-        run: .venv/bin/python scripts/docs/doc_examples.py --python
+      - name: Run Python tests and examples against Polars 2
+        run: |
+          .venv/bin/pip install --disable-pip-version-check "polars==2.*"
+          . .venv/bin/activate && pytest python/tests/ -v
+          .venv/bin/python scripts/docs/doc_examples.py --python
 
   # Windows on every pull request: the build, the library and binary tests, and the
   # binary run without a terminal. The full suite stays on the windows job below
@@ -429,68 +298,14 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-        with:
-          toolchain: stable
-
-      # Its own key rather than Nightly's `tests`: that job builds every test
+      # Its own cache key rather than Nightly's `tests`: that job builds every test
       # executable, more than this one needs, and has run past its timeout without
-      # saving. Saved from main, like the others.
-      - name: Cache cargo dependencies
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # saving. The fixtures as linux caches them, under a Windows key.
+      - name: Set up the build
+        uses: ./.github/actions/setup
         with:
-          shared-key: windows-pr
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      # The fixtures as linux caches them, under a Windows key: see that job.
-      - name: Set up Python
-        id: python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.x'
-
-      - name: Restore sample data
-        id: sample-data
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            tests/sample-data
-            ${{ runner.temp }}/sample-data.sha256
-          key: sample-data-v1-${{ runner.os }}-${{ runner.arch }}-py${{ steps.python.outputs.python-version }}-${{ hashFiles('scripts/generate_sample_data.py', 'scripts/requirements-fixtures.txt') }}
-
-      - name: Verify restored sample data
-        id: verify
-        if: steps.sample-data.outputs.cache-hit == 'true'
-        shell: bash
-        run: |
-          (cd tests/sample-data && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) > "$RUNNER_TEMP/sample-data.actual"
-          if [ -s "$RUNNER_TEMP/sample-data.sha256" ] && cmp -s "$RUNNER_TEMP/sample-data.sha256" "$RUNNER_TEMP/sample-data.actual"; then
-            echo "ok=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::Restored sample data does not match its manifest; regenerating"
-            diff "$RUNNER_TEMP/sample-data.sha256" "$RUNNER_TEMP/sample-data.actual" || true
-          fi
-
-      - name: Generate sample data
-        id: generate
-        if: steps.verify.outputs.ok != 'true'
-        shell: bash
-        run: |
-          rm -rf tests/sample-data
-          python -m venv .venv
-          .venv/Scripts/python.exe -m pip install --disable-pip-version-check -r scripts/requirements-fixtures.txt
-          .venv/Scripts/python.exe scripts/generate_sample_data.py
-          (cd tests/sample-data && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) > "$RUNNER_TEMP/sample-data.sha256"
-
-      - name: Save sample data
-        if: steps.generate.outcome == 'success' && github.ref == 'refs/heads/main'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            tests/sample-data
-            ${{ runner.temp }}/sample-data.sha256
-          key: ${{ steps.sample-data.outputs.cache-primary-key }}
+          cache-key: windows-pr
+          fixtures: true
 
       # The binary for the smoke run, then the tests: `--bins` builds the binary's
       # test harness, not the binary.
@@ -524,6 +339,32 @@ jobs:
           expect_exit_1 datui-no-such-file.csv "File not found: datui-no-such-file.csv"
           expect_exit_1 '~\datui-no-such-file.csv' "File not found: $USERPROFILE\\datui-no-such-file.csv"
 
+  # macOS on every pull request, kept cheap: the library and binary unit tests
+  # build and pass. The full suite stays on the macos job below
+  # (release versions) and on Nightly. No `needs`, like linux.
+  macos-pr:
+    name: macOS unit tests
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Its own cache key, as windows-pr has: it builds less than `tests` does.
+      - name: Set up the build
+        uses: ./.github/actions/setup
+        with:
+          cache-key: macos-pr
+          fixtures: true
+
+      # The test build compiles every workspace crate; a separate check would only
+      # compile them twice.
+      - name: Run unit tests
+        run: cargo test --workspace --locked --lib --bins --no-fail-fast
+
   windows:
     runs-on: windows-latest
     needs: [check]
@@ -536,33 +377,14 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      # Nightly's windows-tests and macos-tests keep this cache entry warm from
+      # main, through the same action and inputs.
+      - name: Set up the build
+        uses: ./.github/actions/setup
         with:
-          toolchain: stable
-
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.x'
-
-      # Nightly's windows-tests and macos-tests keep this entry warm from main; keep
-      # their env and key in step with these jobs.
-      - name: Cache cargo dependencies
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          shared-key: tests
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Create virtual environment and install requirements
-        run: |
-          python -m venv .venv
-          .venv\Scripts\python.exe -m pip install --upgrade pip
-          .venv\Scripts\pip.exe install -r scripts/requirements.txt
-          .venv\Scripts\pip.exe install -r scripts/requirements-wheel-windows.txt
-
-      - name: Generate sample data
-        run: .venv\Scripts\python.exe scripts/generate_sample_data.py
+          cache-key: tests
+          venv: scripts/requirements.txt scripts/requirements-wheel-windows.txt
+          fixtures: true
 
       - name: Build
         run: cargo build --workspace --tests --locked
@@ -608,33 +430,14 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      # Nightly's windows-tests and macos-tests keep this cache entry warm from
+      # main, through the same action and inputs.
+      - name: Set up the build
+        uses: ./.github/actions/setup
         with:
-          toolchain: stable
-
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.x'
-
-      # Nightly's windows-tests and macos-tests keep this entry warm from main; keep
-      # their env and key in step with these jobs.
-      - name: Cache cargo dependencies
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          shared-key: tests
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Create virtual environment and install requirements
-        run: |
-          python -m venv .venv
-          .venv/bin/python -m pip install --upgrade pip
-          .venv/bin/pip install -r scripts/requirements.txt
-          .venv/bin/pip install -r scripts/requirements-wheel.txt
-
-      - name: Generate sample data
-        run: .venv/bin/python scripts/generate_sample_data.py
+          cache-key: tests
+          venv: scripts/requirements.txt scripts/requirements-wheel.txt
+          fixtures: true
 
       - name: Build
         run: cargo build --workspace --tests --locked
@@ -676,7 +479,7 @@ jobs:
     name: CI passed
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [check, no-default-features, fuzz, msrv, linux, python, windows-pr, windows, macos]
+    needs: [check, no-default-features, fuzz, msrv, linux, python, windows-pr, macos-pr, windows, macos]
     if: always()
     steps:
       - name: Check that every job passed or was skipped as intended

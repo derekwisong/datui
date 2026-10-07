@@ -955,7 +955,7 @@ pub const SCREENS: &[Screen] = &[
                         .no_run(),
                     k("Enter", "Next", "Choose the step; from the value, save the row")
                     .also(&["Save", "Add"])
-                        .more("Pick the column (type to narrow, Enter chooses), the operator the same way, then type the value and Enter saves the row. Tab, → and Space also choose at the column and operator steps; Shift+Tab steps back; ↑ / ↓ move in the lists"),
+                        .more("Pick the column (type to narrow, Enter chooses), the operator the same way, then type the value and Enter saves the row. Tab and → also choose at the column and operator steps, and so does Space until typing narrows the list (then it types a space); Shift+Tab steps back; ↑ / ↓ move in the lists"),
                     k("Esc", "Back", "End the edit, and only the edit"),
                 ],
             },
@@ -987,7 +987,8 @@ pub const SCREENS: &[Screen] = &[
                     k("(type)", "Narrow", "Narrow the column list").no_run(),
                     k("↑ / ↓", "Move", "Move; typing narrows"),
                     k("Enter", "Choose", "Choose; on a several-choice row, done"),
-                    k("Space", "Toggle", "Choose; toggle a column on a several-choice row"),
+                    k("Space", "Toggle", "Choose; toggle a column on a several-choice row")
+                        .more("Choose, until typing narrows the list (then it types a space). On a several-choice row: toggle a column in or out"),
                     k("Esc", "Back", "Back out of the picker, undoing its toggles")
                         .more("Back out of the picker; the toggles made since it opened are undone (Enter keeps them)"),
                 ],
@@ -1051,7 +1052,7 @@ pub const SCREENS: &[Screen] = &[
                     k("↑ / ↓", "Move", "Move; typing narrows"),
                     k("Enter / Space", "Choose", "Choose (Y, Color values: Space toggles one)")
                     .also(&["Toggle", "Done"])
-                        .more("Choose; on a line or scatter chart's Y and on the Color values, Space toggles one in or out (up to 10, fewer on a terminal of fewer colors)"),
+                        .more("Choose; on a line or scatter chart's Y and on the Color values, Space toggles one in or out (up to 10, fewer on a terminal of fewer colors). Elsewhere Space chooses until typing narrows the list, then types a space"),
                     k("Tab / Shift+Tab", "Next", "Choose and move to the next or previous row"),
                     k("Esc", "Back", "Back out of the picker alone"),
                 ],
@@ -1207,7 +1208,7 @@ pub const SCREENS: &[Screen] = &[
                     .also(&["Change"]),
                     k("Space", "Open", "Open the row's form or list")
                     .also(&["Sample", "Choose", "Time roles", "Intervals", "Expected", "Intent"])
-                        .more("Open the row: the Sample form, a list (type to narrow), Time roles, Intervals, Column intent or Expected"),
+                        .more("Open the row: the Sample form, a list (type to narrow; Enter chooses, and Space until typing narrows it), Time roles, Intervals, Column intent or Expected"),
                     k("s", "Sample", "The Sample form")
                         .more("The Sample form; its Enter applies to Setup and returns there"),
                     k("p", "Access", "The access plan: what a run reads"),
@@ -1388,7 +1389,8 @@ pub const SCREENS: &[Screen] = &[
                     k("(type)", "Narrow", "Narrow the list").no_run(),
                     k("↑ / ↓", "Move", "Move the cursor (j/k narrow)")
                         .more("Move the cursor (j/k narrow the picker; only ↑/↓ move there)"),
-                    k("Enter / Space", "Choose", "Choose"),
+                    k("Enter / Space", "Choose", "Choose")
+                        .more("Choose. Space chooses until typing narrows the list, then types a space, so a name of several words narrows"),
                     k("Tab / Shift+Tab", "Next", "Choose and move on"),
                     k("Esc", "Back", "Back to the form, the choice unchanged"),
                 ],
@@ -1449,7 +1451,7 @@ pub const SCREENS: &[Screen] = &[
             keys: &[
                 k("(type)", "Narrow", "Narrow to the names that contain it").no_run(),
                 k("↑ / ↓", "Move", "Move"),
-                k("Enter", "Read", "Read the file again with the spec")
+                k("Enter / Space", "Read", "Read the file again with the spec")
                     .more("Read the file again with the spec chosen. The query, filters and sort are cleared"),
                 k("Backspace", "Delete", "Delete a character (Ctrl+W a word, Ctrl+U all)"),
                 k("Esc", "Cancel", "Close and keep the format"),
@@ -1602,7 +1604,8 @@ pub const SCREENS: &[Screen] = &[
                 name: "Go",
                 keys: &[
                     k("B", "Format spec", "Read the file with a format spec instead")
-                    .also(&["Format"]),
+                    .also(&["Format"])
+                        .more("Read the file with a format spec instead: type to narrow the list of specs; Enter chooses, and Space until typing narrows it"),
                     k("Esc", "Back", "Back to the Info panel or home")
                         .more("Back to the table, when opened from the Info panel; back home, when opened from there"),
                     k("q", "Back", "Home, when opened from there; else quit")

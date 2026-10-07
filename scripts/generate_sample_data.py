@@ -25,11 +25,13 @@ This script generates various CSV, Parquet, IPC/Arrow, Avro, and Excel files:
 Uses Polars for most formats; fastavro for Avro; openpyxl for Excel.
 """
 
+import argparse
+import contextlib
+import hashlib
 import os
+import shutil
 import sys
 from pathlib import Path
-import polars as pl
-import numpy as np
 from datetime import date, datetime, timedelta
 import random
 import gzip
@@ -39,19 +41,107 @@ import sqlite3
 import struct
 import wave
 
-# Optional deps for extra formats (fail gracefully if missing)
+# Every format is required: a partial set fails tests far from the cause.
 try:
     import fastavro
-except ImportError:
-    fastavro = None
-try:
+    import numpy as np
     import openpyxl
-except ImportError:
-    openpyxl = None
+    import polars as pl
+except ImportError as e:
+    sys.exit(
+        f"generate_sample_data.py: {e.name} is not installed "
+        "(scripts/requirements-fixtures.txt lists what it needs)."
+    )
 
-# Output directory
-OUTPUT_DIR = Path(__file__).parent.parent / "tests" / "sample-data"
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_OUTPUT_DIR = REPO_ROOT / "tests" / "sample-data"
+# The fixtures are a function of these files alone. The test harness
+# (crates/datui-lib/src/tests/shared.rs) hashes the same files, in the same order,
+# and regenerates when the stamp holds another digest.
+INPUTS = [Path(__file__).resolve(), REPO_ROOT / "scripts" / "requirements-fixtures.txt"]
+STAMP = ".generated"
+
+# Where the generators write; main() points it at a scratch directory.
+OUTPUT_DIR = DEFAULT_OUTPUT_DIR
+
+
+def inputs_digest():
+    """SHA-256 over the generator inputs' bytes, as lowercase hex."""
+    digest = hashlib.sha256()
+    for path in INPUTS:
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def read_stamp(out):
+    """The stamp in `out`: its digest, and the files the run that wrote it generated
+    (none for a stamp from before it listed them). (None, []) when there is none."""
+    try:
+        lines = (out / STAMP).read_text().splitlines()
+    except OSError:
+        return None, []
+    return (lines[0].strip() if lines else None), [line for line in lines[1:] if line]
+
+
+def install(scratch, out):
+    """Move every generated file into `out`, each by an atomic rename. A test process
+    that has the old file mapped keeps its inode; rewriting in place would SIGBUS it.
+    Then remove the files the last run listed and this one no longer generates, and
+    nothing else. The stamp goes last, so a stamped directory is complete."""
+    written = []
+    for path in sorted(scratch.rglob("*")):
+        if path.is_dir():
+            continue
+        relative = path.relative_to(scratch).as_posix()
+        target = out / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(path, target)
+        written.append(relative)
+    _, before = read_stamp(out)
+    for relative in sorted(set(before) - set(written)):
+        # Only a plain relative path the stamp could have listed: never outside `out`.
+        if relative.startswith("/") or ".." in Path(relative).parts:
+            continue
+        with contextlib.suppress(FileNotFoundError):
+            (out / relative).unlink()
+    # Renamed in too, so a reader never sees half a stamp. The digest is the first
+    # line, which the test harness compares.
+    stamp = scratch / STAMP
+    stamp.write_text("\n".join([inputs_digest(), *written]) + "\n")
+    os.replace(stamp, out / STAMP)
+
+
+@contextlib.contextmanager
+def locked(path):
+    """Hold the lock file at `path` exclusively. The test harness runs this script
+    from every test process that finds the fixtures stale; one generates, the rest
+    wait and then find them current."""
+    with open(path, "a+b") as f:
+        if os.name == "nt":
+            import msvcrt
+
+            f.seek(0)
+            while True:
+                try:
+                    # Retries for about ten seconds, then raises; a run takes longer.
+                    msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:
+                    pass
+            try:
+                yield
+            finally:
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
+
 
 def generate_people_data():
     """Generate a people database with cities, states, etc. for grouping."""
@@ -547,7 +637,7 @@ def generate_charting_demo():
     for _ in range(12):
         idx = random.randint(0, days - 1)
         lam[idx] = 8.0 + random.uniform(0, 5)
-    shark_sightings = [np.random.poisson(l) for l in lam]
+    shark_sightings = [np.random.poisson(rate) for rate in lam]
 
     data = {
         "date": dates,
@@ -791,9 +881,6 @@ def _polars_dtype_to_avro(dtype):
 
 def save_avro(df, filename):
     """Save DataFrame as Avro (requires fastavro)."""
-    if fastavro is None:
-        print("Skipping Avro (fastavro not installed):", filename)
-        return
     filepath = OUTPUT_DIR / filename
     fields = []
     for name in df.columns:
@@ -831,9 +918,6 @@ def save_avro(df, filename):
 def save_workbook_of_sheets(filename):
     """A workbook of several sheets: one named like an index, one hidden, one of
     different size, for the sheet listing and the Excel tab."""
-    if openpyxl is None:
-        print("Skipping Excel (openpyxl not installed):", filename)
-        return
     filepath = OUTPUT_DIR / filename
     wb = openpyxl.Workbook()
     first = wb.active
@@ -855,9 +939,6 @@ def save_workbook_of_sheets(filename):
 
 def save_excel(df, filename):
     """Save DataFrame as Excel .xlsx (requires openpyxl)."""
-    if openpyxl is None:
-        print("Skipping Excel (openpyxl not installed):", filename)
-        return
     filepath = OUTPUT_DIR / filename
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -1493,7 +1574,9 @@ def generate_elf():
     strtab_at = place(strtab)
     shstr_at = place(shstr)
     shoff = 64 + len(body)
-    name = lambda n: shstr.index(n + b"\0")
+    def name(n):
+        return shstr.index(n + b"\0")
+
     sections = [
         (0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
         (name(b".text"), 1, 0x6, 0x1000, text_at, len(text), 0, 0, 16, 0),
@@ -1593,12 +1676,16 @@ def generate_dataflash(path):
     log += _df_fmt(133, "MSG", "QZ", "TimeUS,Message")
     log += _df_fmt(140, "ATT", "QccC", "TimeUS,Roll,Pitch,Yaw")
     log += _df_fmt(141, "GPS", "QBLLeI", "TimeUS,Status,Lat,Lng,Alt,Ms")
-    head = lambda t: bytes([0xA3, 0x95, t])
+    def head(t):
+        return bytes([0xA3, 0x95, t])
+
     for uid, label in [(b"s", "s"), (b"d", "deg"), (b"D", "deglatitude"), (b"U", "deglongitude"), (b"m", "m")]:
         log += head(129) + struct.pack("<Q", 0) + uid + label.encode().ljust(64, b"\0")
     for mid, mult in [(b"-", 0.0), (b"0", 1.0), (b"B", 0.01), (b"C", 0.001)]:
         log += head(130) + struct.pack("<Q", 0) + mid + struct.pack("<d", mult)
-    fmtu = lambda t, units, mults: head(131) + struct.pack("<QB", 0, t) + units.encode().ljust(16, b"\0") + mults.encode().ljust(16, b"\0")
+    def fmtu(t, units, mults):
+        return head(131) + struct.pack("<QB", 0, t) + units.encode().ljust(16, b"\0") + mults.encode().ljust(16, b"\0")
+
     log += fmtu(140, "sddd", "F000")
     log += fmtu(141, "s-DUm-", "F-GGB-")
     log += head(132) + struct.pack("<Q", 0) + b"ARMING_CHECK".ljust(16, b"\0") + struct.pack("<f", 1.0)
@@ -1812,8 +1899,43 @@ def generate_midi_files():
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__.strip().splitlines()[0])
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=DEFAULT_OUTPUT_DIR,
+        help="directory to write (default: tests/sample-data)",
+    )
+    parser.add_argument(
+        "--if-stale",
+        action="store_true",
+        help="do nothing when the output's stamp matches these inputs",
+    )
+    args = parser.parse_args()
+
+    global OUTPUT_DIR
+    # Resolved, so checkouts that link one directory share its lock and scratch space.
+    out = args.out.resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    with locked(out.parent / f".{out.name}.lock"):
+        if args.if_stale and read_stamp(out)[0] == inputs_digest():
+            print(f"{out} is up to date.")
+            return
+        # A sibling, so the renames into `out` stay on one filesystem.
+        scratch = out.parent / f".{out.name}.tmp-{os.getpid()}"
+        shutil.rmtree(scratch, ignore_errors=True)
+        scratch.mkdir()
+        OUTPUT_DIR = scratch
+        try:
+            generate_all()
+            install(scratch, out)
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
+    print(f"\nSample data generation complete: {out}")
+
+
+def generate_all():
     print("Generating sample data files...")
-    print(f"Output directory: {OUTPUT_DIR}")
 
     # People data for grouping
     print("\n1. Generating people data...")
@@ -1958,8 +2080,6 @@ def main():
 
     print("\n22. Generating CAN logs...")
     generate_can()
-
-    print("\nSample data generation complete!")
 
 if __name__ == "__main__":
     main()

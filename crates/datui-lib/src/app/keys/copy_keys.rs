@@ -149,7 +149,10 @@ impl App {
                 self.finish_copy(payload, message);
                 None
             }
-            Ok(Planned::Collect) => Some(AppEvent::CopyTable { format, header }),
+            Ok(Planned::Collect) => Some(AppEvent::Applied(crate::Applied::CopyTable {
+                format,
+                header,
+            })),
             Ok(Planned::Confirm(bytes)) => {
                 let counting = self
                     .data_table_state

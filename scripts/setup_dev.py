@@ -1,390 +1,185 @@
 #!/usr/bin/env python3
-"""
-Development environment setup script for datui.
+"""Set up a datui checkout for development, on Linux, macOS or Windows.
 
-This script:
-- Creates and manages a Python virtual environment (.venv)
-- Installs Python dependencies from scripts/requirements.txt (and requirements-wheel.txt on Linux/macOS)
-- Installs/updates pre-commit hooks
-- Ensures mdbook is installed at the correct version (matching CI)
-- Regenerates test data
-- Builds local documentation
+Creates .venv (with uv when it is installed, python -m venv otherwise), installs
+scripts/requirements.txt and the linters CI runs (ruff, typos) into it, installs the
+pre-commit hooks, and generates the test fixtures in tests/sample-data. Safe to rerun: it reuses .venv and regenerates
+the fixtures only when the generator or its pins changed.
 
-The Rust workspace has the main app at the root (datui) and library crates (datui-lib, datui-cli). The Python
-binding crate (datui-pyo3) is not in the workspace and is built separately
-with maturin. See the final "Next steps" output for build/test commands.
-
-Can be run multiple times safely - it's idempotent and non-destructive.
+  python3 scripts/setup_dev.py            # the above
+  python3 scripts/setup_dev.py --wheel    # also maturin and pytest, for the Python package
+  python3 scripts/setup_dev.py --docs     # also mdBook, and build the docs into book/
 """
 
+import argparse
 import os
-import sys
-import subprocess
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
-
-# Configuration
-# Script is in scripts/, so go up one level to get repo root
-REPO_ROOT = Path(__file__).parent.parent.resolve()
-VENV_DIR = REPO_ROOT / ".venv"
-REQUIREMENTS_FILE = Path(__file__).parent / "requirements.txt"
-REQUIREMENTS_WHEEL_FILE = Path(__file__).parent / "requirements-wheel.txt"
-REQUIREMENTS_WHEEL_WINDOWS_FILE = Path(__file__).parent / "requirements-wheel-windows.txt"
-MDBOOK_VERSION = "0.5.2"  # Must match .github/workflows/ci.yml and release.yml
+REPO_ROOT = Path(__file__).resolve().parent.parent
+VENV = REPO_ROOT / ".venv"
+SCRIPTS = REPO_ROOT / "scripts"
+WINDOWS = sys.platform == "win32"
 
 
-def get_venv_python():
-    """Get the path to the venv's Python executable."""
-    if sys.platform == "win32":
-        return VENV_DIR / "Scripts" / "python.exe"
+def venv_bin(name):
+    if WINDOWS:
+        return VENV / "Scripts" / f"{name}.exe"
+    return VENV / "bin" / name
+
+
+def run(cmd, **kwargs):
+    """Run with output streaming to the terminal; exit with its status on failure."""
+    print("$", " ".join(str(c) for c in cmd), flush=True)
+    result = subprocess.run([str(c) for c in cmd], cwd=REPO_ROOT, **kwargs)
+    if result.returncode != 0:
+        sys.exit(f"setup: {Path(str(cmd[0])).name} exited with {result.returncode}")
+
+
+def step(text):
+    print(f"\n==> {text}", flush=True)
+
+
+def make_venv(uv):
+    python = venv_bin("python")
+    if python.exists():
+        step(f"Reusing {VENV.name}")
+    elif uv:
+        step(f"Creating {VENV.name} with uv")
+        run([uv, "venv", VENV])
     else:
-        return VENV_DIR / "bin" / "python"
+        step(f"Creating {VENV.name} with {Path(sys.executable).name} -m venv")
+        run([sys.executable, "-m", "venv", VENV])
+        run([python, "-m", "pip", "install", "--upgrade", "pip"])
 
 
-def get_venv_pip():
-    """Get the path to the venv's pip executable."""
-    if sys.platform == "win32":
-        return VENV_DIR / "Scripts" / "pip"
+def pip_install(uv, args):
+    if uv:
+        # uv installs into the environment VIRTUAL_ENV names.
+        run([uv, "pip", "install", *args], env={**os.environ, "VIRTUAL_ENV": str(VENV)})
     else:
-        return VENV_DIR / "bin" / "pip"
+        run([venv_bin("python"), "-m", "pip", "install", *args])
 
 
-def run_command(cmd, check=True, cwd=None, env=None, stdin=None):
-    """Run a command and return the result."""
-    print(f"Running: {' '.join(cmd) if isinstance(cmd, list) else cmd}")
-    result = subprocess.run(
-        cmd,
-        shell=isinstance(cmd, str),
-        check=check,
-        cwd=cwd or REPO_ROOT,
-        env=env,
-        stdin=stdin,
+def install(uv, requirements):
+    for path in requirements:
+        step(f"Installing {path.relative_to(REPO_ROOT)}")
+        pip_install(uv, ["-r", path])
+
+
+def install_linters(uv):
+    """ruff and typos at CI's versions, so `scripts/dev/test.sh lint` gives CI's verdict.
+    typos is the Rust tool's PyPI build, pinned where CI's copy is."""
+    install(uv, [SCRIPTS / "requirements-lint.txt"])
+    typos = f"typos=={pinned_version('typos')}"
+    step(f"Installing {typos}")
+    pip_install(uv, [typos])
+
+
+def linked_worktree():
+    """Whether this checkout is a `git worktree add` one, which shares its hooks."""
+    out = subprocess.run(
+        ["git", "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"],
+        cwd=REPO_ROOT,
         capture_output=True,
-        text=True
+        text=True,
     )
-    if result.returncode != 0:
-        print(f"Error output: {result.stderr}", file=sys.stderr)
-    return result
+    dirs = out.stdout.split()
+    return out.returncode == 0 and len(dirs) == 2 and Path(dirs[0]) != Path(dirs[1])
 
 
-def create_venv():
-    """Create the virtual environment if it doesn't exist."""
-    if VENV_DIR.exists():
-        print(f"Virtual environment already exists at {VENV_DIR}")
-        return False
-    else:
-        print(f"Creating virtual environment at {VENV_DIR}...")
-        run_command([sys.executable, "-m", "venv", str(VENV_DIR)])
-        print(f"Virtual environment created")
-        return True
-
-
-def ensure_venv_activated():
-    """Check if we're running in the venv, and provide instructions if not."""
-    venv_python = get_venv_python()
-    if not venv_python.exists():
-        print("Error: Virtual environment Python not found. Please run this script again.")
-        sys.exit(1)
-
-    # Check if we're using the venv's Python
-    current_python = Path(sys.executable).resolve()
-    if current_python != venv_python.resolve():
-        print(f"Note: Not running in venv. The script will use {venv_python} for commands.")
-        print("   For interactive use, activate the venv with:")
-        if sys.platform == "win32":
-            print(f"   {VENV_DIR}\\Scripts\\activate")
-        else:
-            print(f"   source {VENV_DIR}/bin/activate")
-
-
-def upgrade_pip():
-    """Upgrade pip in the virtual environment."""
-    print("Upgrading pip...")
-    venv_pip = get_venv_pip()
-    run_command([str(venv_pip), "install", "--upgrade", "pip", "--quiet"])
-
-
-def install_requirements():
-    """Install Python requirements from scripts/requirements.txt."""
-    if not REQUIREMENTS_FILE.exists():
-        print(f"Warning: {REQUIREMENTS_FILE} not found. Skipping requirements installation.")
+def install_hooks():
+    if not (REPO_ROOT / ".git").exists():
+        print("Not a git checkout; skipping the pre-commit hooks.")
         return
-
-    print(f"Installing requirements from {REQUIREMENTS_FILE}...")
-    venv_pip = get_venv_pip()
-    run_command([str(venv_pip), "install", "-r", str(REQUIREMENTS_FILE)])
-    print("Requirements installed")
-
-    # Wheel build deps: Linux/macOS use patchelf + maturin + pytest; Windows uses maturin + pytest only
-    if sys.platform == "win32":
-        wheel_file = REQUIREMENTS_WHEEL_WINDOWS_FILE
-    else:
-        wheel_file = REQUIREMENTS_WHEEL_FILE
-    if wheel_file.exists():
-        print(f"Installing wheel build deps from {wheel_file.name}...")
-        run_command([str(venv_pip), "install", "-r", str(wheel_file)])
-        print("Wheel build requirements installed")
-
-
-def get_venv_pre_commit():
-    """Get the path to the venv's pre-commit executable."""
-    if sys.platform == "win32":
-        return VENV_DIR / "Scripts" / "pre-commit.exe"
-    else:
-        return VENV_DIR / "bin" / "pre-commit"
-
-
-def install_pre_commit_hooks():
-    """Install or update pre-commit hooks."""
-    print("Installing/updating pre-commit hooks...")
-
-    # Check if pre-commit config exists
-    pre_commit_config = REPO_ROOT / ".pre-commit-config.yaml"
-    if not pre_commit_config.exists():
-        print(f"Warning: {pre_commit_config} not found. Skipping pre-commit hook installation.")
+    # Every worktree runs the same hooks, and pre-commit points them at this .venv:
+    # removing the worktree would break commits in all the others.
+    if linked_worktree():
+        print("A linked worktree shares the main checkout's hooks; skipping them.")
         return
-
-    # Try to find pre-commit executable
-    venv_pre_commit = get_venv_pre_commit()
-
-    # Check if pre-commit is installed in venv
-    if not venv_pre_commit.exists():
-        # Try to find it in PATH (might be installed globally)
-        pre_commit_path = shutil.which("pre-commit")
-        if not pre_commit_path:
-            print("Warning: pre-commit not found. It should be in requirements.txt.")
-            print("  Skipping pre-commit hook installation.")
-            return
-        pre_commit_cmd = [pre_commit_path]
-    else:
-        pre_commit_cmd = [str(venv_pre_commit)]
-
-    # Run pre-commit install
-    result = run_command(
-        pre_commit_cmd + ["install"],
-        check=False
-    )
-
-    if result.returncode == 0:
-        print("Pre-commit hooks installed/updated")
-    else:
-        print("Warning: Failed to install pre-commit hooks.")
-        print("  You can manually run: pre-commit install")
+    step("Installing the pre-commit hooks")
+    run([venv_bin("pre-commit"), "install"])
 
 
-def find_mdbook():
-    """Find mdbook executable in common locations."""
-    # Check PATH first
-    mdbook_path = shutil.which("mdbook")
-    if mdbook_path:
-        return mdbook_path
-
-    # Check common cargo install location
-    cargo_bin = Path.home() / ".cargo" / "bin" / "mdbook"
-    if cargo_bin.exists():
-        return str(cargo_bin)
-
-    return None
+def generate_fixtures(force):
+    step("Generating test fixtures")
+    cmd = [venv_bin("python"), SCRIPTS / "generate_sample_data.py"]
+    if not force:
+        cmd.append("--if-stale")
+    run(cmd)
 
 
-def check_mdbook_installed():
-    """Check if mdbook is installed and return the version, or None if not installed."""
-    mdbook_path = find_mdbook()
-    if not mdbook_path:
+def pinned_version(tool):
+    """A tool's version from .github/tool-versions, which CI installs from too."""
+    for line in (REPO_ROOT / ".github" / "tool-versions").read_text().splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[0] == tool:
+            return fields[1]
+    sys.exit(f"setup: {tool} has no version in .github/tool-versions")
+
+
+def mdbook_version():
+    mdbook = shutil.which("mdbook")
+    if not mdbook:
         return None
-
-    try:
-        result = run_command([mdbook_path, "--version"], check=False)
-        if result.returncode == 0:
-            # mdbook --version outputs something like "mdbook v0.5.2"
-            version_line = result.stdout.strip()
-            # Extract version number
-            if "v" in version_line:
-                installed_version = version_line.split("v")[-1].split()[0]
-                return installed_version
-            return None
-    except (FileNotFoundError, subprocess.SubprocessError):
-        pass
-    return None
+    out = subprocess.run([mdbook, "--version"], capture_output=True, text=True).stdout
+    # "mdbook v0.5.2"
+    return out.strip().rsplit("v", 1)[-1] or None
 
 
-def install_mdbook():
-    """Install mdbook at the correct version using cargo."""
-    print(f"Checking mdbook installation (required version: {MDBOOK_VERSION})...")
-
-    installed_version = check_mdbook_installed()
-
-    if installed_version == MDBOOK_VERSION:
-        print(f"mdbook {MDBOOK_VERSION} is already installed")
-        return
-
-    if installed_version:
-        print(f"  Found mdbook {installed_version}, but need {MDBOOK_VERSION}")
-        print(f"  Installing mdbook {MDBOOK_VERSION}...")
-    else:
-        print(f"  mdbook not found. Installing mdbook {MDBOOK_VERSION}...")
-
-    # Check if cargo is available
-    cargo_result = run_command(["cargo", "--version"], check=False)
-    if cargo_result.returncode != 0:
-        print("Error: cargo is not installed or not in PATH.")
-        print("Please install Rust and cargo first: https://rustup.rs/")
-        sys.exit(1)
-
-    # Install mdbook
-    print(f"  Running: cargo install mdbook --version {MDBOOK_VERSION} --locked")
-    result = run_command(
-        ["cargo", "install", "mdbook", "--version", MDBOOK_VERSION, "--locked"],
-        check=False
-    )
-
-    if result.returncode != 0:
-        print("Error: Failed to install mdbook. Please check the error messages above.")
-        sys.exit(1)
-
-    # Verify installation
-    installed_version = check_mdbook_installed()
-    if installed_version == MDBOOK_VERSION:
-        print(f"mdbook {MDBOOK_VERSION} installed successfully")
-    else:
-        print(f"Warning: mdbook was installed but version check failed.")
-        print(f"  Expected: {MDBOOK_VERSION}, Got: {installed_version}")
-
-
-def regenerate_test_data():
-    """Regenerate test data using the venv's Python."""
-    print("Regenerating test data...")
-    venv_python = get_venv_python()
-    script_path = Path(__file__).parent / "generate_sample_data.py"
-
-    if not script_path.exists():
-        print(f"Warning: {script_path} not found. Skipping test data generation.")
-        return
-
-    run_command([str(venv_python), str(script_path)])
-    print("Test data regenerated")
-
-
-def build_local_documentation():
-    """Build local documentation using the build script."""
-    print("Building local documentation...")
-    doc_script = Path(__file__).parent / "docs" / "build_single_version_docs.py"
-
-    if not doc_script.exists():
-        print(f"Warning: {doc_script} not found. Skipping documentation build.")
-        return
-
-    # Check if mdbook is available (required for docs)
-    mdbook_path = find_mdbook()
-    if not mdbook_path:
-        print("Warning: mdbook not found. Skipping documentation build.")
-        print("  Documentation will be built after mdbook is installed.")
-        return
-
-    # Ensure mdbook is in PATH for the script
-    env = os.environ.copy()
-    if mdbook_path and str(Path(mdbook_path).parent) not in env.get("PATH", ""):
-        cargo_bin = str(Path(mdbook_path).parent)
-        if sys.platform == "win32":
-            env["PATH"] = f"{cargo_bin};{env.get('PATH', '')}"
-        else:
-            env["PATH"] = f"{cargo_bin}:{env.get('PATH', '')}"
-
-    result = run_command(
-        [sys.executable, str(doc_script)],
-        check=False,
-        env=env,
-        stdin=subprocess.DEVNULL
-    )
-
-    if result.returncode != 0:
-        print("Warning: Documentation build had errors. Check output above.")
-        print("  You can manually run: python3 scripts/docs/build_single_version_docs.py [VERSION]")
-        return
-
-    print("Local documentation built successfully")
-    print(f"  Documentation is available in: {REPO_ROOT / 'book'}")
-
-    # Rebuild index page (book/index.html)
-    index_script = Path(__file__).parent / "docs" / "rebuild_index.py"
-    if index_script.exists():
-        index_result = run_command(
-            [sys.executable, str(index_script)],
-            check=False,
-            env=env,
-            stdin=subprocess.DEVNULL
-        )
-        if index_result.returncode == 0:
-            print("Documentation index page updated")
-        else:
-            print("Warning: rebuild_index.py had errors. Index page may be missing or stale.")
-    else:
-        print(f"Warning: {index_script} not found. Skipping index page.")
+def build_docs():
+    wanted = pinned_version("mdbook")
+    if mdbook_version() != wanted:
+        step(f"Installing mdBook {wanted} (a few minutes)")
+        run(["cargo", "install", "mdbook", "--version", wanted, "--locked"])
+    step("Building the docs into book/")
+    python = venv_bin("python")
+    run([python, SCRIPTS / "docs" / "build_single_version_docs.py"], stdin=subprocess.DEVNULL)
+    run([python, SCRIPTS / "docs" / "rebuild_index.py"], stdin=subprocess.DEVNULL)
 
 
 def main():
-    """Main setup function."""
-    print("=" * 60)
-    print("datui Development Environment Setup")
-    print("=" * 60)
-    print()
+    lines = __doc__.strip().splitlines()
+    parser = argparse.ArgumentParser(
+        description=lines[0],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="\n".join(lines[1:]),
+    )
+    parser.add_argument(
+        "--wheel", action="store_true", help="also install the Python package's build and test tools"
+    )
+    parser.add_argument("--docs", action="store_true", help="also install mdBook and build the docs")
+    parser.add_argument("--force", action="store_true", help="regenerate the fixtures even when current")
+    parser.add_argument("--no-hooks", action="store_true", help="do not install the pre-commit hooks")
+    args = parser.parse_args()
 
-    # Change to repo root
-    os.chdir(REPO_ROOT)
+    if sys.version_info < (3, 10):
+        sys.exit(f"setup: datui's scripts need Python 3.10 or newer, not {sys.version.split()[0]}")
+    uv = shutil.which("uv")
+    if not uv:
+        print("uv not found; using pip, which is slower (https://docs.astral.sh/uv/).")
 
-    # Create venv if needed
-    venv_created = create_venv()
+    make_venv(uv)
+    requirements = [SCRIPTS / "requirements.txt"]
+    if args.wheel:
+        # patchelf, which the Linux and macOS wheels need, has no Windows build.
+        name = "requirements-wheel-windows.txt" if WINDOWS else "requirements-wheel.txt"
+        requirements.append(SCRIPTS / name)
+    install(uv, requirements)
+    install_linters(uv)
+    if not args.no_hooks:
+        install_hooks()
+    generate_fixtures(args.force)
+    if args.docs:
+        build_docs()
 
-    # Check venv activation status
-    ensure_venv_activated()
-
-    # Get venv Python for subsequent commands
-    venv_python = get_venv_python()
-    if not venv_python.exists():
-        print("Error: Virtual environment Python executable not found.")
-        sys.exit(1)
-
-    # Upgrade pip (especially important for new venvs)
-    if venv_created:
-        upgrade_pip()
-
-    # Install/update requirements
-    install_requirements()
-
-    # Install/update pre-commit hooks
-    install_pre_commit_hooks()
-
-    # Install mdbook
-    install_mdbook()
-
-    # Regenerate test data
-    regenerate_test_data()
-
-    # Build local documentation
-    build_local_documentation()
-
-    print()
-    print("=" * 60)
-    print("Setup complete!")
-    print("=" * 60)
-    print()
-    print("To activate the virtual environment:")
-    if sys.platform == "win32":
-        print(f"  {VENV_DIR}\\Scripts\\activate")
-    else:
-        print(f"  source {VENV_DIR}/bin/activate")
-    print()
-    print("Rust (workspace: root = datui binary, crates/datui-lib, crates/datui-cli):")
-    print("  cargo build --workspace")
-    print("  cargo test --workspace")
-    print("  cargo run -- <args>   # run the CLI (from repo root)")
-    print()
-    print("Python bindings (optional; requires maturin and compatible polars versions):")
-    print("  cd python && maturin develop")
-    print("  pytest python/tests/ -v")
-    print()
-    print("You can run this script again at any time to update dependencies.")
+    print("\nDone. Next:")
+    print("  cargo build")
+    print("  scripts/dev/test.sh full     # or: cargo test --workspace")
+    if args.wheel:
+        print("  scripts/dev/test.sh python   # build and test the Python package")
 
 
 if __name__ == "__main__":

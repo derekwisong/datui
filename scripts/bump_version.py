@@ -651,7 +651,6 @@ Start next dev cycle:
 
     cargo_toml_path = project_root / "Cargo.toml"
     readme_path = project_root / "README.md"
-    cargo_lock_path = project_root / "Cargo.lock"
 
     if not cargo_toml_path.exists():
         print(f"Error: Could not find {cargo_toml_path}", file=sys.stderr)

@@ -100,7 +100,7 @@ impl App {
         }
         // Suspended while writing: a failed write brings the form back with the reason.
         self.step_back();
-        Some(AppEvent::Export(request))
+        Some(AppEvent::Applied(crate::Applied::Export(request)))
     }
 
     /// Give the path input a key; when the value changed, follow the typed extension

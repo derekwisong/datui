@@ -812,6 +812,71 @@ fn end_pressed_at_one_dataset_does_not_move_the_next() {
     );
 }
 
+/// A dataset reaching the screen finds nothing the last one left in the parts of the
+/// app that keep per-dataset state: each owner's reset runs from `install_dataset`.
+#[test]
+fn a_new_dataset_keeps_nothing_the_last_one_left() {
+    use crate::table::DataTableState;
+    use crate::{App, OpenOptions};
+    use polars::prelude::*;
+
+    let frame = || {
+        DataTableState::from_lazyframe(
+            df!("id" => [1i64, 2, 3]).unwrap().lazy(),
+            &OpenOptions::default(),
+        )
+        .unwrap()
+    };
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new(tx, crate::tests::test_runtime());
+    app.install_for_tests(
+        frame(),
+        Some(std::path::PathBuf::from("first.csv")),
+        &OpenOptions::default(),
+        None,
+    );
+    assert!(app.source.original_file_format.is_some());
+    assert!(app.source.original_file_delimiter.is_some());
+    app.source.opened_from_home = true;
+    app.analysis_modal.quality.findings.column = Some("id".to_string());
+    app.analysis_modal.quality.evidence_read =
+        Some(crate::analysis::analysis_modal::EvidenceRead {
+            rows: crate::analysis::quality_report::EvidenceRows::Duplicates,
+            label: "Data Quality / Duplicate rows".to_string(),
+            sample: None,
+            scope: crate::analysis::data_quality::QualityScope::CurrentView,
+            summary: Vec::new(),
+        });
+    app.sample.paths.push((
+        "first.csv".to_string(),
+        crate::analysis::table_sample::DrawPath::Reservoir,
+    ));
+    app.views.active_id = Some("a view".to_string());
+
+    app.install_for_tests(frame(), None, &OpenOptions::default(), None);
+    assert_eq!(
+        app.analysis_modal.quality.findings,
+        crate::analysis::quality_report::FindingsView::default()
+    );
+    assert!(app.analysis_modal.quality.evidence_read.is_none());
+    assert!(app.prompt.query_running.is_none());
+    assert!(app.sample.paths.is_empty());
+    assert!(app.views.active_id.is_none());
+    assert!(app.info.file_facts.is_none());
+    assert!(app.info.codebook.is_none());
+    assert!(app.info.catalog_entry.is_none());
+    assert!(
+        app.source.opened.is_none(),
+        "a frame handed over has no path"
+    );
+    assert!(app.source.original_file_format.is_none());
+    assert!(app.source.original_file_delimiter.is_none());
+    assert!(
+        app.source.opened_from_home,
+        "q still goes home: a later open does not take home out of the stack"
+    );
+}
+
 /// Once the count is known, nothing is still counting.
 ///
 /// A staged open declines the standalone row count, because the pass reading the
@@ -913,6 +978,51 @@ fn a_staged_open_does_not_leave_a_count_running_that_never_ran() {
         "so nothing is still counting, and the row count is a number rather than a \
          spinner for the rest of the session"
     );
+}
+
+/// A head that cannot be read fails the open naming the file the user opened, plain
+/// or compressed, never the decompressed copy the scan reads.
+#[test]
+fn a_head_that_cannot_be_read_names_the_file_opened() {
+    use crate::OpenOptions;
+    use std::io::Write;
+
+    let source = tempfile::tempdir().unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let plain = source.path().join("rows.csv");
+    std::fs::write(&plain, "id\n1\n").unwrap();
+    let gz = source.path().join("rows.csv.gz");
+    let mut encoder = flate2::write::GzEncoder::new(
+        std::fs::File::create(&gz).unwrap(),
+        flate2::Compression::default(),
+    );
+    encoder.write_all(b"id\n1\n").unwrap();
+    encoder.finish().unwrap();
+    // Header line 5 of a two-line file.
+    for in_memory in [false, true] {
+        let options = OpenOptions {
+            header_rows: vec![5],
+            temp_dir: Some(scratch.path().to_path_buf()),
+            decompress_in_memory: in_memory,
+            ..OpenOptions::default()
+        };
+        for file in [&plain, &gz] {
+            let Err(e) = crate::formats::readers::csv::read_delimited(
+                file,
+                b',',
+                &options,
+                &Default::default(),
+            ) else {
+                panic!("{} has no line 5", file.display());
+            };
+            let said = crate::error_display::user_message_from_report(&e, None);
+            assert!(said.contains("rows.csv"), "{said}");
+            assert!(
+                !said.contains(&scratch.path().display().to_string()),
+                "{said}"
+            );
+        }
+    }
 }
 
 /// A read of the rows that fails names the file the user opened, not the temp copy
@@ -2081,6 +2191,26 @@ fn a_job_holds_the_generation_until_its_answer_is_handled() {
     );
 }
 
+/// An answer under a job other than its own acts as neither: it is dropped with
+/// what it carries, and the job still gives back its keys and line.
+#[test]
+fn an_answer_under_another_job_is_dropped() {
+    use crate::app::jobs::{Answer, Job, Outcome};
+    use crate::{App, AppEvent};
+
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new(tx, crate::tests::test_runtime());
+    let copy = app.job_for_tests(Job::Copy, Some("Copying..."));
+    let ticket = copy.ticket();
+    copy.end(Outcome::answered(Answer::Exported(
+        std::path::PathBuf::from("out.csv"),
+    )));
+    assert!(app.event(AppEvent::JobEnded(ticket)).is_none());
+    assert_eq!(app.flash_message(), None, "no export is reported");
+    assert!(!app.is_busy());
+    assert_eq!(app.status_message, None);
+}
+
 /// A job the user waits on holds the keys and its line on the bar; its end gives
 /// both back in one place, whatever the job, and leaves a line that is not its
 /// own. An open's answer hands the wait to its next phase in the same step.
@@ -2995,11 +3125,17 @@ fn a_capped_table_copy_asks_only_past_what_the_cap_could_hold() {
     // 12 MiB of base64 against the terminal's 100 KB: read to the cap, no question.
     let (app, next) = copy(Some(3 * 1024 * 1024), 100 * 1024);
     assert!(!app.confirmation_modal.active);
-    assert!(matches!(next, Some(AppEvent::CopyTable { .. })));
+    assert!(matches!(
+        next,
+        Some(AppEvent::Applied(crate::Applied::CopyTable { .. }))
+    ));
     // Unmeasured blobs: the cap bounds the read all the same.
     let (app, next) = copy(None, 100 * 1024);
     assert!(!app.confirmation_modal.active);
-    assert!(matches!(next, Some(AppEvent::CopyTable { .. })));
+    assert!(matches!(
+        next,
+        Some(AppEvent::Applied(crate::Applied::CopyTable { .. }))
+    ));
     // A cap raised past 10 MB asks, as an uncapped copy does.
     let (app, next) = copy(Some(3 * 1024 * 1024), 64 * 1024 * 1024);
     assert!(app.confirmation_modal.active && next.is_none());
@@ -3098,7 +3234,10 @@ fn a_table_copy_counts_binary_at_its_base64_size() {
 
     let (app, next) = copy(Some(100));
     assert!(!app.confirmation_modal.active, "small blobs copy");
-    assert!(matches!(next, Some(AppEvent::CopyTable { .. })));
+    assert!(matches!(
+        next,
+        Some(AppEvent::Applied(crate::Applied::CopyTable { .. }))
+    ));
 
     let (app, next) = copy(None);
     assert!(app.confirmation_modal.active, "unmeasured blobs ask");
@@ -3157,7 +3296,10 @@ fn a_local_directorys_footers_size_its_binary_columns() {
 
     let (app, next) = copy(100);
     assert!(!app.confirmation_modal.active, "small blobs copy");
-    assert!(matches!(next, Some(AppEvent::CopyTable { .. })));
+    assert!(matches!(
+        next,
+        Some(AppEvent::Applied(crate::Applied::CopyTable { .. }))
+    ));
 }
 
 /// A confirmation names its keys in its own footer; the status footer adds no mode
@@ -3947,10 +4089,10 @@ fn a_journal_reread_for_a_replaced_dataset_is_dropped() {
             .unwrap()
     };
     let detail = || {
-        Answer::JournalDescribed(Some(Box::new(crate::formats::text_formats::Detail {
+        Answer::JournalDescribed(Box::new(crate::formats::text_formats::Detail {
             tab: "Journal",
             ..Default::default()
-        })))
+        }))
     };
     let tab = |app: &App| {
         app.data_table_state

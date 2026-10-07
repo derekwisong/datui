@@ -119,6 +119,25 @@ fn fields_follow_the_format_under_a_fixed_format_row() {
     assert_eq!(shown(&mut modal), ["Source file:"]);
 }
 
+/// The dialog takes every click on it: FormView records its whole area first, so a
+/// click on a blank row or the status line never reaches the table under it.
+#[test]
+fn the_dialog_shields_what_it_covers() {
+    let mut modal = ExportModal::new();
+    let hits = crate::app::pointer::recording(|| {
+        draw(&mut modal, MAX_WIDTH, HEIGHT);
+    });
+    assert_eq!(
+        hits.first(),
+        Some(&(Rect::new(0, 0, MAX_WIDTH, HEIGHT), Hit::Modal))
+    );
+    assert_eq!(
+        hits.iter().filter(|(_, hit)| *hit == Hit::Modal).count(),
+        1,
+        "recorded once, by FormView"
+    );
+}
+
 /// A click on a format's value steps the field to it: each value records
 /// where it was drawn, over the row's own record.
 #[test]

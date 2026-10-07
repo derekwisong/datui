@@ -151,7 +151,6 @@ pub fn render_combine(area: Rect, buf: &mut Buffer, modal: &CombineModal, ctx: &
         Some(problem) => (problem.clone(), Style::default().fg(ctx.warning)),
         None => (modal.spec_line(), Style::default().fg(ctx.text_primary)),
     };
-    crate::app::pointer::record(popup, crate::app::pointer::Hit::Modal);
     FormView {
         title: "Combine into Datetime",
         screen: Context::Combine,
@@ -161,6 +160,7 @@ pub fn render_combine(area: Rect, buf: &mut Buffer, modal: &CombineModal, ctx: &
         focused: Some(modal.focus),
         picker: modal.picker.as_ref().map(|(_, state)| state),
         status: Some(status),
+        shields: true,
     }
     .render::<CombineModal>(popup, buf, ctx);
 }

@@ -305,6 +305,74 @@ mod tests {
             .collect()
     }
 
+    /// Signs, exponents, `inf` and `NaN` line up as one file's read types them.
+    #[test]
+    fn a_window_types_numbers_as_one_file_does() {
+        let columns: [(&str, [&str; 2]); 6] = [
+            ("plus", ["+5", "6"]),
+            ("exponent", ["1e5", "2"]),
+            ("inf", ["inf", "1.5"]),
+            ("nan", ["NaN", "2.5"]),
+            ("int_inf", ["inf", "2"]),
+            ("minus", ["-5", "7"]),
+        ];
+        let options = OpenOptions {
+            parse_strings: Some(crate::ParseStringsTarget::All),
+            parse_dates: true,
+            ..OpenOptions::default()
+        };
+        let window: Vec<Vec<String>> = (0..2)
+            .map(|row| columns.iter().map(|(_, v)| v[row].to_string()).collect())
+            .collect();
+        let frame = DataFrame::new(
+            2,
+            columns
+                .iter()
+                .map(|(name, values)| Column::new((*name).into(), values.to_vec()))
+                .collect(),
+        )
+        .unwrap();
+        let one_file = crate::formats::readers::csv::type_string_columns(
+            frame.lazy(),
+            &crate::ParseStringsTarget::All,
+            1_000,
+            crate::formats::readers::csv::StringTypes {
+                dates: true,
+                numbers: true,
+            },
+            &mut Vec::new(),
+            &[],
+            &mut Vec::new(),
+        )
+        .unwrap()
+        .collect_schema()
+        .unwrap();
+        // What one file makes of them today: signed integers stay integers, and an
+        // exponent, `inf` or `NaN` makes a float.
+        for (name, dtype) in [
+            ("plus", DataType::Int64),
+            ("exponent", DataType::Float64),
+            ("inf", DataType::Float64),
+            ("nan", DataType::Float64),
+            ("int_inf", DataType::Float64),
+            ("minus", DataType::Int64),
+        ] {
+            assert_eq!(one_file.get(name), Some(&dtype), "{name}");
+        }
+        for (at, (name, values)) in columns.iter().enumerate() {
+            let read = one_file.get(name).unwrap();
+            let lined = seen(&window, at, name, &options).unwrap().unwrap();
+            let expected = match read {
+                DataType::Int64 | DataType::Float64 => read.clone(),
+                _ => DataType::String,
+            };
+            assert_eq!(
+                lined, expected,
+                "{name} {values:?}: one file reads {read:?}"
+            );
+        }
+    }
+
     #[test]
     fn a_window_says_what_string_inference_would() {
         let window = rows(&[

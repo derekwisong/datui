@@ -37,6 +37,10 @@ pub struct FormView<'a, F> {
     /// blank and the line are kept under the rows, empty or not, so nothing moves
     /// when a reason comes. A long one wraps upward into rows the fields leave free.
     pub status: Option<(String, Style)>,
+    /// Whether its whole area takes no clicks but its own, as a dialog over the screen.
+    /// `false` only where the caller decides what is around it: the Sample form inline
+    /// beside the analysis tools, or over a pane the caller shields.
+    pub shields: bool,
 }
 
 impl<'a, F: Copy + PartialEq> FormView<'a, F> {
@@ -65,6 +69,9 @@ impl<'a, F: Copy + PartialEq> FormView<'a, F> {
             ),
             (None, footer) => footer,
         };
+        if self.shields {
+            crate::app::pointer::record(area, crate::app::pointer::Hit::Modal);
+        }
         let mut surface = Surface::new(self.title);
         if let Some(footer) = &footer {
             surface = surface.footer(footer);
@@ -87,7 +94,12 @@ impl<'a, F: Copy + PartialEq> FormView<'a, F> {
             .iter()
             .position(|line| matches!(line, FormLine::Field(f, ..) if Some(*f) == focused))
             .unwrap_or(0);
-        let first = at.saturating_sub(room.saturating_sub(1));
+        // With the notes under it, as many as fit beside it.
+        let mut end = at;
+        while end + 1 - at < room && matches!(self.rows.get(end + 1), Some(FormLine::Note(_))) {
+            end += 1;
+        }
+        let first = end.saturating_sub(room.saturating_sub(1));
         let picking = self.picker.is_some();
         let mut y = content.y;
         for line in self.rows.into_iter().skip(first).take(room) {
@@ -176,3 +188,6 @@ impl<'a, F: Copy + PartialEq> FormView<'a, F> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

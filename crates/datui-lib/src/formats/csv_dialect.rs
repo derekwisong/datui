@@ -82,14 +82,16 @@ pub(crate) struct FileHead {
 const POLARS_INFER_ROWS: usize = 100;
 
 /// The head of the file at `file`, through its decompressor when `compression` names
-/// one: see [`head_of`]. A file is opened only when there is something to read.
+/// one: see [`head_of`]. The file is opened only for the window or for names
+/// `--header-rows` gives: a spec's unit and metadata lines alone are read with the
+/// window, never on their own.
 pub(crate) fn head(
     file: &Path,
     options: &OpenOptions,
     compression: Option<crate::CompressionFormat>,
     with_window: bool,
 ) -> color_eyre::Result<FileHead> {
-    if !with_window && wanted_lines(options).is_empty() {
+    if !with_window && options.header_rows().is_none() {
         return Ok(FileHead::empty(file));
     }
     let source = crate::formats::readers::csv::text_source(file, compression)?;
@@ -513,6 +515,68 @@ mod tests {
 
     fn names(text: &str, rows: &[usize], comment: Option<&str>) -> Vec<String> {
         header_names(text.as_bytes(), rows, " ", b',', comment).unwrap()
+    }
+
+    /// Options for a read through the delimited spec `lines`, as an open applies it,
+    /// inferring types.
+    fn spec_options(lines: &str) -> OpenOptions {
+        use crate::formats::delimited_spec::DelimitedRead;
+        let text = format!("name = \"a.log\"\nkind = \"delimited\"\n{lines}");
+        let spec = std::sync::Arc::new(crate::formats::Spec::parse(&text, None).unwrap());
+        let read = DelimitedRead::chosen(spec, crate::formats::Chosen::SpecFile, Vec::new());
+        let mut options = OpenOptions {
+            parse_strings: Some(crate::ParseStringsTarget::All),
+            ..OpenOptions::default()
+        };
+        read.delimited().apply(&mut options);
+        options.delimited = Some(std::sync::Arc::new(read));
+        options
+    }
+
+    /// The type window is the data alone: a spec's metadata and unit lines, above the
+    /// names or below them, are never read as rows (a unit line of `007` would make a
+    /// column text).
+    #[test]
+    fn the_window_starts_below_the_spec_s_unit_and_metadata_lines() {
+        for (spec, text) in [
+            (
+                "header_rows = { name = 3, unit = 2 }\nmetadata_line = 1",
+                "device=\"x\"\n007,m\nid,len\n1,2\n3,4\n",
+            ),
+            (
+                "header_rows = { name = 1, unit = 2 }",
+                "id,len\n007,m\n1,2\n3,4\n",
+            ),
+        ] {
+            let options = spec_options(spec);
+            let head = head_of(text.as_bytes(), Path::new("a.log"), &options, true).unwrap();
+            assert_eq!(head.names.unwrap(), ["id", "len"], "{spec}");
+            assert_eq!(head.window, [["1", "2"], ["3", "4"]], "{spec}");
+        }
+    }
+
+    /// Without the window, the file is opened only for names `--header-rows` gives: a
+    /// spec's metadata line alone is not worth a read.
+    #[test]
+    fn a_head_without_names_or_window_opens_nothing() {
+        let missing = Path::new("/nonexistent/datui/a.log");
+        let read = head(
+            missing,
+            &spec_options("metadata_line = 1\nskip_lines = 1"),
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(read.names.is_none() && read.window.is_empty());
+        assert!(head(missing, &OpenOptions::default(), None, false).is_ok());
+        let named = OpenOptions {
+            header_rows: vec![1],
+            ..OpenOptions::default()
+        };
+        assert!(
+            head(missing, &named, None, false).is_err(),
+            "names are read"
+        );
     }
 
     #[test]

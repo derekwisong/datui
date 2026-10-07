@@ -143,15 +143,15 @@ fn charts_draw_and_export_as_their_goldens() {
     let mut binaries = String::new();
     for scenario in SCENARIOS {
         // As `c` opened it: the settings a scenario changes, back at their defaults.
-        let modal = &mut app.chart_modal;
+        let modal = &mut app.chart.modal;
         modal.spec = crate::chart_modal::ChartSpec::default();
         modal.log_scale = false;
         modal.hist_bins = crate::chart_modal::HISTOGRAM_DEFAULT_BINS;
-        (scenario.set)(&mut app.chart_modal);
-        app.chart_modal.row_limit = None;
-        let request = ChartRequest::from_modal(&app.chart_modal).expect(scenario.name);
+        (scenario.set)(&mut app.chart.modal);
+        app.chart.modal.row_limit = None;
+        let request = ChartRequest::from_modal(&app.chart.modal).expect(scenario.name);
         app.event(&AppEvent::Resize(80, 24));
-        pump(&mut app, &rx, &tx, |a| a.chart_cache.satisfies(&request));
+        pump(&mut app, &rx, &tx, |a| a.chart.cache.satisfies(&request));
         let area = ratatui::layout::Rect::new(0, 0, 80, 24);
         let mut buf = ratatui::buffer::Buffer::empty(area);
         app.render(area, &mut buf);

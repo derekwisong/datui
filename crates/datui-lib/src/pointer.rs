@@ -585,7 +585,7 @@ impl App {
                 self.home.page_selection(*rows);
             }
             Target::ChartColumn(column) => {
-                self.chart_modal.plot_focus = true;
+                self.chart.modal.plot_focus = true;
                 self.move_crosshair_to(Some(*column));
             }
         }
@@ -604,15 +604,15 @@ impl App {
     /// Focus the field a click landed on, in whichever form drew it.
     pub fn focus_field(&mut self, id: &FieldId) -> Option<Clicked> {
         self.flash = None;
-        if let Some(kind) = id.focus_in(&mut self.chart_modal) {
+        if let Some(kind) = id.focus_in(&mut self.chart.modal) {
             // The option rows take the keys back from the plot's crosshair.
-            self.chart_modal.plot_focus = false;
+            self.chart.modal.plot_focus = false;
             return Some(kind);
         }
         let shown = id
             .focus_in(&mut self.export_modal)
             .or_else(|| id.focus_in(&mut self.copy_modal))
-            .or_else(|| id.focus_in(&mut self.chart_export_modal))
+            .or_else(|| id.focus_in(&mut self.chart.export_modal))
             .or_else(|| id.focus_in(&mut self.pivot_melt_modal))
             .or_else(|| id.focus_in(&mut self.sort_filter_modal))
             .or_else(|| id.focus_in(&mut self.view_modal))
@@ -694,9 +694,9 @@ impl App {
     /// modal.
     fn chart_has_the_keys(&self) -> bool {
         self.input_mode == InputMode::Chart
-            && self.chart_modal.active
-            && self.chart_modal.picker.is_none()
-            && !self.chart_export_modal.active
+            && self.chart.modal.active
+            && self.chart.modal.picker.is_none()
+            && !self.chart.export_modal.active
             && !self.help_visible()
             && !self.error_modal.active
             && !self.confirmation_modal.active
@@ -779,9 +779,10 @@ impl App {
             };
         }
         if self.chart_has_the_keys()
-            && self.chart_modal.has_crosshair()
+            && self.chart.modal.has_crosshair()
             && self
-                .chart_modal
+                .chart
+                .modal
                 .plot
                 .is_some_and(|plot| plot.graph.contains(at))
         {

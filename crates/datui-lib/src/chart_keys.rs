@@ -19,8 +19,8 @@ impl App {
     pub(crate) fn chart_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         let out = self.chart_key_inner(event);
         // A Rows change is read once focus leaves the row, however it left.
-        if self.chart_modal.focus != ChartFocus::LimitRows || self.chart_modal.plot_focus {
-            self.chart_modal.leave_rows();
+        if self.chart.modal.focus != ChartFocus::LimitRows || self.chart.modal.plot_focus {
+            self.chart.modal.leave_rows();
         }
         out
     }
@@ -29,11 +29,11 @@ impl App {
         if !event.is_press() {
             return None;
         }
-        if self.chart_export_modal.active {
+        if self.chart.export_modal.active {
             return self.chart_export_key(event);
         }
 
-        if crate::form::picker_form_key(&mut self.chart_modal, event) {
+        if crate::form::picker_form_key(&mut self.chart.modal, event) {
             return None;
         }
 
@@ -41,7 +41,7 @@ impl App {
         // and x, Tab, Shift+Tab or Esc hand the keys back to the panel. The keys that
         // act from anywhere still do; the rest would edit a row with no rail on it, so
         // they do nothing.
-        if self.chart_modal.plot_focus {
+        if self.chart.modal.plot_focus {
             let to = match event.code {
                 KeyCode::Left | KeyCode::Char('h') => Some(Move::Left),
                 KeyCode::Right | KeyCode::Char('l') => Some(Move::Right),
@@ -55,7 +55,7 @@ impl App {
             }
             match event.code {
                 KeyCode::Char('x') | KeyCode::Esc | KeyCode::Tab | KeyCode::BackTab => {
-                    self.chart_modal.plot_focus = false;
+                    self.chart.modal.plot_focus = false;
                     return None;
                 }
                 KeyCode::Char('1'..='7' | '[' | ']' | 'g' | 'e' | 't' | '?') => {}
@@ -63,8 +63,8 @@ impl App {
             }
         }
 
-        if self.chart_modal.focus == ChartFocus::LimitRows
-            && !self.chart_modal.plot_focus
+        if self.chart.modal.focus == ChartFocus::LimitRows
+            && !self.chart.modal.plot_focus
             && self.chart_rows_key(event)
         {
             return None;
@@ -72,19 +72,19 @@ impl App {
 
         // The panel is a form, but one that applies as it changes: Enter acts on the
         // focused row as Space does, since there is nothing left to submit.
-        match crate::form::key(&mut self.chart_modal, event) {
+        match crate::form::key(&mut self.chart.modal, event) {
             FormKey::Cancel => {
-                self.chart_modal.close();
+                self.chart.modal.close();
                 self.reset_chart_state();
                 self.input_mode = InputMode::Normal;
                 return None;
             }
             FormKey::Submit | FormKey::Act(_) => {
-                self.chart_act(self.chart_modal.focus);
+                self.chart_act(self.chart.modal.focus);
                 return None;
             }
             FormKey::Step(row, delta) => {
-                self.chart_modal.step(row, delta);
+                self.chart.modal.step(row, delta);
                 return None;
             }
             FormKey::Moved | FormKey::Text(_) => return None,
@@ -93,24 +93,24 @@ impl App {
 
         match event.code {
             // The crosshair: the plot takes the keys.
-            KeyCode::Char('x') if self.chart_modal.has_crosshair() => {
-                self.chart_modal.plot_focus = true;
+            KeyCode::Char('x') if self.chart.modal.has_crosshair() => {
+                self.chart.modal.plot_focus = true;
                 self.move_crosshair_to(None);
             }
             // The type switches from anywhere: 1-7 name one in order, [ and ] step.
             // Safe as plain keys: with the Picker closed, nothing on this screen types.
             KeyCode::Char(c @ '1'..='7') => {
                 let idx = c as usize - '1' as usize;
-                self.chart_modal.set_mark(Mark::ALL[idx]);
+                self.chart.modal.set_mark(Mark::ALL[idx]);
             }
-            KeyCode::Char('[') => self.chart_modal.step_mark(-1),
-            KeyCode::Char(']') => self.chart_modal.step_mark(1),
+            KeyCode::Char('[') => self.chart.modal.step_mark(-1),
+            KeyCode::Char(']') => self.chart.modal.step_mark(1),
             // The grid at the major ticks, on the kinds that have axes.
-            KeyCode::Char('g') if self.chart_modal.has_grid() => {
-                self.chart_modal.toggle_grid();
+            KeyCode::Char('g') if self.chart.modal.has_grid() => {
+                self.chart.modal.toggle_grid();
             }
             KeyCode::Char('e') => {
-                if self.data_table_state.is_some() && self.chart_modal.can_export() {
+                if self.data_table_state.is_some() && self.chart.modal.can_export() {
                     self.open_chart_export();
                 }
             }
@@ -118,12 +118,12 @@ impl App {
             // too.
             KeyCode::Char('t') if self.follow_rows_waiting() => {
                 self.take_follow_rows(false);
-                self.chart_cache.clear();
+                self.chart.cache.clear();
             }
 
             KeyCode::Char('?') => self.open_help_overlay(),
-            KeyCode::Char('+') | KeyCode::Char('=') => self.chart_modal.adjust_number_row(1),
-            KeyCode::Char('-') => self.chart_modal.adjust_number_row(-1),
+            KeyCode::Char('+') | KeyCode::Char('=') => self.chart.modal.adjust_number_row(1),
+            KeyCode::Char('-') => self.chart.modal.adjust_number_row(-1),
             _ => {}
         }
         None
@@ -136,7 +136,7 @@ impl App {
         let plain = !event
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
-        let modal = &mut self.chart_modal;
+        let modal = &mut self.chart.modal;
         let typing = modal.typing_rows();
         match event.code {
             KeyCode::Char(c)
@@ -166,18 +166,18 @@ impl App {
     /// Space (or Enter) on a panel row: a shelf opens its Picker, a toggle flips, a
     /// stepped row takes its next value.
     fn chart_act(&mut self, focus: ChartFocus) {
-        if self.chart_modal.picker_for(focus).is_some() {
-            self.chart_modal.open_picker();
+        if self.chart.modal.picker_for(focus).is_some() {
+            self.chart.modal.open_picker();
         } else {
-            self.chart_modal.step(focus, 1);
+            self.chart.modal.step(focus, 1);
         }
     }
 
     /// Open the export dialog, its words started from the chart: how it was made of
     /// the rows, and where its data comes from. The figure names Y at its axis.
     fn open_chart_export(&mut self) {
-        let description = sentence_case(&self.chart_modal.how());
-        self.chart_export_modal.open(
+        let description = sentence_case(&self.chart.modal.how());
+        self.chart.export_modal.open(
             &self.theme,
             self.display.history_limit,
             ExportDefaults {
@@ -188,19 +188,19 @@ impl App {
                     .as_ref()
                     .map(|(_, entry)| entry.credit())
                     .unwrap_or_default(),
-                legend: self.chart_modal.show_legend,
-                mark: self.chart_modal.mark(),
-                y_from_zero: self.chart_modal.y_starts_at_zero,
+                legend: self.chart.modal.show_legend,
+                mark: self.chart.modal.mark(),
+                y_from_zero: self.chart.modal.y_starts_at_zero,
             },
         );
     }
 
     /// Keys in the chart's export dialog.
     fn chart_export_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
-        match crate::form::key(&mut self.chart_export_modal, event) {
-            FormKey::Cancel => self.chart_export_modal.close(),
+        match crate::form::key(&mut self.chart.export_modal, event) {
+            FormKey::Cancel => self.chart.export_modal.close(),
             FormKey::Submit => return self.submit_chart_export(),
-            FormKey::Step(field, delta) => self.chart_export_modal.step(field, delta),
+            FormKey::Step(field, delta) => self.chart.export_modal.step(field, delta),
             FormKey::Text(field) => {
                 // The size takes digits and the keys that move through them.
                 let size = matches!(
@@ -220,12 +220,12 @@ impl App {
                     };
                 if field == ChartExportFocus::PathInput {
                     // Typing is the correction the message asked for.
-                    self.chart_export_modal.error = None;
+                    self.chart.export_modal.error = None;
                 }
-                if allowed && let Some(input) = self.chart_export_modal.input_mut(field) {
+                if allowed && let Some(input) = self.chart.export_modal.input_mut(field) {
                     let _ = input.handle_key(event, Some(&self.cache));
                     if size {
-                        self.chart_export_modal.size_typed();
+                        self.chart.export_modal.size_typed();
                     }
                 }
             }
@@ -237,11 +237,11 @@ impl App {
     /// Enter, from any field of the chart's export dialog: build the export from the
     /// state every row already echoes. A blank path says so inline.
     fn submit_chart_export(&mut self) -> Option<AppEvent> {
-        let modal = &self.chart_export_modal;
+        let modal = &self.chart.export_modal;
         let path_str = modal.path_input.value().trim();
         if path_str.is_empty() {
-            self.chart_export_modal.error = Some("Enter a file path.".to_string());
-            crate::form::Form::focus(&mut self.chart_export_modal, ChartExportFocus::PathInput);
+            self.chart.export_modal.error = Some("Enter a file path.".to_string());
+            crate::form::Form::focus(&mut self.chart.export_modal, ChartExportFocus::PathInput);
             return None;
         }
         // `~` and `$VAR` expand as everywhere else a path is typed.
@@ -284,7 +284,8 @@ impl App {
             // Written in when the export starts, from the chart as it is then.
             recipe: None,
         };
-        self.chart_export_modal
+        self.chart
+            .export_modal
             .path_input
             .save_to_history(&self.cache)
             .or_log("save the chart export path");
@@ -299,7 +300,7 @@ impl App {
         if request.path.exists() {
             // Suspended, not closed: declining returns to the filled form with the
             // typed path intact.
-            self.chart_export_modal.suspend();
+            self.chart.export_modal.suspend();
             self.confirmation_modal.show_destructive(
                 format!("File already exists:\n{path_display}\n\nOverwrite it?"),
                 "Overwrite",
@@ -307,14 +308,14 @@ impl App {
             );
             return None;
         }
-        self.chart_export_modal.suspend();
+        self.chart.export_modal.suspend();
         Some(AppEvent::ChartExport(request))
     }
 
     /// Every X of the line or scatter series on screen, in order, each once.
     fn chart_xs(&self) -> Option<&[f64]> {
-        let request = ChartRequest::from_modal(&self.chart_modal)?;
-        match self.chart_cache.prepared(&request)? {
+        let request = ChartRequest::from_modal(&self.chart.modal)?;
+        match self.chart.cache.prepared(&request)? {
             PlotData::Lines(xy) => Some(&xy.xs),
             _ => None,
         }
@@ -322,32 +323,33 @@ impl App {
 
     /// Step the crosshair, from where it stands or the middle of the plot.
     fn move_crosshair(&mut self, to: Move) {
-        let (Some(place), Some(xs)) = (self.chart_modal.plot, self.chart_xs()) else {
+        let (Some(place), Some(xs)) = (self.chart.modal.plot, self.chart_xs()) else {
             return;
         };
         let from = self
-            .chart_modal
+            .chart
+            .modal
             .cursor_x
             .or_else(|| crosshair::at_column(xs, &place, middle(place.graph)));
         let to = from.and_then(|from| crosshair::step(xs, &place, from, to));
         if to.is_some() {
-            self.chart_modal.cursor_x = to;
+            self.chart.modal.cursor_x = to;
         }
     }
 
     /// Put the crosshair on the point nearest `column`, or with none, back on the
     /// point it stood on (the nearest one now), or in the middle of the plot.
     pub(crate) fn move_crosshair_to(&mut self, column: Option<u16>) {
-        let (Some(place), Some(xs)) = (self.chart_modal.plot, self.chart_xs()) else {
+        let (Some(place), Some(xs)) = (self.chart.modal.plot, self.chart_xs()) else {
             return;
         };
-        let at = match (column, self.chart_modal.cursor_x) {
+        let at = match (column, self.chart.modal.cursor_x) {
             (Some(column), _) => crosshair::at_column(xs, &place, column),
             (None, Some(x)) => crosshair::nearest(xs, x),
             (None, None) => crosshair::at_column(xs, &place, middle(place.graph)),
         };
         if at.is_some() {
-            self.chart_modal.cursor_x = at;
+            self.chart.modal.cursor_x = at;
         }
     }
 }

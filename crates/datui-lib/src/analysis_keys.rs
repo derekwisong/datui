@@ -1,5 +1,6 @@
 //! The analysis modal's keys.
 
+use crate::feedback::Confirm;
 use crate::{
     ANALYSIS_READ_WAITS, App, AppEvent, QUALITY_RUN_WAITS, analysis_modal, data_quality,
     sample_modal, sampling,
@@ -307,7 +308,7 @@ impl App {
                         }
                         return None;
                     }
-                    KeyCode::Enter => return self.run_quality_setup(),
+                    KeyCode::Enter => return self.run_quality_setup(false),
                     KeyCode::Char('d') => {
                         self.release_quality_rows();
                         return None;
@@ -529,7 +530,7 @@ impl App {
                     }
                     let before = self.analysis_modal.data_quality_plan.clone();
                     self.analysis_modal.data_quality_plan.sample_seed = sample_modal::new_seed();
-                    let event = self.run_quality_setup();
+                    let event = self.run_quality_setup(false);
                     // Refused, with the reason on Setup's line: the plan stays the
                     // one the report was run with, and the reason is said here.
                     if let Some(note) = self.analysis_modal.data_quality_setup_note.take() {
@@ -708,12 +709,14 @@ impl App {
                         .current_results()
                         .map(|r| r.total_rows)
                         .unwrap_or_default();
-                    self.pending_read_all = true;
-                    self.confirmation_modal.show(format!(
-                        "Read all {} rows? It can take much longer than the sample. \
-                         Esc stops waiting; the read finishes in the background.",
-                        crate::numfmt::group_chrome(total)
-                    ));
+                    self.confirmation_modal.show(
+                        format!(
+                            "Read all {} rows? It can take much longer than the sample. \
+                             Esc stops waiting; the read finishes in the background.",
+                            crate::numfmt::group_chrome(total)
+                        ),
+                        Confirm::ReadAll,
+                    );
                     self.confirmation_modal.yes_label = "Read all";
                 }
                 KeyCode::Tab | KeyCode::BackTab => {
@@ -811,11 +814,9 @@ impl App {
                         analysis_modal::AnalysisView::Main => {
                             match self.analysis_modal.focus {
                                 analysis_modal::AnalysisFocus::Sidebar => {
-                                    // Navigate sidebar tool list
                                     self.analysis_modal.next_tool();
                                 }
                                 analysis_modal::AnalysisFocus::Main => {
-                                    // Navigate in main area based on selected tool
                                     match self.analysis_modal.selected_tool {
                                         Some(analysis_modal::AnalysisTool::Describe) => {
                                             if let Some(state) = &self.data_table_state {
@@ -879,12 +880,8 @@ impl App {
                         && self.analysis_modal.view == analysis_modal::AnalysisView::Main =>
                 {
                     match self.analysis_modal.focus {
-                        analysis_modal::AnalysisFocus::Sidebar => {
-                            // Sidebar navigation handled by Up/Down
-                        }
-                        analysis_modal::AnalysisFocus::DistributionSelector => {
-                            // Distribution selector navigation handled by Up/Down
-                        }
+                        analysis_modal::AnalysisFocus::Sidebar
+                        | analysis_modal::AnalysisFocus::DistributionSelector => {}
                         analysis_modal::AnalysisFocus::Main => {
                             match self.analysis_modal.selected_tool {
                                 Some(
@@ -907,12 +904,8 @@ impl App {
                     if self.analysis_modal.view == analysis_modal::AnalysisView::Main =>
                 {
                     match self.analysis_modal.focus {
-                        analysis_modal::AnalysisFocus::Sidebar => {
-                            // Sidebar navigation handled by Up/Down
-                        }
-                        analysis_modal::AnalysisFocus::DistributionSelector => {
-                            // Distribution selector navigation handled by Up/Down
-                        }
+                        analysis_modal::AnalysisFocus::Sidebar
+                        | analysis_modal::AnalysisFocus::DistributionSelector => {}
                         analysis_modal::AnalysisFocus::Main => {
                             match self.analysis_modal.selected_tool {
                                 // The table set how far it scrolls as it drew.

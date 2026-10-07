@@ -717,11 +717,7 @@ impl App {
         match event {
             AppEvent::ChartExport(request) => {
                 self.busy = true;
-                self.export_progress = Some(ExportProgress {
-                    file_path: request.path.clone(),
-                    current_phase: "Exporting chart".to_string(),
-                    written: None,
-                });
+                self.export_progress = Some(ExportProgress::new(&request.path, "Exporting chart"));
                 Some(AppEvent::DoChartExport(request.clone()))
             }
             AppEvent::DoChartExport(request) => {

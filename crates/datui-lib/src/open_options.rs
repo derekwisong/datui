@@ -77,7 +77,7 @@ pub struct OpenOptions {
     /// rows no query of the table would return. datui does it anyway, because the
     /// alternative was a directory the user could see and could not read at all, and
     /// every other engine at least lets you look. What makes it honest rather than wrong
-    /// is that it is never silent: a note and a chip in the control bar say so, and both
+    /// is that it is never silent: a note and a chip in the footer say so, and both
     /// are load-bearing.
     pub read_as_plain_files_of: Option<&'static str>,
     /// How the directory's own files differed, when they did.

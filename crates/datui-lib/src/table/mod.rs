@@ -72,7 +72,7 @@ pub struct DataTableState {
     /// When true, collect() skips the len() query.
     pub(crate) num_rows_valid: bool,
     /// The dataset's own row count, remembered from the last moment the frame was
-    /// pristine. Lets the control bar say "417 of 1,000" under a filter or query
+    /// pristine. Lets the footer say "417 of 1,000" under a filter or query
     /// without a second count; `None` until a pristine count has resolved.
     pristine_rows: Option<usize>,
     /// Bumped whenever `lf` changes (via `invalidate_num_rows`). A background `len()`

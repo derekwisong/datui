@@ -6,6 +6,7 @@ use crate::chart_export::{ChartExportFormat, ChartExportRequest};
 use crate::chart_export_modal::{ChartExportFocus, ExportDefaults};
 use crate::chart_modal::{ChartFocus, Mark};
 use crate::chart_plot::PlotData;
+use crate::feedback::Confirm;
 use crate::form::{FormKey, PickerKey};
 use crate::logging::LogFailure;
 use crate::output_file::Overwrite;
@@ -133,7 +134,7 @@ impl App {
                 self.take_follow_rows(false);
                 self.chart_cache.clear();
             }
-            // q/Q do nothing in chart view (no exit)
+
             KeyCode::Char('?') => self.open_help_overlay(),
             KeyCode::Char('+') | KeyCode::Char('=') => self.chart_modal.adjust_number_row(1),
             KeyCode::Char('-') => self.chart_modal.adjust_number_row(-1),
@@ -309,13 +310,13 @@ impl App {
             recipe,
         };
         if request.path.exists() {
-            self.pending_chart_export = Some(request);
             // Suspended, not closed: declining returns to the filled form with the
             // typed path intact.
             self.chart_export_modal.suspend();
             self.confirmation_modal.show_destructive(
                 format!("File already exists:\n{path_display}\n\nOverwrite it?"),
                 "Overwrite",
+                Confirm::ChartExport(Box::new(request)),
             );
             return None;
         }

@@ -1352,7 +1352,7 @@ pub fn next_tick(at: Instant) -> Instant {
     at + Duration::from_secs((secs / unit + 1) * unit)
 }
 
-/// Where the follow stands, as the control bar says it.
+/// Where the follow stands, as the footer says it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Standing {
     Following,

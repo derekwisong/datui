@@ -15,7 +15,6 @@ pub struct CacheManager {
 }
 
 impl CacheManager {
-    /// Create a new CacheManager for the given app name
     /// Create a CacheManager rooted at an explicit directory (primarily for testing).
     pub fn with_dir(cache_dir: PathBuf) -> Self {
         Self { cache_dir }

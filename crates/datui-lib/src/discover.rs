@@ -1,8 +1,9 @@
 //! Dataset discovery for the home screen.
 //!
-//! This is deliberately *not* a catalogue. Nothing here is persisted: every listing
+//! This is deliberately *not* a catalogue. Listings are not persisted: every listing
 //! is computed from the filesystem when asked for, and forgotten when the session
-//! ends. The only state datui keeps between runs is a list of recently opened paths.
+//! ends. What datui keeps between runs is the recently opened paths, and the shape an
+//! open measured of a dataset (`remembered`), used while its files are as they were.
 //!
 //! Discovery is also deliberately shallow. Interesting datasets tend to live on
 //! mounts — network filesystems, spinning disks, hive trees with a hundred thousand

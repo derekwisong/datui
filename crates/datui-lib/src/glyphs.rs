@@ -52,7 +52,7 @@ pub struct Glyphs {
     /// Section collapse markers; both must be the same display width.
     pub collapsed: &'static str,
     pub expanded: &'static str,
-    /// Keycap names for the control bar. Named keys are spelled out there, matching
+    /// Keycap names for the footer. Named keys are spelled out there, matching
     /// the rest of datui, so only the arrows need a fallback.
     pub updown: &'static str,
     /// Left/right pair, for the fold hint.

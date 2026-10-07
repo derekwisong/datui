@@ -506,7 +506,6 @@ fn json(path: &Path, format: JsonFormat) -> Result<LazyFrame> {
         .lazy())
 }
 
-/// Load multiple Parquet files and concatenate them into one LazyFrame (same schema assumed).
 /// How the files of one dataset are stacked into one table.
 ///
 /// `diagonal`, so a file written before a column existed brings the rest of its

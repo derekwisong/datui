@@ -1,16 +1,9 @@
-//! The width each column of the main table is drawn at, kept by column identity so
-//! the layout holds still while the view pages, scrolls, reorders and resizes.
-//!
-//! An automatic width is learned from the first page a column is drawn on, from
-//! values the renderer formats anyway: nothing is read for it. Text keeps that width
-//! on later pages, bounded by [`text_cap`], and a longer value is clipped behind the
-//! marker. A number, date or flag can't be clipped without reading as another value,
-//! so its width only grows, to the widest value seen. Widths set by hand in the
-//! Columns sidebar outrank both.
-//!
-//! A deliberate change to what the view shows (a query, reshape, drill, sort or
-//! filter) learns every automatic width again, from the first rows the new view
-//! reads. Paging and scrolling never do.
+//! Each main-table column's drawn width, kept by identity so the layout holds through
+//! paging, scrolling, reordering and resizing. Automatic widths are learned from the
+//! first page drawn (values already formatted, nothing read): text keeps it, bounded by
+//! [`text_cap`] and clipped beyond; numbers, dates and flags only grow (clipped they
+//! would read wrong). Sidebar-set widths win. A query, reshape, drill, sort or filter
+//! relearns automatic widths; paging and scrolling never do.
 
 use polars::prelude::DataType;
 use std::collections::HashMap;
@@ -65,9 +58,8 @@ impl WidthChoice {
 }
 
 /// The most cells an automatic width gives text or a heading: two fifths of the
-/// terminal (32 at 80 columns, 48 at 120), between 16 and 64. Taken from the
-/// terminal rather than the table, so opening a sidebar moves no column; a resize
-/// moves them, as it should.
+/// terminal (32 at 80 columns), between 16 and 64. From the terminal, not the table, so
+/// a sidebar moves nothing; a resize does.
 pub fn text_cap(screen_width: u16) -> u16 {
     let fifths = u32::from(screen_width) * 2 / 5;
     u16::try_from(fifths).unwrap_or(u16::MAX).clamp(16, 64)
@@ -117,10 +109,9 @@ struct Entry {
     current: bool,
 }
 
-/// Display widths by column identity: a name and its type. A column whose type
-/// changes, as a query or reading it as text can do, is a new column and starts
-/// afresh; one that comes back with its type keeps its width. Separate from the
-/// footer's byte estimate, which plans the buffer and says nothing about cells.
+/// Display widths by column identity (name and type): a retyped column starts afresh,
+/// one returning with its type keeps its width. Unrelated to the byte estimate that
+/// plans buffers.
 #[derive(Debug, Clone, Default)]
 pub struct ColumnWidths {
     by_name: HashMap<String, Vec<Entry>>,

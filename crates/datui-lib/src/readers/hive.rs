@@ -36,8 +36,8 @@ pub fn scan_parquet_hive_with_schema(path: &Path, schema: Arc<Schema>) -> Result
     LazyFrame::scan_parquet(pl_path, args).map_err(Into::into)
 }
 
-/// Find the first parquet file along a single spine of a hive-partitioned directory (same walk as partition discovery).
-/// Returns `None` if the directory is empty or has no parquet files along that spine.
+/// The first Parquet file along one spine of a hive directory (as partition discovery
+/// walks); `None` if there is none.
 fn first_parquet_file_in_hive_dir(path: &Path) -> Option<std::path::PathBuf> {
     const MAX_DEPTH: usize = 64;
     first_parquet_file_spine(path, 0, MAX_DEPTH)
@@ -79,9 +79,9 @@ fn read_schema_from_single_parquet(path: &Path) -> Result<Arc<Schema>> {
     Ok(Arc::new(schema))
 }
 
-/// Infer schema from one parquet file in a hive directory and merge with partition columns.
-/// Returns (merged_schema, partition_columns). Use with scan_parquet_hive_with_schema to avoid slow collect_schema().
-/// Only supported when path is a directory (not a glob). Returns Err if no parquet file found or read fails.
+/// The schema of one Parquet file in a hive directory (not a glob) merged with the
+/// partition columns, returned with them; spares `collect_schema()` when used with
+/// `scan_parquet_hive_with_schema`. Errors if no file is found or it fails to read.
 pub fn schema_from_one_hive_parquet(path: &Path) -> Result<(Arc<Schema>, Vec<String>)> {
     let partition_columns = discover_hive_partition_columns(path);
     let one_file = first_parquet_file_in_hive_dir(path)

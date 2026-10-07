@@ -1,53 +1,28 @@
-//! Keeping untrusted text from becoming terminal commands.
-//!
-//! datui displays text it did not write: cell values, column names, filenames,
-//! and parser error messages all originate in whatever file the user opened.
-//! A terminal does not distinguish text from commands, so a cell containing
-//! `\x1b]52;c;...\x07` is a clipboard write, and one containing `\x1b[2J` wipes
-//! the screen. That is the standard vulnerability class for any program that
-//! renders foreign text.
-//!
-//! ratatui defends against this in [`Buffer::set_stringn`], which drops
-//! graphemes containing control characters. It does **not** defend against it
-//! in `Span` and `Line` rendering, which is what almost everything actually
-//! uses: `Span::render_ref` appends zero-width graphemes to the preceding cell,
-//! and an ESC is zero-width. The crossterm backend then writes each cell symbol
-//! out with `Print`, unfiltered, and the escape reaches the terminal intact.
-//!
-//! Sanitising at the roughly two hundred places that build a `Span` would work
-//! until someone adds the two hundred and first. So the sweep happens once, at
-//! the end of `App::render`, over the finished buffer. Every path into the
-//! screen has converged by then, including paths added later and paths nobody
-//! remembered to audit.
+//! Keeping untrusted text (cells, column names, filenames, parser errors) from becoming
+//! terminal commands: `\x1b]52;c;...\x07` in a cell writes the clipboard, `\x1b[2J` wipes
+//! the screen. ratatui's [`Buffer::set_stringn`] drops control graphemes, but `Span`
+//! and `Line` rendering append zero-width graphemes (ESC included) to the previous cell,
+//! and crossterm prints cells unfiltered. Rather than guard every `Span` site, one sweep
+//! runs at the end of `App::render` over the finished buffer.
 //!
 //! [`Buffer::set_stringn`]: ratatui::buffer::Buffer::set_stringn
 
 use ratatui::buffer::Buffer;
 
-/// What a stripped control character is replaced with.
-///
-/// A visible marker rather than deletion: silently dropping bytes would let a
-/// hostile value disguise itself as a different, plausible value. Seeing
-/// `total: 1<?>0` is a hint that something is wrong with the data, where
-/// `total: 10` is a lie.
+/// What a stripped control character becomes: a visible marker, since deleting it
+/// would let a hostile value pose as a plausible one (`1<?>0` vs `10`).
 const REPLACEMENT: char = '\u{fffd}';
 
-/// True for characters that must never reach the terminal from untrusted text.
-///
-/// The C0 controls, DEL, and the C1 range, which some terminals accept as
-/// single-byte equivalents of the two-byte escape sequences (`\u{009b}` for
-/// CSI, for instance). Tab is allowed through: it is layout rather than
-/// control, and ratatui may place one legitimately.
+/// Characters that must never reach the terminal from untrusted text: C0 controls, DEL
+/// and C1 (some terminals take `\u{009b}` as CSI). Tab is layout and allowed.
 #[inline]
 fn is_forbidden(c: char) -> bool {
     let n = c as u32;
     (n < 0x20 && c != '\t') || n == 0x7f || (0x80..=0x9f).contains(&n)
 }
 
-/// Returns a display-safe copy of `s`, or `None` if it was already safe.
-///
-/// The `None` case is the common one by a wide margin, and returning it avoids
-/// allocating for the overwhelming majority of cells.
+/// A display-safe copy of `s`, or `None` if already safe (the usual case, sparing an
+/// allocation).
 pub fn sanitized(s: &str) -> Option<String> {
     if !s.chars().any(is_forbidden) {
         return None;
@@ -59,11 +34,8 @@ pub fn sanitized(s: &str) -> Option<String> {
     )
 }
 
-/// Replaces control characters in every cell of a finished buffer.
-///
-/// Call this once, after all rendering, and before the buffer is handed to a
-/// backend. It is the last point at which datui controls what the terminal
-/// receives.
+/// Replace control characters in every cell of a finished buffer: once, after all
+/// rendering, before the backend, the last point datui controls the output.
 pub fn sanitize_buffer(buf: &mut Buffer) {
     for cell in buf.content.iter_mut() {
         if let Some(clean) = sanitized(cell.symbol()) {

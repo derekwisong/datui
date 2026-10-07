@@ -1,15 +1,9 @@
-//! Writing the view to an export file.
-//!
-//! [`run`] takes the view's plan to a committed file. Uncompressed CSV and
-//! Parquet stream: Polars' sink encodes the plan batch by batch into the
-//! [`OutputFile`], and no frame of the whole output is built. Everything else —
-//! compressed CSV, JSON, NDJSON, IPC, Avro, any export with the streaming
-//! engine off, and builds without it — collects the plan and [`encode`]s the
-//! frame. Either way the destination changes only at the commit, after the
-//! last byte, the encoder's finish and the final flush have succeeded.
-//!
-//! Streaming bounds what the export holds, not what the plan needs: a sort, a
-//! group-by or a join still gathers its input before its first row leaves.
+//! Writing the view to an export file. [`run`] takes the plan to a committed file:
+//! uncompressed CSV and Parquet stream through Polars' sink into the [`OutputFile`];
+//! everything else (compressed CSV, JSON, NDJSON, IPC, Avro, or no streaming engine)
+//! collects and [`encode`]s. The destination changes only at commit, after the last
+//! byte, encoder finish and flush succeed. Streaming bounds the export, not the plan: a
+//! sort, group-by or join still gathers its input first.
 
 use std::io::{self, BufWriter, Write};
 use std::path::PathBuf;
@@ -88,10 +82,9 @@ impl ExportRequest {
 /// How often a running export reports the bytes it has written.
 const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 
-/// Run an export: plan `lf` as the format needs ([`ExportFormat::prepare`]),
-/// write it to the request's path by its [`Route`], and commit. `written` hears
-/// the bytes written so far: 0 as the write starts, then a few times a second.
-/// The destination changes only if every byte was written.
+/// Run an export: plan `lf` for the format ([`ExportFormat::prepare`]), write by its
+/// [`Route`], commit. `written` hears bytes so far (0 at start, then a few times a
+/// second). The destination changes only if everything was written.
 pub fn run(
     lf: LazyFrame,
     request: &ExportRequest,
@@ -227,10 +220,8 @@ impl<F: FnMut(u64)> polars::io::utils::file::WritableTrait for Counted<std::fs::
     }
 }
 
-/// Encode `df` into `sink` and finish: every buffer is drained, the encoder's
-/// last block and trailer written and `sink` flushed before this returns, so a
-/// failure in any of them is an error here rather than one lost when a writer
-/// is dropped.
+/// Encode `df` into `sink` and finish (drain buffers, write the last block and trailer,
+/// flush), so failures surface here rather than at drop.
 pub fn encode<W: Write>(
     df: &mut DataFrame,
     format: ExportFormat,

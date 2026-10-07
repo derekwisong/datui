@@ -2386,8 +2386,6 @@ fn an_open_draws_each_phase_and_then_the_rows() {
     assert!(scanning < rows, "the phase is drawn before the rows");
 }
 
-/// A pump with a wide, long CSV loaded: columns past the screen and rows past a
-/// page, so the keys that move have somewhere to go.
 /// A pump with a wide, long CSV loaded: columns past the screen, rows past a page
 /// and numbers that group, so the keys that move and format have somewhere to go.
 fn long_wide_pump() -> (EventPump, tempfile::TempDir) {

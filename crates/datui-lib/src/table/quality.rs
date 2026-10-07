@@ -209,8 +209,6 @@ impl DataTableState {
             .collect()
     }
 
-    /// Build a temporary filtered table without changing the current pipeline. The
-    /// caller keeps this state to restore its query, filters, sort, and buffer.
     /// A table of rows already read: an analysis's sample, shown in the table viewer
     /// with everything it offers (sort, filter, query, copy, export). The rows are in
     /// memory, so nothing here reads the source again.
@@ -231,6 +229,8 @@ impl DataTableState {
         Ok(view)
     }
 
+    /// A temporary filtered table, leaving the current pipeline unchanged; the caller
+    /// keeps this state to restore its query, filters, sort and buffer.
     pub(crate) fn quality_evidence_view(
         &self,
         scope: &crate::data_quality::QualityScope,

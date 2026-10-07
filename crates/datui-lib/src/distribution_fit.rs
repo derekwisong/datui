@@ -1,17 +1,10 @@
-//! Fitting a column's values to each candidate distribution, and testing each fit.
-//!
-//! One set of parameters per family, estimated once, is what the test, the Q-Q plot
-//! and the histogram overlay all use. The test is Kolmogorov-Smirnov, calibrated by a
-//! parametric bootstrap: the statistic of the values against their fit is ranked among
-//! the statistics of samples drawn from that fit and refitted the same way. That is
-//! what makes it a p-value when the parameters come from the data being tested, which
-//! the textbook KS table assumes they do not, and it holds for the discrete families,
-//! where the table does not apply at all.
-//!
-//! A p-value says how surprising the values would be if they came from the fitted
-//! distribution. It is not the probability that they did, and the largest one is not
-//! the best model: among the families a test does not reject, the one chosen is the
-//! one with the lowest AIC.
+//! Fitting a column to each candidate distribution and testing each fit. One parameter
+//! set per family, estimated once, serves the test, Q-Q plot and histogram overlay. The
+//! test is Kolmogorov-Smirnov calibrated by parametric bootstrap (the statistic ranked
+//! among those of samples drawn from the fit and refitted), so it is a valid p-value
+//! with estimated parameters and for discrete families. A p-value is not the
+//! probability of the model, and the largest is not the best: among unrejected
+//! families, the lowest AIC wins.
 
 use crate::statistics::DistributionType;
 
@@ -371,10 +364,9 @@ impl Fitted {
         0.5 * (low + high)
     }
 
-    /// The smallest whole number whose CDF reaches `p`, found by bisection from a
-    /// guess: a number of CDF evaluations that grows with the log of the spread. A walk
-    /// one number at a time took a million steps per draw on a geometric fitted to
-    /// values in the millions, and the bootstrap draws a hundred thousand.
+    /// The smallest whole number whose CDF reaches `p`, by bisection from a guess (log of
+    /// the spread in evaluations; stepping one at a time was a million steps per draw for
+    /// large geometric fits).
     fn discrete_quantile(&self, p: f64) -> f64 {
         let start = match *self {
             Self::Geometric { start, .. } => start as f64,
@@ -866,10 +858,9 @@ fn weibull_mle(values: &[f64]) -> Option<Fitted> {
     Some(Fitted::Weibull { shape: k, scale })
 }
 
-/// The two-sided Kolmogorov-Smirnov statistic of sorted `values` against `fitted`:
-/// the largest gap between the empirical and fitted CDFs, on either side of each step.
-/// Tied values are one step, compared at the value and just below it, so a discrete
-/// fit is measured where its jumps are.
+/// The two-sided KS statistic of sorted `values` against `fitted`: the largest CDF gap
+/// on either side of each step. Ties are one step, compared at and just below the value,
+/// so discrete fits are measured at their jumps.
 pub fn ks_statistic(sorted: &[f64], fitted: &Fitted) -> f64 {
     let n = sorted.len() as f64;
     let mut d: f64 = 0.0;
@@ -978,10 +969,9 @@ fn nested_in(family: DistributionType) -> &'static [DistributionType] {
     }
 }
 
-/// The family the values are consistent with, or `Unknown` when every test rejects
-/// them. Among those not rejected, the lowest AIC; counts are described by a count
-/// distribution when one is not rejected, since a density and a probability are not
-/// on one scale.
+/// The family the values are consistent with, or `Unknown` when all are rejected: the
+/// lowest AIC among the unrejected, preferring a count distribution for counts (density
+/// and probability are not on one scale).
 pub fn select(results: &[(DistributionType, FitOutcome)], counts: bool) -> DistributionType {
     let held: Vec<&FitTest> = results
         .iter()

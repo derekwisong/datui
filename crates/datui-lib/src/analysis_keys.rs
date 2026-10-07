@@ -57,7 +57,6 @@ impl App {
         match event.code {
                 KeyCode::Esc => {
                     if self.analysis_modal.view != analysis_modal::AnalysisView::Main {
-                        // Close detail view
                         self.analysis_modal.close_detail();
                     } else if self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main
                         && self.analysis_modal.selected_tool.is_some()

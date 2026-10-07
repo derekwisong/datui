@@ -1,10 +1,8 @@
-//! Remote files downloaded to local ones, and standard input spooled to one.
-//!
-//! A download is read on one side and written on the thread that asked, never on a
-//! runtime worker, with at most [`QUEUED_CHUNKS`] waiting between the two: a full
-//! queue stops the reading, so a slow disk holds the transfer back instead of the
-//! file piling up in memory. A store's stream is polled on the app's runtime; a
-//! blocking reader (HTTP, standard input) runs on a thread of its own.
+//! Remote files downloaded to local ones, and stdin spooled to one. Reading and writing
+//! are on separate threads (writing on the caller's, never a runtime worker) with at most
+//! [`QUEUED_CHUNKS`] between them, so a slow disk backs the transfer up instead of
+//! memory. Store streams poll on the app's runtime; blocking readers (HTTP, stdin) get
+//! their own thread.
 
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
@@ -153,13 +151,10 @@ fn receive<B: AsRef<[u8]>>(
     }
 }
 
-/// A new file in `dir`, as [`TempDownload::create`] names it, filled by `fill`
-/// through the writer it is handed. Any failure, and a stop, removes the partial
-/// file before this returns.
-///
-/// The file is claimed through `writer` from the moment it exists until its last
-/// holder drops it, so quitting removes it even while this thread is still writing
-/// (see [`crate::unfinished`]). A stopped open's file is refused and removed.
+/// A new file in `dir` (named as [`TempDownload::create`] does) filled by `fill`. Any
+/// failure or stop removes the partial file before returning. Claimed via `writer` from
+/// creation until its last holder drops it, so quitting removes it mid-write (see
+/// [`crate::unfinished`]); a stopped open's file is refused and removed.
 fn fill_temp(
     dir: Option<&Path>,
     extension: Option<&str>,
@@ -188,15 +183,11 @@ fn fill_temp(
     }
 }
 
-/// Run `open` on `runtime` and hand each chunk of the stream it answers with to
-/// `write` on this thread, in order. Returns the bytes written.
-///
-/// `open` gives the stream and its length, when known. `stop` is checked between
-/// chunks, and every `STALL_CHECK` while the store is silent; so is whether this
-/// side has stopped listening. Ends in an error, never a short success, when the
-/// open or a chunk fails, `write` refuses one, `stop` says so, or the runtime shuts
-/// down mid-transfer; the request is dropped with the stream then. Must not be
-/// called on a runtime worker: it blocks.
+/// Run `open` on `runtime` and pass each stream chunk to `write` on this thread, in
+/// order, returning the bytes written. `stop` (and whether this side still listens) is
+/// checked between chunks and every `STALL_CHECK` of silence. Errors, never a short
+/// success, on open or chunk failure, a refused write, a stop, or runtime shutdown.
+/// Blocks: never call on a runtime worker.
 #[cfg(feature = "cloud")]
 pub fn stream_into<O, S, B, E>(
     runtime: &tokio::runtime::Handle,
@@ -296,14 +287,10 @@ where
 /// Bytes asked of a blocking reader at a time.
 const READ_CHUNK: usize = 64 * 1024;
 
-/// Run `open` on a thread of its own and hand each chunk read from the reader it
-/// answers with to `write` on this thread, in order. Returns the bytes written; a
-/// length `open` gives must be what arrives.
-///
-/// The reads run at most [`QUEUED_CHUNKS`] ahead of the writes, and a server that
-/// stops sending holds that thread and not this one: `stop` is checked between
-/// chunks and every `STALL_CHECK` while nothing arrives. The reading thread ends at
-/// its next chunk once this side has gone.
+/// Run `open` on its own thread and pass each chunk to `write` here, in order, returning
+/// the bytes written (a stated length must match). Reads run at most [`QUEUED_CHUNKS`]
+/// ahead; a silent server holds the reader, not this thread, with `stop` checked between
+/// chunks and every `STALL_CHECK`. The reader ends at its next chunk once this side goes.
 pub fn read_into<R: std::io::Read>(
     open: impl FnOnce() -> Opened<R> + Send + 'static,
     stop: impl Fn() -> bool,
@@ -359,13 +346,9 @@ pub fn read_into<R: std::io::Read>(
     receive(&stop, next, write)
 }
 
-/// Read what `open` answers with into a new file in `dir`, as
-/// [`TempDownload::create`] names it, until `writer`'s open stops; see [`read_into`].
-/// Any failure, and a stop, removes the partial file before this returns.
-///
-/// With a `limit`, it is refused as a [`StreamError::Write`] of [`PastLimit`] once
-/// more than `limit` bytes have arrived: nothing past the limit is written, and the
-/// partial file is removed as for any other failure.
+/// Read `open`'s stream into a new file in `dir` until `writer`'s open stops (see
+/// [`read_into`]); failures and stops remove the partial file. With `limit`, more bytes
+/// than that fail as [`StreamError::Write`] of [`PastLimit`], nothing past it written.
 #[cfg(feature = "http")]
 pub(crate) fn read_to_temp<R: std::io::Read>(
     dir: Option<&Path>,

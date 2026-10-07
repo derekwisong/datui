@@ -53,14 +53,12 @@ pub(crate) fn ordered_by(plan: &polars::lazy::dsl::DslPlan) -> Vec<(String, bool
     }
 }
 
-/// `plan` giving its rows in one order on every read. Each page is its own read of
-/// the view, so a node free to return rows in any order lets pages repeat some rows
-/// and skip others, a `LIMIT` keep different groups on each read, and a sort's ties
-/// arrive in a different order each time. Every sort keeps tied rows in the order
-/// they come, as `sort_options` does (Polars SQL sorts unstably and offers no
-/// option), and every grouping, distinct, union and join keeps its input's order,
-/// except a grouping sorted by all its keys (see [`sorts_by_group_keys`]). Only the
-/// parts of the plan holding such a node are rewritten.
+/// `plan` giving its rows in one order on every read: each page is a separate read, so
+/// unordered nodes would repeat or skip rows, `LIMIT` would keep different groups, and
+/// sort ties would reorder. Sorts keep tied rows in arrival order (as `sort_options`;
+/// Polars SQL sorts unstably), and groupings, distincts, unions and joins keep input
+/// order, except a grouping sorted by all its keys ([`sorts_by_group_keys`]). Only
+/// subplans with such nodes are rewritten.
 pub(crate) fn stable_order(plan: &mut polars::lazy::dsl::DslPlan) {
     order_stably(plan, false);
 }
@@ -107,17 +105,13 @@ fn order_stably(plan: &mut polars::lazy::dsl::DslPlan, groups_sorted: bool) {
     for_each_input(plan, &mut |input| order_stably(input, inputs_sorted));
 }
 
-/// Whether `sort` sorts the rows of a grouping by every one of its keys, so the
-/// order the groups arrive in never shows and keeping it is wasted time (#523).
-/// Keys are unique per group, so such a sort has no ties, wherever it puts NULLs: a
-/// NULL key is one group, and NaN and -0.0 group as the sort compares them. The
-/// groups must reach the sort through projections that only pass or rename
-/// columns: a filter or a computed column could depend on the order they arrive
-/// in, as `ROW_NUMBER() OVER ()` does. A key counts only as a plain column of the
-/// sort, which is what polars-sql makes of an alias, an ordinal or a key's own
-/// name. It evaluates any other expression against the grouped columns, which
-/// already hold the keys: `ORDER BY x % 4 * 2` over `GROUP BY x % 4 * 2` sorts by
-/// the key's `% 4 * 2`, and ties keys that differ.
+/// Whether `sort` orders a grouping by all its keys, so arrival order never shows and
+/// keeping it is wasted. Keys are unique per group, so no ties (NULL is one group; NaN
+/// and -0.0 group as the sort compares). Groups must reach the sort through pure
+/// pass/rename projections (a filter or computed column, like `ROW_NUMBER() OVER ()`,
+/// could depend on order). Keys count only as plain sort columns (polars-sql's form of
+/// aliases, ordinals and key names); other expressions are evaluated against the keys,
+/// so `ORDER BY x % 4 * 2` over `GROUP BY x % 4 * 2` can tie distinct keys.
 fn sorts_by_group_keys(sort: &polars::lazy::dsl::DslPlan) -> bool {
     use polars::lazy::dsl::DslPlan;
     let DslPlan::Sort {
@@ -182,15 +176,12 @@ fn sorts_by_group_keys(sort: &polars::lazy::dsl::DslPlan) -> bool {
     }
 }
 
-/// `plan` with an `IN (SELECT …)` subquery's values counted once instead of once per
-/// row. polars-sql adds the values as a one-row list column and filters on
-/// `col.first().list.len()` and `col.first().list.contains(NULL)`. The streaming
-/// engine repeats that `first()` for every row of a batch and the list kernels copy
-/// the list into each: rows times values, 26 GB for a page of a 100k-row table where
-/// a third of the rows match (#509). Asked of the values exploded, the questions read
-/// the one list; an empty list explodes to no rows, so both answers are unchanged.
-/// Only those questions are rewritten: a user's own `ARRAY_LENGTH(FIRST(l))` differs
-/// once exploded when the first list is NULL.
+/// `plan` with an `IN (SELECT …)` subquery's values counted once, not per row.
+/// polars-sql adds them as a one-row list column filtered by `col.first().list.len()`
+/// and `.list.contains(NULL)`; streaming repeats `first()` per row and copies the list
+/// into each (26 GB for one page of a 100k-row table). Asked of the exploded values the
+/// answers are unchanged (an empty list explodes to nothing). Only those exact
+/// expressions are rewritten: a user's `ARRAY_LENGTH(FIRST(l))` differs when exploded.
 pub(crate) fn count_subquery_values_once(plan: &mut polars::lazy::dsl::DslPlan) {
     use polars::lazy::dsl::{DslPlan, FunctionExpr, ListFunction};
     fn ask_once(e: Expr, names: &[PlSmallStr]) -> Expr {
@@ -234,12 +225,10 @@ pub(crate) fn count_subquery_values_once(plan: &mut polars::lazy::dsl::DslPlan) 
     for_each_input(plan, &mut count_subquery_values_once);
 }
 
-/// The columns of `schema`, `plan`'s columns, that carry what polars-sql added to
-/// hold `IN` subqueries' values (see [`subquery_value_columns`]). A WHERE's projection
-/// drops them, but a QUALIFY keeps them in its result, a list of every value on every
-/// row, and a statement reading its result as a table carries them on (#519), under
-/// a join's suffix when both sides hold one. Matched by the name polars-sql gave
-/// them, which is unique to the process, so no column of the user's is taken for one.
+/// The columns of `schema` carrying polars-sql's `IN`-subquery values (see
+/// [`subquery_value_columns`]): a WHERE projects them away, but QUALIFY keeps them, and a
+/// statement over that result carries them on (with a join suffix if both sides have
+/// one). Matched by polars-sql's process-unique name, so no user column is mistaken.
 pub(crate) fn leftover_subquery_value_columns(
     plan: &mut polars::lazy::dsl::DslPlan,
     schema: &Schema,

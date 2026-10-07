@@ -1,18 +1,9 @@
-//! GPS logs: NMEA 0183 and GPX, read into a table.
-//!
-//! Neither format can be scanned in place, so an open reads the file once, start to
-//! end, a piece at a time, and writes the rows to a temporary Arrow IPC file a batch
-//! at a time. The dataset scans that file lazily like any other, and memory stays at
-//! one batch however long the log. The file is claimed through the open's
-//! `Writer`, so quitting or replacing the open removes it.
-//!
-//! A GPX file can find a new extension field a million points in: the rows after it
-//! go to a new segment, a second IPC file with the wider schema, and the frame is the
-//! segments joined with the missing columns null. An NMEA table's columns are fixed,
-//! so it is always one segment.
-//!
-//! The readers take bytes as they come and hand back rows as they are ready, so a log
-//! still being written can later be followed by reading on from where they stopped.
+//! GPS logs (NMEA 0183, GPX) as a table. Neither scans in place, so an open reads the
+//! file once in pieces, writing rows a batch at a time to a temp Arrow IPC file (claimed
+//! via the open's `Writer`) that the dataset scans lazily. A GPX extension field
+//! appearing late starts a new segment file with the wider schema, joined with nulls;
+//! NMEA is always one segment. Readers are incremental, so a growing log can be
+//! followed later.
 
 pub mod gpx;
 pub mod nmea;
@@ -99,11 +90,9 @@ pub(crate) const GPX: crate::readers::Reader = crate::readers::Reader {
     ..crate::readers::BASE
 };
 
-/// Read `files` (named `display` to the user when there is one) as `format` into
-/// temporary IPC files, written through `writer`, counting the bytes of the files read
-/// in `read`. Several files are one table with a `file` column first, each file's
-/// columns its own and the others null; what the reads noticed is counted across them,
-/// and is the GPS tab of the Info panel.
+/// Read `files` (shown as `display`) as `format` into temp IPC files via `writer`,
+/// counting bytes read in `read`. Several files form one table with a leading `file`
+/// column; read notes are summed for Info's GPS tab.
 pub(crate) fn convert(
     files: &[PathBuf],
     display: &Path,
@@ -551,10 +540,9 @@ fn nmea_notes(stats: &nmea::Stats, of: Option<usize>, undated: usize) -> Vec<Not
     notes
 }
 
-/// The tables of an NMEA log besides `table`, each named as `--table` takes it with the
-/// sentences it holds, when one of them holds rows `table` does not show: a sentence
-/// type the fixes do not merge (GSA, GSV, ZDA), or any other type beside one type's
-/// table. Empty otherwise, so a log of fixes only says nothing.
+/// An NMEA log's other tables (as `--table` names them, with their sentences) when one
+/// holds rows `table` lacks (GSA, GSV, ZDA, or another type's table); empty for a
+/// fixes-only log.
 fn nmea_other_tables(stats: &nmea::Stats, table: nmea::Table) -> Vec<String> {
     use nmea::Table;
     let typed = |t: Table| !matches!(t, Table::Fixes | Table::Sentences);

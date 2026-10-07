@@ -3,13 +3,11 @@
 
 use super::*;
 
-/// The view as it stood before a query or view replaced it: a checkpoint. A query plans
-/// without reading anything and can still fail once it runs — a value that will not
-/// cast — and then the table goes back to this, rows and all, rather than keep a
-/// frame that fails on every scroll. Frames and buffers are shared, not copied.
-///
-/// Taken by [`DataTableState::rollback_point`] or [`DataTableState::try_transition`],
-/// put back by [`DataTableState::roll_back`].
+/// The view as it stood before a query or view replaced it: a checkpoint. A query can
+/// plan and still fail on its rows (a value that will not cast); then the table returns
+/// to this, rows and all. Frames and buffers are shared, not copied. Taken by
+/// [`DataTableState::rollback_point`] or [`DataTableState::try_transition`], restored by
+/// [`DataTableState::roll_back`].
 pub struct ViewRollback {
     /// The data as loaded when this was taken; see [`DataTableState::roll_back`].
     root_generation: u64,
@@ -121,10 +119,9 @@ impl DataTableState {
         &self.view.column_order
     }
 
-    /// Whether the table shows its defaults: no query, filters, sort or
-    /// reshape, every column in file order, nothing locked. A view saved
-    /// from this state would carry nothing — and, matching by schema, it
-    /// would shadow real views in the apply gate as a well-used no-op.
+    /// Whether the table shows its defaults (no query, filters, sort or reshape, file
+    /// order, nothing locked): a view saved from here carries nothing and, matching by
+    /// schema, would shadow real views.
     pub fn is_at_defaults(&self) -> bool {
         self.sampled.is_none()
             && self.view.column_changes.is_empty()
@@ -174,14 +171,10 @@ impl DataTableState {
         }
     }
 
-    /// Put back the view `rollback_point` saved, with no error showing. Its row count
-    /// and buffer come back with it, and a count of it that landed meanwhile (see
-    /// [`ViewRollback::count_landed`]), so nothing is read again. Nothing is read here:
-    /// a view with no rows on hand has them read by the caller's next collect.
-    ///
-    /// A checkpoint taken over data since replaced — a join of the remaining footers,
-    /// a column read as text — holds frames built on data no longer loaded. Putting
-    /// those back would mix two roots, so the view returns to the data as loaded instead.
+    /// Restore the view `rollback_point` saved, with no error showing, with its row count,
+    /// buffer, and any count that landed meanwhile ([`ViewRollback::count_landed`]). Reads
+    /// nothing. A checkpoint over since-replaced data (a footer join, a column read as text)
+    /// would mix roots, so the view returns to the data as loaded instead.
     pub fn roll_back(&mut self, saved: ViewRollback) {
         if saved.root_generation != self.root_generation {
             self.return_to_root();
@@ -200,11 +193,9 @@ impl DataTableState {
         }
     }
 
-    /// Run `steps` as one transition of the view: planned, never read (no collect
-    /// runs while they do), starting with no error showing. If a step fails, the view
-    /// before them is put back and the error returned. If they all plan, the view
-    /// before them comes back with the result, for the caller to restore with
-    /// [`Self::roll_back`] should reading the new view's rows fail.
+    /// Run `steps` as one view transition, planned but never read, with no error showing.
+    /// A failing step restores the prior view and returns its error; on success the prior
+    /// view comes back with the result, for [`Self::roll_back`] if the new rows fail.
     pub fn try_transition<T, E>(
         &mut self,
         steps: impl FnOnce(&mut Self) -> std::result::Result<T, E>,
@@ -269,11 +260,9 @@ impl DataTableState {
         self.follow.as_mut()
     }
 
-    /// Join `fields`, which arrived in a followed pipe's NDJSON after the open, to the
-    /// dataset: its scan reads them, and they go on the end of the column order, as a
-    /// dataset's footers join theirs. `Err` while the view is a query, a reshape or a
-    /// group, which would lose the columns it is built from: the caller holds them
-    /// until the view is back on the data. `Ok(false)` when there is nothing to join.
+    /// Join `fields` that a followed NDJSON pipe brought after the open: the scan reads
+    /// them, appended to the column order, as footer joins do. `Err` while the view is a
+    /// query, reshape or group (the caller holds them); `Ok(false)` when nothing joins.
     pub(crate) fn join_followed_fields(
         &mut self,
         fields: &[Field],
@@ -363,11 +352,9 @@ impl DataTableState {
         }
     }
 
-    /// The followed file holds `rows` complete rows now: every frame reads that many,
-    /// so the query, filters and sort run over the new ones too. `restarted` when the
-    /// file was read again from its start. Returns whether the rows on hand still
-    /// stand: a view that only filters, with nothing reordered, keeps the rows it had,
-    /// since rows only arrive after them.
+    /// The followed file now holds `rows` complete rows: every frame reads that many.
+    /// `restarted` when reread from the start. Returns whether the rows on hand still stand
+    /// (a filter-only view keeps them; new rows come after).
     pub(crate) fn follow_to(&mut self, rows: usize, restarted: bool) -> bool {
         let Some(path) = self.follow.as_ref().map(|f| f.path().to_path_buf()) else {
             return true;
@@ -396,10 +383,9 @@ impl DataTableState {
         rows_stand
     }
 
-    /// Where the view's rows are known, before the frames read more of the followed file
-    /// at `path`: what was known for the count on screen, and the count itself when it
-    /// is exact. Only for a view whose rows are each kept or not by itself (filters and
-    /// a sort over the file's rows), so the rows that arrive are counted alone.
+    /// Where the view's rows are known before frames read more of the followed `path`:
+    /// known points for the current count, plus the count when exact. Only for row-wise
+    /// views (filters and a sort over file rows), so new rows are counted alone.
     fn known_before_follow(&mut self, path: &Path, restarted: bool) -> Option<Vec<(usize, usize)>> {
         if restarted || self.is_pristine() || !self.scan_is_the_root() {
             return None;

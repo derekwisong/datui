@@ -956,7 +956,6 @@ impl DataTableState {
                     Some(Arc::new(kept))
                 };
 
-                // Apply filter first (where clause)
                 if let Some(f) = filter {
                     lf = lf.filter(f);
                 }

@@ -1,19 +1,13 @@
-//! Records that are not all one size, read from a memory map: length-prefixed records,
-//! variants a type field picks, records found by a sync marker, records in compressed
-//! blocks or in the payloads of a packet capture, and fixed records with fields that
-//! are read one at a time (varints, NUL-terminated text, counted groups, bit fields,
-//! deltas, checksums).
+//! Records not all one size, read from a memory map: length-prefixed records, variants
+//! picked by a type field, records found by a sync marker, records in compressed blocks
+//! or packet-capture payloads, and fixed records with fields read one at a time
+//! (varints, NUL-terminated text, counted groups, bit fields, deltas, checksums).
 //!
-//! A first pass walks the records and keeps where every 1024th one starts (and, for
-//! delta columns, the running sums there), so the index stays small and a window
-//! anywhere is read by walking from the nearest checkpoint. Fixed records with a
-//! known size need no pass at all: where a record starts is arithmetic.
-//!
-//! A compressed block is decompressed when it is first read, and a few are kept.
-//!
-//! The frame is decoded over a row index ([`crate::row_index`]), as
-//! [`crate::fixed_records`]' is, and a window deeper in the file is read through
-//! [`FramedRecords::window`].
+//! A first pass keeps where every 1024th record starts (and delta columns' running sums
+//! there), so a window anywhere walks from the nearest checkpoint. Fixed-size records
+//! need no pass. Compressed blocks are decompressed on first read, a few kept. The frame
+//! decodes over a row index ([`crate::row_index`]), as [`crate::fixed_records`] does;
+//! deeper windows go through [`FramedRecords::window`].
 
 use crate::fixed_records::{Bytes, ColumnLayout, Physical};
 use crate::formats::{
@@ -383,10 +377,9 @@ enum Index {
 /// The variant tag of a row read field by field: one cut short, or of no variant.
 const WALK: u8 = u8::MAX;
 
-/// Where each row's record starts and which variant it is, kept from the walk that
-/// opens the file, so every column of a query reads from the same starts rather than
-/// walking the records again (#662). One run of the map only: a block's records are
-/// in its decompressed copy, and a packet's in its payload.
+/// Each row's record start and variant, kept from the opening walk so every column of a
+/// query reads the same starts without walking again. One map run only: blocks' and
+/// packets' records live in their decompressed copies and payloads.
 #[derive(Debug)]
 struct RowTable {
     /// Where each row's record starts, its sync marker included.
@@ -395,10 +388,8 @@ struct RowTable {
     tags: Vec<u8>,
 }
 
-/// A file's walk, kept for the next open of it with the same spec: the walk is the one
-/// read of the file an open makes, and a file opened again (its variants, `H`) is not
-/// walked again. Kept by [`crate::indexed::keep`], which bounds what it keeps by the
-/// size of the files.
+/// A file's walk, kept for its next open with the same spec (variants, `H`), so it is
+/// walked once. Kept by [`crate::indexed::keep`], bounded by file sizes.
 struct KeptWalk {
     spec: Spec,
     data: Range<usize>,
@@ -2590,10 +2581,9 @@ impl crate::row_index::RowSource for FramedRecords {
         self.schema.clone()
     }
 
-    // Each column is decoded on its own, so a query that names one column decodes only
-    // that one; the streaming engine asks for a morsel at a time. From the row table,
-    // a column reads each row where its record starts, as every other column does;
-    // without one, each column walks the span its rows cover.
+    // Each column decodes alone, so a query decodes only what it names, a morsel at a time;
+    // with a row table each row reads from its record start, without one each column walks
+    // the span its rows cover.
     fn decode(&self, column: usize, index: &IdxCa) -> PolarsResult<Column> {
         let rows = crate::row_index::checked(index, self.rows)?;
         if let Some(table) = &self.table

@@ -1,15 +1,10 @@
-//! Axis ticks, labels, titles and the grid for every chart. ratatui places whatever
-//! labels it is given, cutting them or running them together on a narrow plot, and
-//! draws the axis titles over the plot's corners. So datui chooses the ticks, draws
-//! their labels and marks, and gives each title a row of its own or none.
-//!
-//! Ticks fall on nice values: 1, 2 or 5 times a power of ten, or calendar boundaries
-//! on a time axis, as many as the space holds (about one label per 15 columns, one
-//! per 4 rows). The rule for labels, on every chart: they never touch, two cells
-//! between them. A crowded axis first takes a coarser step, then a shorter form of
-//! its labels (`12.3k`, or a date without its year); the ends of a fixed axis stay
-//! while anything fits. A title never covers the plot: it is cut to its row, and
-//! dropped when the plot has no rows to spare.
+//! Axis ticks, labels, titles and grid for every chart. ratatui would cut or run labels
+//! together and draw titles over the plot, so datui picks ticks and draws labels and
+//! marks itself. Ticks fall on nice values (1, 2 or 5 times a power of ten, or calendar
+//! boundaries), about one label per 15 columns or 4 rows, never closer than two cells: a
+//! crowded axis takes a coarser step, then shorter labels (`12.3k`, yearless dates),
+//! keeping a fixed axis's ends while anything fits. A title gets its own row, cut to
+//! fit, or is dropped.
 
 use ratatui::{
     buffer::Buffer,
@@ -170,10 +165,9 @@ impl<'a> AxisSpec<'a> {
         Self::fixed(bounds, ticks, label, title)
     }
 
-    /// A y axis on a log scale, position `v` standing for the value `exp_m1(v)` as
-    /// the chart draws it: ticked at nice values (1, 10, 100, and 2 and 5 between
-    /// when there is room) and widened to the ticks either side of its range, every
-    /// tick in one format.
+    /// A log-scale y axis (position `v` is `exp_m1(v)`): ticks at nice values (1, 10, 100,
+    /// with 2 and 5 between when there is room), widened to the ticks around its range, one
+    /// format throughout.
     pub fn y_log(bounds: [f64; 2], numbers: &AxisNumbers, title: &'a str) -> Self {
         Self {
             bounds,
@@ -190,10 +184,10 @@ impl<'a> AxisSpec<'a> {
         Self { pad: width, ..self }
     }
 
-    /// The ways to tick this axis `length` long, the preferred first: about one label
-    /// per `spacing`, then coarser, none closer than `least`, minor ticks `minor_gap`
-    /// apart at the least. Cells on screen, points in a file. A second group follows
-    /// when the first may come up empty: a time axis's dates at its ends and middle.
+    /// The ways to tick this axis of `length`, preferred first: about one label per
+    /// `spacing`, then coarser, none closer than `least`, minor ticks at least `minor_gap`
+    /// apart (cells on screen, points in a file). A second group follows when the first may
+    /// be empty: a time axis's ends and middle.
     pub fn tick_sets(
         &self,
         length: f64,
@@ -267,11 +261,9 @@ struct Candidate<T> {
     ticks: usize,
 }
 
-/// Of the options, finest first: the one nearest `spacing` apart and every coarser
-/// one, those at least `least` apart. Two ticks say little, so when the nearest has
-/// only two and a finer one is still `least` apart, the finer one comes first: a
-/// narrow 0 to 7 reads `0 2 4 6`, not `0 5`. Its labels may still not fit, and then
-/// the two do.
+/// Of the options (finest first), the one nearest `spacing` and every coarser one at
+/// least `least` apart. When the nearest has only two ticks and a finer one fits, the
+/// finer comes first (`0 2 4 6`, not `0 5`), the two-tick set as fallback.
 fn preferred<T>(options: Vec<Candidate<T>>, spacing: f64, least: f64) -> Vec<T> {
     let closeness = |gap: f64| (gap / spacing).ln().abs();
     let best = options
@@ -372,11 +364,10 @@ fn number_sets(
     with_ticks(sets)
 }
 
-/// Log-scale tick sets over `bounds`, positions standing for `exp_m1` of them, for an
-/// axis `length` cells long. From one up, the values at each power of ten (with 2 and
-/// 5 between, or every second or third power), 0 below them where the axis starts
-/// there; under one, nice steps as on a plain axis, which a log scale this close to
-/// zero nearly is. Each set widens the axis to its ticks either side of the data.
+/// Log-scale tick sets over `bounds` (positions are `exp_m1`) for an axis of `length`
+/// cells: from one up, powers of ten (with 2 and 5 between, or every second or third
+/// power), 0 below where the axis starts there; under one, plain nice steps. Each set
+/// widens the axis to its ticks around the data.
 fn log_sets(
     bounds: [f64; 2],
     numbers: &AxisNumbers,
@@ -837,10 +828,9 @@ struct LegendPlace {
     name_width: usize,
 }
 
-/// Where in `frame`'s plot the legend covers the fewest of the marks in `probe`: a
-/// corner, or the middle of an edge. A braille cell counts its dots, so a sparse
-/// patch wins over a dense one. Corners first on a tie, the top right first. `None`
-/// when the plot is too small to give it a quarter.
+/// Where in `frame`'s plot the legend covers the fewest marks of `probe` (braille cells
+/// by dots): a corner or edge middle, corners first and top right first on ties. `None`
+/// when the plot cannot spare a quarter.
 fn place_legend(
     probe: &Buffer,
     frame: &PlotFrame,
@@ -1084,11 +1074,9 @@ fn distinct<'a>(labels: impl Iterator<Item = &'a String>) -> bool {
     labels.windows(2).all(|w| w[0] != w[1])
 }
 
-/// The x labels that fit on a row spanning columns `span` (start, end) under a plot
-/// whose columns are `track`, each with its column: centered under its tick, kept on
-/// the row, `LABEL_GAP` cells from the next. About one label per 15 columns; a
-/// coarser step when they crowd, then shorter forms; none at all when even two do
-/// not fit.
+/// The x labels fitting a row over columns `span` under a plot of `track`, each centered
+/// under its tick, kept on the row, `LABEL_GAP` cells apart: about one per 15 columns,
+/// coarser then shorter when crowded, none when even two do not fit.
 pub fn fit_x_labels(axis: &AxisSpec<'_>, span: (u16, u16), track: Track) -> Placed {
     let (start, end) = span;
     let column = |v: f64| track.cell(fraction(v, axis.bounds));

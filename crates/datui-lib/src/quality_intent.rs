@@ -446,12 +446,10 @@ pub fn check_intent(
     Ok(())
 }
 
-/// A date or millisecond datetime held to what microseconds since the epoch can
-/// count, so converting it to them cannot overflow, which made a date past the
-/// calendar null and never compared. One held at a limit (about 292,000 years from
-/// 1970) is still further out than any bound, which the calendar keeps within
-/// 262,143 years. Any other value as it is; a batch with none so far out costs a
-/// min and a max.
+/// A date or ms datetime clamped to what epoch microseconds can count, so converting
+/// cannot overflow (which nulled dates past the calendar). Clamped values still lie
+/// beyond any bound the calendar allows. Others unchanged; a batch without such values
+/// costs a min and a max.
 fn within_micros(value: Expr) -> Expr {
     value.map(
         |c| {

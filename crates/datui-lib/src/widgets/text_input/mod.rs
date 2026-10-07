@@ -1,16 +1,7 @@
-//! The text entry field used everywhere in datui.
-//!
-//! One widget covers every shape of input the app needs. A single-line input
-//! submits on Enter and recalls previous values with the arrow keys; a
-//! multi-line input inserts newlines instead and recalls with `Ctrl-P` /
-//! `Ctrl-N`; a statement submits on Enter, breaks lines on Alt+Enter and
-//! wraps. Everything else, including the editing keys, is shared, so the
-//! query bar, the modal filter boxes and the view description all behave
-//! the same way.
-//!
-//! Editing itself belongs to [`crate::widgets::textarea::TextArea`], which this
-//! type owns. What is added here is theming, focus, and history of previously
-//! submitted values.
+//! The text entry field used everywhere. Single-line inputs submit on Enter and recall
+//! history with arrows; multi-line ones insert newlines and recall with Ctrl-P/Ctrl-N;
+//! statements submit on Enter, break lines on Alt+Enter and wrap. Editing belongs to
+//! [`crate::widgets::textarea::TextArea`]; this adds theming, focus and history.
 
 pub mod history;
 
@@ -236,10 +227,9 @@ impl TextInput {
         self.sync();
     }
 
-    /// Fill the field with a default the form proposes rather than a value the
-    /// user chose. Until the first key, the value is selected whenever the field
-    /// has focus: a printable replaces it, Backspace or Delete clears it, and a
-    /// cursor movement or Enter keeps it. Leaving the field drops the selection.
+    /// Fill with a proposed default: until the first key it is selected while focused (a
+    /// printable replaces it, Backspace or Delete clears it, movement or Enter keeps it);
+    /// leaving drops the selection.
     pub fn suggest(&mut self, value: impl AsRef<str>) {
         self.set_value(value);
         self.suggested = !self.value.is_empty();
@@ -379,10 +369,7 @@ impl TextInput {
         }
     }
 
-    /// Handle one key press.
-    ///
-    /// `cache` is only needed by inputs that have a history; pass `None` when
-    /// there is none or when the caller does not want disk access.
+    /// Handle one key press; `cache` only for inputs with history (`None` skips disk).
     pub fn handle_key(&mut self, event: &KeyEvent, cache: Option<&CacheManager>) -> TextInputEvent {
         if event.code == KeyCode::Esc {
             return TextInputEvent::Cancel;

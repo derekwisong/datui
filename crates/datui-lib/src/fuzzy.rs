@@ -1,25 +1,12 @@
-//! Fuzzy matching, scored the way fzf scores it.
+//! Fuzzy matching scored as fzf scores it, so ranking matches the finder people already
+//! know (`fzf`, `fzf-lua`, Telescope's fzf-native and `snacks.picker`, a port of
+//! `fzf/src/algo/algo.go`, all agree). The scoring constants are fzf's:
 //!
-//! The point is not to invent a good matcher, it is to not surprise anyone. A person
-//! who reaches for a fuzzy finder has one already calibrated in their fingers, and if
-//! datui ranks differently the filter feels broken rather than different.
-//!
-//! fzf is the shared ancestor: `fzf` itself, `fzf-lua`, Telescope with
-//! `telescope-fzf-native`, and `snacks.picker` — which is a direct port of
-//! `fzf/src/algo/algo.go` — all agree on the behaviour this implements. The scoring
-//! constants below are fzf's.
-//!
-//! What that buys, concretely:
-//!
-//! - a match right after `/` or `_` beats one in the middle of a word
+//! - a match right after `/` or `_` beats one mid-word
 //! - consecutive characters beat scattered ones
-//! - a match in the file name beats one in a directory along the way
-//! - the *best* alignment wins, not the first one found scanning left to right
-//!
-//! That last property is the one people notice. Matching `revdetail` against
-//! `warehouse/2024/q3/revenue_detail.parquet` greedily puts `re` inside *ware*house;
-//! every mainstream finder puts it on *rev*enue, because it tries every starting
-//! position and keeps the highest score.
+//! - a match in the file name beats one in a directory
+//! - the best alignment wins, not the first found (`revdetail` lands on `revenue`, not
+//!   the `re` in `warehouse`)
 
 /// Character classes, which is how fzf decides what counts as a boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -43,25 +30,15 @@ const BONUS_NON_WORD: i32 = SCORE_MATCH / 2;
 const BONUS_CAMEL_123: i32 = BONUS_BOUNDARY - 1;
 const BONUS_CONSECUTIVE: i32 = -(SCORE_GAP_START + SCORE_GAP_EXTENSION);
 const BONUS_FIRST_CHAR_MULTIPLIER: i32 = 2;
-/// Start-of-string and whitespace boundaries.
-///
-/// fzf's default scheme sets this to `BONUS_BOUNDARY + 2`, privileging the start of
-/// the string. Its *path* scheme drops it back to `BONUS_BOUNDARY`, so that a match
-/// after `/` outranks one at the start — and that is the right scheme here, because
-/// every haystack on this screen is a file name or a path below the search root.
-///
-/// Without it, `report` prefers `report/2024/summary.csv` to
-/// `archive/old/report.csv` by a single point, which is the wrong answer and the one
-/// fzf gives only when told the input is not paths.
+/// Start-of-string and whitespace boundaries: fzf's path scheme value, not its
+/// default's `+ 2`, so a match after `/` outranks one at the start (every haystack here
+/// is a path; `report` should prefer `archive/old/report.csv`).
 const BONUS_BOUNDARY_WHITE: i32 = BONUS_BOUNDARY;
 const BONUS_BOUNDARY_DELIMITER: i32 = BONUS_BOUNDARY + 1;
 
-/// Awarded when nothing after the match start is a path separator — that is, when the
-/// match landed in the file name rather than in a directory along the way.
-///
-/// This is fzf's `--scheme=path`, and it is the difference between `sales` finding
-/// `archive/old/sales.csv` and finding `sales/2024/report.csv`. Search results here
-/// are named by their path below the search root, so it matters more than usual.
+/// Awarded when no path separator follows the match start (it landed in the file
+/// name): fzf's `--scheme=path`, so `sales` finds `archive/old/sales.csv` over
+/// `sales/2024/report.csv`.
 const BONUS_FILENAME: i32 = BONUS_BOUNDARY - 2;
 
 /// Added when the needle is the whole haystack, ignoring case. Not fzf's: it ranks an
@@ -126,10 +103,8 @@ fn bonus_for(prev: Class, curr: Class) -> i32 {
     }
 }
 
-/// A successful match: how good it is, and exactly which characters made it.
-///
-/// The positions come out of the same alignment that produced the score, so what gets
-/// highlighted is always what was actually scored.
+/// A match: its score and the characters that made it, from the same alignment, so
+/// highlights show what was scored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Match {
     /// Higher is better, as in fzf.
@@ -212,13 +187,8 @@ fn score_from(hay: &[char], lower: &[char], needle: &[char], start: usize) -> Op
     Some(Match { score, positions })
 }
 
-/// Best fuzzy match of `needle` in `haystack`, or `None` if it does not match at all.
-///
-/// Every starting position is tried and the highest-scoring alignment wins. This is
-/// what makes `revdetail` land on `revenue_detail` rather than on the `re` in
-/// `warehouse`, and it is the behaviour people arrive with.
-///
-/// Matching is case-insensitive. An empty needle matches everything with score 0.
+/// The best fuzzy match of `needle` in `haystack`, or `None`: every start is tried and
+/// the highest alignment wins. Case-insensitive; an empty needle matches with score 0.
 pub fn best_match(needle: &str, haystack: &str) -> Option<Match> {
     if needle.is_empty() {
         return Some(Match {
@@ -315,10 +285,8 @@ fn subsequence(lower: &[char], needle: &[char]) -> bool {
     true
 }
 
-/// Whether `needle` matches at all, without paying for the scoring.
-///
-/// A cheap gate in front of `best_match`, since most candidates in a long list do not
-/// match and every one that fails here costs a single pass.
+/// Whether `needle` matches at all, without scoring: a one-pass gate before
+/// `best_match`, since most candidates fail.
 pub fn is_match(needle: &str, haystack: &str) -> bool {
     if needle.is_empty() {
         return true;

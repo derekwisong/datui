@@ -1,25 +1,12 @@
-//! Asking the terminal for its background color, so `theme.mode = "auto"` can pick
-//! the light or dark palette from what is actually on screen.
-//!
-//! The question is OSC 11 (`ESC ] 11 ; ? ST`); a terminal that knows it answers
-//! `ESC ] 11 ; rgb:RRRR/GGGG/BBBB` followed by BEL or ST. The answer comes back on
-//! the input stream, which Crossterm alone reads ([`crate::terminal_input`]).
-//! Crossterm has no event for it: it reads `ESC ]` as Alt+`]` and the rest as typed
-//! characters. So the reader watches for that run of keys while a question is out
-//! ([`armed`]) and takes it off the stream ([`ReplyScanner`]) instead of letting it
-//! reach the app as keystrokes.
-//!
-//! Nothing here waits on the terminal, startup included: the first frame is drawn
-//! in the palette this terminal's last answer picked (kept in the cache under
-//! [`terminal_key`]), and the answer, when it comes, switches palettes if it
-//! differs. A terminal that does not answer sends nothing, and the question lapses
-//! after [`ARMED_FOR`].
-//!
-//! DEC mode 2031 (the terminal reporting a scheme change as `CSI ? 997 ; n`) is not
-//! enabled: Crossterm 0.29 takes any `CSI ?` sequence that ends in neither `u` nor
-//! `c` as unfinished and keeps buffering, so one report would swallow every key
-//! after it. The question is asked again when the terminal regains focus instead,
-//! which is when a scheme changed elsewhere is first seen.
+//! Asking the terminal for its background (OSC 11) so `theme.mode = "auto"` picks the
+//! palette from the screen. The reply (`ESC ] 11 ; rgb:RRRR/GGGG/BBBB` then BEL or ST)
+//! arrives on the input stream, which Crossterm reads ([`crate::terminal_input`]) as
+//! Alt+`]` and typed characters, so while a question is out ([`armed`]) the reader takes
+//! that run off the stream ([`ReplyScanner`]). Nothing waits: the first frame uses this
+//! terminal's last answer (cached under [`terminal_key`]); a later answer switches if
+//! different; silence lapses after [`ARMED_FOR`]. DEC mode 2031 is not used: Crossterm
+//! 0.29 buffers such a `CSI ?` report forever, swallowing later keys; the question is
+//! asked again on focus instead.
 
 use std::io::{self, IsTerminal, Write};
 use std::sync::OnceLock;
@@ -66,10 +53,9 @@ pub(crate) fn disarm() {
     ARMED_UNTIL.store(0, Ordering::SeqCst);
 }
 
-/// Whether asking makes sense here: a Unix terminal on standard output. The Linux
-/// console prints an OSC it does not know, and a dumb terminal has no OSC. On
-/// Windows the console delivers a reply as key events, an Esc among them, which
-/// would reach the app as a keypress, so the question is never asked there.
+/// Whether to ask: a Unix terminal on stdout. The Linux console prints unknown OSCs and
+/// dumb terminals have none; Windows delivers replies as key events (an Esc among them),
+/// so never there.
 pub(crate) fn supported() -> bool {
     can_ask(
         cfg!(unix),
@@ -159,13 +145,10 @@ pub(crate) enum Scanned {
     Background(Option<ThemeMode>),
 }
 
-/// Takes an OSC 11 reply out of the keys Crossterm made of it.
-///
-/// Crossterm reads `ESC ] 11 ; rgb:… BEL` as Alt+`]`, the body's characters, then
-/// Ctrl+G; with ST as the terminator, Alt+`\`. An ESC at the end of one read and the
-/// rest in the next comes as Esc then plain characters, so while armed a lone Esc is
-/// held a moment too. Anything that stops looking like a reply is passed on as it
-/// was read, in order.
+/// Takes an OSC 11 reply out of Crossterm's keys: Alt+`]`, the body's characters, then
+/// Ctrl+G (or Alt+`\` for ST). An ESC split across reads arrives as Esc then characters,
+/// so a lone Esc is held briefly while armed. Anything that stops looking like a reply
+/// passes through in order.
 #[derive(Debug, Default)]
 pub(crate) struct ReplyScanner {
     held: Vec<Event>,

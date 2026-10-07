@@ -1,12 +1,8 @@
-//! Arrow IPC streams: the format Hugging Face `datasets` writes its cache in.
-//!
-//! A stream is the IPC file format without the `ARROW1` magic and the footer that says
-//! where each record batch is, so Polars cannot scan it. An open converts the stream,
-//! or every stream shard of a directory, once into one IPC file in the temp directory
-//! and scans that; IPC files among the shards are scanned where they are, not copied
-//! ([`Part`]). The conversion holds one record batch at a time: 0.2 GiB at its peak
-//! for a 3.0 GiB stream. Read eagerly instead, that stream held 3.6 GiB for as long as
-//! it was open, and the same rows with ZSTD buffers, 1.3 GiB on disk, the same 3.6 GiB.
+//! Arrow IPC streams, the format Hugging Face `datasets` caches in: the IPC file format
+//! without the `ARROW1` magic and footer, so Polars cannot scan it. An open converts the
+//! stream (or a directory's stream shards) once into a temp IPC file and scans that; IPC
+//! files among the shards are scanned in place ([`Part`]). One record batch is held at a
+//! time: 0.2 GiB peak for a 3.0 GiB stream that read eagerly took 3.6 GiB.
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
@@ -32,13 +28,10 @@ const CONTINUATION: [u8; 4] = [0xff; 4];
 /// thousands of columns and its metadata fits well inside.
 const MAX_SCHEMA: usize = 16 << 20;
 
-/// Whether `head`, the first bytes of a file, begins an Arrow IPC stream: a schema
-/// message, after the continuation marker or, in a stream older than it, without.
-///
-/// Where `head` holds the whole message it has to be a schema message. Where it is cut
-/// short, the marker followed by a length is taken as a stream; an older stream, with
-/// no marker to go on, is not. The message's fields are not read: Polars panics on a
-/// column type it has not implemented, and this runs on any file being opened.
+/// Whether `head` begins an Arrow IPC stream: a schema message, with or (older streams)
+/// without the continuation marker. A whole message must be a schema message; a cut one
+/// counts if marked. Fields are not parsed: Polars panics on unimplemented column types,
+/// and this runs on any opened file.
 pub fn is_stream_head(head: &[u8]) -> bool {
     let marked = head.starts_with(&CONTINUATION);
     let rest = if marked { &head[4..] } else { head };
@@ -109,10 +102,8 @@ fn begins_schema(message: &[u8]) -> bool {
     )
 }
 
-/// Whether the Arrow `paths` are read by converting their streams: when the first is a
-/// stream. Only the first is opened. The conversion opens the rest, and leaves the IPC
-/// files among them where they are; a stream behind an IPC file is found by
-/// [`any_stream`] once the scan, which reads every IPC file's footer, has failed on it.
+/// Whether Arrow `paths` are converted: when the first is a stream (only it is opened).
+/// A stream behind an IPC file is found by [`any_stream`] once the scan fails on it.
 pub fn starts_with_stream(paths: &[PathBuf]) -> bool {
     paths.first().is_some_and(|p| is_stream_file(p))
 }
@@ -147,14 +138,10 @@ pub(crate) fn is_ipc_file_head(head: &[u8]) -> bool {
     head.starts_with(b"ARROW1")
 }
 
-/// Convert the Arrow streams at `paths`, in order, into one IPC file in `temp_dir` (the
-/// system temp directory when `None`), created and claimed through `writer` and
-/// removed if the open stops or this fails. The IPC files among them are not copied:
-/// they are scanned where they are, in their place among the streams. `read` counts
-/// the bytes looked at so far.
-///
-/// One record batch is in memory at a time. Buffers compressed with LZ4 or ZSTD are
-/// written out uncompressed, so the file maps and scans like any other.
+/// Convert the Arrow streams at `paths`, in order, into one IPC file in `temp_dir`
+/// (system temp if `None`), claimed via `writer` and removed on stop or failure. IPC
+/// files among them are scanned in place. `read` counts bytes looked at. One batch in
+/// memory at a time; LZ4 and ZSTD buffers are written uncompressed so the file maps.
 pub(crate) fn convert(
     paths: &[PathBuf],
     temp_dir: Option<&Path>,

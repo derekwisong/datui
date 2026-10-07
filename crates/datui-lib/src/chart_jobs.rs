@@ -29,13 +29,10 @@ pub struct Charts {
     pub(crate) export_waiting: Option<ChartExportRequest>,
 }
 
-/// Outcomes of chart preparation keyed by the request that produced them, least
-/// recently used first. A failure is remembered too, so a selection that cannot be
-/// charted is not retried after every event; the chart shows its message.
-/// Bounded so that toggling between a few selections does not collect again, without
-/// holding every series ever prepared: line and scatter series are the only payload
-/// that grows with the row limit, so few of those are kept and only the current one
-/// has its log copy.
+/// Chart preparation outcomes by request, least recently used first. Failures are kept
+/// so they are not retried every event. Bounded so toggling a few selections does not
+/// recollect; line and scatter series (which grow with the row limit) are kept few, and
+/// only the current one has its log copy.
 #[derive(Default)]
 pub(crate) struct ChartCache {
     pub(crate) entries: Vec<(ChartRequest, Result<PlotData, String>)>,
@@ -139,10 +136,9 @@ impl ChartCache {
         });
     }
 
-    /// Note that `request` is the selection on screen: its entry moves to the back,
-    /// where eviction reaches it last, and it alone keeps a log copy of its series,
-    /// made here when `log_scale` wants it. Only an in-memory map over points already
-    /// held, cheap enough for the event thread; never in render.
+    /// Mark `request` as the selection on screen: last to be evicted, and the only one with
+    /// a log copy (made here if `log_scale`). An in-memory map over held points, fine on
+    /// the event thread, never in render.
     pub(crate) fn touch(&mut self, request: &ChartRequest, log_scale: bool) {
         let Some(i) = self.entries.iter().position(|(r, _)| r == request) else {
             return;
@@ -158,12 +154,9 @@ impl ChartCache {
     }
 }
 
-/// What the chart view needs prepared for the panel's spec. Compared with the cache
-/// and with the computation in flight, so each spec is prepared once, off the UI
-/// thread, and a result for a spec the user has since moved past is stale.
-///
-/// Only what the chart type reads takes part: another bin count on a line chart is
-/// the same request.
+/// What the chart view needs prepared for the panel's spec, compared with the cache and
+/// the job in flight so each spec is prepared once off the UI thread. Only what the
+/// chart type reads takes part (bin count does not change a line chart's request).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ChartRequest {
     pub(crate) spec: ChartSpec,
@@ -229,10 +222,8 @@ impl ChartRequest {
         if !x_only && !ChartModal::is_complete(&spec) {
             return None;
         }
-        // Leave out what this chart does not read, so a change to it asks for nothing.
-        // Whether color splits the chart is read from the spec charted, a Y the
-        // picker previews included.
-        // No more series than there are colors to tell them apart.
+        // Leave out what this chart does not read; color splitting is read from the charted
+        // spec, previewed Y included. No more series than colors to tell them apart.
         let series_cap = modal.series_max();
         spec.encoding.y.field.truncate(series_cap);
         spec.encoding.color.values.truncate(series_cap);
@@ -493,10 +484,8 @@ fn rows_note(counted: usize, whole: bool, grouped: bool) -> String {
 }
 
 impl App {
-    /// True while chart data for the current view is being prepared off-thread: its
-    /// job is running, or it waits its turn behind a superseded one still reading,
-    /// which cannot be stopped mid-read (see `ChartPrep`). Either way the user is
-    /// waiting on a computation and the throbber should say so.
+    /// Whether chart data for the current view is being prepared: running, or waiting
+    /// behind a superseded preparation still reading (unstoppable, see `ChartPrep`).
     pub fn chart_preparing(&self) -> bool {
         if self.chart_prep().is_some() {
             true
@@ -535,13 +524,10 @@ impl App {
             .is_some_and(|request| self.chart.cache.get(&request).is_none())
     }
 
-    /// Forget everything chart-related that belongs to the view or dataset on its way
-    /// out: the cache, an export parked on data that is now never coming, and an export
-    /// write still running (its file may still appear, but its result is ignored and
-    /// `busy` is released). The preparation running is superseded: it is waited for,
-    /// as it cannot be stopped mid-read, and its answer dropped on arrival. Called when
-    /// the chart view closes and whenever the dataset changes or is left for the home
-    /// screen.
+    /// Forget chart state belonging to the outgoing view or dataset: the cache, a parked
+    /// export, and a running export write (its result ignored, `busy` released). A running
+    /// preparation is superseded and its answer dropped. Called when the chart view closes,
+    /// the dataset changes, or home is entered.
     pub(crate) fn reset_chart_state(&mut self) {
         self.chart.cache.clear();
         self.chart.asked = None;
@@ -603,10 +589,9 @@ impl App {
         ChartRequest::from_modal(&self.chart.modal).is_some_and(|r| self.chart.cache.satisfies(&r))
     }
 
-    /// Start preparing the chart the modal currently asks for, unless the cache already
-    /// has it, it is known to fail, or another preparation is still running (the newest
-    /// selection is picked up when that one lands). Runs after every event, so a change
-    /// of column or option is noticed as soon as it is made and render only ever draws.
+    /// Start preparing the modal's current chart unless cached, known to fail, or another
+    /// preparation is running (the newest selection follows when it lands). Runs after every
+    /// event, so render only draws.
     pub(crate) fn ensure_chart_data(&mut self) {
         const CHART_AGGREGATE_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
         if !self.overlay.shows(&Overlay::Chart) {
@@ -728,10 +713,8 @@ impl App {
             prepared
         });
         self.chart.cache.insert(prep.request, outcome);
-        // An export parked on chart data resumes against the *current* selection,
-        // whatever just landed: it is written if that selection is now prepared, fails
-        // with the reason if that is the one that failed, and otherwise waits for the
-        // next result (which `ensure_chart_data` starts once this event is handled).
+        // A parked export resumes against the current selection: written if prepared, failed
+        // if that one failed, else waiting for the next result.
         if let Some(request) = self.chart.export_waiting.take() {
             self.start_chart_export(request);
         }
@@ -746,10 +729,8 @@ impl App {
                 Some(AppEvent::DoChartExport(request))
             }
             AppEvent::DoChartExport(request) => {
-                // `ChartExport` arms `busy` and defers here so the phase can be drawn
-                // first. A Ctrl-O in that window has already left the chart view, and
-                // there is nothing to export any more: release the app rather than park
-                // an export that no view would ever prepare.
+                // `ChartExport` arms `busy` and defers here to draw its phase; a Ctrl-O meanwhile left
+                // the chart, so release rather than park an export nothing will prepare.
                 if !self.overlay.shows(&Overlay::Chart) {
                     self.export_progress = None;
                     self.status_message = None;

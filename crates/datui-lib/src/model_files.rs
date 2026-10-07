@@ -1,14 +1,9 @@
-//! SafeTensors and GGUF model files, read as a table of their tensors.
-//!
-//! Only the header is read: a 70 GB checkpoint opens as fast as a 7 MB one, because
-//! the tensor data is never touched. Both parsers are hand-written over a reader that
-//! knows where the header must end, and every length the file states is checked
-//! against that before anything is allocated or skipped, so a corrupt or hostile
-//! header is an error rather than a multi-gigabyte allocation or a panic.
-//!
-//! The rows are a small eager `DataFrame` (one per tensor) made lazy, as ORC and Excel
-//! are. What is not a row — the file's metadata and the totals — is a
-//! [`ModelSummary`], carried to the dataset for the Info panel's Model tab.
+//! SafeTensors and GGUF model files as a table of their tensors. Only the header is
+//! read, so a 70 GB checkpoint opens like a 7 MB one. Both parsers are hand-written over
+//! a bounded reader, checking every stated length before allocating or skipping, so a
+//! hostile header errors rather than allocating gigabytes or panicking. Rows are a
+//! small eager frame made lazy; metadata and totals go to a [`ModelSummary`] for Info's
+//! Model tab.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -304,13 +299,10 @@ pub fn read_safetensors<R: Read>(reader: R, len: u64) -> Result<Header> {
     parse_safetensors_json(&json, len.saturating_sub(8).saturating_sub(header_len))
 }
 
-/// The header's JSON, without its length prefix. `data_len` is how many bytes of
-/// tensor data follow it, which every tensor's `data_offsets` must stay inside.
-///
-/// Read straight into what is kept rather than through `serde_json::Value`: a hostile
-/// 100 MB header of tiny arrays would be gigabytes as a `Value` tree. Fields the spec
-/// does not name are passed over without being stored, and keys are seen in the order
-/// the file has them, which is the order the metadata is shown in.
+/// The header's JSON without its length prefix; `data_len` bytes of tensor data follow,
+/// which every `data_offsets` must stay inside. Deserialized straight into what is kept
+/// (a hostile 100 MB header would be gigabytes as a `Value`), unknown fields skipped,
+/// keys in file order (the metadata's display order).
 fn parse_safetensors_json(json: &[u8], data_len: u64) -> Result<Header> {
     let mut de = serde_json::Deserializer::from_slice(json);
     let parsed = serde::Deserializer::deserialize_map(&mut de, StHeaderVisitor)
@@ -766,9 +758,8 @@ pub fn read_gguf<R: Read>(reader: R, len: u64) -> Result<Header> {
             offset_end: None,
         });
     }
-    // The tensor data starts at the next multiple of the alignment after the header,
-    // and every tensor whose size is known must end inside the file: a download cut
-    // short is an error, not a table that looks whole.
+    // Tensor data starts at the next alignment multiple after the header, and every sized
+    // tensor must end inside the file: a truncated download is an error.
     let alignment = metadata
         .iter()
         .find(|(k, _)| k == "general.alignment")
@@ -903,14 +894,12 @@ impl From<color_eyre::Report> for RangeError {
     }
 }
 
-/// The first range a GGUF header is read in. Each read after it is twice the one
-/// before, up to `MAX_RANGE`, so a header of a few KB costs one request and one with
-/// a vocabulary (5 to 10 MB) four or five. Larger, fewer requests fetch up to twice
-/// the header; see `a_vocabulary_sized_gguf_header_takes_a_few_ranges`.
+/// The first GGUF header read; each next is twice the last up to `MAX_RANGE`, so a few
+/// KB costs one request and a 5-10 MB vocabulary four or five (see
+/// `a_vocabulary_sized_gguf_header_takes_a_few_ranges`).
 pub const FIRST_GGUF_RANGE: u64 = 256 * 1024;
-/// The first read of a SafeTensors file: its header's length and, for most files, the
-/// whole of its JSON in the same request. A checkpoint shard's header is a few KB to
-/// some tens of KB; one longer than this takes a second request, for the rest of it.
+/// The first SafeTensors read: the header length and usually all its JSON (shard
+/// headers are KB to tens of KB); longer takes one more request.
 pub const FIRST_SAFETENSORS_RANGE: u64 = 64 * 1024;
 /// The most one ranged request asks for.
 const MAX_RANGE: u64 = 16 * 1024 * 1024;
@@ -985,10 +974,9 @@ impl Read for Ranged<'_> {
     }
 }
 
-/// Read one model header from `src` with ranged requests: SafeTensors as its first
-/// [`FIRST_SAFETENSORS_RANGE`] and, when its JSON runs past that, the rest of the JSON
-/// and no further; GGUF forward in growing ranges until its tensor infos end. Every
-/// bound the file readers keep is kept. `stop` is asked before each request.
+/// Read one model header from `src` with ranged requests: SafeTensors' first
+/// [`FIRST_SAFETENSORS_RANGE`] plus any remaining JSON; GGUF in growing ranges until the
+/// tensor infos end. File-reader bounds all hold; `stop` is checked before each request.
 pub fn read_header_ranged(
     src: &mut dyn RangeSource,
     format: FileFormat,
@@ -1001,9 +989,8 @@ pub fn read_header_ranged(
     read_header_ranged_from(src, format, first, stop)
 }
 
-/// As [`read_header_ranged`], with the first range `first` (at least the 8 bytes of a
-/// SafeTensors length): small, for the fuzz target and the tests, so a header crosses
-/// many ranges.
+/// As [`read_header_ranged`] with first range `first` (at least 8 bytes): small for the
+/// fuzz target and tests, to cross many ranges.
 pub fn read_header_ranged_from(
     src: &mut dyn RangeSource,
     format: FileFormat,
@@ -1067,18 +1054,16 @@ fn read_index_ranged(
 pub type OpenRanges<'a> =
     dyn Fn(&str) -> std::result::Result<Box<dyn RangeSource>, RangeError> + Sync + 'a;
 
-/// How a remote model's files are reached: a source for a URL, and the URL of a file
-/// named beside another. `open` and `stop` are called from the threads that read
-/// shards at once ([`SHARD_READS`]).
+/// How a remote model's files are reached: a source per URL and sibling file URLs.
+/// `open` and `stop` are called from concurrent shard readers ([`SHARD_READS`]).
 pub struct Remote<'a> {
     pub open: &'a OpenRanges<'a>,
     pub sibling: &'a dyn Fn(&str, &str) -> String,
     pub stop: &'a (dyn Fn() -> bool + Sync),
 }
 
-/// Shards whose headers are read at once. A model hub's checkpoint is up to some
-/// hundreds of shards, each a request or two: one at a time, their round trips add up
-/// to minutes. A few at once is most of the gain without a burst at the server.
+/// Shard headers read at once: hundreds of shards one at a time add up to minutes; a few
+/// at once gets most of the gain without a burst.
 pub const SHARD_READS: usize = 8;
 
 /// The last segment of a URL, without a query: what a file's row and its errors call it.
@@ -1087,10 +1072,9 @@ pub fn url_file_name(url: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
-/// Read `urls` — remote model files, or SafeTensors indexes that name them — as one
-/// table of tensors, as [`read_model`] reads files on disk, fetching only their
-/// headers. [`RangeError::NoRanges`] only for one file named on its own, which can be
-/// downloaded instead; for shards it is an error that says so.
+/// Read `urls` (remote model files, or SafeTensors indexes naming them) as one tensor
+/// table, fetching only headers, as [`read_model`] does on disk.
+/// [`RangeError::NoRanges`] only for one standalone file (downloadable instead).
 pub fn read_remote_model(
     urls: &[String],
     format: FileFormat,
@@ -1146,9 +1130,8 @@ pub fn read_remote_model(
     Ok(build(&headers, &names, metadata)?)
 }
 
-/// Each of `files`' headers, in their order, read [`SHARD_READS`] at a time. The first
-/// read to fail is the error, with its file; once one has failed, or the open is
-/// stopped, no more requests are made.
+/// Each of `files`' headers in order, [`SHARD_READS`] at a time; the first failure is
+/// the error, after which (or once stopped) no more requests go out.
 fn read_headers<'f>(
     files: &'f [String],
     format: FileFormat,

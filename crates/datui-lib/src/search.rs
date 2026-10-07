@@ -1,16 +1,8 @@
-//! Recursive search for datasets below a directory.
-//!
-//! The home screen's filter is a fuzzy match over rows that are already listed. This
-//! module is what puts more rows in front of it: one bounded walk of the working
-//! directory, run once in the background, whose result is then filtered in memory
-//! like everything else. Nothing here is repeated per keystroke — a walk per
-//! character is how a file finder becomes slow on exactly the trees where it matters.
-//!
-//! Every limit exists because some real directory violates it. See `Limits`.
-//!
-//! The walk keeps every data file it finds, and the filter is scored against that
-//! index off the UI thread ([`score`]). The cap on what is listed counts matches, not
-//! files: a file that matches is never lost behind thousands that do not.
+//! Recursive search for datasets below a directory: one bounded background walk of the
+//! working directory, its results filtered in memory like listed rows; nothing repeats
+//! per keystroke. Every limit exists because some real directory needs it (see
+//! `Limits`). The walk keeps every data file, scored off the UI thread ([`score`]); the
+//! listing cap counts matches, so a match is never lost behind non-matches.
 
 use crate::config::SearchConfig;
 use crate::discover::{Entry, EntryKind, is_data_file};
@@ -22,10 +14,8 @@ use std::time::{Duration, Instant};
 /// bounds its memory on a tree fast enough to list a million names inside it.
 pub const MAX_INDEXED: usize = 100_000;
 
-/// How far a walk got, and why it stopped.
-///
-/// A search that quietly returned less than the truth would be worse than no search:
-/// "not found here" is a thing people act on.
+/// How far a walk got and why it stopped: "not found here" is acted on, so a short
+/// search must say it was short.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Outcome {
     /// Directory entries examined, whether or not they were data.
@@ -57,20 +47,13 @@ impl Outcome {
     }
 }
 
-/// How often the walker hands back what it has found so far.
-///
-/// Small enough that a cold tree fills the screen while it is still working, large
-/// enough that a warm one does not spend its time sending messages.
+/// How often the walker reports: often enough that a cold tree fills the screen while
+/// working, rarely enough that a warm one is not busy messaging.
 const BATCH: usize = 64;
 const BATCH_INTERVAL: Duration = Duration::from_millis(120);
 
-/// Walk `root` for datasets, handing batches to `emit` as they are found.
-///
-/// `emit` returns `false` to abandon the walk — the caller has moved on, and there is
-/// no reason to keep reading a filesystem for an answer nobody is waiting for.
-///
-/// This blocks and touches the filesystem, so it must never be called from the thread
-/// drawing the screen.
+/// Walk `root` for datasets, handing batches to `emit`; `emit` returns `false` to
+/// abandon the walk. Blocks on the filesystem: never call from the drawing thread.
 pub fn walk<F>(root: &Path, config: &SearchConfig, emit: F) -> Outcome
 where
     F: FnMut(Vec<Entry>, Outcome) -> bool,
@@ -250,10 +233,8 @@ where
             break;
         }
 
-        // Either condition, not both. A full batch bounds the work done between
-        // checkpoints; the interval covers the opposite case, a walk crossing
-        // thousands of entries that match nothing, where the caller still wants a
-        // progress count and still needs somewhere to say "stop".
+        // Either condition: a full batch bounds work between checkpoints; the interval covers
+        // long stretches of non-matching entries, which still need progress and a way to stop.
         if batch.len() >= BATCH || last_emit.elapsed() >= BATCH_INTERVAL {
             last_emit = Instant::now();
             if !emit(std::mem::take(&mut batch), outcome) {
@@ -306,12 +287,8 @@ fn matches_extension(path: &Path, extensions: &[String]) -> bool {
         .is_some_and(|e| extensions.contains(&e))
 }
 
-/// A label naming the dataset by where it sits under the search root.
-///
-/// Always with forward slashes. The separator here is a display choice, not a path:
-/// the row carries its real `path` for opening, and a list mixing `a/b/c.parquet`
-/// with `a\b\c.parquet` depending on the platform is worse to read and worse to
-/// write tests against.
+/// A label naming the dataset by its place under the search root, always with forward
+/// slashes (a display choice; the row keeps its real `path`).
 fn relative_label(root: &Path, path: &Path) -> String {
     let relative = path.strip_prefix(root).unwrap_or(path);
     relative
@@ -321,10 +298,8 @@ fn relative_label(root: &Path, path: &Path) -> String {
         .join("/")
 }
 
-/// Where a search should start, given where the user is.
-///
-/// `None` when there is nothing sensible to search: no working directory, or one on a
-/// filesystem that must not be walked.
+/// Where a search should start from where the user is; `None` without a working
+/// directory or on a filesystem that must not be walked.
 pub fn search_root(
     browsing: Option<&PathBuf>,
     network_check: fn(&Path) -> bool,
@@ -398,11 +373,9 @@ impl Matches {
     }
 }
 
-/// Score `query` against the files in `index`, keeping the best `limit` to list.
-///
-/// With `base` from a prefix of `query`, only its matches and the files indexed since
-/// are looked at. Called off the UI thread: over a large tree this is the work that made
-/// every keystroke wait.
+/// Score `query` against `index`, keeping the best `limit`. With `base` from a prefix
+/// of `query`, only its matches and newer files are scored. Off the UI thread: on a large
+/// tree this made every keystroke wait.
 pub fn score(index: &[Arc<[Entry]>], query: &str, base: Option<&Matches>, limit: usize) -> Matches {
     let all: Vec<&Entry> = index.iter().flat_map(|batch| batch.iter()).collect();
     let base = base.filter(|b| b.narrows_to(query) && b.upto <= all.len());

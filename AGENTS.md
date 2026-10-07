@@ -97,7 +97,7 @@ and helpers: `docs/for-developers/tests.md`.
 | Path | What |
 |---|---|
 | `Cargo.toml` (root) | The `datui` binary. `src/main.rs` parses args and runs `datui_lib::run` |
-| `crates/datui-lib/src/` | Everything else, by concern (below). `lib.rs` holds `App`, the event loop and key handling |
+| `crates/datui-lib/src/` | Everything else, by concern (below). `lib.rs` holds `App`, `AppEvent`, key handling and event dispatch; the event loop is `app/run.rs` and `app/event_pump.rs` |
 | `crates/datui-cli/` | Clap `Args` shared by the binary and `gen_docs`, which writes the generated docs and the manpages (`man/`, committed) |
 | `crates/datui-pyo3/`, `python/` | Python bindings and wheel. Not a workspace member; see `docs/for-developers/python-bindings.md` |
 | `fuzz/` | cargo-fuzz targets, own workspace; `docs/for-developers/fuzzing.md` |

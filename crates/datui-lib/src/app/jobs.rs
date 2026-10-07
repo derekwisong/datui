@@ -188,7 +188,7 @@ pub(crate) enum Job {
 pub(crate) struct Classify {
     pub(crate) path: PathBuf,
     /// Where home was browsing when the look was asked; an answer for a place left
-    /// opens nothing. Not `home_generation`: listings rebuild for unrelated reasons
+    /// opens nothing. Not `HomeApp::generation`: listings rebuild for unrelated reasons
     /// (another root's probe answering).
     pub(crate) browsing: Option<PathBuf>,
     /// A path typed at `~` rather than a row already listed.

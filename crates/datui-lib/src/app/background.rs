@@ -267,7 +267,7 @@ impl Drop for OwedCount {
 
 /// The answer a home worker owes its in-flight marker, sent instead if it panics
 /// first; unanswered, the marker stands for the session. Not a [`crate::app::jobs::Jobs`] job:
-/// keyed by place and `home_generation`, no lease, no keys. The panic hook logs and
+/// keyed by place and `HomeApp::generation`, no lease, no keys. The panic hook logs and
 /// flashes the panic itself.
 pub(crate) struct OwedAnswer {
     pub(crate) tx: Sender<AppEvent>,

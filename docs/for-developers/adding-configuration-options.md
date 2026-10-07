@@ -36,7 +36,7 @@ the registry:
 cargo run -p datui-cli --bin gen_docs -- write
 ```
 
-`the_registry_and_the_config_structs_agree` in `config.rs` fails when a key the
+`the_registry_and_the_config_structs_agree` in `config/mod.rs` fails when a key the
 defaults serialize is not registered, or a registered default differs from the
 struct's.
 
@@ -72,8 +72,9 @@ too.
 
 Add the `color(...)` entry with both defaults, and the field to `ColorConfig`,
 `ColorConfig::dark`, `ColorConfig::light`, `ColorConfig::validate` and
-`Theme::from_config`. Use the theme slot in rendering code; never a hardcoded
-color in a widget. Name it for its purpose, such as `modal_border_active`.
+`Theme::from_config`, and the slot to the `color_slots!` list in
+`config/mod.rs`, which gives `Theme` its typed accessor. Use the accessor in
+rendering code; never a hardcoded color in a widget. Name it for its purpose, such as `modal_border_active`.
 
 ## Check the change
 

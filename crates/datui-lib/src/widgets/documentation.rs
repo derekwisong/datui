@@ -448,24 +448,6 @@ impl DocState {
     }
 }
 
-/// `text` cut to `width` columns with the ellipsis when it does not fit.
-fn cut(text: &str, width: usize) -> String {
-    if text.width() <= width {
-        return text.to_string();
-    }
-    let ellipsis = glyphs::get().ellipsis;
-    let room = width.saturating_sub(ellipsis.width());
-    let mut out = String::new();
-    for c in text.chars() {
-        if out.width() + c.to_string().width() > room {
-            break;
-        }
-        out.push(c);
-    }
-    out.push_str(ellipsis);
-    out
-}
-
 /// `text` wrapped at word boundaries to `width` columns.
 fn wrap(text: &str, width: usize) -> Vec<String> {
     let width = width.max(8);
@@ -579,7 +561,10 @@ fn layout(
                 push(
                     vec![
                         Span::styled(format!("{key:<key_w$}"), key_style),
-                        Span::styled(cut(url, room), plain.add_modifier(Modifier::UNDERLINED)),
+                        Span::styled(
+                            glyphs::fit(url, room),
+                            plain.add_modifier(Modifier::UNDERLINED),
+                        ),
                     ],
                     true,
                 );
@@ -604,7 +589,7 @@ fn layout(
                 let text = format!("{about}{marker}");
                 for (n, row) in wrap(&text, room).into_iter().enumerate() {
                     let head = if n == 0 {
-                        format!("{:<col_w$}", cut(name, col_w - 2))
+                        format!("{:<col_w$}", glyphs::fit(name, col_w - 2))
                     } else {
                         " ".repeat(col_w)
                     };
@@ -618,7 +603,7 @@ fn layout(
                 let room = inner.saturating_sub(col_w);
                 for (n, row) in wrap(about, room).into_iter().enumerate() {
                     let head = if n == 0 {
-                        format!("{:<col_w$}", cut(name, col_w - 2))
+                        format!("{:<col_w$}", glyphs::fit(name, col_w - 2))
                     } else {
                         " ".repeat(col_w)
                     };
@@ -648,8 +633,11 @@ fn layout(
                 let room = inner.saturating_sub(col_w);
                 push(
                     vec![
-                        Span::styled(format!("{:<col_w$}", cut(name, col_w - 2)), key_style),
-                        Span::styled(cut(path, room), plain),
+                        Span::styled(
+                            format!("{:<col_w$}", glyphs::fit(name, col_w - 2)),
+                            key_style,
+                        ),
+                        Span::styled(glyphs::fit(path, room), plain),
                     ],
                     true,
                 );

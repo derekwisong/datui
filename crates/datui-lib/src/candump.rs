@@ -14,7 +14,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
@@ -22,6 +22,7 @@ use color_eyre::eyre::eyre;
 use crate::error_display::FileError;
 use polars::prelude::*;
 
+use crate::columns::{Builder, Cell, Kind};
 use crate::dbc::{Dbc, Message, Mux, Signal};
 use crate::fixed_records::{Bytes, ColumnLayout, Logical, Physical};
 use crate::indexed::Offsets;
@@ -335,21 +336,69 @@ fn line_of(bytes: &[u8], at: usize) -> &str {
     std::str::from_utf8(&bytes[at..end.min(at + MAX_LINE)]).unwrap_or_default()
 }
 
-fn ts_dtype(absolute: bool) -> DataType {
+/// The `ts` column's kind: wall clock, or time since the capture started.
+fn ts_kind(absolute: bool) -> Kind {
     if absolute {
-        DataType::Datetime(TimeUnit::Microseconds, None)
+        Kind::DatetimeUs
     } else {
-        DataType::Duration(TimeUnit::Microseconds)
+        Kind::DurationUs
     }
 }
 
-fn ts_series(values: Vec<Option<i64>>, absolute: bool) -> Series {
-    let ca: Int64Chunked = values.into_iter().collect();
+fn ts_cell(absolute: bool, ts: Option<i64>) -> Cell {
     if absolute {
-        ca.into_datetime(TimeUnit::Microseconds, None).into_series()
+        Cell::DatetimeUs(ts)
     } else {
-        ca.into_duration(TimeUnit::Microseconds).into_series()
+        Cell::DurationUs(ts)
     }
+}
+
+/// The rows a decode last asked for, and the frame read for them. Polars decodes a
+/// window a column at a time; with this, every column of a window comes from one parse
+/// of each of its lines.
+#[derive(Default)]
+struct LastRows(Mutex<Option<(Vec<usize>, DataFrame)>>);
+
+impl LastRows {
+    /// Column `column` of the rows `index` names, of `height`, from the frame `read`
+    /// makes of them or the one it made last for the same rows.
+    fn column(
+        &self,
+        column: usize,
+        index: &IdxCa,
+        height: usize,
+        read: impl FnOnce(&[usize]) -> PolarsResult<DataFrame>,
+    ) -> PolarsResult<Column> {
+        let rows: Vec<usize> = crate::row_index::checked(index, height)?
+            .iter()
+            .map(|&r| r as usize)
+            .collect();
+        let mut last = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let df = match last.as_ref() {
+            Some((seen, df)) if *seen == rows => df.clone(),
+            _ => {
+                let df = read(&rows)?;
+                *last = Some((rows, df.clone()));
+                df
+            }
+        };
+        Ok(df.columns()[column].clone())
+    }
+}
+
+/// The raw table's columns, `ts` of the log's kind.
+fn raw_columns(absolute: bool) -> [(&'static str, Kind); 9] {
+    [
+        ("ts", ts_kind(absolute)),
+        ("iface", Kind::Str),
+        ("id", Kind::Str),
+        ("ext", Kind::Bool),
+        ("dlc", Kind::U8),
+        ("data", Kind::Binary),
+        ("fd", Kind::Bool),
+        ("flags", Kind::U8),
+        ("kind", Kind::Label),
+    ]
 }
 
 /// The raw table: a row per frame, read from its line where it is shown.
@@ -358,26 +407,21 @@ pub struct RawFrames {
     offsets: Arc<Offsets>,
     absolute: bool,
     schema: SchemaRef,
+    last: LastRows,
 }
 
 impl RawFrames {
     pub fn new(bytes: Arc<Bytes>, index: &Index) -> Self {
-        let schema = Schema::from_iter([
-            Field::new("ts".into(), ts_dtype(index.absolute)),
-            Field::new("iface".into(), DataType::String),
-            Field::new("id".into(), DataType::String),
-            Field::new("ext".into(), DataType::Boolean),
-            Field::new("dlc".into(), DataType::UInt8),
-            Field::new("data".into(), DataType::Binary),
-            Field::new("fd".into(), DataType::Boolean),
-            Field::new("flags".into(), DataType::UInt8),
-            Field::new("kind".into(), DataType::String),
-        ]);
+        let schema = raw_columns(index.absolute)
+            .into_iter()
+            .map(|(name, kind)| Field::new(name.into(), kind.dtype()))
+            .collect::<Schema>();
         Self {
             bytes,
             offsets: index.offsets.clone(),
             absolute: index.absolute,
             schema: Arc::new(schema),
+            last: LastRows::default(),
         }
     }
 
@@ -385,95 +429,47 @@ impl RawFrames {
         self.offsets.len().min(crate::row_index::MAX_ROWS)
     }
 
-    fn column(&self, column: usize, rows: impl Iterator<Item = usize>) -> PolarsResult<Column> {
+    /// The frames of `rows`, each line parsed once.
+    fn read(&self, rows: &[usize]) -> PolarsResult<DataFrame> {
         self.bytes.still_whole()?;
         let bytes = self.bytes.as_slice();
-        let frames: Vec<Option<Frame<'_>>> = rows
-            .map(|r| parse_line(line_of(bytes, self.offsets.get(r))))
-            .collect();
-        let name: PlSmallStr = self
-            .schema
-            .get_at_index(column)
-            .expect("a column")
-            .0
-            .clone();
-        let series = match column {
-            0 => ts_series(
-                frames
-                    .iter()
-                    .map(|f| f.as_ref().and_then(|f| f.ts))
-                    .collect(),
-                self.absolute,
-            ),
-            1 => frames
-                .iter()
-                .map(|f| f.as_ref().map(|f| f.iface))
-                .collect::<StringChunked>()
-                .into_series(),
-            2 => frames
-                .iter()
-                .map(|f| {
-                    f.as_ref().map(|f| {
-                        if f.extended {
-                            format!("{:08X}", f.id)
-                        } else {
-                            format!("{:03X}", f.id)
-                        }
-                    })
-                })
-                .collect::<StringChunked>()
-                .into_series(),
-            3 => frames
-                .iter()
-                .map(|f| f.as_ref().map(|f| f.extended))
-                .collect::<BooleanChunked>()
-                .into_series(),
-            4 => frames
-                .iter()
-                .map(|f| f.as_ref().map(|f| f.dlc))
-                .collect::<UInt8Chunked>()
-                .into_series(),
-            5 => frames
-                .iter()
-                .map(|f| f.as_ref().map(|f| f.data.as_slice()))
-                .collect::<BinaryChunked>()
-                .into_series(),
-            6 => frames
-                .iter()
-                .map(|f| f.as_ref().map(|f| f.fd))
-                .collect::<BooleanChunked>()
-                .into_series(),
-            7 => frames
-                .iter()
-                .map(|f| f.as_ref().and_then(|f| f.flags))
-                .collect::<UInt8Chunked>()
-                .into_series(),
-            _ => frames
-                .iter()
-                .map(|f| {
-                    f.as_ref().map(|f| {
-                        if f.error {
-                            "error"
-                        } else if f.remote {
-                            "remote"
-                        } else {
-                            "data"
-                        }
-                    })
-                })
-                .collect::<StringChunked>()
-                .into_series(),
-        };
-        Ok(series.with_name(name).into_column())
+        let mut out = Builder::new(&raw_columns(self.absolute));
+        for &r in rows {
+            let Some(f) = parse_line(line_of(bytes, self.offsets.get(r))) else {
+                out.push([]);
+                continue;
+            };
+            let id = if f.extended {
+                format!("{:08X}", f.id)
+            } else {
+                format!("{:03X}", f.id)
+            };
+            let kind = if f.error {
+                "error"
+            } else if f.remote {
+                "remote"
+            } else {
+                "data"
+            };
+            out.push([
+                ts_cell(self.absolute, f.ts),
+                Cell::Str(Some(f.iface.to_string())),
+                Cell::Str(Some(id)),
+                Cell::Bool(Some(f.extended)),
+                Cell::U8(Some(f.dlc)),
+                Cell::Binary(Some(f.data)),
+                Cell::Bool(Some(f.fd)),
+                Cell::U8(f.flags),
+                Cell::Label(Some(kind)),
+            ]);
+        }
+        out.take()
     }
 
     pub fn collect_window(&self, start: usize, len: usize) -> PolarsResult<DataFrame> {
         let start = start.min(self.rows());
         let len = len.min(self.rows() - start);
-        let columns = (0..self.schema.len())
-            .map(|c| self.column(c, start..start + len))
-            .collect::<PolarsResult<Vec<_>>>()?;
-        DataFrame::new(len, columns)
+        self.read(&(start..start + len).collect::<Vec<_>>())
     }
 }
 
@@ -487,8 +483,8 @@ impl crate::row_index::RowSource for RawFrames {
     }
 
     fn decode(&self, column: usize, index: &IdxCa) -> PolarsResult<Column> {
-        let rows = crate::row_index::checked(index, self.rows())?;
-        self.column(column, rows.iter().map(|&r| r as usize))
+        self.last
+            .column(column, index, self.rows(), |rows| self.read(rows))
     }
 }
 
@@ -509,6 +505,7 @@ pub struct Decoded {
     /// Value names as text, or every value as a number (for the long table).
     named: bool,
     schema: SchemaRef,
+    last: LastRows,
 }
 
 /// How a signal's values are typed: an integer when factor and offset keep it one, a
@@ -544,7 +541,7 @@ impl Decoded {
         message: Arc<Message>,
         named: bool,
     ) -> PolarsResult<Self> {
-        let mut fields = vec![Field::new("ts".into(), ts_dtype(index.absolute))];
+        let mut fields = vec![Field::new("ts".into(), ts_kind(index.absolute).dtype())];
         for s in &message.signals {
             let dtype = if s.float != 0 {
                 DataType::Float64
@@ -566,6 +563,7 @@ impl Decoded {
             absolute: index.absolute,
             named,
             schema: Arc::new(schema),
+            last: LastRows::default(),
         })
     }
 
@@ -573,64 +571,63 @@ impl Decoded {
         self.rows.len().min(crate::row_index::MAX_ROWS)
     }
 
-    fn column(&self, column: usize, rows: impl Iterator<Item = usize>) -> PolarsResult<Column> {
+    /// The frames of `rows` decoded, each line parsed once.
+    fn read(&self, rows: &[usize]) -> PolarsResult<DataFrame> {
         self.bytes.still_whole()?;
         let bytes = self.bytes.as_slice();
         let frames: Vec<Option<Frame<'_>>> = rows
-            .map(|r| parse_line(line_of(bytes, self.offsets.get(self.rows[r] as usize))))
+            .iter()
+            .map(|&r| parse_line(line_of(bytes, self.offsets.get(self.rows[r] as usize))))
             .collect();
-        let name = self
-            .schema
-            .get_at_index(column)
-            .expect("a column")
-            .0
-            .clone();
-        if column == 0 {
-            let ts = frames
-                .iter()
-                .map(|f| f.as_ref().and_then(|f| f.ts))
-                .collect();
-            return Ok(ts_series(ts, self.absolute).with_name(name).into_column());
-        }
-        let signal = &self.message.signals[column - 1];
+        let names = self.schema.iter_names().cloned();
+        let mut columns = Vec::with_capacity(self.schema.len());
+        let ts = frames
+            .iter()
+            .map(|f| ts_cell(self.absolute, f.as_ref().and_then(|f| f.ts)));
+        columns.push(crate::columns::series("ts", ts_kind(self.absolute), ts)?);
         let multiplexer = self
             .message
             .signals
             .iter()
             .find(|s| s.mux == Mux::Multiplexer);
-        let present = |f: &Frame<'_>| {
-            let mux = multiplexer.and_then(|m| crate::dbc::raw(m, &f.data));
-            crate::dbc::present(signal, mux)
-        };
-        let series = if signal.float != 0 {
-            frames
-                .iter()
-                .map(|f| {
-                    let f = f.as_ref()?;
-                    present(f).then(|| crate::dbc::physical(signal, &f.data))?
-                })
-                .collect::<Float64Chunked>()
-                .into_series()
-        } else {
-            let ints: Vec<Option<i128>> = frames
-                .iter()
-                .map(|f| {
-                    let f = f.as_ref()?;
-                    present(f).then(|| crate::dbc::integer(signal, &f.data))?
-                })
-                .collect();
-            crate::fixed_records::integers(&signal_layout(signal, self.named), ints)?
-        };
-        Ok(series.with_name(name).into_column())
+        for signal in &self.message.signals {
+            let present = |f: &Frame<'_>| {
+                let mux = multiplexer.and_then(|m| crate::dbc::raw(m, &f.data));
+                crate::dbc::present(signal, mux)
+            };
+            let series = if signal.float != 0 {
+                frames
+                    .iter()
+                    .map(|f| {
+                        let f = f.as_ref()?;
+                        present(f).then(|| crate::dbc::physical(signal, &f.data))?
+                    })
+                    .collect::<Float64Chunked>()
+                    .into_series()
+            } else {
+                let ints: Vec<Option<i128>> = frames
+                    .iter()
+                    .map(|f| {
+                        let f = f.as_ref()?;
+                        present(f).then(|| crate::dbc::integer(signal, &f.data))?
+                    })
+                    .collect();
+                crate::fixed_records::integers(&signal_layout(signal, self.named), ints)?
+            };
+            columns.push(series);
+        }
+        let columns = columns
+            .into_iter()
+            .zip(names)
+            .map(|(s, name)| s.with_name(name).into_column())
+            .collect();
+        DataFrame::new(rows.len(), columns)
     }
 
     pub fn collect_window(&self, start: usize, len: usize) -> PolarsResult<DataFrame> {
         let start = start.min(self.height());
         let len = len.min(self.height() - start);
-        let columns = (0..self.schema.len())
-            .map(|c| self.column(c, start..start + len))
-            .collect::<PolarsResult<Vec<_>>>()?;
-        DataFrame::new(len, columns)
+        self.read(&(start..start + len).collect::<Vec<_>>())
     }
 }
 
@@ -644,8 +641,8 @@ impl crate::row_index::RowSource for Decoded {
     }
 
     fn decode(&self, column: usize, index: &IdxCa) -> PolarsResult<Column> {
-        let rows = crate::row_index::checked(index, self.height())?;
-        self.column(column, rows.iter().map(|&r| r as usize))
+        self.last
+            .column(column, index, self.height(), |rows| self.read(rows))
     }
 }
 
@@ -996,6 +993,27 @@ fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// Every column of one window comes from one read of its rows; other rows read again.
+    #[test]
+    fn a_window_is_read_once_for_all_its_columns() {
+        let last = LastRows::default();
+        let reads = std::cell::Cell::new(0);
+        let read = |rows: &[usize]| {
+            reads.set(reads.get() + 1);
+            let a: Vec<u32> = rows.iter().map(|&r| r as u32).collect();
+            df!("a" => a.clone(), "b" => a)
+        };
+        let rows = IdxCa::from_vec("".into(), vec![1, 2]);
+        let a = last.column(0, &rows, 4, read).unwrap();
+        let b = last.column(1, &rows, 4, read).unwrap();
+        assert_eq!(reads.get(), 1);
+        assert_eq!(a.name().as_str(), "a");
+        assert_eq!(b.u32().unwrap().get(1), Some(2));
+        last.column(0, &IdxCa::from_vec("".into(), vec![3]), 4, read)
+            .unwrap();
+        assert_eq!(reads.get(), 2);
+    }
 
     /// A log of no frames names itself; a table that wants a DBC file says the flag
     /// that gives one, and a DBC file that is not one names the DBC file.

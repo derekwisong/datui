@@ -122,6 +122,19 @@ kinds! {
     };
 }
 
+/// One column of `kind` named `name`, of `cells`.
+pub fn series(
+    name: &str,
+    kind: Kind,
+    cells: impl IntoIterator<Item = Cell>,
+) -> PolarsResult<Series> {
+    let mut values = Values::new(kind);
+    for cell in cells {
+        values.push(cell);
+    }
+    values.take(name.into())
+}
+
 /// Columns being filled, a row at a time.
 #[derive(Debug)]
 pub struct Builder {

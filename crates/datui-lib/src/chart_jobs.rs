@@ -8,14 +8,13 @@ use color_eyre::Result;
 use polars::prelude::{LazyFrame, Schema};
 
 use crate::chart_data::{self, ColorSplit, ValueRange};
-use crate::chart_export::{ChartExportFormat, ChartExportRequest, ExportOptions, Figure};
 use crate::chart_modal::{Aggregate, ChartModal, ChartSpec, ColorCounts, Mark};
 use crate::jobs::{Answer, Job};
 use crate::output_file::Overwrite;
 use crate::{
-    App, AppEvent, ExportProgress, InputMode, chart_export, chart_modal, logging, numfmt,
-    output_file, sampling,
+    App, AppEvent, ExportProgress, InputMode, chart_export, logging, numfmt, output_file, sampling,
 };
+use chart_export::{ChartExportFormat, ChartExportRequest, ExportOptions, Figure};
 
 /// Outcomes of chart preparation keyed by the request that produced them, least
 /// recently used first. A failure is remembered too, so a selection that cannot be
@@ -377,7 +376,6 @@ impl ChartRequest {
                 };
                 ChartPrepared::XY(ChartCacheXY {
                     other: grouped.other,
-                    x_column: x.to_string(),
                     names: grouped.names,
                     series: grouped.series,
                     breaks: grouped.breaks,
@@ -573,7 +571,7 @@ impl ChartExportJob {
         format: ChartExportFormat,
         overwrite: Overwrite,
     ) -> Result<()> {
-        let bytes = crate::chart_export::render(&self.figure, &self.options, format)?;
+        let bytes = chart_export::render(&self.figure, &self.options, format)?;
         let out = output_file::OutputFile::create(path, overwrite)?;
         std::fs::write(out.path(), bytes)?;
         out.commit()?;
@@ -582,7 +580,6 @@ impl ChartExportJob {
 }
 
 pub(crate) struct ChartCacheXY {
-    pub(crate) x_column: String,
     /// One per series: its Y column, or its color group.
     pub(crate) names: Vec<String>,
     pub(crate) series: Vec<Vec<(f64, f64)>>,
@@ -894,25 +891,12 @@ impl App {
         }
     }
 
-    /// What `column` holds, for an export's axis ticks.
-    fn axis_numbers(&self, column: &str) -> chart_data::AxisNumbers {
-        let schema = self.data_table_state.as_ref().map(|s| s.schema().as_ref());
-        chart_data::AxisNumbers::column(&self.number_format, schema, column)
-    }
-
-    /// What `columns` hold on one axis.
-    fn axes_numbers(&self, columns: &[String]) -> chart_data::AxisNumbers {
-        let schema = self.data_table_state.as_ref().map(|s| s.schema().as_ref());
-        chart_data::AxisNumbers::columns(&self.number_format, schema, columns)
-    }
-
     /// The figure to export from the prepared chart for the current spec. `Ok(None)`
     /// means that chart is still being prepared and the caller should wait for it.
-    pub(crate) fn build_chart_figure(&self) -> Result<Option<chart_export::Figure>> {
-        use chart_export::{Axis, Figure, Plot, Series};
-        if self.data_table_state.is_none() {
+    pub(crate) fn build_chart_figure(&self) -> Result<Option<Figure>> {
+        let Some(state) = self.data_table_state.as_ref() else {
             return Err(color_eyre::eyre::eyre!("No data loaded"));
-        }
+        };
         let modal = &self.chart_modal;
         let Some(request) = ChartRequest::from_modal(modal).filter(|r| !r.x_only) else {
             return Err(color_eyre::eyre::eyre!(
@@ -926,169 +910,27 @@ impl App {
             Some(Err(message)) => return Err(color_eyre::eyre::eyre!("{}", message)),
             None => return Ok(None),
         };
-        let no_points = || color_eyre::eyre::eyre!("No valid data points to export");
-        let spec = &request.spec;
-        let x_name = spec.encoding.x.field.clone().unwrap_or_default();
-        let ys = &spec.encoding.y.field;
-        let title = |column: &str| modal.axis_title(column);
-        let numbers_of = |column: &str| self.axis_numbers(column);
-        let y_axis = || {
-            use chart_modal::Aggregate;
-            let aggregate = spec.encoding.y.aggregate;
-            let numbers = match aggregate {
-                Aggregate::Count | Aggregate::Distinct => {
-                    chart_data::AxisNumbers::count(&self.number_format)
-                }
-                a if a.is_fractional() => self.axes_numbers(ys).fractional(),
-                _ => self.axes_numbers(ys),
-            };
-            let names = if aggregate == Aggregate::Count {
-                "count".to_string()
-            } else {
-                ys.iter().map(|y| title(y)).collect::<Vec<_>>().join(", ")
-            };
-            let title = match aggregate {
-                Aggregate::None | Aggregate::Count => names,
-                _ => format!("{} {names}", spec.encoding.y.aggregate_name()),
-            };
-            Axis {
-                title,
-                numbers,
-                log: modal.log_scale,
-                ..Default::default()
-            }
+        let context = PlotContext {
+            modal,
+            spec: &request.spec,
+            numbers: &self.number_format,
+            schema: Some(state.schema().as_ref()),
         };
+        // A single X column has nothing to export.
         let plot = match prepared {
-            ChartPrepared::XY(cache) => {
-                let points = if modal.log_scale {
-                    cache
-                        .series_log
-                        .clone()
-                        .unwrap_or_else(|| log_series(&cache.series))
-                } else {
-                    cache.series.clone()
-                };
-                let last = cache.names.len().saturating_sub(1);
-                let series: Vec<Series> = points
-                    .into_iter()
-                    .zip(&cache.names)
-                    .zip(&cache.breaks)
-                    .enumerate()
-                    .filter(|(_, ((points, _), _))| !points.is_empty())
-                    .map(|(i, ((points, name), breaks))| Series {
-                        name: name.clone(),
-                        points,
-                        breaks: breaks.clone(),
-                        other: cache.other && i == last,
-                    })
-                    .collect();
-                if series.is_empty() {
-                    return Err(no_points());
-                }
-                Plot::Lines {
-                    series,
-                    scatter: spec.mark == chart_modal::Mark::Scatter,
-                    x: Axis {
-                        title: title(&cache.x_column),
-                        numbers: numbers_of(&cache.x_column),
-                        kind: cache.x_axis_kind,
-                        log: false,
-                    },
-                    y: y_axis(),
-                    y_from_zero: modal.y_starts_at_zero,
-                }
-            }
-            ChartPrepared::Histogram(data) => {
-                if data.bins.is_empty() {
-                    return Err(no_points());
-                }
-                Plot::Histogram {
-                    data: data.clone(),
-                    x: Axis {
-                        title: title(&data.column),
-                        numbers: numbers_of(&data.column),
-                        ..Default::default()
-                    },
-                    y: Axis {
-                        title: if data.share { "share" } else { "count" }.to_string(),
-                        numbers: if data.share {
-                            chart_data::AxisNumbers::measure(&self.number_format, "Share")
-                        } else {
-                            chart_data::AxisNumbers::count(&self.number_format)
-                        },
-                        ..Default::default()
-                    },
-                }
-            }
-            ChartPrepared::BoxPlot(data) => {
-                if data.stats.is_empty() {
-                    return Err(no_points());
-                }
-                Plot::Box {
-                    data: data.clone(),
-                    x_title: x_name.clone(),
-                    y: Axis {
-                        title: ys.first().map(|y| title(y)).unwrap_or_default(),
-                        numbers: self.axes_numbers(ys),
-                        ..Default::default()
-                    },
-                }
-            }
-            ChartPrepared::Kde(data) => {
-                if data.series.is_empty() {
-                    return Err(no_points());
-                }
-                Plot::Kde {
-                    data: data.clone(),
-                    x: Axis {
-                        title: title(&x_name),
-                        numbers: numbers_of(&x_name).fractional(),
-                        ..Default::default()
-                    },
-                    y: Axis {
-                        title: "density".to_string(),
-                        numbers: chart_data::AxisNumbers::measure(&self.number_format, "Density"),
-                        ..Default::default()
-                    },
-                }
-            }
-            ChartPrepared::Heatmap(data) => {
-                if data.counts.is_empty() || data.max_count <= 0.0 {
-                    return Err(no_points());
-                }
-                Plot::Heatmap {
-                    data: data.clone(),
-                    x: Axis {
-                        title: title(&data.x_column),
-                        numbers: numbers_of(&data.x_column),
-                        ..Default::default()
-                    },
-                    y: Axis {
-                        title: title(&data.y_column),
-                        numbers: numbers_of(&data.y_column),
-                        ..Default::default()
-                    },
-                }
-            }
-            ChartPrepared::Bar(data) => {
-                if data.bars.is_empty() {
-                    return Err(no_points());
-                }
-                Plot::Bars {
-                    value: Axis {
-                        title: data.value_column.clone(),
-                        numbers: chart_data::AxisNumbers {
-                            format: data.value_format(&self.number_format),
-                            whole: data.value_dtype.is_integer(),
-                        },
-                        ..Default::default()
-                    },
-                    data: data.clone(),
-                }
-            }
-            // Left out above: a single X column has nothing to export.
-            ChartPrepared::XRange(_) => return Err(no_points()),
-        };
+            ChartPrepared::XRange(_) => None,
+            prepared => plot(Some(prepared), &context).filter(|plot| !plot.is_empty()),
+        }
+        .ok_or_else(|| color_eyre::eyre::eyre!("No valid data points to export"))?;
+        let mut plot = plot.into_owned();
+        // The screen's title row says how the rows were made; a file has none, so
+        // its Y axis names the aggregate.
+        let y = &request.spec.encoding.y;
+        if let chart_export::Plot::Lines(lines) = &mut plot
+            && !matches!(y.aggregate, Aggregate::None | Aggregate::Count)
+        {
+            lines.y.title = format!("{} {}", y.aggregate_name(), lines.y.title);
+        }
         Ok(Some(Figure {
             plot,
             // The file always has the middle dot; the terminal may be ASCII.
@@ -1181,5 +1023,178 @@ impl App {
             notes.insert(0, note);
         }
         notes
+    }
+}
+
+/// What a plot is drawn from beside its data: the panel's options, the spec, and
+/// how the view's columns print.
+pub(crate) struct PlotContext<'a> {
+    pub(crate) modal: &'a ChartModal,
+    /// The spec drawn: on screen, with the picker's choice previewed.
+    pub(crate) spec: &'a crate::chart_modal::ChartSpec,
+    pub(crate) numbers: &'a crate::numfmt::NumberFormatSettings,
+    pub(crate) schema: Option<&'a Schema>,
+}
+
+/// The plot of `prepared` for the spec, as the screen and every export draw it: a
+/// line or scatter chart's axes always, standing empty until its series arrive;
+/// any other kind once its data has.
+pub(crate) fn plot<'a>(
+    prepared: Option<&'a ChartPrepared>,
+    context: &PlotContext<'_>,
+) -> Option<chart_export::Plot<'a>> {
+    use chart_data::AxisNumbers;
+    use chart_export::{Axis, Plot};
+    use std::borrow::Cow;
+    let PlotContext {
+        modal,
+        spec,
+        numbers,
+        schema,
+    } = *context;
+    let column = |name: &str| AxisNumbers::column(numbers, schema, name);
+    let title = |name: &str| modal.axis_title(name);
+    let axis = |title: String, numbers: AxisNumbers| Axis {
+        title,
+        numbers,
+        ..Default::default()
+    };
+    let encoding = &spec.encoding;
+    let x_name = encoding.x.field.as_deref();
+    let ys = &encoding.y.field;
+    Some(match (spec.mark, prepared) {
+        (Mark::Line | Mark::Scatter, prepared) => Plot::Lines(lines(prepared, context)),
+        (Mark::Histogram, Some(ChartPrepared::Histogram(data))) => Plot::Histogram {
+            x: axis(title(&data.column), column(&data.column)),
+            y: if data.share {
+                axis("Share".to_string(), AxisNumbers::measure(numbers, "Share"))
+            } else {
+                axis("Count".to_string(), AxisNumbers::count(numbers))
+            },
+            data: Cow::Borrowed(data),
+        },
+        (Mark::Kde, Some(ChartPrepared::Kde(data))) => Plot::Kde {
+            x: axis(
+                x_name.map(title).unwrap_or_default(),
+                x_name.map(column).unwrap_or_default().fractional(),
+            ),
+            y: axis(
+                "Density".to_string(),
+                AxisNumbers::measure(numbers, "Density"),
+            ),
+            data: Cow::Borrowed(data),
+        },
+        (Mark::Box, Some(ChartPrepared::BoxPlot(data))) => Plot::Box {
+            x_title: x_name.unwrap_or_default().to_string(),
+            y: axis(
+                ys.first().map(|y| title(y)).unwrap_or_default(),
+                AxisNumbers::columns(numbers, schema, ys),
+            ),
+            data: Cow::Borrowed(data),
+        },
+        (Mark::Heatmap, Some(ChartPrepared::Heatmap(data))) => Plot::Heatmap {
+            x: axis(title(&data.x_column), column(&data.x_column)),
+            y: axis(title(&data.y_column), column(&data.y_column)),
+            data: Cow::Borrowed(data),
+        },
+        (Mark::Bar, Some(ChartPrepared::Bar(data))) => Plot::Bars {
+            value: axis(
+                data.value_column.clone(),
+                AxisNumbers {
+                    format: data.value_format(numbers),
+                    whole: data.value_dtype.is_integer(),
+                },
+            ),
+            data: Cow::Borrowed(data),
+        },
+        _ => return None,
+    })
+}
+
+/// A line or scatter chart's series and axes; the axes alone, over the X column's
+/// range or typed from the schema, while the series are on their way.
+fn lines<'a>(
+    prepared: Option<&'a ChartPrepared>,
+    context: &PlotContext<'_>,
+) -> chart_export::Lines<'a> {
+    use chart_data::AxisNumbers;
+    use chart_export::Axis;
+    use std::borrow::Cow;
+    let PlotContext {
+        modal,
+        spec,
+        numbers,
+        schema,
+    } = *context;
+    let encoding = &spec.encoding;
+    let ys = &encoding.y.field;
+    let aggregate = encoding.y.aggregate;
+    let y_numbers = match aggregate {
+        Aggregate::Count | Aggregate::Distinct => AxisNumbers::count(numbers),
+        // A mean or median of whole numbers is not whole.
+        a if a.is_fractional() => AxisNumbers::columns(numbers, schema, ys).fractional(),
+        _ => AxisNumbers::columns(numbers, schema, ys),
+    };
+    let names = if aggregate == Aggregate::Count {
+        "count".to_string()
+    } else {
+        ys.iter()
+            .map(|y| modal.axis_title(y))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let y = Axis {
+        title: names,
+        numbers: y_numbers,
+        log: modal.log_scale,
+        ..Default::default()
+    };
+    let x_name = encoding.x.field.as_deref();
+    let x = |kind| Axis {
+        title: x_name.map(|x| modal.axis_title(x)).unwrap_or_default(),
+        numbers: x_name
+            .map(|x| AxisNumbers::column(numbers, schema, x))
+            .unwrap_or_default(),
+        kind,
+        log: false,
+    };
+    let empty = |kind, x_bounds| chart_export::Lines {
+        series: Cow::Borrowed(&[][..]),
+        values: Cow::Borrowed(&[][..]),
+        breaks: Cow::Borrowed(&[][..]),
+        names: Cow::Borrowed(&[][..]),
+        other: false,
+        scatter: spec.mark == Mark::Scatter,
+        x_bounds,
+        x: x(kind),
+        y: y.clone(),
+        y_from_zero: modal.y_starts_at_zero,
+    };
+    match prepared {
+        Some(ChartPrepared::XY(cache)) => chart_export::Lines {
+            series: match (modal.log_scale, &cache.series_log) {
+                (false, _) => Cow::Borrowed(&cache.series[..]),
+                (true, Some(logged)) => Cow::Borrowed(&logged[..]),
+                (true, None) => Cow::Owned(log_series(&cache.series)),
+            },
+            values: Cow::Borrowed(&cache.series[..]),
+            breaks: Cow::Borrowed(&cache.breaks[..]),
+            names: Cow::Borrowed(&cache.names[..]),
+            other: cache.other,
+            x_bounds: None,
+            x: x(cache.x_axis_kind),
+            ..empty(cache.x_axis_kind, None)
+        },
+        Some(ChartPrepared::XRange(range)) => {
+            empty(range.x_axis_kind, Some((range.x_min, range.x_max)))
+        }
+        // Still on its way: typed from the schema so the labels are right.
+        _ => {
+            let kind = match (x_name, schema) {
+                (Some(x), Some(schema)) => chart_data::x_axis_temporal_kind_for_column(schema, x),
+                _ => chart_data::XAxisTemporalKind::Numeric,
+            };
+            empty(kind, None)
+        }
     }
 }

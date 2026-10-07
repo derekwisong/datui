@@ -4,10 +4,10 @@ scatter_by_color png 55e02e54d1db4693
 scatter_by_color pdf e8279cc6089828e9
 line_mean_log png 05bbfdf5e7675880
 line_mean_log pdf 436cdfd7cba04cc5
-histogram png 9a5d4f38965f573e
-histogram pdf 0781ed837ce03d06
-kde png 167e43a4eb7d1d7f
-kde pdf 45481c6e70526e8f
+histogram png e3dc9a0cdb56883e
+histogram pdf c677575316d302ef
+kde png 682ddd0923c333e9
+kde pdf 6c998441b76ef482
 box png 9518b68fab8d4084
 box pdf 10be65b14906f5c7
 heatmap png dea68acff6750ec9

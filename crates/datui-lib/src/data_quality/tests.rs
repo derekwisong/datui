@@ -1,4 +1,5 @@
 use super::*;
+use crate::data_quality::fixtures::measure;
 
 fn fixture() -> LazyFrame {
     df!(
@@ -63,7 +64,7 @@ fn dates_past_the_calendar_fall_in_segments_without_a_panic() {
             grain: grain.clone(),
             ..DataQualityPlan::default()
         };
-        let results = compute_data_quality(&lf, Some(3), &plan, None, false).unwrap();
+        let results = measure(&lf, Some(3), &plan);
         let labels: Vec<&str> = results.segments.iter().map(|s| s.label.as_str()).collect();
         if let QualityGrain::Partition(column) = &grain {
             assert!(
@@ -116,7 +117,7 @@ fn partition_segments_find_the_same_rows_by_type_as_by_label() {
             grain: grain.clone(),
             ..DataQualityPlan::default()
         };
-        let results = compute_data_quality(&lf, Some(4), &plan, None, false).unwrap();
+        let results = measure(&lf, Some(4), &plan);
         for segment in &results.segments {
             for schema in [Some(schema.as_ref()), None] {
                 let predicate = segment_predicate(&plan, &grain, &segment.label, schema)
@@ -137,7 +138,7 @@ fn a_full_whole_scope_segment_is_the_column_profile() {
         compute: QualityCompute::Full,
         ..DataQualityPlan::default()
     };
-    let results = compute_data_quality(&fixture(), Some(4), &plan, None, false).unwrap();
+    let results = measure(&fixture(), Some(4), &plan);
     let schema = fixture().collect_schema().unwrap();
     let read = profile_segments_lazy(&fixture(), 4, &plan, None, &schema, false).unwrap();
     assert_eq!(results.segments.len(), 1);
@@ -169,7 +170,7 @@ fn full_profile_reports_core_counts() {
         compute: QualityCompute::Full,
         ..DataQualityPlan::default()
     };
-    let results = compute_data_quality(&fixture(), Some(4), &plan, None, false).unwrap();
+    let results = measure(&fixture(), Some(4), &plan);
 
     assert_eq!(results.precision, QualityPrecision::Exact);
     assert_eq!(results.evaluated_rows, 4);
@@ -328,7 +329,7 @@ fn sample_is_disclosed_and_bounded() {
         sample_seed: 7,
         ..DataQualityPlan::default()
     };
-    let results = compute_data_quality(&fixture(), Some(4), &plan, None, false).unwrap();
+    let results = measure(&fixture(), Some(4), &plan);
     assert_eq!(results.precision, QualityPrecision::Sampled);
     assert_eq!(results.total_rows, Some(4));
     assert_eq!(results.evaluated_rows, 2);
@@ -348,14 +349,14 @@ fn a_sampled_run_knows_the_total_it_was_drawn_from() {
         dataset_rows: 10,
         ..DataQualityPlan::default()
     };
-    let results = compute_data_quality(&frame, None, &plan, None, false).unwrap();
+    let results = measure(&frame, None, &plan);
     assert_eq!(results.total_rows, Some(100));
     assert_eq!(results.evaluated_rows, 10);
     assert_eq!(results.precision, QualityPrecision::Sampled);
     assert_eq!(results.segments[0].total_rows, Some(100));
 
     let short = frame.clone().limit(8);
-    let results = compute_data_quality(&short, None, &plan, None, false).unwrap();
+    let results = measure(&short, None, &plan);
     assert_eq!(results.total_rows, Some(8));
     assert_eq!(results.evaluated_rows, 8);
     assert_eq!(results.precision, QualityPrecision::Exact);
@@ -364,7 +365,7 @@ fn a_sampled_run_knows_the_total_it_was_drawn_from() {
         compute: QualityCompute::Metadata,
         ..plan
     };
-    let results = compute_data_quality(&frame, None, &metadata, None, false).unwrap();
+    let results = measure(&frame, None, &metadata);
     assert_eq!(results.total_rows, None);
     assert_eq!(results.evaluated_rows, 0);
 }
@@ -385,7 +386,7 @@ fn a_dataset_sample_spreads_across_a_sorted_table() {
         dataset_rows: 1_000,
         ..DataQualityPlan::default()
     };
-    let results = compute_data_quality(&frame, None, &plan, None, false).unwrap();
+    let results = measure(&frame, None, &plan);
     assert_eq!(results.precision, QualityPrecision::Sampled);
     assert_eq!(results.evaluated_rows, 1_000);
     assert_eq!(results.total_rows, Some(rows));
@@ -408,7 +409,7 @@ fn a_dataset_sample_spreads_across_a_sorted_table() {
             sample_seed: seed,
             ..plan.clone()
         };
-        let results = compute_data_quality(&frame, None, &plan, None, false).unwrap();
+        let results = measure(&frame, None, &plan);
         let id = results
             .columns
             .iter()
@@ -439,7 +440,7 @@ fn partitions_compare_with_the_one_before_in_value_order() {
         comparison: QualityComparison::Previous,
         ..DataQualityPlan::default()
     };
-    let results = compute_data_quality(&frame, Some(300), &plan, None, false).unwrap();
+    let results = measure(&frame, Some(300), &plan);
     let labels = results
         .segments
         .iter()
@@ -496,7 +497,7 @@ fn a_daily_sample_names_real_changes_and_counts_every_day() {
         comparison: QualityComparison::Previous,
         ..DataQualityPlan::default()
     };
-    let results = compute_data_quality(&frame, Some(total), &plan, None, false).unwrap();
+    let results = measure(&frame, Some(total), &plan);
     assert_eq!(results.precision, QualityPrecision::Sampled);
     assert_eq!(results.segments.len(), 200);
     assert_eq!(
@@ -566,8 +567,7 @@ fn every_segment_keeps_its_own_counts() {
         },
         ..DataQualityPlan::default()
     };
-    let results =
-        compute_data_quality(&frame, Some(days as usize * 3), &plan, None, false).unwrap();
+    let results = measure(&frame, Some(days as usize * 3), &plan);
     assert_eq!(results.segments.len(), days as usize);
     for (index, segment) in results.segments.iter().enumerate() {
         assert_eq!(segment.evaluated_rows, 3, "{}", segment.label);
@@ -597,7 +597,7 @@ fn row_chunks_cut_the_shared_sample_where_its_rows_sat() {
         grain: QualityGrain::RowChunks(10),
         ..DataQualityPlan::default()
     };
-    let results = compute_data_quality(&frame, Some(100), &plan, None, false).unwrap();
+    let results = measure(&frame, Some(100), &plan);
     assert_eq!(results.total_rows, Some(100));
     assert_eq!(results.evaluated_rows, 30);
     assert_eq!(results.precision, QualityPrecision::Sampled);
@@ -628,7 +628,7 @@ fn row_chunks_cut_the_shared_sample_where_its_rows_sat() {
             segment.label
         );
     }
-    let again = compute_data_quality(&frame, Some(100), &plan, None, false).unwrap();
+    let again = measure(&frame, Some(100), &plan);
     assert_eq!(
         results
             .segments
@@ -698,7 +698,7 @@ fn a_grain_change_cuts_the_kept_sample() {
         ]
     );
     assert!(again.unwrap().counted.is_empty(), "counted by the sampler");
-    let fresh = compute_data_quality(&frame, None, &by_region, None, false).unwrap();
+    let fresh = measure(&frame, None, &by_region);
     assert_eq!(
         format!("{:?}", results.segments),
         format!("{:?}", fresh.segments),
@@ -742,7 +742,7 @@ fn segments_are_the_shared_sample_split() {
         grain: grain.clone(),
         ..DataQualityPlan::default()
     };
-    let results = compute_data_quality(&frame, None, &random, None, false).unwrap();
+    let results = measure(&frame, None, &random);
     assert_eq!(results.total_rows, Some(120));
     assert_eq!(results.evaluated_rows, 24);
     assert_eq!(
@@ -763,7 +763,7 @@ fn segments_are_the_shared_sample_split() {
         grain,
         ..DataQualityPlan::default()
     };
-    let results = compute_data_quality(&frame, None, &equal, None, false).unwrap();
+    let results = measure(&frame, None, &equal);
     assert_eq!(results.evaluated_rows, 10);
     assert_eq!(
         results
@@ -781,7 +781,7 @@ fn metadata_mode_does_not_evaluate_values() {
         compute: QualityCompute::Metadata,
         ..DataQualityPlan::default()
     };
-    let results = compute_data_quality(&fixture(), Some(4), &plan, None, false).unwrap();
+    let results = measure(&fixture(), Some(4), &plan);
     assert_eq!(results.precision, QualityPrecision::Metadata);
     assert_eq!(results.evaluated_rows, 0);
     assert_eq!(results.columns.len(), 5);
@@ -1006,12 +1006,11 @@ fn full_profile_accepts_list_columns() {
         compute: QualityCompute::Full,
         ..DataQualityPlan::default()
     };
-    let result = compute_data_quality(&frame, Some(2), &plan, None, false).unwrap();
+    let result = measure(&frame, Some(2), &plan);
     assert_eq!(result.columns[0].null_count, 0);
     assert_eq!(result.columns[0].min_length, Some(1));
     assert_eq!(result.columns[0].max_length, Some(2));
-    let sampled =
-        compute_data_quality(&frame, Some(2), &DataQualityPlan::default(), None, false).unwrap();
+    let sampled = measure(&frame, Some(2), &DataQualityPlan::default());
     assert_eq!(sampled.columns[0].min_length, Some(1));
     assert_eq!(sampled.columns[0].max_length, Some(2));
 }
@@ -1024,7 +1023,7 @@ fn row_chunks_keep_denominators_and_compare_previous() {
         comparison: QualityComparison::Previous,
         ..DataQualityPlan::default()
     };
-    let results = compute_data_quality(&fixture(), Some(4), &plan, None, false).unwrap();
+    let results = measure(&fixture(), Some(4), &plan);
     assert_eq!(results.segments.len(), 2);
     assert_eq!(results.segments[0].evaluated_rows, 2);
     let first_dirty = results.segments[0]
@@ -1099,7 +1098,7 @@ fn a_comparison_from_held_segments_matches_a_fresh_run() {
             grain: QualityGrain::Partition("region".into()),
             ..DataQualityPlan::default()
         };
-        let held = compute_data_quality(&df, Some(rows), &base, None, false).unwrap();
+        let held = measure(&df, Some(rows), &base);
         assert_eq!(held.segments.len(), 4, "{compute:?}");
         for (comparison, baseline) in comparisons {
             let plan = DataQualityPlan {
@@ -1107,7 +1106,7 @@ fn a_comparison_from_held_segments_matches_a_fresh_run() {
                 baseline_segment: baseline.map(str::to_string),
                 ..base.clone()
             };
-            let fresh = compute_data_quality(&df, Some(rows), &plan, None, false).unwrap();
+            let fresh = measure(&df, Some(rows), &plan);
             let mut derived = held.clone();
             derived.compare_segments(&plan);
             let compared = |results: &DataQualityResults| {
@@ -1167,7 +1166,7 @@ fn temporal_roles_produce_latency_without_name_inference() {
         ..DataQualityPlan::default()
     };
 
-    let without_roles = compute_data_quality(&frame, Some(4), &plan, None, false).unwrap();
+    let without_roles = measure(&frame, Some(4), &plan);
     assert!(without_roles.temporal.is_empty());
 
     plan.temporal_roles = vec![
@@ -1182,7 +1181,7 @@ fn temporal_roles_produce_latency_without_name_inference() {
             timezone: None,
         },
     ];
-    let results = compute_data_quality(&frame, Some(4), &plan, None, false).unwrap();
+    let results = measure(&frame, Some(4), &plan);
     assert_eq!(results.temporal.len(), 1);
     let latency = &results.temporal[0];
     assert_eq!(latency.missing_start, 1);
@@ -1272,7 +1271,7 @@ fn a_nearly_unique_column_that_repeats_is_reported_with_its_repeats() {
         compute: QualityCompute::Full,
         ..DataQualityPlan::default()
     };
-    let results = compute_data_quality(&frame, Some(100), &plan, None, false).unwrap();
+    let results = measure(&frame, Some(100), &plan);
     let key_like = results
         .observations
         .iter()
@@ -1307,7 +1306,7 @@ fn a_nearly_unique_column_that_repeats_is_reported_with_its_repeats() {
 
     // A distinct count does not extrapolate: in a sample of a large dataset every
     // repeated id looks unique, so the claim is not made at all.
-    let sampled = compute_data_quality(
+    let sampled = measure(
         &frame,
         Some(1_000_000),
         &DataQualityPlan {
@@ -1315,10 +1314,7 @@ fn a_nearly_unique_column_that_repeats_is_reported_with_its_repeats() {
             dataset_rows: 10,
             ..DataQualityPlan::default()
         },
-        None,
-        false,
-    )
-    .unwrap();
+    );
     assert_eq!(sampled.precision, QualityPrecision::Sampled);
     assert!(
         !sampled
@@ -1344,7 +1340,7 @@ fn a_sample_is_read_at_its_full_size() {
         dataset_rows: 60_000,
         ..DataQualityPlan::default()
     };
-    let results = compute_data_quality(&frame, Some(rows), &plan, None, false).unwrap();
+    let results = measure(&frame, Some(rows), &plan);
     assert_eq!(results.evaluated_rows, 60_000);
     assert_eq!(results.precision, QualityPrecision::Sampled);
     let tag = results
@@ -1453,7 +1449,7 @@ fn a_nearly_unique_float_is_not_a_key() {
         compute: QualityCompute::Full,
         ..DataQualityPlan::default()
     };
-    let results = compute_data_quality(&frame, Some(100), &plan, None, false).unwrap();
+    let results = measure(&frame, Some(100), &plan);
     assert!(
         !results
             .observations
@@ -1479,7 +1475,7 @@ fn text_is_read_as_numbers_only_when_nearly_all_of_it_parses() {
         compute: QualityCompute::Full,
         ..DataQualityPlan::default()
     };
-    let results = compute_data_quality(&frame, Some(100), &plan, None, false).unwrap();
+    let results = measure(&frame, Some(100), &plan);
     let readings = results
         .observations
         .iter()
@@ -1524,7 +1520,7 @@ fn columns_missing_together_are_found_to_share_their_rows() {
             compute,
             ..DataQualityPlan::default()
         };
-        let results = compute_data_quality(&frame, Some(10), &plan, None, false).unwrap();
+        let results = measure(&frame, Some(10), &plan);
         assert_eq!(
             results.shared_nulls,
             vec![SharedNulls {
@@ -1540,8 +1536,7 @@ fn columns_missing_together_are_found_to_share_their_rows() {
     let frame = df!("open" => missing(&[2, 5]), "close" => missing(&[2, 5]))
         .unwrap()
         .lazy();
-    let results =
-        compute_data_quality(&frame, Some(10), &DataQualityPlan::default(), None, false).unwrap();
+    let results = measure(&frame, Some(10), &DataQualityPlan::default());
     assert!(results.shared_nulls[0].same_rows());
 }
 
@@ -1561,7 +1556,7 @@ fn the_largest_change_names_the_column_and_measurement_that_moved() {
         comparison: QualityComparison::Previous,
         ..DataQualityPlan::default()
     };
-    let results = compute_data_quality(&frame, Some(4), &plan, None, false).unwrap();
+    let results = measure(&frame, Some(4), &plan);
     assert_eq!(results.segments.len(), 2);
     assert_eq!(
         results.segments[0].largest_change, None,
@@ -1587,7 +1582,7 @@ fn a_segment_whose_rates_hold_still_reports_the_range_that_moved() {
         comparison: QualityComparison::Previous,
         ..DataQualityPlan::default()
     };
-    let results = compute_data_quality(&frame, Some(4), &plan, None, false).unwrap();
+    let results = measure(&frame, Some(4), &plan);
     let change = results.segments[1].largest_change.as_deref().unwrap();
     assert!(
         change.starts_with("reading range 1..2 -> 300..400"),
@@ -1638,7 +1633,7 @@ fn row_chunk_labels_agree_between_trends_and_segments_at_every_budget() {
             temporal_roles: roles.clone(),
             ..DataQualityPlan::default()
         };
-        let results = compute_data_quality(&frame, Some(4), &plan, None, false).unwrap();
+        let results = measure(&frame, Some(4), &plan);
         let segments = results
             .segments
             .iter()
@@ -1668,7 +1663,7 @@ fn an_unassigned_plan_reports_no_latency() {
         grain: QualityGrain::RowChunks(2),
         ..DataQualityPlan::default()
     };
-    let results = compute_data_quality(&fixture(), Some(4), &plan, None, false).unwrap();
+    let results = measure(&fixture(), Some(4), &plan);
     assert!(results.temporal.is_empty());
 }
 
@@ -1710,7 +1705,7 @@ fn identity_and_category_groups_keep_distinct_duplicate_semantics() {
         compute: QualityCompute::Full,
         ..DataQualityPlan::default()
     };
-    let results = compute_data_quality(&frame, Some(4), &plan, None, false).unwrap();
+    let results = measure(&frame, Some(4), &plan);
     let identity = results.identity.unwrap();
     assert_eq!(identity.duplicate_groups, 1);
     assert_eq!(identity.extra_rows, 1);
@@ -1735,7 +1730,7 @@ fn sample_identity_does_not_equate_null_with_literal_text() {
         dataset_rows: 3,
         ..DataQualityPlan::default()
     };
-    let results = compute_data_quality(&frame, Some(3), &plan, None, false).unwrap();
+    let results = measure(&frame, Some(3), &plan);
     let identity = results.identity.unwrap();
     assert_eq!(identity.duplicate_groups, 1);
     assert_eq!(identity.rows_involved, 2);
@@ -1765,7 +1760,7 @@ fn partition_and_time_window_grains_create_ordered_profiles() {
         grain: QualityGrain::Partition("partition".to_string()),
         ..DataQualityPlan::default()
     };
-    let partitioned = compute_data_quality(&frame, Some(3), &partition_plan, None, false).unwrap();
+    let partitioned = measure(&frame, Some(3), &partition_plan);
     assert_eq!(partitioned.segments.len(), 2);
     assert_eq!(partitioned.segments[0].evaluated_rows, 2);
 
@@ -1777,7 +1772,7 @@ fn partition_and_time_window_grains_create_ordered_profiles() {
         },
         ..DataQualityPlan::default()
     };
-    let windowed = compute_data_quality(&frame, Some(3), &window_plan, None, false).unwrap();
+    let windowed = measure(&frame, Some(3), &window_plan);
     assert_eq!(windowed.segments.len(), 2);
     assert!(windowed.segments[0].label.starts_with("week of "));
 }
@@ -1802,7 +1797,7 @@ fn an_exact_run_measures_everything_a_sampled_run_does() {
             compute,
             ..DataQualityPlan::default()
         };
-        let results = compute_data_quality(&frame, Some(4), &plan, None, false).unwrap();
+        let results = measure(&frame, Some(4), &plan);
         results
             .columns
             .iter()
@@ -1825,8 +1820,7 @@ fn an_exact_run_measures_everything_a_sampled_run_does() {
             compute,
             ..DataQualityPlan::default()
         };
-        compute_data_quality(&dupes, Some(5), &plan, None, false)
-            .unwrap()
+        measure(&dupes, Some(5), &plan)
             .columns
             .iter()
             .map(|column| (column.dominant_value.clone(), column.dominant_count))
@@ -1862,7 +1856,7 @@ fn an_exact_run_measures_everything_a_sampled_run_does() {
             compute,
             ..DataQualityPlan::default()
         };
-        let results = compute_data_quality(&stamps, Some(6), &plan, None, false).unwrap();
+        let results = measure(&stamps, Some(6), &plan);
         assert_eq!(
             results.columns[0].datetime_parse_count,
             Some(5),
@@ -1877,8 +1871,7 @@ fn an_exact_run_measures_everything_a_sampled_run_does() {
             compute,
             ..DataQualityPlan::default()
         };
-        let mut kinds = compute_data_quality(&frame, Some(4), &plan, None, false)
-            .unwrap()
+        let mut kinds = measure(&frame, Some(4), &plan)
             .observations
             .iter()
             .map(|item| (item.kind, item.column.clone()))
@@ -1993,7 +1986,7 @@ fn metadata_mode_does_not_need_the_grain_column() {
         grain: QualityGrain::Partition("gone".to_string()),
         ..DataQualityPlan::default()
     };
-    let results = compute_data_quality(&frame, Some(2), &plan, None, false).unwrap();
+    let results = measure(&frame, Some(2), &plan);
     assert_eq!(results.precision, QualityPrecision::Metadata);
 }
 
@@ -2012,17 +2005,14 @@ fn segments_come_back_in_one_order_however_much_was_read() {
         ..DataQualityPlan::default()
     };
     let labels = |compute| {
-        compute_data_quality(
+        measure(
             &frame,
             Some(6),
             &DataQualityPlan {
                 compute,
                 ..plan.clone()
             },
-            None,
-            false,
         )
-        .unwrap()
         .segments
         .iter()
         .map(|segment| segment.label.clone())
@@ -2090,8 +2080,7 @@ fn every_offered_window_width_cuts_the_scope_it_names() {
             },
             ..DataQualityPlan::default()
         };
-        let results =
-            compute_data_quality(&frame, Some(days as usize), &plan, None, false).unwrap();
+        let results = measure(&frame, Some(days as usize), &plan);
         assert_eq!(results.segments.len(), segments, "{every} windows");
         assert_eq!(
             results
@@ -2138,18 +2127,15 @@ fn rows_without_a_window_clock_are_named_and_ordered_the_same_however_much_was_r
         ..DataQualityPlan::default()
     };
 
-    let sampled = compute_data_quality(&frame, Some(4), &plan, None, false).unwrap();
-    let full = compute_data_quality(
+    let sampled = measure(&frame, Some(4), &plan);
+    let full = measure(
         &frame,
         Some(4),
         &DataQualityPlan {
             compute: QualityCompute::Full,
             ..plan.clone()
         },
-        None,
-        false,
-    )
-    .unwrap();
+    );
 
     let labels = |results: &DataQualityResults| {
         results
@@ -2299,7 +2285,7 @@ fn text_without_a_format_is_not_read_as_time() {
         ],
         ..DataQualityPlan::default()
     };
-    let results = compute_data_quality(&text_times(), Some(6), &plan, None, false).unwrap();
+    let results = measure(&text_times(), Some(6), &plan);
     assert!(results.temporal.is_empty());
     let windows = DataQualityPlan {
         grain: QualityGrain::TimeWindows {
@@ -2527,9 +2513,7 @@ fn assert_exact(results: &DataQualityResults, df: &DataFrame, plan: &DataQuality
         compute: QualityCompute::Full,
         ..plan.clone()
     };
-    let exact = segment_totals(
-        &compute_data_quality(&df.clone().lazy(), None, &full, None, false).unwrap(),
-    );
+    let exact = segment_totals(&measure(&df.clone().lazy(), None, &full));
     assert!(!results.segments.is_empty());
     for (label, total) in segment_totals(results) {
         assert_eq!(total, exact[&label], "{label} of {:?}", plan.grain);
@@ -3178,7 +3162,7 @@ fn a_report_on_wide_text_is_weighed_by_the_text_it_holds() {
             dataset_rows: rows,
             ..DataQualityPlan::default()
         };
-        let results = compute_data_quality(&df.clone().lazy(), None, &plan, None, false).unwrap();
+        let results = measure(&df.clone().lazy(), None, &plan);
         assert_eq!(results.category_variants.len(), 100, "{compute:?}");
         let spellings = results
             .category_variants

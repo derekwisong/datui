@@ -1275,7 +1275,8 @@ impl ExportForm {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data_quality::{QualityCompute, compute_data_quality};
+    use crate::data_quality::QualityCompute;
+    use crate::data_quality::fixtures::measure;
     use crate::quality_intent::{ColumnIntent, DeclaredIntent};
     use polars::prelude::*;
 
@@ -1297,7 +1298,7 @@ mod tests {
             },
             ..DataQualityPlan::default()
         };
-        let mut results = compute_data_quality(&df.lazy(), Some(4), &plan, None, false).unwrap();
+        let mut results = measure(&df.lazy(), Some(4), &plan);
         results.source = Some(Box::new(SourceIdentity {
             location: Some("orders.parquet".to_string()),
             format: Some("Parquet".to_string()),
@@ -1413,7 +1414,7 @@ mod tests {
             }),
             ..DataQualityPlan::default()
         };
-        let results = compute_data_quality(&lf, None, &plan, None, false).unwrap();
+        let results = measure(&lf, None, &plan);
         let file = report_file(&results, &plan, "2026-09-30T00:00:00Z");
         let text = to_json(&file).unwrap();
         assert_eq!(serde_json::from_str::<ReportFile>(&text).unwrap(), file);

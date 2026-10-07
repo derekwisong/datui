@@ -1095,6 +1095,7 @@ pub(crate) fn supersede(observations: &mut Vec<QualityObservation>, plan: &DataQ
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data_quality::fixtures::measure;
     use crate::data_quality::{DataQualityResults, QualityCompute, compute_data_quality};
     use crate::quality_report::{Outcome, build_report, checks, coverage, describe};
 
@@ -1140,7 +1141,7 @@ mod tests {
     }
 
     fn run(df: &DataFrame, plan: &DataQualityPlan) -> DataQualityResults {
-        compute_data_quality(&df.clone().lazy(), Some(df.height()), plan, None, false).unwrap()
+        measure(&df.clone().lazy(), Some(df.height()), plan)
     }
 
     fn affected(results: &DataQualityResults, kind: ObservationKind, column: &str) -> usize {

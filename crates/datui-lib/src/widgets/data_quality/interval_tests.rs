@@ -1,4 +1,5 @@
 use super::*;
+use crate::data_quality::fixtures::measure;
 use crate::data_quality::{TemporalRoleAssignment, TimeInterpretation, TimeKind};
 use polars::prelude::*;
 
@@ -88,8 +89,7 @@ impl Screen {
             None,
         )
         .unwrap();
-        let results =
-            crate::data_quality::compute_data_quality(&lf, Some(8), &plan, None, false).unwrap();
+        let results = measure(&lf, Some(8), &plan);
         Self {
             state,
             plan,

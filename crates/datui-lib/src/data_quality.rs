@@ -1572,6 +1572,33 @@ pub struct ColumnQualityProfile {
 }
 
 impl ColumnQualityProfile {
+    /// A column with its null count at zero and nothing else measured.
+    pub fn unmeasured(name: &str, dtype: DataType, evaluated_rows: usize) -> Self {
+        Self {
+            name: name.to_string(),
+            dtype,
+            evaluated_rows,
+            null_count: 0,
+            empty_count: None,
+            whitespace_count: None,
+            nan_count: None,
+            positive_infinity_count: None,
+            negative_infinity_count: None,
+            distinct_count: None,
+            min: None,
+            max: None,
+            integer_parse_count: None,
+            decimal_parse_count: None,
+            date_parse_count: None,
+            datetime_parse_count: None,
+            leading_zero_count: None,
+            dominant_value: None,
+            dominant_count: None,
+            min_length: None,
+            max_length: None,
+        }
+    }
+
     pub fn null_rate(&self) -> f64 {
         rate(self.null_count, self.evaluated_rows)
     }
@@ -2414,29 +2441,7 @@ impl DataQualityResults {
             sample_seed: plan.sample_seed,
             columns: schema
                 .iter()
-                .map(|(name, dtype)| ColumnQualityProfile {
-                    name: name.to_string(),
-                    dtype: dtype.clone(),
-                    evaluated_rows: 0,
-                    null_count: 0,
-                    empty_count: None,
-                    whitespace_count: None,
-                    nan_count: None,
-                    positive_infinity_count: None,
-                    negative_infinity_count: None,
-                    distinct_count: None,
-                    min: None,
-                    max: None,
-                    integer_parse_count: None,
-                    decimal_parse_count: None,
-                    date_parse_count: None,
-                    datetime_parse_count: None,
-                    leading_zero_count: None,
-                    dominant_value: None,
-                    dominant_count: None,
-                    min_length: None,
-                    max_length: None,
-                })
+                .map(|(name, dtype)| ColumnQualityProfile::unmeasured(name, dtype.clone(), 0))
                 .collect(),
             observations: Vec::new(),
             segments: Vec::new(),
@@ -5856,6 +5861,8 @@ fn string_value_at(df: &DataFrame, name: &str, row: usize) -> Option<String> {
     }
 }
 
+#[cfg(test)]
+pub(crate) mod fixtures;
 #[cfg(test)]
 mod tests;
 

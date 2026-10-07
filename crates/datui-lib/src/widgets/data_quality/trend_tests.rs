@@ -1,6 +1,7 @@
 use super::*;
 use crate::analysis_modal::ExpectedForm;
-use crate::data_quality::{ExpectedWindows, compute_data_quality};
+use crate::data_quality::ExpectedWindows;
+use crate::data_quality::fixtures::measure;
 use polars::prelude::{DataType, IntoLazy, LazyFrame, col, df};
 use ratatui::style::Color;
 use std::sync::Arc;
@@ -60,7 +61,7 @@ impl Screen {
             }),
             ..DataQualityPlan::default()
         };
-        let results = compute_data_quality(&lf, Some(1_400), &plan, None, false).unwrap();
+        let results = measure(&lf, Some(1_400), &plan);
         assert!(!results.unsampled_segments.is_empty());
         Self {
             state,
@@ -396,7 +397,7 @@ fn one_window_found_still_sums_up_the_expected_ones() {
             .cast(DataType::Int32)
             .eq(polars::prelude::lit(19_724)),
     );
-    screen.results = compute_data_quality(&one_day, None, &screen.plan, None, false).unwrap();
+    screen.results = measure(&one_day, None, &screen.plan);
     assert!(!crate::data_quality::shows_trend(
         &screen.plan,
         &screen.results

@@ -1,4 +1,5 @@
 use super::*;
+use crate::data_quality::fixtures::measure;
 
 const HOUR: i64 = 3_600_000_000;
 
@@ -27,7 +28,7 @@ fn both_ways(frame: &LazyFrame, rows: usize, plan: &DataQualityPlan) -> [DataQua
             compute,
             ..plan.clone()
         };
-        compute_data_quality(frame, Some(rows), &plan, None, false).unwrap()
+        measure(frame, Some(rows), &plan)
     })
 }
 
@@ -146,7 +147,7 @@ fn a_chosen_pair_is_measured_and_an_unpaired_role_is_named() {
     plan.toggle_interval((TemporalRole::Event, TemporalRole::Received));
     assert_eq!(plan.intervals, Some(Vec::new()));
     assert!(plan.interval_pairs().is_empty());
-    let results = compute_data_quality(&delays(), Some(8), &plan, None, false).unwrap();
+    let results = measure(&delays(), Some(8), &plan);
     assert!(results.temporal.is_empty());
 }
 
@@ -358,7 +359,7 @@ fn a_facts_rows_are_the_rows_it_counted() {
         grain: QualityGrain::RowChunks(4),
         ..DataQualityPlan::default()
     };
-    let results = compute_data_quality(&frame, Some(8), &plan, None, false).unwrap();
+    let results = measure(&frame, Some(8), &plan);
     assert!(results.temporal.iter().all(|latency| {
         latency
             .evidence_predicate(IntervalFact::Negative, &plan, None)

@@ -1950,62 +1950,9 @@ pub fn verdict(report: &QualityReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data_quality::{DataQualityPlan, QualityObservation, SharedNulls};
+    use crate::data_quality::SharedNulls;
+    use crate::data_quality::fixtures::{observation, profile, results_with};
     use polars::prelude::DataType;
-
-    fn profile(name: &str, dtype: DataType) -> ColumnQualityProfile {
-        ColumnQualityProfile {
-            name: name.to_string(),
-            dtype,
-            evaluated_rows: 100,
-            null_count: 0,
-            empty_count: None,
-            whitespace_count: None,
-            nan_count: None,
-            positive_infinity_count: None,
-            negative_infinity_count: None,
-            distinct_count: None,
-            min: None,
-            max: None,
-            integer_parse_count: None,
-            decimal_parse_count: None,
-            date_parse_count: None,
-            datetime_parse_count: None,
-            leading_zero_count: None,
-            dominant_value: None,
-            dominant_count: None,
-            min_length: None,
-            max_length: None,
-        }
-    }
-
-    fn observation(kind: ObservationKind, column: &str, affected: usize) -> QualityObservation {
-        QualityObservation {
-            kind,
-            column: column.to_string(),
-            affected_rows: affected,
-            evaluated_rows: 100,
-            fact: String::new(),
-            normalized_category: None,
-            files: Vec::new(),
-            time_format: None,
-            full_scale: None,
-        }
-    }
-
-    fn results(
-        columns: Vec<ColumnQualityProfile>,
-        observations: Vec<QualityObservation>,
-    ) -> DataQualityResults {
-        let plan = DataQualityPlan::default();
-        let mut results =
-            DataQualityResults::empty(Some(100), &plan, &polars::prelude::Schema::default());
-        results.evaluated_rows = 100;
-        results.precision = QualityPrecision::Exact;
-        results.columns = columns;
-        results.observations = observations;
-        results
-    }
 
     /// Sixteen columns missing on the same rows are one fact, and it says so.
     #[test]
@@ -2016,7 +1963,7 @@ mod tests {
             .map(|name| profile(name, DataType::Float64))
             .collect::<Vec<_>>();
         columns.push(profile("ticker", DataType::String));
-        let mut results = results(
+        let mut results = results_with(
             columns,
             names
                 .iter()
@@ -2047,7 +1994,7 @@ mod tests {
     #[test]
     fn missing_values_collapse_and_mostly_missing_leads() {
         let names = ["a", "b", "c", "d"];
-        let results = results(
+        let results = results_with(
             names
                 .iter()
                 .map(|name| profile(name, DataType::Float64))
@@ -2076,7 +2023,7 @@ mod tests {
 
     #[test]
     fn problems_rank_before_notes_and_mark_their_columns() {
-        let results = results(
+        let results = results_with(
             vec![
                 profile("price", DataType::Float64),
                 profile("region", DataType::String),
@@ -2100,7 +2047,7 @@ mod tests {
 
     #[test]
     fn a_column_with_no_values_at_all_is_a_problem() {
-        let results = results(
+        let results = results_with(
             vec![profile("legacy", DataType::String)],
             vec![observation(ObservationKind::Nulls, "legacy", 100)],
         );
@@ -2119,7 +2066,7 @@ mod tests {
         code.leading_zero_count = Some(20);
         code.min_length = Some(4);
         code.max_length = Some(4);
-        let results = results(
+        let results = results_with(
             vec![code],
             vec![observation(ObservationKind::ParseableText, "industry", 100)],
         );
@@ -2132,7 +2079,7 @@ mod tests {
     /// clean that way.
     #[test]
     fn a_metadata_run_reports_footer_problems_and_no_clean_columns() {
-        let mut results = results(
+        let mut results = results_with(
             vec![
                 profile("fee", DataType::Float64),
                 profile("id", DataType::Int64),
@@ -2153,7 +2100,7 @@ mod tests {
     /// look at and why, so a clean result is one the reader can trust.
     #[test]
     fn checks_report_reach_findings_and_what_did_not_run() {
-        let mut results = results(
+        let mut results = results_with(
             vec![
                 profile("price", DataType::Float64),
                 profile("region", DataType::String),
@@ -2226,7 +2173,7 @@ mod tests {
         };
 
         // A clean sampled run of one file, its sample streamed from 1,000 rows.
-        let mut sampled = measured(results(columns.clone(), Vec::new()));
+        let mut sampled = measured(results_with(columns.clone(), Vec::new()));
         sampled.precision = QualityPrecision::Sampled;
         sampled.total_rows = Some(1_000);
         sampled.reads = Some(ObservedReads {
@@ -2290,7 +2237,7 @@ mod tests {
         );
 
         // Every row read: nothing unavailable, and the passes' rows beside the total.
-        let mut full = measured(results(columns.clone(), Vec::new()));
+        let mut full = measured(results_with(columns.clone(), Vec::new()));
         full.reads = Some(ObservedReads {
             reads: 4,
             counted: 3,
@@ -2307,7 +2254,7 @@ mod tests {
         assert!(found.limits().is_empty());
 
         // No values read: the footers are all that was checked.
-        let mut metadata = measured(results(columns, Vec::new()));
+        let mut metadata = measured(results_with(columns, Vec::new()));
         metadata.precision = QualityPrecision::Metadata;
         metadata.source_files = Some(3);
         metadata.footers_read = Some(3);
@@ -2321,12 +2268,12 @@ mod tests {
         // A check with no column of its kind is skipped whatever was read: the schema
         // says so without the values.
         let floats_only = vec![profile("price", DataType::Float64)];
-        let mut metadata = measured(results(floats_only.clone(), Vec::new()));
+        let mut metadata = measured(results_with(floats_only.clone(), Vec::new()));
         metadata.precision = QualityPrecision::Metadata;
         let report = build_report(&metadata);
         let found = coverage(&metadata, &checks(&metadata, &report), &plan);
         assert_eq!(found.checks(), ["6 skipped", "4 unavailable"], "{found:?}");
-        let mut sampled = measured(results(floats_only, Vec::new()));
+        let mut sampled = measured(results_with(floats_only, Vec::new()));
         sampled.precision = QualityPrecision::Sampled;
         let report = build_report(&sampled);
         let list = checks(&sampled, &report);
@@ -2351,7 +2298,7 @@ mod tests {
     /// severity.
     #[test]
     fn findings_narrow_and_order_without_measuring() {
-        let mut results = results(
+        let mut results = results_with(
             vec![
                 profile("price", DataType::Float64),
                 profile("region", DataType::String),
@@ -2445,7 +2392,7 @@ mod tests {
     /// rows with any of them are a range nobody counted, not their sum.
     #[test]
     fn grouped_findings_break_down_by_column_and_bound_the_union() {
-        let results = results(
+        let results = results_with(
             vec![
                 profile("a", DataType::String),
                 profile("b", DataType::String),
@@ -2483,7 +2430,7 @@ mod tests {
         text.null_count = 4;
         text.integer_parse_count = Some(95);
         text.decimal_parse_count = Some(95);
-        let mut results = results(
+        let mut results = results_with(
             vec![text],
             vec![observation(ObservationKind::ParseableText, "amount", 95)],
         );
@@ -2518,7 +2465,7 @@ mod tests {
     /// Duplicate rows open as a group, and the count is every row with a copy.
     #[test]
     fn duplicate_rows_open_every_row_with_a_copy() {
-        let mut results = results(
+        let mut results = results_with(
             vec![profile("id", DataType::Int64)],
             vec![observation(
                 ObservationKind::DuplicateRows,

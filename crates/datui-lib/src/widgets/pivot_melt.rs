@@ -501,7 +501,7 @@ fn grid_columns(
                 .chain([
                     crate::glyphs::cell_width(&name),
                     if ctx.dtype_row {
-                        type_label.chars().count()
+                        crate::glyphs::display_width(&type_label)
                     } else {
                         0
                     },

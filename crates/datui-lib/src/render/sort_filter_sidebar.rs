@@ -609,7 +609,7 @@ fn render_filters(
     let col_w = filter
         .statements
         .iter()
-        .map(|s| filter.column_label(s).chars().count())
+        .map(|s| crate::glyphs::display_width(&filter.column_label(s)))
         .max()
         .unwrap_or(6)
         .clamp(6, 14);

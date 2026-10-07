@@ -687,7 +687,7 @@ Clear the staged sort, order, locks, hidden columns and widths
 Narrow the column or operator list. The operators are those the column's type takes
 .TP
 \fBEnter\fR
-Pick the column (type to narrow, Enter chooses), the operator the same way, then type the value and Enter saves the row. Tab, \(-> and Space also choose at the column and operator steps; Shift+Tab steps back; \(ua / \(da move in the lists
+Pick the column (type to narrow, Enter chooses), the operator the same way, then type the value and Enter saves the row. Tab and \(-> also choose at the column and operator steps, and so does Space until typing narrows the list (then it types a space); Shift+Tab steps back; \(ua / \(da move in the lists
 .TP
 \fBEsc\fR
 End the edit, and only the edit
@@ -723,7 +723,7 @@ Move; typing narrows
 Choose; on a several-choice row, done
 .TP
 \fBSpace\fR
-Choose; toggle a column on a several-choice row
+Choose, until typing narrows the list (then it types a space). On a several-choice row: toggle a column in or out
 .TP
 \fBEsc\fR
 Back out of the picker; the toggles made since it opened are undone (Enter keeps them)
@@ -787,7 +787,7 @@ The crosshair off, back to the panel
 Move; typing narrows
 .TP
 \fBEnter / Space\fR
-Choose; on a line or scatter chart's Y and on the Color values, Space toggles one in or out (up to 10, fewer on a terminal of fewer colors)
+Choose; on a line or scatter chart's Y and on the Color values, Space toggles one in or out (up to 10, fewer on a terminal of fewer colors). Elsewhere Space chooses until typing narrows the list, then types a space
 .TP
 \fBTab / Shift+Tab\fR
 Choose and move to the next or previous row
@@ -978,7 +978,7 @@ Move between rows
 Change a short list's choice
 .TP
 \fBSpace\fR
-Open the row: the Sample form, a list (type to narrow), Time roles, Intervals, Column intent or Expected
+Open the row: the Sample form, a list (type to narrow; Enter chooses, and Space until typing narrows it), Time roles, Intervals, Column intent or Expected
 .TP
 \fBs\fR
 The Sample form; its Enter applies to Setup and returns there
@@ -1187,7 +1187,7 @@ Narrow the list
 Move the cursor (j/k narrow the picker; only \(ua/\(da move there)
 .TP
 \fBEnter / Space\fR
-Choose
+Choose. Space chooses until typing narrows the list, then types a space, so a name of several words narrows
 .TP
 \fBTab / Shift+Tab\fR
 Choose and move on
@@ -1430,7 +1430,7 @@ Mark from the cursor; move to mark a range, and the status line counts it. v aga
 \fIGo\fR
 .TP
 \fBB\fR
-Read the file with a format spec instead
+Read the file with a format spec instead: type to narrow the list of specs; Enter chooses, and Space until typing narrows it
 .TP
 \fBEsc\fR
 Back to the table, when opened from the Info panel; back home, when opened from there

@@ -324,7 +324,8 @@ pub enum PickerKey {
     Handled,
     /// Esc: close the picker, choosing nothing.
     Close,
-    /// Enter, or Space on a pick-one list: take the cursor's item and close.
+    /// Enter, or Space on a pick-one list with nothing typed: take the cursor's item
+    /// and close.
     Choose,
     /// Space on a list that takes several: flip the cursor's item, staying open.
     Toggle,
@@ -336,8 +337,9 @@ pub enum PickerKey {
 
 /// What `event` does in an open picker: type to narrow, ↑↓ move, Space chooses
 /// (or toggles in a list of several), Enter chooses, Esc closes the picker only.
-/// A space never reaches the narrowing filter: it would match nothing and blank
-/// the list under the key that opened it.
+/// In a pick-one list Space chooses only while the filter is empty, and types a
+/// space once it narrows, so a name of several words can be typed; with nothing
+/// typed it would match nothing and blank the list under the key that opened it.
 pub fn picker_key(picker: &mut PickerState, multi: bool, event: &KeyEvent) -> PickerKey {
     let shift = event.modifiers.contains(KeyModifiers::SHIFT);
     match event.code {
@@ -354,7 +356,7 @@ pub fn picker_key(picker: &mut PickerState, multi: bool, event: &KeyEvent) -> Pi
             PickerKey::Handled
         }
         KeyCode::Char(' ') if multi => PickerKey::Toggle,
-        KeyCode::Char(' ') => PickerKey::Choose,
+        KeyCode::Char(' ') if picker.filter.is_empty() => PickerKey::Choose,
         KeyCode::Backspace => {
             picker.backspace();
             PickerKey::Handled

@@ -5375,7 +5375,9 @@ impl App {
         }
         Some(AppEvent::Sort(vec![column], vec![descending]))
     }
+}
 
+impl App {
     fn quick_filter(&mut self, keep: bool) -> Option<AppEvent> {
         let state = self.data_table_state.as_ref()?;
         let column = state.current_column()?.to_string();

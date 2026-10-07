@@ -1959,7 +1959,10 @@ impl App {
             "{note}URL: {url}\n{files}File size: {size_str}\nDestination: {dest_dir} (temporary file)\n\nContinue with download?"
         )
     }
+}
 
+/// Scans and schema reads for each kind of source, used by the load's phases.
+impl App {
     fn hoist_partition_columns(
         lf: LazyFrame,
         schema: &Schema,

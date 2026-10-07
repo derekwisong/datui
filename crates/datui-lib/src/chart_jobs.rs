@@ -8,10 +8,14 @@ use color_eyre::Result;
 use polars::prelude::{LazyFrame, Schema};
 
 use crate::chart_data::{self, ColorSplit, ValueRange};
-use crate::chart_export::{ChartExportFormat, ExportOptions, Figure};
+use crate::chart_export::{ChartExportFormat, ChartExportRequest, ExportOptions, Figure};
 use crate::chart_modal::{Aggregate, ChartModal, ChartSpec, ColorCounts, Mark};
+use crate::jobs::{Answer, Job};
 use crate::output_file::Overwrite;
-use crate::{numfmt, output_file};
+use crate::{
+    App, AppEvent, ExportProgress, InputMode, chart_export, chart_modal, logging, numfmt,
+    output_file, sampling,
+};
 
 /// Outcomes of chart preparation keyed by the request that produced them, least
 /// recently used first. A failure is remembered too, so a selection that cannot be
@@ -604,5 +608,578 @@ fn rows_note(counted: usize, whole: bool, grouped: bool) -> String {
         format!("all {n} rows")
     } else {
         format!("{n} rows")
+    }
+}
+
+impl App {
+    /// True while chart data for the current view is being prepared off-thread — either
+    /// its worker is running, or it is waiting its turn behind an orphaned worker that
+    /// cannot be cancelled (see `ChartInflight::stale`). Either way the user is waiting
+    /// on a computation and the throbber should say so.
+    pub fn chart_preparing(&self) -> bool {
+        match self.chart_inflight.as_ref() {
+            Some(inflight) if !inflight.stale => true,
+            Some(_) => self.chart_request_pending(),
+            None => self.chart_settling(),
+        }
+    }
+
+    /// Whether the selection on screen is a step through the aggregates still waiting
+    /// for the next step.
+    fn chart_settling(&self) -> bool {
+        self.chart_asked
+            .as_ref()
+            .and_then(|(_, until)| *until)
+            .is_some_and(|until| std::time::Instant::now() < until)
+    }
+
+    /// Whether the chart view wants data it does not have and cannot be told it will
+    /// never get.
+    pub(crate) fn chart_request_pending(&self) -> bool {
+        if self.input_mode != InputMode::Chart || !self.chart_modal.active {
+            return false;
+        }
+        ChartRequest::from_modal(&self.chart_modal)
+            .is_some_and(|request| self.chart_cache.get(&request).is_none())
+    }
+
+    /// Forget everything chart-related that belongs to the view or dataset on its way
+    /// out: the cache, the handed-over slot, an export parked on data that is now never
+    /// coming, and an export write still running (its file may still appear, but its
+    /// result is ignored and `busy` is released). The preparation in flight is marked
+    /// stale rather than forgotten: it cannot be cancelled, so it is waited for and its
+    /// result discarded on arrival. Called when the chart view closes and whenever the
+    /// dataset changes or is left for the home screen.
+    pub(crate) fn reset_chart_state(&mut self) {
+        self.chart_cache.clear();
+        self.chart_asked = None;
+        if let Some(inflight) = self.chart_inflight.as_mut() {
+            inflight.stale = true;
+            inflight
+                .cancel
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        // A failed export reopens its modal; it must not follow the user to the next
+        // dataset.
+        self.chart_export_modal.close();
+        *self
+            .pending_chart_result
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+        let writing = self
+            .jobs
+            .supersede(|job| matches!(job, Job::ChartExport { .. }));
+        let waiting = self.chart_export_waiting.take().is_some();
+        if writing || waiting {
+            self.export_progress = None;
+            self.status_message = None;
+            self.busy = false;
+        }
+    }
+
+    /// What the chart being prepared is doing: an aggregate groups every row of the
+    /// view, and says how many where the table knows.
+    pub(crate) fn chart_status(&self) -> String {
+        let aggregating = self
+            .chart_inflight
+            .as_ref()
+            .filter(|i| !i.stale)
+            .map(|i| i.request.aggregates())
+            .or_else(|| ChartRequest::from_modal(&self.chart_modal).map(|r| r.aggregates()))
+            .unwrap_or(false);
+        if !aggregating {
+            return "Preparing chart...".to_string();
+        }
+        match self
+            .data_table_state
+            .as_ref()
+            .and_then(|s| s.num_rows_if_valid())
+        {
+            Some(rows) => format!("Grouping {} rows...", crate::discover::format_rows(rows)),
+            None => "Grouping every row...".to_string(),
+        }
+    }
+
+    /// The series of the line or scatter chart on screen, by name, once prepared:
+    /// its Y columns or its color groups.
+    pub fn chart_names(&self) -> Option<Vec<String>> {
+        let request = ChartRequest::from_modal(&self.chart_modal)?;
+        match self.chart_cache.prepared(&request)? {
+            ChartPrepared::XY(xy) => Some(xy.names.clone()),
+            _ => None,
+        }
+    }
+
+    /// True when the chart cache holds the data for the modal's current selection.
+    pub fn chart_data_ready(&self) -> bool {
+        ChartRequest::from_modal(&self.chart_modal).is_some_and(|r| self.chart_cache.satisfies(&r))
+    }
+
+    /// Start preparing the chart the modal currently asks for, unless the cache already
+    /// has it, it is known to fail, or another preparation is still running (the newest
+    /// selection is picked up when that one lands). Runs after every event, so a change
+    /// of column or option is noticed as soon as it is made and render only ever draws.
+    pub(crate) fn ensure_chart_data(&mut self) {
+        const CHART_AGGREGATE_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
+        if self.input_mode != InputMode::Chart || !self.chart_modal.active {
+            return;
+        }
+        // What Every row costs, as the table counted it.
+        self.chart_modal.view_rows = self
+            .data_table_state
+            .as_ref()
+            .and_then(|state| state.num_rows_if_valid());
+        let request = ChartRequest::from_modal(&self.chart_modal);
+        if let Some(inflight) = self.chart_inflight.as_ref()
+            && !request
+                .as_ref()
+                .is_some_and(|r| r.reads_as(&inflight.request))
+        {
+            // A count streaming a large view for a selection the cursor has moved
+            // past would hold up the next chart for as long as it reads.
+            inflight
+                .cancel
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        let Some(request) = request else {
+            return;
+        };
+        // Stepping none, count, distinct, sum, mean grouped every row at each step, and
+        // drew each: a step waits a moment for the next, and only where it stops is
+        // prepared. A Wake when the wait ends prepares it.
+        let settle = match self.chart_asked.take() {
+            Some((asked, until)) if asked == request => until,
+            Some((asked, _)) if request.steps_aggregate_from(&asked) => {
+                let tx = self.events.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(CHART_AGGREGATE_SETTLE);
+                    let _ = tx.send(AppEvent::Wake);
+                });
+                Some(std::time::Instant::now() + CHART_AGGREGATE_SETTLE)
+            }
+            _ => None,
+        };
+        self.chart_asked = Some((request.clone(), settle));
+        if self.chart_cache.get(&request).is_some() {
+            self.chart_cache.touch(&request, self.chart_modal.log_scale);
+            // A cached chart's colors were counted with it.
+            if let Some(colors) = request
+                .spec
+                .encoding
+                .color
+                .field
+                .as_deref()
+                .and_then(|c| self.chart_cache.colors(c))
+            {
+                self.chart_modal.color_counts = Some(colors.clone());
+            }
+            return;
+        }
+        if self.chart_inflight.is_some() || self.chart_settling() {
+            return;
+        }
+        let Some(state) = self.data_table_state.as_ref() else {
+            return;
+        };
+        // Unsorted: the rows a chart draws do not depend on the table's order, a line
+        // is drawn in X order anyway, and a sort would make a sampled read read it all.
+        // First and last are the order's: they read the view as sorted.
+        let lf = if request.sorted {
+            state.lf().clone()
+        } else {
+            state.analysis_lf()
+        };
+        let schema = state.schema().clone();
+        let dataset = Some(state.len_generation());
+        let sampling = chart_data::ChartSampling {
+            // None for an aggregate: it reads every row.
+            limit: request.row_limit,
+            known_total: state.num_rows_if_valid(),
+            seed: self.analysis_modal.sample.seed,
+            streaming: self.app_config.performance.streaming,
+            full_passes: !state.is_remote_source(),
+            held: self.chart_cache.held_rows(dataset),
+            cancel: Arc::default(),
+        };
+        self.chart_inflight = Some(ChartInflight {
+            dataset,
+            request: request.clone(),
+            stale: false,
+            cancel: Arc::clone(&sampling.cancel),
+        });
+        let slot = self.pending_chart_result.clone();
+        let tx = self.events.clone();
+        self.runtime.spawn_blocking(move || {
+            // A panic in the preparation must still report back: without the event the
+            // in-flight record would stand for the rest of the session and every later
+            // selection would be refused.
+            let result = logging::catch_panic(|| request.prepare(&lf, &schema, &sampling))
+                .unwrap_or_else(|_| Err(color_eyre::eyre::eyre!("Chart preparation panicked")))
+                .map_err(|e| crate::error_display::user_message_from_report(&e, None));
+            *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(result);
+            let _ = tx.send(AppEvent::BackgroundChartReady);
+        });
+    }
+
+    /// The chart view's events: an export asked for, and a preparation landing.
+    pub(crate) fn chart_event(&mut self, event: &AppEvent) -> Option<AppEvent> {
+        match event {
+            AppEvent::ChartExport(request) => {
+                self.busy = true;
+                self.export_progress = Some(ExportProgress {
+                    file_path: request.path.clone(),
+                    current_phase: "Exporting chart".to_string(),
+                    written: None,
+                });
+                Some(AppEvent::DoChartExport(request.clone()))
+            }
+            AppEvent::DoChartExport(request) => {
+                // `ChartExport` arms `busy` and defers here so the phase can be drawn
+                // first. A Ctrl-O in that window has already left the chart view, and
+                // there is nothing to export any more: release the app rather than park
+                // an export that no view would ever prepare.
+                if self.input_mode != InputMode::Chart || !self.chart_modal.active {
+                    self.export_progress = None;
+                    self.status_message = None;
+                    self.busy = false;
+                    return None;
+                }
+                self.start_chart_export(request.clone());
+                None
+            }
+            AppEvent::BackgroundChartReady => {
+                // The result belongs to the one preparation in flight. It is installed
+                // only while that record is current (a reset marks it stale when its
+                // view or dataset goes) and only into the dataset it was computed from.
+                // Taking the record is what lets the next request start; the slot is
+                // emptied either way so a discarded series is not kept around.
+                let inflight = self.chart_inflight.take()?;
+                let outcome = self
+                    .pending_chart_result
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                    .unwrap_or_else(|| Err("Chart preparation produced no result".to_string()));
+                if inflight.stale {
+                    return None;
+                }
+                // A count stopped part way is no answer, and must not be remembered as
+                // a failure; the selection is prepared again when it comes back.
+                if outcome.is_err() && inflight.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    return None;
+                }
+                let dataset = self.data_table_state.as_ref().map(|s| s.len_generation());
+                if dataset != inflight.dataset {
+                    return None;
+                }
+                let outcome = outcome.map(|(prepared, colors)| {
+                    if let Some(colors) = colors {
+                        self.chart_cache.hold_colors(colors.clone());
+                        self.chart_modal.color_counts = Some(colors);
+                    }
+                    prepared
+                });
+                self.chart_cache.insert(inflight.request, outcome);
+                // An export parked on chart data resumes against the *current*
+                // selection, whatever just landed: it is written if that selection is
+                // now prepared, fails with the reason if that is the one that failed,
+                // and otherwise waits for the next result (which `ensure_chart_data`
+                // starts once this handler returns).
+                if let Some(request) = self.chart_export_waiting.take() {
+                    self.start_chart_export(request);
+                }
+                None
+            }
+            _ => unreachable!("not an event for chart_event"),
+        }
+    }
+
+    /// What `column` holds, for an export's axis ticks.
+    fn axis_numbers(&self, column: &str) -> chart_data::AxisNumbers {
+        let schema = self.data_table_state.as_ref().map(|s| s.schema().as_ref());
+        chart_data::AxisNumbers::column(&self.number_format, schema, column)
+    }
+
+    /// What `columns` hold on one axis.
+    fn axes_numbers(&self, columns: &[String]) -> chart_data::AxisNumbers {
+        let schema = self.data_table_state.as_ref().map(|s| s.schema().as_ref());
+        chart_data::AxisNumbers::columns(&self.number_format, schema, columns)
+    }
+
+    /// The figure to export from the prepared chart for the current spec. `Ok(None)`
+    /// means that chart is still being prepared and the caller should wait for it.
+    fn build_chart_figure(&self) -> Result<Option<chart_export::Figure>> {
+        use chart_export::{Axis, Figure, Plot, Series};
+        if self.data_table_state.is_none() {
+            return Err(color_eyre::eyre::eyre!("No data loaded"));
+        }
+        let modal = &self.chart_modal;
+        let Some(request) = ChartRequest::from_modal(modal).filter(|r| !r.x_only) else {
+            return Err(color_eyre::eyre::eyre!(
+                "Pick the columns the chart needs first"
+            ));
+        };
+        let prepared = match self.chart_cache.get(&request) {
+            Some(Ok(prepared)) => prepared,
+            // A selection known not to chart is never retried, so waiting for its data
+            // would wait forever: fail the export now with the reason.
+            Some(Err(message)) => return Err(color_eyre::eyre::eyre!("{}", message)),
+            None => return Ok(None),
+        };
+        let no_points = || color_eyre::eyre::eyre!("No valid data points to export");
+        let spec = &request.spec;
+        let x_name = spec.encoding.x.field.clone().unwrap_or_default();
+        let ys = &spec.encoding.y.field;
+        let title = |column: &str| modal.axis_title(column);
+        let numbers_of = |column: &str| self.axis_numbers(column);
+        let y_axis = || {
+            use chart_modal::Aggregate;
+            let aggregate = spec.encoding.y.aggregate;
+            let numbers = match aggregate {
+                Aggregate::Count | Aggregate::Distinct => {
+                    chart_data::AxisNumbers::count(&self.number_format)
+                }
+                a if a.is_fractional() => self.axes_numbers(ys).fractional(),
+                _ => self.axes_numbers(ys),
+            };
+            let names = if aggregate == Aggregate::Count {
+                "count".to_string()
+            } else {
+                ys.iter().map(|y| title(y)).collect::<Vec<_>>().join(", ")
+            };
+            let title = match aggregate {
+                Aggregate::None | Aggregate::Count => names,
+                _ => format!("{} {names}", spec.encoding.y.aggregate_name()),
+            };
+            Axis {
+                title,
+                numbers,
+                log: modal.log_scale,
+                ..Default::default()
+            }
+        };
+        let plot = match prepared {
+            ChartPrepared::XY(cache) => {
+                let points = if modal.log_scale {
+                    cache
+                        .series_log
+                        .clone()
+                        .unwrap_or_else(|| log_series(&cache.series))
+                } else {
+                    cache.series.clone()
+                };
+                let last = cache.names.len().saturating_sub(1);
+                let series: Vec<Series> = points
+                    .into_iter()
+                    .zip(&cache.names)
+                    .zip(&cache.breaks)
+                    .enumerate()
+                    .filter(|(_, ((points, _), _))| !points.is_empty())
+                    .map(|(i, ((points, name), breaks))| Series {
+                        name: name.clone(),
+                        points,
+                        breaks: breaks.clone(),
+                        other: cache.other && i == last,
+                    })
+                    .collect();
+                if series.is_empty() {
+                    return Err(no_points());
+                }
+                Plot::Lines {
+                    series,
+                    scatter: spec.mark == chart_modal::Mark::Scatter,
+                    x: Axis {
+                        title: title(&cache.x_column),
+                        numbers: numbers_of(&cache.x_column),
+                        kind: cache.x_axis_kind,
+                        log: false,
+                    },
+                    y: y_axis(),
+                    y_from_zero: modal.y_starts_at_zero,
+                }
+            }
+            ChartPrepared::Histogram(data) => {
+                if data.bins.is_empty() {
+                    return Err(no_points());
+                }
+                Plot::Histogram {
+                    data: data.clone(),
+                    x: Axis {
+                        title: title(&data.column),
+                        numbers: numbers_of(&data.column),
+                        ..Default::default()
+                    },
+                    y: Axis {
+                        title: if data.share { "share" } else { "count" }.to_string(),
+                        numbers: if data.share {
+                            chart_data::AxisNumbers::measure(&self.number_format, "Share")
+                        } else {
+                            chart_data::AxisNumbers::count(&self.number_format)
+                        },
+                        ..Default::default()
+                    },
+                }
+            }
+            ChartPrepared::BoxPlot(data) => {
+                if data.stats.is_empty() {
+                    return Err(no_points());
+                }
+                Plot::Box {
+                    data: data.clone(),
+                    x_title: x_name.clone(),
+                    y: Axis {
+                        title: ys.first().map(|y| title(y)).unwrap_or_default(),
+                        numbers: self.axes_numbers(ys),
+                        ..Default::default()
+                    },
+                }
+            }
+            ChartPrepared::Kde(data) => {
+                if data.series.is_empty() {
+                    return Err(no_points());
+                }
+                Plot::Kde {
+                    data: data.clone(),
+                    x: Axis {
+                        title: title(&x_name),
+                        numbers: numbers_of(&x_name).fractional(),
+                        ..Default::default()
+                    },
+                    y: Axis {
+                        title: "density".to_string(),
+                        numbers: chart_data::AxisNumbers::measure(&self.number_format, "Density"),
+                        ..Default::default()
+                    },
+                }
+            }
+            ChartPrepared::Heatmap(data) => {
+                if data.counts.is_empty() || data.max_count <= 0.0 {
+                    return Err(no_points());
+                }
+                Plot::Heatmap {
+                    data: data.clone(),
+                    x: Axis {
+                        title: title(&data.x_column),
+                        numbers: numbers_of(&data.x_column),
+                        ..Default::default()
+                    },
+                    y: Axis {
+                        title: title(&data.y_column),
+                        numbers: numbers_of(&data.y_column),
+                        ..Default::default()
+                    },
+                }
+            }
+            ChartPrepared::Bar(data) => {
+                if data.bars.is_empty() {
+                    return Err(no_points());
+                }
+                Plot::Bars {
+                    value: Axis {
+                        title: data.value_column.clone(),
+                        numbers: chart_data::AxisNumbers {
+                            format: data.value_format(&self.number_format),
+                            whole: data.value_dtype.is_integer(),
+                        },
+                        ..Default::default()
+                    },
+                    data: data.clone(),
+                }
+            }
+            // Left out above: a single X column has nothing to export.
+            ChartPrepared::XRange(_) => return Err(no_points()),
+        };
+        Ok(Some(Figure {
+            plot,
+            // The file always has the middle dot; the terminal may be ASCII.
+            chart_notes: self.chart_notes_of(prepared, "·"),
+            grid: modal.grid,
+        }))
+    }
+
+    /// Write the chart from the prepared data off-thread, or park the export until that
+    /// data is ready. `busy` was set by `ChartExport` and stays set until the export ends.
+    fn start_chart_export(&mut self, mut request: ChartExportRequest) {
+        // How the chart was made, from the view and chart as they are now; none
+        // when the dialog says Omit.
+        request.options.recipe = if request.recipe {
+            self.chart_recipe()
+        } else {
+            None
+        };
+        match self.build_chart_figure() {
+            Ok(Some(figure)) => {
+                self.chart_export_waiting = None;
+                let write = Job::ChartExport {
+                    path: request.path.clone(),
+                    format: request.format,
+                };
+                self.spawn_job(write, Some("Exporting chart..."), move |_| {
+                    let ChartExportRequest {
+                        path,
+                        format,
+                        options,
+                        overwrite,
+                        ..
+                    } = request;
+                    ChartExportJob { figure, options }
+                        .write(&path, format, overwrite)
+                        .map_err(|e| Self::format_export_error(&e))?;
+                    Ok(Answer::ChartExported)
+                });
+            }
+            // Still being prepared; `BackgroundChartReady` comes back here.
+            Ok(None) => self.chart_export_waiting = Some(request),
+            Err(e) => {
+                let message = Self::format_export_error(&e);
+                self.finish_chart_export(&request.path, request.format, Err(message));
+            }
+        }
+    }
+
+    pub(crate) fn finish_chart_export(
+        &mut self,
+        path: &Path,
+        format: ChartExportFormat,
+        result: Result<(), String>,
+    ) {
+        self.chart_export_waiting = None;
+        self.export_progress = None;
+        self.status_message = None;
+        self.busy = false;
+        match result {
+            Ok(()) => {
+                self.flash_path("Chart exported to ", path);
+                self.chart_export_modal.close();
+            }
+            // The form comes back as it was, the reason on its status line.
+            Err(message) => {
+                self.chart_export_modal.reopen_with_path(path, format);
+                self.chart_export_modal.error = Some(message);
+            }
+        }
+    }
+
+    /// What a chart says under its plot about the rows it drew. A view with a sample
+    /// is charted from all of it: the note says which sample, with its seed, so the
+    /// chart can be drawn again.
+    pub(crate) fn chart_notes_of(
+        &self,
+        prepared: &crate::chart_jobs::ChartPrepared,
+        middot: &str,
+    ) -> Vec<String> {
+        let mut notes = prepared.notes(middot);
+        let sampled = self.data_table_state.as_ref().and_then(|s| s.sampled());
+        if let Some(sampled) = sampled {
+            let mut note = sampled.label();
+            if matches!(
+                sampled.sample().method,
+                sampling::SampleMethod::Spread | sampling::SampleMethod::PerPartition { .. }
+            ) {
+                note.push_str(&format!(" {middot} seed {}", sampled.sample().seed));
+            }
+            notes.insert(0, note);
+        }
+        notes
     }
 }

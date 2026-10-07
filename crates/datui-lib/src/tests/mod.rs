@@ -2618,9 +2618,8 @@ fn an_error_and_a_panic_end_a_job_the_same_way() {
 /// flight alone: its spinner, its record, and the screen with no error on it.
 #[test]
 fn a_failure_leaves_other_work_alone() {
-    use crate::{
-        AnalysisProgress, App, AppEvent, ChartExportFormat, InflightCollect, Job, Outcome,
-    };
+    use crate::chart_export::ChartExportFormat;
+    use crate::{AnalysisProgress, App, AppEvent, InflightCollect, Job, Outcome};
     use std::path::PathBuf;
 
     // An open replaced long since.

@@ -521,7 +521,6 @@ pub fn compute_statistics_for_sample(
                 // Get sample for distribution inference
                 Some(infer_distribution(
                     series,
-                    series,
                     actual_sample_size.unwrap_or(count),
                     should_sample,
                 ))
@@ -555,7 +554,6 @@ pub fn compute_statistics_for_sample(
                             series,
                             numeric_stats,
                             dist_info,
-                            actual_sample_size.unwrap_or(total_rows),
                             should_sample,
                         ))
                     } else {
@@ -1677,12 +1675,7 @@ fn compute_categorical_stats(series: &Series) -> Result<CategoricalStatistics> {
 /// Seeds the fit tests' simulations, so the same values get the same p-values.
 const FIT_SEED: u64 = 0x5eed_d157;
 
-fn infer_distribution(
-    _series: &Series,
-    sample: &Series,
-    sample_size: usize,
-    is_sampled: bool,
-) -> DistributionInfo {
+fn infer_distribution(sample: &Series, sample_size: usize, is_sampled: bool) -> DistributionInfo {
     if sample_size < 3 {
         return DistributionInfo {
             distribution_type: DistributionType::Unknown,
@@ -1782,7 +1775,7 @@ fn approximate_shapiro_wilk(values: &[f64]) -> (Option<f64>, Option<f64>) {
 
     for (i, &value) in sorted.iter().enumerate() {
         let p = (i as f64 + 1.0 - 0.375) / (n as f64 + 0.25);
-        let expected_quantile = normal_quantile(p);
+        let expected_quantile = crate::distribution_fit::normal_quantile(p);
         let standardized_value = (value - mean) / std;
 
         sum_expected_sq += expected_quantile * expected_quantile;
@@ -1819,7 +1812,7 @@ fn shapiro_francia_pvalue(w: f64, n: usize) -> Option<f64> {
     let mu = -1.2725 + 1.0521 * (v - u);
     let sigma = 1.0308 - 0.26758 * (v + 2.0 / u);
     let z = ((1.0 - w).ln() - mu) / sigma;
-    Some((1.0 - normal_cdf(z, 0.0, 1.0)).clamp(0.0, 1.0))
+    Some((1.0 - crate::distribution_fit::normal_cdf(z)).clamp(0.0, 1.0))
 }
 
 // Advanced distribution analysis computation
@@ -1828,7 +1821,6 @@ fn compute_advanced_distribution_analysis(
     series: &Series,
     numeric_stats: &NumericStatistics,
     dist_info: &DistributionInfo,
-    _sample_size: usize,
     is_sampled: bool,
 ) -> DistributionAnalysis {
     // At most five thousand, spread across the rows: the head of a table sorted by
@@ -1962,538 +1954,6 @@ fn compute_mode(values: &[f64]) -> Option<f64> {
         .map(|(idx, _)| idx);
 
     max_bin.map(|idx| bin_sums[idx] / bin_counts[idx] as f64)
-}
-
-/// The standard normal quantile. See [`crate::distribution_fit::normal_quantile`].
-pub(crate) fn normal_quantile(p: f64) -> f64 {
-    crate::distribution_fit::normal_quantile(p)
-}
-
-// CDF (Cumulative Distribution Function) implementations for histogram theoretical probabilities
-fn normal_cdf(x: f64, mean: f64, std: f64) -> f64 {
-    if std <= 0.0 {
-        return if x < mean { 0.0 } else { 1.0 };
-    }
-    crate::distribution_fit::normal_cdf((x - mean) / std)
-}
-
-fn lognormal_cdf(x: f64, mu: f64, sigma: f64) -> f64 {
-    if x <= 0.0 {
-        return 0.0;
-    }
-    if sigma <= 0.0 {
-        return if x < mu.exp() { 0.0 } else { 1.0 };
-    }
-    // Lognormal: CDF(x) = Normal CDF of ln(x) with parameters mu, sigma
-    normal_cdf(x.ln(), mu, sigma)
-}
-
-fn exponential_cdf(x: f64, lambda: f64) -> f64 {
-    if x < 0.0 {
-        return 0.0;
-    }
-    if lambda <= 0.0 {
-        return if x < 0.0 { 0.0 } else { 1.0 };
-    }
-    // Exponential CDF: 1 - exp(-lambda * x)
-    1.0 - (-lambda * x).exp()
-}
-
-fn powerlaw_cdf(x: f64, xmin: f64, alpha: f64) -> f64 {
-    if x < xmin {
-        return 0.0;
-    }
-    if alpha <= 1.0 {
-        return if x >= xmin { 1.0 } else { 0.0 };
-    }
-    // Power law CDF: 1 - (x/xmin)^(-alpha + 1) for x >= xmin
-    // Valid for alpha > 1
-    if alpha <= 1.0 || xmin <= 0.0 {
-        return if x >= xmin { 1.0 } else { 0.0 };
-    }
-    1.0 - (x / xmin).powf(-alpha + 1.0)
-}
-
-/// The regularized incomplete beta function `I_x(a, b)`, by its continued fraction
-/// (Lentz's method), flipped to the side where the fraction converges fast.
-fn regularized_incomplete_beta(x: f64, a: f64, b: f64) -> f64 {
-    if x <= 0.0 {
-        return 0.0;
-    }
-    if x >= 1.0 {
-        return 1.0;
-    }
-    let ln_gamma = crate::distribution_fit::ln_gamma;
-    let ln_front = ln_gamma(a + b) - ln_gamma(a) - ln_gamma(b) + a * x.ln() + b * (1.0 - x).ln();
-    let front = ln_front.exp();
-    if x < (a + 1.0) / (a + b + 2.0) {
-        front * beta_continued_fraction(x, a, b) / a
-    } else {
-        1.0 - front * beta_continued_fraction(1.0 - x, b, a) / b
-    }
-}
-
-fn beta_continued_fraction(x: f64, a: f64, b: f64) -> f64 {
-    const TINY: f64 = 1e-300;
-    let mut c = 1.0;
-    let mut d = 1.0 - (a + b) * x / (a + 1.0);
-    if d.abs() < TINY {
-        d = TINY;
-    }
-    d = 1.0 / d;
-    let mut h = d;
-    for m in 1..=300 {
-        let m = m as f64;
-        let m2 = 2.0 * m;
-        let even = m * (b - m) * x / ((a + m2 - 1.0) * (a + m2));
-        d = 1.0 + even * d;
-        if d.abs() < TINY {
-            d = TINY;
-        }
-        c = 1.0 + even / c;
-        if c.abs() < TINY {
-            c = TINY;
-        }
-        d = 1.0 / d;
-        h *= d * c;
-        let odd = -(a + m) * (a + b + m) * x / ((a + m2) * (a + m2 + 1.0));
-        d = 1.0 + odd * d;
-        if d.abs() < TINY {
-            d = TINY;
-        }
-        c = 1.0 + odd / c;
-        if c.abs() < TINY {
-            c = TINY;
-        }
-        d = 1.0 / d;
-        let step = d * c;
-        h *= step;
-        if (step - 1.0).abs() < 1e-12 {
-            break;
-        }
-    }
-    h
-}
-
-// Beta distribution CDF: the regularized incomplete beta function.
-fn beta_cdf(x: f64, alpha: f64, beta: f64) -> f64 {
-    if alpha <= 0.0 || beta <= 0.0 {
-        return 0.0;
-    }
-    regularized_incomplete_beta(x, alpha, beta)
-}
-
-// Gamma distribution CDF (requires incomplete gamma function approximation)
-pub(crate) fn gamma_cdf(x: f64, shape: f64, scale: f64) -> f64 {
-    if x <= 0.0 {
-        return 0.0;
-    }
-    if shape <= 0.0 || scale <= 0.0 {
-        return 0.0;
-    }
-    // Gamma CDF uses incomplete gamma function
-    // For large shape, use normal approximation
-    if shape > 30.0 {
-        let mean = shape * scale;
-        let variance = shape * scale * scale;
-        if variance > 0.0 {
-            normal_cdf(x, mean, variance.sqrt())
-        } else if x < mean {
-            0.0
-        } else {
-            1.0
-        }
-    } else {
-        // Series approximation for incomplete gamma: P(x, k) = gamma(k, x) / Gamma(k)
-        // Simplified approximation for small shape
-        let z = x / scale;
-        let sum: f64 = (0..(shape as usize * 10).min(100))
-            .map(|n| {
-                if (n as f64) < shape {
-                    (-z).exp() * z.powi(n as i32) / (1..=n).map(|i| i as f64).product::<f64>()
-                } else {
-                    0.0
-                }
-            })
-            .sum();
-        (1.0 - sum).clamp(0.0, 1.0)
-    }
-}
-
-// Chi-squared distribution CDF (special case of Gamma with shape = df/2, scale = 2)
-fn chi_squared_cdf(x: f64, df: f64) -> f64 {
-    if x <= 0.0 {
-        return 0.0;
-    }
-    if df <= 0.0 {
-        return 0.0;
-    }
-    gamma_cdf(x, df / 2.0, 2.0)
-}
-
-// Student's t distribution CDF (approximation)
-fn students_t_cdf(x: f64, df: f64) -> f64 {
-    if df <= 0.0 {
-        return 0.5; // Invalid, return median
-    }
-    // Exact, through the incomplete beta: the tails are what tell a t from a normal,
-    // and a scaled normal standing in for it had none.
-    let tail = 0.5 * regularized_incomplete_beta(df / (df + x * x), df / 2.0, 0.5);
-    if x >= 0.0 { 1.0 - tail } else { tail }
-}
-
-// Poisson CDF (discrete, but return as continuous approximation)
-fn poisson_cdf(x: f64, lambda: f64) -> f64 {
-    if x < 0.0 {
-        return 0.0;
-    }
-    if lambda <= 0.0 {
-        return if x >= 0.0 { 1.0 } else { 0.0 };
-    }
-    // For large lambda, use normal approximation
-    if lambda > 20.0 {
-        normal_cdf(x, lambda, lambda.sqrt())
-    } else {
-        // Sum Poisson PMF from 0 to floor(x)
-        let k_max = x.floor() as usize;
-        let mut cdf = 0.0;
-        let mut factorial = 1.0;
-        for k in 0..=k_max.min(100) {
-            if k > 0 {
-                factorial *= k as f64;
-            }
-            let ln_pmf = (k as f64) * lambda.ln() - lambda - factorial.ln();
-            let pmf = ln_pmf.exp();
-            cdf += pmf;
-            if cdf > 1.0 {
-                break;
-            }
-        }
-        cdf.min(1.0)
-    }
-}
-
-// Bernoulli CDF (discrete, p = probability of success)
-fn bernoulli_cdf(x: f64, p: f64) -> f64 {
-    if x < 0.0 {
-        return 0.0;
-    }
-    if x >= 1.0 {
-        return 1.0;
-    }
-    if p < 0.0 {
-        return 0.0;
-    }
-    if p > 1.0 {
-        return 1.0;
-    }
-    1.0 - p // CDF(x) = 0 for x < 0, 1-p for 0 <= x < 1, 1 for x >= 1
-}
-
-// Binomial coefficient helper
-fn binomial_coeff(n: usize, k: usize) -> f64 {
-    if k > n {
-        0.0
-    } else if k == 0 || k == n {
-        1.0
-    } else {
-        let k = k.min(n - k); // Use symmetry
-        (1..=k).map(|i| (n - k + i) as f64 / i as f64).product()
-    }
-}
-
-// Binomial CDF (discrete)
-fn binomial_cdf(x: f64, n: usize, p: f64) -> f64 {
-    if x < 0.0 {
-        return 0.0;
-    }
-    if p <= 0.0 {
-        return if x >= n as f64 { 1.0 } else { 0.0 };
-    }
-    if p >= 1.0 {
-        return if x >= 0.0 { 1.0 } else { 0.0 };
-    }
-    // For large n, use normal approximation
-    if n > 50 {
-        let mean = n as f64 * p;
-        let variance = n as f64 * p * (1.0 - p);
-        if variance > 0.0 {
-            normal_cdf(x + 0.5, mean, variance.sqrt()) // Continuity correction
-        } else if x < mean {
-            0.0
-        } else {
-            1.0
-        }
-    } else {
-        // Sum binomial PMF
-        let k_max = x.floor() as usize;
-        let mut cdf = 0.0;
-        for k in 0..=k_max.min(n) {
-            let coeff = binomial_coeff(n, k);
-            let pmf = coeff * p.powi(k as i32) * (1.0 - p).powi((n - k) as i32);
-            cdf += pmf;
-        }
-        cdf.min(1.0)
-    }
-}
-
-// Geometric CDF (discrete, number of failures before first success)
-fn geometric_cdf(x: f64, p: f64) -> f64 {
-    if x < 0.0 {
-        return 0.0;
-    }
-    if p <= 0.0 || p >= 1.0 {
-        return if x >= 0.0 && p >= 1.0 { 1.0 } else { 0.0 };
-    }
-
-    // Geometric CDF: 1 - (1-p)^(k+1) for k failures
-    // Use log-space to avoid numerical underflow: (1-p)^(k+1) = exp((k+1) * ln(1-p))
-    // But cap k aggressively: beyond k=50, CDF is essentially 1.0 for most p values
-    let k = x.floor().min(50.0); // Aggressive cap at 50 (was 1000)
-
-    // For very small (1-p)^(k+1), we can approximate as 0
-    let log_one_minus_p = (1.0 - p).ln();
-    if log_one_minus_p.is_nan() || log_one_minus_p.is_infinite() {
-        return if x >= 0.0 { 1.0 } else { 0.0 };
-    }
-
-    // Calculate (k+1) * ln(1-p)
-    let exponent = (k + 1.0) * log_one_minus_p;
-
-    // If exponent is very negative, (1-p)^(k+1) is essentially 0, so CDF ≈ 1.0
-    if exponent < -50.0 {
-        return 1.0;
-    }
-
-    // Otherwise calculate normally using exp
-    let one_minus_p_power = exponent.exp();
-    let result = 1.0 - one_minus_p_power;
-    result.clamp(0.0, 1.0)
-}
-
-// Weibull distribution CDF
-fn weibull_cdf(x: f64, shape: f64, scale: f64) -> f64 {
-    if x <= 0.0 {
-        return 0.0;
-    }
-    if shape <= 0.0 || scale <= 0.0 {
-        return 0.0;
-    }
-    // Weibull CDF: 1 - exp(-(x/scale)^shape)
-    1.0 - (-(x / scale).powf(shape)).exp()
-}
-
-// Calculate theoretical probability in an interval [lower, upper] for a distribution
-// Helper function for dense sampling of theoretical distribution
-/// Calculates the probability that a value falls in [lower, upper] for the given distribution.
-///
-/// Uses the distribution's CDF to compute P(lower ≤ X < upper).
-pub fn calculate_theoretical_probability_in_interval(
-    dist: &DistributionAnalysis,
-    dist_type: DistributionType,
-    lower: f64,
-    upper: f64,
-) -> f64 {
-    let mean = dist.characteristics.mean;
-    let std = dist.characteristics.std_dev;
-    let sorted_data = &dist.sorted_sample_values;
-
-    match dist_type {
-        DistributionType::Normal => {
-            let cdf_upper = normal_cdf(upper, mean, std);
-            let cdf_lower = normal_cdf(lower, mean, std);
-            cdf_upper - cdf_lower
-        }
-        DistributionType::LogNormal => {
-            if sorted_data.is_empty() || !sorted_data.iter().all(|&v| v > 0.0) {
-                0.0
-            } else {
-                let e_x = mean;
-                let var_x = std * std;
-                let sigma_sq = (1.0 + var_x / (e_x * e_x)).ln();
-                let mu = e_x.ln() - sigma_sq / 2.0;
-                let sigma = sigma_sq.sqrt();
-
-                if lower > 0.0 && upper > 0.0 {
-                    let cdf_upper = lognormal_cdf(upper, mu, sigma);
-                    let cdf_lower = lognormal_cdf(lower, mu, sigma);
-                    cdf_upper - cdf_lower
-                } else {
-                    0.0
-                }
-            }
-        }
-        DistributionType::Uniform => {
-            if sorted_data.is_empty() {
-                0.0
-            } else {
-                let data_min = sorted_data[0];
-                let data_max = sorted_data[sorted_data.len() - 1];
-                let data_range = data_max - data_min;
-                if data_range > 0.0 {
-                    (upper - lower) / data_range
-                } else {
-                    0.0
-                }
-            }
-        }
-        DistributionType::Exponential if mean > 0.0 => {
-            let lambda = 1.0 / mean;
-            let cdf_upper = exponential_cdf(upper, lambda);
-            let cdf_lower = exponential_cdf(lower, lambda);
-            cdf_upper - cdf_lower
-        }
-        DistributionType::PowerLaw => {
-            if sorted_data.is_empty() || !sorted_data.iter().any(|&v| v > 0.0) {
-                0.0
-            } else {
-                let positive_values: Vec<f64> =
-                    sorted_data.iter().filter(|&&v| v > 0.0).copied().collect();
-                if positive_values.is_empty() {
-                    0.0
-                } else {
-                    let xmin = positive_values[0];
-                    let n_pos = positive_values.len();
-                    if n_pos < 2 || xmin <= 0.0 {
-                        0.0
-                    } else {
-                        let sum_log = positive_values
-                            .iter()
-                            .map(|&x| (x / xmin).ln())
-                            .sum::<f64>();
-                        if sum_log > 0.0 {
-                            let alpha = 1.0 + (n_pos as f64) / sum_log;
-                            let cdf_upper = powerlaw_cdf(upper, xmin, alpha);
-                            let cdf_lower = powerlaw_cdf(lower, xmin, alpha);
-                            cdf_upper - cdf_lower
-                        } else {
-                            0.0
-                        }
-                    }
-                }
-            }
-        }
-        DistributionType::Beta => {
-            // Estimate parameters from mean and variance
-            let mean_val = mean;
-            let variance = std * std;
-            if mean_val > 0.0 && mean_val < 1.0 && variance > 0.0 {
-                let max_var = mean_val * (1.0 - mean_val);
-                if variance < max_var {
-                    let sum = mean_val * (1.0 - mean_val) / variance - 1.0;
-                    let alpha = mean_val * sum;
-                    let beta = (1.0 - mean_val) * sum;
-                    if alpha > 0.0 && beta > 0.0 {
-                        let cdf_upper = beta_cdf(upper, alpha, beta);
-                        let cdf_lower = beta_cdf(lower, alpha, beta);
-                        cdf_upper - cdf_lower
-                    } else {
-                        0.0
-                    }
-                } else {
-                    0.0
-                }
-            } else {
-                0.0
-            }
-        }
-        DistributionType::Gamma if mean > 0.0 && std > 0.0 => {
-            let variance = std * std;
-            let shape = (mean * mean) / variance;
-            let scale = variance / mean;
-            if shape > 0.0 && scale > 0.0 {
-                let cdf_upper = gamma_cdf(upper, shape, scale);
-                let cdf_lower = gamma_cdf(lower, shape, scale);
-                cdf_upper - cdf_lower
-            } else {
-                0.0
-            }
-        }
-        DistributionType::ChiSquared => {
-            // Chi-squared is gamma(df/2, 2)
-            let df = mean; // For chi-squared, mean = df
-            if df > 0.0 {
-                let cdf_upper = chi_squared_cdf(upper, df);
-                let cdf_lower = chi_squared_cdf(lower, df);
-                cdf_upper - cdf_lower
-            } else {
-                0.0
-            }
-        }
-        DistributionType::StudentsT => {
-            // Estimate df from variance
-            let variance = std * std;
-            let df = if variance > 1.0 {
-                2.0 * variance / (variance - 1.0)
-            } else {
-                30.0
-            };
-            let cdf_upper = students_t_cdf(upper, df);
-            let cdf_lower = students_t_cdf(lower, df);
-            cdf_upper - cdf_lower
-        }
-        DistributionType::Poisson => {
-            let lambda = mean;
-            if lambda > 0.0 {
-                let cdf_upper = poisson_cdf(upper, lambda);
-                let cdf_lower = poisson_cdf(lower, lambda);
-                cdf_upper - cdf_lower
-            } else {
-                0.0
-            }
-        }
-        DistributionType::Bernoulli => {
-            let p = mean; // For Bernoulli, mean = p
-            let cdf_upper = bernoulli_cdf(upper, p);
-            let cdf_lower = bernoulli_cdf(lower, p);
-            cdf_upper - cdf_lower
-        }
-        DistributionType::Binomial => {
-            // Estimate n from data range
-            let sorted_data = &dist.sorted_sample_values;
-            if !sorted_data.is_empty() {
-                let max_val = sorted_data[sorted_data.len() - 1];
-                let n = max_val.floor() as usize;
-                let p = if n > 0 { mean / n as f64 } else { 0.5 };
-                if n > 0 && p > 0.0 && p < 1.0 {
-                    let cdf_upper = binomial_cdf(upper, n, p);
-                    let cdf_lower = binomial_cdf(lower, n, p);
-                    cdf_upper - cdf_lower
-                } else {
-                    0.0
-                }
-            } else {
-                0.0
-            }
-        }
-        DistributionType::Geometric => {
-            let mean_val = mean; // mean = (1-p)/p for geometric
-            if mean_val > 0.0 {
-                let p = 1.0 / (mean_val + 1.0);
-                let cdf_upper = geometric_cdf(upper, p);
-                let cdf_lower = geometric_cdf(lower, p);
-                cdf_upper - cdf_lower
-            } else {
-                0.0
-            }
-        }
-        DistributionType::Weibull if mean > 0.0 && std > 0.0 => {
-            // Approximate shape from CV
-            let cv = std / mean;
-            let shape = if cv < 1.0 { 1.0 / cv } else { 1.0 };
-            // Scale from mean
-            let gamma_1_over_shape = 1.0 + 1.0 / shape; // Approximation
-            let scale = mean / gamma_1_over_shape;
-            if shape > 0.0 && scale > 0.0 {
-                let cdf_upper = weibull_cdf(upper, shape, scale);
-                let cdf_lower = weibull_cdf(lower, shape, scale);
-                cdf_upper - cdf_lower
-            } else {
-                0.0
-            }
-        }
-        _ => 0.0,
-    }
 }
 
 /// How many outlier examples an analysis keeps, most extreme first.
@@ -2980,7 +2440,8 @@ fn compute_correlation_p_value(correlation: f64, n: usize) -> f64 {
         return 0.0;
     }
     let df = (n - 2) as f64;
-    regularized_incomplete_beta(1.0 - correlation * correlation, df / 2.0, 0.5).clamp(0.0, 1.0)
+    crate::distribution_fit::beta_inc(df / 2.0, 0.5, 1.0 - correlation * correlation)
+        .clamp(0.0, 1.0)
 }
 
 /// Computes correlation statistics for a pair of columns.
@@ -3405,22 +2866,9 @@ mod sampling_tests {
     }
 
     #[test]
-    fn the_incomplete_beta_and_the_t_cdf_are_exact() {
-        // I_0.5(2, 3) = 11/16.
-        let i = regularized_incomplete_beta(0.5, 2.0, 3.0);
-        assert!((i - 0.6875).abs() < 1e-6, "{i}");
-        // The 97.5th percentile of t with 5 degrees of freedom is 2.5706.
-        assert!((students_t_cdf(2.5706, 5.0) - 0.975).abs() < 1e-4);
-        assert!((students_t_cdf(-2.5706, 5.0) - 0.025).abs() < 1e-4);
-        assert!((students_t_cdf(0.0, 5.0) - 0.5).abs() < 1e-12);
-        // Beta(1, 1) is the uniform.
-        assert!((beta_cdf(0.3, 1.0, 1.0) - 0.3).abs() < 1e-6);
-    }
-
-    #[test]
     fn a_constant_column_is_constant_and_a_hopeless_one_has_no_clear_fit() {
         let constant = Series::new("c".into(), vec![2020.0f64; 500]);
-        let info = infer_distribution(&constant, &constant, 500, false);
+        let info = infer_distribution(&constant, 500, false);
         assert_eq!(info.distribution_type, DistributionType::Constant);
 
         // Two far-apart clusters of non-integers: every candidate is rejected.
@@ -3435,7 +2883,7 @@ mod sampling_tests {
             })
             .collect();
         let bimodal = Series::new("b".into(), values);
-        let info = infer_distribution(&bimodal, &bimodal, 2_000, false);
+        let info = infer_distribution(&bimodal, 2_000, false);
         assert_eq!(info.distribution_type, DistributionType::Unknown);
         assert_eq!(info.distribution_type.to_string(), "No clear fit");
 
@@ -3451,7 +2899,7 @@ mod sampling_tests {
             })
             .collect();
         let integers = Series::new("i".into(), values);
-        let info = infer_distribution(&integers, &integers, 2_000, false);
+        let info = infer_distribution(&integers, 2_000, false);
         assert!(
             !matches!(
                 info.distribution_type,
@@ -3504,7 +2952,7 @@ mod normality_tests {
         assert!(shapiro_francia_pvalue(0.9995, 2_590).unwrap() > 0.05);
         assert_eq!(shapiro_francia_pvalue(0.99, 4), None);
         let normal: Vec<f64> = (1..=500)
-            .map(|i| normal_quantile(i as f64 / 501.0))
+            .map(|i| crate::distribution_fit::normal_quantile(i as f64 / 501.0))
             .collect();
         let (_, p) = approximate_shapiro_wilk(&normal);
         assert!(p.unwrap() > 0.5, "{p:?}");

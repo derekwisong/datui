@@ -1155,6 +1155,13 @@ fn is_partition_dir(path: &Path) -> bool {
         .is_some_and(is_partition_name)
 }
 
+/// An empty object with no extension: a marker some tool left for a folder, whether or
+/// not the directory still has anything in it (`yellow/year=2032` beside no
+/// `year=2032/`). Nothing datui opens is both empty and nameless.
+pub fn is_empty_marker(name: &str, size: u64) -> bool {
+    size == 0 && !name.contains('.')
+}
+
 /// Classify a directory without walking it.
 ///
 /// Reads one listing, bounded by [`MAX_ENTRIES_PER_DIR`] rather than by a probe of the
@@ -1308,9 +1315,7 @@ pub fn classify(seen: impl Iterator<Item = Seen>, rules: &Rules) -> (EntryKind, 
             holds.partitions += usize::from(is_partition_name(&s.name));
             continue;
         }
-        if s.size
-            .is_some_and(|size| crate::cloud_browse::is_empty_marker(&s.name, size))
-        {
+        if s.size.is_some_and(|size| is_empty_marker(&s.name, size)) {
             holds.not_read += 1;
             continue;
         }

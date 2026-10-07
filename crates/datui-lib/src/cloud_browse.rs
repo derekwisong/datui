@@ -23,6 +23,7 @@
 
 use crate::cloud_sources::{S3Settings, Signing, Source};
 use crate::config::CloudConfig;
+use crate::discover::is_empty_marker;
 use crate::source::ProviderKind;
 use std::path::{Path, PathBuf};
 
@@ -1048,13 +1049,6 @@ pub fn is_marker(name: &str) -> bool {
         || name.starts_with("_committed_")
         || name.starts_with("_started_")
         || name.ends_with("_$folder$")
-}
-
-/// An empty object with no extension: a marker some tool left for a folder, whether or
-/// not the directory still has anything in it (`yellow/year=2032` beside no
-/// `year=2032/`). Nothing datui opens is both empty and nameless.
-pub fn is_empty_marker(name: &str, size: u64) -> bool {
-    size == 0 && !name.contains('.')
 }
 
 /// Whether an object in one level of `prefix` is shown as a row.

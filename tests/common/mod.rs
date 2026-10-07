@@ -1,5 +1,4 @@
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 use std::sync::Once;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
@@ -7,7 +6,10 @@ use std::time::{Duration, Instant};
 use datui::{App, AppEvent, OpenOptions};
 
 #[allow(dead_code)]
-static INIT: Once = Once::new();
+#[path = "../../crates/datui-lib/src/tests/shared.rs"]
+mod shared;
+#[allow(unused_imports)]
+pub use shared::{buffer_lines, buffer_text, ensure_sample_data, sample_data_dir};
 
 /// How long a wait goes before it fails the test. Only a hang guard; nothing is timed.
 #[allow(dead_code)]
@@ -283,122 +285,4 @@ pub fn frame_bottoms(rows: &[String]) -> Vec<usize> {
         }
     }
     bottoms
-}
-
-/// Ensures that sample data files are generated before tests run.
-/// This function uses `std::sync::Once` to ensure it only runs once,
-/// even if called from multiple tests.
-#[allow(dead_code)]
-pub fn ensure_sample_data() {
-    INIT.call_once(|| {
-        let sample_data_dir = Path::new("tests/sample-data");
-
-        // Check if key files exist to determine if we need to generate data
-        // We check for a few representative files that should always be generated
-        let key_files = [
-            "people.parquet",
-            "sales.parquet",
-            "large_dataset.parquet",
-            "empty.parquet",
-            "pivot_long.parquet",
-            "melt_wide.parquet",
-            "models/tiny.gguf",
-            "people_stream.arrow",
-            "dialect_padded_log.csv",
-            "gps/drive.nmea",
-            "audio/loop.aiff",
-            "midi/song.mid",
-            "sqlite/shop.db",
-            "numpy/packed.npz",
-            "elf/tiny.elf",
-            "flight/00000042.BIN",
-            "can/dbc/body.toml",
-            "hf_cache/people-test.arrow",
-            "arrow_mixed/b.arrow",
-            "hf_dict/dataset_dict.json",
-            "sheets.xlsx",
-        ];
-
-        let needs_generation = !sample_data_dir.exists()
-            || key_files
-                .iter()
-                .any(|file| !sample_data_dir.join(file).exists());
-
-        if needs_generation {
-            eprintln!("Sample data not found. Generating test data...");
-
-            // Get the path to the Python script
-            let script_path = Path::new("scripts/generate_sample_data.py");
-            if !script_path.exists() {
-                panic!(
-                    "Sample data generation script not found at: {}. \
-                    Please ensure you're running tests from the repository root.",
-                    script_path.display()
-                );
-            }
-
-            // Prefer the project virtualenv: the generator needs Polars and friends,
-            // which a system Python almost never has. Falling straight through to
-            // `python3` produces a bare ImportError that tells nobody what to do.
-            let venv_python = if cfg!(windows) {
-                Path::new(".venv/Scripts/python.exe")
-            } else {
-                Path::new(".venv/bin/python")
-            };
-
-            let python_cmd = if venv_python.exists() {
-                venv_python.to_string_lossy().into_owned()
-            } else if Command::new("python3").arg("--version").output().is_ok() {
-                "python3".to_string()
-            } else if Command::new("python").arg("--version").output().is_ok() {
-                "python".to_string()
-            } else {
-                panic!(
-                    "Python not found, and no project virtualenv at {}.\n\
-                     Run ./scripts/dev/setup-test-data.sh to create one and generate \
-                     the fixtures these tests read.",
-                    venv_python.display()
-                );
-            };
-
-            // Run the generation script
-            let output = Command::new(python_cmd)
-                .arg(script_path)
-                .output()
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "Failed to run sample data generation script: {}. \
-                        Make sure Python is installed and the script is executable.",
-                        e
-                    );
-                });
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let hint = if venv_python.exists() {
-                    String::new()
-                } else {
-                    format!(
-                        "\n\nNo virtualenv at {}. This usually means the generator's \
-                         dependencies (Polars, NumPy, pyarrow, fastavro, openpyxl) are \
-                         missing.\nRun ./scripts/dev/setup-test-data.sh to set it up.",
-                        venv_python.display()
-                    )
-                };
-                panic!(
-                    "Sample data generation failed!\n\
-                    Exit code: {:?}\n\
-                    stdout:\n{}\n\
-                    stderr:\n{}{}",
-                    output.status.code(),
-                    stdout,
-                    stderr,
-                    hint
-                );
-            }
-
-            eprintln!("Sample data generation complete!");
-        }
-    });
 }

@@ -208,13 +208,13 @@ fn an_export_counts_the_bytes_it_has_written() {
     };
     app.event(&writing(ticket, 1_572_864));
     assert!(
-        bar(&mut app).contains("Writing file...  out.csv  1.5 MB"),
+        bar(&mut app).contains("Writing file...  out.csv  1.5 MiB"),
         "{}",
         bar(&mut app)
     );
     app.event(&writing(passed, 9_999_999));
     assert!(
-        bar(&mut app).contains("out.csv  1.5 MB"),
+        bar(&mut app).contains("out.csv  1.5 MiB"),
         "{}",
         bar(&mut app)
     );

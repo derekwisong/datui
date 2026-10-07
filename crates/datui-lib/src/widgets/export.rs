@@ -65,12 +65,7 @@ const COMPRESSION_NAMES: [&str; COMPRESSION_OPTIONS.len()] = {
 pub fn dialog_area(area: Rect) -> Rect {
     let width = area.width.saturating_sub(4).min(MAX_WIDTH);
     let height = HEIGHT.min(area.height);
-    Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    }
+    crate::render::layout::centered_rect(area, width, height)
 }
 
 pub fn render_export_modal(
@@ -203,7 +198,7 @@ pub fn render_export_modal(
         lines.truncate(room);
         if let Some(last) = lines.last_mut() {
             let cut = format!("{last} {}", crate::glyphs::get().ellipsis);
-            *last = crate::widgets::data_quality::fit(&cut, width);
+            *last = crate::glyphs::fit(&cut, width);
         }
     }
     let top = content.bottom() - lines.len() as u16;
@@ -239,18 +234,8 @@ mod tests {
         buf
     }
 
-    fn lines(buf: &Buffer) -> Vec<String> {
-        (0..buf.area.height)
-            .map(|y| {
-                (0..buf.area.width)
-                    .map(|x| buf[(x, y)].symbol().to_string())
-                    .collect::<String>()
-            })
-            .collect()
-    }
-
     fn painted(modal: &mut ExportModal, width: u16, height: u16) -> String {
-        lines(&draw(modal, width, height)).join("\n")
+        crate::tests::buffer_lines(&draw(modal, width, height)).join("\n")
     }
 
     /// The dialog's first content row, where Format always sits.
@@ -266,7 +251,7 @@ mod tests {
         modal.active = true;
         modal.selected_format = ExportFormat::Tsv;
         let buf = draw(&mut modal, MAX_WIDTH, HEIGHT);
-        let rows = lines(&buf);
+        let rows = crate::tests::buffer_lines(&buf);
         let row = &rows[usize::from(FORMAT_Y)];
         assert!(row.contains("Format:"), "{row}");
         let mut at = 0;
@@ -308,7 +293,7 @@ mod tests {
         modal.selected_format = ExportFormat::Csv;
         modal.csv_compression = Some(CompressionFormat::Zstd);
         let buf = draw(&mut modal, MAX_WIDTH, HEIGHT);
-        let rows = lines(&buf);
+        let rows = crate::tests::buffer_lines(&buf);
         let (y, row) = rows
             .iter()
             .enumerate()
@@ -329,7 +314,7 @@ mod tests {
         let mut modal = ExportModal::new();
         modal.active = true;
         modal.selected_format = ExportFormat::Parquet;
-        let rows = lines(&draw(&mut modal, 50, HEIGHT));
+        let rows = crate::tests::buffer_lines(&draw(&mut modal, 50, HEIGHT));
         let row = &rows[usize::from(FORMAT_Y)];
         let compact = format!("{} Parquet {}", g.choice_prev, g.choice_next);
         assert!(row.contains(&compact), "{row:?}");
@@ -345,7 +330,7 @@ mod tests {
         let mut modal = ExportModal::new();
         modal.active = true;
         let shown = |modal: &mut ExportModal| {
-            let rows = lines(&draw(modal, MAX_WIDTH, HEIGHT));
+            let rows = crate::tests::buffer_lines(&draw(modal, MAX_WIDTH, HEIGHT));
             assert!(rows[usize::from(FORMAT_Y)].contains("Format:"));
             ["Delimiter:", "Header:", "Compression:", "Source file:"]
                 .into_iter()
@@ -471,7 +456,7 @@ mod tests {
         for format in [ExportFormat::Csv, ExportFormat::Parquet] {
             modal.selected_format = format;
             for width in [50u16, MAX_WIDTH] {
-                let rows = lines(&draw(&mut modal, width, HEIGHT));
+                let rows = crate::tests::buffer_lines(&draw(&mut modal, width, HEIGHT));
                 let at = rows
                     .iter()
                     .position(|row| row.contains("Enter a file path."));
@@ -490,7 +475,7 @@ mod tests {
             modal.active = true;
             let mut buf = Buffer::empty(screen);
             render_export_modal(dialog, &mut buf, &mut modal, &RenderContext::for_test());
-            let text = lines(&buf).join("\n");
+            let text = crate::tests::buffer_lines(&buf).join("\n");
             assert_eq!(text.contains("Avro"), full, "at {width}: {text}");
         }
     }

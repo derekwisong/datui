@@ -296,10 +296,10 @@ fn catalog_fields(out: &mut Vec<DocLine>, entry: &Dataset, catalog: &str, measur
         (None, None) => {}
     }
     match (measured, entry.size) {
-        (Some(size), _) => out.push(DocLine::Field("size", crate::discover::format_size(size))),
+        (Some(size), _) => out.push(DocLine::Field("size", crate::numfmt::bytes(size))),
         (None, Some(hint)) => out.push(DocLine::Field(
             "size",
-            format!("~{}", crate::discover::format_size(hint)),
+            format!("~{}", crate::numfmt::bytes(hint)),
         )),
         (None, None) => {}
     }

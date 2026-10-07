@@ -290,7 +290,7 @@ fn row_group_note(dataset: &DatasetSchema, scope: &str) -> Option<Note> {
     Some(Note {
         summary: format!(
             "median row group {}, each read whole",
-            crate::widgets::info::format_bytes(median as u64)
+            crate::numfmt::bytes(median as u64)
         ),
         scope: scope.to_string(),
         read_as_text: None,
@@ -348,7 +348,7 @@ fn small_files_note(dataset: &DatasetSchema, scope: &str) -> Option<Note> {
         summary: format!(
             "{} files, median {}; {footers} read before any row",
             group_chrome(files),
-            crate::widgets::info::format_bytes(median as u64)
+            crate::numfmt::bytes(median as u64)
         ),
         scope: scope.to_string(),
         read_as_text: None,

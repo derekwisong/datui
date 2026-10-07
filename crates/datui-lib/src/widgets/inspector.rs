@@ -173,14 +173,14 @@ fn plural(n: usize, one: &str, many: &str) -> String {
     format!("{} {}", thousands(n), if n == 1 { one } else { many })
 }
 
-/// A byte count as people read it, and exactly: `1.0 MB (1,048,576 bytes)`.
+/// A byte count as people read it, and exactly: `1.0 MiB (1,048,576 bytes)`.
 pub fn size_text(n: usize) -> String {
     if n < 1024 {
         plural(n, "byte", "bytes")
     } else {
         format!(
             "{} ({} bytes)",
-            crate::discover::format_size(n as u64),
+            crate::numfmt::bytes(n as u64),
             thousands(n)
         )
     }
@@ -606,7 +606,7 @@ fn preview(field: &InspectField, value: &AnyValue, room: usize, ctx: &RenderCont
     let budget = room.saturating_mul(4).max(16);
     let sized = |text: String, len: usize| {
         if len > 1024 && crate::glyphs::cell_width(&text) > room {
-            let size = format!(" {} {}", g.middot, crate::discover::format_size(len as u64));
+            let size = format!(" {} {}", g.middot, crate::numfmt::bytes(len as u64));
             let keep = room.saturating_sub(crate::glyphs::cell_width(&size));
             let cut = crate::glyphs::fit_cells(&text, keep, g.ellipsis).into_owned();
             format!("{cut}{size}")
@@ -642,7 +642,7 @@ fn binary_preview(b: &[u8]) -> String {
     let size = if b.len() < 1024 {
         plural(b.len(), "byte", "bytes")
     } else {
-        crate::discover::format_size(b.len() as u64)
+        crate::numfmt::bytes(b.len() as u64)
     };
     match inspector_bytes::sniff(&b[..b.len().min(4096)]) {
         // A prefix that is UTF-8 says little about the rest.
@@ -2751,7 +2751,7 @@ mod tests {
             &Shown::Value(AnyValue::Binary(&big)),
             &ask(140),
         );
-        assert_eq!(p.facts, format!("binary {m} 1.0 MB (1,048,576 bytes)"));
+        assert_eq!(p.facts, format!("binary {m} 1.0 MiB (1,048,576 bytes)"));
         assert_eq!(p.views, [View::Hex, View::Escaped]);
         assert!(matches!(p.content, Content::Hex { per_line: 32, .. }));
         assert!(matches!(p.copy, CopyAs::Base64));
@@ -2985,6 +2985,6 @@ mod tests {
     fn sizes_read_in_human_units_and_exactly() {
         assert_eq!(size_text(73), "73 bytes");
         assert_eq!(size_text(1), "1 byte");
-        assert_eq!(size_text(4 << 20), "4.0 MB (4,194,304 bytes)");
+        assert_eq!(size_text(4 << 20), "4.0 MiB (4,194,304 bytes)");
     }
 }

@@ -52,7 +52,7 @@ fn screen(app: &mut App) -> String {
     let area = Rect::new(0, 0, 120, 30);
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
-    rendered_text(&buffer)
+    common::buffer_text(&buffer)
 }
 
 /// Opened as `datui FILE` opens it: text columns typed (`--infer-types`).

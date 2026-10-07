@@ -78,7 +78,7 @@ connection = "<CONNECTION>"
 | `connection` | Object-store `url` only: the [`[[cloud.connections]]`](cloud-sources.md#connections) entry whose login reads it |
 | `description`, `publisher`, `license` | Shown in the details pane and the Documentation view |
 | `homepage`, `documentation` | Links: the dataset's page, and an `https://` link to the publisher's documentation of its columns |
-| `size` | HTTP(S) `url` only: about how many bytes the file is, shown as `~33 MB` until datui measures it |
+| `size` | HTTP(S) `url` only: about how many bytes the file is, shown as `~33 MiB` until datui measures it |
 | `columns.NAME` | What a column means; see [Columns](#columns) |
 | `bookmarks."Name"` | A place inside a directory to start from, relative to the dataset's `path` or object-store `url` |
 

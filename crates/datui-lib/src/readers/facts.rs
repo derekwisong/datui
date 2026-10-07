@@ -28,10 +28,7 @@ fn metadata<'a>(pairs: impl Iterator<Item = (&'a str, &'a [u8])>) -> Vec<(String
         pairs.into_iter().map(|(key, value)| {
             let value = match std::str::from_utf8(value) {
                 Ok(text) => text.to_string(),
-                Err(_) => format!(
-                    "{} of bytes",
-                    crate::widgets::info::format_bytes(value.len() as u64)
-                ),
+                Err(_) => format!("{} of bytes", crate::numfmt::bytes(value.len() as u64)),
             };
             (key.to_string(), MetaValue::Text(value))
         }),

@@ -226,11 +226,11 @@ under its label: `catalog.toml` (`MY DATASETS`), each file in `catalogs/` or lis
 
 ```text
 ▾ MY DATASETS  5   catalog.toml  ─────────────────────────────────
-  ▪ Sales                                          6.8 KB   now
+  ▪ Sales                                          6.8 KiB  now
   ▪ Archive/ 1 csv                                          now
   ◦ Gone missing
   ≈ Weather/ dataset
-  ≈ Penguins                                      ~16.1 KB
+  ≈ Penguins                                      ~16.1 KiB
 ```
 
 | Row | <kbd>Enter</kbd> | Label |
@@ -239,7 +239,7 @@ under its label: `catalog.toml` (`MY DATASETS`), each file in `catalogs/` or lis
 | A local directory | Goes inside | What is inside |
 | A local path with nothing there | Says so | `missing` |
 | A directory in an object store | Goes inside; <kbd>Backspace</kbd> at its top comes back | `dataset` |
-| A remote file | Opens it | Its format, and its size: `~16.1 KB`, the catalog's word for it, until a `HEAD` sent when the row is selected measures it |
+| A remote file | Opens it | Its format, and its size: `~16.1 KiB`, the catalog's word for it, until a `HEAD` sent when the row is selected measures it |
 
 Nothing else remote is asked for until you open or enter a dataset. Inside one,
 the title reads `My datasets › Weather › by_year`, and the pane gives its

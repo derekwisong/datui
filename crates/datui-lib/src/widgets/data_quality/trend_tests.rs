@@ -126,7 +126,7 @@ impl Screen {
     }
 
     fn draw(&self, page: QualityPage, line: usize, selected: usize, size: (u16, u16)) -> String {
-        text(&self.draw_with(&self.theme, page, line, selected, None, size))
+        crate::tests::buffer_text(&self.draw_with(&self.theme, page, line, selected, None, size))
     }
 
     /// The Trends line of the amount column.
@@ -137,18 +137,6 @@ impl Screen {
             .position(|line| line.names == ["amount"])
             .unwrap()
     }
-}
-
-fn text(buf: &Buffer) -> String {
-    let area = buf.area;
-    (0..area.height)
-        .map(|y| {
-            (0..area.width)
-                .map(|x| buf[(x, y)].symbol().to_string())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 /// Every character outside ASCII is a glyph slot, which `LANG=C` swaps for its
@@ -294,10 +282,17 @@ fn trends_and_gaps_read_the_same_without_color() {
         (QualityPage::TrendDetail, screen.amount()),
         (QualityPage::Gaps, 0),
     ] {
-        let full = text(&screen.draw_with(&screen.theme, page, line, 1, None, (80, 24)));
+        let full = crate::tests::buffer_text(&screen.draw_with(
+            &screen.theme,
+            page,
+            line,
+            1,
+            None,
+            (80, 24),
+        ));
         for theme in [&mono, &sixteen] {
             assert_eq!(
-                text(&screen.draw_with(theme, page, line, 1, None, (80, 24))),
+                crate::tests::buffer_text(&screen.draw_with(theme, page, line, 1, None, (80, 24))),
                 full,
                 "{page:?}"
             );
@@ -338,7 +333,7 @@ fn setup_states_the_expected_windows() {
         "{setup}"
     );
     let form = ExpectedForm::new(&screen.plan, &screen.theme);
-    let editor = text(&screen.draw_with(
+    let editor = crate::tests::buffer_text(&screen.draw_with(
         &screen.theme,
         QualityPage::ExpectedWindows,
         0,

@@ -293,7 +293,7 @@ pub(crate) fn metadata_lines(
             let g = crate::glyphs::get();
             out.push((
                 blank,
-                format!("{} {} more", g.ellipsis, format_bytes(more as u64)),
+                format!("{} {} more", g.ellipsis, crate::numfmt::bytes(more as u64)),
             ));
         }
     }
@@ -308,22 +308,6 @@ pub(crate) fn clock(seconds: f64) -> String {
         format!("{h}:{m:02}:{s:02}.{ms:03}")
     } else {
         format!("{m}:{s:02}.{ms:03}")
-    }
-}
-
-/// Human-readable byte size (e.g. "1.2 MiB", "456 KiB").
-pub fn format_bytes(n: u64) -> String {
-    const K: u64 = 1024;
-    const M: u64 = K * K;
-    const G: u64 = M * K;
-    if n >= G {
-        format!("{:.1} GiB", n as f64 / G as f64)
-    } else if n >= M {
-        format!("{:.1} MiB", n as f64 / M as f64)
-    } else if n >= K {
-        format!("{:.1} KiB", n as f64 / K as f64)
-    } else {
-        format!("{} B", n)
     }
 }
 
@@ -1219,7 +1203,7 @@ impl<'a> DataTableInfo<'a> {
             None | Some(FileFacts::Read { size: None, .. }) => Span::raw(crate::glyphs::get().dash),
             Some(FileFacts::Read {
                 size: Some(size), ..
-            }) => Span::raw(format_bytes(*size)),
+            }) => Span::raw(crate::numfmt::bytes(*size)),
             Some(FileFacts::Reading) => {
                 Span::styled("reading...", Style::default().fg(self.theme.dimmed))
             }
@@ -1330,7 +1314,7 @@ impl<'a> DataTableInfo<'a> {
                 .unwrap_or_else(|| {
                     self.state
                         .buffered_memory_bytes()
-                        .map(|b| format_bytes(b as u64))
+                        .map(|b| crate::numfmt::bytes(b as u64))
                         .unwrap_or_else(|| crate::glyphs::get().dash.to_string())
                 });
             Paragraph::new(value).render(mb_chunks[1], buf);
@@ -1873,7 +1857,7 @@ fn wire_line(wire: crate::measurements::OverTheWire) -> String {
     // requests today also weighs them; this is what stops a stretch that one day does
     // not from printing `0 B`, which would say its requests came back empty.
     if let Some(bytes) = wire.bytes {
-        line.push_str(&format!(", {}", format_bytes(bytes)));
+        line.push_str(&format!(", {}", crate::numfmt::bytes(bytes)));
     }
     line
 }
@@ -2195,14 +2179,7 @@ mod tests {
                 &theme,
             );
             panel.render_schema_summary(area, &mut buf);
-            (0..area.height)
-                .map(|y| {
-                    (0..area.width)
-                        .map(|x| buf[(x, y)].symbol().to_string())
-                        .collect::<String>()
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
+            crate::tests::buffer_text(&buf)
         };
 
         let uncounted = painted(&state);
@@ -2265,14 +2242,7 @@ mod tests {
             &theme,
         );
         (&mut panel).render(area, &mut buf);
-        let text = (0..area.height)
-            .map(|y| {
-                (0..area.width)
-                    .map(|x| buf[(x, y)].symbol().to_string())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+        let text = crate::tests::buffer_text(&buf);
         assert!(
             text.contains("below"),
             "the hidden columns are counted: {text}"
@@ -2320,14 +2290,7 @@ mod tests {
             );
             panel.header_toggle = header_toggle;
             (&mut panel).render(area, &mut buf);
-            (0..area.height)
-                .map(|y| {
-                    (0..area.width)
-                        .map(|x| buf[(x, y)].symbol().to_string())
-                        .collect::<String>()
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
+            crate::tests::buffer_text(&buf)
         };
         let shown = footer(true, InfoTab::Schema);
         assert!(shown.contains("Header"), "{shown}");
@@ -2403,13 +2366,7 @@ mod tests {
                 &theme,
             )
             .render_resources_tab(area, &mut buf);
-            (0..area.height)
-                .map(|y| {
-                    (0..area.width)
-                        .map(|x| buf[(x, y)].symbol())
-                        .collect::<String>()
-                })
-                .collect::<Vec<_>>()
+            crate::tests::buffer_lines(&buf)
         };
         let lines = painted(Some(crate::ReadMode::InMemory));
         assert!(
@@ -2474,14 +2431,7 @@ mod tests {
                 &theme,
             );
             panel.render_resources_tab(area, &mut buf);
-            (0..area.height)
-                .map(|y| {
-                    (0..area.width)
-                        .map(|x| buf[(x, y)].symbol().to_string())
-                        .collect::<String>()
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
+            crate::tests::buffer_text(&buf)
         };
 
         // Nothing measured: no heading, and above all no row of zeroes standing in for
@@ -2670,13 +2620,7 @@ mod tests {
                 &theme,
             );
             (&mut panel).render(area, &mut buf);
-            (0..area.height)
-                .map(|y| {
-                    (0..area.width)
-                        .map(|x| buf[(x, y)].symbol().to_string())
-                        .collect::<String>()
-                })
-                .collect::<Vec<_>>()
+            crate::tests::buffer_lines(&buf)
         };
         let middot = crate::glyphs::get().middot;
         let text = paint(vec!["GSV 9".into(), "sentences".into()]);
@@ -2744,13 +2688,7 @@ mod tests {
             &theme,
         );
         (&mut panel).render(area, &mut buf);
-        let text: Vec<String> = (0..area.height)
-            .map(|y| {
-                (0..area.width)
-                    .map(|x| buf[(x, y)].symbol().to_string())
-                    .collect()
-            })
-            .collect();
+        let text: Vec<String> = crate::tests::buffer_lines(&buf);
         let has = |needle: &str| text.iter().any(|row| row.contains(needle));
         assert!(has("VCD") && !has("Format"), "{text:#?}");
         assert!(has("Version: Icarus"), "{text:#?}");
@@ -2802,13 +2740,7 @@ mod tests {
                 &theme,
             );
             (&mut panel).render(area, &mut buf);
-            let text: Vec<String> = (0..area.height)
-                .map(|y| {
-                    (0..area.width)
-                        .map(|x| buf[(x, y)].symbol().to_string())
-                        .collect()
-                })
-                .collect();
+            let text: Vec<String> = crate::tests::buffer_lines(&buf);
             (buf, text)
         };
         let find = |text: &[String], needle: &str| {
@@ -3109,14 +3041,6 @@ mod tests {
         );
         // Double-width characters take two columns each, so four of them fill eight.
         assert_eq!(wrap_to("日本語表 x", 8), ["日本語表", "x"]);
-    }
-
-    #[test]
-    fn test_format_bytes() {
-        assert_eq!(format_bytes(0), "0 B");
-        assert_eq!(format_bytes(500), "500 B");
-        assert_eq!(format_bytes(1536), "1.5 KiB");
-        assert_eq!(format_bytes(1024 * 1024), "1.0 MiB");
     }
 
     #[test]

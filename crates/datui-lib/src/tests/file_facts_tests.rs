@@ -83,14 +83,7 @@ fn screen(app: &mut App) -> String {
     let area = Rect::new(0, 0, 80, 24);
     let mut buf = Buffer::empty(area);
     Widget::render(&mut *app, area, &mut buf);
-    (0..area.height)
-        .map(|y| {
-            (0..area.width)
-                .map(|x| buf[(x, y)].symbol().to_string())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    crate::tests::buffer_text(&buf)
 }
 
 fn file_size_line(text: &str) -> &str {

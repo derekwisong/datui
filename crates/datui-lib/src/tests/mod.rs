@@ -1,8 +1,7 @@
 use std::path::Path;
-use std::process::Command;
-use std::sync::Once;
 
-static INIT: Once = Once::new();
+mod shared;
+pub use shared::{buffer_lines, buffer_text, ensure_sample_data, sample_data_dir};
 
 pub(crate) mod fixtures;
 
@@ -199,84 +198,6 @@ mod cloud_recent_facts {
     }
 }
 
-/// Ensures that sample data files are generated before tests run.
-/// This function uses `std::sync::Once` to ensure it only runs once,
-/// even if called from multiple tests.
-pub fn ensure_sample_data() {
-    INIT.call_once(|| {
-        // When the lib is in crates/datui-lib, repo root is CARGO_MANIFEST_DIR/../..
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let sample_data_dir = repo_root.join("tests/sample-data");
-
-        // Check if key files exist to determine if we need to generate data
-        // We check for a few representative files that should always be generated
-        let key_files = [
-            "people.parquet",
-            "sales.parquet",
-            "large_dataset.parquet",
-            "empty.parquet",
-            "pivot_long.parquet",
-            "melt_wide.parquet",
-            "infer_schema_length_data.csv",
-        ];
-
-        let needs_generation = !sample_data_dir.exists()
-            || key_files
-                .iter()
-                .any(|file| !sample_data_dir.join(file).exists());
-
-        if needs_generation {
-            // Get the path to the Python script (at repo root)
-            let script_path = repo_root.join("scripts/generate_sample_data.py");
-            if !script_path.exists() {
-                panic!(
-                    "Sample data generation script not found at: {}. \
-                    Please ensure you're running tests from the repository root.",
-                    script_path.display()
-                );
-            }
-
-            // Try to find Python (python3 or python)
-            let python_cmd = if Command::new("python3").arg("--version").output().is_ok() {
-                "python3"
-            } else if Command::new("python").arg("--version").output().is_ok() {
-                "python"
-            } else {
-                panic!(
-                    "Python not found. Please install Python 3 to generate test data. \
-                    The script requires: polars>=0.20.0 and numpy>=1.24.0"
-                );
-            };
-
-            // Run the generation script
-            let output = Command::new(python_cmd)
-                .arg(script_path)
-                .output()
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "Failed to run sample data generation script: {}. \
-                        Make sure Python is installed and the script is executable.",
-                        e
-                    );
-                });
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                panic!(
-                    "Sample data generation failed!\n\
-                    Exit code: {:?}\n\
-                    stdout:\n{}\n\
-                    stderr:\n{}",
-                    output.status.code(),
-                    stdout,
-                    stderr
-                );
-            }
-        }
-    });
-}
-
 /// Whether the app is still waiting on background work: `busy`, the row count, or
 /// the buffer collect, a load-ahead included. What a test driving the app without
 /// a terminal waits on: a quiet channel says only that nothing arrived lately,
@@ -386,14 +307,6 @@ fn a_runtime_shut_down_under_a_waiting_thread_does_not_panic_it() {
     rt.shutdown_background();
     let outcome = waiter.join().expect("the waiting thread must not panic");
     assert!(outcome.is_none());
-}
-
-/// Path to the tests/sample-data directory (at repo root). Call `ensure_sample_data()` first if needed.
-pub fn sample_data_dir() -> std::path::PathBuf {
-    ensure_sample_data();
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join("tests/sample-data")
 }
 
 /// End pressed while the footers are still coming waits for them, then jumps.

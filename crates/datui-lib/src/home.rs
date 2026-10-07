@@ -2541,7 +2541,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         root_sections.push((
             root.origin,
             Section {
-                subtitle: (!state.is_empty()).then(|| state.join(" · ")),
+                subtitle: (!state.is_empty()).then(|| crate::glyphs::dotted(&state.join(" · "))),
                 origin: Some(root.origin.note()),
                 root: Some(root.path.clone()),
                 unavailable: !root.available || unreachable,
@@ -3150,9 +3150,12 @@ impl HomeState {
             && browsing == dir
             && let Some(section) = self.sections.first_mut()
         {
-            let note = format!("{} · not read as a table", format.to_ascii_lowercase());
+            let note = crate::glyphs::dotted(&format!(
+                "{} · not read as a table",
+                format.to_ascii_lowercase()
+            ));
             section.subtitle = Some(match section.subtitle.take() {
-                Some(state) => format!("{note} · {state}"),
+                Some(state) => crate::glyphs::dotted(&format!("{note} · {state}")),
                 None => note,
             });
         }
@@ -3822,7 +3825,8 @@ impl HomeState {
             && (self.search.indexed > 0 || self.search.running || self.search.limited.is_some());
         if !local {
             if !cloud_rows.is_empty() {
-                let subtitle = format!("cloud · {} names", cloud_rows.len());
+                let subtitle =
+                    crate::glyphs::dotted(&format!("cloud · {} names", cloud_rows.len()));
                 self.sections.push(Section {
                     subtitle: Some(subtitle),
                     ..Section::titled(Self::SEARCH_SECTION, cloud_rows)

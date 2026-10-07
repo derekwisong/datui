@@ -4,9 +4,8 @@
 use crate::glyphs;
 use crate::intent_modal::{IntentField, IntentForm};
 use crate::numfmt;
-use crate::widgets::data_quality::{
-    DataQualityWidgetConfig, centered_rect, dotted, fit, rule_line,
-};
+use crate::render::layout::centered_rect;
+use crate::widgets::data_quality::{DataQualityWidgetConfig, rule_line};
 use crate::widgets::ui::{FormRow, FormValue, Surface};
 use polars::prelude::DataType;
 use ratatui::buffer::Buffer;
@@ -99,11 +98,17 @@ pub fn render_list(
         let rules = if rules.is_empty() {
             Cell::from(Span::styled("any", dimmed))
         } else {
-            Cell::from(fit(&rules.join(&format!(" {} ", g.middot)), rules_width))
+            Cell::from(crate::glyphs::fit(
+                &rules.join(&format!(" {} ", g.middot)),
+                rules_width,
+            ))
         };
         Row::new(vec![
-            Cell::from(fit(column, name_width as usize - 2)),
-            Cell::from(Span::styled(fit(dtype, type_width as usize - 2), dimmed)),
+            Cell::from(crate::glyphs::fit(column, name_width as usize - 2)),
+            Cell::from(Span::styled(
+                crate::glyphs::fit(dtype, type_width as usize - 2),
+                dimmed,
+            )),
             rules,
         ])
     });
@@ -125,7 +130,11 @@ pub fn render_list(
     } else {
         format!("Key: {}", plan.intent.key.join(", "))
     };
-    Paragraph::new(Line::styled(fit(&key_line, key.width as usize), dimmed)).render(
+    Paragraph::new(Line::styled(
+        crate::glyphs::fit(&key_line, key.width as usize),
+        dimmed,
+    ))
+    .render(
         Rect {
             y: key.y + 1,
             height: 1,
@@ -151,7 +160,11 @@ pub fn render_form(
     let width = 64.min(area.width.saturating_sub(2));
     // The type, the rows, a blank and the status line, inside the frame.
     let height = fields.len() as u16 + 3 + 2;
-    let popup = centered_rect(width, height, area);
+    let popup = centered_rect(
+        area.inner(ratatui::layout::Margin::new(1, 1)),
+        width,
+        height,
+    );
     let title = format!("Intent: {}", form.column);
     let content = Surface::new(&title).render(popup, buf, ctx);
     if content.height < 2 || content.width < 8 {
@@ -201,20 +214,20 @@ pub fn render_form(
                 IntentField::Key => "Key column: together the key names one row".to_string(),
                 IntentField::Required => "Every row has a value".to_string(),
                 IntentField::ReadAs if form.time.is_some() => {
-                    "Read by Text as time · change in Setup".to_string()
+                    crate::glyphs::dotted("Read by Text as time · change in Setup")
                 }
                 IntentField::ReadAs => "Text that does not read is counted".to_string(),
                 IntentField::Allowed => "Comma-separated · \"a, b\" holds a comma".to_string(),
-                IntentField::Minimum | IntentField::Maximum => format!(
+                IntentField::Minimum | IntentField::Maximum => crate::glyphs::dotted(&format!(
                     "{} · empty for no bound",
                     upper_first(form.value_kind().bound_hint())
-                ),
+                )),
             },
             false,
         ),
     };
     Paragraph::new(Line::styled(
-        fit(&dotted(&status), content.width as usize),
+        crate::glyphs::fit(&crate::glyphs::dotted(&status), content.width as usize),
         Style::default().fg(if warn { ctx.warning } else { ctx.dimmed }),
     ))
     .render(line(content.height - 1), buf);

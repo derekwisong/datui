@@ -496,8 +496,6 @@ fn test_compact_formatting() {
     assert_eq!(discover::format_rows(950), "950");
     assert_eq!(discover::format_rows(89_000), "89k");
     assert_eq!(discover::format_rows(2_400_000), "2.4M");
-    assert_eq!(discover::format_size(500), "500 B");
-    assert_eq!(discover::format_size(1536), "1.5 KB");
 }
 
 // ---------------------------------------------------------------------------
@@ -8493,7 +8491,7 @@ mod catalog {
                 .find(|line| line.find("Palmer penguins").is_some_and(|at| at < 12))
                 .unwrap_or_else(|| panic!("{w}x{h}: {lines:#?}"));
             assert!(row.contains("Palmer penguins  csv"), "{w}x{h}: {row:?}");
-            assert!(row.contains("16.1 KB"), "{w}x{h}: {row:?}");
+            assert!(row.contains("16.1 KiB"), "{w}x{h}: {row:?}");
         }
     }
 

@@ -51,15 +51,7 @@ pub(crate) fn home_cloud_source(
 ) -> home::CloudSource {
     let mut details: Vec<(String, String)> = vec![
         ("source".to_string(), source.id.clone()),
-        (
-            "api".to_string(),
-            match source.kind {
-                crate::cloud_browse::ProviderKind::S3 => "s3",
-                crate::cloud_browse::ProviderKind::Gcs => "gcs",
-                crate::cloud_browse::ProviderKind::Azure => "azure",
-            }
-            .to_string(),
-        ),
+        ("api".to_string(), source.kind.name().to_string()),
     ];
     if let Some(endpoint) = &source.s3.endpoint {
         details.push(("endpoint".to_string(), endpoint.clone()));
@@ -130,12 +122,7 @@ pub(crate) fn home_cloud_source(
     home::CloudSource {
         id: source.id.clone(),
         label: source.label.clone(),
-        api: match source.kind {
-            crate::cloud_browse::ProviderKind::S3 => "s3",
-            crate::cloud_browse::ProviderKind::Gcs => "gcs",
-            crate::cloud_browse::ProviderKind::Azure => "azure",
-        }
-        .to_string(),
+        api: source.kind,
         note,
         buckets: names
             .iter()
@@ -574,10 +561,10 @@ impl App {
                         let watch = crate::cloud_browse::Watch {
                             progress: Some(std::sync::Arc::new({
                                 let (tx, root) = (tx.clone(), root.clone());
-                                move |so_far: &[crate::discover::Entry]| {
+                                move |page: &[crate::discover::Entry]| {
                                     let _ = tx.send(AppEvent::HomeProbeProgress {
                                         root: root.clone(),
-                                        rows: so_far.to_vec(),
+                                        rows: page.to_vec(),
                                     });
                                 }
                             })),
@@ -627,10 +614,10 @@ impl App {
                     let rows = if std::fs::read_dir(&root).is_ok() {
                         // What has been read shows while the rest is read: a share can take
                         // seconds over a directory of thousands.
-                        let scan = crate::discover::scan_dir_progressive(&root, |so_far| {
+                        let scan = crate::discover::scan_dir_progressive(&root, |read| {
                             let _ = tx.send(AppEvent::HomeProbeProgress {
                                 root: root.clone(),
-                                rows: so_far.to_vec(),
+                                rows: read.to_vec(),
                             });
                         });
                         cut_short = scan.truncated;
@@ -703,10 +690,10 @@ impl App {
     pub(crate) fn narrow_cloud_listing(&mut self) {
         let dir = self.home.browsing.clone();
         let prefix = dir.as_ref().and_then(|dir| {
-            if !self.home.cut_short.contains(dir) {
+            if !self.home.probes.cut_short(dir) {
                 return None;
             }
-            let rows = self.home.probed.get(dir)?;
+            let rows = self.home.probes.listed(dir)?;
             let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
             crate::cloud_browse::narrowing_prefix(&self.home.filter, &names)
         });
@@ -965,9 +952,10 @@ impl App {
             }
         }
         if let Some(dir) = self.home.browsing.clone() {
-            self.home.probed.remove(&dir);
-            self.home.unreachable.remove(&dir);
-            self.home.cut_short.remove(&dir);
+            // Its answer, not a listing still coming in.
+            if self.home.probes.settled(&dir) {
+                self.home.probes.forget(&dir);
+            }
         }
         // A peek that failed is asked again: Ctrl+R is the request to try. So is a web
         // file that was not there.
@@ -1087,6 +1075,7 @@ impl App {
 
     /// Rebuild the home listing from the filesystem.
     pub(crate) fn home_refresh(&mut self) {
+        self.home_refresh_owed = false;
         // Every way into a source comes through here: Enter, Backspace up from a
         // bucket, a jump, and rows arriving while the source is already open.
         #[cfg(feature = "cloud")]
@@ -1097,26 +1086,21 @@ impl App {
         let generation = self.home_generation;
 
         self.move_remembered_places();
-        self.home.catalogs = home::catalogs(&self.app_config);
+        let mut catalogs = home::catalogs(&self.app_config);
         // Hidden with Delete on its heading: the catalog that comes with datui only,
         // never a user's own `examples.toml`.
         if self.cache.examples_hidden() {
-            self.home
-                .catalogs
-                .retain(|c| c.origin != crate::catalog::Origin::Bundled);
+            catalogs.retain(|c| c.origin != crate::catalog::Origin::Bundled);
         }
+        self.home.set_catalogs(catalogs);
         let mut request = home::ListingRequest {
             // Filled in on the worker, from the cache and the desktop's recents: files
             // all the same, and the first frame does not wait on a file.
             recents: Vec::new(),
             desktop_dirs: Vec::new(),
             browsing: self.home.browsing.clone(),
-            probed: self.home.probed.clone(),
-            unreachable: self.home.unreachable.clone(),
-            listing_so_far: self.home.listing_so_far.clone(),
-            cut_short: self.home.cut_short.clone(),
+            probes: self.home.probes.clone(),
             narrowed: self.home.narrowed.clone(),
-            probe_errors: self.home.probe_errors.clone(),
             network_check: self.home.network_check,
             cloud: self.home.cloud.clone(),
             catalogs: self.home.catalogs.clone(),
@@ -1207,7 +1191,7 @@ impl App {
         if !self.head_web_rows {
             return;
         }
-        let Some(entry) = self.home.selected_entry() else {
+        let Some(entry) = self.home.selected_entry().cloned() else {
             return;
         };
         if entry.size.is_some()
@@ -1986,13 +1970,13 @@ impl App {
         }
         // A SQLite database lists its tables, however many it has.
         if entry.cost.tables.is_some() {
-            return Some(entry.path);
+            return Some(entry.path.clone());
         }
         (!matches!(
             entry.kind,
             discover::EntryKind::File | discover::EntryKind::Other
         ))
-        .then_some(entry.path)
+        .then_some(entry.path.clone())
     }
 
     /// Why a prefix in an object store cannot be read as one table, when it cannot.
@@ -2136,7 +2120,7 @@ impl App {
             self.home_toggle_fold();
             return None;
         }
-        let entry = self.home.selected_entry()?;
+        let entry = self.home.selected_entry()?.clone();
         // A collection's local dataset that is not there: said here, where it was named.
         if self.home.missing.contains(&entry.path) {
             self.home.status = Some(format!(
@@ -2342,7 +2326,7 @@ impl App {
                 // the facts fill in rows the recursive search finds the same way, and
                 // only the first listing after entering home carries the folds.
                 self.home.known = known.clone();
-                self.home.visits = visits.clone();
+                self.home.set_visits(visits.clone());
                 self.home.newest_recent = newest.clone();
                 if let Some(folds) = folds {
                     self.home.folds = folds.clone();
@@ -2610,7 +2594,7 @@ impl App {
             AppEvent::HomeProbeCancelled { root } => {
                 self.home_probes_inflight.retain(|p| p != root);
                 self.home_listing_cancels.remove(root);
-                self.home.listing_so_far.remove(root);
+                self.home.probes.stopped(root);
                 // Come back to after it had stopped: listed afresh.
                 if self.home.browsing.as_ref() == Some(root) {
                     self.home_refresh();
@@ -2620,18 +2604,17 @@ impl App {
             AppEvent::HomeProbeFailed { root, message } => {
                 self.home_probes_inflight.retain(|p| p != root);
                 self.home_listing_cancels.remove(root);
-                self.home.probe_failed(root.clone());
-                self.home.probe_errors.insert(root.clone(), message.clone());
+                self.home.probe_failed(root.clone(), Some(message.clone()));
                 self.home_refresh();
                 None
             }
             AppEvent::HomeProbeProgress { root, rows } => {
                 // Only while that listing is still out: a late batch must not paint
                 // over the whole answer.
-                if self.home_probes_inflight.contains(root) && !self.home.probed.contains_key(root)
-                {
-                    self.home.listing_so_far.insert(root.clone(), rows.clone());
-                    self.home_refresh();
+                if self.home_probes_inflight.contains(root) && !self.home.probes.settled(root) {
+                    self.home.probes.read(root, rows);
+                    // Listed once a frame, however many batches came in it.
+                    self.home_refresh_owed = true;
                 }
                 None
             }
@@ -2649,11 +2632,10 @@ impl App {
                 self.home_listing_cancels.remove(root);
                 let landed = rows.is_some();
                 match rows {
-                    Some(rows) => self.home.probe_ready(root.clone(), rows.clone()),
-                    None => self.home.probe_failed(root.clone()),
-                }
-                if *cut_short {
-                    self.home.cut_short.insert(root.clone());
+                    Some(rows) => self
+                        .home
+                        .probe_ready(root.clone(), rows.clone(), *cut_short),
+                    None => self.home.probe_failed(root.clone(), None),
                 }
                 // A filter typed while it was listing asks the server too.
                 #[cfg(feature = "cloud")]
@@ -2704,7 +2686,12 @@ impl App {
                     self.home.peeking.remove(directory);
                     self.home.peek_failed.insert(directory.clone());
                 }
-                let roots: Vec<PathBuf> = self.home.probed.keys().cloned().collect();
+                let roots: Vec<PathBuf> = self
+                    .home
+                    .probes
+                    .answered()
+                    .map(|(root, _)| root.clone())
+                    .collect();
                 for (directory, kind) in kinds {
                     // Answered: out of the in-flight set and into the one the rows are
                     // labelled from. Every directory asked about comes back, so nothing

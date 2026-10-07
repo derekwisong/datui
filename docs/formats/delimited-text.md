@@ -153,7 +153,8 @@ seq 1 1000 | datui
   End, <kbd>:</kbd> to a row past it, a sort or an analysis wait for it too.
   Home pauses the indexing until you are back. A file that shrinks meanwhile
   (a log rotated with copytruncate) stops it with a note: open it again. Past
-  67,108,864 lines, the first that many show and the Info panel counts the rest.
+  67,108,864 lines (`indexed_records` in `[limits]`), the first that many show
+  and the Info panel counts the rest.
 - `--follow` reads lines as they are appended; see
   [Pipes and growing files](../user-guide/pipes-and-follow.md).
 - `SYSTEMD_PAGER=datui journalctl -u nginx` makes datui journalctl's pager. For

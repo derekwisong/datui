@@ -44,9 +44,10 @@
 
 mod common;
 
-use datui::cloud_browse::{self, Environment, ProviderKind};
+use datui::cloud_browse::{self, Environment};
 use datui::cloud_sources;
 use datui::config::CloudConfig;
+use datui::source::ProviderKind;
 
 /// The MinIO credentials the documented container runs with. Not a secret in any sense:
 /// they are the defaults printed in MinIO's own quick-start, and this only ever points
@@ -1606,9 +1607,10 @@ fn gcloud_projects_browse_from_the_home_screen() {
         assert!(select_row(&mut app, &name));
         app.event(&key(crossterm::event::KeyCode::Enter));
         pump_until(&mut app, &rx, 30, |app| {
-            app.home.browsing.as_ref().is_some_and(|b| {
-                app.home.probed.contains_key(b) || app.home.probe_errors.contains_key(b)
-            })
+            app.home
+                .browsing
+                .as_ref()
+                .is_some_and(|b| app.home.probes.settled(b))
         });
         let sep = datui::glyphs::get().trail;
         let text = screen_text(&mut app, 160, 30);
@@ -1628,7 +1630,7 @@ fn gcloud_projects_browse_from_the_home_screen() {
                 app.home
                     .browsing
                     .as_ref()
-                    .is_some_and(|b| app.home.probed.contains_key(b))
+                    .is_some_and(|b| app.home.probes.listed(b).is_some())
             });
             let text = screen_text(&mut app, 160, 30);
             assert!(

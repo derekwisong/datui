@@ -14,21 +14,7 @@ fn unlooked_at(n: usize) -> home::Listing {
         })
         .collect();
     home::Listing {
-        sections: vec![home::Section {
-            door: None,
-            title: "SHARE".into(),
-            subtitle: None,
-            origin: None,
-            rows,
-            unavailable: false,
-            unavailable_note: None,
-            folded_by_default: false,
-            remote_root: None,
-            waiting: false,
-            grouped_by_place: false,
-            place_labels: Default::default(),
-            root: None,
-        }],
+        sections: vec![home::Section::titled("SHARE", rows)],
         ..Default::default()
     }
 }

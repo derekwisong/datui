@@ -121,21 +121,15 @@ pub fn unsupported_credential_type(text: &str) -> Option<String> {
     (!matches!(kind, "service_account" | "authorized_user")).then(|| kind.to_string())
 }
 
-type TokenCache = Mutex<HashMap<String, (String, SystemTime)>>;
-
-fn tokens() -> &'static TokenCache {
-    static TOKENS: OnceLock<TokenCache> = OnceLock::new();
+fn tokens() -> &'static crate::cloud_command::Expiring<(String, SystemTime)> {
+    static TOKENS: OnceLock<crate::cloud_command::Expiring<(String, SystemTime)>> = OnceLock::new();
     TOKENS.get_or_init(Default::default)
 }
 
 /// A token from `gcloud` for `configuration`, with its expiry. Kept until five
 /// minutes before it runs out.
 pub fn token(configuration: &str, env: &Environment<'_>) -> Result<(String, SystemTime), String> {
-    if let Some(cached) = tokens().lock().ok().and_then(|t| {
-        t.get(configuration)
-            .cloned()
-            .filter(|(_, expires)| *expires > SystemTime::now() + Duration::from_secs(5 * 60))
-    }) {
+    if let Some(cached) = tokens().get(configuration) {
         return Ok(cached);
     }
     let output = (env.run)(
@@ -160,9 +154,7 @@ pub fn token(configuration: &str, env: &Environment<'_>) -> Result<(String, Syst
     let (token, expires) =
         parse_config_helper(&output).ok_or_else(|| "gcloud returned no token".to_string())?;
     crate::logging::keep_out_of_log(&token);
-    if let Ok(mut cached) = tokens().lock() {
-        cached.insert(configuration.to_string(), (token.clone(), expires));
-    }
+    tokens().put(configuration, (token.clone(), expires), Some(expires));
     Ok((token, expires))
 }
 
@@ -237,41 +229,38 @@ const MAX_PROJECT_PAGES: usize = 10;
 
 /// Every active project `bearer` can see, through Resource Manager's `projects:search`.
 pub fn search_projects(bearer: &str) -> Result<Vec<Project>, String> {
-    let mut projects = Vec::new();
-    let mut page_token: Option<String> = None;
-    for _ in 0..MAX_PROJECT_PAGES {
+    crate::cloud_command::paged(MAX_PROJECT_PAGES, |token| {
         let mut url = "https://cloudresourcemanager.googleapis.com/v3/projects:search?pageSize=50"
             .to_string();
-        if let Some(token) = &page_token {
+        if let Some(token) = token {
             url.push_str(&format!(
                 "&pageToken={}",
                 crate::cloud_browse::urlencode(token)
             ));
         }
-        let mut response = crate::cloud_browse::http_agent()
-            .get(&url)
-            .config()
-            .http_status_as_error(false)
-            .build()
-            .header("Authorization", &format!("Bearer {bearer}"))
-            .call()
-            .map_err(|e| format!("{e}"))?;
-        let status = response.status().as_u16();
-        let body = response
-            .body_mut()
-            .read_to_string()
-            .map_err(|e| format!("could not read the response: {e}"))?;
-        if status != 200 {
-            return Err(describe_error(status, &body));
-        }
-        let (page, next) = parse_projects(&body)?;
-        projects.extend(page);
-        match next {
-            Some(token) => page_token = Some(token),
-            None => break,
-        }
+        parse_projects(&get(&url, bearer)?)
+    })
+}
+
+/// The body of a Google API's answer to a GET signed with `bearer`, or why it refused.
+pub fn get(url: &str, bearer: &str) -> Result<String, String> {
+    let mut response = crate::cloud_browse::http_agent()
+        .get(url)
+        .config()
+        .http_status_as_error(false)
+        .build()
+        .header("Authorization", &format!("Bearer {bearer}"))
+        .call()
+        .map_err(|e| format!("{e}"))?;
+    let status = response.status().as_u16();
+    let body = response
+        .body_mut()
+        .read_to_string()
+        .map_err(|e| format!("could not read the response: {e}"))?;
+    match status {
+        200 => Ok(body),
+        _ => Err(describe_error(status, &body)),
     }
-    Ok(projects)
 }
 
 /// One page of `projects:search`: active projects, and the next page's token.

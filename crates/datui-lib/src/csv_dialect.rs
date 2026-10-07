@@ -37,19 +37,25 @@ pub fn header_names(
     comment: Option<&str>,
 ) -> color_eyre::Result<Vec<String>> {
     let lines = named_lines(source, rows)?;
-    Ok(names_of(&lines, rows, join, separator, comment))
+    Ok(names_of(&lines, rows, rows, join, separator, comment))
 }
 
-/// [`header_names`] from `lines`, the lines `rows` names as [`named_lines`] read them.
+/// [`header_names`] from `lines`, the lines `read` names as [`named_lines`] read them;
+/// of those, the names come from the lines `rows` names, and one not read is blank.
 pub fn names_of(
     lines: &[Vec<u8>],
+    read: &[usize],
     rows: &[usize],
     join: &str,
     separator: u8,
     comment: Option<&str>,
 ) -> Vec<String> {
     let mut columns: Vec<Vec<String>> = Vec::new();
-    for (&row, line) in rows.iter().zip(lines) {
+    for &row in rows {
+        let line = read
+            .iter()
+            .position(|&r| r == row)
+            .map_or(&[][..], |i| lines[i].as_slice());
         for (i, field) in header_fields(line, row, separator, comment)
             .into_iter()
             .enumerate()

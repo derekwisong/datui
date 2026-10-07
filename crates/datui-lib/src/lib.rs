@@ -53,6 +53,7 @@ mod cloud_hive;
 pub mod cloud_sources;
 pub mod codebook;
 pub mod column_types;
+pub mod columns;
 pub mod commands;
 pub mod config;
 pub mod config_command;
@@ -113,6 +114,7 @@ pub mod intent_modal;
 pub mod ipc_stream;
 mod jobs;
 pub mod journal;
+pub mod limits;
 pub mod lines;
 pub mod link_open;
 mod loading;
@@ -413,7 +415,8 @@ pub enum AppEvent {
         /// The listing stopped at [`crate::discover::MAX_ENTRIES_PER_DIR`].
         cut_short: bool,
     },
-    /// The rows of a network directory read so far, while its listing goes on.
+    /// Rows of a network directory read since its last batch, while its listing goes
+    /// on.
     HomeProbeProgress {
         root: PathBuf,
         rows: Vec<crate::discover::Entry>,
@@ -657,16 +660,12 @@ pub enum WhatEnter {
 impl App {
     /// See [`WhatEnter`].
     pub fn what_enter_does(&self) -> WhatEnter {
-        // One walk of the list, not four. Every `selected_*` helper rebuilds it, and this
-        // runs from the control bar on every frame, beside a
-        // `selected_directory_to_enter` that walks it once more.
-        let rows = self.home.visible();
-        let entry = match rows.get(self.home.selected) {
+        let entry = match self.home.selected_row() {
             // A place row browses into the place, which is what `→` does on it too, so
             // it is labelled the same and offered once. An HTTP place has no listing to
             // browse and says so instead.
             Some(home::Row::Place { path, .. }) => {
-                return if home::place_is_browsable(path) {
+                return if home::place_is_browsable(&path) {
                     WhatEnter::GoesInside
                 } else {
                     WhatEnter::Explains
@@ -680,7 +679,7 @@ impl App {
             // The door reads the directory it names whatever that directory is labelled —
             // the lake tables included, which is the one row that reads them at all.
             Some(home::Row::Door { .. }) => return WhatEnter::OpensDirectory,
-            Some(home::Row::Entry { entry, .. }) => *entry,
+            Some(home::Row::Entry { entry, .. }) => entry,
         };
         // A bookmark opens whole.
         if entry.kind != discover::EntryKind::File && self.home.bookmark(&entry.path).is_some() {
@@ -1029,6 +1028,9 @@ pub struct App {
     home_schema_inflight: Vec<PathBuf>,
     /// Invalidates listings and measurements from a request the user has moved past.
     home_generation: u64,
+    /// Rows came in for a listing still being read; it is listed again before the
+    /// next frame.
+    home_refresh_owed: bool,
     /// Home screen state. Rebuilt from the filesystem whenever home is entered;
     /// nothing here is persisted beyond the recents list.
     pub home: home::HomeState,
@@ -4731,6 +4733,7 @@ impl App {
             home_search_inflight: false,
             home_search_generation: 0,
             home_generation: 0,
+            home_refresh_owed: false,
             home_schema_inflight: Vec::new(),
             last_load_error: None,
             pending_clear_recents: false,
@@ -4940,16 +4943,17 @@ impl App {
         if self.input_mode != InputMode::Home {
             return;
         }
-        if std::mem::take(&mut self.home.pending_enrich) {
-            self.request_home_measurements();
+        if self.home_refresh_owed {
+            self.home_refresh();
         }
         #[cfg(feature = "http")]
         self.size_selected_web_file();
-        if std::mem::take(&mut self.home.pending_classify) {
+        // The rows on screen as the frame left them: each pass asks for those still
+        // unknown, a batch at a time. Not under the path prompt, which hides the list.
+        if !self.home.path_input_active {
+            self.request_home_measurements();
             self.request_home_classifications();
-        }
-        #[cfg(feature = "cloud")]
-        if std::mem::take(&mut self.home.pending_peek) {
+            #[cfg(feature = "cloud")]
             self.peek_cloud_directories();
         }
     }
@@ -7021,14 +7025,14 @@ impl App {
             crate::user_agent::get(),
         );
         let options = match resolved.kind {
-            crate::cloud_browse::ProviderKind::S3 => Self::build_s3_cloud_options(&resolved.s3),
-            crate::cloud_browse::ProviderKind::Gcs
+            crate::source::ProviderKind::S3 => Self::build_s3_cloud_options(&resolved.s3),
+            crate::source::ProviderKind::Gcs
                 if resolved.signing == crate::cloud_sources::Signing::Unsigned =>
             {
                 CloudOptions::default()
                     .with_gcp([(GoogleConfigKey::SkipSignature, "true".into()), gcs_agent])
             }
-            crate::cloud_browse::ProviderKind::Gcs => match &resolved.gcloud {
+            crate::source::ProviderKind::Gcs => match &resolved.gcloud {
                 // The token comes from `gcloud` whenever Polars asks, so a long scan
                 // outlives the one fetched here.
                 Some((configuration, _)) => CloudOptions::default()
@@ -7045,7 +7049,7 @@ impl App {
                     None => CloudOptions::default().with_gcp([gcs_agent]),
                 },
             },
-            crate::cloud_browse::ProviderKind::Azure => {
+            crate::source::ProviderKind::Azure => {
                 let (account, _, _) = source::azure_parts(&resolved.url)
                     .ok_or_else(|| color_eyre::eyre::eyre!("not an Azure URL"))?;
                 let mut azure = crate::azure::polars_options(&account, &resolved.azure);
@@ -9516,9 +9520,16 @@ impl App {
     /// app is idle. The main loop ([`event_pump::EventPump`]) does exactly that;
     /// [`App::event`] is the same call for callers that have nowhere to hold a key.
     pub fn handle(&mut self, event: &AppEvent) -> EventOutcome {
+        let started = std::time::Instant::now();
+        let outcome = self.handle_event(event);
+        self.debug.times.handler(started.elapsed());
+        outcome
+    }
+
+    fn handle_event(&mut self, event: &AppEvent) -> EventOutcome {
         // Without the pump to offer it as typed, a pressed key is a key.
         if let AppEvent::Press(key) = event {
-            return self.handle(&AppEvent::Key(*key));
+            return self.handle_event(&AppEvent::Key(*key));
         }
         if let AppEvent::Key(key) = event
             && self.is_busy()
@@ -13188,6 +13199,14 @@ impl App {
 
 impl Widget for &mut App {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let started = std::time::Instant::now();
+        self.draw_frame(area, buf);
+        self.debug.times.frame(started.elapsed());
+    }
+}
+
+impl App {
+    fn draw_frame(&mut self, area: Rect, buf: &mut Buffer) {
         self.begin_frame();
         self.debug.num_frames += 1;
         if self.debug.enabled {

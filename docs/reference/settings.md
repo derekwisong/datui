@@ -190,6 +190,19 @@ lives, imports, the theme and troubleshooting.
 |---|---|---|---|---|
 | `formats.path` | list | `[]` |  | Directories of format specs and dictionaries, searched after ~/.config/datui/formats and $DATUI_FORMATS_PATH. Adds up across imports. |
 
+## Limits
+
+`[limits]` The most of a file some readers take in. Past one, the rest is left out or the file refused, and the note or error names the key that raises it.
+
+| Key | Type | Default | Flag | Description |
+|---|---|---|---|---|
+| `limits.indexed_records` | integer | `67108864` |  | Most records one pass indexes: a flight log's messages, a candump's frames, a text file's lines, a format spec's tagged records. |
+| `limits.elf_symbols` | integer | `10000000` |  | Most symbols read from an ELF file. |
+| `limits.midi_bytes` | size | `"64MiB"` |  | Largest MIDI file read; a larger one is refused. |
+| `limits.midi_events` | integer | `10000000` |  | Most events read from MIDI files, all files of one open together. |
+| `limits.journal_bytes` | size | `"1GiB"` |  | Most journal JSON read into memory, all files of one open together; the records past it are left out, and the Notes tab says how much. |
+| `limits.detail_rows` | integer | `10000` |  | Most rows of a list on an Info panel tab (symbols, sections, metadata); one more row says how many were left out. |
+
 ## Log
 
 `[log]`

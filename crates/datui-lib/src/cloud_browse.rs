@@ -23,27 +23,8 @@
 
 use crate::cloud_sources::{S3Settings, Signing, Source};
 use crate::config::CloudConfig;
+use crate::source::ProviderKind;
 use std::path::{Path, PathBuf};
-
-/// Which API a provider speaks. Not which company runs it: MinIO, Ceph, R2 and AWS
-/// itself are all [`ProviderKind::S3`], and are told apart by their endpoint.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProviderKind {
-    Gcs,
-    S3,
-    Azure,
-}
-
-impl ProviderKind {
-    /// The URL scheme datui opens this provider's objects with.
-    pub fn scheme(self) -> &'static str {
-        match self {
-            ProviderKind::Gcs => "gs",
-            ProviderKind::S3 => "s3",
-            ProviderKind::Azure => "abfss",
-        }
-    }
-}
 
 /// An object store datui believes it can read, and why it believes that.
 #[derive(Debug, Clone, PartialEq, Eq)]

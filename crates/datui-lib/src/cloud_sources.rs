@@ -10,8 +10,9 @@
 //! Discovery here reads environment variables and asks whether files exist. It never
 //! touches the network: listing is `cloud_browse`'s job, and it runs on a worker.
 
-use crate::cloud_browse::{Environment, ProviderKind};
+use crate::cloud_browse::Environment;
 use crate::config::{CloudConfig, CloudConnectionConfig, DatasetAccess, DatasetAuth};
+use crate::source::ProviderKind;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -948,11 +949,7 @@ pub fn on_home(sources: Vec<Source>, config: &CloudConfig) -> Vec<Source> {
         .into_iter()
         .filter(|source| {
             config.connections.iter().any(|c| c.name == source.id)
-                || discover.allows(match source.kind {
-                    ProviderKind::S3 => "s3",
-                    ProviderKind::Gcs => "gcs",
-                    ProviderKind::Azure => "azure",
-                })
+                || discover.allows(source.kind.name())
         })
         .collect()
 }

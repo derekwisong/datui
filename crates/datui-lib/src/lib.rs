@@ -7025,14 +7025,14 @@ impl App {
             crate::user_agent::get(),
         );
         let options = match resolved.kind {
-            crate::cloud_browse::ProviderKind::S3 => Self::build_s3_cloud_options(&resolved.s3),
-            crate::cloud_browse::ProviderKind::Gcs
+            crate::source::ProviderKind::S3 => Self::build_s3_cloud_options(&resolved.s3),
+            crate::source::ProviderKind::Gcs
                 if resolved.signing == crate::cloud_sources::Signing::Unsigned =>
             {
                 CloudOptions::default()
                     .with_gcp([(GoogleConfigKey::SkipSignature, "true".into()), gcs_agent])
             }
-            crate::cloud_browse::ProviderKind::Gcs => match &resolved.gcloud {
+            crate::source::ProviderKind::Gcs => match &resolved.gcloud {
                 // The token comes from `gcloud` whenever Polars asks, so a long scan
                 // outlives the one fetched here.
                 Some((configuration, _)) => CloudOptions::default()
@@ -7049,7 +7049,7 @@ impl App {
                     None => CloudOptions::default().with_gcp([gcs_agent]),
                 },
             },
-            crate::cloud_browse::ProviderKind::Azure => {
+            crate::source::ProviderKind::Azure => {
                 let (account, _, _) = source::azure_parts(&resolved.url)
                     .ok_or_else(|| color_eyre::eyre::eyre!("not an Azure URL"))?;
                 let mut azure = crate::azure::polars_options(&account, &resolved.azure);

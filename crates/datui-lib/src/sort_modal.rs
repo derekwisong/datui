@@ -38,6 +38,12 @@ pub struct SortModal {
     pub applied_locked: usize,
     /// Rows the Columns list showed when last drawn: what PgUp and PgDn move.
     pub page_rows: usize,
+    /// The Columns list as the find shows it, and a fingerprint of the find text and
+    /// the columns it was worked out for: see [`Self::filtered_columns`].
+    shown: std::sync::Mutex<Option<(u64, Vec<usize>)>>,
+    /// Times the list was worked out, for a test that a key reuses it.
+    #[cfg(test)]
+    shown_builds: std::sync::atomic::AtomicUsize,
 }
 
 impl Default for SortModal {
@@ -53,6 +59,9 @@ impl Default for SortModal {
             applied_order: Vec::new(),
             applied_locked: 0,
             page_rows: 10,
+            shown: Default::default(),
+            #[cfg(test)]
+            shown_builds: Default::default(),
         }
     }
 }
@@ -62,17 +71,31 @@ impl SortModal {
         Self::default()
     }
 
+    /// The columns the find text matches, in display order. Asked several times a
+    /// key; the list is worked out again only when the find text, a name or the
+    /// order changed, which a fingerprint of them tells without allocating.
     pub fn filtered_columns(&self) -> Vec<(usize, &SortColumn)> {
-        let filter_text = self.filter_input.value().to_lowercase();
-        let mut filtered: Vec<_> = self
-            .columns
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| c.name.to_lowercase().contains(&filter_text))
-            .collect();
-        // Sort by display_order to show columns in their current order
-        filtered.sort_by_key(|(_, c)| c.display_order);
-        filtered
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.filter_input.value().hash(&mut hasher);
+        for c in &self.columns {
+            (&c.name, c.display_order).hash(&mut hasher);
+        }
+        let key = hasher.finish();
+        let mut shown = self.shown.lock().unwrap_or_else(|e| e.into_inner());
+        if shown.as_ref().is_none_or(|(at, _)| *at != key) {
+            let filter_text = self.filter_input.value().to_lowercase();
+            let mut filtered: Vec<usize> = (0..self.columns.len())
+                .filter(|&i| self.columns[i].name.to_lowercase().contains(&filter_text))
+                .collect();
+            filtered.sort_by_key(|&i| self.columns[i].display_order);
+            *shown = Some((key, filtered));
+            #[cfg(test)]
+            self.shown_builds
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        let rows = shown.as_ref().map_or(&[][..], |(_, rows)| rows);
+        rows.iter().map(|&i| (i, &self.columns[i])).collect()
     }
 
     pub fn get_column_order(&self) -> Vec<String> {
@@ -749,6 +772,31 @@ mod tests {
         assert_eq!(filtered.len(), 2);
         assert_eq!(filtered[0].1.name, "Banana");
         assert_eq!(filtered[1].1.name, "Orange");
+    }
+
+    /// The list is worked out once per change of the find text, the names or the
+    /// order, however often it is asked for.
+    #[test]
+    fn the_filtered_list_is_worked_out_once_per_change() {
+        let builds = |m: &SortModal| m.shown_builds.load(std::sync::atomic::Ordering::Relaxed);
+        let mut modal = SortModal::new();
+        modal.columns = columns(&["Apple", "Banana", "Orange"]);
+        for _ in 0..5 {
+            modal.filtered_columns();
+        }
+        assert_eq!(builds(&modal), 1);
+        modal.filter_input.set_value("an");
+        modal.filtered_columns();
+        modal.filtered_columns();
+        assert_eq!(builds(&modal), 2);
+        modal.columns[1].display_order = 9;
+        let names: Vec<&str> = modal
+            .filtered_columns()
+            .iter()
+            .map(|(_, c)| c.name.as_str())
+            .collect();
+        assert_eq!(names, ["Orange", "Banana"]);
+        assert_eq!(builds(&modal), 3);
     }
 
     /// Space walks one column through none → ascending → descending → none,

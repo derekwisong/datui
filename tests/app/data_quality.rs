@@ -2447,7 +2447,12 @@ fn an_empty_scope_is_never_a_clean_report() {
         }
         let report = datui::quality_report::build_report(&results);
         for check in datui::quality_report::checks(&results, &report) {
-            assert!(!check.outcome.ran(), "{} ran on no rows", check.name);
+            use datui::quality_report::Outcome;
+            assert!(
+                !matches!(check.outcome, Outcome::Passed | Outcome::Found { .. }),
+                "{} ran on no rows",
+                check.name
+            );
         }
     }
 }

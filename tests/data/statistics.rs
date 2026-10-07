@@ -27,7 +27,7 @@ fn close(actual: f64, expected: f64) -> bool {
     (actual - expected).abs() <= 1e-9 * expected.abs().max(1.0)
 }
 
-/// Every outlier is counted, not the first hundred, and skewness and kurtosis are
+/// Every outlier is counted, and skewness and kurtosis are
 /// over the 25,714 non-null values. Expected values are Polars' on the same column:
 /// `skew(bias=False)`, `kurtosis(fisher=False, bias=False)` and nearest quantiles.
 #[test]
@@ -40,11 +40,6 @@ fn distribution_statistics_cover_every_value() -> Result<()> {
     assert_eq!(outliers.iqr_count, 3_224);
     assert_eq!(outliers.zscore_count, 180);
     assert!(close(outliers.percentage, 12.537917087967642));
-    assert_eq!(outliers.outlier_rows.len(), 100, "examples stay capped");
-    assert_eq!(
-        outliers.outlier_rows[0].column_value, 1000.0,
-        "most extreme first"
-    );
 
     let shape = &dist.characteristics;
     assert!(

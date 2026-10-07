@@ -256,22 +256,6 @@ impl DataTableState {
         }
     }
 
-    /// The dataset's full row count for the footer when the rows shown are a subset of
-    /// it (filter, query or drill-down) and the pre-subset count is known. Not for pivots
-    /// or melts, whose rows are not the dataset's. Reads nothing new.
-    pub fn total_rows_when_subset(&self) -> Option<usize> {
-        let subsetting = !self.view.filters.is_empty()
-            || !self.view.active_query.is_empty()
-            || !self.view.active_sql_query.is_empty()
-            || !self.view.active_fuzzy_query.is_empty()
-            || self.view.drilled_down_group_index.is_some();
-        if subsetting && self.view.reshaped_lf.is_none() {
-            self.pristine_rows
-        } else {
-            None
-        }
-    }
-
     /// Clone of the LazyFrame for off-thread queries (e.g. background len()).
     pub fn lf_clone(&self) -> LazyFrame {
         self.view.lf.clone()

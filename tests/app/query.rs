@@ -2956,48 +2956,6 @@ fn sort_and_filter_edits_what_is_in_effect() {
     assert_eq!(state.view_sort_descending(), [true, false]);
 }
 
-/// The footer's "of" total: none while pristine, the dataset's count under a
-/// filter or query, and gone again when the filter clears. Never a fresh read — only
-/// the count the pristine frame already resolved.
-#[test]
-fn test_total_rows_offered_only_under_a_subset() {
-    use datui::filter_modal::FilterOperator;
-    let (mut app, rx, tx) = open_query_filter_fixture("total_under_filter.csv");
-    let state = app.data_table_state.as_ref().unwrap();
-    assert_eq!(
-        state.total_rows_when_subset(),
-        None,
-        "a pristine view offers no pair"
-    );
-
-    app.event(AppEvent::Filter(vec![filter_stmt(
-        "c",
-        FilterOperator::Eq,
-        "1",
-    )]));
-    pump_until_idle(&mut app, &rx, &tx);
-    let state = app.data_table_state.as_ref().unwrap();
-    assert_eq!(state.total_rows_when_subset(), Some(100));
-
-    // A sort is not a subset: same rows, other order.
-    app.event(AppEvent::Filter(vec![]));
-    app.event(AppEvent::Sort(vec!["a".to_string()], vec![true]));
-    pump_until_idle(&mut app, &rx, &tx);
-    let state = app.data_table_state.as_ref().unwrap();
-    assert_eq!(state.total_rows_when_subset(), None);
-
-    // A query is.
-    app.event(AppEvent::QQuery("select where a < 50".to_string()));
-    pump_until_idle(&mut app, &rx, &tx);
-    let state = app.data_table_state.as_ref().unwrap();
-    assert_eq!(state.total_rows_when_subset(), Some(100));
-
-    app.event(AppEvent::Reset);
-    pump_until_idle(&mut app, &rx, &tx);
-    let state = app.data_table_state.as_ref().unwrap();
-    assert_eq!(state.total_rows_when_subset(), None);
-}
-
 /// A new user pressing `:` gets SQL; a build without SQL opens on q.
 #[test]
 fn the_query_prompt_opens_on_sql() {

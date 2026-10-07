@@ -328,19 +328,6 @@ pub struct OutlierAnalysis {
     pub percentage: f64,
     pub iqr_count: usize,
     pub zscore_count: usize,
-    pub outlier_rows: Vec<OutlierRow>, // Limited to top N for performance
-}
-
-#[derive(Clone)]
-pub struct OutlierRow {
-    pub column_value: f64,
-    pub z_score: Option<f64>,
-}
-
-#[derive(Clone, Debug)]
-pub enum IqrPosition {
-    BelowLowerFence,
-    AboveUpperFence,
 }
 
 #[derive(Clone)]
@@ -1002,14 +989,8 @@ impl OutlierTest {
         })
     }
 
-    fn iqr_position(&self, value: f64) -> Option<IqrPosition> {
-        if value < self.lower_fence {
-            Some(IqrPosition::BelowLowerFence)
-        } else if value > self.upper_fence {
-            Some(IqrPosition::AboveUpperFence)
-        } else {
-            None
-        }
+    fn beyond_fences(&self, value: f64) -> bool {
+        value < self.lower_fence || value > self.upper_fence
     }
 
     fn z_score(&self, value: f64) -> f64 {
@@ -1244,54 +1225,31 @@ fn distribution_analysis(
     }
 }
 
-/// How many outlier examples an analysis keeps, most extreme first.
-const OUTLIER_EXAMPLES: usize = 100;
-
-/// Outliers among every finite value of the column. The counts and the percentage
-/// cover all of them; only the list of examples is cut to [`OUTLIER_EXAMPLES`].
+/// Outliers among every finite value of the column, counted by each test and as a
+/// share of the values.
 fn compute_outlier_analysis(values: &[f64], numeric_stats: &NumericStatistics) -> OutlierAnalysis {
     let mut analysis = OutlierAnalysis {
         total_count: 0,
         percentage: 0.0,
         iqr_count: 0,
         zscore_count: 0,
-        outlier_rows: Vec::new(),
     };
     let Some(test) = OutlierTest::new(values, numeric_stats.q25, numeric_stats.q75) else {
         return analysis;
     };
 
     for &value in values {
-        let beyond_fences = test.iqr_position(value).is_some();
-        let z_score = test.z_score(value);
-        let beyond_z = z_score > Z_THRESHOLD;
+        let beyond_fences = test.beyond_fences(value);
+        let beyond_z = test.z_score(value) > Z_THRESHOLD;
         if !beyond_fences && !beyond_z {
             continue;
         }
         analysis.total_count += 1;
         analysis.iqr_count += usize::from(beyond_fences);
         analysis.zscore_count += usize::from(beyond_z);
-        analysis.outlier_rows.push(OutlierRow {
-            column_value: value,
-            z_score: Some(z_score),
-        });
     }
 
     analysis.percentage = analysis.total_count as f64 / values.len() as f64 * 100.0;
-    // Most extreme first; a z-score is the distance from the mean in one scale. The
-    // hundred are picked before sorting: a long tail has tens of thousands.
-    let most_extreme = |a: &OutlierRow, b: &OutlierRow| {
-        b.z_score
-            .unwrap_or(0.0)
-            .total_cmp(&a.z_score.unwrap_or(0.0))
-    };
-    if analysis.outlier_rows.len() > OUTLIER_EXAMPLES {
-        analysis
-            .outlier_rows
-            .select_nth_unstable_by(OUTLIER_EXAMPLES, most_extreme);
-        analysis.outlier_rows.truncate(OUTLIER_EXAMPLES);
-    }
-    analysis.outlier_rows.sort_by(most_extreme);
     analysis
 }
 

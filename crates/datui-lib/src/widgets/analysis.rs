@@ -2123,7 +2123,6 @@ mod tests {
                 percentage: 0.0,
                 iqr_count: 0,
                 zscore_count: 0,
-                outlier_rows: Vec::new(),
             },
             percentiles: PercentileBreakdown {
                 p25: 0.0,

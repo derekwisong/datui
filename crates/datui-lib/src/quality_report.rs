@@ -1344,12 +1344,6 @@ pub enum Outcome {
     Unavailable(&'static str),
 }
 
-impl Outcome {
-    pub fn ran(&self) -> bool {
-        matches!(self, Self::Passed | Self::Found { .. })
-    }
-}
-
 /// One check the run makes: what it looks for, how far it reached, what it found.
 /// The list is the answer to "checked for what?" when nothing turned up.
 #[derive(Debug, Clone)]

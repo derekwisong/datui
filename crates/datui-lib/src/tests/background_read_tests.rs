@@ -122,3 +122,35 @@ fn one_sidebar_apply_reads_one_page() {
     let shown = state.display_df().unwrap().column("a").unwrap().get(0);
     assert_eq!(shown.unwrap(), AnyValue::Int64(29), "filtered and sorted");
 }
+
+/// A sidebar apply says what it does: sorting, filtering, or only reading the
+/// page again for a change of columns.
+#[test]
+fn a_sidebar_apply_says_what_it_does() {
+    use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+    let (mut app, rx, tx, _dir) = app();
+    let filter = FilterStatement {
+        columns: Vec::new(),
+        column: "a".to_string(),
+        operator: FilterOperator::Gt,
+        value: "3".to_string(),
+        logical_op: LogicalOperator::And,
+    };
+    let order = vec!["b".to_string(), "a".to_string()];
+    for (filters, sort, says) in [
+        (vec![], vec![], App::LOADING_BUFFER),
+        (vec![filter.clone()], vec![], "Filtering..."),
+        (vec![filter], vec!["b".to_string()], "Sorting..."),
+    ] {
+        let descending = vec![false; sort.len()];
+        app.event(&AppEvent::ApplyView(
+            order.clone(),
+            0,
+            filters,
+            sort,
+            descending,
+        ));
+        assert_eq!(app.status_message.as_deref(), Some(says));
+        super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !crate::tests::work_pending(a));
+    }
+}

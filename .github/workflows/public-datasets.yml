@@ -17,7 +17,7 @@ on:
     branches: [ main ]
     paths:
       - 'crates/datui-lib/src/home/public_catalog.toml'
-      - 'crates/datui-lib/src/config.rs'
+      - 'crates/datui-lib/src/config/mod.rs'
       - 'crates/datui-lib/src/home/catalog.rs'
       - 'crates/datui-lib/src/cloud/cloud_sources.rs'
       - 'crates/datui-lib/src/cloud/cloud_browse.rs'

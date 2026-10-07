@@ -90,7 +90,7 @@ const ALLOWED: &[(&str, &str)] = &[
     // The retired keys, named so a file that still has them is told what to write.
     ("crates/datui-lib/src/home/catalog.rs", "codebook"),
     (
-        "crates/datui-lib/src/config.rs",
+        "crates/datui-lib/src/config/mod.rs",
         "a collection is a catalog file now",
     ),
     // Omarchy's own word for the theme file its tooling fills in.

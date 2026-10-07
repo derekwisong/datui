@@ -1,3 +1,6 @@
+pub mod config_command;
+pub mod themes;
+
 pub use crate::home::catalog::is_object_store_dataset;
 use crate::numfmt::{self, Glob, Grouping, NumberFormat, NumberFormatSettings};
 use color_eyre::Result;
@@ -143,7 +146,7 @@ impl ConfigManager {
         // Where more catalogs go: the header's `> catalogs/examples.toml` needs it there.
         self.ensure_subdir(crate::home::catalog::FOLDER)?;
         // Where theme files go: `datui theme show NAME` prints one to start from.
-        self.ensure_subdir(crate::themes::FOLDER)?;
+        self.ensure_subdir(crate::config::themes::FOLDER)?;
 
         Ok(config_path)
     }
@@ -1441,7 +1444,7 @@ pub struct ThemeConfig {
     pub overrides: toml::Table,
     /// The themes there are, read from the config directory's `themes/`.
     #[serde(skip)]
-    pub library: crate::themes::Library,
+    pub library: crate::config::themes::Library,
     /// The theme in use for each mode: `dark` and `light`, or the built-in when the named
     /// one could not be used.
     #[serde(skip)]
@@ -1465,14 +1468,14 @@ impl Default for ThemeConfig {
     fn default() -> Self {
         Self {
             mode: None,
-            dark: crate::themes::NIGHT_MARKET.to_string(),
-            light: crate::themes::DAY_MARKET.to_string(),
+            dark: crate::config::themes::NIGHT_MARKET.to_string(),
+            light: crate::config::themes::DAY_MARKET.to_string(),
             colors: ColorConfig::default(),
             follow: false,
             overrides: toml::Table::new(),
-            library: crate::themes::Library::default(),
-            dark_theme: crate::themes::NIGHT_MARKET.to_string(),
-            light_theme: crate::themes::DAY_MARKET.to_string(),
+            library: crate::config::themes::Library::default(),
+            dark_theme: crate::config::themes::NIGHT_MARKET.to_string(),
+            light_theme: crate::config::themes::DAY_MARKET.to_string(),
             dark_palette: ColorConfig::dark(),
             light_palette: ColorConfig::light(),
             problems: Vec::new(),
@@ -1488,7 +1491,7 @@ impl ThemeConfig {
             ThemeMode::Light => &self.light_palette,
             _ => &self.dark_palette,
         };
-        let mut palette = crate::themes::slots(base);
+        let mut palette = crate::config::themes::slots(base);
         palette.extend(self.overrides.clone());
         Ok(toml::Value::Table(palette).try_into()?)
     }
@@ -1506,7 +1509,7 @@ impl ThemeConfig {
 
     /// Resolve `dark` and `light` against `library`, keeping it. An unusable name falls
     /// back to its mode's built-in, noted in `problems` when that mode can be in use.
-    pub fn use_library(&mut self, library: crate::themes::Library, active: ThemeMode) {
+    pub fn use_library(&mut self, library: crate::config::themes::Library, active: ThemeMode) {
         self.problems.clear();
         self.fallbacks.clear();
         for mode in [ThemeMode::Dark, ThemeMode::Light] {
@@ -1517,7 +1520,7 @@ impl ThemeConfig {
             let (used, palette) = match library.resolve(&name, mode) {
                 Ok(palette) => (name, palette),
                 Err(why) => {
-                    let fallback = crate::themes::built_in_name(mode);
+                    let fallback = crate::config::themes::built_in_name(mode);
                     if self.follow || active == mode {
                         let short = format!("{key}: using {fallback}, not {name}");
                         self.problems.push(format!("{short}: {why}"));
@@ -2659,7 +2662,7 @@ impl AppConfig {
         // The built-ins only; `from_read_layers` reads the theme files and resolves again.
         config
             .theme
-            .use_library(crate::themes::Library::default(), resolved);
+            .use_library(crate::config::themes::Library::default(), resolved);
         config.theme.colors = config.theme.palette_for(resolved)?;
         config.sync_dataset_access();
         Ok(config)
@@ -2669,7 +2672,7 @@ impl AppConfig {
     /// as built-ins. A broken file or unusable name is reported and falls back to the
     /// built-in; it never stops startup.
     pub fn read_theme_files(&mut self, config_dir: Option<&Path>) -> Result<()> {
-        let library = crate::themes::Library::read(config_dir);
+        let library = crate::config::themes::Library::read(config_dir);
         let active = self.theme.mode.unwrap_or_default().resolve();
         self.theme.use_library(library, active);
         for warning in self.theme.warnings() {

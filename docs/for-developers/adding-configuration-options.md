@@ -17,7 +17,7 @@ s("display.notes_accent", Bool, Value("true"), "Accent the i key when datui has 
 | `.kwarg("name")` | The keyword Python's `datui.view()` takes for it, when it has one |
 
 Then add the field it fills to the section's struct in
-`crates/datui-lib/src/config.rs`, with its value in the section's `Default`, and
+`crates/datui-lib/src/config/mod.rs`, with its value in the section's `Default`, and
 read the merged setting where the behavior lives.
 
 From the entry, without more code:

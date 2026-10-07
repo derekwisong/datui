@@ -19,16 +19,17 @@ fn run_command(command: &Command, args: &Args) -> ! {
             Err(e) => fail(e),
         },
         Command::Config { action } => match ConfigManager::new(APP_NAME) {
-            Ok(manager) => datui::config_command::command(&manager, action, &args.config),
+            Ok(manager) => datui::config::config_command::command(&manager, action, &args.config),
             Err(e) => fail(e),
         },
         Command::Catalog { action } => datui::home::catalog::command(
             action,
             datui::AppConfig::load_with(APP_NAME, &args.config),
         ),
-        Command::Theme { action } => {
-            datui::themes::command(action, datui::AppConfig::load_with(APP_NAME, &args.config))
-        }
+        Command::Theme { action } => datui::config::themes::command(
+            action,
+            datui::AppConfig::load_with(APP_NAME, &args.config),
+        ),
         Command::Cache { action } => {
             let cache = datui::CacheManager::new(APP_NAME).ok();
             datui::commands::cache(cache.as_ref(), action)

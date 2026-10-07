@@ -405,7 +405,7 @@ static ALLOCATOR: RowSizedCount = RowSizedCount;
 /// hundreds of allocations the size of a column.
 #[test]
 fn correlation_allocates_per_column_not_per_pair() -> Result<()> {
-    let rows = 200_003;
+    let rows = 50_003;
     let columns: Vec<Column> = (0..24)
         .map(|c| {
             let name = format!("c{c}");

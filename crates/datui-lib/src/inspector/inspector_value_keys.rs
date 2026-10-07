@@ -6,7 +6,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 
 impl App {
     /// The keys with the focus in the value: scroll it, search it, change its view.
-    pub(crate) fn inspector_value_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
+    pub(super) fn inspector_value_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         let Some(pane) = self.inspector_pane() else {
             self.inspector_modal.focus = inspector_modal::Focus::List;
             return None;
@@ -68,7 +68,7 @@ impl App {
 
     /// A key in the value's find line. Enter finds every place and goes to the first at
     /// or after the pane's top.
-    pub(crate) fn value_find_key(&mut self, event: &KeyEvent) {
+    pub(super) fn value_find_key(&mut self, event: &KeyEvent) {
         let pane = self.inspector_pane();
         let modal = &mut self.inspector_modal;
         let Some(find) = modal.value_find.as_mut() else {
@@ -101,7 +101,7 @@ impl App {
     }
 
     /// `n` and `N` in the value: the next or the last place found, round the ends.
-    pub(crate) fn next_value_hit(&mut self, step: isize) {
+    fn next_value_hit(&mut self, step: isize) {
         let Some(pane) = self.inspector_pane() else {
             return;
         };

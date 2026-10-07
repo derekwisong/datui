@@ -1529,6 +1529,16 @@ mod tests {
         let facts = jobs.start(Job::FileFacts { dataset: 1 }, None);
         let footers = jobs.start(Job::FootersJoin { dataset: 1 }, None);
         let journal = jobs.start(Job::JournalDetail { dataset: 1 }, None);
+        let mut modal = crate::ChartModal::new();
+        modal.spec.encoding.x.field = Some("a".into());
+        let chart = jobs.start(
+            Job::ChartPrepare(Box::new(ChartPrep {
+                request: crate::ChartRequest::from_modal(&modal).expect("a request"),
+                dataset: Some(1),
+                cancel: Arc::default(),
+            })),
+            None,
+        );
         assert!(!jobs.would_strand());
         assert!(jobs.try_advance());
         assert!(!jobs.is_current(rows.ticket()));
@@ -1542,6 +1552,8 @@ mod tests {
         // generation; its answer is judged by the dataset alone. So is a journal's.
         assert!(jobs.is_current(footers.ticket()));
         assert!(jobs.is_current(journal.ticket()));
+        // A chart's data is judged by its dataset and put down with its view.
+        assert!(jobs.is_current(chart.ticket()));
     }
 
     /// Progress is sent with the job's ticket; what runs after the answer runs after

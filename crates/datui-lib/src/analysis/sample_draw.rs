@@ -389,13 +389,10 @@ impl App {
     /// draw stopped by memory says why.
     pub(crate) fn sample_drawn(
         &mut self,
-        job: Job,
+        draw: SampleDraw,
         current: bool,
         drawn: crate::analysis::table_sample::Drawn,
     ) -> Option<AppEvent> {
-        let Job::SampleDraw(draw) = job else {
-            return None;
-        };
         if !current || !self.take_on_sample(&draw) {
             return None;
         }
@@ -420,10 +417,7 @@ impl App {
 
     /// The draw failed or stopped before keeping a row: the view stays as it was. Rows
     /// that came stay, as a sample cut short.
-    pub(crate) fn sample_draw_failed(&mut self, job: &Job, current: bool, message: &str) {
-        let Job::SampleDraw(draw) = job else {
-            return;
-        };
+    pub(crate) fn sample_draw_failed(&mut self, draw: &SampleDraw, current: bool, message: &str) {
         if !current {
             return;
         }

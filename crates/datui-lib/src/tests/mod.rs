@@ -2146,6 +2146,26 @@ fn a_job_holds_the_generation_until_its_answer_is_handled() {
     );
 }
 
+/// An answer under a job other than its own acts as neither: it is dropped with
+/// what it carries, and the job still gives back its keys and line.
+#[test]
+fn an_answer_under_another_job_is_dropped() {
+    use crate::app::jobs::{Answer, Job, Outcome};
+    use crate::{App, AppEvent};
+
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new(tx, crate::tests::test_runtime());
+    let copy = app.job_for_tests(Job::Copy, Some("Copying..."));
+    let ticket = copy.ticket();
+    copy.end(Outcome::answered(Answer::Exported(
+        std::path::PathBuf::from("out.csv"),
+    )));
+    assert!(app.event(AppEvent::JobEnded(ticket)).is_none());
+    assert_eq!(app.flash_message(), None, "no export is reported");
+    assert!(!app.is_busy());
+    assert_eq!(app.status_message, None);
+}
+
 /// A job the user waits on holds the keys and its line on the bar; its end gives
 /// both back in one place, whatever the job, and leaves a line that is not its
 /// own. An open's answer hands the wait to its next phase in the same step.
@@ -4012,10 +4032,10 @@ fn a_journal_reread_for_a_replaced_dataset_is_dropped() {
             .unwrap()
     };
     let detail = || {
-        Answer::JournalDescribed(Some(Box::new(crate::formats::text_formats::Detail {
+        Answer::JournalDescribed(Box::new(crate::formats::text_formats::Detail {
             tab: "Journal",
             ..Default::default()
-        })))
+        }))
     };
     let tab = |app: &App| {
         app.data_table_state

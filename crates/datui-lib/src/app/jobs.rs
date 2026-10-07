@@ -458,8 +458,8 @@ pub(crate) enum Answer {
     /// [`Job::FootersJoin`]: what the footers say; `None` when unreadable, so the
     /// dataset stops waiting.
     FootersJoined(Option<Box<crate::table::FootersFound>>),
-    /// [`Job::JournalDetail`]: the journal's Info tab, when it could be read.
-    JournalDescribed(Option<Box<crate::formats::text_formats::Detail>>),
+    /// [`Job::JournalDetail`]: the journal's Info tab.
+    JournalDescribed(Box<crate::formats::text_formats::Detail>),
     /// [`Job::IndexLines`]: every line is indexed, this many rows of them.
     LinesIndexed(usize),
 }

@@ -1265,9 +1265,9 @@ impl App {
         };
         let dataset = self.dataset_generation;
         self.spawn_job(Job::JournalDetail { dataset }, None, move |_| {
-            Ok(Answer::JournalDescribed(
-                crate::formats::journal::summary(&lf).ok().map(Box::new),
-            ))
+            crate::formats::journal::summary(&lf)
+                .map(|detail| Answer::JournalDescribed(Box::new(detail)))
+                .map_err(|e| e.to_string())
         });
     }
 
@@ -4608,7 +4608,7 @@ impl App {
         answer: Answer,
     ) -> Option<AppEvent> {
         match (job, answer) {
-            (Job::JournalDetail { dataset }, Answer::JournalDescribed(Some(detail))) => {
+            (Job::JournalDetail { dataset }, Answer::JournalDescribed(detail)) => {
                 if dataset == self.dataset_generation
                     && let Some(state) = self.data_table_state.as_mut()
                 {
@@ -4749,7 +4749,7 @@ impl App {
                 None
             }
             (
-                _,
+                Job::Rows(_),
                 Answer::RowsFailed {
                     message,
                     conversion,
@@ -4758,7 +4758,7 @@ impl App {
                 self.rows_failed(current, waited, &message, conversion.as_deref());
                 None
             }
-            (_, Answer::Analysis(install, results)) => {
+            (Job::Analysis(_), Answer::Analysis(install, results)) => {
                 if current {
                     install(&mut self.analysis_modal, results);
                     self.analysis_modal.computing = None;
@@ -4766,7 +4766,7 @@ impl App {
                 None
             }
             (
-                _,
+                Job::Analysis(_),
                 Answer::DataQuality {
                     results,
                     kept,
@@ -4793,15 +4793,17 @@ impl App {
                 }
                 None
             }
-            (job, Answer::SampleDrawn(drawn)) => self.sample_drawn(job, current, drawn),
-            (_, Answer::Sample { df, label }) => {
+            (Job::SampleDraw(draw), Answer::SampleDrawn(drawn)) => {
+                self.sample_drawn(*draw, current, drawn)
+            }
+            (Job::SampleRows, Answer::Sample { df, label }) => {
                 if current {
                     self.analysis_modal.computing = None;
                     self.show_sample_view(df, label);
                 }
                 None
             }
-            (_, Answer::Pivoted { spec, pivoted }) => {
+            (Job::Pivot, Answer::Pivoted { spec, pivoted }) => {
                 // Superseded means something replaced the view, which owns the wait.
                 if !current {
                     return None;
@@ -4851,7 +4853,7 @@ impl App {
                 }
                 None
             }
-            (_, Answer::DrillRow { group_index, row }) => {
+            (Job::DrillRow, Answer::DrillRow { group_index, row }) => {
                 // Superseded means something replaced the view, which owns the wait.
                 if current {
                     self.drill_into(group_index, &row);
@@ -4917,13 +4919,13 @@ impl App {
                 }
                 None
             }
-            (_, Answer::ValueWritten(open)) => {
+            (Job::OpenValue, Answer::ValueWritten(open)) => {
                 if current && self.overlay == Overlay::Inspect {
                     self.external.open = Some(open);
                 }
                 None
             }
-            (_, Answer::Exported(path)) => {
+            (Job::Export, Answer::Exported(path)) => {
                 // Written: the dialog held for a failure is done with.
                 self.forget_export();
                 if current {
@@ -4932,14 +4934,14 @@ impl App {
                 }
                 None
             }
-            (_, Answer::Copied { payload, message }) => {
+            (Job::Copy, Answer::Copied { payload, message }) => {
                 if current {
                     self.export_progress = None;
                     self.finish_copy(payload, message);
                 }
                 None
             }
-            (_, Answer::QualityReportWritten(path)) => {
+            (Job::QualityReport, Answer::QualityReportWritten(path)) => {
                 self.analysis_modal.quality.export = None;
                 if current {
                     self.flash_path("Report written to ", &path);
@@ -4992,15 +4994,20 @@ impl App {
                     record_size,
                 },
                 Answer::HexOpened(source),
-            ) if current => {
-                self.hex_opened(origin, fallback, record_size, *source);
+            ) => {
+                // Superseded: another file, or the view was left.
+                if current {
+                    self.hex_opened(origin, fallback, record_size, *source);
+                }
                 None
             }
-            (Job::HexFind(run), Answer::HexFound(hit)) if current => {
-                self.hex_found(run, hit);
+            (Job::HexFind(run), Answer::HexFound(hit)) => {
+                if current {
+                    self.hex_found(run, hit);
+                }
                 None
             }
-            (_, Answer::ValueCounts(counts)) => {
+            (Job::ValueCounts, Answer::ValueCounts(counts)) => {
                 // Superseded: another column, a cancel, or a trip away.
                 if current {
                     self.value_counts.computing = None;
@@ -5008,16 +5015,16 @@ impl App {
                 }
                 None
             }
-            // What a test's answer carries goes with it.
+            // What a test's answer carries goes with it; it rides any job.
             #[cfg(test)]
             (_, Answer::Probe(held)) => {
                 drop(held);
                 None
             }
-            // An answer under another job than its own, a hex answer gone stale, or a
-            // journal that could not be read again: dropped with what it carries.
+            // An answer under another job than its own is a bug: dropped with what it
+            // carries. Every answer is named, so a new one needs its own arm above.
             (
-                _,
+                job,
                 Answer::Load(_)
                 | Answer::NamedPaths { .. }
                 | Answer::NamedPathMissing(_)
@@ -5039,14 +5046,29 @@ impl App {
                 | Answer::HexFound(_)
                 | Answer::FootersJoined(_)
                 | Answer::JournalDescribed(_)
-                | Answer::LinesIndexed(_),
-            ) => None,
+                | Answer::LinesIndexed(_)
+                | Answer::RowsFailed { .. }
+                | Answer::Analysis(..)
+                | Answer::DataQuality { .. }
+                | Answer::SampleDrawn(_)
+                | Answer::Sample { .. }
+                | Answer::Pivoted { .. }
+                | Answer::DrillRow { .. }
+                | Answer::ValueWritten(_)
+                | Answer::Exported(_)
+                | Answer::Copied { .. }
+                | Answer::QualityReportWritten(_)
+                | Answer::ValueCounts(_),
+            ) => {
+                log::error!(target: "datui", "a {:?} job got another job's answer; dropped", job.kind());
+                None
+            }
         }
     }
 
     /// Put down what a failed job started, and say why. [`Self::job_ended`] already
-    /// released its keys and line. Each arm clears only what that job started, and
-    /// only when it is current; a stale failure is dropped.
+    /// released its keys and line. Each arm clears only what that job started; most act
+    /// only when it is current, and the rest are judged by something of their own.
     fn background_failed(
         &mut self,
         job: &Job,
@@ -5055,19 +5077,24 @@ impl App {
         message: &str,
         panicked: bool,
     ) {
-        // Jobs judged by something of their own rather than by being current.
+        // With one line for the reason, a panic's message gives way to the log.
+        let could_not = |what: &str| {
+            if panicked {
+                format!("Could not {what}; see the log")
+            } else {
+                format!("Could not {what}: {message}")
+            }
+        };
         match job {
             // Judged by the open: one put down or replaced is not the one waited on.
             Job::Load(load) | Job::OpenNamed(load) | Job::LookAtDirectory { load, .. } => {
                 if let loading::Step::Failed(failed) = self.loading.failed(*load, message) {
                     self.load_failed(failed);
                 }
-                return;
             }
             // A pass that failed could not read them: the dataset stops waiting.
             Job::FootersJoin { dataset } => {
                 self.footers_joined(*dataset, None);
-                return;
             }
             Job::ChartPrepare(prep) => {
                 let message = if panicked {
@@ -5076,12 +5103,11 @@ impl App {
                     message.to_string()
                 };
                 self.chart_prepared(*prep.clone(), current, Err(message));
-                return;
             }
             Job::Rows(_) | Job::OwedRows { .. } => {
-                return self.rows_failed(current, waited, message, None);
+                self.rows_failed(current, waited, message, None);
             }
-            Job::SampleDraw(_) => return self.sample_draw_failed(job, current, message),
+            Job::SampleDraw(draw) => self.sample_draw_failed(draw, current, message),
             // The preview says why in its own pane; the log has a panic's details.
             Job::ReshapePreview { epoch, token } => {
                 let message = if panicked {
@@ -5090,7 +5116,6 @@ impl App {
                     message.to_string()
                 };
                 self.reshape_preview_ended(*epoch, *token, None, Err(message));
-                return;
             }
             Job::InspectPretty { token } => {
                 let modal = &mut self.inspector_modal;
@@ -5102,7 +5127,6 @@ impl App {
                         place: place.clone(),
                     });
                 }
-                return;
             }
             Job::InspectUnpack { token } => {
                 let modal = &mut self.inspector_modal;
@@ -5114,9 +5138,8 @@ impl App {
                         place: place.clone(),
                     });
                 }
-                return;
             }
-            Job::Find(_) => return self.find_failed(current, message),
+            Job::Find(_) => self.find_failed(current, message),
             // Judged by the dataset, as its answer is; the panel has one line for it.
             Job::FileFacts { dataset } => {
                 let why = if panicked {
@@ -5125,52 +5148,23 @@ impl App {
                     message.to_string()
                 };
                 self.file_facts_landed(*dataset, FileFacts::Failed(why));
-                return;
             }
             // The note is left unsaid; the log has why.
             Job::UnfitCount { .. } => {
                 log::warn!(target: "datui", "counting values that did not fit their type failed: {message}");
-                return;
             }
             // The Info tab keeps what the open read.
-            Job::JournalDetail { .. } => return,
+            Job::JournalDetail { .. } => {}
             // Stopped: whoever stopped it says what becomes of the reads waiting on the
             // lines.
-            Job::IndexLines { .. } => return,
-            Job::Export if !current => {
-                self.forget_export();
-                return;
+            Job::IndexLines { .. } => {}
+            // The rest act only for the job still current; a stale failure is dropped.
+            _ if !current => {
+                if matches!(job, Job::Export) {
+                    // The dialog held for a failure is done with.
+                    self.forget_export();
+                }
             }
-            Job::Classify(_)
-            | Job::Analysis(_)
-            | Job::SampleRows
-            | Job::Pivot
-            | Job::ViewPivot(_)
-            | Job::DrillRow
-            | Job::InspectRow { .. }
-            | Job::InspectJson { .. }
-            | Job::OpenValue
-            | Job::Export
-            | Job::Copy
-            | Job::QualityReport
-            | Job::ChartExport { .. }
-            | Job::ValueCounts
-            | Job::HexOpen { .. }
-            | Job::HexFind(_) => {}
-        }
-        // The rest act only for the job still current.
-        if !current {
-            return;
-        }
-        // With one line for the reason, a panic's message gives way to the log.
-        let could_not = |what: &str| {
-            if panicked {
-                format!("Could not {what}; see the log")
-            } else {
-                format!("Could not {what}: {message}")
-            }
-        };
-        match job {
             Job::Classify(_) => {
                 self.home.status = None;
                 self.error_modal.show(message.to_string());
@@ -5242,23 +5236,6 @@ impl App {
                     self.value_counts.failed = Some((computing.column, why));
                 }
             }
-            // Handled above.
-            Job::Load(_)
-            | Job::OpenNamed(_)
-            | Job::LookAtDirectory { .. }
-            | Job::Rows(_)
-            | Job::OwedRows { .. }
-            | Job::SampleDraw(_)
-            | Job::ReshapePreview { .. }
-            | Job::InspectPretty { .. }
-            | Job::InspectUnpack { .. }
-            | Job::FileFacts { .. }
-            | Job::ChartPrepare(_)
-            | Job::Find(_)
-            | Job::UnfitCount { .. }
-            | Job::FootersJoin { .. }
-            | Job::JournalDetail { .. }
-            | Job::IndexLines { .. } => {}
         }
     }
 

@@ -13,7 +13,8 @@ lists the prerequisites):
 On Windows without Git Bash, run `python scripts\setup_dev.py`, which is what
 `setup` runs. It creates `.venv` (with uv when installed, otherwise
 `python -m venv`), installs `scripts/requirements.txt`, installs the pre-commit
-hooks and generates the test fixtures. Rerunning it is cheap.
+hooks (not from a `git worktree add` checkout, which shares the main one's) and
+generates the test fixtures. Rerunning it is cheap.
 
 | Option | Adds |
 |---|---|

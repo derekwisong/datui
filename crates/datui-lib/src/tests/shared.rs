@@ -2,10 +2,11 @@
 //! `tests/sample-data`, a drawn buffer as text, and the tokio runtime. `tests/common`
 //! includes this file.
 
+use std::ffi::OsString;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Once;
+use std::sync::OnceLock;
 
 use fs2::FileExt;
 use sha2::{Digest, Sha256};
@@ -56,29 +57,42 @@ fn is_current(dir: &Path, digest: &str) -> bool {
 /// checkout, generating it when not. Test processes run side by side (nextest starts
 /// one per test), so the check and the generation happen under a lock file, and the
 /// generator replaces each fixture by a rename: a process with one mapped keeps it.
+/// Every test in a process that could not generate them fails with the same message.
 pub fn ensure_sample_data() {
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        let root = repo_root();
-        let dir = root.join("tests/sample-data");
-        let digest = inputs_digest(&root);
-        if is_current(&dir, &digest) {
-            return;
-        }
-        let lock_path = root.join("tests/.sample-data.lock");
-        let lock = File::create(&lock_path)
-            .unwrap_or_else(|e| panic!("creating {}: {e}", lock_path.display()));
-        lock.lock_exclusive()
-            .unwrap_or_else(|e| panic!("locking {}: {e}", lock_path.display()));
-        // Another process may have generated them while this one waited.
-        if !is_current(&dir, &digest) {
-            generate(&root, &dir);
-        }
-        // Dropping the file releases the lock.
-    });
+    static READY: OnceLock<Result<(), String>> = OnceLock::new();
+    if let Err(message) = READY.get_or_init(prepare) {
+        panic!("{message}");
+    }
 }
 
-fn generate(root: &Path, dir: &Path) {
+fn prepare() -> Result<(), String> {
+    let root = repo_root();
+    let dir = root.join("tests/sample-data");
+    let digest = inputs_digest(&root);
+    if is_current(&dir, &digest) {
+        return Ok(());
+    }
+    let lock_path = root.join("tests/.sample-data.lock");
+    let lock = File::create(&lock_path)
+        .and_then(|lock| lock.lock_exclusive().map(|()| lock))
+        .map_err(|e| format!("locking {}: {e}", lock_path.display()))?;
+    // Another process may have generated them while this one waited.
+    let generated = if is_current(&dir, &digest) {
+        Ok(())
+    } else {
+        generate(&root, &dir)
+    };
+    drop(lock);
+    generated.map_err(|detail| {
+        format!(
+            "Could not generate the test fixtures in {}.\n\
+             Run {SETUP} to set up .venv and generate them.\n\n{detail}",
+            dir.display()
+        )
+    })
+}
+
+fn generate(root: &Path, dir: &Path) -> Result<(), String> {
     eprintln!(
         "{} is missing or out of date; generating it...",
         dir.display()
@@ -89,17 +103,10 @@ fn generate(root: &Path, dir: &Path) {
         root.join(".venv/bin/python")
     };
     // The project virtualenv has the pinned dependencies; a system Python seldom does.
-    let pythons: Vec<std::ffi::OsString> = if venv_python.exists() {
+    let pythons: Vec<OsString> = if venv_python.exists() {
         vec![venv_python.into()]
     } else {
         vec!["python3".into(), "python".into()]
-    };
-    let fail = |detail: String| -> ! {
-        panic!(
-            "The test fixtures in {} are missing or out of date, and generating them \
-             failed.\nRun {SETUP} to set up .venv and generate them.\n\n{detail}",
-            dir.display()
-        )
     };
     let output = pythons
         .iter()
@@ -111,16 +118,16 @@ fn generate(root: &Path, dir: &Path) {
                 .output()
                 .ok()
         })
-        .unwrap_or_else(|| fail("No Python found.".to_string()));
+        .ok_or("No Python found.")?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        fail(format!(
+        return Err(format!(
             "generate_sample_data.py exited with {}:\n{}",
             output.status,
-            stderr.trim_end()
+            String::from_utf8_lossy(&output.stderr).trim_end()
         ));
     }
     eprintln!("Generated {}.", dir.display());
+    Ok(())
 }
 
 /// Each row of `buf` as drawn.

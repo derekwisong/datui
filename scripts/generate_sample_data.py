@@ -48,8 +48,8 @@ try:
     import polars as pl
 except ImportError as e:
     sys.exit(
-        f"generate_sample_data.py: {e.name} is not installed.\n"
-        "Run ./scripts/dev/setup-test-data.sh to set up .venv with every fixture dependency."
+        f"generate_sample_data.py: {e.name} is not installed "
+        "(scripts/requirements-fixtures.txt lists what it needs)."
     )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

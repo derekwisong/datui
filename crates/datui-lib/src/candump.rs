@@ -420,7 +420,8 @@ impl Lines {
     }
 }
 
-/// Which rows a decode asked for: a run exactly, any other set by a hash of it.
+/// Which rows a decode asked for: a run exactly, any other set by a hash of it, which
+/// a hit confirms against the rows its slot keeps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WindowKey {
     Run {
@@ -477,6 +478,9 @@ struct Windows<T> {
 
 struct Slot<T> {
     key: WindowKey,
+    /// The rows of a [`WindowKey::Rows`] window, so two sets that hash alike never
+    /// share a parse.
+    listed: Option<Box<[IdxSize]>>,
     rows: usize,
     taken: usize,
     parsed: Arc<std::sync::OnceLock<T>>,
@@ -504,7 +508,10 @@ impl<T> Windows<T> {
         let key = WindowKey::of(rows);
         let parsed = {
             let mut kept = self.kept.lock().unwrap_or_else(|e| e.into_inner());
-            match kept.iter().position(|s| s.key == key) {
+            let same = |s: &Slot<T>| {
+                s.key == key && s.listed.as_deref().is_none_or(|listed| listed == rows)
+            };
+            match kept.iter().position(same) {
                 Some(at) => {
                     let slot = &mut kept[at];
                     slot.taken += 1;
@@ -519,6 +526,7 @@ impl<T> Windows<T> {
                     if self.width > 1 {
                         kept.push_back(Slot {
                             key,
+                            listed: matches!(key, WindowKey::Rows { .. }).then(|| rows.into()),
                             rows: rows.len(),
                             taken: 1,
                             parsed: parsed.clone(),
@@ -1181,6 +1189,19 @@ pub(crate) mod tests {
         windows.with(&[3], parse, |_| ());
         windows.with(&[1, 3], parse, |_| ());
         assert_eq!(parses(), 3);
+    }
+
+    /// Two sets of rows whose keys collide are two windows: the rows decide a hit.
+    #[test]
+    fn rows_that_hash_alike_are_parsed_apart() {
+        let windows = Windows::new(2);
+        let parse = |rows: &[IdxSize]| rows.to_vec();
+        windows.with(&[1, 3], parse, |_| ());
+        // Forge the collision: the kept window claims the key of other rows.
+        windows.kept.lock().unwrap()[0].key = WindowKey::of(&[2, 4]);
+        let other = windows.with(&[2, 4], parse, |rows| rows.clone());
+        assert_eq!(other, vec![2, 4]);
+        assert_eq!(windows.parses.load(std::sync::atomic::Ordering::Relaxed), 2);
     }
 
     /// One window's parse does not hold up another's.

@@ -29,7 +29,7 @@ pub fn intent_columns(schema: &polars::prelude::Schema) -> Vec<(String, DataType
 fn type_label(config: &DataQualityWidgetConfig<'_>, column: &str, dtype: &DataType) -> String {
     match config.plan.time_format(column) {
         Some(format) => format!("text as {}", format.kind.label()),
-        None => crate::table::dtype_label(dtype),
+        None => crate::column_types::dtype_label(dtype),
     }
 }
 
@@ -164,7 +164,7 @@ pub fn render_form(
     };
     FormRow {
         label: "Type:",
-        value: FormValue::Choice(&crate::table::dtype_label(&form.dtype)),
+        value: FormValue::Choice(&crate::column_types::dtype_label(&form.dtype)),
         focused: false,
         label_width: LABEL_WIDTH,
     }

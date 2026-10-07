@@ -272,7 +272,7 @@ pub struct AppConfig {
     pub glyphs: GlyphsConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CloudConfig {
     /// The S3 endpoint, keys and region the environment gives (`AWS_*`): not keys of

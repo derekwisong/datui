@@ -4,6 +4,8 @@ use std::sync::Once;
 
 static INIT: Once = Once::new();
 
+pub(crate) mod fixtures;
+
 #[cfg(feature = "cloud")]
 mod cloud_recent_facts {
     use crate::dataset_files::DatasetFile;
@@ -4291,3 +4293,6 @@ mod codebook_tests;
 
 /// An open whose CSV type inference falls short shows the error, not a crash.
 mod csv_inference_tests;
+
+/// Every text field the app shows, driven through the real `App`.
+mod text_input_flows;

@@ -595,46 +595,12 @@ pub fn present(signal: &Signal, mux: Option<u64>) -> bool {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
-
-    pub(crate) const SAMPLE: &str = r#"VERSION ""
-
-NS_ :
-	NS_DESC_
-	CM_
-	BA_DEF_
-	VAL_
-
-BS_:
-
-BU_: ECU GW
-
-BO_ 291 ENGINE: 8 ECU
- SG_ Speed : 0|16@1+ (0.125,0) [0|8191] "rpm" GW
- SG_ Temp : 16|8@1- (1,-40) [-40|215] "degC" GW
- SG_ Gear : 24|4@1+ (1,0) [0|15] "" GW
-
-BO_ 2566844926 BODY: 8 GW
- SG_ Pressure : 7|16@0+ (0.1,0) [0|6553.5] "kPa" ECU
- SG_ Offset : 23|12@0- (1,0) [-2048|2047] "" ECU
-
-BO_ 512 MUXED: 8 ECU
- SG_ Page M : 0|8@1+ (1,0) [0|255] "" GW
- SG_ Volts m1 : 8|16@1+ (0.01,0) [0|655.35] "V" GW
- SG_ Amps m2 : 8|16@1- (0.1,0) [-3276.8|3276.7] "A" GW
- SG_ Ratio : 24|32@1- (1,0) [0|0] "" GW
-
-CM_ SG_ 291 Speed "Engine speed;
-over two lines";
-BA_DEF_ SG_ "GenSigStartValue" INT 0 100;
-VAL_ 291 Gear 0 "Neutral" 1 "First" 2 "Second" ;
-SIG_VALTYPE_ 512 Ratio : 1;
-"#;
 
     #[test]
     fn messages_signals_values_and_comments() {
-        let dbc = parse(SAMPLE, "car", None).unwrap();
+        let dbc = parse(crate::tests::fixtures::DBC, "car", None).unwrap();
         assert_eq!(dbc.messages.len(), 3);
         let body = &dbc.messages[1];
         assert!(body.extended);
@@ -658,7 +624,7 @@ SIG_VALTYPE_ 512 Ratio : 1;
 
     #[test]
     fn intel_motorola_signed_and_float() {
-        let dbc = parse(SAMPLE, "car", None).unwrap();
+        let dbc = parse(crate::tests::fixtures::DBC, "car", None).unwrap();
         let engine = &dbc.messages[0];
         // Speed 0x1F40 = 8000 * 0.125 = 1000 rpm; Temp 0xF6 = -10 - 40 = -50.
         let data = [0x40, 0x1F, 0xF6, 0x02, 0, 0, 0, 0];

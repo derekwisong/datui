@@ -14613,7 +14613,7 @@ fn test_a_sampled_column_count_is_marked_on_screen() {
     app.home.selected = row;
 
     // As a directory past the footer budget comes back from measurement.
-    for section in app.home.sections.iter_mut() {
+    for section in app.home.sections_mut().iter_mut() {
         for entry in section.rows.iter_mut().filter(|e| e.name == "events") {
             entry.kind = datui::discover::EntryKind::MultiFile;
             entry.rows = None;
@@ -14682,7 +14682,7 @@ fn test_an_unexamined_lake_root_is_classified_before_it_is_opened() {
     app.home.selected = row;
 
     // As a row restored from a cache this build will not take its kind from.
-    for section in app.home.sections.iter_mut() {
+    for section in app.home.sections_mut().iter_mut() {
         for entry in section.rows.iter_mut().filter(|e| e.name == "orders") {
             entry.kind = datui::discover::EntryKind::Unknown;
         }
@@ -14970,7 +14970,7 @@ fn test_a_hive_directory_from_home_still_opens_as_one_dataset() {
     app.home.browsing = Some(tmp.path().to_path_buf());
     app.home.rebuild(&[]);
     let gone = PathBuf::from("/mnt/gone/sales");
-    for section in app.home.sections.iter_mut() {
+    for section in app.home.sections_mut().iter_mut() {
         for entry in section.rows.iter_mut().filter(|e| e.name == "sales") {
             entry.path = gone.clone();
         }

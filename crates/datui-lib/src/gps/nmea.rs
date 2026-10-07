@@ -572,11 +572,17 @@ pub struct Stats {
 }
 
 impl Stats {
-    fn count(&mut self, name: String) {
-        if let Some((_, n)) = self.types.iter_mut().find(|(t, _)| *t == name) {
+    /// Count `s` under its type, naming the type only when it is first seen.
+    fn count(&mut self, s: &Sentence<'_>) {
+        let vendor = s.talker == "P";
+        let is = |t: &str| match vendor {
+            true => t.strip_prefix('P') == Some(s.kind),
+            false => t == s.kind,
+        };
+        if let Some((_, n)) = self.types.iter_mut().find(|(t, _)| is(t)) {
             *n += 1;
         } else if self.types.len() < MAX_TYPES {
-            self.types.push((name, 1));
+            self.types.push((s.type_name(), 1));
         } else {
             self.other_types += 1;
         }
@@ -758,7 +764,7 @@ impl NmeaReader {
         if s.checksum_ok == Some(false) {
             self.stats.bad_checksums += 1;
         }
-        self.stats.count(s.type_name());
+        self.stats.count(s);
         let standard = s.talker != "P";
         let kind = if standard { s.kind } else { "" };
         let tod = match kind {

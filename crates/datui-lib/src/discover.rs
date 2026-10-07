@@ -520,7 +520,7 @@ pub fn sniff_format(path: &Path) -> Option<crate::FileFormat> {
 #[derive(Debug, Clone)]
 pub enum Sniffed {
     /// A format datui reads.
-    Format(crate::FileFormat),
+    Format,
     /// A format spec's, which reads it.
     Spec(std::sync::Arc<crate::formats::Spec>),
 }
@@ -530,8 +530,8 @@ pub enum Sniffed {
 pub fn sniff_listed(path: &Path, formats: &crate::formats::Registry) -> Option<Sniffed> {
     use crate::readers::{Asked, HEAD, head_of, sniff};
     let head = head_of(path)?;
-    if let Some(format) = sniff(&head, Some(path), Asked::Listing, |_| true) {
-        return Some(Sniffed::Format(format));
+    if sniff(&head, Some(path), Asked::Listing, |_| true).is_some() {
+        return Some(Sniffed::Format);
     }
     formats
         .listed(path, &head, head.len() < HEAD)
@@ -1328,7 +1328,7 @@ fn scan_dir_with(
             EntryKind::File
         } else if spend_sniff(&mut sniffs_left, meta.is_file(), &path) {
             match sniff_listed(&path, formats) {
-                Some(Sniffed::Format(_)) => EntryKind::File,
+                Some(Sniffed::Format) => EntryKind::File,
                 Some(Sniffed::Spec(found)) => {
                     spec = Some(found);
                     EntryKind::File

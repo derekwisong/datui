@@ -20,7 +20,6 @@ pub struct SortColumn {
 }
 
 pub struct SortModal {
-    pub active: bool,
     pub filter_input: TextInput,
     pub columns: Vec<SortColumn>,
     pub table_state: TableState,
@@ -49,7 +48,6 @@ pub struct SortModal {
 impl Default for SortModal {
     fn default() -> Self {
         Self {
-            active: false,
             filter_input: TextInput::new(),
             columns: Vec::new(),
             table_state: TableState::default(),
@@ -67,10 +65,6 @@ impl Default for SortModal {
 }
 
 impl SortModal {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// The columns the find text matches, in display order. Asked several times a key,
     /// so recomputed only when a fingerprint of the find text, names and order changes.
     pub fn filtered_columns(&self) -> Vec<(usize, &SortColumn)> {
@@ -731,6 +725,10 @@ pub fn order_with_hidden(visible: &[String], all: &[String], reference: &[String
 mod tests {
     use super::*;
 
+    fn modal() -> SortModal {
+        SortModal::default()
+    }
+
     fn columns(names: &[&str]) -> Vec<SortColumn> {
         names
             .iter()
@@ -751,8 +749,7 @@ mod tests {
 
     #[test]
     fn test_sort_modal_new() {
-        let modal = SortModal::new();
-        assert!(!modal.active);
+        let modal = modal();
         assert_eq!(modal.filter_input.value(), "");
         assert!(modal.columns.is_empty());
         assert!(modal.table_state.selected().is_none());
@@ -760,7 +757,7 @@ mod tests {
 
     #[test]
     fn test_filtered_columns() {
-        let mut modal = SortModal::new();
+        let mut modal = modal();
         modal.columns = columns(&["Apple", "Banana", "Orange"]);
         modal.filter_input.set_value("an");
         let filtered = modal.filtered_columns();
@@ -774,7 +771,7 @@ mod tests {
     #[test]
     fn the_filtered_list_is_worked_out_once_per_change() {
         let builds = |m: &SortModal| m.shown_builds.load(std::sync::atomic::Ordering::Relaxed);
-        let mut modal = SortModal::new();
+        let mut modal = modal();
         modal.columns = columns(&["Apple", "Banana", "Orange"]);
         for _ in 0..5 {
             modal.filtered_columns();
@@ -798,7 +795,7 @@ mod tests {
     /// each column carrying its own direction.
     #[test]
     fn space_cycles_a_column_through_the_three_states() {
-        let mut modal = SortModal::new();
+        let mut modal = modal();
         modal.columns = columns(&["A", "B"]);
         modal.table_state.select(Some(0));
 
@@ -819,7 +816,7 @@ mod tests {
     /// directions, and the directions travel with their columns.
     #[test]
     fn leaving_the_sort_renumbers_and_keeps_directions() {
-        let mut modal = SortModal::new();
+        let mut modal = modal();
         modal.columns = columns(&["A", "B", "C"]);
         modal.table_state.select(Some(1)); // B ascending, order 1
         modal.cycle_sort();
@@ -846,7 +843,7 @@ mod tests {
     /// column it changes nothing and stages nothing.
     #[test]
     fn zero_removes_a_column_and_stages_the_change() {
-        let mut modal = SortModal::new();
+        let mut modal = modal();
         modal.columns = columns(&["A", "B"]);
         modal.columns[0].sort_order = Some(1);
         modal.table_state.select(Some(1));
@@ -863,7 +860,7 @@ mod tests {
     /// positions exist.
     #[test]
     fn a_digit_past_the_end_says_why() {
-        let mut modal = SortModal::new();
+        let mut modal = modal();
         modal.columns = columns(&["A", "B", "C"]);
         modal.columns[0].sort_order = Some(1);
         modal.table_state.select(Some(1));
@@ -890,7 +887,7 @@ mod tests {
 
     #[test]
     fn test_move_selection_up() {
-        let mut modal = SortModal::new();
+        let mut modal = modal();
         modal.columns = columns(&["A", "B"]);
         modal.columns[0].sort_order = Some(2);
         modal.columns[1].sort_order = Some(1);
@@ -902,7 +899,7 @@ mod tests {
 
     #[test]
     fn test_move_selection_down() {
-        let mut modal = SortModal::new();
+        let mut modal = modal();
         modal.columns = columns(&["A", "B"]);
         modal.columns[0].sort_order = Some(2);
         modal.columns[1].sort_order = Some(1);
@@ -914,7 +911,7 @@ mod tests {
 
     #[test]
     fn the_sort_list_flips_moves_and_drops_entries() {
-        let mut modal = SortModal::new();
+        let mut modal = modal();
         modal.columns = columns(&["A", "B", "C"]);
         assert_eq!(modal.add_sort("C"), Some(0));
         assert_eq!(modal.add_sort("A"), Some(1));
@@ -936,7 +933,7 @@ mod tests {
 
     #[test]
     fn the_sort_cycles_both_ways() {
-        let mut modal = SortModal::new();
+        let mut modal = modal();
         modal.columns = columns(&["A"]);
         modal.table_state.select(Some(0));
         modal.cycle_sort_back();
@@ -949,7 +946,7 @@ mod tests {
 
     #[test]
     fn test_clear_selection() {
-        let mut modal = SortModal::new();
+        let mut modal = modal();
         modal.columns = columns(&["A", "B"]);
         modal.columns[0].sort_order = Some(1);
         modal.columns[0].sort_descending = true;
@@ -964,7 +961,7 @@ mod tests {
     /// asked, and each change is staged rather than applied.
     #[test]
     fn width_changes_are_staged_on_the_column_under_the_cursor() {
-        let mut modal = SortModal::new();
+        let mut modal = modal();
         modal.columns = columns(&["a", "b"]);
         modal.table_state.select(Some(1));
         modal.change_width(WidthChoice::wider);
@@ -995,7 +992,7 @@ mod tests {
 
     #[test]
     fn hiding_and_showing_keeps_the_column_in_place() {
-        let mut modal = SortModal::new();
+        let mut modal = modal();
         modal.columns = columns(&["A", "B", "C", "D"]);
         modal.table_state.select(Some(1));
         modal.toggle_visibility();
@@ -1013,7 +1010,7 @@ mod tests {
 
     #[test]
     fn a_hidden_column_keeps_its_lock_but_is_not_counted() {
-        let mut modal = SortModal::new();
+        let mut modal = modal();
         modal.columns = columns(&["A", "B", "C", "D"]);
         modal.table_state.select(Some(2));
         modal.toggle_lock_at_column();

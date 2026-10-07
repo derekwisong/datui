@@ -13,11 +13,6 @@ pub struct CollectRequest {
     pub buffer_start: usize,
     /// Buffer end row in the full dataset.
     pub buffer_end: usize,
-    /// Row count for the full (unsliced) dataset. Only meaningful when `count_known`.
-    pub num_rows: usize,
-    /// Whether `num_rows` is the true total. False for a first buffer rendered before
-    /// the background `len()` count has resolved; in that case `num_rows` is provisional.
-    pub count_known: bool,
     /// How the worker fits the rows it reads to the buffer: [`FillPlan::fit`].
     pub plan: FillPlan,
 }
@@ -130,8 +125,10 @@ pub struct CollectResult {
     /// The range the read was planned for.
     buffer_start: usize,
     buffer_end: usize,
+    /// Row count for the full (unsliced) dataset. Only meaningful when `count_known`.
     num_rows: usize,
-    /// See `CollectRequest::count_known`.
+    /// Whether `num_rows` is the true total. False for a first buffer read before the
+    /// background `len()` count has resolved; `num_rows` is then provisional.
     count_known: bool,
     /// See `FillPlan::indexing`.
     indexing: bool,
@@ -828,8 +825,6 @@ impl DataTableState {
             polars_streaming: self.polars_streaming,
             buffer_start: new_buffer_start,
             buffer_end: new_buffer_end,
-            num_rows,
-            count_known,
             plan: self.fill_plan(new_buffer_start, new_buffer_end, num_rows, count_known),
         })
     }

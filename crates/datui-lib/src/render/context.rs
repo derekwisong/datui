@@ -22,7 +22,6 @@ pub struct RenderContext {
     pub keybind_hints: Color,
     pub keybind_labels: Color,
     pub controls_bg: Color,
-    pub background: Color,
     pub text_primary: Color,
     pub text_secondary: Color,
     pub text_inverse: Color,
@@ -34,7 +33,6 @@ pub struct RenderContext {
     pub modal_border: Color,
     pub modal_border_active: Color,
     pub modal_border_error: Color,
-    pub surface: Color,
     pub throbber: Color,
     pub primary_chart_series_color: Color,
 
@@ -149,7 +147,6 @@ impl RenderContext {
             keybind_hints: theme.chip_key(),
             keybind_labels: theme.chip_label(),
             controls_bg: theme.controls_bg(),
-            background: theme.background(),
             text_primary: theme.text_primary(),
             text_secondary: theme.text_secondary(),
             text_inverse: theme.text_inverse(),
@@ -161,7 +158,6 @@ impl RenderContext {
             modal_border: theme.modal_border(),
             modal_border_active: theme.modal_border_active(),
             modal_border_error: theme.modal_border_error(),
-            surface: theme.surface(),
             throbber: theme.throbber(),
             primary_chart_series_color: theme.chart_1(),
 

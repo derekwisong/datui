@@ -291,7 +291,7 @@ fn spec_of(
     sniffed_in.1 += 1;
     match crate::discover::sniff_listed(path, formats)? {
         crate::discover::Sniffed::Spec(spec) => Some(spec),
-        crate::discover::Sniffed::Format(_) => None,
+        crate::discover::Sniffed::Format => None,
     }
 }
 

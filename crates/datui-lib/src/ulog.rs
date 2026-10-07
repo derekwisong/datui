@@ -75,12 +75,8 @@ struct FieldDef {
 /// A subscription: a topic's instance and where its data messages start.
 #[derive(Debug)]
 pub struct Topic {
-    pub name: String,
-    pub multi_id: u8,
     /// Where each message's fields start: after its header and message id.
     pub offsets: Arc<Offsets>,
-    /// The bytes a message must hold to have every field that is not trailing padding.
-    pub needs: usize,
     pub columns: Vec<ColumnLayout>,
 }
 
@@ -88,7 +84,6 @@ pub struct Topic {
 #[derive(Debug, Default)]
 pub struct Index {
     pub version: u8,
-    pub start_us: u64,
     /// Each topic and instance with data, by message id.
     pub topics: BTreeMap<u16, Topic>,
     /// The table name of each topic with data, in the listing's order.
@@ -333,7 +328,6 @@ pub fn index(data: &[u8]) -> Result<Index, String> {
     }
     let mut index = Index {
         version: data[7],
-        start_us: u64_at(data, 8).unwrap_or(0),
         ..Index::default()
     };
     let mut formats: HashMap<String, Vec<FieldDef>> = HashMap::new();
@@ -541,16 +535,13 @@ pub fn index(data: &[u8]) -> Result<Index, String> {
         let table = if counts.get(&name).copied().unwrap_or(0) > 1 {
             format!("{name}.{multi_id}")
         } else {
-            name.clone()
+            name
         };
         index.names.push((table, id));
         index.topics.insert(
             id,
             Topic {
-                name,
-                multi_id,
                 offsets: Arc::new(offsets),
-                needs,
                 columns,
             },
         );

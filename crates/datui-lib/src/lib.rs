@@ -494,7 +494,7 @@ pub enum AppEvent {
     DoScrollHalfDown, // Deferred scroll: half page down
     DoScrollHalfUp,   // Deferred scroll: half page up
     GoToLine(usize),  // Deferred: jump to line number (when collect needed)
-    /// Run the next chunk of analysis (describe/distribution); drives per-column progress.
+    /// Run the next chunk of analysis (describe/distribution).
     AnalysisChunk,
     /// Run distribution analysis (deferred so progress overlay can show first).
     AnalysisDistributionCompute,
@@ -1045,8 +1045,8 @@ pub struct App {
     /// [`Self::remember_a_downloads_shape`].
     shape_remembered: Option<u64>,
     path: Option<PathBuf>,
-    original_file_format: Option<ExportFormat>, // Track original file format for default export
-    original_file_delimiter: Option<u8>, // Track original file delimiter for CSV export default
+    original_file_format: Option<ExportFormat>,
+    original_file_delimiter: Option<u8>,
     /// What `-` reads in place of standard input: a test's pipe.
     stdin_reader: Option<Box<dyn std::io::Read + Send>>,
     /// Where `--tee -` passes the stream on: standard output as the process got it.
@@ -6621,13 +6621,13 @@ pub(crate) fn hoist_partition_columns(
     lf.select(exprs)
 }
 
-/// What a pass behind a staged open reported, and which dataset it was reading for.
-/// `None` where the footers are: a pass that could not read them says so, so the
-/// dataset stops waiting.
 /// Bytes of a text file indexed per step behind its first rows, between which the
 /// indexing looks whether it is still wanted.
 const INDEX_STEP: usize = 16 << 20;
 
+/// What a pass behind a staged open reported, and which dataset it was reading for.
+/// `None` where the footers are: a pass that could not read them says so, so the
+/// dataset stops waiting.
 type FootersReported = Option<(u64, Option<crate::table::FootersFound>)>;
 
 impl App {
@@ -8533,8 +8533,7 @@ impl App {
             return None;
         }
 
-        // Handle modals first - they have highest priority
-        // Confirmation modal (for overwrite)
+        // The confirmation modal (for an overwrite).
         if self.confirmation_modal.active {
             match event.code {
                 KeyCode::Left | KeyCode::Char('h') => {
@@ -8544,7 +8543,6 @@ impl App {
                     self.confirmation_modal.focus_yes = false;
                 }
                 KeyCode::Tab => {
-                    // Toggle between Yes and No
                     self.confirmation_modal.focus_yes = !self.confirmation_modal.focus_yes;
                 }
                 // ←→ carry the choice, so ↑↓ (k/j) scroll a long question; the
@@ -9050,8 +9048,7 @@ impl App {
                     state.stop_following();
                     self.flash_note("Stopped following".to_string());
                 }
-                // Escape no longer exits - use 'q' or Ctrl-C to exit
-                // (Info modal handles Esc in its own block)
+                // The Info panel handles Esc in its own block.
                 None
             }
             KeyCode::Char('t') if event.is_press() => self.toggle_follow(),
@@ -10154,7 +10151,6 @@ impl App {
                     state.deferred(|s| s.reset());
                 }
                 self.spawn_async_collect(Self::LOADING_BUFFER);
-                // Clear active view when resetting
                 self.active_view_id = None;
                 None
             }
@@ -13246,8 +13242,6 @@ impl App {
         {
             menu.render(main_area, buf, &ctx);
         }
-
-        // Status messages are shown inline in the footer (no overlay popups).
 
         if self.confirmation_modal.active {
             crate::render::overlays::render_confirmation_modal(

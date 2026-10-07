@@ -1153,7 +1153,7 @@ pub fn svg(figure: &Figure, options: &ExportOptions) -> Result<String> {
     ))
 }
 
-/// The names a legend lists, with each one's color index.
+/// The names a legend lists, in the order of their colors.
 fn legend_names(figure: &Figure) -> Vec<String> {
     match &figure.plot {
         Plot::Lines { series, .. } => series.iter().map(|s| s.name.clone()).collect(),

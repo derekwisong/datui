@@ -476,7 +476,8 @@ pub struct AnalysisModal {
     pub distribution_results: Option<AnalysisResults>,
     pub correlation_results: Option<AnalysisResults>,
     pub data_quality_results: Option<DataQualityResults>,
-    /// When Some, show progress overlay (phase, current/total); in-progress data lives in App.
+    /// Set while a tool runs: its phase and progress, drawn in place of its results.
+    /// What it is building lives in App.
     pub computing: Option<AnalysisProgress>,
     pub view: AnalysisView,
     pub focus: AnalysisFocus,

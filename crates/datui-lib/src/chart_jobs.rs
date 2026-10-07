@@ -477,8 +477,8 @@ pub(crate) type ChartResultSlot =
 /// The chart preparation currently running. There is at most one: a burst of selection
 /// changes must not fan out into a full collect per column, so the next request waits
 /// for this one to land and then the newest selection is the one prepared. Being the
-/// only one is also what ties a `BackgroundChartReady` to it, so no generation is
-/// needed to match them up.
+/// only one is also what ties a `BackgroundChartReady` to it; `dataset` keeps its
+/// answer to the dataset it was asked of.
 pub(crate) struct ChartInflight {
     /// `len_generation` of the dataset the request was spawned against, so a result
     /// cannot be installed for a different dataset that happens to share column names.

@@ -811,11 +811,9 @@ impl App {
                         analysis_modal::AnalysisView::Main => {
                             match self.analysis_modal.focus {
                                 analysis_modal::AnalysisFocus::Sidebar => {
-                                    // Navigate sidebar tool list
                                     self.analysis_modal.next_tool();
                                 }
                                 analysis_modal::AnalysisFocus::Main => {
-                                    // Navigate in main area based on selected tool
                                     match self.analysis_modal.selected_tool {
                                         Some(analysis_modal::AnalysisTool::Describe) => {
                                             if let Some(state) = &self.data_table_state {
@@ -879,12 +877,8 @@ impl App {
                         && self.analysis_modal.view == analysis_modal::AnalysisView::Main =>
                 {
                     match self.analysis_modal.focus {
-                        analysis_modal::AnalysisFocus::Sidebar => {
-                            // Sidebar navigation handled by Up/Down
-                        }
-                        analysis_modal::AnalysisFocus::DistributionSelector => {
-                            // Distribution selector navigation handled by Up/Down
-                        }
+                        analysis_modal::AnalysisFocus::Sidebar
+                        | analysis_modal::AnalysisFocus::DistributionSelector => {}
                         analysis_modal::AnalysisFocus::Main => {
                             match self.analysis_modal.selected_tool {
                                 Some(
@@ -907,12 +901,8 @@ impl App {
                     if self.analysis_modal.view == analysis_modal::AnalysisView::Main =>
                 {
                     match self.analysis_modal.focus {
-                        analysis_modal::AnalysisFocus::Sidebar => {
-                            // Sidebar navigation handled by Up/Down
-                        }
-                        analysis_modal::AnalysisFocus::DistributionSelector => {
-                            // Distribution selector navigation handled by Up/Down
-                        }
+                        analysis_modal::AnalysisFocus::Sidebar
+                        | analysis_modal::AnalysisFocus::DistributionSelector => {}
                         analysis_modal::AnalysisFocus::Main => {
                             match self.analysis_modal.selected_tool {
                                 // The table set how far it scrolls as it drew.

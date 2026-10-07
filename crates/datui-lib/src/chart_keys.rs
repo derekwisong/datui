@@ -132,7 +132,7 @@ impl App {
                 self.take_follow_rows(false);
                 self.chart_cache.clear();
             }
-            // q/Q do nothing in chart view (no exit)
+
             KeyCode::Char('?') => self.open_help_overlay(),
             KeyCode::Char('+') | KeyCode::Char('=') => self.chart_modal.adjust_number_row(1),
             KeyCode::Char('-') => self.chart_modal.adjust_number_row(-1),

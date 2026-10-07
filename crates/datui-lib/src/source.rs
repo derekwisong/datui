@@ -1,4 +1,4 @@
-//! Input source detection for local paths vs remote URLs (S3, GCS, HTTP/HTTPS).
+//! Input source detection for local paths vs remote URLs (S3, GCS, Azure, HTTP/HTTPS).
 
 use std::path::{Path, PathBuf};
 

@@ -138,7 +138,7 @@ pub fn opener_argv(platform: Platform, url: &str) -> Vec<String> {
 
 /// Start the browser on `url`, already checked, without waiting for it.
 pub fn open(url: &str) -> std::io::Result<()> {
-    crate::external_open::start(&opener_argv(Platform::current(), url))
+    crate::inspector::external_open::start(&opener_argv(Platform::current(), url))
 }
 
 #[cfg(test)]

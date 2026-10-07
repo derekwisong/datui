@@ -4,8 +4,9 @@
 use crate::form::ListMove;
 use crate::jobs::{Answer, Job};
 use crate::{
-    App, AppEvent, Overlay, clipboard, copy_modal, external_open, inspector_bytes, inspector_drill,
-    inspector_modal, inspector_reader, sentence,
+    App, AppEvent, Overlay, clipboard, copy_modal, inspector::external_open,
+    inspector::inspector_bytes, inspector::inspector_drill, inspector::inspector_modal,
+    inspector::inspector_reader, sentence,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 

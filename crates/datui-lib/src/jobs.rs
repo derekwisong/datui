@@ -129,13 +129,13 @@ pub(crate) enum Job {
     /// The inspector's fields of row `row` of frame `frame`, not in the buffer.
     InspectRow { frame: u64, row: usize },
     /// The inspector's text parsed as JSON to drill into; answers
-    /// [`crate::inspector_drill::JsonWait`].
+    /// [`crate::inspector::inspector_drill::JsonWait`].
     InspectJson { token: u64 },
     /// The inspector's long JSON indented for its JSON view; answers
-    /// [`crate::inspector_modal::Pretty`].
+    /// [`crate::inspector::inspector_modal::Pretty`].
     InspectPretty { token: u64 },
     /// The inspector's gzip or zstd bytes decompressed for its Text view; answers
-    /// [`crate::inspector_modal::Unpack`].
+    /// [`crate::inspector::inspector_modal::Unpack`].
     InspectUnpack { token: u64 },
     /// The inspector's value written to a file for another program to open.
     OpenValue,
@@ -417,9 +417,9 @@ pub(crate) enum Answer {
     /// [`Job::InspectPretty`]: the text, indented.
     Indented(std::sync::Arc<str>),
     /// [`Job::InspectUnpack`]: the text, as far as it was decompressed.
-    Unpacked(crate::inspector_bytes::Decoded),
+    Unpacked(crate::inspector::inspector_bytes::Decoded),
     /// [`Job::OpenValue`]: the file, written.
-    ValueWritten(crate::external_open::ExternalOpen),
+    ValueWritten(crate::inspector::external_open::ExternalOpen),
     /// [`Job::Export`]: the file, committed.
     Exported(PathBuf),
     /// [`Job::Copy`]: the formatted view or field and its flash. The clipboard is

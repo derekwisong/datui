@@ -1,4 +1,4 @@
-use crate::inspector_modal::FieldRead;
+use crate::inspector::inspector_modal::FieldRead;
 use crate::*;
 use polars::prelude::{IntoLazy, df};
 
@@ -169,7 +169,7 @@ fn json_text_that_cannot_open_stops_offering_open() {
     let mut app = App::new(tx, crate::tests::test_runtime());
     let huge = format!(
         "[{}0]",
-        "0,".repeat(inspector_drill::JSON_MAX_BYTES / 2 + 1)
+        "0,".repeat(inspector::inspector_drill::JSON_MAX_BYTES / 2 + 1)
     );
     let bad = format!("{{{}}}", "x".repeat(40 * 1024));
     let df = df!("huge" => [huge], "bad" => [bad]).unwrap();

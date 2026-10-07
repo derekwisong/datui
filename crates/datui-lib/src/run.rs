@@ -7,8 +7,8 @@ use crate::terminal::{
 };
 use crate::view::Views;
 use crate::{
-    App, AppEvent, RunInput, event_pump, external_open, glyphs, logging, pointer, startup,
-    terminal_color, terminal_input,
+    App, AppEvent, RunInput, event_pump, glyphs, inspector::external_open, logging, pointer,
+    startup, terminal_color, terminal_input,
 };
 use color_eyre::Result;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -20,7 +20,7 @@ use polars::prelude::LazyFrame;
 pub struct External {
     /// A value the inspector wrote for another program, for the run loop to open (it
     /// owns the terminal a waiting program takes).
-    pub(crate) open: Option<crate::external_open::ExternalOpen>,
+    pub(crate) open: Option<crate::inspector::external_open::ExternalOpen>,
     /// Where those values are written; removed when the app is.
     pub(crate) open_dir: Option<tempfile::TempDir>,
     /// Where copies go, built at the first copy and kept: on Wayland and X11 the

@@ -2,18 +2,20 @@
 //! value, as one Surface titled with the row. Under 140 columns the fields list above
 //! the value; wider, fields fill columns on the left and the value runs full height on
 //! the right. Tab moves focus (and the rail). The value pane wraps only on-screen rows
-//! ([`crate::inspector_reader`]), so a 2 MiB value's end is a key away.
+//! ([`crate::inspector::inspector_reader`]), so a 2 MiB value's end is a key away.
 
 use crate::copy_modal::thousands;
 use crate::exact;
 use crate::formats::column_types::dtype_label;
-use crate::inspector_bytes::{self, Decoded, Sniffed};
-use crate::inspector_drill::{JSON_INLINE_BYTES, Node, Shape, json_text, looks_like_json};
-use crate::inspector_modal::{
+use crate::inspector::inspector_bytes::{self, Decoded, Sniffed};
+use crate::inspector::inspector_drill::{
+    JSON_INLINE_BYTES, Node, Shape, json_text, looks_like_json,
+};
+use crate::inspector::inspector_modal::{
     CHUNK_BYTES, FieldRead, Focus, InspectorModal, Order, PaneKey, Pretty, View,
 };
-pub use crate::inspector_reader::Tone;
-use crate::inspector_reader::{self as reader, Content, TextForm, Window};
+pub use crate::inspector::inspector_reader::Tone;
+use crate::inspector::inspector_reader::{self as reader, Content, TextForm, Window};
 use crate::render::context::RenderContext;
 use crate::table::{DataTableState, InspectField, InspectRow, NullKind};
 use crate::widgets::ui::{HintBar, SectionRule, Surface};
@@ -758,7 +760,7 @@ fn differs_from(
 /// Keep the fields listed for `row`, the row shown, as [`visible_fields`] has them:
 /// worked out again only when something they depend on changed.
 pub fn refresh_list(modal: &mut InspectorModal, state: &DataTableState, row: Option<&InspectRow>) {
-    let key = crate::inspector_modal::ListKey {
+    let key = crate::inspector::inspector_modal::ListKey {
         order: modal.order,
         filled_only: modal.filled_only,
         filter: modal.filter.clone(),
@@ -1975,8 +1977,8 @@ fn dim_or(ctx: &RenderContext, focused: bool) -> Style {
 /// reads as a JSON object or array.
 pub fn value_opens(value: &AnyValue) -> bool {
     match value {
-        AnyValue::String(s) => crate::inspector_drill::opens_as_json(s),
-        AnyValue::StringOwned(s) => crate::inspector_drill::opens_as_json(s),
+        AnyValue::String(s) => crate::inspector::inspector_drill::opens_as_json(s),
+        AnyValue::StringOwned(s) => crate::inspector::inspector_drill::opens_as_json(s),
         v => exact::is_nested_value(v),
     }
 }

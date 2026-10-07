@@ -719,7 +719,7 @@ fn test_inspector_compares_rows_and_lists_only_the_differences() {
 /// stays on its list.
 #[test]
 fn test_inspector_esc_leaves_compare_first_and_tab_moves_nothing() {
-    use datui::inspector_modal::Focus;
+    use datui::inspector::inspector_modal::Focus;
 
     let dir = tempfile::tempdir().unwrap();
     let (mut app, rx, tx) = open_orders_fixture(dir.path());
@@ -865,7 +865,7 @@ fn test_inspector_reads_follow_the_row_after_one_enter() {
     pump_until(&mut app, &rx, &tx, |app| {
         !matches!(
             app.inspector_modal.read,
-            Some(datui::inspector_modal::FieldRead::Reading { .. })
+            Some(datui::inspector::inspector_modal::FieldRead::Reading { .. })
         )
     });
     let screen = draw_inspector(&mut app);
@@ -1075,7 +1075,7 @@ fn test_inspector_decompresses_bytes_off_the_ui_thread() {
     let pending = |app: &App| {
         matches!(
             app.inspector_modal.unpack,
-            Some(datui::inspector_modal::Unpack::Pending { .. })
+            Some(datui::inspector::inspector_modal::Unpack::Pending { .. })
         )
     };
 

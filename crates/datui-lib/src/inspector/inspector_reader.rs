@@ -945,18 +945,18 @@ mod tests {
             first.rows[0].text,
             "paragraph 0 of words that wrap at the pane edge."
         );
-        assert!(r.take_formatted() <= crate::inspector_modal::CHUNK_BYTES);
+        assert!(r.take_formatted() <= crate::inspector::inspector_modal::CHUNK_BYTES);
         r.end(&c, 40);
         let last = r.window(&c, 40);
         assert!(!last.below && last.above);
         assert_eq!(last.rows.len(), 40);
         assert!(last.rows.iter().all(|row| row.text.starts_with('y')));
         assert_eq!(last.to, prose.len());
-        assert!(r.take_formatted() <= crate::inspector_modal::CHUNK_BYTES);
+        assert!(r.take_formatted() <= crate::inspector::inspector_modal::CHUNK_BYTES);
         for _ in 0..50 {
             r.scroll(&c, 40, -39);
             r.window(&c, 40);
-            assert!(r.take_formatted() <= crate::inspector_modal::CHUNK_BYTES);
+            assert!(r.take_formatted() <= crate::inspector::inspector_modal::CHUNK_BYTES);
         }
         r.home();
         assert_eq!(r.window(&c, 40).from, 0);

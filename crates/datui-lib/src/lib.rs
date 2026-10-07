@@ -32,7 +32,6 @@ pub mod error_display;
 pub mod event_pump;
 pub mod exact;
 pub mod export;
-pub mod external_open;
 mod feedback;
 pub mod filter_modal;
 pub mod find;
@@ -45,11 +44,7 @@ mod hex_keys;
 pub mod hex_view;
 pub mod home;
 mod info_keys;
-pub mod inspector_bytes;
-pub mod inspector_drill;
-mod inspector_keys;
-pub mod inspector_modal;
-pub mod inspector_reader;
+pub mod inspector;
 mod jobs;
 pub mod limits;
 pub mod link_open;
@@ -840,7 +835,7 @@ pub struct App {
     pub chart: chart::chart_jobs::Charts,
     pub export_modal: ExportModal,
     pub copy_modal: copy_modal::CopyModal,
-    pub inspector_modal: inspector_modal::InspectorModal,
+    pub inspector_modal: inspector::inspector_modal::InspectorModal,
     /// What datui hands to other programs, and the clipboard.
     external: run::External,
     /// The go-to-column, format and table pickers.
@@ -2714,7 +2709,7 @@ impl App {
             },
             export_modal: ExportModal::new(),
             copy_modal: copy_modal::CopyModal::new(),
-            inspector_modal: inspector_modal::InspectorModal::new(),
+            inspector_modal: inspector::inspector_modal::InspectorModal::new(),
             external: run::External::default(),
             pickers: picker_keys::Pickers::default(),
             value_counts: analysis::value_counts_modal::ValueCountsModal::default(),
@@ -4900,7 +4895,7 @@ impl App {
                     .is_some_and(|read| read.key() == (frame, row));
                 if self.overlay == Overlay::Inspect && asked {
                     self.inspector_modal.read =
-                        Some(inspector_modal::FieldRead::Read { frame, row, values });
+                        Some(inspector::inspector_modal::FieldRead::Read { frame, row, values });
                 }
                 None
             }
@@ -4911,7 +4906,7 @@ impl App {
                 }
                 let modal = &mut self.inspector_modal;
                 if let Some(wait) = modal.json_wait.take_if(|w| w.token == token) {
-                    let node = inspector_drill::Node::Json {
+                    let node = inspector::inspector_drill::Node::Json {
                         root,
                         path: Vec::new(),
                     };
@@ -4922,11 +4917,11 @@ impl App {
             (Job::InspectPretty { token }, Answer::Indented(text)) => {
                 let modal = &mut self.inspector_modal;
                 if current
-                    && let Some(inspector_modal::Pretty::Pending { token: t, place }) =
+                    && let Some(inspector::inspector_modal::Pretty::Pending { token: t, place }) =
                         modal.pretty.as_ref()
                     && *t == token
                 {
-                    modal.pretty = Some(inspector_modal::Pretty::Ready {
+                    modal.pretty = Some(inspector::inspector_modal::Pretty::Ready {
                         place: place.clone(),
                         text,
                     });
@@ -4936,11 +4931,11 @@ impl App {
             (Job::InspectUnpack { token }, Answer::Unpacked(decoded)) => {
                 let modal = &mut self.inspector_modal;
                 if current
-                    && let Some(inspector_modal::Unpack::Pending { token: t, place }) =
+                    && let Some(inspector::inspector_modal::Unpack::Pending { token: t, place }) =
                         modal.unpack.as_ref()
                     && *t == token
                 {
-                    modal.unpack = Some(inspector_modal::Unpack::Ready {
+                    modal.unpack = Some(inspector::inspector_modal::Unpack::Ready {
                         place: place.clone(),
                         text: std::sync::Arc::new(decoded),
                     });
@@ -5124,11 +5119,11 @@ impl App {
             }
             Job::InspectPretty { token } => {
                 let modal = &mut self.inspector_modal;
-                if let Some(inspector_modal::Pretty::Pending { token: t, place }) =
+                if let Some(inspector::inspector_modal::Pretty::Pending { token: t, place }) =
                     modal.pretty.as_ref()
                     && t == token
                 {
-                    modal.pretty = Some(inspector_modal::Pretty::Failed {
+                    modal.pretty = Some(inspector::inspector_modal::Pretty::Failed {
                         place: place.clone(),
                     });
                 }
@@ -5136,11 +5131,11 @@ impl App {
             }
             Job::InspectUnpack { token } => {
                 let modal = &mut self.inspector_modal;
-                if let Some(inspector_modal::Unpack::Pending { token: t, place }) =
+                if let Some(inspector::inspector_modal::Unpack::Pending { token: t, place }) =
                     modal.unpack.as_ref()
                     && t == token
                 {
-                    modal.unpack = Some(inspector_modal::Unpack::Failed {
+                    modal.unpack = Some(inspector::inspector_modal::Unpack::Failed {
                         place: place.clone(),
                     });
                 }
@@ -5240,11 +5235,12 @@ impl App {
                     .as_ref()
                     .is_some_and(|read| read.key() == (*frame, *row));
                 if asked {
-                    self.inspector_modal.read = Some(inspector_modal::FieldRead::Failed {
-                        frame: *frame,
-                        row: *row,
-                        message: could_not("read the field"),
-                    });
+                    self.inspector_modal.read =
+                        Some(inspector::inspector_modal::FieldRead::Failed {
+                            frame: *frame,
+                            row: *row,
+                            message: could_not("read the field"),
+                        });
                 }
             }
             // The form comes back with the reason on its status line.
@@ -5567,7 +5563,7 @@ impl App {
     }
 
     /// The value the inspector wrote for another program, for the run loop.
-    pub fn take_external_open(&mut self) -> Option<external_open::ExternalOpen> {
+    pub fn take_external_open(&mut self) -> Option<inspector::external_open::ExternalOpen> {
         self.external.open.take()
     }
 
@@ -5579,14 +5575,19 @@ impl App {
 
     /// The run loop opened `open`: a waiting program is done with its file; a failure
     /// goes on the bar.
-    pub fn external_opened(&mut self, open: &external_open::ExternalOpen, failed: Option<String>) {
-        let program = external_open::program_for(open.document, |name| std::env::var(name).ok());
-        if matches!(program, external_open::Program::Wait(_)) {
+    pub fn external_opened(
+        &mut self,
+        open: &inspector::external_open::ExternalOpen,
+        failed: Option<String>,
+    ) {
+        let program =
+            inspector::external_open::program_for(open.document, |name| std::env::var(name).ok());
+        if matches!(program, inspector::external_open::Program::Wait(_)) {
             let _ = std::fs::remove_file(&open.path);
         }
         match failed {
             Some(e) => self.flash_note(format!("Could not open the value: {e}")),
-            None if matches!(program, external_open::Program::Opener(_)) => {
+            None if matches!(program, inspector::external_open::Program::Opener(_)) => {
                 self.flash_note("Opened in the system viewer".to_string())
             }
             None => {}

@@ -3,8 +3,8 @@
 //! for this row that the buffer lacks. Values are not kept here: the inspector
 //! draws the table's selected row from its buffer every frame.
 
-use crate::inspector_drill::{Drill, JsonWait, Level, Node};
-use crate::inspector_reader::{Reader, Wrap};
+use crate::inspector::inspector_drill::{Drill, JsonWait, Level, Node};
+use crate::inspector::inspector_reader::{Reader, Wrap};
 use crate::table::{InspectField, InspectRow};
 use crate::widgets::inspector::Pane;
 use polars::prelude::DataFrame;
@@ -158,7 +158,7 @@ pub enum Unpack {
     },
     Ready {
         place: (u64, usize, String),
-        text: Arc<crate::inspector_bytes::Decoded>,
+        text: Arc<crate::inspector::inspector_bytes::Decoded>,
     },
     Failed {
         place: (u64, usize, String),

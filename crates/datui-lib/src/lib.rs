@@ -6286,16 +6286,14 @@ impl App {
         if self.home_refresh_owed {
             self.home_refresh();
         }
-        if std::mem::take(&mut self.home.pending_enrich) {
-            self.request_home_measurements();
-        }
         #[cfg(feature = "http")]
         self.size_selected_web_file();
-        if std::mem::take(&mut self.home.pending_classify) {
+        // The rows on screen as the frame left them: each pass asks for those still
+        // unknown, a batch at a time. Not under the path prompt, which hides the list.
+        if !self.home.path_input_active {
+            self.request_home_measurements();
             self.request_home_classifications();
-        }
-        #[cfg(feature = "cloud")]
-        if std::mem::take(&mut self.home.pending_peek) {
+            #[cfg(feature = "cloud")]
             self.peek_cloud_directories();
         }
     }

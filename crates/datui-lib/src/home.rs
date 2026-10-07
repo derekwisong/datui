@@ -1545,13 +1545,6 @@ pub struct HomeState {
     /// chosen from the viewport as it is then — which is what keeps paging quickly
     /// from queueing a classification for every row it passed over.
     pub classify_in_flight: bool,
-    /// Set while rows on screen are still unmeasured, so the main loop knows to draw
-    /// another frame and measure the next batch.
-    pub pending_enrich: bool,
-    /// The same, for rows on screen nothing has looked into yet.
-    pub pending_classify: bool,
-    /// The same, for cloud directories on screen nothing has peeked into yet.
-    pub pending_peek: bool,
     /// Cloud directories with a peek out. Their own set rather than a claim written into
     /// [`Self::cloud_kinds`]: a claim is an answer, and writing one before the request
     /// comes back put `dir` on a row that had a count and staked "never again this
@@ -1758,8 +1751,6 @@ impl Default for HomeState {
             listing_in_flight: false,
             measure_in_flight: false,
             classify_in_flight: false,
-            pending_classify: false,
-            pending_peek: false,
             peeking: std::collections::HashSet::new(),
             probed: std::collections::HashMap::new(),
             unreachable: std::collections::HashSet::new(),
@@ -1769,7 +1760,6 @@ impl Default for HomeState {
             probe_errors: std::collections::HashMap::new(),
             cloud_kinds: std::collections::HashMap::new(),
             peek_failed: std::collections::HashSet::new(),
-            pending_enrich: false,
             waiting_since: None,
             enriched: std::collections::HashMap::new(),
             folds: std::collections::HashMap::new(),

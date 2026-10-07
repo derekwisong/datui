@@ -552,11 +552,6 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
         .collect();
     app.pointer.home_list_drawn(area, lines_drawn);
 
-    // Nothing is read here. Rows carry whatever a worker has measured so far, and
-    // the request for more is made after the frame, not during it.
-    app.home.pending_enrich = !app.home.unmeasured_visible(1).is_empty();
-    app.home.pending_classify = !app.home.unclassified_visible(1).is_empty();
-    app.home.pending_peek = !app.home.cloud_directories_to_peek(1).is_empty();
     let awaiting = app.home.awaiting_listing().map(|d| d.to_path_buf());
     let since = match awaiting {
         Some(_) => Some(

@@ -1529,11 +1529,16 @@ impl App {
             Option<usize>,
             bool,
         ) -> Result<crate::statistics::AnalysisResults>;
-        let (status, compute): (&str, Compute) = match tool {
+        type Install = fn(&mut analysis_modal::AnalysisModal, crate::statistics::AnalysisResults);
+        let (status, compute, install): (&str, Compute, Install) = match tool {
             AnalysisTool::DataQuality => return self.run_quality_compute(),
-            AnalysisTool::Describe => ("Running analysis...", |lf, sample, known, streaming| {
-                crate::statistics::compute_describe_from_lazy(lf, known, sample, streaming)
-            }),
+            AnalysisTool::Describe => (
+                "Running analysis...",
+                |lf, sample, known, streaming| {
+                    crate::statistics::compute_describe_from_lazy(lf, known, sample, streaming)
+                },
+                |modal, results| modal.describe_results = Some(results),
+            ),
             AnalysisTool::DistributionAnalysis => (
                 "Analyzing distributions...",
                 |lf, sample, known, streaming| {
@@ -1546,10 +1551,13 @@ impl App {
                     };
                     crate::statistics::compute_statistics_for_sample(lf, sample, known, options)
                 },
+                |modal, results| modal.distribution_results = Some(results),
             ),
-            AnalysisTool::CorrelationMatrix => {
-                ("Computing correlation matrix...", correlations_of_sample)
-            }
+            AnalysisTool::CorrelationMatrix => (
+                "Computing correlation matrix...",
+                correlations_of_sample,
+                analysis_modal::AnalysisModal::install_correlations,
+            ),
         };
         let Some(state) = &self.data_table_state else {
             self.analysis_modal.computing = None;
@@ -1572,7 +1580,7 @@ impl App {
                     .cut(&sample.scope)
                     .and_then(|lf| compute(&lf, &sample, known_total, streaming))
                     .map_err(|e| format!("{e}"))?;
-                Ok(Answer::Analysis(tool, results))
+                Ok(Answer::Analysis(install, results))
             },
         );
         None
@@ -5560,22 +5568,10 @@ impl App {
                 self.rows_failed(current, waited, &message, conversion.as_deref());
                 None
             }
-            Answer::Analysis(tool, results) => {
+            Answer::Analysis(install, results) => {
                 if current {
-                    let modal = &mut self.analysis_modal;
-                    match tool {
-                        analysis_modal::AnalysisTool::Describe => {
-                            modal.describe_results = Some(results)
-                        }
-                        analysis_modal::AnalysisTool::DistributionAnalysis => {
-                            modal.distribution_results = Some(results)
-                        }
-                        analysis_modal::AnalysisTool::CorrelationMatrix => {
-                            modal.install_correlations(results)
-                        }
-                        analysis_modal::AnalysisTool::DataQuality => {}
-                    }
-                    modal.computing = None;
+                    install(&mut self.analysis_modal, results);
+                    self.analysis_modal.computing = None;
                 }
                 None
             }

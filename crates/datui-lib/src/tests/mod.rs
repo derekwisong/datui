@@ -2307,7 +2307,6 @@ fn a_superseded_scan_does_not_continue_the_load() {
 /// screen, whatever the tool: every one of them is judged by its job.
 #[test]
 fn stale_analysis_answers_are_ignored() {
-    use crate::analysis_modal::AnalysisTool;
     use crate::data_quality::{DataQualityResults, QualityPrecision};
     use crate::statistics::AnalysisResults;
     use crate::{Answer, App, AppEvent, Job, Outcome};
@@ -2324,9 +2323,12 @@ fn stale_analysis_answers_are_ignored() {
         distribution_analyses: vec![],
     };
     let answers = vec![
-        Answer::Analysis(AnalysisTool::Describe, results()),
-        Answer::Analysis(AnalysisTool::DistributionAnalysis, results()),
-        Answer::Analysis(AnalysisTool::CorrelationMatrix, results()),
+        Answer::Analysis(|modal, r| modal.describe_results = Some(r), results()),
+        Answer::Analysis(|modal, r| modal.distribution_results = Some(r), results()),
+        Answer::Analysis(
+            crate::analysis_modal::AnalysisModal::install_correlations,
+            results(),
+        ),
         Answer::DataQuality {
             results: Box::new(DataQualityResults {
                 total_rows: Some(999_999),

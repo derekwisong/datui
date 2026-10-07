@@ -394,6 +394,7 @@ impl ChartRequest {
             Mark::Bar if encoding.y.aggregate != Aggregate::None => {
                 let mut data = chart_data::prepare_bar_aggregate(
                     lf,
+                    schema,
                     &chart_data::BarAggregate {
                         category: x,
                         value: first_y,
@@ -424,9 +425,7 @@ impl ChartRequest {
                 Some(split) => {
                     chart_data::prepare_kde_by(lf, x, self.bandwidth, self.range, split, sampling)?
                 }
-                None => {
-                    chart_data::prepare_kde_data(lf, &[x], self.bandwidth, self.range, sampling)?
-                }
+                None => chart_data::prepare_kde_data(lf, x, self.bandwidth, self.range, sampling)?,
             }),
             Mark::Box => {
                 let y = first_y.unwrap_or_default();
@@ -452,7 +451,7 @@ impl ChartRequest {
                         }
                         data
                     }
-                    None => chart_data::prepare_box_plot_data(lf, &[y], self.range, sampling)?,
+                    None => chart_data::prepare_box_plot_data(lf, y, self.range, sampling)?,
                 })
             }
             Mark::Heatmap => ChartPrepared::Heatmap(chart_data::prepare_heatmap_data(

@@ -37,6 +37,9 @@ pub(crate) struct View {
     /// pipeline is original → query/reshape (`base_lf`) → filters → sort (`lf`) → column
     /// order (at collect). Filters therefore never discard the query.
     base_lf: LazyFrame,
+    /// `base_lf`'s schema, as the frame that built it said: what the view's column
+    /// changes are checked against without resolving the plan again.
+    base_schema: Arc<Schema>,
     pub(crate) df: Option<DataFrame>, // Scrollable columns dataframe
     pub(crate) locked_df: Option<DataFrame>, // Locked columns dataframe
     pub(crate) start_row: usize,
@@ -721,6 +724,7 @@ impl DataTableState {
             view: View {
                 unsorted_lf: None,
                 base_lf: lf.clone(),
+                base_schema: schema.clone(),
                 lf,
                 df: None,
                 locked_df: None,
@@ -899,6 +903,7 @@ impl DataTableState {
         self.root_generation = next_len_generation();
         self.invalidate_num_rows();
         self.original_schema = schema.clone();
+        self.view.base_schema = schema.clone();
         self.view.schema = schema;
         self.original_lf = lf.clone();
         self.view.base_lf = lf.clone();
@@ -930,6 +935,7 @@ impl DataTableState {
         // A column may keep its name and type and hold other values now.
         self.widths.relearn();
         self.view.base_lf = lf.clone();
+        self.view.base_schema = schema.clone();
         self.view.lf = lf;
         self.view.unsorted_lf = None;
         // Every caller says how the base was built; one that does not leaves a script

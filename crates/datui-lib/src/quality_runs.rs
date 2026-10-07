@@ -68,7 +68,7 @@ impl App {
     /// no rows to show opens nothing.
     pub(crate) fn open_quality_evidence(&mut self) -> Option<AppEvent> {
         let (_, finding) = self.analysis_modal.selected_finding()?;
-        let results = self.analysis_modal.data_quality_results.as_ref()?;
+        let results = self.analysis_modal.quality.results.as_ref()?;
         let rows = finding.evidence(results).ok()?;
         let sampled = results.precision == data_quality::QualityPrecision::Sampled;
         let count = finding.evidence_count(results);
@@ -95,7 +95,8 @@ impl App {
             .interval_evidence(schema.map(|schema| schema.as_ref()))?;
         let sampled = self
             .analysis_modal
-            .data_quality_results
+            .quality
+            .results
             .as_ref()
             .is_some_and(|results| results.precision == data_quality::QualityPrecision::Sampled);
         let what = label
@@ -114,7 +115,7 @@ impl App {
     /// rows, same dataset, view and sample. `None` after a full scan, which keeps
     /// none, and once they are released.
     pub(crate) fn quality_rows_kept(&self) -> Option<std::sync::Arc<data_quality::QualitySample>> {
-        self.analysis_modal.data_quality_results.as_ref()?;
+        self.analysis_modal.quality.results.as_ref()?;
         let plan = self.analysis_modal.quality_result_plan();
         if plan.compute != data_quality::QualityCompute::Sample {
             return None;
@@ -216,7 +217,7 @@ impl App {
         } else {
             "local, read only"
         };
-        self.analysis_modal.data_quality_evidence_read = Some(analysis_modal::EvidenceRead {
+        self.analysis_modal.quality.evidence_read = Some(analysis_modal::EvidenceRead {
             summary: vec![
                 ("Rows", what),
                 ("Why", why),
@@ -235,7 +236,7 @@ impl App {
     /// Enter on a staged read: read the rows it named, as it said.
     pub(crate) fn confirm_evidence_read(&mut self) -> Option<AppEvent> {
         // Beside a cancelled run still reading, the read stays staged for later.
-        let staged = self.analysis_modal.data_quality_evidence_read.as_ref()?;
+        let staged = self.analysis_modal.quality.evidence_read.as_ref()?;
         let kept = staged
             .sample
             .as_ref()
@@ -243,7 +244,7 @@ impl App {
         if !kept && self.read_waits_for_cancelled() {
             return None;
         }
-        let read = self.analysis_modal.data_quality_evidence_read.take()?;
+        let read = self.analysis_modal.quality.evidence_read.take()?;
         if let Some(sample) = read.sample {
             return self.read_sample_rows(sample, Some((read.rows, read.label)));
         }
@@ -351,14 +352,14 @@ impl App {
         else {
             return;
         };
-        if self.analysis_modal.data_quality_plan != data_quality::DataQualityPlan::default() {
+        if self.analysis_modal.quality.plan != data_quality::DataQualityPlan::default() {
             return;
         }
         if let Some(cached) = self.quality.cache.iter().find(|entry| {
             entry.dataset_generation == self.dataset_generation
                 && entry.view_generation == view_generation
         }) {
-            self.analysis_modal.data_quality_plan = cached.plan.clone();
+            self.analysis_modal.quality.plan = cached.plan.clone();
         }
     }
 
@@ -368,7 +369,7 @@ impl App {
         let Some(state) = self.data_table_state.as_ref() else {
             return analysis_modal::PlanContext::default();
         };
-        let plan = &self.analysis_modal.data_quality_plan;
+        let plan = &self.analysis_modal.quality.plan;
         let scope = &plan.scope;
         let schema = state.schema();
         let mut partitions = state.partition_columns().unwrap_or_default().to_vec();
@@ -424,7 +425,7 @@ impl App {
         let Some(state) = self.data_table_state.as_ref() else {
             return Vec::new();
         };
-        let scope = &self.analysis_modal.data_quality_plan.scope;
+        let scope = &self.analysis_modal.quality.plan.scope;
         let mut columns = state.quality_temporal_columns(scope);
         columns.extend(state.quality_text_columns(scope));
         columns
@@ -436,7 +437,7 @@ impl App {
             .as_ref()
             .map(|state| {
                 crate::widgets::quality_intent::intent_columns(
-                    state.quality_schema(&self.analysis_modal.data_quality_plan.scope),
+                    state.quality_schema(&self.analysis_modal.quality.plan.scope),
                 )
             })
             .unwrap_or_default()
@@ -514,9 +515,9 @@ impl App {
     pub(crate) fn quality_page_setup(&self) -> Option<data_quality::QualitySetup> {
         let modal = &self.analysis_modal;
         data_quality::page_setup(
-            modal.data_quality_page,
+            modal.quality.page,
             modal.quality_result_plan(),
-            modal.data_quality_results.as_ref(),
+            modal.quality.results.as_ref(),
             self.has_quality_time_columns(),
         )
     }
@@ -524,14 +525,10 @@ impl App {
     /// Whether the plan's scope has a column it reads as time: a date or time
     /// column, or text given a format. What an empty Trends page points to.
     pub(crate) fn has_quality_time_columns(&self) -> bool {
-        !self
-            .analysis_modal
-            .data_quality_plan
-            .time_formats
-            .is_empty()
+        !self.analysis_modal.quality.plan.time_formats.is_empty()
             || self.data_table_state.as_ref().is_some_and(|state| {
                 !state
-                    .quality_temporal_columns(&self.analysis_modal.data_quality_plan.scope)
+                    .quality_temporal_columns(&self.analysis_modal.quality.plan.scope)
                     .is_empty()
             })
     }
@@ -843,7 +840,7 @@ impl App {
         else {
             return false;
         };
-        let plan = self.analysis_modal.data_quality_plan.clone();
+        let plan = self.analysis_modal.quality.plan.clone();
         let Some(cached) = self.quality.cache.iter().find(|entry| {
             entry.dataset_generation == self.dataset_generation
                 && entry.view_generation == view_generation
@@ -859,9 +856,9 @@ impl App {
             }
             self.cache_quality_result(&results, plan.clone());
         }
-        self.analysis_modal.data_quality_results = Some(results);
-        self.analysis_modal.data_quality_last_plan = Some(plan);
-        self.analysis_modal.data_quality_from_cache = true;
+        self.analysis_modal.quality.results = Some(results);
+        self.analysis_modal.quality.last_plan = Some(plan);
+        self.analysis_modal.quality.from_cache = true;
         self.analysis_modal
             .set_quality_page(data_quality::QualityPage::Overview);
         true
@@ -1227,7 +1224,7 @@ impl App {
     /// engine and into the session cache's key. Metadata-only stays metadata-only.
     pub(crate) fn sync_quality_plan(&mut self) {
         let sample = self.analysis_modal.sample.clone();
-        self.analysis_modal.data_quality_plan.adopt_sample(&sample);
+        self.analysis_modal.quality.plan.adopt_sample(&sample);
     }
 
     /// Open Data Quality Setup: the plan, staged. Edits wait for Run, and Esc puts
@@ -1235,15 +1232,15 @@ impl App {
     pub(crate) fn open_quality_setup(&mut self) {
         use data_quality::QualityPage;
         let modal = &mut self.analysis_modal;
-        if !modal.data_quality_page.is_setup() {
-            modal.data_quality_setup_return = modal.data_quality_page.tab();
+        if !modal.quality.page.is_setup() {
+            modal.quality.setup_return = modal.quality.page.tab();
         }
-        if modal.data_quality_setup_before.is_none() {
-            modal.data_quality_setup_before = Some(modal.data_quality_plan.clone());
+        if modal.quality.setup_before.is_none() {
+            modal.quality.setup_before = Some(modal.quality.plan.clone());
         }
-        if modal.data_quality_page != QualityPage::Setup {
+        if modal.quality.page != QualityPage::Setup {
             modal.set_quality_page(QualityPage::Setup);
-            modal.data_quality_plan_field = 0;
+            modal.quality.plan_field = 0;
         }
         modal.focus = analysis_modal::AnalysisFocus::Main;
     }
@@ -1253,13 +1250,13 @@ impl App {
     pub(crate) fn leave_quality_setup(&mut self) {
         use data_quality::QualityPage;
         let modal = &mut self.analysis_modal;
-        if let Some(before) = modal.data_quality_setup_before.take() {
-            modal.data_quality_plan = before;
+        if let Some(before) = modal.quality.setup_before.take() {
+            modal.quality.plan = before;
         }
-        modal.data_quality_setup_note = None;
-        modal.data_quality_picker = None;
-        if modal.data_quality_results.is_some() {
-            let back = match modal.data_quality_setup_return {
+        modal.quality.setup_note = None;
+        modal.quality.picker = None;
+        if modal.quality.results.is_some() {
+            let back = match modal.quality.setup_return {
                 page if page.is_setup() => QualityPage::Overview,
                 page => page,
             };
@@ -1291,7 +1288,7 @@ impl App {
     /// What stops Setup from running as it stands, said on its own line: a time
     /// window on text that has no format to read it with.
     fn quality_setup_problem(&self) -> Option<String> {
-        let plan = &self.analysis_modal.data_quality_plan;
+        let plan = &self.analysis_modal.quality.plan;
         let schema = self.data_table_state.as_ref()?.quality_schema(&plan.scope);
         match &plan.grain {
             data_quality::QualityGrain::TimeWindows { column, .. }
@@ -1318,19 +1315,20 @@ impl App {
     pub(crate) fn run_quality_setup(&mut self, confirmed: bool) -> Option<AppEvent> {
         use data_quality::QualityPage;
         if self.cancelled_analysis_running().is_some() {
-            self.analysis_modal.data_quality_setup_note = Some(QUALITY_RUN_WAITS.to_string());
+            self.analysis_modal.quality.setup_note = Some(QUALITY_RUN_WAITS.to_string());
             return None;
         }
         if let Some(problem) = self.quality_setup_problem() {
-            self.analysis_modal.data_quality_setup_note = Some(problem);
+            self.analysis_modal.quality.setup_note = Some(problem);
             return None;
         }
         // A report already here, on screen or cached, reads nothing: nothing to confirm.
-        let plan = &self.analysis_modal.data_quality_plan;
-        let here = (self.analysis_modal.data_quality_results.is_some()
+        let plan = &self.analysis_modal.quality.plan;
+        let here = (self.analysis_modal.quality.results.is_some()
             && self
                 .analysis_modal
-                .data_quality_last_plan
+                .quality
+                .last_plan
                 .as_ref()
                 .is_some_and(|last| last.same_measurement(plan)))
             || self.quality_cached(plan);
@@ -1344,10 +1342,10 @@ impl App {
         }
         self.commit_quality_plan();
         let modal = &mut self.analysis_modal;
-        if modal.data_quality_results.is_some()
-            && modal.data_quality_last_plan.as_ref() == Some(&modal.data_quality_plan)
+        if modal.quality.results.is_some()
+            && modal.quality.last_plan.as_ref() == Some(&modal.quality.plan)
         {
-            let back = match modal.data_quality_setup_return {
+            let back = match modal.quality.setup_return {
                 page if page.is_setup() => QualityPage::Overview,
                 page => page,
             };
@@ -1358,20 +1356,20 @@ impl App {
         // holds every count the windows are checked against and every segment the
         // comparison is worked out from, so it is relabeled, not read again.
         if let (Some(results), Some(last)) = (
-            modal.data_quality_results.as_ref(),
-            modal.data_quality_last_plan.as_ref(),
-        ) && last.same_measurement(&modal.data_quality_plan)
+            modal.quality.results.as_ref(),
+            modal.quality.last_plan.as_ref(),
+        ) && last.same_measurement(&modal.quality.plan)
         {
             let mut results = results.clone();
-            let plan = modal.data_quality_plan.clone();
+            let plan = modal.quality.plan.clone();
             let page = if last.compares_differently(&plan) {
                 results.compare_segments(&plan);
                 QualityPage::Segments
             } else {
                 QualityPage::Trends
             };
-            modal.data_quality_results = Some(results.clone());
-            modal.data_quality_last_plan = Some(plan.clone());
+            modal.quality.results = Some(results.clone());
+            modal.quality.last_plan = Some(plan.clone());
             modal.set_quality_page(page);
             self.cache_quality_result(&results, plan);
             return None;
@@ -1379,9 +1377,9 @@ impl App {
         if self.restore_cached_quality() {
             return None;
         }
-        self.analysis_modal.data_quality_from_cache = false;
+        self.analysis_modal.quality.from_cache = false;
         let mut progress = AnalysisProgress::new("Preparing the plan");
-        if self.quality_kept_serves(&self.analysis_modal.data_quality_plan) {
+        if self.quality_kept_serves(&self.analysis_modal.quality.plan) {
             progress.reuse = Some("Starts from rows a run already read".to_string());
         }
         self.analysis_modal.computing = Some(progress);
@@ -1397,7 +1395,7 @@ impl App {
     /// until the run replaces it.
     fn commit_quality_plan(&mut self) {
         let modal = &mut self.analysis_modal;
-        let sample = modal.data_quality_plan.sample();
+        let sample = modal.quality.plan.sample();
         if sample != modal.sample {
             modal.describe_results = None;
             modal.distribution_results = None;
@@ -1406,16 +1404,16 @@ impl App {
         modal.sample = sample;
         modal.sample_dataset = Some(self.dataset_generation);
         modal.sample_run_for = Some(self.dataset_generation);
-        modal.data_quality_setup_before = None;
-        modal.data_quality_setup_note = None;
-        modal.data_quality_picker = None;
+        modal.quality.setup_before = None;
+        modal.quality.setup_note = None;
+        modal.quality.picker = None;
     }
 
     /// Run the data quality check on the plan Setup committed.
     pub(crate) fn run_quality_compute(&mut self) -> Option<AppEvent> {
         // The plan Run committed; Setup's Run is the only way here.
         if let Some(state) = &self.data_table_state {
-            let plan = self.analysis_modal.data_quality_plan.clone();
+            let plan = self.analysis_modal.quality.plan.clone();
             let source_scope = plan.scope.uses_source();
             let (lf, source, cached_rows) = if source_scope {
                 let (lf, source) = state.data_quality_source_scan();

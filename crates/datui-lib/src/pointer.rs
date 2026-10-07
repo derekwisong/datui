@@ -633,13 +633,15 @@ impl App {
             .and_then(|f| id.focus_in(f))
             .or_else(|| {
                 analysis
-                    .data_quality_expected_form
+                    .quality
+                    .expected_form
                     .as_mut()
                     .and_then(|f| id.focus_in(f))
             })
             .or_else(|| {
                 analysis
-                    .data_quality_intent_form
+                    .quality
+                    .intent_form
                     .as_mut()
                     .and_then(|f| id.focus_in(f))
             })?;

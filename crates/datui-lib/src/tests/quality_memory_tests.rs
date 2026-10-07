@@ -20,10 +20,10 @@ fn a_cached_report_serves_other_expected_windows() {
         ..plan
     };
     assert!(app.quality_cached(&expecting));
-    app.analysis_modal.data_quality_plan = expecting.clone();
+    app.analysis_modal.quality.plan = expecting.clone();
     assert!(app.restore_cached_quality(), "no run");
     assert_eq!(
-        app.analysis_modal.data_quality_last_plan.as_ref(),
+        app.analysis_modal.quality.last_plan.as_ref(),
         Some(&expecting)
     );
     assert_eq!(app.quality.cache.len(), 1);

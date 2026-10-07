@@ -307,7 +307,7 @@ fn data_quality_finds_clipping_silence_and_dc_offset() {
     press(&mut app, KeyCode::Char('a'));
     app.analysis_modal.sidebar_state.select(Some(3));
     press(&mut app, KeyCode::Enter);
-    let plan = &mut app.analysis_modal.data_quality_plan;
+    let plan = &mut app.analysis_modal.quality.plan;
     plan.method = datui::sampling::SampleMethod::EveryRow;
     plan.compute = QualityCompute::Full;
     // A full scan asks first; the second Enter runs it.
@@ -316,7 +316,8 @@ fn data_quality_finds_clipping_silence_and_dc_offset() {
     drain_events(&mut app, &rx);
     let results = app
         .analysis_modal
-        .data_quality_results
+        .quality
+        .results
         .as_ref()
         .expect("the run finished");
     let found = |kind: ObservationKind, column: &str| {

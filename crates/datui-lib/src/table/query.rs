@@ -411,8 +411,9 @@ impl DataTableState {
 
     /// `column`'s type before the view's: as the read gave it, or as the view made it.
     pub fn type_as_read(&self, column: &str) -> Option<DataType> {
-        let base = self.view.base_lf.clone().collect_schema().ok()?;
-        base.get(column)
+        self.view
+            .base_schema
+            .get(column)
             .or_else(|| self.view.schema.get(column))
             .cloned()
     }
@@ -520,12 +521,7 @@ impl DataTableState {
         changes: &[crate::column_types::ColumnChange],
     ) -> Vec<String> {
         self.view.column_changes = Vec::new();
-        let base = self
-            .view
-            .base_lf
-            .clone()
-            .collect_schema()
-            .unwrap_or_else(|_| self.view.schema.clone());
+        let base = self.view.base_schema.clone();
         let mut known: Vec<String> = base.iter_names().map(|n| n.to_string()).collect();
         let mut dropped = Vec::new();
         for change in changes {
@@ -621,10 +617,8 @@ impl DataTableState {
         if self.view.column_changes.is_empty() {
             return (lf, None);
         }
-        let Ok(schema) = lf.collect_schema() else {
-            return (lf, None);
-        };
-        let mut schema = (*schema).clone();
+        // The frames passed here have the base's columns.
+        let mut schema = (*self.view.base_schema).clone();
         let mut made = lf.clone();
         let mut typed = Vec::new();
         for change in &self.view.column_changes {

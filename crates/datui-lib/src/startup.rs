@@ -34,6 +34,12 @@ pub struct Settings {
     pub(crate) notes: Vec<String>,
 }
 
+/// The value for `POLARS_MAX_THREADS` that `performance.threads` asks for: none for 0
+/// (every core), or when the environment already names one, which wins.
+pub(crate) fn polars_threads(threads: usize, env: Option<&std::ffi::OsStr>) -> Option<String> {
+    (threads > 0 && env.is_none()).then(|| threads.to_string())
+}
+
 /// Read the settings: the configuration (unless one was given), the command line over
 /// it, `[cloud] env_files`, the log.
 pub(crate) fn read(input: RunInput, config: Option<AppConfig>) -> Result<Settings> {
@@ -426,5 +432,15 @@ mod tests {
             Some(crate::cli::FormatChoice::File(home.join("l2feed.toml")))
         );
         assert_eq!(args.dict, [home.join("car.dbc")]);
+    }
+
+    /// `performance.threads` becomes POLARS_MAX_THREADS, unless the environment
+    /// already says, and 0 leaves Polars every core.
+    #[test]
+    fn performance_threads_caps_polars_unless_the_environment_says() {
+        assert_eq!(polars_threads(4, None).as_deref(), Some("4"));
+        assert_eq!(polars_threads(0, None), None);
+        let asked = std::ffi::OsString::from("2");
+        assert_eq!(polars_threads(4, Some(&asked)), None);
     }
 }

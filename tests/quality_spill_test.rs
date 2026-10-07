@@ -126,7 +126,7 @@ fn a_full_scan_leaves_no_temporary_files() {
     app.analysis_modal.sidebar_state.select(Some(3));
     press(&mut app, KeyCode::Enter);
     let full = |app: &mut App, grain: QualityGrain| {
-        let plan = &mut app.analysis_modal.data_quality_plan;
+        let plan = &mut app.analysis_modal.quality.plan;
         plan.method = datui::sampling::SampleMethod::EveryRow;
         plan.compute = QualityCompute::Full;
         plan.grain = grain;
@@ -137,7 +137,7 @@ fn a_full_scan_leaves_no_temporary_files() {
     // Finished: every pass, a grouping by region among them.
     let run = full(&mut app, QualityGrain::Partition("region".into()));
     settle(&mut app, &rx, run);
-    let results = app.analysis_modal.data_quality_results.as_ref().unwrap();
+    let results = app.analysis_modal.quality.results.as_ref().unwrap();
     assert_eq!(results.evaluated_rows, rows);
     untouched("a finished full scan");
 
@@ -156,7 +156,7 @@ fn a_full_scan_leaves_no_temporary_files() {
 
     // Failed: the file is gone.
     std::fs::remove_file(&path).unwrap();
-    if !app.analysis_modal.data_quality_page.is_setup() {
+    if !app.analysis_modal.quality.page.is_setup() {
         press(&mut app, KeyCode::Char('e'));
     }
     let run = full(&mut app, QualityGrain::Partition("note".into()));

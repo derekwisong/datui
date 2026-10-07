@@ -253,8 +253,8 @@ impl App {
         modal.describe_results = None;
         modal.distribution_results = None;
         modal.correlation_results = None;
-        modal.data_quality_results = None;
-        modal.data_quality_last_plan = None;
+        modal.quality.results = None;
+        modal.quality.last_plan = None;
         let sampled = self
             .data_table_state
             .as_ref()
@@ -572,9 +572,9 @@ impl App {
             self.analysis_modal.describe_results = None;
             self.analysis_modal.distribution_results = None;
             self.analysis_modal.correlation_results = None;
-            self.analysis_modal.data_quality_results = None;
-            self.analysis_modal.data_quality_last_plan = None;
-            self.analysis_modal.data_quality_from_cache = false;
+            self.analysis_modal.quality.results = None;
+            self.analysis_modal.quality.last_plan = None;
+            self.analysis_modal.quality.from_cache = false;
         }
         self.analysis_modal.sample = sample;
         self.analysis_modal.sample_dataset = Some(self.dataset_generation);

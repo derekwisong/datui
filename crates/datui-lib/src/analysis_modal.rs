@@ -475,7 +475,6 @@ pub struct AnalysisModal {
     pub describe_results: Option<AnalysisResults>,
     pub distribution_results: Option<AnalysisResults>,
     pub correlation_results: Option<AnalysisResults>,
-    pub data_quality_results: Option<DataQualityResults>,
     /// Set while a tool runs: its phase and progress, drawn in place of its results.
     /// What it is building lives in App.
     pub computing: Option<AnalysisProgress>,
@@ -489,58 +488,78 @@ pub struct AnalysisModal {
     pub correlation_method: crate::statistics::CorrelationMethod,
     pub selected_theoretical_distribution: DistributionType, // Selected theoretical distribution for Q-Q plot
     pub distribution_selector_state: TableState,             // For distribution selector list
-    pub histogram_scale: HistogramScale,                     // Scale for histogram (linear or log)
-    pub data_quality_page: QualityPage,
-    /// The plan: the one the last Run committed, and while Setup is open, the draft
-    /// being staged for the next.
-    pub data_quality_plan: DataQualityPlan,
-    /// The plan as it stood when Setup opened: Esc puts it back. `None` while Setup
-    /// is closed.
-    pub data_quality_setup_before: Option<DataQualityPlan>,
-    /// The report page Setup was opened from, and goes back to.
-    pub data_quality_setup_return: QualityPage,
-    /// Why Enter did not run, said on Setup's own line until the next edit.
-    pub data_quality_setup_note: Option<String>,
-    pub data_quality_table_state: TableState,
-    /// The list a Setup row's choices open in, while it is open.
-    pub data_quality_picker: Option<PlanPicker>,
-    /// The Setup row under the cursor, or the role in the time roles editor.
-    pub data_quality_plan_field: usize,
-    pub data_quality_show_access: bool,
-    pub data_quality_observation_detail: bool,
-    /// Where the finding popup is scrolled to, and how far it can go (set as it draws).
-    pub data_quality_detail_scroll: DetailScroll,
-    /// The segment a drill-in shows, and the one Segments selects on the way back.
-    pub data_quality_segment_index: usize,
-    /// Segments listed clearest change first rather than in their own order.
-    pub data_quality_segments_by_change: bool,
-    /// The clean entry's popup lists every check rather than the most important.
-    pub data_quality_checks_expanded: bool,
-    pub data_quality_plan_before_edit: Option<DataQualityPlan>,
-    pub data_quality_last_plan: Option<DataQualityPlan>,
-    pub data_quality_from_cache: bool,
-    pub data_quality_metric: QualityMetric,
-    pub data_quality_column_index: usize,
-    /// The interval a detail shows, and the one Intervals selects on the way back.
-    pub data_quality_interval_index: usize,
-    /// How Overview narrows and orders its findings; the report is not measured again.
-    pub data_quality_findings: FindingsView,
-    /// A read for a finding's rows, shown with what it reads until Enter or Esc.
-    pub data_quality_evidence_read: Option<EvidenceRead>,
-    /// The Trends line a bar detail shows, and the one Trends selects on the way back.
-    pub data_quality_trend_line: usize,
-    /// The Expected editor, while it is open.
-    pub data_quality_expected_form: Option<ExpectedForm>,
-    /// One column's declared intent, being edited over the Column intent list.
-    pub data_quality_intent_form: Option<crate::intent_modal::IntentForm>,
-    /// The dialog that writes the report on screen to a file.
-    pub data_quality_export: Option<crate::quality_export::ExportForm>,
+    pub histogram_scale: HistogramScale,
+    /// Data Quality: its plan, its report and where the cursor is in each.
+    pub quality: QualityState, // Scale for histogram (linear or log)
     /// The view (`DataTableState::len_generation`) the screen was opened on, which
     /// its results are of.
     pub results_view: Option<u64>,
     /// What a close put down: the tools' results and where they were, taken back
     /// by the next open on the same view.
     kept: Option<Kept>,
+}
+
+/// Data Quality's part of the analysis modal: the plan, Setup's draft and its
+/// editors, the report and where the cursor stands on each of its pages.
+#[derive(Default)]
+pub struct QualityState {
+    pub results: Option<DataQualityResults>,
+    pub page: QualityPage,
+    /// The plan: the one the last Run committed, and while Setup is open, the draft
+    /// being staged for the next.
+    pub plan: DataQualityPlan,
+    /// The plan as it stood when Setup opened: Esc puts it back. `None` while Setup
+    /// is closed.
+    pub setup_before: Option<DataQualityPlan>,
+    /// The report page Setup was opened from, and goes back to.
+    pub setup_return: QualityPage,
+    /// Why Enter did not run, said on Setup's own line until the next edit.
+    pub setup_note: Option<String>,
+    pub table_state: TableState,
+    /// The list a Setup row's choices open in, while it is open.
+    pub picker: Option<PlanPicker>,
+    /// The Setup row under the cursor, or the role in the time roles editor.
+    pub plan_field: usize,
+    pub show_access: bool,
+    pub observation_detail: bool,
+    /// Where the finding popup is scrolled to, and how far it can go (set as it draws).
+    pub detail_scroll: DetailScroll,
+    /// The segment a drill-in shows, and the one Segments selects on the way back.
+    pub segment_index: usize,
+    /// Segments listed clearest change first rather than in their own order.
+    pub segments_by_change: bool,
+    /// The clean entry's popup lists every check rather than the most important.
+    pub checks_expanded: bool,
+    pub plan_before_edit: Option<DataQualityPlan>,
+    pub last_plan: Option<DataQualityPlan>,
+    pub from_cache: bool,
+    pub metric: QualityMetric,
+    pub column_index: usize,
+    /// The interval a detail shows, and the one Intervals selects on the way back.
+    pub interval_index: usize,
+    /// How Overview narrows and orders its findings; the report is not measured again.
+    pub findings: FindingsView,
+    /// A read for a finding's rows, shown with what it reads until Enter or Esc.
+    pub evidence_read: Option<EvidenceRead>,
+    /// The Trends line a bar detail shows, and the one Trends selects on the way back.
+    pub trend_line: usize,
+    /// The Expected editor, while it is open.
+    pub expected_form: Option<ExpectedForm>,
+    /// One column's declared intent, being edited over the Column intent list.
+    pub intent_form: Option<crate::intent_modal::IntentForm>,
+    /// The dialog that writes the report on screen to a file.
+    pub export: Option<crate::quality_export::ExportForm>,
+}
+
+impl QualityState {
+    /// What a close leaves: the plan, and how Segments is ordered.
+    fn close(&mut self) {
+        *self = Self {
+            plan: std::mem::take(&mut self.plan),
+            segments_by_change: self.segments_by_change,
+            ..Self::default()
+        };
+    }
 }
 
 /// The tools' results as a close left them, and the cursor in each.
@@ -608,27 +627,7 @@ impl AnalysisModal {
         self.describe_results = None;
         self.distribution_results = None;
         self.correlation_results = None;
-        self.data_quality_results = None;
-        self.data_quality_page = QualityPage::Setup;
-        self.data_quality_plan = DataQualityPlan::default();
-        self.data_quality_setup_before = None;
-        self.data_quality_setup_return = QualityPage::Overview;
-        self.data_quality_setup_note = None;
-        self.data_quality_table_state.select(Some(0));
-        self.data_quality_picker = None;
-        self.data_quality_plan_field = 0;
-        self.data_quality_show_access = false;
-        self.data_quality_observation_detail = false;
-        self.data_quality_plan_before_edit = None;
-        self.data_quality_last_plan = None;
-        self.data_quality_from_cache = false;
-        self.data_quality_metric = QualityMetric::NullRate;
-        self.data_quality_column_index = 0;
-        self.data_quality_interval_index = 0;
-        self.data_quality_trend_line = 0;
-        self.data_quality_expected_form = None;
-        self.data_quality_intent_form = None;
-        self.data_quality_export = None;
+        self.quality.close();
         self.sample_form = None;
         if let Some(kept) = kept {
             self.describe_results = kept.describe;
@@ -685,23 +684,23 @@ impl AnalysisModal {
         self.describe_results = None;
         self.distribution_results = None;
         self.correlation_results = None;
-        self.data_quality_results = None;
-        self.data_quality_page = QualityPage::Setup;
-        self.data_quality_setup_before = None;
-        self.data_quality_setup_note = None;
-        self.data_quality_picker = None;
-        self.data_quality_show_access = false;
-        self.data_quality_observation_detail = false;
-        self.data_quality_plan_before_edit = None;
-        self.data_quality_last_plan = None;
-        self.data_quality_from_cache = false;
-        self.data_quality_metric = QualityMetric::NullRate;
-        self.data_quality_column_index = 0;
-        self.data_quality_interval_index = 0;
-        self.data_quality_trend_line = 0;
-        self.data_quality_expected_form = None;
-        self.data_quality_intent_form = None;
-        self.data_quality_export = None;
+        self.quality.results = None;
+        self.quality.page = QualityPage::Setup;
+        self.quality.setup_before = None;
+        self.quality.setup_note = None;
+        self.quality.picker = None;
+        self.quality.show_access = false;
+        self.quality.observation_detail = false;
+        self.quality.plan_before_edit = None;
+        self.quality.last_plan = None;
+        self.quality.from_cache = false;
+        self.quality.metric = QualityMetric::NullRate;
+        self.quality.column_index = 0;
+        self.quality.interval_index = 0;
+        self.quality.trend_line = 0;
+        self.quality.expected_form = None;
+        self.quality.intent_form = None;
+        self.quality.export = None;
     }
 
     /// Returns the cached results for the currently selected tool, if any.
@@ -845,27 +844,27 @@ impl AnalysisModal {
     }
 
     pub fn quality_row_count(&self) -> usize {
-        let Some(results) = self.data_quality_results.as_ref() else {
+        let Some(results) = self.quality.results.as_ref() else {
             return 0;
         };
-        match self.data_quality_page {
+        match self.quality.page {
             QualityPage::Setup => SetupRow::ALL.len(),
             QualityPage::TimeRoles => TemporalRole::ALL.len(),
-            QualityPage::IntervalPairs => self.data_quality_plan.candidate_pairs().len(),
+            QualityPage::IntervalPairs => self.quality.plan.candidate_pairs().len(),
             // The scope's columns, which the modal does not hold: the list's keys move
             // by them in `App`.
             QualityPage::Intent => 0,
             QualityPage::Intervals => results.temporal.len(),
             QualityPage::IntervalDetail => self.interval_facts().len(),
-            QualityPage::Overview => self.data_quality_findings.shown(results.report()).len(),
+            QualityPage::Overview => self.quality.findings.shown(results.report()).len(),
             QualityPage::Columns | QualityPage::Detail => results.columns.len(),
             QualityPage::Segments => results.segments.len(),
             QualityPage::SegmentDetail => {
-                crate::data_quality::segment_changes(results, self.data_quality_segment_index).len()
+                crate::data_quality::segment_changes(results, self.quality.segment_index).len()
             }
             // The trend table's lines; the width only changes how many bars.
             QualityPage::Trends => {
-                crate::quality_trends::trend_view(results, self.data_quality_metric, 1)
+                crate::quality_trends::trend_view(results, self.quality.metric, 1)
                     .lines
                     .len()
             }
@@ -885,7 +884,7 @@ impl AnalysisModal {
     /// Whether the highlighted Overview entry is the clean-columns entry, which opens
     /// no rows and instead lists the checks.
     pub fn quality_selected_is_clean(&self) -> bool {
-        self.data_quality_page == QualityPage::Overview
+        self.quality.page == QualityPage::Overview
             && self
                 .selected_finding()
                 .is_some_and(|(_, finding)| finding.kind.is_none())
@@ -894,10 +893,11 @@ impl AnalysisModal {
     /// The report on screen and the finding under the cursor, as Overview lists
     /// them: narrowed and ordered.
     pub fn selected_finding(&self) -> Option<(&QualityReport, Finding)> {
-        let report = self.data_quality_results.as_ref()?.report();
+        let report = self.quality.results.as_ref()?.report();
         let finding = self
-            .data_quality_findings
-            .selected(report, self.data_quality_table_state.selected()?)?
+            .quality
+            .findings
+            .selected(report, self.quality.table_state.selected()?)?
             .clone();
         Some((report, finding))
     }
@@ -905,11 +905,11 @@ impl AnalysisModal {
     /// Narrow the findings to a column (`by_column`) or a check, from a list of
     /// those the report has, the current one selected.
     pub fn open_findings_picker(&mut self, by_column: bool) {
-        let Some(results) = self.data_quality_results.as_ref() else {
+        let Some(results) = self.quality.results.as_ref() else {
             return;
         };
         let report = results.report();
-        let view = &self.data_quality_findings;
+        let view = &self.quality.findings;
         let findings = |count: usize| match count {
             0 => "none".to_string(),
             1 => "1 finding".to_string(),
@@ -960,7 +960,7 @@ impl AnalysisModal {
         let (labels, choices): (Vec<_>, Vec<_>) = choices.into_iter().unzip();
         let mut state = crate::widgets::ui::PickerState::new(labels);
         state.select_original(current);
-        self.data_quality_picker = Some(PlanPicker {
+        self.quality.picker = Some(PlanPicker {
             row: None,
             title: title.to_string(),
             choices,
@@ -971,32 +971,31 @@ impl AnalysisModal {
     /// The next order for the findings, keeping the finding under the cursor under it.
     pub fn cycle_findings_order(&mut self) {
         let selected = self.selected_finding().map(|(_, finding)| finding);
-        self.data_quality_findings.order = self.data_quality_findings.order.next();
+        self.quality.findings.order = self.quality.findings.order.next();
         self.reselect_finding(selected);
     }
 
     /// Show every finding again, in the order chosen.
     pub fn clear_findings_narrowing(&mut self) {
         let selected = self.selected_finding().map(|(_, finding)| finding);
-        self.data_quality_findings.column = None;
-        self.data_quality_findings.check = None;
+        self.quality.findings.column = None;
+        self.quality.findings.check = None;
         self.reselect_finding(selected);
     }
 
     /// Put the cursor on `finding` where the list now shows it, or on the first.
     fn reselect_finding(&mut self, finding: Option<Finding>) {
-        let position = self.data_quality_results.as_ref().and_then(|results| {
+        let position = self.quality.results.as_ref().and_then(|results| {
             let report = results.report();
             let finding = finding?;
-            let shown = self.data_quality_findings.shown(report);
+            let shown = self.quality.findings.shown(report);
             shown.iter().position(|index| {
                 let listed = &report.findings[*index];
                 listed.same_as(&finding)
             })
         });
-        self.data_quality_table_state
-            .select(Some(position.unwrap_or(0)));
-        *self.data_quality_table_state.offset_mut() = 0;
+        self.quality.table_state.select(Some(position.unwrap_or(0)));
+        *self.quality.table_state.offset_mut() = 0;
     }
 
     /// Whether `s` opens the Sample form here: on a tool's main view, with nothing
@@ -1006,19 +1005,19 @@ impl AnalysisModal {
             && self.view == AnalysisView::Main
             && self.selected_tool.is_some()
             && self.computing.is_none()
-            && self.data_quality_picker.is_none()
+            && self.quality.picker.is_none()
             && !matches!(
-                self.data_quality_page,
+                self.quality.page,
                 QualityPage::TimeRoles
                     | QualityPage::IntervalPairs
                     | QualityPage::ExpectedWindows
                     | QualityPage::Intent
             )
-            && !self.data_quality_show_access
-            && !self.data_quality_observation_detail
-            && self.data_quality_evidence_read.is_none()
-            && self.data_quality_export.is_none()
-            && self.data_quality_intent_form.is_none()
+            && !self.quality.show_access
+            && !self.quality.observation_detail
+            && self.quality.evidence_read.is_none()
+            && self.quality.export.is_none()
+            && self.quality.intent_form.is_none()
             && self.sample_form.is_none()
     }
 
@@ -1026,7 +1025,8 @@ impl AnalysisModal {
     pub fn export_typing(&self) -> bool {
         self.active
             && self
-                .data_quality_export
+                .quality
+                .export
                 .as_ref()
                 .is_some_and(|form| !form.on_format)
     }
@@ -1036,7 +1036,8 @@ impl AnalysisModal {
     pub fn intent_typing(&self) -> bool {
         self.active
             && self
-                .data_quality_intent_form
+                .quality
+                .intent_form
                 .as_ref()
                 .is_some_and(crate::intent_modal::IntentForm::typing)
     }
@@ -1054,36 +1055,37 @@ impl AnalysisModal {
     /// but its own types there.
     pub fn quality_expected_typing(&self) -> bool {
         self.active
-            && self.data_quality_page == QualityPage::ExpectedWindows
+            && self.quality.page == QualityPage::ExpectedWindows
             && self
-                .data_quality_expected_form
+                .quality
+                .expected_form
                 .as_ref()
                 .is_some_and(ExpectedForm::typing)
     }
 
     /// Open the bars of the Trends line under the cursor, the first bar selected.
     pub fn open_trend_detail(&mut self) {
-        let line = self.data_quality_table_state.selected().unwrap_or(0);
-        self.data_quality_trend_line = line;
+        let line = self.quality.table_state.selected().unwrap_or(0);
+        self.quality.trend_line = line;
         self.set_quality_page(QualityPage::TrendDetail);
     }
 
     /// The next measure in a bar's detail, on the same column's line. A column with
     /// nothing to draw in it has no line, and Trends lists what does.
     pub fn cycle_trend_detail_metric(&mut self) {
-        let Some(results) = self.data_quality_results.as_ref() else {
+        let Some(results) = self.quality.results.as_ref() else {
             return;
         };
-        let view = crate::quality_trends::trend_view(results, self.data_quality_metric, 1);
+        let view = crate::quality_trends::trend_view(results, self.quality.metric, 1);
         let line = view
             .lines
-            .get(self.data_quality_trend_line)
+            .get(self.quality.trend_line)
             .map(|line| (line.measure, line.names.clone()));
         self.cycle_quality_metric();
-        let Some(results) = self.data_quality_results.as_ref() else {
+        let Some(results) = self.quality.results.as_ref() else {
             return;
         };
-        let view = crate::quality_trends::trend_view(results, self.data_quality_metric, 1);
+        let view = crate::quality_trends::trend_view(results, self.quality.metric, 1);
         let found = line.and_then(|(measure, names)| {
             view.lines.iter().position(|candidate| {
                 candidate.measure == measure
@@ -1094,9 +1096,9 @@ impl AnalysisModal {
             })
         });
         match found {
-            Some(index) => self.data_quality_trend_line = index,
+            Some(index) => self.quality.trend_line = index,
             None => {
-                self.data_quality_trend_line = 0;
+                self.quality.trend_line = 0;
                 self.close_to_trends();
             }
         }
@@ -1104,18 +1106,17 @@ impl AnalysisModal {
 
     /// Back to Trends from a bar detail or the gaps, the line still selected.
     pub fn close_to_trends(&mut self) {
-        let line = (self.data_quality_page == QualityPage::TrendDetail)
-            .then_some(self.data_quality_trend_line);
+        let line =
+            (self.quality.page == QualityPage::TrendDetail).then_some(self.quality.trend_line);
         self.set_quality_page(QualityPage::Trends);
-        self.data_quality_table_state
-            .select(Some(line.unwrap_or(0)));
+        self.quality.table_state.select(Some(line.unwrap_or(0)));
     }
 
     pub fn set_quality_page(&mut self, page: QualityPage) {
-        self.data_quality_page = page;
-        self.data_quality_observation_detail = false;
-        self.data_quality_evidence_read = None;
-        self.data_quality_table_state.select(Some(0));
+        self.quality.page = page;
+        self.quality.observation_detail = false;
+        self.quality.evidence_read = None;
+        self.quality.table_state.select(Some(0));
     }
 
     /// Move between the column lens and its detail without losing which column
@@ -1124,21 +1125,22 @@ impl AnalysisModal {
         // Detail moves the same selection with Up/Down, so capture it from there
         // too or navigating inside Detail is lost on the way back.
         if matches!(
-            self.data_quality_page,
+            self.quality.page,
             QualityPage::Columns | QualityPage::Detail
         ) {
-            self.data_quality_column_index = self.data_quality_table_state.selected().unwrap_or(0);
+            self.quality.column_index = self.quality.table_state.selected().unwrap_or(0);
         }
         self.set_quality_page(page);
-        self.data_quality_table_state
-            .select(Some(self.data_quality_column_index));
+        self.quality
+            .table_state
+            .select(Some(self.quality.column_index));
     }
 
     /// Open the highlighted segment's columns, or go back to the list with the
     /// segment still selected.
     pub fn open_segment_detail(&mut self) {
         if let Some(segment) = self.selected_segment() {
-            self.data_quality_segment_index = segment;
+            self.quality.segment_index = segment;
             self.set_quality_page(QualityPage::SegmentDetail);
         }
     }
@@ -1148,24 +1150,24 @@ impl AnalysisModal {
         let position = self
             .segment_order()
             .iter()
-            .position(|segment| *segment == self.data_quality_segment_index);
-        self.data_quality_table_state
-            .select(Some(position.unwrap_or(0)));
+            .position(|segment| *segment == self.quality.segment_index);
+        self.quality.table_state.select(Some(position.unwrap_or(0)));
     }
 
     /// The order Segments lists its rows in.
     pub fn segment_order(&self) -> Vec<usize> {
-        self.data_quality_results
+        self.quality
+            .results
             .as_ref()
             .map(|results| {
-                crate::data_quality::segment_order(results, self.data_quality_segments_by_change)
+                crate::data_quality::segment_order(results, self.quality.segments_by_change)
             })
             .unwrap_or_default()
     }
 
     /// The segment under the cursor on Segments, whichever order it is listed in.
     pub fn selected_segment(&self) -> Option<usize> {
-        let position = self.data_quality_table_state.selected()?;
+        let position = self.quality.table_state.selected()?;
         self.segment_order().get(position).copied()
     }
 
@@ -1173,24 +1175,25 @@ impl AnalysisModal {
     /// under the cursor under it.
     pub fn toggle_segment_order(&mut self) {
         let segment = self.selected_segment();
-        self.data_quality_segments_by_change = !self.data_quality_segments_by_change;
+        self.quality.segments_by_change = !self.quality.segments_by_change;
         let position = segment
             .and_then(|segment| self.segment_order().iter().position(|s| *s == segment))
             .unwrap_or(0);
-        self.data_quality_table_state.select(Some(position));
+        self.quality.table_state.select(Some(position));
     }
 
     /// Open the highlighted interval's detail, its first count under the cursor.
     pub fn open_interval_detail(&mut self) {
-        let Some(index) = self.data_quality_table_state.selected() else {
+        let Some(index) = self.quality.table_state.selected() else {
             return;
         };
         if self
-            .data_quality_results
+            .quality
+            .results
             .as_ref()
             .is_some_and(|results| index < results.temporal.len())
         {
-            self.data_quality_interval_index = index;
+            self.quality.interval_index = index;
             self.set_quality_page(QualityPage::IntervalDetail);
         }
     }
@@ -1198,17 +1201,19 @@ impl AnalysisModal {
     /// Back to the list, the interval still selected.
     pub fn close_interval_detail(&mut self) {
         self.set_quality_page(QualityPage::Intervals);
-        self.data_quality_table_state
-            .select(Some(self.data_quality_interval_index));
+        self.quality
+            .table_state
+            .select(Some(self.quality.interval_index));
     }
 
     /// The counts an interval's detail lists, each with rows it can open: those
     /// the interval measured, in the order the detail shows them.
     pub fn interval_facts(&self) -> Vec<IntervalFact> {
         let plan = self.quality_result_plan();
-        self.data_quality_results
+        self.quality
+            .results
             .as_ref()
-            .and_then(|results| results.temporal.get(self.data_quality_interval_index))
+            .and_then(|results| results.temporal.get(self.quality.interval_index))
             .map(|profile| {
                 IntervalFact::ALL
                     .into_iter()
@@ -1222,7 +1227,7 @@ impl AnalysisModal {
     pub fn selected_interval_fact(&self) -> Option<IntervalFact> {
         let facts = self.interval_facts();
         facts
-            .get(self.data_quality_table_state.selected().unwrap_or(0))
+            .get(self.quality.table_state.selected().unwrap_or(0))
             .copied()
     }
 
@@ -1235,7 +1240,7 @@ impl AnalysisModal {
         &self,
         schema: Option<&polars::prelude::Schema>,
     ) -> Option<(polars::prelude::Expr, String, usize)> {
-        let results = self.data_quality_results.as_ref()?;
+        let results = self.quality.results.as_ref()?;
         if !matches!(
             results.precision,
             crate::data_quality::QualityPrecision::Exact
@@ -1244,7 +1249,7 @@ impl AnalysisModal {
             return None;
         }
         let plan = self.quality_result_plan();
-        let profile = results.temporal.get(self.data_quality_interval_index)?;
+        let profile = results.temporal.get(self.quality.interval_index)?;
         let fact = self.selected_interval_fact()?;
         let (count, _) = profile.count(fact, plan)?;
         if count == 0 {
@@ -1265,22 +1270,23 @@ impl AnalysisModal {
 
     /// Move the finding popup by `rows`, within what it last drew.
     pub fn scroll_quality_detail(&mut self, rows: i32) {
-        let scroll = &mut self.data_quality_detail_scroll;
+        let scroll = &mut self.quality.detail_scroll;
         scroll.offset = (scroll.offset as i32 + rows).clamp(0, scroll.max as i32) as u16;
     }
 
     /// Show a tab, keeping the column in view across Columns, Segments and Trends.
     pub fn show_quality_tab(&mut self, page: QualityPage) {
         if matches!(
-            self.data_quality_page,
+            self.quality.page,
             QualityPage::Columns | QualityPage::Detail
         ) {
-            self.data_quality_column_index = self.data_quality_table_state.selected().unwrap_or(0);
+            self.quality.column_index = self.quality.table_state.selected().unwrap_or(0);
         }
         self.set_quality_page(page);
         if page == QualityPage::Columns {
-            self.data_quality_table_state
-                .select(Some(self.data_quality_column_index));
+            self.quality
+                .table_state
+                .select(Some(self.quality.column_index));
         }
     }
 
@@ -1289,7 +1295,7 @@ impl AnalysisModal {
         let tabs = QualityPage::TABS;
         let Some(at) = tabs
             .iter()
-            .position(|page| *page == self.data_quality_page.tab())
+            .position(|page| *page == self.quality.page.tab())
         else {
             return;
         };
@@ -1306,36 +1312,38 @@ impl AnalysisModal {
     pub fn cycle_quality_metric(&mut self) {
         let current = QualityMetric::ALL
             .iter()
-            .position(|metric| *metric == self.data_quality_metric)
+            .position(|metric| *metric == self.quality.metric)
             .unwrap_or(0);
-        self.data_quality_metric = QualityMetric::ALL[(current + 1) % QualityMetric::ALL.len()];
+        self.quality.metric = QualityMetric::ALL[(current + 1) % QualityMetric::ALL.len()];
     }
 
     /// The plan the result on screen was measured with; the plan until a run
     /// exists. Result pages read this one, so a draft never relabels what was
     /// measured.
     pub fn quality_result_plan(&self) -> &DataQualityPlan {
-        self.data_quality_last_plan
+        self.quality
+            .last_plan
             .as_ref()
-            .unwrap_or(&self.data_quality_plan)
+            .unwrap_or(&self.quality.plan)
     }
 
     /// The plan differs from the one the result on screen was measured with.
     pub fn quality_plan_pending(&self) -> bool {
-        self.data_quality_results.is_some()
-            && self.data_quality_last_plan.as_ref() != Some(&self.data_quality_plan)
+        self.quality.results.is_some()
+            && self.quality.last_plan.as_ref() != Some(&self.quality.plan)
     }
 
     /// The Setup row under the cursor.
     pub fn setup_row(&self) -> SetupRow {
-        SetupRow::at(self.data_quality_plan_field)
+        SetupRow::at(self.quality.plan_field)
     }
 
     /// Whether Setup holds staged changes Esc would discard.
     pub fn setup_edited(&self) -> bool {
-        self.data_quality_setup_before
+        self.quality
+            .setup_before
             .as_ref()
-            .is_some_and(|before| *before != self.data_quality_plan)
+            .is_some_and(|before| *before != self.quality.plan)
     }
 
     /// The choices a Setup row offers, in the words the header uses.
@@ -1367,8 +1375,8 @@ impl AnalysisModal {
                     }
                 }
                 grains.extend([100_000, 1_000_000].map(QualityGrain::RowChunks));
-                if !grains.contains(&self.data_quality_plan.grain) {
-                    grains.insert(0, self.data_quality_plan.grain.clone());
+                if !grains.contains(&self.quality.plan.grain) {
+                    grains.insert(0, self.quality.plan.grain.clone());
                 }
                 grains
                     .into_iter()
@@ -1377,12 +1385,11 @@ impl AnalysisModal {
             }
             SetupRow::Values => {
                 // The draft's sample says which kind of read it is.
-                let read =
-                    if self.data_quality_plan.method == crate::sampling::SampleMethod::EveryRow {
-                        QualityCompute::Full
-                    } else {
-                        QualityCompute::Sample
-                    };
+                let read = if self.quality.plan.method == crate::sampling::SampleMethod::EveryRow {
+                    QualityCompute::Full
+                } else {
+                    QualityCompute::Sample
+                };
                 vec![
                     ("read".to_string(), PlanChoice::Values(read)),
                     (
@@ -1404,12 +1411,12 @@ impl AnalysisModal {
                 )
             })
             .collect(),
-            SetupRow::WindowBy if !self.data_quality_plan.windows_intervals() => Vec::new(),
+            SetupRow::WindowBy if !self.quality.plan.windows_intervals() => Vec::new(),
             SetupRow::WindowBy => IntervalClock::ALL
                 .into_iter()
                 .map(|clock| (clock.label().to_string(), PlanChoice::Clock(clock)))
                 .collect(),
-            SetupRow::Latency if self.data_quality_plan.interval_pairs().is_empty() => Vec::new(),
+            SetupRow::Latency if self.quality.plan.interval_pairs().is_empty() => Vec::new(),
             SetupRow::Latency => [None, Some(3_600), Some(86_400), Some(604_800)]
                 .into_iter()
                 .map(|seconds| {
@@ -1425,8 +1432,7 @@ impl AnalysisModal {
                 .text_columns
                 .iter()
                 .map(|(column, examples)| {
-                    let label = match (self.data_quality_plan.time_format(column), examples.first())
-                    {
+                    let label = match (self.quality.plan.time_format(column), examples.first()) {
                         (Some(format), _) => format!("{column}  as {}", format.label()),
                         (None, Some(example)) => format!("{column}  {example}"),
                         (None, None) => column.clone(),
@@ -1445,7 +1451,7 @@ impl AnalysisModal {
     /// Open the focused Setup row's choices, the current one selected.
     pub fn open_plan_picker(&mut self, row: SetupRow, context: &PlanContext) {
         let choices = self.plan_choices(row, context);
-        self.data_quality_plan_field = row.index();
+        self.quality.plan_field = row.index();
         self.show_picker(row, row.label().to_string(), choices);
     }
 
@@ -1455,12 +1461,12 @@ impl AnalysisModal {
         }
         let current = choices
             .iter()
-            .position(|(_, choice)| choice.is_current(&self.data_quality_plan))
+            .position(|(_, choice)| choice.is_current(&self.quality.plan))
             .unwrap_or(0);
         let (labels, choices): (Vec<_>, Vec<_>) = choices.into_iter().unzip();
         let mut state = crate::widgets::ui::PickerState::new(labels);
         state.select_original(current);
-        self.data_quality_picker = Some(PlanPicker {
+        self.quality.picker = Some(PlanPicker {
             row: Some(row),
             title,
             choices,
@@ -1510,7 +1516,7 @@ impl AnalysisModal {
                 )
             })
             .collect::<Vec<_>>();
-        if self.data_quality_plan.time_format(column).is_some() {
+        if self.quality.plan.time_format(column).is_some() {
             choices.push((
                 "text, not a time".to_string(),
                 PlanChoice::Format(column.to_string(), None),
@@ -1522,12 +1528,12 @@ impl AnalysisModal {
     /// Take the picker's selection into the plan and close it. A text column chosen
     /// to read as time comes back: its format is the next choice.
     pub fn choose_plan_picker(&mut self) -> Option<String> {
-        let picker = self.data_quality_picker.take()?;
+        let picker = self.quality.picker.take()?;
         let choice = picker
             .state
             .selected_original()
             .and_then(|index| picker.choices.get(index))?;
-        let plan = &mut self.data_quality_plan;
+        let plan = &mut self.quality.plan;
         match choice.clone() {
             PlanChoice::Grain(grain) => {
                 if plan.grain != grain {
@@ -1548,12 +1554,12 @@ impl AnalysisModal {
             PlanChoice::Format(column, format) => set_time_format(plan, &column, format),
             PlanChoice::FindingColumn(column) => {
                 let selected = self.selected_finding().map(|(_, finding)| finding);
-                self.data_quality_findings.column = column;
+                self.quality.findings.column = column;
                 self.reselect_finding(selected);
             }
             PlanChoice::FindingCheck(check) => {
                 let selected = self.selected_finding().map(|(_, finding)| finding);
-                self.data_quality_findings.check = check;
+                self.quality.findings.check = check;
                 self.reselect_finding(selected);
             }
         }
@@ -1569,7 +1575,7 @@ impl AnalysisModal {
         }
         let current = choices
             .iter()
-            .position(|(_, choice)| choice.is_current(&self.data_quality_plan))
+            .position(|(_, choice)| choice.is_current(&self.quality.plan))
             .unwrap_or(0);
         let next = if forward {
             (current + 1).min(choices.len() - 1)
@@ -1579,7 +1585,7 @@ impl AnalysisModal {
         let (labels, choices): (Vec<_>, Vec<_>) = choices.into_iter().unzip();
         let mut state = crate::widgets::ui::PickerState::new(labels);
         state.select_original(next);
-        self.data_quality_picker = Some(PlanPicker {
+        self.quality.picker = Some(PlanPicker {
             row: Some(row),
             title: row.label().to_string(),
             choices,
@@ -1598,7 +1604,8 @@ impl AnalysisModal {
             return;
         };
         let current = self
-            .data_quality_plan
+            .quality
+            .plan
             .temporal_roles
             .iter()
             .find(|assignment| assignment.role == role)
@@ -1613,11 +1620,13 @@ impl AnalysisModal {
         } else {
             current - 1
         };
-        self.data_quality_plan
+        self.quality
+            .plan
             .temporal_roles
             .retain(|assignment| assignment.role != role);
         if next > 0 {
-            self.data_quality_plan
+            self.quality
+                .plan
                 .temporal_roles
                 .push(TemporalRoleAssignment {
                     role,
@@ -1669,8 +1678,9 @@ impl AnalysisModal {
                 self.correlation_table_state.select(Some(cell.0));
             }
             Some(AnalysisTool::DataQuality) => {
-                let at = self.data_quality_table_state.selected().unwrap_or(0);
-                self.data_quality_table_state
+                let at = self.quality.table_state.selected().unwrap_or(0);
+                self.quality
+                    .table_state
                     .select(Some(step.apply(at, rows, PAGE)));
             }
             None => {}
@@ -1846,15 +1856,15 @@ mod quality_scope_tests {
         );
         // Choosing opens the list on the current value and sets the one chosen.
         modal.open_plan_picker(SetupRow::Grain, &context);
-        let picker = modal.data_quality_picker.as_mut().unwrap();
+        let picker = modal.quality.picker.as_mut().unwrap();
         assert_eq!(picker.state.selected_original(), Some(0));
         picker.state.move_down();
         picker.state.move_down();
         picker.state.move_down();
         modal.choose_plan_picker();
-        assert!(modal.data_quality_picker.is_none());
+        assert!(modal.quality.picker.is_none());
         assert_eq!(
-            modal.data_quality_plan.grain,
+            modal.quality.plan.grain,
             QualityGrain::TimeWindows {
                 column: "date".to_string(),
                 every: "1d".to_string()
@@ -1868,23 +1878,24 @@ mod quality_scope_tests {
     fn a_read_is_the_samples_kind() {
         let mut modal = AnalysisModal::new();
         let context = PlanContext::default();
-        modal.data_quality_plan.compute = QualityCompute::Metadata;
+        modal.quality.plan.compute = QualityCompute::Metadata;
         modal.open_plan_picker(SetupRow::Values, &context);
         modal
-            .data_quality_picker
+            .quality
+            .picker
             .as_mut()
             .unwrap()
             .state
             .select_original(0);
         modal.choose_plan_picker();
-        assert_eq!(modal.data_quality_plan.compute, QualityCompute::Sample);
-        modal.data_quality_plan.method = crate::sampling::SampleMethod::EveryRow;
+        assert_eq!(modal.quality.plan.compute, QualityCompute::Sample);
+        modal.quality.plan.method = crate::sampling::SampleMethod::EveryRow;
         modal.open_plan_picker(SetupRow::Values, &context);
         modal.choose_plan_picker();
-        assert_eq!(modal.data_quality_plan.compute, QualityCompute::Full);
+        assert_eq!(modal.quality.plan.compute, QualityCompute::Full);
         modal.open_plan_picker(SetupRow::Latency, &context);
         assert!(
-            modal.data_quality_picker.is_none(),
+            modal.quality.picker.is_none(),
             "no threshold without an interval to measure"
         );
     }
@@ -1905,12 +1916,12 @@ mod quality_scope_tests {
         modal.open_plan_picker(SetupRow::TextAsTime, &context);
         assert_eq!(modal.choose_plan_picker(), Some("created".to_string()));
         modal.open_format_picker("created", &["2024-01-31 08:15:00".to_string()]);
-        let picker = modal.data_quality_picker.as_ref().unwrap();
+        let picker = modal.quality.picker.as_ref().unwrap();
         assert_eq!(picker.title, "Read created As");
         let first = picker.state.filtered()[0].1.to_string();
         assert_eq!(first, "reads 1 of 1  datetime %Y-%m-%d %H:%M:%S");
         assert_eq!(modal.choose_plan_picker(), None);
-        let format = modal.data_quality_plan.time_format("created").unwrap();
+        let format = modal.quality.plan.time_format("created").unwrap();
         assert_eq!(format.kind, TimeKind::Datetime);
 
         // Now a time window can split by it; as text again, the window goes.
@@ -1919,16 +1930,16 @@ mod quality_scope_tests {
             ..context.clone()
         };
         modal.open_plan_picker(SetupRow::Grain, &windows);
-        let picker = modal.data_quality_picker.as_mut().unwrap();
+        let picker = modal.quality.picker.as_mut().unwrap();
         picker.state.move_down();
         picker.state.move_down();
         modal.choose_plan_picker();
         assert!(matches!(
-            modal.data_quality_plan.grain,
+            modal.quality.plan.grain,
             QualityGrain::TimeWindows { .. }
         ));
         modal.open_format_picker("created", &[]);
-        let picker = modal.data_quality_picker.as_mut().unwrap();
+        let picker = modal.quality.picker.as_mut().unwrap();
         let text = picker
             .state
             .filtered()
@@ -1939,7 +1950,7 @@ mod quality_scope_tests {
             picker.state.move_down();
         }
         modal.choose_plan_picker();
-        assert!(modal.data_quality_plan.time_formats.is_empty());
-        assert_eq!(modal.data_quality_plan.grain, QualityGrain::Dataset);
+        assert!(modal.quality.plan.time_formats.is_empty());
+        assert_eq!(modal.quality.plan.grain, QualityGrain::Dataset);
     }
 }

@@ -427,11 +427,11 @@ fn test_selection_wraps_and_stays_in_range() {
     };
     home.rebuild(&[]);
 
-    // The list is [header, the row that opens the whole directory, a, b]; the cursor
-    // starts on the first dataset, and moving walks headers too, since reaching one is
-    // how a section gets expanded.
+    // The list is [header, `..`, the row that opens the whole directory, a, b]; the
+    // cursor starts on the first dataset, and moving walks headers too, since reaching
+    // one is how a section gets expanded.
     let total = home.visible().len();
-    assert_eq!(total, 4);
+    assert_eq!(total, 5);
     let start = home.selected;
     assert!(home.selected_entry().is_some(), "should start on a dataset");
 
@@ -5037,9 +5037,10 @@ fn test_nothing_that_walks_the_rows_can_reach_the_door() {
             .any(|r| matches!(r, Row::Entry { entry, .. } if entry.path == door.path)),
         "and neither must a walk of `Row::Entry`"
     );
-    // It is on screen all the same, and first.
+    // It is on screen all the same, and first, after the way up.
     assert!(matches!(home.visible().first(), Some(Row::Header { .. })));
-    assert!(matches!(home.visible().get(1), Some(Row::Door { .. })));
+    assert!(matches!(home.visible().get(1), Some(Row::Up { .. })));
+    assert!(matches!(home.visible().get(2), Some(Row::Door { .. })));
 }
 
 /// The two directories that get no door, and the reason each is not one.
@@ -5706,6 +5707,37 @@ mod coming_back {
             read_catalogs: vec![crate::dir_catalog(dir)],
             ..Default::default()
         }
+    }
+
+    /// `..` is the first row inside a directory, and Enter on it goes up a level as
+    /// Backspace does, the cursor back on the directory left.
+    #[test]
+    fn dot_dot_goes_up_a_level() {
+        let tmp = TempDir::new().unwrap();
+        many_directories(tmp.path());
+        let d30 = tmp.path().join("d30");
+        let inner = d30.join("inner");
+        touch(&inner, "a.csv");
+        let (mut app, rx) = home_app(local_config(tmp.path()));
+        select(&mut app, &d30);
+        go_into(&mut app, &rx, KeyCode::Enter, &d30);
+        select(&mut app, &inner);
+        go_into(&mut app, &rx, KeyCode::Enter, &inner);
+
+        let up = app
+            .home
+            .visible()
+            .iter()
+            .position(|row| matches!(row, Row::Up { .. }))
+            .expect("a way up");
+        assert_eq!(up, 1, "first under the heading");
+        app.home
+            .move_selection(up as isize - app.home.selected as isize);
+        assert_eq!(app.what_enter_does(), datui::WhatEnter::GoesUp);
+        assert!(press(&mut app, KeyCode::Enter).is_none());
+        assert_eq!(app.home.browsing.as_deref(), Some(d30.as_path()));
+        settle(&mut app, &rx, |app| app.home.returning.is_none());
+        assert_eq!(on(&app), Some(inner));
     }
 
     /// Every pass over the list in a frame reads one build of its rows: the list, the
@@ -9130,4 +9162,85 @@ fn a_spec_file_opens_the_same_from_home_and_the_command_line() {
             "{key}: volts is a number: {from_home}"
         );
     }
+}
+
+/// A directory of many files at the root listing shows its first rows, then one row for
+/// the rest; its heading counts them all and a filter finds a row past the cut. Shown
+/// whole, every row is there; cut again, the cursor is on the row for the rest.
+#[test]
+fn test_a_big_directory_shows_its_first_rows_and_a_row_for_the_rest() {
+    let tmp = TempDir::new().unwrap();
+    for i in 0..60 {
+        touch(tmp.path(), &format!("f{i:02}.csv"));
+    }
+    let _cwd = in_cwd(tmp.path());
+    let mut home = HomeState {
+        view_height: 20,
+        ..Default::default()
+    };
+    home.rebuild(&[]);
+    let at = home
+        .sections
+        .iter()
+        .position(|s| s.rows.len() == 60)
+        .expect("the working directory's section");
+    fn in_section(home: &HomeState, at: usize) -> Vec<Row<'_>> {
+        home.visible()
+            .into_iter()
+            .filter(|row| row.section() == at)
+            .collect()
+    }
+    let rows = in_section(&home, at);
+    assert!(
+        matches!(rows[0], Row::Header { matches: 60, .. }),
+        "{:?}",
+        rows[0]
+    );
+    let entries = rows
+        .iter()
+        .filter(|r| matches!(r, Row::Entry { .. }))
+        .count();
+    assert_eq!(entries, 8, "a share of the list's height");
+    assert!(
+        matches!(
+            rows.last(),
+            Some(Row::More {
+                hidden: 52,
+                places: 0,
+                ..
+            })
+        ),
+        "{:?}",
+        rows.last()
+    );
+
+    home.filter = "f59".to_string();
+    assert!(
+        in_section(&home, at)
+            .iter()
+            .any(|r| matches!(r, Row::Entry { entry, .. } if entry.name == "f59.csv")),
+        "a filter searches every row"
+    );
+    home.filter.clear();
+
+    home.show_all(at);
+    let rows = in_section(&home, at);
+    assert_eq!(
+        rows.iter()
+            .filter(|r| matches!(r, Row::Entry { .. }))
+            .count(),
+        60
+    );
+    assert!(!rows.iter().any(|r| matches!(r, Row::More { .. })));
+
+    home.selected = home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, Row::Entry { entry, .. } if entry.name == "f50.csv"))
+        .unwrap();
+    assert!(home.cut_again(at));
+    assert!(
+        matches!(home.selected_row(), Some(Row::More { places: 0, .. })),
+        "the cursor goes to the row standing for the row it was on"
+    );
 }

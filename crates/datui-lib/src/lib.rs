@@ -688,8 +688,10 @@ pub enum WhatEnter {
     LooksFirst,
     /// Fold or unfold a section.
     FoldsSection,
-    /// Show the rest of `RECENT`.
+    /// Show the rest of `RECENT`, or of a directory cut short.
     ShowsMore,
+    /// Go up a level: the `..` row.
+    GoesUp,
     /// Show the files datui cannot open, as `Ctrl+A` does.
     ShowsHidden,
     /// Nothing to open and nowhere to go: an HTTP place, which has no listing to
@@ -717,6 +719,7 @@ impl App {
             }
             Some(home::Row::Header { .. }) => return WhatEnter::FoldsSection,
             Some(home::Row::More { .. }) => return WhatEnter::ShowsMore,
+            Some(home::Row::Up { .. }) => return WhatEnter::GoesUp,
             Some(home::Row::Hidden { .. }) => return WhatEnter::ShowsHidden,
             // "No match.": nothing to open and nothing to say about it.
             None => return WhatEnter::Nothing,
@@ -2315,9 +2318,10 @@ impl App {
             }
             InputMode::Chart => {
                 if self.chart_export_modal.active {
+                    // Every row is a choice or a text field.
                     self.chart_export_modal
-                        .input(self.chart_export_modal.focus)
-                        .is_some()
+                        .choice(self.chart_export_modal.focus)
+                        .is_none()
                 } else {
                     // The open column Picker narrows by typing, so it types.
                     self.chart_modal.picker.is_some()
@@ -4667,7 +4671,7 @@ impl App {
             AppEvent::QualityReportExport(path, format, overwrite) => {
                 // The report on screen and the plan it was measured with, cloned into
                 // the writer: the file is built from memory and nothing is read.
-                let results = self.analysis_modal.data_quality_results.clone()?;
+                let results = self.analysis_modal.quality.results.clone()?;
                 let plan = self.analysis_modal.quality_result_plan().clone();
                 let (path, format, overwrite) = (path.clone(), *format, *overwrite);
                 self.spawn_job(
@@ -5180,9 +5184,9 @@ impl App {
         // is still going, Run can run again and Setup no longer says it waits.
         if cancelled_analysis
             && self.cancelled_analysis().is_none()
-            && self.analysis_modal.data_quality_setup_note.as_deref() == Some(QUALITY_RUN_WAITS)
+            && self.analysis_modal.quality.setup_note.as_deref() == Some(QUALITY_RUN_WAITS)
         {
-            self.analysis_modal.data_quality_setup_note = None;
+            self.analysis_modal.quality.setup_note = None;
         }
         out
     }
@@ -5415,9 +5419,9 @@ impl App {
                     // Labeled with the plan it was dispatched with, whatever has been
                     // staged since.
                     self.cache_quality_result(&results, (*plan).clone());
-                    self.analysis_modal.data_quality_last_plan = Some(*plan);
-                    self.analysis_modal.data_quality_results = Some(*results);
-                    self.analysis_modal.data_quality_from_cache = false;
+                    self.analysis_modal.quality.last_plan = Some(*plan);
+                    self.analysis_modal.quality.results = Some(*results);
+                    self.analysis_modal.quality.from_cache = false;
                     self.analysis_modal
                         .set_quality_page(crate::data_quality::QualityPage::Overview);
                     self.analysis_modal.computing = None;
@@ -5591,7 +5595,7 @@ impl App {
                 None
             }
             Answer::QualityReportWritten(path) => {
-                self.analysis_modal.data_quality_export = None;
+                self.analysis_modal.quality.export = None;
                 if current {
                     self.flash_path("Report written to ", &path);
                 }
@@ -5724,7 +5728,7 @@ impl App {
             // The dialog is still up, the reason on its status line under the path.
             Job::QualityReport => {
                 if current {
-                    match self.analysis_modal.data_quality_export.as_mut() {
+                    match self.analysis_modal.quality.export.as_mut() {
                         Some(form) => form.error = Some(message.to_string()),
                         None => self.error_modal.show(message.to_string()),
                     }

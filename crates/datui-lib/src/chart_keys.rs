@@ -222,7 +222,7 @@ impl App {
                     // Typing is the correction the message asked for.
                     self.chart_export_modal.error = None;
                 }
-                if allowed && let Some(input) = self.chart_export_modal.focused_input_mut() {
+                if allowed && let Some(input) = self.chart_export_modal.input_mut(field) {
                     let _ = input.handle_key(event, Some(&self.cache));
                     if size {
                         self.chart_export_modal.size_typed();

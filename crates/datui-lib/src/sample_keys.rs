@@ -268,8 +268,8 @@ impl App {
         match finished {
             Ok(sample) if quality => {
                 self.analysis_modal.sample_form = None;
-                self.analysis_modal.data_quality_plan.adopt_sample(&sample);
-                self.analysis_modal.data_quality_setup_note = None;
+                self.analysis_modal.quality.plan.adopt_sample(&sample);
+                self.analysis_modal.quality.setup_note = None;
                 None
             }
             // The form stays open, as filled, while a cancelled run finishes.
@@ -296,7 +296,7 @@ impl App {
     /// Enter stages the sample in the draft and returns to Setup; only Run reads.
     pub(crate) fn open_quality_sample_form(&mut self) {
         self.open_quality_setup();
-        let sample = self.analysis_modal.data_quality_plan.sample();
+        let sample = self.analysis_modal.quality.plan.sample();
         self.open_sample_form_on(&sample, false);
     }
 

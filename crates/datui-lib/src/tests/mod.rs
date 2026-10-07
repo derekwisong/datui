@@ -2375,7 +2375,7 @@ fn stale_analysis_answers_are_ignored() {
     assert!(modal.describe_results.is_none());
     assert!(modal.distribution_results.is_none());
     assert!(modal.correlation_results.is_none());
-    assert!(modal.data_quality_results.is_none());
+    assert!(modal.quality.results.is_none());
 }
 
 /// Work a cancel passed holds nothing up. Polars cannot stop the query, so the

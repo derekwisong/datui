@@ -15,14 +15,14 @@ fn the_grain_follows_an_equal_per_value_sample_once() {
     app.analysis_modal.sample.method = per_date.clone();
     app.sync_quality_plan();
     assert_eq!(
-        app.analysis_modal.data_quality_plan.grain,
+        app.analysis_modal.quality.plan.grain,
         data_quality::QualityGrain::Partition("date".into())
     );
 
-    app.analysis_modal.data_quality_plan.grain = data_quality::QualityGrain::Dataset;
+    app.analysis_modal.quality.plan.grain = data_quality::QualityGrain::Dataset;
     app.sync_quality_plan();
     assert_eq!(
-        app.analysis_modal.data_quality_plan.grain,
+        app.analysis_modal.quality.plan.grain,
         data_quality::QualityGrain::Dataset,
         "the same sample again leaves the chosen grain alone"
     );
@@ -119,14 +119,14 @@ fn quality_run_under_way(
     modal.selected_tool = Some(analysis_modal::AnalysisTool::DataQuality);
     modal.focus = analysis_modal::AnalysisFocus::Main;
     let plan = data_quality::DataQualityPlan::default();
-    modal.data_quality_results = Some(data_quality::DataQualityResults::empty(
+    modal.quality.results = Some(data_quality::DataQualityResults::empty(
         Some(3),
         &plan,
         df.schema(),
     ));
-    modal.data_quality_last_plan = Some(plan.clone());
+    modal.quality.last_plan = Some(plan.clone());
     modal.set_quality_page(data_quality::QualityPage::Overview);
-    modal.data_quality_plan.sample_seed = 7;
+    modal.quality.plan.sample_seed = 7;
     let mut progress = AnalysisProgress::new(stage.stage.label());
     progress.reads_source = Some(stage.reads_source);
     progress.interruptible = Some(stage.interruptible);
@@ -165,11 +165,11 @@ fn a_cancelled_run_says_so_until_its_worker_exits() {
     assert!(app.analysis_modal.computing.is_none());
     assert!(!app.is_busy());
     assert!(
-        app.analysis_modal.data_quality_results.is_some(),
+        app.analysis_modal.quality.results.is_some(),
         "the last report is kept"
     );
     assert_eq!(
-        app.analysis_modal.data_quality_page,
+        app.analysis_modal.quality.page,
         data_quality::QualityPage::Setup
     );
     assert!(app.flash_message().is_none(), "state, not a flash");
@@ -190,7 +190,7 @@ fn a_cancelled_run_says_so_until_its_worker_exits() {
     // So does r on the report.
     key(&mut app, KeyCode::Esc);
     assert_eq!(
-        app.analysis_modal.data_quality_page,
+        app.analysis_modal.quality.page,
         data_quality::QualityPage::Overview
     );
     assert!(key(&mut app, KeyCode::Char('r')).is_none());
@@ -250,7 +250,7 @@ fn a_run_that_stops_at_its_next_batch_is_not_called_a_finishing_read() {
     assert!(watch.cancelled(), "the worker's reads were told to stop");
     assert_eq!(app.flash_message(), Some("Run cancelled"));
     assert_eq!(
-        app.analysis_modal.data_quality_page,
+        app.analysis_modal.quality.page,
         data_quality::QualityPage::Setup
     );
     assert!(app.cancelled_run_shown().is_none());
@@ -303,7 +303,7 @@ fn a_stale_report_never_replaces_the_current_one() {
     while let Ok(event) = rx.try_recv() {
         app.event(&event);
     }
-    let on_screen = app.analysis_modal.data_quality_results.clone().unwrap();
+    let on_screen = app.analysis_modal.quality.results.clone().unwrap();
     let df = polars::prelude::df!("id" => [1i64, 2, 3]).unwrap();
     let state = app.data_table_state.as_ref().unwrap();
     let (dataset_generation, view_generation) = (app.dataset_generation, state.len_generation());
@@ -351,7 +351,7 @@ fn a_stale_report_never_replaces_the_current_one() {
     });
     app.event(&AppEvent::JobEnded(ended));
     assert_eq!(
-        format!("{:?}", app.analysis_modal.data_quality_results),
+        format!("{:?}", app.analysis_modal.quality.results),
         format!("{:?}", Some(&on_screen)),
         "the report on screen stays"
     );
@@ -376,11 +376,11 @@ fn a_stale_report_never_replaces_the_current_one() {
     }));
     app.event(&AppEvent::JobEnded(ended));
     assert_eq!(
-        format!("{:?}", app.analysis_modal.data_quality_results),
+        format!("{:?}", app.analysis_modal.quality.results),
         format!("{:?}", Some(&new_results))
     );
     assert_eq!(
-        app.analysis_modal.data_quality_last_plan.as_ref(),
+        app.analysis_modal.quality.last_plan.as_ref(),
         Some(&new_plan)
     );
     assert!(app.analysis_modal.computing.is_none() && !app.is_busy());
@@ -487,7 +487,7 @@ fn nothing_reads_beside_a_cancelled_run_through_another_way_in() {
     assert!(app.cancelled_analysis_running().is_some());
     key(&mut app, KeyCode::Esc);
     assert_eq!(
-        app.analysis_modal.data_quality_page,
+        app.analysis_modal.quality.page,
         data_quality::QualityPage::Overview
     );
     let refused = |app: &mut App, what: &str| {
@@ -505,10 +505,10 @@ fn nothing_reads_beside_a_cancelled_run_through_another_way_in() {
     };
 
     // A finding's staged read: Enter waits, and the read stays staged.
-    app.analysis_modal.data_quality_evidence_read = Some(duplicates());
+    app.analysis_modal.quality.evidence_read = Some(duplicates());
     assert!(key(&mut app, KeyCode::Enter).is_none());
     refused(&mut app, "a finding's rows");
-    assert!(app.analysis_modal.data_quality_evidence_read.is_some());
+    assert!(app.analysis_modal.quality.evidence_read.is_some());
     key(&mut app, KeyCode::Esc);
 
     // The sample's rows, which the cancelled run never kept.

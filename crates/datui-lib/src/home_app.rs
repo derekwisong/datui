@@ -1377,6 +1377,7 @@ impl App {
                 | home::Row::Place { .. }
                 | home::Row::More { .. }
                 | home::Row::Hidden { .. }
+                | home::Row::Up { .. }
                 | home::Row::Door { .. } => false,
             }) {
                 self.home.selected = idx;
@@ -1537,7 +1538,7 @@ impl App {
                 let name = home::display_path(&root);
                 Some((root, name))
             }
-            home::Row::More { .. } | home::Row::Hidden { .. } => None,
+            home::Row::More { .. } | home::Row::Hidden { .. } | home::Row::Up { .. } => None,
         }
     }
 
@@ -1826,6 +1827,15 @@ impl App {
         let Some(section) = self.home.selected_section() else {
             return;
         };
+        // A directory cut to its first rows shows them all, and is cut again, before
+        // its section folds.
+        if collapse && self.home.cut_again(section) {
+            return;
+        }
+        if !collapse && matches!(self.home.selected_row(), Some(home::Row::More { .. })) {
+            self.home.show_all(section);
+            return;
+        }
         if collapse && !self.home.is_collapsed(section) {
             self.home.set_collapsed(section, true);
             if let Some(idx) = self
@@ -2156,9 +2166,24 @@ impl App {
                 }
                 return None;
             }
-            // The rest of `RECENT`, for the session.
-            Some(home::Row::More { .. }) => {
-                self.home.recent_expanded = true;
+            // The rest of `RECENT`, or of a directory, for the session.
+            Some(home::Row::More { section, .. }) => {
+                self.home.show_all(section);
+                return None;
+            }
+            // Up a level: as Backspace while browsing, and above a root at the listing.
+            Some(home::Row::Up { section }) => {
+                if self.home.browsing.is_some() {
+                    self.home_ascend();
+                } else if let Some(parent) = self
+                    .home
+                    .sections
+                    .get(section)
+                    .and_then(|s| s.root.as_deref())
+                    .and_then(home::parent_location)
+                {
+                    self.home_browse_into(parent);
+                }
                 return None;
             }
             // What Ctrl+A shows. The cursor goes to the first of them, where the row

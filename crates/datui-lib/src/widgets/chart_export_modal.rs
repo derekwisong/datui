@@ -1,7 +1,7 @@
 //! Chart export dialog rendering: one Surface, a FormRow per field, the actions in
 //! the footer.
 
-use crate::chart_export_modal::{ChartExportFocus, ChartExportModal, FIELDS};
+use crate::chart_export_modal::{ChartExportModal, FIELDS};
 use crate::render::context::RenderContext;
 use crate::widgets::ui::{FormRow, FormValue, HintBar, Surface};
 use ratatui::layout::Rect;
@@ -42,18 +42,9 @@ pub fn render_chart_export_modal(
         return;
     }
     let focus = modal.focus;
-    for field in FIELDS {
-        let focused = field == focus;
-        match field {
-            ChartExportFocus::PathInput => modal.path_input.set_focused(focused),
-            ChartExportFocus::WidthInput => modal.width_input.set_focused(focused),
-            ChartExportFocus::HeightInput => modal.height_input.set_focused(focused),
-            ChartExportFocus::TitleInput => modal.title_input.set_focused(focused),
-            ChartExportFocus::DescriptionInput => modal.description_input.set_focused(focused),
-            ChartExportFocus::NotesInput => modal.notes_input.set_focused(focused),
-            ChartExportFocus::SourceInput => modal.source_input.set_focused(focused),
-            ChartExportFocus::BylineInput => modal.byline_input.set_focused(focused),
-            _ => {}
+    for (field, _) in FIELDS {
+        if let Some(input) = modal.input_mut(field) {
+            input.set_focused(field == focus);
         }
     }
     // The status line keeps its place at the bottom while there is room for a
@@ -87,7 +78,7 @@ pub fn render_chart_export_modal(
     for (i, field) in shown.iter().enumerate().skip(first).take(rows) {
         let value = match modal.choice(*field) {
             Some(choice) => FormValue::Choice(choice),
-            None => match modal.input(*field) {
+            None => match modal.input_mut(*field) {
                 Some(input) => FormValue::Input(input),
                 None => continue,
             },

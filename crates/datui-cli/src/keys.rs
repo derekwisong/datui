@@ -558,7 +558,7 @@ pub const SCREENS: &[Screen] = &[
                     k("Home / End", "First, last", "The first or last row")
                         .more("The first or last row. The filter has no cursor to move: it is edited at its end"),
                     k("← / →", "Fold", "Fold or unfold; → goes inside")
-                        .more("Fold or unfold a section; → on a directory or a file of tables goes inside it, and on a file a format spec reads as record types lists them, one row each"),
+                        .more("Fold or unfold a section; → on a directory or a file of tables goes inside it, and on a file a format spec reads as record types lists them, one row each. On a directory cut to its first rows, → on its more row shows them all and ← cuts it back"),
                     k("Space", "Fold", "Fold the section (types once filtering)")
                         .more("While the filter is empty: fold or unfold the section header under the cursor. With a filter typed, it types"),
                     k("Tab", "Sort", "Cycle the sort")
@@ -570,8 +570,8 @@ pub const SCREENS: &[Screen] = &[
                 name: "Go",
                 keys: &[
                     k("Enter", "Open", "What the footer names: Open, Inside, Look")
-                    .also(&["Open all", "Inside", "Look", "Fold", "Show all", "Show", "Hex", "About"])
-                        .more("What the footer says on this row: \"Open all\" reads a whole directory as one table, \"Inside\" steps into it, \"Open\" loads a file, \"Look\" finds out first. A catalog bookmark, indented under its dataset, opens whole. On a section header, fold or unfold it; on the More row, show the rest; on the hidden-files row, show them"),
+                    .also(&["Up", "Open all", "Inside", "Look", "Fold", "Show all", "Show", "Hex", "About"])
+                        .more("What the footer says on this row: \"Open all\" reads a whole directory as one table, \"Inside\" steps into it, \"Open\" loads a file, \"Look\" finds out first. A catalog bookmark, indented under its dataset, opens whole. On a section header, fold or unfold it; on a more row, show the rest; on `..`, go up a level; on the hidden-files row, show them"),
                     k("Backspace", "Up", "Delete a filter character, or up a level")
                         .more("Delete a filter character; on an empty filter, up a level (from a bucket, back to its cloud source; from the top of a catalog's remote dataset, back here)"),
                     k("Esc", "Back", "Path prompt, filter, directory, then the table")

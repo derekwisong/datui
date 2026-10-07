@@ -42,6 +42,16 @@ fn test_default_config() {
     // Check display defaults
     assert_eq!(config.performance.pages_ahead, 3);
     assert_eq!(config.performance.pages_behind, 3);
+    assert_eq!(config.performance.threads, 0, "every core");
+    assert_eq!(
+        AppConfig::from_layers([
+            datui::config::ConfigLayer::parse("[performance]\nthreads = 4").unwrap()
+        ])
+        .unwrap()
+        .performance
+        .threads,
+        4
+    );
     assert_eq!(config.display.row_numbers, datui::config::RowNumbers::Auto);
     assert_eq!(config.display.row_numbers_start, 1);
     assert_eq!(config.display.cell_padding.cells(), 2);

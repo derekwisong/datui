@@ -23,8 +23,10 @@ forms (Sample, Expected, a column's intent).
   <kbd>↑</kbd> <kbd>↓</kbd> move between its lines, leaving it from the first or
   last; <kbd>Ctrl</kbd>+<kbd>J</kbd> applies from there.
 - In a picker, typing narrows the list, <kbd>↑</kbd> <kbd>↓</kbd> move,
-  <kbd>Space</kbd> chooses (or toggles, where several can be chosen) and
-  <kbd>Tab</kbd> chooses and moves to the next field.
+  <kbd>Enter</kbd> chooses, <kbd>Space</kbd> toggles where several can be
+  chosen and elsewhere chooses until you type (then it types a space, so a
+  name of several words narrows), and <kbd>Tab</kbd> chooses and moves to the
+  next field.
 - The chart's options apply as they change, so <kbd>Enter</kbd> there acts as
   <kbd>Space</kbd> does.
 - A dialog that cannot do what <kbd>Enter</kbd> asked says why on its last

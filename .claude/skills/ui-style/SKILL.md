@@ -239,6 +239,9 @@ next/prev or per-modal arrow handling.
 
 - `h j k l` are the arrows on a field that does not type; letters never
   open a picker (Space does, then typing narrows).
+- In an open picker, Enter chooses. Space toggles in a list of several; in a
+  pick-one list it chooses only while nothing is typed, then types a space,
+  so a name of several words narrows (`picker_key`).
 - A hidden or disabled field is left out of `fields()`, so focus skips it;
   `settle_focus` after a change that hides the focused one.
 - A tab bar is the form's first field, a Choice: ←/→ switch tabs there, and

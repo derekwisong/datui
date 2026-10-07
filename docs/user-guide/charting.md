@@ -310,8 +310,9 @@ S3, GCS or Azure, which the envelope would download whole twice.
 | <kbd>Esc</kbd> | Back to the table |
 
 In a picker: type part of a name to narrow, <kbd>↑</kbd> <kbd>↓</kbd> move,
-<kbd>Enter</kbd> or <kbd>Space</kbd> chooses (on a line or scatter chart's
-**Y** and on the Color values <kbd>Space</kbd> toggles one in or out),
+<kbd>Enter</kbd> chooses, and so does <kbd>Space</kbd> until you type (then it
+types a space; on a line or scatter chart's **Y** and on the Color values
+<kbd>Space</kbd> toggles one in or out),
 <kbd>Tab</kbd> or <kbd>Shift</kbd>+<kbd>Tab</kbd> chooses and moves to the
 next or previous row, and <kbd>Esc</kbd> backs out of the picker alone.
 

@@ -4286,3 +4286,6 @@ mod doc_queries_tests;
 
 /// A catalog dataset's codebook in the Info panel and the inspector (#734).
 mod codebook_tests;
+
+/// An open whose CSV type inference falls short shows the error, not a crash.
+mod csv_inference_tests;

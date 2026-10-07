@@ -1354,13 +1354,13 @@ impl StatefulWidget for DataTable {
             && state.visible_rows > 0
         {
             let overflow = selected - (state.visible_rows - 1);
-            state.start_row += overflow;
+            state.view.start_row += overflow;
             state.table_state.select(Some(state.visible_rows - 1));
         }
 
         // Only a page the rows on hand do not cover needs a read: the footer growing
         // and shrinking a line must not re-read the buffer each time.
-        if visible_rows_changed && !state.page_on_hand(state.start_row) {
+        if visible_rows_changed && !state.page_on_hand(state.view.start_row) {
             // The App event loop checks this flag after each render and triggers an
             // async collect.
             state.needs_recollect = true;
@@ -1436,15 +1436,16 @@ impl StatefulWidget for DataTable {
 
         // Both sides are cut to the same rows on screen, so the frozen columns are
         // measured on what they show, not on the head of the buffer.
-        let offset = start_row.saturating_sub(state.buffered_start_row);
+        let offset = start_row.saturating_sub(state.view.buffered_start_row);
         let rows_room = (area.height as usize).saturating_sub(header_h as usize);
         let locked_slice = state
+            .view
             .locked_df
             .as_ref()
             .and_then(|df| visible_or_header(df, offset, state.visible_rows));
         self.fit_pending(state, offset, state.visible_rows.min(rows_room), cap);
 
-        if state.df.is_some() || state.locked_df.is_some() {
+        if state.view.df.is_some() || state.view.locked_df.is_some() {
             if state.row_numbers() {
                 self.render_row_numbers(row_num_area, buf, row_number_params);
             }
@@ -1463,13 +1464,14 @@ impl StatefulWidget for DataTable {
                     &locked,
                     locked.height().min(rows_room),
                     data_area.width,
-                    state.column_order.len() <= asked,
+                    state.view.column_order.len() <= asked,
                     area.width,
                     &mut Sizing {
                         widths: &mut state.widths,
-                        schema: &state.schema,
+                        schema: &state.view.schema,
                         cap,
                         page: state
+                            .view
                             .locked_df
                             .as_ref()
                             .map(|frame| (&mut state.page_cells, frame, offset)),
@@ -1530,6 +1532,7 @@ impl StatefulWidget for DataTable {
                 self.measure_column(state, name, offset, rows, cap)
             });
             if let Some(sliced_df) = state
+                .view
                 .df
                 .as_ref()
                 .and_then(|df| visible_or_header(df, offset, state.visible_rows))
@@ -1543,9 +1546,10 @@ impl StatefulWidget for DataTable {
                     leading_gap,
                     Sizing {
                         widths: &mut state.widths,
-                        schema: &state.schema,
+                        schema: &state.view.schema,
                         cap,
                         page: state
+                            .view
                             .df
                             .as_ref()
                             .map(|frame| (&mut state.page_cells, frame, offset)),
@@ -1556,7 +1560,7 @@ impl StatefulWidget for DataTable {
                 let more_left = state.termcol_index > 0;
                 let more_right = total_cols.saturating_sub(shown);
                 let first = state.frozen_shown() + state.termcol_index + 1;
-                let total = state.column_order.len();
+                let total = state.view.column_order.len();
                 state.on_screen =
                     state
                         .cursor_index()
@@ -1574,7 +1578,7 @@ impl StatefulWidget for DataTable {
                 });
             } else {
                 // Every column frozen: all on screen, and the cursor walks them.
-                let total = state.column_order.len();
+                let total = state.view.column_order.len();
                 state.on_screen =
                     state
                         .cursor_index()
@@ -1593,13 +1597,15 @@ impl StatefulWidget for DataTable {
                 rows: drawn_rows,
                 columns: drawn_columns,
             });
-        } else if !state.column_order.is_empty() {
+        } else if !state.view.column_order.is_empty() {
             // No rows on hand, but a schema: the header alone, each column its own type.
             let empty_columns: Vec<_> = state
+                .view
                 .column_order
                 .iter()
                 .map(|name| {
                     let dtype = state
+                        .view
                         .schema
                         .get(name.as_str())
                         .cloned()
@@ -1624,7 +1630,7 @@ impl StatefulWidget for DataTable {
                         false,
                         Sizing {
                             widths: &mut state.widths,
-                            schema: &state.schema,
+                            schema: &state.view.schema,
                             cap,
                             page: None,
                         },
@@ -1640,7 +1646,9 @@ impl StatefulWidget for DataTable {
         }
 
         // A table known to hold no rows says so under its header.
-        let empty = state.num_rows_valid && state.num_rows() == 0 && !state.column_order.is_empty();
+        let empty = state.view.num_rows_valid
+            && state.num_rows() == 0
+            && !state.view.column_order.is_empty();
         if empty && area.height > header_h && data_area.width > 0 {
             let line = Rect {
                 y: area.y + header_h,
@@ -1666,7 +1674,7 @@ impl StatefulWidget for DataTable {
                 cell.set_char(' ');
                 cell.set_style(header_style);
             }
-            if state.df.is_some()
+            if state.view.df.is_some()
                 && !empty
                 && let Some(sel) = state.table_state.selected()
             {

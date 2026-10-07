@@ -33,15 +33,18 @@ fn load_file(app: &mut App, rx: &std::sync::mpsc::Receiver<AppEvent>, path: Path
 }
 
 /// TUI-like collect sequence before pivot: the open's first rows → Collect → set visible_rows → collect.
-fn simulate_initial_tui_collects(app: &mut App, terminal_height: usize) {
-    let state = match app.data_table_state.as_mut() {
-        Some(s) => s,
-        None => return,
-    };
-    state.collect();
-    state.collect();
-    state.visible_rows = terminal_height;
-    state.collect();
+fn simulate_initial_tui_collects(
+    app: &mut App,
+    rx: &std::sync::mpsc::Receiver<AppEvent>,
+    terminal_height: usize,
+) {
+    if app.data_table_state.is_none() {
+        return;
+    }
+    common::read_rows(app, rx);
+    common::read_rows(app, rx);
+    app.data_table_state.as_mut().unwrap().visible_rows = terminal_height;
+    common::read_rows(app, rx);
 }
 
 const SIMULATE_TUI_INITIAL_COLLECTS: bool = true;
@@ -60,10 +63,10 @@ fn test_pivot_via_events() {
     assert!(app.data_table_state.is_some());
 
     if SIMULATE_TUI_INITIAL_COLLECTS {
-        simulate_initial_tui_collects(&mut app, 40);
+        simulate_initial_tui_collects(&mut app, &rx, 40);
     } else if let Some(state) = app.data_table_state.as_mut() {
         state.visible_rows = 40;
-        state.collect();
+        common::read_rows(&mut app, &rx);
     }
 
     let spec = PivotSpec {
@@ -96,9 +99,8 @@ fn test_pivot_date_index_render_simulation() {
     let mut app = App::new(tx, common::test_runtime());
     let path = PathBuf::from("tests/sample-data/pivot_long.parquet");
     load_file_with(&mut app, &rx, path, OpenOptions::default());
-    let state = app.data_table_state.as_mut().unwrap();
-    state.visible_rows = 40;
-    state.collect();
+    app.data_table_state.as_mut().unwrap().visible_rows = 40;
+    common::read_rows(&mut app, &rx);
     let spec = PivotSpec {
         index: vec!["date".to_string()],
         pivot_column: "key".to_string(),

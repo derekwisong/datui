@@ -25,7 +25,7 @@ impl DataTableState {
     pub fn select_previous(&mut self) -> bool {
         if let Some(selected) = self.table_state.selected() {
             self.table_state.select_previous();
-            if selected == 0 && self.start_row > 0 {
+            if selected == 0 && self.view.start_row > 0 {
                 return self.slide_table(-1);
             }
         } else {
@@ -36,24 +36,24 @@ impl DataTableState {
 
     /// Returns true if a buffer collect is needed.
     pub fn scroll_to(&mut self, index: usize) -> bool {
-        if self.start_row == index {
+        if self.view.start_row == index {
             return false;
         }
-        self.start_row = index;
+        self.view.start_row = index;
         true // caller must collect
     }
 
     /// Set scroll position for go-to-line (centered). Returns true if a collect is needed.
     pub fn scroll_to_row_centered(&mut self, row_index: usize) -> bool {
-        if self.num_rows == 0 || self.visible_rows == 0 {
+        if self.view.num_rows == 0 || self.visible_rows == 0 {
             return false;
         }
         let center_offset = self.visible_rows / 2;
         let mut start_row = row_index.saturating_sub(center_offset);
-        let max_start = self.num_rows.saturating_sub(self.visible_rows);
+        let max_start = self.view.num_rows.saturating_sub(self.visible_rows);
         start_row = start_row.min(max_start);
 
-        if self.start_row == start_row {
+        if self.view.start_row == start_row {
             let display_idx = row_index
                 .saturating_sub(start_row)
                 .min(self.visible_rows.saturating_sub(1));
@@ -61,7 +61,7 @@ impl DataTableState {
             return false;
         }
 
-        self.start_row = start_row;
+        self.view.start_row = start_row;
         let display_idx = row_index
             .saturating_sub(start_row)
             .min(self.visible_rows.saturating_sub(1));
@@ -77,28 +77,28 @@ impl DataTableState {
 
     /// Jump to the last page. Returns true if a collect is needed.
     pub fn scroll_to_end(&mut self) -> bool {
-        if self.num_rows == 0 {
-            self.start_row = 0;
-            self.buffered_start_row = 0;
-            self.buffered_end_row = 0;
+        if self.view.num_rows == 0 {
+            self.view.start_row = 0;
+            self.view.buffered_start_row = 0;
+            self.view.buffered_end_row = 0;
             return false;
         }
-        let end_start = self.num_rows.saturating_sub(self.visible_rows);
-        if self.start_row == end_start {
+        let end_start = self.view.num_rows.saturating_sub(self.visible_rows);
+        if self.view.start_row == end_start {
             self.select_last_visible_row();
             return false;
         }
-        self.start_row = end_start;
+        self.view.start_row = end_start;
         self.select_last_visible_row();
         true // caller must collect
     }
 
     /// Set table selection to the last row in the current view (for use after scroll_to_end).
     fn select_last_visible_row(&mut self) {
-        if self.num_rows == 0 {
+        if self.view.num_rows == 0 {
             return;
         }
-        let last_row_display_idx = (self.num_rows - 1).saturating_sub(self.start_row);
+        let last_row_display_idx = (self.view.num_rows - 1).saturating_sub(self.view.start_row);
         let sel = last_row_display_idx.min(self.visible_rows.saturating_sub(1));
         self.table_state.select(Some(sel));
     }
@@ -111,7 +111,7 @@ impl DataTableState {
 
     /// Returns true if a buffer collect is needed after the scroll.
     pub fn half_page_up(&mut self) -> bool {
-        if self.start_row == 0 {
+        if self.view.start_row == 0 {
             return false;
         }
         let half = (self.visible_rows / 2).max(1) as i64;
@@ -120,7 +120,7 @@ impl DataTableState {
 
     /// Returns true if a buffer collect is needed after the scroll.
     pub fn page_up(&mut self) -> bool {
-        if self.start_row == 0 {
+        if self.view.start_row == 0 {
             return false;
         }
         self.slide_table(-(self.visible_rows as i64))
@@ -142,7 +142,10 @@ impl DataTableState {
 
     /// How many columns scroll: the shown ones right of those drawn frozen.
     fn scroll_count(&self) -> usize {
-        self.column_order.len().saturating_sub(self.frozen_shown())
+        self.view
+            .column_order
+            .len()
+            .saturating_sub(self.frozen_shown())
     }
 
     /// Move the view sideways, leaving the cursor where it is unless the view leaves
@@ -186,7 +189,7 @@ impl DataTableState {
     /// it is when already whole on screen, else first after the frozen columns, or on
     /// the last page when it is there. A frozen column is on screen already.
     pub fn go_to_column(&mut self, name: &str) {
-        let Some(at) = self.column_order.iter().position(|c| c == name) else {
+        let Some(at) = self.view.column_order.iter().position(|c| c == name) else {
             return;
         };
         self.column_moves.clear();
@@ -199,7 +202,7 @@ impl DataTableState {
     /// Put the cursor on the shown column `name`, scrolling as little as it takes to
     /// show it.
     pub fn set_current_column(&mut self, name: &str) {
-        let Some(at) = self.column_order.iter().position(|c| c == name) else {
+        let Some(at) = self.view.column_order.iter().position(|c| c == name) else {
             return;
         };
         self.column_moves.clear();
@@ -211,7 +214,8 @@ impl DataTableState {
     /// copying a cell, the sidebar and inspector opening on it, a find in one column).
     /// The first shown column until the cursor moves; `None` with no columns shown.
     pub fn current_column(&self) -> Option<&str> {
-        self.cursor_index().map(|at| self.column_order[at].as_str())
+        self.cursor_index()
+            .map(|at| self.view.column_order[at].as_str())
     }
 
     /// The cursor's place among the shown columns, from 0, frozen ones first.
@@ -220,18 +224,19 @@ impl DataTableState {
     }
 
     pub(crate) fn cursor_index(&self) -> Option<usize> {
-        let last = self.column_order.len().checked_sub(1)?;
+        let last = self.view.column_order.len().checked_sub(1)?;
         Some(
-            self.cursor_column
+            self.view
+                .cursor_column
                 .as_deref()
-                .and_then(|name| self.column_order.iter().position(|c| c == name))
-                .unwrap_or(self.cursor_at.min(last)),
+                .and_then(|name| self.view.column_order.iter().position(|c| c == name))
+                .unwrap_or(self.view.cursor_at.min(last)),
         )
     }
 
     pub(super) fn place_cursor_at(&mut self, at: usize) {
-        self.cursor_column = self.column_order.get(at).cloned();
-        self.cursor_at = at;
+        self.view.cursor_column = self.view.column_order.get(at).cloned();
+        self.view.cursor_at = at;
     }
 
     /// After the shown columns changed: the cursor stays on its column by name, or,
@@ -277,7 +282,7 @@ impl DataTableState {
         let Some(cursor) = self.cursor_index() else {
             return true;
         };
-        let last = self.column_order.len() - 1;
+        let last = self.view.column_order.len() - 1;
         let frozen = self.frozen_shown();
         match mv {
             CursorMove::Left | CursorMove::Right => {
@@ -332,7 +337,7 @@ impl DataTableState {
 
     /// The scrolling columns, by name.
     pub(super) fn scrolling_names(&self) -> &[String] {
-        &self.column_order[self.frozen_shown().min(self.column_order.len())..]
+        &self.view.column_order[self.frozen_shown().min(self.view.column_order.len())..]
     }
 
     /// `[` straight after the `]` that came here goes back where that one started,
@@ -492,11 +497,11 @@ impl DataTableState {
     }
 
     pub fn headers(&self) -> Vec<String> {
-        self.column_order.clone()
+        self.view.column_order.clone()
     }
 
     pub fn set_column_order(&mut self, order: Vec<String>) {
-        self.column_order = order;
+        self.view.column_order = order;
         self.clear_column_moves();
         // Fewer columns shown may leave the scroll past the last; keep one on screen.
         self.termcol_index = self
@@ -508,7 +513,7 @@ impl DataTableState {
     }
 
     pub fn set_locked_columns(&mut self, count: usize) {
-        self.locked_columns_count = count.min(self.column_order.len());
+        self.view.locked_columns_count = count.min(self.view.column_order.len());
         self.clear_column_moves();
         self.settle_cursor();
         self.termcol_index = self
@@ -519,18 +524,18 @@ impl DataTableState {
     }
 
     pub fn locked_columns_count(&self) -> usize {
-        self.locked_columns_count
+        self.view.locked_columns_count
     }
 
     /// How many columns are drawn frozen: the count asked for, or fewer while the
     /// last layout could not fit them all beside a usable scrolling column. The ones
     /// left out lead the scrolling columns, so every column stays reachable.
     pub fn frozen_shown(&self) -> usize {
-        let (asked, shown) = self.frozen_fit;
-        if asked == self.locked_columns_count {
+        let (asked, shown) = self.view.frozen_fit;
+        if asked == self.view.locked_columns_count {
             shown.min(asked)
         } else {
-            self.locked_columns_count
+            self.view.locked_columns_count
         }
     }
 
@@ -541,20 +546,20 @@ impl DataTableState {
     /// called while drawing, and only re-selects columns of the buffer already held.
     pub(crate) fn fit_frozen(&mut self, shown: usize) {
         let before = self.frozen_shown();
-        let shown = shown.min(self.locked_columns_count);
+        let shown = shown.min(self.view.locked_columns_count);
         if shown == before {
-            self.frozen_fit = (self.locked_columns_count, shown);
+            self.view.frozen_fit = (self.view.locked_columns_count, shown);
             return;
         }
         if self.defer_collect || !self.buffer_on_hand() {
             return;
         }
-        self.frozen_fit = (self.locked_columns_count, shown);
+        self.view.frozen_fit = (self.view.locked_columns_count, shown);
         // The scrolling indices the trail was kept in shift with the frozen count.
         self.page_trail.clear();
         if self.termcol_index > 0 {
             let first = before + self.termcol_index;
-            let last = self.column_order.len().saturating_sub(1);
+            let last = self.view.column_order.len().saturating_sub(1);
             self.termcol_index = first.min(last).saturating_sub(shown);
         }
         self.slice_buffer_into_display();
@@ -563,7 +568,11 @@ impl DataTableState {
     /// The type a column has in the frame on screen: with its name, the identity its
     /// width is kept under.
     pub(crate) fn width_dtype(&self, name: &str) -> DataType {
-        self.schema.get(name).cloned().unwrap_or(DataType::Null)
+        self.view
+            .schema
+            .get(name)
+            .cloned()
+            .unwrap_or(DataType::Null)
     }
 
     /// How a column's width is chosen.
@@ -600,7 +609,7 @@ impl DataTableState {
     /// One column's rows on screen, from the buffer already held, as the table draws
     /// them. For fitting a column that may be scrolled out of view.
     pub(crate) fn page_column(&self, name: &str, offset: usize, len: usize) -> Option<DataFrame> {
-        let column = self.buffered_df.as_ref()?.select([name]).ok()?;
+        let column = self.view.buffered_df.as_ref()?.select([name]).ok()?;
         visible_slice(&column, offset, len)
     }
 }

@@ -124,7 +124,7 @@ fn anything_built_on_the_scan_holds_the_arriving_columns_off() {
     let mut drilled = fresh();
     // The field rather than the drill itself, which needs a grouped frame to drill
     // into: what is being asked here is whether the clause is consulted.
-    drilled.drilled_down_group_index = Some(0);
+    drilled.view.drilled_down_group_index = Some(0);
     assert!(
         drilled.join_dataset_schema(found()).is_err(),
         "and a drill-down is showing one group of it, not it"
@@ -143,7 +143,7 @@ fn test_filter() {
         logical_op: LogicalOperator::And,
     }];
     state.filter(filters);
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.view.lf.clone().collect().unwrap();
     assert_eq!(df.shape().0, 1);
     assert_eq!(df.column("a").unwrap().get(0).unwrap(), AnyValue::Int32(3));
 }
@@ -153,7 +153,7 @@ fn test_query() {
     let lf = create_test_lf();
     let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
     state.query("select b where a = 2".to_string());
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.view.lf.clone().collect().unwrap();
     assert_eq!(df.shape(), (1, 1));
     assert_eq!(
         df.column("b").unwrap().get(0).unwrap(),
@@ -183,7 +183,7 @@ fn test_query_date_accessors() {
         "query should succeed: {:?}",
         state.error
     );
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.view.lf.clone().collect().unwrap();
     assert_eq!(df.shape(), (3, 3));
     assert_eq!(
         df.column("year").unwrap().get(0).unwrap(),
@@ -205,7 +205,7 @@ fn test_query_date_accessors() {
         "filter should succeed: {:?}",
         state.error
     );
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.view.lf.clone().collect().unwrap();
     assert_eq!(df.height(), 1);
     assert_eq!(
         df.column("name").unwrap().get(0).unwrap(),
@@ -219,7 +219,7 @@ fn test_query_date_accessors() {
         "date literal filter should succeed: {:?}",
         state.error
     );
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.view.lf.clone().collect().unwrap();
     assert_eq!(
         df.height(),
         2,
@@ -236,7 +236,7 @@ fn test_query_date_accessors() {
         "string accessors should succeed: {:?}",
         state.error
     );
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.view.lf.clone().collect().unwrap();
     assert_eq!(df.height(), 1, "only 'c' ends with 'c'");
     assert_eq!(
         df.column("upper_name").unwrap().get(0).unwrap(),
@@ -246,12 +246,15 @@ fn test_query_date_accessors() {
     // Query that returns 0 rows: df and locked_df must be cleared for correct empty-table render
     state.query("select where event_date.date = 2020.01.01".to_string());
     assert!(state.error.is_none());
-    assert_eq!(state.num_rows, 0);
+    assert_eq!(state.view.num_rows, 0);
     state.visible_rows = 10;
     state.collect();
-    assert!(state.df.is_none(), "df must be cleared when num_rows is 0");
     assert!(
-        state.locked_df.is_none(),
+        state.view.df.is_none(),
+        "df must be cleared when num_rows is 0"
+    );
+    assert!(
+        state.view.locked_df.is_none(),
         "locked_df must be cleared when num_rows is 0"
     );
 }
@@ -368,11 +371,11 @@ fn a_sql_in_subquery_reads_its_values_once() {
         state.sql_query(sql.to_string());
         assert!(state.error.is_none(), "{sql}: {:?}", state.error);
         assert!(
-            !(&state.lf.logical_plan).into_iter().any(asks_per_row),
+            !(&state.view.lf.logical_plan).into_iter().any(asks_per_row),
             "{sql}"
         );
         for streaming in [false, cfg!(feature = "streaming")] {
-            let got = collect_lazy(state.lf.clone(), streaming).unwrap();
+            let got = collect_lazy(state.view.lf.clone(), streaming).unwrap();
             assert!(
                 got.equals_missing(&expected),
                 "{sql}, streaming {streaming}"
@@ -474,10 +477,10 @@ fn a_sql_in_subquery_returns_only_the_statements_columns() {
             DataTableState::from_lazyframe(df.clone().lazy(), &OpenOptions::default()).unwrap();
         state.sql_query(sql.to_string());
         assert!(state.error.is_none(), "{sql}: {:?}", state.error);
-        let names: Vec<&str> = state.schema.iter_names().map(|n| n.as_str()).collect();
+        let names: Vec<&str> = state.view.schema.iter_names().map(|n| n.as_str()).collect();
         assert_eq!(names, columns, "{sql}");
         for streaming in [false, cfg!(feature = "streaming")] {
-            let got = collect_lazy(state.lf.clone(), streaming).unwrap();
+            let got = collect_lazy(state.view.lf.clone(), streaming).unwrap();
             assert!(
                 got.equals_missing(&expected),
                 "{sql}, streaming {streaming}: {got:?}"
@@ -514,7 +517,7 @@ fn a_sql_order_by_with_ties_reads_the_same_rows_page_by_page() {
             DataTableState::from_lazyframe(df.clone().lazy(), &OpenOptions::default()).unwrap();
         state.sql_query(sql.to_string());
         assert!(state.error.is_none(), "{sql}: {:?}", state.error);
-        let unstable = (&state.lf.logical_plan).into_iter().any(|node| {
+        let unstable = (&state.view.lf.logical_plan).into_iter().any(|node| {
             matches!(
                 node,
                 polars::lazy::dsl::DslPlan::Sort { sort_options, .. }
@@ -525,8 +528,9 @@ fn a_sql_order_by_with_ties_reads_the_same_rows_page_by_page() {
         // The app pages with the streaming engine by default, which runs the top
         // page's top-k its own way.
         for streaming in [false, cfg!(feature = "streaming")] {
-            let page =
-                |offset, len| collect_lazy(state.lf.clone().slice(offset, len), streaming).unwrap();
+            let page = |offset, len| {
+                collect_lazy(state.view.lf.clone().slice(offset, len), streaming).unwrap()
+            };
             let top = page(0, 200);
             let next = page(100, 200);
             assert!(top.slice(100, 100).equals(&next.slice(0, 100)), "{sql}");
@@ -575,23 +579,23 @@ fn a_sql_result_without_order_by_reads_the_same_rows_page_by_page() {
             assert!(state.error.is_none(), "{sql}: {:?}", state.error);
             if sort {
                 // By the first column, which most of these results repeat.
-                let first = state.schema.get_at_index(0).unwrap().0.to_string();
+                let first = state.view.schema.get_at_index(0).unwrap().0.to_string();
                 state.sort(vec![first], true);
                 assert!(state.error.is_none(), "{sql}: {:?}", state.error);
             }
             let mut fulls = Vec::new();
             for streaming in [false, cfg!(feature = "streaming")] {
                 let read = |lf: LazyFrame| collect_lazy(lf, streaming).unwrap();
-                let full = read(state.lf.clone());
+                let full = read(state.view.lf.clone());
                 let middle = full.height() as i64 / 2;
                 for offset in [0, 100, middle] {
-                    let page = read(state.lf.clone().slice(offset, 200));
+                    let page = read(state.view.lf.clone().slice(offset, 200));
                     assert!(
                         page.equals_missing(&full.slice(offset, 200)),
                         "{sql}, sort {sort}, streaming {streaming}, offset {offset}"
                     );
                 }
-                let one = read(state.lf.clone().slice(middle + 7, 1));
+                let one = read(state.view.lf.clone().slice(middle + 7, 1));
                 assert!(
                     one.equals_missing(&full.slice(middle + 7, 1)),
                     "{sql}, sort {sort}, streaming {streaming}"
@@ -607,13 +611,17 @@ fn a_sql_result_without_order_by_reads_the_same_rows_page_by_page() {
     // Keeping the groups' order as well would double a large grouping's time.
     let mut state = DataTableState::from_lazyframe(df.lazy(), &OpenOptions::default()).unwrap();
     state.sql_query("SELECT v % 1000 AS g, COUNT(*) AS n FROM df GROUP BY g".to_string());
-    assert!((&state.lf.logical_plan).into_iter().any(|node| matches!(
-        node,
-        polars::lazy::dsl::DslPlan::GroupBy {
-            maintain_order: false,
-            ..
-        }
-    )));
+    assert!(
+        (&state.view.lf.logical_plan)
+            .into_iter()
+            .any(|node| matches!(
+                node,
+                polars::lazy::dsl::DslPlan::GroupBy {
+                    maintain_order: false,
+                    ..
+                }
+            ))
+    );
 }
 
 /// A SQL grouping whose ORDER BY covers every key, by alias, ordinal or name,
@@ -711,13 +719,17 @@ fn a_sql_grouping_sorted_by_its_keys_leaves_the_order_to_the_sort() {
             DataTableState::from_lazyframe(df.clone().lazy(), &OpenOptions::default()).unwrap();
         state.sql_query(sql.to_string());
         assert!(state.error.is_none(), "{sql}: {:?}", state.error);
-        assert_eq!(groups_ordered(&state.lf.logical_plan), [ordered], "{sql}");
+        assert_eq!(
+            groups_ordered(&state.view.lf.logical_plan),
+            [ordered],
+            "{sql}"
+        );
         let mut ctx = polars_sql::SQLContext::new();
         ctx.register("df", df.clone().lazy());
         let raw = ctx.execute(sql).unwrap();
         for streaming in [false, cfg!(feature = "streaming")] {
             let read = |lf: LazyFrame| collect_lazy(lf, streaming).unwrap();
-            let full = read(state.lf.clone());
+            let full = read(state.view.lf.clone());
             if !ordered {
                 // No ties, so polars-sql's unstable sort gives the one order too.
                 assert!(
@@ -727,7 +739,7 @@ fn a_sql_grouping_sorted_by_its_keys_leaves_the_order_to_the_sort() {
             }
             let middle = full.height() as i64 / 2;
             for offset in [0, 100, middle] {
-                let page = read(state.lf.clone().slice(offset, 200));
+                let page = read(state.view.lf.clone().slice(offset, 200));
                 assert!(
                     page.equals_missing(&full.slice(offset, 200)),
                     "{sql}, streaming {streaming}, offset {offset}"
@@ -772,7 +784,7 @@ fn test_filter_multiple() {
         },
     ];
     state.filter(filters);
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.view.lf.clone().collect().unwrap();
     assert_eq!(df.shape().0, 7);
 }
 
@@ -789,7 +801,7 @@ fn test_filter_and_sort() {
     }];
     state.filter(filters);
     state.sort(vec!["a".to_string()], false);
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.view.lf.clone().collect().unwrap();
     assert_eq!(df.column("a").unwrap().get(0).unwrap(), AnyValue::Int32(97));
 }
 
@@ -805,7 +817,7 @@ fn test_pivot_basic() {
         sort_columns: None,
     };
     state.pivot(&spec).unwrap();
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.view.lf.clone().collect().unwrap();
     let names: Vec<&str> = df.get_column_names().iter().map(|s| s.as_str()).collect();
     assert!(names.contains(&"id"));
     assert!(names.contains(&"date"));
@@ -827,7 +839,7 @@ fn test_pivot_aggregation_last() {
         sort_columns: None,
     };
     state.pivot(&spec).unwrap();
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.view.lf.clone().collect().unwrap();
     let a_col = df.column("A").unwrap();
     let row0 = a_col.get(0).unwrap();
     let row1 = a_col.get(1).unwrap();
@@ -847,7 +859,7 @@ fn test_pivot_aggregation_first() {
         sort_columns: None,
     };
     state.pivot(&spec).unwrap();
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.view.lf.clone().collect().unwrap();
     let a_col = df.column("A").unwrap();
     assert_eq!(a_col.get(0).unwrap(), AnyValue::Float64(10.0));
     assert_eq!(a_col.get(1).unwrap(), AnyValue::Float64(40.0));
@@ -866,7 +878,7 @@ fn test_pivot_aggregation_min_max() {
             sort_columns: None,
         })
         .unwrap();
-    let df_min = state_min.lf.clone().collect().unwrap();
+    let df_min = state_min.view.lf.clone().collect().unwrap();
     assert_eq!(
         df_min.column("A").unwrap().get(0).unwrap(),
         AnyValue::Float64(10.0)
@@ -882,7 +894,7 @@ fn test_pivot_aggregation_min_max() {
             sort_columns: None,
         })
         .unwrap();
-    let df_max = state_max.lf.clone().collect().unwrap();
+    let df_max = state_max.view.lf.clone().collect().unwrap();
     assert_eq!(
         df_max.column("A").unwrap().get(0).unwrap(),
         AnyValue::Float64(11.0)
@@ -902,7 +914,7 @@ fn test_pivot_aggregation_avg_count() {
             sort_columns: None,
         })
         .unwrap();
-    let df_avg = state_avg.lf.clone().collect().unwrap();
+    let df_avg = state_avg.view.lf.clone().collect().unwrap();
     let a = df_avg.column("A").unwrap().get(0).unwrap();
     if let AnyValue::Float64(x) = a {
         assert!((x - 10.5).abs() < 1e-6);
@@ -920,7 +932,7 @@ fn test_pivot_aggregation_avg_count() {
             sort_columns: None,
         })
         .unwrap();
-    let df_count = state_count.lf.clone().collect().unwrap();
+    let df_count = state_count.view.lf.clone().collect().unwrap();
     let a = df_count.column("A").unwrap().get(0).unwrap();
     assert_eq!(a, AnyValue::UInt32(2));
 }
@@ -943,7 +955,7 @@ fn test_pivot_string_first_last() {
         sort_columns: None,
     };
     state.pivot(&spec).unwrap();
-    let out = state.lf.clone().collect().unwrap();
+    let out = state.view.lf.clone().collect().unwrap();
     assert_eq!(
         out.column("X").unwrap().get(0).unwrap(),
         AnyValue::String("low")
@@ -965,7 +977,7 @@ fn test_melt_basic() {
         value_name: "value".to_string(),
     };
     state.melt(&spec).unwrap();
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.view.lf.clone().collect().unwrap();
     assert_eq!(df.height(), 9);
     let names: Vec<&str> = df.get_column_names().iter().map(|s| s.as_str()).collect();
     assert!(names.contains(&"variable"));
@@ -995,7 +1007,7 @@ fn a_pivot_on_a_date_past_the_calendar_names_it_by_its_stored_number() {
                     sort_columns: None,
                 })
                 .unwrap();
-            let df = state.lf.clone().collect().unwrap();
+            let df = state.view.lf.clone().collect().unwrap();
             let names: Vec<&str> = df.get_column_names().iter().map(|n| n.as_str()).collect();
             let dates = match (with_past, on) {
                 (false, _) => vec![first.as_str()],
@@ -1036,7 +1048,7 @@ fn a_melt_of_dates_with_text_writes_a_date_past_the_calendar_as_its_number() {
                 value_name: "value".to_string(),
             })
             .unwrap();
-        state.lf.clone().collect().unwrap()
+        state.view.lf.clone().collect().unwrap()
     };
     for column in PAST_CALENDAR {
         let [first, past] = past_calendar_text(column);
@@ -1077,7 +1089,7 @@ fn a_sql_join_with_an_in_subquery_and_a_date_past_the_calendar() {
             DataTableState::new(past_calendar_lf(), None, None, None, None, true).unwrap();
         state.sql_query(sql.clone());
         assert!(state.error.is_none(), "{sql}: {:?}", state.error);
-        let plan = &state.lf.logical_plan;
+        let plan = &state.view.lf.logical_plan;
         assert!(!plan.into_iter().any(asks_per_row), "{sql}");
         let joins: Vec<_> = plan
             .into_iter()
@@ -1092,7 +1104,7 @@ fn a_sql_join_with_an_in_subquery_and_a_date_past_the_calendar() {
             "{sql}"
         );
         for streaming in [false, cfg!(feature = "streaming")] {
-            let df = collect_lazy(state.lf.clone(), streaming).unwrap();
+            let df = collect_lazy(state.view.lf.clone(), streaming).unwrap();
             let ids: Vec<Option<i32>> = df.column("id").unwrap().i32().unwrap().iter().collect();
             assert_eq!(ids, [Some(1), Some(2)], "{sql}, streaming {streaming}");
             let x: Vec<Option<&str>> = df.column("x").unwrap().str().unwrap().iter().collect();
@@ -1101,7 +1113,7 @@ fn a_sql_join_with_an_in_subquery_and_a_date_past_the_calendar() {
                 [Some(first.as_str()), Some(past.as_str())],
                 "{sql}, streaming {streaming}"
             );
-            let page = collect_lazy(state.lf.clone().slice(1, 1), streaming).unwrap();
+            let page = collect_lazy(state.view.lf.clone().slice(1, 1), streaming).unwrap();
             assert!(page.equals_missing(&df.slice(1, 1)), "{sql}");
         }
     }
@@ -1139,7 +1151,7 @@ fn test_melt_all_except_index() {
         value_name: "val".to_string(),
     };
     state.melt(&spec).unwrap();
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.view.lf.clone().collect().unwrap();
     assert!(df.column("var").is_ok());
     assert!(df.column("val").is_ok());
 }
@@ -1163,7 +1175,7 @@ fn test_pivot_on_current_view_after_filter() {
         sort_columns: None,
     };
     state.pivot(&spec).unwrap();
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.view.lf.clone().collect().unwrap();
     assert_eq!(df.height(), 1);
     let id_col = df.column("id").unwrap();
     assert_eq!(id_col.get(0).unwrap(), AnyValue::Int32(1));
@@ -1290,13 +1302,19 @@ fn test_fuzzy_search() {
     let mut state = DataTableState::from_csv(&path, &Default::default()).unwrap();
     state.visible_rows = 10;
     state.collect();
-    let before = state.num_rows;
+    let before = state.view.num_rows;
     state.fuzzy_search("string".to_string());
     assert!(state.error.is_none(), "{:?}", state.error);
-    assert!(state.num_rows <= before, "fuzzy search should filter rows");
+    assert!(
+        state.view.num_rows <= before,
+        "fuzzy search should filter rows"
+    );
     state.fuzzy_search("".to_string());
     state.collect();
-    assert_eq!(state.num_rows, before, "empty fuzzy search should reset");
+    assert_eq!(
+        state.view.num_rows, before,
+        "empty fuzzy search should reset"
+    );
     assert!(state.get_active_fuzzy_query().is_empty());
 }
 
@@ -1371,7 +1389,7 @@ fn fuzzy_search_after_a_descending_sort_is_not_reversed() {
 
     // The sidebar re-applies the (empty) filters and sort over the result.
     state.filter(Vec::new());
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.view.lf.clone().collect().unwrap();
     assert_eq!(df.height(), 2);
     assert_eq!(df.column("id").unwrap().get(0).unwrap(), AnyValue::Int32(1));
 }
@@ -1396,14 +1414,14 @@ fn melt_after_a_descending_sort_is_not_reversed() {
         .unwrap();
     assert!(state.view_sort_columns().is_empty());
     assert!(state.view_sort_ascending());
-    let melted = state.lf.clone().collect().unwrap();
+    let melted = state.view.lf.clone().collect().unwrap();
     assert_eq!(
         melted.column("id").unwrap().get(0).unwrap(),
         AnyValue::Int32(3)
     );
 
     state.filter(Vec::new());
-    assert!(state.lf.clone().collect().unwrap().equals(&melted));
+    assert!(state.view.lf.clone().collect().unwrap().equals(&melted));
 }
 
 #[test]
@@ -1430,7 +1448,7 @@ fn search_matches_every_words_letters_in_order_in_any_text_column() {
         let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
         state.fuzzy_search(query.to_string());
         assert!(state.error.is_none(), "{:?}", state.error);
-        state.lf.clone().collect().unwrap().height()
+        state.view.lf.clone().collect().unwrap().height()
     };
     assert_eq!(rows("smth"), 2, "letters in order, not adjacent, any case");
     assert_eq!(rows("smth ldn"), 1, "every word, each in its own column");
@@ -1460,7 +1478,7 @@ fn test_by_query_result_sorted_by_group_columns() {
         "query should succeed: {:?}",
         state.error
     );
-    let result = state.lf.collect().unwrap();
+    let result = state.view.lf.collect().unwrap();
     // Result must be sorted by group columns (age_group, then team)
     let sorted = result
         .sort(
@@ -1493,7 +1511,7 @@ fn test_by_query_computed_group_key_sorted_by_result_column() {
         "query should succeed: {:?}",
         state.error
     );
-    let result = state.lf.collect().unwrap();
+    let result = state.view.lf.collect().unwrap();
     let bucket = result.column("bucket").unwrap();
     // Must be sorted by bucket (1, 2, 3)
     for i in 1..result.height() {
@@ -1717,7 +1735,7 @@ fn absent_columns_and_type_conflicts_are_measured_from_the_footers() {
     let evidence = state
         .quality_evidence_view(&scope, lit(true))
         .expect("the rows the third file contributed");
-    let rows = collect_lazy(evidence.lf.clone(), false).unwrap();
+    let rows = collect_lazy(evidence.view.lf.clone(), false).unwrap();
     assert_eq!(
         rows.column("id")
             .unwrap()
@@ -1812,9 +1830,9 @@ fn a_new_base_is_measured_afresh() {
         num_rows: 100,
         count_known: true,
     });
-    assert!(state.observed_bytes_per_row.is_some());
+    assert!(state.view.observed_bytes_per_row.is_some());
     state.query("select b".to_string());
-    assert!(state.observed_bytes_per_row.is_none());
+    assert!(state.view.observed_bytes_per_row.is_none());
     assert_eq!(
         state.bytes_per_row(),
         4,

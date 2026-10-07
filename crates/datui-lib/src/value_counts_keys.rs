@@ -1,6 +1,7 @@
 //! Value Counts: counting a column's values off the UI thread, its keys, and drilling,
 //! copying or exporting from it.
 
+use crate::form::ListMove;
 use crate::jobs::{Answer, Job};
 use crate::{App, AppEvent, InputMode, clipboard, copy_modal, value_counts, value_counts_modal};
 use crossterm::event::{KeyCode, KeyEvent};
@@ -113,9 +114,18 @@ impl App {
         if !event.is_press() {
             return None;
         }
-        let page = self.value_counts_page() as isize;
         // The histogram has no lines to move through or drill into.
         let listing = !self.value_counts.shows_histogram();
+        if listing && let Some(step) = ListMove::from_key(event) {
+            match step {
+                ListMove::Home => self.value_counts.move_to_start(),
+                ListMove::End => self.value_counts.move_to_end(),
+                _ => self
+                    .value_counts
+                    .move_by(step.delta(self.value_counts_page())),
+            }
+            return None;
+        }
         match event.code {
             // A count still reading stops; with nothing to show for the column, Esc
             // goes on back to the table.
@@ -128,12 +138,7 @@ impl App {
                     self.input_mode = InputMode::Normal;
                 }
             }
-            KeyCode::Down | KeyCode::Char('j') if listing => self.value_counts.move_by(1),
-            KeyCode::Up | KeyCode::Char('k') if listing => self.value_counts.move_by(-1),
-            KeyCode::PageDown if listing => self.value_counts.move_by(page),
-            KeyCode::PageUp if listing => self.value_counts.move_by(-page),
-            KeyCode::Home if listing => self.value_counts.move_to_start(),
-            KeyCode::End | KeyCode::Char('G') if listing => self.value_counts.move_to_end(),
+            KeyCode::Char('G') if listing => self.value_counts.move_to_end(),
             KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l') => {
                 let by = if matches!(event.code, KeyCode::Left | KeyCode::Char('h')) {
                     -1

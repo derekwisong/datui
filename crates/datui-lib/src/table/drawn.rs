@@ -117,7 +117,7 @@ impl DataTableState {
         let mut landed = true;
         if let Some(row) = hit.row {
             if let Some(drawn) = self.drawn.as_ref()
-                && drawn.start_row == self.start_row
+                && drawn.start_row == self.view.start_row
                 && row < drawn.rows
             {
                 self.table_state.select(Some(row));

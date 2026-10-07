@@ -3127,7 +3127,10 @@ fn a_table_copy_with_no_size_yet_asks_first() {
         app.confirmation_modal.active,
         "an unknown size asks; it never collects unprompted"
     );
-    assert!(app.pending_copy.is_some());
+    assert!(matches!(
+        app.confirmation_modal.asking,
+        Some(crate::feedback::Confirm::Copy(..))
+    ));
 }
 
 /// A Table copy writes binary as base64, so the guard counts it at that size
@@ -3176,7 +3179,12 @@ fn a_table_copy_counts_binary_at_its_base64_size() {
     // bytes alone, or the stub the buffer holds, would not be.
     let (app, next) = copy(Some(3 * 1024 * 1024));
     assert!(app.confirmation_modal.active, "large blobs ask first");
-    assert!(app.pending_copy.is_some() && next.is_none());
+    assert!(
+        matches!(
+            app.confirmation_modal.asking,
+            Some(crate::feedback::Confirm::Copy(..))
+        ) && next.is_none()
+    );
 
     let (app, next) = copy(Some(100));
     assert!(!app.confirmation_modal.active, "small blobs copy");
@@ -3184,7 +3192,12 @@ fn a_table_copy_counts_binary_at_its_base64_size() {
 
     let (app, next) = copy(None);
     assert!(app.confirmation_modal.active, "unmeasured blobs ask");
-    assert!(app.pending_copy.is_some() && next.is_none());
+    assert!(
+        matches!(
+            app.confirmation_modal.asking,
+            Some(crate::feedback::Confirm::Copy(..))
+        ) && next.is_none()
+    );
 }
 
 /// A local directory's footers, read to open it, give its binary columns their
@@ -4296,3 +4309,6 @@ mod csv_inference_tests;
 
 /// Every text field the app shows, driven through the real `App`.
 mod text_input_flows;
+
+/// Every confirmation's Yes, No and Esc.
+mod confirm_tests;

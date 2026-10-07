@@ -1005,8 +1005,10 @@ mod tests {
         app.input_mode = crate::InputMode::Normal;
         let content = super::MainViewContent::Datatable;
         assert_eq!(super::help_key(&app, content), Some("?"));
-        app.confirmation_modal
-            .show("Overwrite out.csv?".to_string());
+        app.confirmation_modal.show(
+            "Overwrite out.csv?".to_string(),
+            crate::feedback::Confirm::ClearRecents,
+        );
         assert_eq!(super::help_key(&app, content), None);
         app.confirmation_modal.hide();
         app.error_modal.show("Cannot read it.".to_string());

@@ -1,6 +1,7 @@
 //! The Data Quality forms: the intent and expected-values forms, Setup's rows and
 //! pickers, and the quality export.
 
+use crate::feedback::Confirm;
 use crate::form::FormKey;
 use crate::output_file::Overwrite;
 use crate::{App, AppEvent, analysis_modal, data_quality, form, intent_modal};
@@ -86,10 +87,10 @@ impl App {
                 Ok((path, format)) => {
                     if path.exists() {
                         let shown = path.display().to_string();
-                        self.pending_quality_export = Some((path, format));
                         self.confirmation_modal.show_destructive(
                             format!("File already exists:\n{shown}\n\nOverwrite it?"),
                             "Overwrite",
+                            Confirm::QualityExport(path, format),
                         );
                     } else {
                         // The dialog stays up while the report is written: a failed

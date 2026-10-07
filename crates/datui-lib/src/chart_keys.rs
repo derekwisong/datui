@@ -4,6 +4,7 @@
 use crate::chart_export::{ChartExportFormat, ChartExportRequest};
 use crate::chart_export_modal::{ChartExportFocus, ExportDefaults};
 use crate::chart_modal::{ChartFocus, Mark};
+use crate::feedback::Confirm;
 use crate::form::{FormKey, PickerKey};
 use crate::logging::LogFailure;
 use crate::output_file::Overwrite;
@@ -308,13 +309,13 @@ impl App {
             recipe,
         };
         if request.path.exists() {
-            self.pending_chart_export = Some(request);
             // Suspended, not closed: declining returns to the filled form with the
             // typed path intact.
             self.chart_export_modal.suspend();
             self.confirmation_modal.show_destructive(
                 format!("File already exists:\n{path_display}\n\nOverwrite it?"),
                 "Overwrite",
+                Confirm::ChartExport(Box::new(request)),
             );
             return None;
         }

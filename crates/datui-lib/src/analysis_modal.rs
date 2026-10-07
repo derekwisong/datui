@@ -515,8 +515,6 @@ pub struct AnalysisModal {
     pub data_quality_segments_by_change: bool,
     /// The clean entry's popup lists every check rather than the most important.
     pub data_quality_checks_expanded: bool,
-    /// A full scan is being asked about in the confirmation; Yes runs Setup.
-    pub data_quality_confirm_run: bool,
     pub data_quality_plan_before_edit: Option<DataQualityPlan>,
     pub data_quality_last_plan: Option<DataQualityPlan>,
     pub data_quality_from_cache: bool,
@@ -620,7 +618,6 @@ impl AnalysisModal {
         self.data_quality_plan_field = 0;
         self.data_quality_show_access = false;
         self.data_quality_observation_detail = false;
-        self.data_quality_confirm_run = false;
         self.data_quality_plan_before_edit = None;
         self.data_quality_last_plan = None;
         self.data_quality_from_cache = false;
@@ -694,7 +691,6 @@ impl AnalysisModal {
         self.data_quality_picker = None;
         self.data_quality_show_access = false;
         self.data_quality_observation_detail = false;
-        self.data_quality_confirm_run = false;
         self.data_quality_plan_before_edit = None;
         self.data_quality_last_plan = None;
         self.data_quality_from_cache = false;

@@ -5,6 +5,7 @@ use crate::cli::{CompressionFormat, FileFormat};
 use crate::export::{ExportOptions, ExportRequest};
 use crate::export_modal::ExportFocus;
 use crate::export_modal::ExportFormat;
+use crate::feedback::Confirm;
 use crate::form::FormKey;
 use crate::logging::LogFailure;
 use crate::output_file::Overwrite;
@@ -92,10 +93,10 @@ impl App {
         };
         if request.path.exists() {
             let path_display = request.path.display().to_string();
-            self.pending_export = Some(request);
             self.confirmation_modal.show_destructive(
                 format!("File already exists:\n{path_display}\n\nOverwrite it?"),
                 "Overwrite",
+                Confirm::Export(Box::new(request)),
             );
             // Suspended, not closed: declining returns to the filled form with the
             // typed path intact.

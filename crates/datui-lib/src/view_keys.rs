@@ -1,5 +1,6 @@
 //! The view modal's keys.
 
+use crate::feedback::Confirm;
 use crate::form::FormKey;
 use crate::widgets::view_modal::{FormFocus, ViewModalMode};
 use crate::{App, AppEvent};
@@ -71,8 +72,11 @@ impl App {
             KeyCode::Char('d') if !form => {
                 if let Some(view) = self.view_modal.selected_view() {
                     let message = format!("Delete \"{}\"? This cannot be undone.", view.name);
-                    self.pending_delete_view = Some(view.id.clone());
-                    self.confirmation_modal.show_destructive(message, "Delete");
+                    self.confirmation_modal.show_destructive(
+                        message,
+                        "Delete",
+                        Confirm::DeleteView(view.id.clone()),
+                    );
                 }
             }
             KeyCode::Char('i') if !form => {

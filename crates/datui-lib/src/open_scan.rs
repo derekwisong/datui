@@ -4,6 +4,7 @@
 use crate::cli::{CompressionFormat, FileFormat};
 #[cfg(feature = "cloud")]
 use crate::cloud_hive;
+use crate::feedback::Confirm;
 use crate::jobs::{Answer, Job};
 use crate::open_options::{OpenOptions, ReadReport, UnaskedDownload};
 use crate::pivot_melt_modal::PivotMeltModal;
@@ -226,18 +227,19 @@ impl App {
                 // Nothing runs while the question is up: datui waits on a key, and a
                 // spinner would read as progress. The loader holds the generation
                 // meanwhile.
-                self.confirmation_modal
-                    .show(Self::download_confirmation_message(
-                        &pending,
-                        self.loading.download_note(),
-                    ));
+                self.confirmation_modal.show(
+                    Self::download_confirmation_message(&pending, self.loading.download_note()),
+                    Confirm::Download,
+                );
                 None
             }
             Step::AskRead(read) => {
                 // As for a download: nothing runs, and the generation is held.
                 self.loading.hold_while_asking(self.jobs.hold());
-                self.confirmation_modal
-                    .show(Self::in_memory_confirmation_message(&read));
+                self.confirmation_modal.show(
+                    Self::in_memory_confirmation_message(&read),
+                    Confirm::Download,
+                );
                 None
             }
             step => {

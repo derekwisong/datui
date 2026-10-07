@@ -1,6 +1,7 @@
 //! The documentation viewer: opening a dataset's documentation, its keys, copying
 //! from it and following its links.
 
+use crate::feedback::Confirm;
 use crate::{App, clipboard, glyphs, link_open, widgets};
 use crossterm::event::{KeyCode, KeyEvent};
 use std::path::Path;
@@ -78,9 +79,12 @@ impl App {
         }
         match link_open::checked_url(&link) {
             Ok(url) => {
-                self.confirmation_modal
-                    .show_choice(format!("Open {url}?"), "Open", "Cancel");
-                self.pending_link = Some(url);
+                self.confirmation_modal.show_choice(
+                    format!("Open {url}?"),
+                    "Open",
+                    "Cancel",
+                    Confirm::OpenLink(url),
+                );
             }
             Err(why) => self.flash_note(format!("Not opened: {why}; y copies it")),
         }

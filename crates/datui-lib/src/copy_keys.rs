@@ -2,6 +2,7 @@
 //! does with them.
 
 use crate::copy_modal::CopyFocus;
+use crate::feedback::Confirm;
 use crate::form::{FormKey, PickerKey};
 use crate::jobs::{Answer, Job};
 use crate::open_options::OpenOptions;
@@ -167,12 +168,11 @@ impl App {
             }
             Ok(Planned::Collect) => Some(AppEvent::CopyTable { format, header }),
             Ok(Planned::Confirm(bytes)) => {
-                self.pending_copy = Some((format, header));
                 let counting = self
                     .data_table_state
                     .as_ref()
                     .is_some_and(|state| state.num_rows_if_valid().is_none());
-                self.confirmation_modal.show(match bytes {
+                let message = match bytes {
                     Some(bytes) => format!(
                         "This copies about {} to the clipboard.\n\nCopy the whole table?",
                         Self::format_bytes(bytes as u64)
@@ -183,7 +183,9 @@ impl App {
                     None => "The size of the table's binary columns is not known.\n\n\
                              Copy the whole table anyway?"
                         .to_string(),
-                });
+                };
+                self.confirmation_modal
+                    .show(message, Confirm::Copy(format, header));
                 None
             }
             Err(message) => {

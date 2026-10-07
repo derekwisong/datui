@@ -3421,7 +3421,7 @@ fn full_scan_evidence_is_read_only_on_confirm() {
     app.analysis_modal.data_quality_plan.method = datui::sampling::SampleMethod::EveryRow;
     app.analysis_modal.data_quality_plan.compute = datui::data_quality::QualityCompute::Full;
     assert!(press(&mut app, KeyCode::Enter).is_none());
-    assert!(app.analysis_modal.data_quality_confirm_run);
+    assert!(app.confirmation_modal.asks_full_scan());
     // The one confirmation, with what the scan reads and writes and its own keys.
     assert!(app.confirmation_modal.active);
     assert_eq!(app.confirmation_modal.yes_label, "Run");
@@ -3446,7 +3446,7 @@ fn full_scan_evidence_is_read_only_on_confirm() {
     // Esc declines: nothing runs, and Enter on Setup asks again.
     assert!(press(&mut app, KeyCode::Esc).is_none());
     assert!(!app.confirmation_modal.active);
-    assert!(!app.analysis_modal.data_quality_confirm_run);
+    assert!(!app.confirmation_modal.asks_full_scan());
     assert_nothing_started(&mut app, &rx);
     assert!(press(&mut app, KeyCode::Enter).is_none());
     assert!(app.confirmation_modal.active);
@@ -3826,7 +3826,7 @@ fn the_data_quality_ceremony_takes_the_cursor_with_it() {
     );
 
     // The run asked for confirmation, and Enter confirms — no Tab required.
-    assert!(app.analysis_modal.data_quality_confirm_run);
+    assert!(app.confirmation_modal.asks_full_scan());
     let next = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
@@ -3929,7 +3929,7 @@ fn r_from_the_sidebar_runs_a_sampled_report_again() {
     };
     let sampled = std::mem::replace(&mut app.analysis_modal.data_quality_plan, full.clone());
     assert!(press(&mut app, KeyCode::Char('r')).is_none());
-    assert!(!app.analysis_modal.data_quality_confirm_run);
+    assert!(!app.confirmation_modal.asks_full_scan());
     assert_eq!(app.analysis_modal.data_quality_plan, full);
 
     app.analysis_modal.data_quality_plan = sampled;
@@ -4113,9 +4113,9 @@ fn data_quality_reads_nothing_until_setup_runs() {
     app.analysis_modal.data_quality_plan.method = datui::sampling::SampleMethod::EveryRow;
     app.analysis_modal.data_quality_plan.compute = datui::data_quality::QualityCompute::Full;
     assert!(press(&mut app, KeyCode::Enter).is_none());
-    assert!(app.analysis_modal.data_quality_confirm_run);
+    assert!(app.confirmation_modal.asks_full_scan());
     assert!(press(&mut app, KeyCode::Esc).is_none());
-    assert!(!app.analysis_modal.data_quality_confirm_run);
+    assert!(!app.confirmation_modal.asks_full_scan());
     assert_eq!(app.analysis_modal.sample, shared);
     assert_eq!(
         app.analysis_modal
@@ -4487,7 +4487,7 @@ fn data_quality_coverage_sits_under_every_verdict() {
     app.analysis_modal.data_quality_plan.method = datui::sampling::SampleMethod::EveryRow;
     app.analysis_modal.data_quality_plan.compute = QualityCompute::Full;
     assert!(press(&mut app, KeyCode::Enter).is_none());
-    assert!(app.analysis_modal.data_quality_confirm_run);
+    assert!(app.confirmation_modal.asks_full_scan());
     let next = press(&mut app, KeyCode::Enter);
     drain_quality(&mut app, &rx, next);
     let text = draw(&mut app);
@@ -4576,7 +4576,7 @@ fn data_quality_setup_edits_never_outlive_esc() {
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
     let full = app.analysis_modal.data_quality_plan.clone();
     assert!(press(&mut app, KeyCode::Char('r')).is_none());
-    assert!(!app.analysis_modal.data_quality_confirm_run);
+    assert!(!app.confirmation_modal.asks_full_scan());
     assert_eq!(app.analysis_modal.data_quality_plan, full);
 }
 
@@ -5134,10 +5134,7 @@ fn expected_windows_on_a_full_scan_run_without_asking() {
         };
     }
     assert!(press(&mut app, KeyCode::Enter).is_none());
-    assert!(
-        app.analysis_modal.data_quality_confirm_run,
-        "a full scan asks"
-    );
+    assert!(app.confirmation_modal.asks_full_scan(), "a full scan asks");
     let next = press(&mut app, KeyCode::Enter);
     assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
     let (finished, _) = drain_quality(&mut app, &rx, next);
@@ -5150,7 +5147,7 @@ fn expected_windows_on_a_full_scan_run_without_asking() {
     });
     assert!(press(&mut app, KeyCode::Enter).is_none());
     assert!(
-        !app.analysis_modal.data_quality_confirm_run,
+        !app.confirmation_modal.asks_full_scan(),
         "nothing to confirm"
     );
     assert!(!app.is_busy() && app.analysis_modal.computing.is_none());
@@ -5535,7 +5532,7 @@ fn an_empty_scope_is_never_a_clean_report() {
             plan.compute = datui::data_quality::QualityCompute::Full;
         }
         let mut first = press(&mut app, KeyCode::Enter);
-        if app.analysis_modal.data_quality_confirm_run {
+        if app.confirmation_modal.asks_full_scan() {
             first = press(&mut app, KeyCode::Enter);
         }
         let (finished, _) = drain_quality(&mut app, &rx, first);

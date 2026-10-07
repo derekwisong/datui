@@ -227,6 +227,7 @@ use counting::FootersReported;
 pub use error_display::{ErrorKindForPython, error_for_python};
 pub use export::{ExportOptions, ExportRequest};
 use export_modal::{ExportFocus, ExportFormat, ExportModal};
+use feedback::Confirm;
 pub use feedback::{ConfirmationModal, ErrorModal, Flash};
 use filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
 use jobs::{Answer, Job, Jobs, Outcome};
@@ -849,7 +850,7 @@ fn recording_label(spool: &crate::follow::Spool) -> (String, bool) {
 
 /// Where a key was taking the user when leaving was asked about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Leaving {
+pub(crate) enum Leaving {
     Quit,
     Home,
 }
@@ -1000,15 +1001,9 @@ pub struct App {
     /// own, whatever refreshes the listing meanwhile; the root decides whether they
     /// still describe where the user is.
     home_search_generation: u64,
-    /// Set while the confirmation modal is asking about forgetting every recent.
-    pending_clear_recents: bool,
-    /// The checked link the confirmation modal is asking about opening.
-    pending_link: Option<String>,
     /// Whether a browser opened here opens in front of the user: `o` on a
     /// documentation link is offered only then (`link_open::local_desktop`).
     pub local_desktop: bool,
-    /// The place whose recents the confirmation modal is asking about forgetting.
-    pending_forget_place: Option<PathBuf>,
     /// Why the last open failed, shown on the home screen when the error is dismissed
     /// and there is nothing to fall back to.
     last_load_error: Option<String>,
@@ -1041,8 +1036,6 @@ pub struct App {
     stdout_pass: Option<Box<dyn std::io::Write + Send>>,
     /// The follow mark as last drawn, so its clock redraws only when it changes.
     follow_drawn: Option<crate::render::footer::FollowMark>,
-    /// Leaving was asked about while recording: what the user was doing.
-    pending_leave: Option<Leaving>,
     /// A recording kept going after the user went home or quit, until its stream ends.
     recording_on: Option<Arc<crate::follow::SpoolHandle>>,
     /// A recording's end has been said: once, in the bar or the error dialog.
@@ -1181,8 +1174,6 @@ pub struct App {
     /// Wayland and X11 the clipboard offer dies with the process that owns it,
     /// so this handle must live as long as the copy should.
     clipboard: Option<Box<dyn clipboard::Destination>>,
-    /// A table-scope copy waiting on the size confirmation.
-    pending_copy: Option<(clipboard::CopyFormat, bool)>,
     pub(crate) chart_cache: ChartCache,
     /// The one chart preparation allowed to run at a time. Render draws only what is in
     /// `chart_cache`; this drives the throbber while it is current. Its result is
@@ -1203,15 +1194,6 @@ pub struct App {
     error_modal: ErrorModal,
     flash: Option<Flash>,
     pub confirmation_modal: ConfirmationModal,
-    /// An export waiting on the overwrite confirmation.
-    pending_export: Option<ExportRequest>,
-    /// The saved view `d` asked to delete, by id, while the confirmation is up.
-    pending_delete_view: Option<String>,
-    /// Delete on the Example datasets heading asked to hide them.
-    pending_hide_examples: bool,
-    pending_chart_export: Option<ChartExportRequest>,
-    /// A Data Quality report export waiting on the overwrite confirmation.
-    pending_quality_export: Option<(PathBuf, crate::quality_export::ReportFormat)>,
     /// The help overlay, over whatever screen it was opened at.
     help: help::Help,
     /// What the mouse can land on in the last frame, and the last click.
@@ -1225,10 +1207,8 @@ pub struct App {
     active_view_id: Option<String>, // ID of currently applied view
     /// An export under way, which the control bar reports.
     export_progress: Option<ExportProgress>,
-    theme: Theme, // Color theme for UI rendering
-    /// `a` is waiting on the confirmation to read every row.
-    pending_read_all: bool,
-    history_limit: usize, // History limit for all text inputs (from config.query.history_limit)
+    theme: Theme,            // Color theme for UI rendering
+    history_limit: usize,    // History limit for all text inputs (from config.query.history_limit)
     table_cell_padding: u16, // Spaces between columns (from config.display.cell_padding)
     column_colors: bool, // When true, colorize table cells by column type (from config.display.column_colors)
     /// Second header row of column types. Starts from `display.type_row`; `D` flips it.
@@ -1872,15 +1852,17 @@ impl App {
              recording until the stream ends?",
             tee.name()
         );
-        self.pending_leave = Some(leaving);
-        self.confirmation_modal
-            .show_choice(message, "Stop recording", "Keep recording");
+        self.confirmation_modal.show_choice(
+            message,
+            "Stop recording",
+            "Keep recording",
+            Confirm::Leave(leaving),
+        );
     }
 
     /// Leave as asked: the recording stopped and its file finished, or kept going
     /// until its stream ends, while datui goes home or quits.
-    fn leave_recording(&mut self, stop: bool) -> Option<AppEvent> {
-        let leaving = self.pending_leave.take()?;
+    fn leave_recording(&mut self, leaving: Leaving, stop: bool) -> Option<AppEvent> {
         let handle = self
             .opened
             .as_ref()
@@ -3164,12 +3146,9 @@ impl App {
             home_refresh_owed: false,
             home_schema_inflight: Vec::new(),
             last_load_error: None,
-            pending_clear_recents: false,
-            pending_link: None,
             local_desktop: link_open::local_desktop(link_open::Platform::current(), |name| {
                 std::env::var(name).ok()
             }),
-            pending_forget_place: None,
             home_schema_cache: HashMap::new(),
             home_previews: crate::home_preview::Previews::default(),
             reads: crate::home_preview::ReadCounts::default(),
@@ -3179,7 +3158,6 @@ impl App {
             stdin_reader: None,
             stdout_pass: None,
             follow_drawn: None,
-            pending_leave: None,
             recording_on: None,
             recording_end_said: false,
             events,
@@ -3255,7 +3233,6 @@ impl App {
             table_picker: crate::widgets::ui::PickerState::default(),
             table_choices: None,
             clipboard: None,
-            pending_copy: None,
             chart_cache: ChartCache::default(),
             chart_inflight: None,
             chart_asked: None,
@@ -3264,11 +3241,6 @@ impl App {
             error_modal: ErrorModal::new(),
             flash: None,
             confirmation_modal: ConfirmationModal::new(),
-            pending_export: None,
-            pending_delete_view: None,
-            pending_hide_examples: false,
-            pending_chart_export: None,
-            pending_quality_export: None,
             help: help::Help::default(),
             pointer: pointer::Pointing::default(),
             context_menu: None,
@@ -3278,7 +3250,6 @@ impl App {
             active_view_id: None,
             export_progress: None,
             theme,
-            pending_read_all: false,
             history_limit: app_config.query.history_limit,
             table_cell_padding: app_config.display.cell_padding.cells(),
             column_colors: app_config.display.column_colors,
@@ -3507,6 +3478,91 @@ impl App {
         self.confirmation_modal.active && self.loading.asking()
     }
 
+    /// Enter on the confirmation's Yes, or on either choice of one whose No acts too.
+    fn confirmed(&mut self) -> Option<AppEvent> {
+        let stop = self.confirmation_modal.focus_yes;
+        match self.confirmation_modal.take()? {
+            Confirm::Leave(leaving) => self.leave_recording(leaving, stop),
+            Confirm::ReadAll => {
+                // Every row is a sample method like the others: it shows in the strip,
+                // and `s` changes it back.
+                let sample = sampling::Sample {
+                    method: sampling::SampleMethod::EveryRow,
+                    ..self.analysis_modal.sample.clone()
+                };
+                self.apply_sample(sample)
+            }
+            Confirm::OpenLink(url) => Some(AppEvent::OpenLink(url)),
+            Confirm::ClearRecents => {
+                self.cache.clear_recents();
+                self.home_refresh();
+                self.home.status = None;
+                None
+            }
+            Confirm::QualityFullScan => self.run_quality_setup(true),
+            Confirm::HideExamples => {
+                self.cache.hide_examples();
+                self.home_refresh();
+                self.home.select_first_entry();
+                None
+            }
+            Confirm::DeleteView(id) => {
+                if self.view_manager.delete_view(&id).is_ok() {
+                    self.refresh_view_list();
+                }
+                None
+            }
+            Confirm::ForgetPlace(place) => {
+                let paths = self.home.recents_in(&place);
+                self.cache.forget_recents(&paths);
+                self.home_refresh();
+                self.home.status = None;
+                None
+            }
+            // The overwrite was agreed to: each export may now replace the file it
+            // asked about, and only through that answer.
+            Confirm::QualityExport(path, format) => Some(AppEvent::QualityReportExport(
+                path,
+                format,
+                Overwrite::Replace,
+            )),
+            Confirm::ChartExport(request) => Some(AppEvent::ChartExport(ChartExportRequest {
+                overwrite: Overwrite::Replace,
+                ..*request
+            })),
+            Confirm::Export(request) => Some(AppEvent::Export(ExportRequest {
+                overwrite: Overwrite::Replace,
+                ..*request
+            })),
+            Confirm::Copy(format, header) => Some(AppEvent::CopyTable { format, header }),
+            Confirm::Download => {
+                // The loader lets go of its hold on the generation as the download or
+                // the read starts, and its job takes it before anything else can look.
+                let step = self.loading.confirmed();
+                self.run_load_step(step)
+            }
+        }
+    }
+
+    /// No or Esc on the confirmation: nothing it asked about happens. A declined
+    /// overwrite returns to the filled form, so the typed path, format and options
+    /// survive; the report's dialog and a declined full scan's draft stay where they
+    /// were.
+    fn declined(&mut self) -> Option<AppEvent> {
+        match self.confirmation_modal.take() {
+            Some(Confirm::ChartExport(_)) => self.chart_export_modal.resume(),
+            Some(Confirm::Export(_)) => {
+                self.export_modal.resume();
+                self.input_mode = InputMode::Export;
+            }
+            // Backing out of a download, or a large read, goes home: `enter_home` puts
+            // the open down.
+            Some(Confirm::Download) => self.enter_home(),
+            _ => {}
+        }
+        None
+    }
+
     fn key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         self.debug.on_key(event);
 
@@ -3646,163 +3702,23 @@ impl App {
                     self.confirmation_modal.scroll =
                         self.confirmation_modal.scroll.saturating_add(1);
                 }
-                KeyCode::Enter if self.pending_leave.is_some() => {
-                    let stop = self.confirmation_modal.focus_yes;
-                    self.confirmation_modal.hide();
-                    return self.leave_recording(stop);
+                KeyCode::Enter if self.confirmation_modal.focus_yes => {
+                    return self.confirmed();
                 }
                 KeyCode::Enter => {
-                    if self.confirmation_modal.focus_yes {
-                        // The confirmations that are not about overwriting a file come
-                        // first: reading every row, and forgetting recents.
-                        if std::mem::take(&mut self.pending_read_all) {
-                            self.confirmation_modal.hide();
-                            // Every row is a sample method like the others: it shows in
-                            // the strip, and `s` changes it back.
-                            let sample = sampling::Sample {
-                                method: sampling::SampleMethod::EveryRow,
-                                ..self.analysis_modal.sample.clone()
-                            };
-                            return self.apply_sample(sample);
-                        }
-                        if let Some(url) = self.pending_link.take() {
-                            self.confirmation_modal.hide();
-                            return Some(AppEvent::OpenLink(url));
-                        }
-                        if self.pending_clear_recents {
-                            self.pending_clear_recents = false;
-                            self.confirmation_modal.hide();
-                            self.cache.clear_recents();
-                            self.home_refresh();
-                            self.home.status = None;
-                            return None;
-                        }
-                        // A full scan agreed to: Setup runs, past the question.
-                        if self.analysis_modal.data_quality_confirm_run {
-                            self.confirmation_modal.hide();
-                            let event = self.run_quality_setup();
-                            // Asked once: a run that waits or is refused asks again.
-                            self.analysis_modal.data_quality_confirm_run = false;
-                            return event;
-                        }
-                        if std::mem::take(&mut self.pending_hide_examples) {
-                            self.confirmation_modal.hide();
-                            self.cache.hide_examples();
-                            self.home_refresh();
-                            self.home.select_first_entry();
-                            return None;
-                        }
-                        if let Some(id) = self.pending_delete_view.take() {
-                            self.confirmation_modal.hide();
-                            if self.view_manager.delete_view(&id).is_ok() {
-                                self.refresh_view_list();
-                            }
-                            return None;
-                        }
-                        if let Some(place) = self.pending_forget_place.take() {
-                            self.confirmation_modal.hide();
-                            let paths = self.home.recents_in(&place);
-                            self.cache.forget_recents(&paths);
-                            self.home_refresh();
-                            self.home.status = None;
-                            return None;
-                        }
-                        // The overwrite was agreed to: each export may now replace the
-                        // file it asked about, and only through that answer.
-                        if let Some((path, format)) = self.pending_quality_export.take() {
-                            self.confirmation_modal.hide();
-                            return Some(AppEvent::QualityReportExport(
-                                path,
-                                format,
-                                Overwrite::Replace,
-                            ));
-                        }
-                        if let Some(request) = self.pending_chart_export.take() {
-                            self.confirmation_modal.hide();
-                            return Some(AppEvent::ChartExport(ChartExportRequest {
-                                overwrite: Overwrite::Replace,
-                                ..request
-                            }));
-                        }
-                        if let Some(request) = self.pending_export.take() {
-                            self.confirmation_modal.hide();
-                            return Some(AppEvent::Export(ExportRequest {
-                                overwrite: Overwrite::Replace,
-                                ..request
-                            }));
-                        }
-                        if let Some((format, header)) = self.pending_copy.take() {
-                            self.confirmation_modal.hide();
-                            return Some(AppEvent::CopyTable { format, header });
-                        }
-                        if self.loading.asking() {
-                            self.confirmation_modal.hide();
-                            // The loader lets go of its hold on the generation as the
-                            // download or the read starts, and its job takes it before
-                            // anything else can look.
-                            let step = self.loading.confirmed();
-                            return self.run_load_step(step);
-                        }
-                    } else {
-                        self.pending_clear_recents = false;
-                        self.pending_link = None;
-                        self.pending_read_all = false;
-                        self.pending_forget_place = None;
-                        self.pending_delete_view = None;
-                        self.pending_hide_examples = false;
-                        // Declining the full read leaves the draft staged, and the
-                        // sample and report as they were.
-                        self.analysis_modal.data_quality_confirm_run = false;
-                        // Declining an overwrite returns to the filled form:
-                        // the typed path, format and options survive the No.
-                        if self.pending_chart_export.take().is_some() {
-                            self.chart_export_modal.resume();
-                        }
-                        // The report's dialog stays open behind the question.
-                        self.pending_quality_export = None;
-                        if self.pending_export.take().is_some() {
-                            self.export_modal.resume();
-                            self.input_mode = InputMode::Export;
-                        }
-                        self.pending_copy = None;
-                        if self.loading.asking() {
-                            self.enter_home();
-                            return None;
-                        }
-                        self.confirmation_modal.hide();
+                    // The recording question's No is a choice too: keep recording.
+                    if matches!(self.confirmation_modal.asking, Some(Confirm::Leave(_))) {
+                        return self.confirmed();
                     }
+                    return self.declined();
                 }
                 KeyCode::Esc => {
-                    // Disarmed on every exit from the modal, so a declined confirmation
-                    // cannot fire against whatever the *next* one is asking about.
-                    self.pending_clear_recents = false;
-                    self.pending_link = None;
-                    self.pending_read_all = false;
-                    self.pending_forget_place = None;
-                    self.pending_delete_view = None;
-                    self.pending_hide_examples = false;
-                    self.analysis_modal.data_quality_confirm_run = false;
                     // Staying: the recording goes on, and so does the view.
-                    self.pending_leave = None;
-                    // Declining an overwrite returns to the filled form: the
-                    // typed path, format and options survive the Esc.
-                    if self.pending_chart_export.take().is_some() {
-                        self.chart_export_modal.resume();
-                    }
-                    self.pending_quality_export = None;
-                    if self.pending_export.take().is_some() {
-                        self.export_modal.resume();
-                        self.input_mode = InputMode::Export;
-                    }
-                    self.pending_copy = None;
-                    if self.loading.asking() {
-                        // Declining a download used to quit datui outright, which made
-                        // a remote open the one thing in the app you could not back out
-                        // of. `enter_home` puts the open down and hides this.
-                        self.enter_home();
+                    if matches!(self.confirmation_modal.asking, Some(Confirm::Leave(_))) {
+                        self.confirmation_modal.hide();
                         return None;
                     }
-                    self.confirmation_modal.hide();
+                    return self.declined();
                 }
                 _ => {}
             }

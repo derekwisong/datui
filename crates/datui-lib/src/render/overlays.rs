@@ -387,7 +387,10 @@ mod tests {
         let area = Rect::new(0, 0, 80, 24);
         let mut buf = Buffer::empty(area);
         let mut modal = crate::ConfirmationModal::new();
-        modal.show("Overwrite out.csv?".to_string());
+        modal.show(
+            "Overwrite out.csv?".to_string(),
+            crate::feedback::Confirm::ClearRecents,
+        );
         render_confirmation_modal(area, &mut buf, &mut modal, &ctx);
         let rows = grid(&buf, area);
         let frames = crate::glyphs::frame_corners(&rows).len();

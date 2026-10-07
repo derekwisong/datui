@@ -13,7 +13,7 @@
 use crate::cloud_browse::{Environment, ProviderKind};
 use crate::config::{CloudConfig, CloudConnectionConfig, DatasetAccess, DatasetAuth};
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// The source built from `[cloud] s3_*`, `--s3-*` and the `AWS_*` environment: what a
 /// plain `s3://bucket/key` has always meant.
@@ -966,7 +966,8 @@ fn remembered(kind: ProviderKind, bucket: &str) -> Option<String> {
 /// S3 bucket's own region. May run a credential command and ask S3 where the bucket is,
 /// so call it on a worker.
 pub fn resolve(url: &str, config: &CloudConfig) -> Result<Resolved, String> {
-    let mut resolved = resolve_with(url, config, &Environment::current())?;
+    let sources = session_sources(config);
+    let mut resolved = resolve_among(url, config, &sources, &Environment::current())?;
     if resolved.kind == ProviderKind::S3
         && resolved.s3.endpoint.is_none()
         && let Some((_, bucket, _)) = crate::cloud_browse::split_bucket_url(&resolved.url)
@@ -1130,7 +1131,70 @@ pub fn resolve_with(
     config: &CloudConfig,
     env: &Environment<'_>,
 ) -> Result<Resolved, String> {
-    let sources = discover(config, env);
+    resolve_among(url, config, &discover(config, env), env)
+}
+
+/// What discovery found, kept so that each resolve does not read every tool's files
+/// again: one is asked for per peek, per listing and per open. Kept for one config at a
+/// time; [`SessionSources::refresh`] looks again.
+#[derive(Debug, Default)]
+pub struct SessionSources(Mutex<Option<(CloudConfig, Arc<[Source]>)>>);
+
+impl SessionSources {
+    /// The sources found for `config`, discovering them when nothing was kept for it.
+    pub fn get(
+        &self,
+        config: &CloudConfig,
+        discover: impl FnOnce() -> Vec<Source>,
+    ) -> Arc<[Source]> {
+        if let Ok(kept) = self.0.lock()
+            && let Some((asked, sources)) = kept.as_ref()
+            && asked == config
+        {
+            return sources.clone();
+        }
+        self.refresh(config, discover)
+    }
+
+    /// Discover again and keep what is found.
+    pub fn refresh(
+        &self,
+        config: &CloudConfig,
+        discover: impl FnOnce() -> Vec<Source>,
+    ) -> Arc<[Source]> {
+        // Not under the lock: discovery reads files, and a resolve waiting on another
+        // would wait for nothing it needs.
+        let sources: Arc<[Source]> = discover().into();
+        if let Ok(mut kept) = self.0.lock() {
+            *kept = Some((config.clone(), sources.clone()));
+        }
+        sources
+    }
+}
+
+fn session() -> &'static SessionSources {
+    static SESSION: OnceLock<SessionSources> = OnceLock::new();
+    SESSION.get_or_init(SessionSources::default)
+}
+
+/// The sources on this machine for `config`, discovered once for the session.
+pub fn session_sources(config: &CloudConfig) -> Arc<[Source]> {
+    session().get(config, || discover(config, &Environment::current()))
+}
+
+/// The sources on this machine discovered again, as Ctrl+R asks: a login made since
+/// is found.
+pub fn rediscover(config: &CloudConfig) -> Arc<[Source]> {
+    session().refresh(config, || discover(config, &Environment::current()))
+}
+
+/// As [`resolve_with`], among `sources` already discovered.
+fn resolve_among(
+    url: &str,
+    config: &CloudConfig,
+    sources: &[Source],
+    env: &Environment<'_>,
+) -> Result<Resolved, String> {
     let place = access_key(url).ok_or_else(|| format!("not an object-store URL: {url}"))?;
     let configured = configured_access(url, config);
     // A dataset read anonymously is read that way whoever is logged in: no login is
@@ -1190,7 +1254,7 @@ pub fn resolve_with(
         .and_then(|map| map.get(&place).copied())
         .filter(|_| connection.is_none());
     if let Some(parts) = crate::source::azure_parts(url) {
-        return resolve_azure(&parts, &sources, connection.as_ref(), known, place, env);
+        return resolve_azure(&parts, sources, connection.as_ref(), known, place, env);
     }
     let (id, plain) = crate::source::split_source_id(url);
     let (kind, bucket, _) = crate::cloud_browse::split_bucket_url(&plain)
@@ -1205,7 +1269,7 @@ pub fn resolve_with(
         (None, Some(source)) => source,
         (Some(id), _) => {
             let Some(source) = find(id) else {
-                return Err(unknown_source(id, config, env));
+                return Err(unknown_source(id, sources));
             };
             if !source.named_in_urls() {
                 return Err(format!(
@@ -1396,11 +1460,11 @@ fn resolve_azure(
     }
 }
 
-fn unknown_source(id: &str, config: &CloudConfig, env: &Environment<'_>) -> String {
-    let names: Vec<String> = discover(config, env)
-        .into_iter()
-        .filter(Source::named_in_urls)
-        .map(|s| s.id)
+fn unknown_source(id: &str, sources: &[Source]) -> String {
+    let names: Vec<&str> = sources
+        .iter()
+        .filter(|s| s.named_in_urls())
+        .map(|s| s.id.as_str())
         .collect();
     if names.is_empty() {
         format!("no S3-compatible source is named \"{id}\"")
@@ -2635,5 +2699,32 @@ aws_secret_access_key = minioadmin
         assert!(crate::config::is_valid_source_id(&profile_source_id(
             "a very long profile name that goes on and on"
         )));
+    }
+
+    /// A resolve asks for the sources each time; they are discovered once for a config,
+    /// again for a different one, and again when asked to look again.
+    #[test]
+    fn sources_are_discovered_once_per_config() {
+        let session = SessionSources::default();
+        let looked = std::cell::Cell::new(0);
+        let look = || {
+            looked.set(looked.get() + 1);
+            Vec::new()
+        };
+        let config = CloudConfig::default();
+        for _ in 0..8 {
+            session.get(&config, look);
+        }
+        assert_eq!(looked.get(), 1, "eight resolves, one discovery");
+        let other = CloudConfig {
+            hide: vec!["lab".to_string()],
+            ..CloudConfig::default()
+        };
+        session.get(&other, look);
+        session.get(&other, look);
+        assert_eq!(looked.get(), 2, "a changed config is discovered for once");
+        session.refresh(&other, look);
+        session.get(&other, look);
+        assert_eq!(looked.get(), 3, "Ctrl+R looks again, once");
     }
 }

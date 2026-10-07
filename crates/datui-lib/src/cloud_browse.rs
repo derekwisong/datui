@@ -1832,9 +1832,10 @@ pub async fn list_account(
     let source = {
         let (source_id, config) = (source_id.clone(), config.clone());
         tokio::task::spawn_blocking(move || {
-            crate::cloud_sources::discover(&config, &Environment::current())
-                .into_iter()
+            crate::cloud_sources::session_sources(&config)
+                .iter()
                 .find(|s| s.id == source_id)
+                .cloned()
                 .ok_or_else(|| format!("source not found: {source_id}"))
         })
         .await

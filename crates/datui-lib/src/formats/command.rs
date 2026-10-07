@@ -339,6 +339,7 @@ pub fn command(
     args: &crate::cli::Args,
     config: &crate::config::AppConfig,
 ) -> (String, i32) {
+    crate::limits::set(config.limits);
     let path = search_path_for(config);
     let registry = Registry::load(&path);
     match action {

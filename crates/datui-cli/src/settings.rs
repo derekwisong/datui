@@ -231,6 +231,11 @@ pub const SECTIONS: &[Section] = &[
         intro: "Where [format specs](../formats/format-specs.md) and dictionaries are found.",
     },
     Section {
+        name: "limits",
+        title: "Limits",
+        intro: "The most of a file some readers take in. Past one, the rest is left out or the file refused, and the note or error names the key that raises it.",
+    },
+    Section {
         name: "log",
         title: "Log",
         intro: "",
@@ -334,6 +339,11 @@ pub const SETTINGS: &[Setting] = &[
     // [formats]
     s("formats.path", List, Value("[]"), "Directories of format specs and dictionaries, searched after ~/.config/datui/formats and $DATUI_FORMATS_PATH. Adds up across imports."),
     // [log]
+    s("limits.indexed_records", Count, Value("67108864"), "Most records one pass indexes: a flight log's messages, a candump's frames, a text file's lines, a format spec's tagged records."),
+    s("limits.elf_symbols", Count, Value("10000000"), "Most symbols read from an ELF file."),
+    s("limits.midi_bytes", Size, Value("\"64MiB\""), "Largest MIDI file read; a larger one is refused."),
+    s("limits.midi_events", Count, Value("10000000"), "Most events read from MIDI files, all files of one open together."),
+    s("limits.detail_rows", Count, Value("10000"), "Most rows of a list on an Info panel tab (symbols, sections, metadata); one more row says how many were left out."),
     s("log.file", Path, Unset("\"~/datui.log\""), "Where the log goes. Unset: datui.log in the cache directory.").flag("log-file"),
     s("log.level", Choice(&["error", "warn", "info", "debug", "trace", "off"]), Unset("\"warn\""), "How much the log says (default warn). DATUI_LOG beats a config file's; -c and --log-level beat DATUI_LOG.").flag("log-level"),
     // [theme]

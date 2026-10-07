@@ -77,7 +77,7 @@ pub struct LineIndex {
     partial: Option<(bool, bool)>,
     /// Lines that are not valid UTF-8.
     pub invalid: usize,
-    /// Lines past [`crate::indexed::MAX_RECORDS`], left out.
+    /// Lines past `limits.indexed_records`, left out.
     pub past_limit: usize,
     /// Lines indexed before this index begins: a step taken apart from the index it
     /// goes on ([`Self::step_after`]) counts them toward the limit.
@@ -154,11 +154,12 @@ impl LineIndex {
     fn index_chunk(&mut self, bytes: &[u8], to: usize) {
         // Checked once for the chunk; line by line only when that fails.
         let all_utf8 = std::str::from_utf8(&bytes[self.end..to]).is_ok();
+        let limit = crate::limits::get().indexed_records;
         let mut at = self.end;
         while at < to {
             let newline = memchr::memchr(b'\n', &bytes[at..to]).map(|i| at + i);
             let end = newline.unwrap_or(to);
-            let indexed = self.before + self.offsets.len() < crate::indexed::MAX_RECORDS;
+            let indexed = self.before + self.offsets.len() < limit;
             if indexed {
                 self.offsets.push(at);
             } else {
@@ -733,10 +734,10 @@ pub(crate) fn notes(lines: &Lines, format_guessed: bool) -> Vec<crate::notes::No
         ));
     }
     if past_limit > 0 {
-        notes.push(format!(
-            "{} left out: past the first {}",
-            crate::text_formats::count(past_limit as u64, "line", "lines"),
-            crate::numfmt::group_chrome(crate::indexed::MAX_RECORDS)
+        notes.push(crate::limits::left_out(
+            &crate::text_formats::count(past_limit as u64, "line", "lines"),
+            crate::limits::get().indexed_records,
+            "indexed_records",
         ));
     }
     notes

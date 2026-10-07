@@ -113,6 +113,7 @@ pub mod intent_modal;
 pub mod ipc_stream;
 mod jobs;
 pub mod journal;
+pub mod limits;
 pub mod lines;
 pub mod link_open;
 mod loading;

@@ -277,6 +277,7 @@ pub struct Index {
 
 /// Index the candump log in `data`: one pass, start to end.
 pub fn index(data: &[u8]) -> std::result::Result<Index, String> {
+    let limit = crate::limits::get().indexed_records;
     let mut offsets = Offsets::for_file(data.len());
     let mut index = Index::default();
     let mut ifaces: HashMap<String, u8> = HashMap::new();
@@ -290,7 +291,7 @@ pub fn index(data: &[u8]) -> std::result::Result<Index, String> {
             .flatten()
             .and_then(parse_line);
         match parsed {
-            Some(frame) if offsets.len() < crate::indexed::MAX_RECORDS => {
+            Some(frame) if offsets.len() < limit => {
                 if first_ts.is_none() {
                     first_ts = frame.ts;
                 }
@@ -949,10 +950,10 @@ fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
         ));
     }
     if index.past_limit > 0 {
-        notes.push(format!(
-            "{} frames left out: past the first {}",
-            crate::numfmt::group_chrome(index.past_limit),
-            crate::numfmt::group_chrome(crate::indexed::MAX_RECORDS)
+        notes.push(crate::limits::left_out(
+            &format!("{} frames", crate::numfmt::group_chrome(index.past_limit)),
+            crate::limits::get().indexed_records,
+            "indexed_records",
         ));
     }
     for dbc in &listing.layers.dbcs {

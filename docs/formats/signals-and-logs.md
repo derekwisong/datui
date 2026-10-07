@@ -120,8 +120,9 @@ file order.
   each one with why.
 - `channel`, `note`, `velocity` and `controller` are `u8`, `track` is `u16`,
   and `value` is `i32`.
-- A file over 64 MiB is refused, or left out of a directory. An open of more
-  than 10 million events in all is refused.
+- A file over 64 MiB (`midi_bytes` in `[limits]`) is refused, or left out of a
+  directory. An open of more than 10 million events in all (`midi_events`) is
+  refused.
 - A real-time byte in a track keeps running status, as on the wire; a sysex,
   meta or system common message cancels it, as the specification says.
 
@@ -357,7 +358,8 @@ reading the log again.
   record header; a log cut off mid-message keeps what it holds. The Notes tab
   says how many bytes were passed over.
 - ULog appended data (written after a crash) is read with the rest.
-- At most 67,108,864 messages are indexed in one log.
+- At most 67,108,864 messages are indexed in one log (`indexed_records` in
+  `[limits]`); the Notes tab counts the rest.
 
 ## CAN logs
 
@@ -580,7 +582,8 @@ them: `W` write, `A` alloc, `X` execute, ...), `kind` and `region`.
 - The symbol table is `.symtab`, or `.dynsym` for a stripped library.
 - `.elf` and `.axf` files open by name; any file that starts with `\x7fELF`
   opens too when named on the command line.
-- At most 10 million symbols are read; the Notes tab says how many more there are.
+- At most 10 million symbols are read (`elf_symbols` in `[limits]`); the Notes
+  tab says how many more there are.
 
 Press <kbd>i</kbd> for the ELF tab: class, machine, type, entry point, the bytes
 in flash and in RAM, and each section's address, size and flags.

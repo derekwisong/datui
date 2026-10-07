@@ -44,9 +44,6 @@ pub const MAGIC: &[u8; 4] = b"\x7fELF";
 pub const SYMBOLS: &str = "symbols";
 pub const SECTIONS: &str = "sections";
 
-/// Symbols read; a file of more says how many were left out.
-const MAX_SYMBOLS: usize = 10_000_000;
-
 // `sh_flags` bits.
 const SHF_WRITE: u64 = 0x1;
 const SHF_ALLOC: u64 = 0x2;
@@ -146,7 +143,7 @@ pub struct Elf {
     pub symbols: DataFrame,
     pub sections: DataFrame,
     pub detail: Detail,
-    /// Symbols past [`MAX_SYMBOLS`], left out.
+    /// Symbols past `limits.elf_symbols`, left out.
     pub left_out: usize,
 }
 
@@ -198,7 +195,7 @@ pub fn read(data: &[u8]) -> std::result::Result<Elf, String> {
         symbols = file.dynamic_symbols().collect();
     }
     let total = symbols.len();
-    symbols.truncate(MAX_SYMBOLS);
+    symbols.truncate(crate::limits::get().elf_symbols);
     let rows = symbols.len();
     let (mut name, mut addr, mut size, mut kind, mut bind, mut section, mut place) = (
         Vec::with_capacity(rows),
@@ -332,10 +329,10 @@ fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
     let elf = read(bytes.as_slice()).map_err(|e| FileError::new(path, e))?;
     let mut notes = Vec::new();
     if elf.left_out > 0 {
-        notes.push(format!(
-            "{} symbols left out: past the first {}",
-            crate::numfmt::group_chrome(elf.left_out),
-            crate::numfmt::group_chrome(MAX_SYMBOLS)
+        notes.push(crate::limits::left_out(
+            &format!("{} symbols", crate::numfmt::group_chrome(elf.left_out)),
+            crate::limits::get().elf_symbols,
+            "elf_symbols",
         ));
     }
     let df = if picked == SECTIONS {

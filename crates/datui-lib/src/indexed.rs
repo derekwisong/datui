@@ -21,10 +21,6 @@ use crate::readers::ScanIn;
 use crate::scan::Scan;
 use crate::text_formats::Detail;
 
-/// Records one pass indexes, all types together. Four bytes a record for a file under
-/// 4 GiB, eight past it: 256 MiB at most for a file under 4 GiB.
-pub const MAX_RECORDS: usize = 64 << 20;
-
 /// Where each record of one type starts, four bytes a record when the file allows.
 #[derive(Debug, Clone)]
 pub enum Offsets {

@@ -2118,7 +2118,7 @@ impl FramedRecords {
                         if got == Got::Row {
                             rows += 1;
                             if let Some(t) = table.as_mut() {
-                                if t.tags.len() >= crate::indexed::MAX_RECORDS {
+                                if t.tags.len() >= crate::limits::get().indexed_records {
                                     table = None;
                                 } else {
                                     let tag = match (walker.short, plan.type_slot) {

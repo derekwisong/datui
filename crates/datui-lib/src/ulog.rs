@@ -108,7 +108,7 @@ pub struct Index {
     pub short: usize,
     /// Data messages with an id no subscription gave.
     pub unsubscribed: usize,
-    /// Records past [`crate::indexed::MAX_RECORDS`], left out.
+    /// Records past `limits.indexed_records`, left out.
     pub past_limit: usize,
     /// Why a topic's fields could not be read, by topic.
     pub unread: Vec<(String, String)>,
@@ -340,6 +340,7 @@ pub fn index(data: &[u8]) -> Result<Index, String> {
     let mut subs: HashMap<u16, (String, u8, Offsets)> = HashMap::new();
     let mut multi: Vec<(String, String)> = Vec::new();
     let mut records = 0usize;
+    let limit = crate::limits::get().indexed_records;
     let mut last_time: Option<u64> = None;
     // Appended data, at offsets the flag bits give: the main data ends at the first.
     let mut appended: Vec<usize> = Vec::new();
@@ -419,7 +420,7 @@ pub fn index(data: &[u8]) -> Result<Index, String> {
             b'D' if size >= 2 => {
                 let id = u16_at(payload, 0).unwrap_or_default();
                 match subs.get_mut(&id) {
-                    Some((_, _, offsets)) if records < crate::indexed::MAX_RECORDS => {
+                    Some((_, _, offsets)) if records < limit => {
                         offsets.push(body + 2);
                         records += 1;
                     }
@@ -683,10 +684,10 @@ impl crate::indexed::Log for Index {
             ));
         }
         if self.past_limit > 0 {
-            notes.push(format!(
-                "{} messages left out: past the first {}",
-                group(self.past_limit),
-                group(crate::indexed::MAX_RECORDS)
+            notes.push(crate::limits::left_out(
+                &format!("{} messages", group(self.past_limit)),
+                crate::limits::get().indexed_records,
+                "indexed_records",
             ));
         }
         if self.logged_left_out > 0 {

@@ -267,6 +267,7 @@ pub struct AppConfig {
     pub views: ViewsConfig,
     pub clipboard: ClipboardConfig,
     pub formats: FormatsConfig,
+    pub limits: LimitsConfig,
     pub log: LogConfig,
     pub theme: ThemeConfig,
     pub glyphs: GlyphsConfig,
@@ -1868,6 +1869,38 @@ pub struct GlyphsConfig {
     pub overrides: std::collections::BTreeMap<String, crate::glyphs::SlotOverride>,
 }
 
+/// `[limits]`: the most of a file some readers take in. Each note or error that says a
+/// cap was reached names its key here.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LimitsConfig {
+    /// Records one pass indexes, all types together; four bytes each for a file under
+    /// 4 GiB, eight past it.
+    pub indexed_records: usize,
+    pub elf_symbols: usize,
+    pub midi_bytes: ByteSize,
+    /// Events of every MIDI file of one open together.
+    pub midi_events: usize,
+    /// Rows of a list on an Info panel tab.
+    pub detail_rows: usize,
+}
+
+impl LimitsConfig {
+    pub const DEFAULT: Self = Self {
+        indexed_records: 64 << 20,
+        elf_symbols: 10_000_000,
+        midi_bytes: ByteSize::mib(64),
+        midi_events: 10_000_000,
+        detail_rows: 10_000,
+    };
+}
+
+impl Default for LimitsConfig {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         let mut config = Self {
@@ -1889,6 +1922,7 @@ impl Default for AppConfig {
             views: ViewsConfig::default(),
             clipboard: ClipboardConfig::default(),
             formats: FormatsConfig::default(),
+            limits: LimitsConfig::DEFAULT,
             log: LogConfig::default(),
             theme: ThemeConfig::default(),
             glyphs: GlyphsConfig::default(),

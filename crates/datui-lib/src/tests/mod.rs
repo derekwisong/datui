@@ -980,6 +980,51 @@ fn a_staged_open_does_not_leave_a_count_running_that_never_ran() {
     );
 }
 
+/// A head that cannot be read fails the open naming the file the user opened, plain
+/// or compressed, never the decompressed copy the scan reads.
+#[test]
+fn a_head_that_cannot_be_read_names_the_file_opened() {
+    use crate::OpenOptions;
+    use std::io::Write;
+
+    let source = tempfile::tempdir().unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let plain = source.path().join("rows.csv");
+    std::fs::write(&plain, "id\n1\n").unwrap();
+    let gz = source.path().join("rows.csv.gz");
+    let mut encoder = flate2::write::GzEncoder::new(
+        std::fs::File::create(&gz).unwrap(),
+        flate2::Compression::default(),
+    );
+    encoder.write_all(b"id\n1\n").unwrap();
+    encoder.finish().unwrap();
+    // Header line 5 of a two-line file.
+    for in_memory in [false, true] {
+        let options = OpenOptions {
+            header_rows: vec![5],
+            temp_dir: Some(scratch.path().to_path_buf()),
+            decompress_in_memory: in_memory,
+            ..OpenOptions::default()
+        };
+        for file in [&plain, &gz] {
+            let Err(e) = crate::formats::readers::csv::read_delimited(
+                file,
+                b',',
+                &options,
+                &Default::default(),
+            ) else {
+                panic!("{} has no line 5", file.display());
+            };
+            let said = crate::error_display::user_message_from_report(&e, None);
+            assert!(said.contains("rows.csv"), "{said}");
+            assert!(
+                !said.contains(&scratch.path().display().to_string()),
+                "{said}"
+            );
+        }
+    }
+}
+
 /// A read of the rows that fails names the file the user opened, not the temp copy
 /// the frame scans: here a compressed CSV's decompressed copy (#511).
 #[test]

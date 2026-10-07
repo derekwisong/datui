@@ -910,7 +910,8 @@ pub(crate) fn read_delimited(
             let (df, header) = match compression {
                 CompressionFormat::Gzip | CompressionFormat::Zstd => {
                     let header =
-                        crate::formats::csv_dialect::head(path, options, Some(compression), false)?
+                        crate::formats::csv_dialect::head(path, options, Some(compression), false)
+                            .map_err(|e| crate::error_display::in_file(path, e))?
                             .names;
                     let nv = build_null_values_for_csv(options, path, header.as_deref())?;
                     let read_options = eager_csv_read_options(options, nv.as_ref());
@@ -975,7 +976,7 @@ pub(crate) fn read_delimited(
             // Decompress to temp file, then lazy scan
             let temp_dir = options.temp_dir.clone().unwrap_or_else(std::env::temp_dir);
             let temp = decompress_compressed_csv_to_temp(path, compression, &temp_dir, writer)?;
-            let read = scan_csv_file(temp.path(), options)?;
+            let read = scan_csv_file(temp.path(), path, options)?;
             Ok(Read {
                 temp: Some(Arc::new(temp)),
                 ..read
@@ -983,7 +984,7 @@ pub(crate) fn read_delimited(
         }
     } else {
         // For uncompressed files, use lazy scanning (more efficient)
-        scan_csv_file(path, options)
+        scan_csv_file(path, path, options)
     }
 }
 
@@ -1025,11 +1026,19 @@ pub(crate) fn from_lines_decompressed(
     Ok((read, opened))
 }
 
-/// One uncompressed delimited file, scanned lazily. The frame is finished before
-/// the state is made from it, so the column order is of the names shown.
-fn scan_csv_file(path: &Path, options: &OpenOptions) -> Result<Read> {
-    let head =
-        crate::formats::csv_dialect::head(path, options, None, options.parse_strings.is_some())?;
+/// Whether [`scan_some_as_text`] looks for leading zeros in the type window: while
+/// types are inferred, over a header.
+fn infers_from_window(options: &OpenOptions) -> bool {
+    options.parse_strings.is_some() && options.has_header != Some(false)
+}
+
+/// One uncompressed delimited file, scanned lazily; `opened` is the file the user
+/// named (the compressed one, for a decompressed copy), which its head's errors name.
+/// The frame is finished before the state is made from it, so the column order is of
+/// the names shown.
+fn scan_csv_file(path: &Path, opened: &Path, options: &OpenOptions) -> Result<Read> {
+    let head = crate::formats::csv_dialect::head(path, options, None, infers_from_window(options))
+        .map_err(|e| crate::error_display::in_file(opened, e))?;
     let header = head.names.clone();
     let nv = build_null_values_for_csv(options, path, header.as_deref())?;
     let reader = csv_reader_of(path)?;
@@ -1063,7 +1072,7 @@ pub(crate) fn from_csv_paths(paths: &[impl AsRef<Path>], options: &OpenOptions) 
     // Read through a spec, each file's header pass reads its units and the lines its
     // types are inferred from too, for lining the files up by name.
     let spec = options.delimited.is_some();
-    let window = spec || options.parse_strings.is_some();
+    let window = spec || infers_from_window(options);
     let mut heads = Vec::new();
     let mut read_text = Vec::new();
     for p in paths {

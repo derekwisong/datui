@@ -147,9 +147,7 @@ impl<'a> AnalysisWidget<'a> {
             None => "Analysis".to_string(),
         };
 
-        // What the numbers are of, stated rather than implied: a sample says how big,
-        // of how many, and of which rows, so a surprising figure can be told apart
-        // from a rare one.
+        // What the numbers are of: a sample says its size, of how many, and which rows.
         let breadcrumb_text = match self.results {
             Some(results) if self.selected_tool.is_some() => format!(
                 "{tool_name} {} {}",
@@ -360,9 +358,7 @@ impl<'a> AnalysisWidget<'a> {
                 _ => (0.0, 1.0),
             };
 
-            // Both plots' y labels take one width, so the plots start in the same
-            // column: the widest Q-Q value, or the widest count the histogram could
-            // reach, the sample's size.
+            // Both plots share a y-label width so they start in the same column.
             let (lo, hi) = unified_x_range;
             let qq_format = AxisFormat::ends_and_middle([lo, hi], &values);
             let qq_width = [lo, (lo + hi) / 2.0, hi]
@@ -533,9 +529,8 @@ fn describe_correlation(r: f64) -> &'static str {
     }
 }
 
-/// The body of the correlation pair detail: everything the matrix already knows
-/// about the pair. Nothing is collected here — a scatter or per-column moments
-/// would need the pair's values, which the correlation results do not carry.
+/// The correlation pair detail: what the matrix knows of the pair (no scatter or
+/// per-column moments: the results lack the values).
 fn render_correlation_pair_summary(
     Shown { matrix, method }: Shown,
     (row, col): (usize, usize),
@@ -655,9 +650,8 @@ impl StatisticsTable<'_> {
         ];
         let num_stats = stat_names.len();
 
-        // Calculate column widths based on header names and content (minimal spacing)
-        // First, determine minimum width for each column based on header length
-        // Note: ratatui Table adds 1 space between columns by default, so we don't add extra padding
+        // Column widths from header names and content; ratatui's Table adds one space between
+        // columns.
         let mut min_col_widths: Vec<u16> = stat_display_names
             .iter()
             .map(|name| crate::glyphs::display_width(name) as u16) // header length (no extra padding - table handles spacing)
@@ -786,10 +780,8 @@ fn describe_value(
     .unwrap_or_else(|| "-".to_string())
 }
 
-/// Format a row/null count, following the same grouping setting as the data
-/// table so a user who turned formatting on sees it everywhere they read
-/// numbers. Float statistics go through `format_num`, which switches to
-/// scientific notation well before grouping would apply.
+/// A row or null count, grouped as the data table is; float statistics use
+/// `format_num`, which switches to scientific notation first.
 fn format_count(n: usize, settings: &NumberFormatSettings) -> String {
     let fmt = settings.formatter_for("", &DataType::UInt64);
     let mut scratch = String::new();
@@ -1097,10 +1089,8 @@ fn stat_texts(dist_analysis: &DistributionAnalysis) -> [String; 8] {
 /// so focus arriving moves nothing.
 const RAIL_WIDTH: u16 = 1;
 
-/// The rail beside the row the cursor is on: in the accent while the table has
-/// focus, dimmed while the tool list has it, so the row stays marked without
-/// claiming the accent. The tint alone vanishes on a 16-color terminal whose
-/// black is the background.
+/// The rail beside the cursor's row: accented while the table has focus, dimmed while
+/// the tool list does (a tint alone vanishes on 16 colors).
 fn cursor_rail(focused: bool, theme: &Theme) -> Span<'static> {
     Span::styled(crate::glyphs::get().rail, rail_style(focused, theme))
 }
@@ -1129,11 +1119,10 @@ fn more_mark(hidden: usize) -> String {
     format!(" +{hidden} {}", crate::glyphs::get().arrow_right)
 }
 
-/// Which statistics fit beside the locked name column, as `start..end`, from the
-/// scroll's offset. Sets the scroll's `max` to the first start that brings the
-/// last statistic into view, and clamps the offset to it, so a key press past the
-/// end does nothing and the first press back always moves. A window that leaves
-/// statistics out to the right keeps room for the mark that counts them.
+/// Which statistics fit beside the locked name column, as `start..end` from the scroll
+/// offset. Sets the scroll's `max` to the first start showing the last statistic and
+/// clamps to it, so a press past the end does nothing and the first press back moves.
+/// Leaves room for the count mark when statistics are cut off right.
 fn stat_window(
     widths: &[u16],
     available: u16,
@@ -1176,9 +1165,8 @@ fn stat_window(
     (start, (start + shown(start)).min(n))
 }
 
-/// Say that statistics are out of view: an arrow at the end of the locked
-/// column's header when some are to the left, and the count at the right edge of
-/// the header when some are to the right.
+/// Mark statistics out of view: an arrow at the locked column header's end for the
+/// left, the count at the header's right edge for the right.
 fn draw_scroll_marks(
     area: Rect,
     buf: &mut Buffer,
@@ -1421,9 +1409,8 @@ struct SelectorConfig<'a> {
     ctx: &'a RenderContext,
 }
 
-/// The families to compare with, one Surface on the right of the detail: each
-/// family and its p-value, the one on the plots on the rail, and the scale the
-/// histogram is drawn in on the last row.
+/// The families to compare with, one Surface right of the detail: each family and its
+/// p-value, the plotted one on the rail, and the histogram scale on the last row.
 fn render_distribution_selector(
     config: SelectorConfig,
     selector_state: &mut TableState,
@@ -1564,9 +1551,8 @@ struct DistributionPlotConfig<'a> {
 /// The family list's least width: the frame, the rail, "Exponential" and a p-value.
 const SELECTOR_WIDTH: u16 = 24;
 
-/// Which of `total` items a list of `rows` shows around the cursor, as the
-/// first and how many. While some are out of view below, the last row is kept
-/// to count them, so the cursor never sits on it.
+/// Which of `total` items `rows` rows show around the cursor (first, count). With items
+/// below, the last row counts them and the cursor never sits there.
 fn list_window(selected: usize, total: usize, rows: usize) -> (usize, usize) {
     if total <= rows || rows == 0 {
         return (0, total.min(rows));
@@ -1596,9 +1582,8 @@ pub(crate) fn main_pane(area: Rect) -> Rect {
     }
 }
 
-/// The Analysis Tools list, the same beside every tool: one Surface, the
-/// cursor carrying the rail and the tint while the list has focus, and the tool
-/// on screen carrying the accent.
+/// The Analysis Tools list, the same beside every tool: the cursor's rail and tint while
+/// focused, the tool on screen accented.
 pub(crate) fn render_sidebar(
     area: Rect,
     buf: &mut Buffer,
@@ -1706,29 +1691,21 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
     let y_axis_gap = 1u16; // Minimal gap between labels and plot area (needed to prevent bars from extending outside)
     let total_y_axis_space = shared_y_axis_label_width + y_axis_gap;
 
-    // Calculate available width for bars - must match Chart widget's plot area exactly
-    // Chart widget reserves space for Y-axis labels internally, using remaining width for plot
-    // Less the axis line itself, which the plot starts after.
+    // Bar width must match the Chart's plot area exactly: minus its y-axis labels and the
+    // axis line.
     let available_width = area.width.saturating_sub(total_y_axis_space + 1);
     // One blank column between neighboring bars.
     let gap_width = 1u16;
 
-    // Target bar width: aim for 6-8 pixels per bar for good density
-    // Calculate optimal number of bins to fill available width
-    // Formula: available_width = num_bins * bar_width + (num_bins - 1) * gap_width
-    // Rearranging: num_bins = (available_width + gap_width) / (bar_width + gap_width)
+    // Aim for ~7-cell bars: num_bins = (available + gap) / (bar + gap).
     let target_bar_width = 7.0; // Target bar width in pixels
     let optimal_num_bins = ((available_width as f64 + gap_width as f64)
         / (target_bar_width + gap_width as f64)) as usize;
 
-    // Clamp to reasonable bounds: minimum 5 bins, maximum 60 bins
-    // Fewer bins for very narrow displays, more bins for wide displays
-    // Increased max to 60 to better utilize ultrawide displays
+    // Between 5 and 60 bins (more for ultrawide displays).
     let num_bins = optimal_num_bins.clamp(5, 60);
 
-    // Use log-scale binning if user has selected log scale and data is positive
-    // Log-scale binning is standard practice for power law distributions and wide dynamic ranges
-    // Check actual data values, not histogram range (which may include padding or theoretical bounds)
+    // Log-scale bins when chosen and the data (not the padded range) is positive.
     let all_data_positive = data_min > 0.0;
     // For log scale, ensure hist_min is positive (adjust if needed)
     let (log_hist_min, log_hist_max) =
@@ -1784,9 +1761,8 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
         })
         .collect();
 
-    // The labels are padded to the width shared with the Q-Q plot, so both plots
-    // start in the same column. The bars stand on a 0-100 scale; their labels read
-    // counts.
+    // Labels padded to the width shared with the Q-Q plot; bars stand on a 0-100 scale,
+    // labeled in counts.
     let label_width = y_axis_label_width as usize;
     let count_axis = AxisSpec::numbers_as([0.0, 100.0], counts, "Counts", move |v| {
         v * global_max / 100.0
@@ -1800,15 +1776,11 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
     let block = distribution_block(format!("Histogram vs {dist_type}"));
     let chart_area = block.inner(area);
 
-    // Exactly the overlay's plot area: bar `i` starts where bin `i` does. Shifting the
-    // bars right to meet the overlay put the first bin's bar over the second bin and
-    // drew the last one past the axis, onto whatever sits beside the chart.
+    // Exactly the overlay's plot area: bar `i` starts where bin `i` does.
     let bar_plot_area = axes.frame(chart_area).graph;
 
-    // Bin `i` takes the plot columns its values map to, as the labels and the curve
-    // map them, and its bar fills them less a gap before the next bar. Bars of one
-    // shared width stopped short of the right end by up to a bar, leaving each bar
-    // left of the values it counts.
+    // Bin `i` spans the plot columns its values map to (as labels and curve map them),
+    // less a gap, so bars reach the right end.
     let plot_width = bar_plot_area.width as usize;
     let bin_edge = |i: usize| ((2 * i * plot_width + num_bins) / (2 * num_bins)) as u16;
     let bar_charts: Vec<(Rect, BarChart)> = data_bars
@@ -1829,9 +1801,7 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
             };
             let chart = BarChart::default()
                 .data(BarGroup::default().bars(&[bar]))
-                // The same 0-100 scale the curve and the labels use; left to itself the
-                // chart scales to its tallest bar and the curve no longer measures
-                // against the bars.
+                // The curve's 0-100 scale, not the tallest bar's, so the curve measures against bars.
                 .max(100)
                 .bar_set(g.plot.column_set())
                 .bar_width(width)
@@ -1853,12 +1823,9 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
     let theory_chart = Chart::new(vec![theory_dataset])
         .hidden_legend_constraints((Constraint::Length(0), Constraint::Length(0)));
 
-    // Render Chart overlay to full area (no borders)
-    // Chart widget will automatically handle its own inner layout for x-axis labels
-    // The bars, then the chart laid over them from a buffer of its own: its axes,
-    // labels and curve, except where the curve crosses a bar. Drawn straight over the
-    // bars, each braille cell of the curve replaced a block and cut a notch in the bar;
-    // drawn under them, the bar chart's blank cells erased the curve and the axis title.
+    // The bars, then the chart overlaid from its own buffer except where the curve
+    // crosses a bar: drawn directly, braille cells would notch bars; drawn under, blank
+    // bar cells would erase the curve and title.
     for (rect, chart) in bar_charts {
         chart.render(rect, buf);
     }
@@ -1928,9 +1895,7 @@ fn render_qq_plot(config: DistributionPlotConfig, buf: &mut Buffer) {
     }
     let n = qq_data.len();
 
-    // Find data ranges for both axes
-    // X-axis (Theoretical): calculated from probability percentiles via inverse CDF
-    // Y-axis (Empirical): raw sorted sample data (preserve all values, even if "impossible")
+    // Axis ranges: X theoretical (inverse CDF of percentiles), Y the sorted sample as is.
     let theory_min = qq_data
         .iter()
         .map(|(t, _)| *t)

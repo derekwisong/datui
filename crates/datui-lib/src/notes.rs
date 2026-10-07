@@ -2,7 +2,7 @@
 //! never costs its own request or scan (all come from footers the schema and count
 //! needed), is never styled as an alarm, and states its basis, so "in 1 of 3 files" is
 //! never read as a claim about files not looked at. One claim per note, and one
-//! function ([`out_of`]) deciding the only ratio any note states.
+//! function (`out_of`) deciding the only ratio any note states.
 
 use crate::numfmt::group_chrome;
 use crate::schema_union::{ColumnDrift, ColumnRange, DatasetSchema, SchemaOrigin, SkippedFiles};

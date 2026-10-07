@@ -10,20 +10,24 @@ not a member of the Cargo workspace. For the installed package, see
 ## Set up
 
 ```bash,repo
-python -m venv .venv
-.venv/bin/pip install maturin "polars==1.43.*" "pytest>=7.0"
+./scripts/dev/test.sh setup --wheel
 ```
 
-It also needs Rust and the Python headers (`python3-dev` on Debian and Ubuntu).
-The [setup script](contributing.md) installs these into `.venv` too.
+It installs maturin, pytest and the pinned Polars into `.venv`. The build also
+needs Rust and the Python headers (`python3-dev` on Debian and Ubuntu).
 
 <a id="building-locally"></a>
 <a id="testing"></a>
 
 ## Build and test
 
-The `datui` command the wheel installs runs a bundled binary, found beside the
-package rather than on `PATH`. Build it, copy it in, then build the extension:
+```bash,repo
+./scripts/dev/test.sh python
+```
+
+That is what CI's Python job runs. The `datui` command the wheel installs runs a
+bundled binary, found beside the package rather than on `PATH`, so by hand:
+build it, copy it in, then build the extension:
 
 ```bash,repo
 cargo build

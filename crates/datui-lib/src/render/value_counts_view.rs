@@ -337,7 +337,11 @@ fn draw_histogram(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderCo
             );
     }
     let schema = app.data_table_state.as_ref().map(|s| s.schema().as_ref());
-    let x = crate::chart_data::AxisNumbers::column(&ctx.number_format, schema, &counts.column);
+    let x = crate::widgets::axis_numbers::AxisNumbers::column(
+        &ctx.number_format,
+        schema,
+        &counts.column,
+    );
     crate::widgets::chart::render_histogram(plot, buf, &app.theme, ctx, histogram, x);
 }
 

@@ -1,5 +1,6 @@
 pub mod analysis;
 pub mod axes;
+pub mod axis_numbers;
 pub mod chart;
 pub mod chart_export_modal;
 pub mod column_paging;

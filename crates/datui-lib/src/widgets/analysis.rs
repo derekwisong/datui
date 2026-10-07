@@ -12,7 +12,6 @@ use ratatui::{
 use crate::analysis_modal::{
     AnalysisFocus, AnalysisTool, AnalysisView, ColumnScroll, HistogramScale,
 };
-use crate::chart_data::{AxisFormat, AxisNumbers};
 use crate::config::Theme;
 use crate::distribution_fit::{FitOutcome, FitTest};
 use crate::glyphs::PlotMarks;
@@ -24,6 +23,7 @@ use crate::statistics::{
 };
 use crate::table::DataTableState;
 use crate::widgets::axes::{AxisSpec, PlotAxes};
+use crate::widgets::axis_numbers::{AxisFormat, AxisNumbers};
 use crate::widgets::ui::Surface;
 use polars::prelude::{AnyValue, DataType};
 

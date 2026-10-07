@@ -54,7 +54,6 @@ pub fn render_copy_modal(area: Rect, buf: &mut Buffer, modal: &mut CopyModal, ct
         Err(gap) if modal.attention => (gap, Style::default().fg(ctx.warning)),
         Err(gap) => (gap, Style::default().fg(ctx.dimmed)),
     };
-    crate::app::pointer::record(area, crate::app::pointer::Hit::Modal);
     FormView {
         title: "Copy",
         screen: Context::Copy,
@@ -64,6 +63,7 @@ pub fn render_copy_modal(area: Rect, buf: &mut Buffer, modal: &mut CopyModal, ct
         focused: Some(modal.focus),
         picker: modal.picker.as_ref(),
         status: Some(status),
+        shields: true,
     }
     .render::<CopyModal>(area, buf, ctx);
 }

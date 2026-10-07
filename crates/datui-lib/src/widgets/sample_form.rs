@@ -155,6 +155,9 @@ pub fn render(form: &SampleForm, focused: bool, area: Rect, buf: &mut Buffer, ct
             .error
             .clone()
             .map(|error| (error, Style::default().fg(ctx.warning))),
+        // Inline it takes clicks beside the tools; floating, its caller shields the
+        // pane it covers.
+        shields: false,
     }
     .render::<SampleForm>(frame, buf, ctx);
 }

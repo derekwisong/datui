@@ -92,7 +92,6 @@ pub fn render_export_modal(
         ExportFocus::PathInput | ExportFocus::CsvDelimiter => footer,
     };
     let footer = footer.key("Tab").weight(1).key("Esc").weight(4);
-    crate::app::pointer::record(area, crate::app::pointer::Hit::Modal);
 
     modal
         .path_input
@@ -168,6 +167,7 @@ pub fn render_export_modal(
         focused: Some(modal.focus),
         picker: None,
         status: Some((status.0.to_string(), Style::default().fg(status.1))),
+        shields: true,
     }
     .render::<ExportModal>(area, buf, ctx);
 }

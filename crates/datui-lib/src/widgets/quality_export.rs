@@ -40,6 +40,8 @@ pub fn render(
                 Style::default().fg(ctx.dimmed),
             ),
         }),
+        // The report under it is shielded by Data Quality's drawing.
+        shields: false,
     }
     .render_unrecorded(popup, buf, ctx);
 }

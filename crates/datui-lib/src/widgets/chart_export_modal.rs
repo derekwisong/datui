@@ -34,7 +34,6 @@ pub fn render_chart_export_modal(
         .weight(1)
         .key("Esc")
         .weight(4);
-    crate::app::pointer::record(area, crate::app::pointer::Hit::Modal);
     let focus = modal.focus;
     for (field, _) in FIELDS {
         if let Some(input) = modal.input_mut(field) {
@@ -62,6 +61,7 @@ pub fn render_chart_export_modal(
         focused: Some(focus),
         picker: None,
         status: Some((error, ratatui::style::Style::default().fg(ctx.warning))),
+        shields: true,
     }
     .render::<ChartExportModal>(area, buf, ctx);
 }

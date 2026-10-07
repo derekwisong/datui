@@ -11,7 +11,7 @@ use ratatui::{
 
 use crate::chart_data::{
     AxisNumbers, BarData, BoxPlotData, HeatmapData, HistogramData, KdeData, XAxisTemporalKind,
-    segments,
+    drawing_order, other_at, segments,
 };
 use crate::chart_export::{Axis, Lines, Plot};
 use crate::chart_modal::{
@@ -1281,11 +1281,6 @@ fn series_style(theme: &Theme, i: usize, other_at: Option<usize>) -> Style {
     Style::default().fg(colors[i % colors.len()])
 }
 
-/// Where Other is among `n` series, when the last one is.
-fn other_at(other: bool, n: usize) -> Option<usize> {
-    (other && n > 0).then(|| n - 1)
-}
-
 /// A histogram: filled bars, or split by a color, each group's bins as a step
 /// outline over the others, since filled bars would hide one another.
 /// How a histogram is drawn: its grid and its legend.
@@ -1373,23 +1368,17 @@ fn render_histogram_chart(
         look.grid,
     );
     if !data.groups.is_empty() {
-        let steps = step_outlines(data);
+        let steps = data.step_outlines();
         let other = other_at(data.other, steps.len());
-        // Other first, under the rest.
-        let mut datasets: Vec<(usize, Dataset)> = steps
-            .iter()
-            .enumerate()
-            .map(|(i, points)| {
-                let dataset = Dataset::default()
+        let datasets: Vec<Dataset> = drawing_order(steps.len(), other)
+            .map(|i| {
+                Dataset::default()
                     .graph_type(GraphType::Line)
                     .marker(marker)
                     .style(series_style(theme, i, other))
-                    .data(points);
-                (i, dataset)
+                    .data(&steps[i])
             })
             .collect();
-        datasets.sort_by_key(|(i, _)| Some(*i) != other);
-        let datasets: Vec<Dataset> = datasets.into_iter().map(|(_, d)| d).collect();
         axes.legend = legend(
             look.legend,
             data.groups
@@ -1412,26 +1401,6 @@ fn render_histogram_chart(
         .data(&points);
 
     axes.render(Chart::new(vec![dataset]), area, buf, g);
-}
-
-/// Each group's bins as the outline of its bars: up the left edge of each bin,
-/// across its top, and down at the end.
-fn step_outlines(data: &HistogramData) -> Vec<Vec<(f64, f64)>> {
-    let n = data.bins.len().max(1);
-    let width = (data.x_max - data.x_min) / n as f64;
-    data.groups
-        .iter()
-        .map(|group| {
-            let mut points = vec![(data.x_min, 0.0)];
-            for (i, &count) in group.counts.iter().enumerate() {
-                let x0 = data.x_min + i as f64 * width;
-                points.push((x0, count));
-                points.push((x0 + width, count));
-            }
-            points.push((data.x_max, 0.0));
-            points
-        })
-        .collect()
 }
 
 /// A histogram's bars as a column of the plot each, `columns` wide over `bounds`: a
@@ -1476,22 +1445,15 @@ fn render_kde_chart(
     }
 
     let other = other_at(data.other, data.series.len());
-    let mut datasets: Vec<(usize, Dataset)> = data
-        .series
-        .iter()
-        .enumerate()
-        .map(|(i, s)| {
-            let dataset = Dataset::default()
+    let datasets: Vec<Dataset> = drawing_order(data.series.len(), other)
+        .map(|i| {
+            Dataset::default()
                 .graph_type(GraphType::Line)
                 .marker(g.plot.line)
                 .style(series_style(theme, i, other))
-                .data(&s.points);
-            (i, dataset)
+                .data(&data.series[i].points)
         })
         .collect();
-    // Other first, under the rest.
-    datasets.sort_by_key(|(i, _)| Some(*i) != other);
-    let datasets: Vec<Dataset> = datasets.into_iter().map(|(_, d)| d).collect();
 
     let mut axes = plot_axes(
         theme,
@@ -1530,32 +1492,19 @@ fn render_box_plot_chart(
 
     let mut segments: Vec<Vec<(f64, f64)>> = Vec::new();
     let mut segment_styles: Vec<Style> = Vec::new();
-    let box_half = 0.3;
-    let cap_half = 0.2;
     for (i, stat) in data.stats.iter().enumerate() {
-        let x = i as f64;
-        let style = series_style(theme, i, None);
-        segments.push(vec![
-            (x - box_half, stat.q1),
-            (x + box_half, stat.q1),
-            (x + box_half, stat.q3),
-            (x - box_half, stat.q3),
-            (x - box_half, stat.q1),
-        ]);
-        segment_styles.push(style);
-        segments.push(vec![
-            (x - box_half, stat.median),
-            (x + box_half, stat.median),
-        ]);
-        segment_styles.push(style);
-        segments.push(vec![(x, stat.min), (x, stat.q1)]);
-        segment_styles.push(style);
-        segments.push(vec![(x, stat.q3), (x, stat.max)]);
-        segment_styles.push(style);
-        segments.push(vec![(x - cap_half, stat.min), (x + cap_half, stat.min)]);
-        segment_styles.push(style);
-        segments.push(vec![(x - cap_half, stat.max), (x + cap_half, stat.max)]);
-        segment_styles.push(style);
+        let marks = stat.marks(i as f64, 0.3, 0.2);
+        for segment in [
+            &marks.outline[..],
+            &marks.median,
+            &marks.low,
+            &marks.high,
+            &marks.low_cap,
+            &marks.high_cap,
+        ] {
+            segments.push(segment.to_vec());
+            segment_styles.push(series_style(theme, i, None));
+        }
     }
 
     let datasets: Vec<Dataset> = segments

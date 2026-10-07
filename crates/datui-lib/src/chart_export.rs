@@ -11,8 +11,8 @@ use color_eyre::Result;
 use resvg::{tiny_skia, usvg};
 
 use crate::chart_data::{
-    AxisNumbers, BarData, BoxPlotData, HeatmapData, HistogramData, KdeData, XAxisTemporalKind,
-    segments,
+    self, AxisNumbers, BarData, BoxPlotData, HeatmapData, HistogramData, KdeData,
+    XAxisTemporalKind, segments,
 };
 use crate::widgets::axes::{AxisSpec, TickSet};
 
@@ -1272,14 +1272,13 @@ fn legend_names(figure: &Figure) -> Vec<String> {
 
 /// Where Other is among the figure's series: last, when it has one.
 fn other_at(figure: &Figure) -> Option<usize> {
-    let (other, n) = match &figure.plot {
-        Plot::Lines(lines) => return lines.drawn().position(|s| s.other),
-        Plot::Bars { data, .. } => (data.other, data.groups.len()),
-        Plot::Histogram { data, .. } => (data.other, data.groups.len()),
-        Plot::Kde { data, .. } => (data.other, data.series.len()),
-        Plot::Box { .. } | Plot::Heatmap { .. } => (false, 0),
-    };
-    (other && n > 0).then(|| n - 1)
+    match &figure.plot {
+        Plot::Lines(lines) => lines.drawn().position(|s| s.other),
+        Plot::Bars { data, .. } => chart_data::other_at(data.other, data.groups.len()),
+        Plot::Histogram { data, .. } => chart_data::other_at(data.other, data.groups.len()),
+        Plot::Kde { data, .. } => chart_data::other_at(data.other, data.series.len()),
+        Plot::Box { .. } | Plot::Heatmap { .. } => None,
+    }
 }
 
 /// The plot in `frame`: axes, grid, marks, and the legend.
@@ -1386,8 +1385,8 @@ fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame
                 figure.grid,
             );
             let mut ends = Vec::new();
-            for (i, s) in data.series.iter().enumerate() {
-                let pts: Vec<(f64, f64)> = s
+            for i in chart_data::drawing_order(data.series.len(), c.other) {
+                let pts: Vec<(f64, f64)> = data.series[i]
                     .points
                     .iter()
                     .map(|&(px, py)| (sx.at(px), sy.at(py)))
@@ -1436,15 +1435,12 @@ fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame
                 }
             } else {
                 // Groups overlaid as step outlines: filled bars would hide each other.
-                for (g, group) in data.groups.iter().enumerate() {
-                    let mut pts = vec![(sx.at(data.x_min), sy.at(0.0))];
-                    for (i, &count) in group.counts.iter().enumerate() {
-                        let x0 = sx.at(data.x_min + i as f64 * bin);
-                        let x1 = sx.at(data.x_min + (i + 1) as f64 * bin);
-                        pts.push((x0, sy.at(count)));
-                        pts.push((x1, sy.at(count)));
-                    }
-                    pts.push((sx.at(data.x_max), sy.at(0.0)));
+                let steps = data.step_outlines();
+                for g in chart_data::drawing_order(steps.len(), c.other) {
+                    let pts: Vec<(f64, f64)> = steps[g]
+                        .iter()
+                        .map(|&(x, y)| (sx.at(x), sy.at(y)))
+                        .collect();
                     c.polyline(&pts, c.color(g), 1.5 * c.pt);
                 }
             }
@@ -1476,20 +1472,12 @@ fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame
                 let mid = plot.left + slot * (i as f64 + 0.5);
                 let half = (slot * 0.3).min(c.body * 3.0);
                 let stroke = 1.25 * c.pt;
-                c.line((mid, sy.at(s.max)), (mid, sy.at(s.q3)), color, stroke);
-                c.line((mid, sy.at(s.q1)), (mid, sy.at(s.min)), color, stroke);
-                c.line(
-                    (mid - half / 2.0, sy.at(s.max)),
-                    (mid + half / 2.0, sy.at(s.max)),
-                    color,
-                    stroke,
-                );
-                c.line(
-                    (mid - half / 2.0, sy.at(s.min)),
-                    (mid + half / 2.0, sy.at(s.min)),
-                    color,
-                    stroke,
-                );
+                let marks = s.marks(mid, half, half / 2.0);
+                let at = |[a, b]: [(f64, f64); 2]| ((a.0, sy.at(a.1)), (b.0, sy.at(b.1)));
+                for segment in [marks.high, marks.low, marks.high_cap, marks.low_cap] {
+                    let (a, b) = at(segment);
+                    c.line(a, b, color, stroke);
+                }
                 let top = sy.at(s.q3);
                 c.rect(mid - half, top, half * 2.0, sy.at(s.q1) - top, color, 0.18);
                 c.out.push_str(&format!(
@@ -1500,12 +1488,8 @@ fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame
                     (sy.at(s.q1) - top).max(0.0),
                     color.hex()
                 ));
-                c.line(
-                    (mid - half, sy.at(s.median)),
-                    (mid + half, sy.at(s.median)),
-                    color,
-                    stroke * 2.0,
-                );
+                let (a, b) = at(marks.median);
+                c.line(a, b, color, stroke * 2.0);
             }
         }
         Plot::Heatmap { data, x, y } => {

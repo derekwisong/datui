@@ -803,6 +803,39 @@ pub struct BoxPlotStats {
     pub max: f64,
 }
 
+/// A box and its whiskers as line segments, the box `half` either side of `center`
+/// and the caps `cap` either side; Y in data values, X in whatever unit `center` is.
+pub struct BoxMarks {
+    /// The box, corner to corner and back to the first.
+    pub outline: [(f64, f64); 5],
+    pub median: [(f64, f64); 2],
+    /// Minimum to the first quartile, and the third quartile to the maximum.
+    pub low: [(f64, f64); 2],
+    pub high: [(f64, f64); 2],
+    pub low_cap: [(f64, f64); 2],
+    pub high_cap: [(f64, f64); 2],
+}
+
+impl BoxPlotStats {
+    pub fn marks(&self, center: f64, half: f64, cap: f64) -> BoxMarks {
+        let (left, right) = (center - half, center + half);
+        BoxMarks {
+            outline: [
+                (left, self.q1),
+                (right, self.q1),
+                (right, self.q3),
+                (left, self.q3),
+                (left, self.q1),
+            ],
+            median: [(left, self.median), (right, self.median)],
+            low: [(center, self.min), (center, self.q1)],
+            high: [(center, self.q3), (center, self.max)],
+            low_cap: [(center - cap, self.min), (center + cap, self.min)],
+            high_cap: [(center - cap, self.max), (center + cap, self.max)],
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct BoxPlotData {
     pub stats: Vec<BoxPlotStats>,
@@ -813,6 +846,41 @@ pub struct BoxPlotData {
     /// One box per category: how many categories there are, of which the largest
     /// have a box. 0 for a box per column.
     pub of: usize,
+}
+
+impl HistogramData {
+    /// Each group's bins as the outline of its bars: up the left edge of each bin,
+    /// across its top, and down at the end.
+    pub fn step_outlines(&self) -> Vec<Vec<(f64, f64)>> {
+        let n = self.bins.len().max(1);
+        let width = (self.x_max - self.x_min) / n as f64;
+        self.groups
+            .iter()
+            .map(|group| {
+                let mut points = vec![(self.x_min, 0.0)];
+                for (i, &count) in group.counts.iter().enumerate() {
+                    let x0 = self.x_min + i as f64 * width;
+                    points.push((x0, count));
+                    points.push((x0 + width, count));
+                }
+                points.push((self.x_max, 0.0));
+                points
+            })
+            .collect()
+    }
+}
+
+/// Where Other is among `n` series: the last, when there is one.
+pub fn other_at(other: bool, n: usize) -> Option<usize> {
+    (other && n > 0).then(|| n - 1)
+}
+
+/// The order `n` series are drawn in: Other first, under the series drawn over it.
+pub fn drawing_order(n: usize, other: Option<usize>) -> impl Iterator<Item = usize> {
+    other
+        .filter(|&o| o < n)
+        .into_iter()
+        .chain((0..n).filter(move |&i| Some(i) != other))
 }
 
 /// Heatmap data for two numeric columns.

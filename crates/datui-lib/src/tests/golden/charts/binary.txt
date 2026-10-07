@@ -9,7 +9,7 @@ histogram pdf 599faece69be4860
 kde png 1923a1fda71ba1ad
 kde pdf a739bd91ddbc3b9a
 box png d1d7341a882f54d6
-box pdf 495f59796539b520
+box pdf 802580461748fdc4
 heatmap png 033b993c45ba5487
 heatmap pdf 7a78e0e1674b3974
 bar_counts png 2e1fbf9a0eadd258

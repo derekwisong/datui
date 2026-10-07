@@ -1266,8 +1266,8 @@ pub struct Seen {
     /// A regular file, which an open can read. A FIFO, a socket or a broken symlink is
     /// neither this nor a directory.
     pub is_file: bool,
-    /// Where the listing says it. An empty file with no extension is a tool's marker
-    /// for a folder, not data.
+    /// Bytes, where the listing gives them. An empty file with no extension is a tool's
+    /// marker for a folder, not data.
     pub size: Option<u64>,
 }
 

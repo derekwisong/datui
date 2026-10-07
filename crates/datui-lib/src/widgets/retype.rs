@@ -103,12 +103,7 @@ pub fn render_combine(area: Rect, buf: &mut Buffer, modal: &CombineModal, ctx: &
     if height < 6 {
         return;
     }
-    let popup = Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    };
+    let popup = crate::render::layout::centered_rect(area, width, height);
     crate::pointer::record(popup, crate::pointer::Hit::Modal);
     let footer = match &modal.picker {
         Some(_) => HintBar::from_ctx(ctx)
@@ -205,18 +200,6 @@ mod tests {
     use super::*;
     use polars::prelude::DataType;
 
-    fn text(buf: &Buffer) -> String {
-        let area = buf.area;
-        (0..area.height)
-            .map(|y| {
-                (0..area.width)
-                    .map(|x| buf[(x, y)].symbol().to_string())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
     #[test]
     fn the_picker_lists_the_types_then_the_formats_with_a_preview() {
         let ctx = RenderContext::for_test();
@@ -229,7 +212,7 @@ mod tests {
         );
         let mut buf = Buffer::empty(area);
         render_retype(area, &mut buf, &modal, &ctx);
-        let shown = text(&buf);
+        let shown = crate::tests::buffer_text(&buf);
         assert!(shown.contains("Type of when, read as str"), "{shown}");
         assert!(shown.contains("as read"), "{shown}");
         assert!(shown.contains("datetime"), "{shown}");
@@ -241,7 +224,7 @@ mod tests {
         modal.choose();
         let mut buf = Buffer::empty(area);
         render_retype(area, &mut buf, &modal, &ctx);
-        let shown = text(&buf);
+        let shown = crate::tests::buffer_text(&buf);
         assert!(shown.contains("Date Format"), "{shown}");
         assert!(shown.contains("%d/%m/%Y  03/04/2024"), "{shown}");
         assert!(shown.contains("2024-04-03"), "{shown}");
@@ -250,7 +233,7 @@ mod tests {
         }
         let mut buf = Buffer::empty(area);
         render_retype(area, &mut buf, &modal, &ctx);
-        let shown = text(&buf);
+        let shown = crate::tests::buffer_text(&buf);
         assert!(
             shown.contains("%d %m: does not read the first value"),
             "{shown}"
@@ -265,7 +248,7 @@ mod tests {
         let modal = CombineModal::new("Lcl Date".into(), columns.clone(), &columns);
         let mut buf = Buffer::empty(area);
         render_combine(area, &mut buf, &modal, &ctx);
-        let shown = text(&buf);
+        let shown = crate::tests::buffer_text(&buf);
         assert!(shown.contains("Combine into Datetime"), "{shown}");
         assert!(shown.contains("UTC offset:"), "{shown}");
         assert!(

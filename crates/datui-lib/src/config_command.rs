@@ -135,12 +135,7 @@ fn shown(value: &toml::Value) -> String {
 
 /// `text` cut to `most` characters, the cut marked.
 fn shorten(text: String, most: usize) -> String {
-    if text.chars().count() > most {
-        let cut: String = text.chars().take(most - 3).collect();
-        format!("{cut}...")
-    } else {
-        text
-    }
+    crate::glyphs::fit_cells(&text, most, "...").into_owned()
 }
 
 fn value_at<'a>(table: &'a toml::Table, key: &str) -> Option<&'a toml::Value> {

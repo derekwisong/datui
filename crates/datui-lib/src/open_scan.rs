@@ -1521,7 +1521,7 @@ impl App {
                     .parts()
                     .1
                     .filter(|_| status == "Downloading...")
-                    .map(|size| format!("Downloading {}...", discover::format_size(size)));
+                    .map(|size| format!("Downloading {}...", crate::numfmt::bytes(size)));
                 let status = sized.as_deref().unwrap_or(status);
                 self.spawn_job(job, Some(status), move |_| {
                     let (url, _, options) = pending.parts();
@@ -1918,7 +1918,7 @@ impl App {
         };
         format!(
             "{what} {} into memory before the table appears.\n\nRead it?",
-            Self::format_bytes(read.bytes)
+            crate::numfmt::bytes(read.bytes)
         )
     }
 
@@ -1930,7 +1930,7 @@ impl App {
     ) -> String {
         let (url, size, options) = pending.parts();
         let size_str = size
-            .map(Self::format_bytes)
+            .map(crate::numfmt::bytes)
             .unwrap_or_else(|| "unknown".to_string());
         let dest_dir = options
             .temp_dir

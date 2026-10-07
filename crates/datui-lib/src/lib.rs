@@ -852,12 +852,12 @@ enum RunOrigin {
 /// error. The second value is that last.
 fn recording_label(spool: &crate::follow::Spool) -> (String, bool) {
     let dot = crate::glyphs::get().middot;
-    let size = crate::discover::format_size(spool.bytes());
+    let size = crate::numfmt::bytes(spool.bytes());
     match spool.ended() {
         None => (
             format!(
                 "rec {size} {dot} {}/s",
-                crate::discover::format_size(spool.rate() as u64)
+                crate::numfmt::bytes(spool.rate() as u64)
             ),
             false,
         ),
@@ -2096,7 +2096,7 @@ impl App {
                 let chip = format!(
                     "reading stdin {} {}",
                     crate::glyphs::get().middot,
-                    crate::discover::format_size(read)
+                    crate::numfmt::bytes(read)
                 );
                 let note = (follow.new_below > 0 && !state.on_last_row())
                     .then(|| rows(follow.new_below, "new below"));
@@ -3468,25 +3468,6 @@ impl App {
     /// Get a color from the theme by name
     fn color(&self, name: &str) -> Color {
         self.theme.get(name)
-    }
-
-    /// Human-readable byte size, for the download confirmation and the load's progress.
-    fn format_bytes(n: u64) -> String {
-        const KB: u64 = 1024;
-        const MB: u64 = KB * 1024;
-        const GB: u64 = MB * 1024;
-        const TB: u64 = GB * 1024;
-        if n >= TB {
-            format!("{:.2} TB", n as f64 / TB as f64)
-        } else if n >= GB {
-            format!("{:.2} GB", n as f64 / GB as f64)
-        } else if n >= MB {
-            format!("{:.2} MB", n as f64 / MB as f64)
-        } else if n >= KB {
-            format!("{:.2} KB", n as f64 / KB as f64)
-        } else {
-            format!("{} bytes", n)
-        }
     }
 }
 

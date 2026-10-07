@@ -190,23 +190,6 @@ pub struct Holds {
 /// How many skipped names are kept for the pane. Enough to recognise the convention.
 pub(crate) const SKIPPED_NAMES_SHOWN: usize = 4;
 
-/// A name cut to `width`, keeping both ends and marking the middle.
-pub(crate) fn shorten(name: &str, width: usize) -> String {
-    let chars: Vec<char> = name.chars().collect();
-    if chars.len() <= width {
-        return name.to_string();
-    }
-    let ellipsis = crate::glyphs::get().ellipsis;
-    let room = width.saturating_sub(ellipsis.chars().count());
-    let head = room.div_ceil(2);
-    let tail = room - head;
-    format!(
-        "{}{ellipsis}{}",
-        chars[..head].iter().collect::<String>(),
-        chars[chars.len() - tail..].iter().collect::<String>()
-    )
-}
-
 impl Holds {
     /// Data files of every format.
     pub fn data_files(&self) -> usize {
@@ -2512,24 +2495,6 @@ fn nested_keys(dir: &Path) -> Vec<String> {
         current = child.path();
     }
     keys
-}
-
-/// Render a byte count compactly for a listing (`340 MB`).
-pub fn format_size(bytes: u64) -> String {
-    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{} {}", bytes, UNITS[0])
-    } else if value >= 100.0 {
-        format!("{:.0} {}", value, UNITS[unit])
-    } else {
-        format!("{:.1} {}", value, UNITS[unit])
-    }
 }
 
 /// Render a row count compactly (`2.4M`).

@@ -1387,7 +1387,7 @@ pub(crate) fn recording(window: Arc<dyn crate::pushdown::Windowed>) -> Option<Ar
 /// `LIST INFO`, AIFF text) and markers, markers last.
 pub fn detail(audio: &AudioSource) -> crate::text_formats::Detail {
     use crate::model_files::MetaValue;
-    use crate::widgets::info::{clock, count_of, format_bytes, group_u64};
+    use crate::widgets::info::{clock, count_of, group_u64};
     let h = audio.header();
     let g = crate::glyphs::get();
     let sep = format!(" {} ", g.middot);
@@ -1425,15 +1425,15 @@ pub fn detail(audio: &AudioSource) -> crate::text_formats::Detail {
         ),
         format!(
             "Data: {}",
-            format_bytes(audio.frames() * h.frame_bytes as u64)
+            crate::numfmt::bytes(audio.frames() * h.frame_bytes as u64)
         ),
     ];
     let mut warnings = Vec::new();
     if let Some((declared, held)) = audio.cut_short() {
         warnings.push(format!(
             "header says {} of samples{sep}file holds {}",
-            format_bytes(declared),
-            format_bytes(held)
+            crate::numfmt::bytes(declared),
+            crate::numfmt::bytes(held)
         ));
     } else if h.data_declared.is_none() && audio.frames() > 0 {
         lines.push(format!(

@@ -144,7 +144,7 @@ impl App {
                         Some(bytes) if bytes > Self::COPY_REFUSE_BYTES => Err(format!(
                             "The table is about {} — too much to hold on a clipboard. \
                              Export it to a file instead (e).",
-                            Self::format_bytes(bytes as u64)
+                            crate::numfmt::bytes(bytes as u64)
                         )),
                         Some(bytes) if bytes.min(cap) > Self::COPY_CONFIRM_BYTES => {
                             Ok(Planned::Confirm(Some(bytes)))
@@ -175,7 +175,7 @@ impl App {
                 let message = match bytes {
                     Some(bytes) => format!(
                         "This copies about {} to the clipboard.\n\nCopy the whole table?",
-                        Self::format_bytes(bytes as u64)
+                        crate::numfmt::bytes(bytes as u64)
                     ),
                     None if counting => "The table's size is not known yet — the row count \
                                          is still being read.\n\nCopy the whole table anyway?"

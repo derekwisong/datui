@@ -124,14 +124,7 @@ mod tests {
         let mut buf = Buffer::empty(area);
         let ctx = RenderContext::for_test();
         render_copy_modal(area, &mut buf, modal, &ctx);
-        (0..area.height)
-            .map(|y| {
-                (0..area.width)
-                    .map(|x| buf[(x, y)].symbol().to_string())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        crate::tests::buffer_text(&buf)
     }
 
     #[test]

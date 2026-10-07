@@ -70,7 +70,7 @@ fn s_draws_a_sample_the_table_shows_as_it_arrives() {
     let mut buffer = Buffer::empty(area);
     key(&mut app, KeyCode::Char('S'));
     app.render(area, &mut buffer);
-    let screen = rendered_text(&buffer);
+    let screen = common::buffer_text(&buffer);
     assert!(screen.contains("Sample size:"), "{screen}");
     assert!(screen.contains("Enter Draw"), "{screen}");
     key(&mut app, KeyCode::Esc);
@@ -197,7 +197,7 @@ fn analysis_and_charts_read_the_views_sample() {
     let area = Rect::new(0, 0, 120, 30);
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
-    let screen = rendered_text(&buffer);
+    let screen = common::buffer_text(&buffer);
     assert!(screen.contains("sample 300 of 10k"), "{screen}");
     assert!(screen.contains("seed 7"), "{screen}");
 }

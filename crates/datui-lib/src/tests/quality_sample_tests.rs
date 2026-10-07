@@ -446,8 +446,7 @@ fn stages_and_spinner_frames_do_not_move_the_layout() {
                 .enumerate()
                 .find_map(|(y, row)| row.find(stage.label()).map(|x| (y, x)))
                 .unwrap_or_else(|| panic!("{} on screen: {rows:#?}", stage.label()));
-            let clock =
-                crate::render::analysis_view::elapsed(std::time::Duration::from_secs(seconds));
+            let clock = crate::numfmt::duration(seconds as i64);
             assert!(rows[at.0].contains(&clock), "the clock beside the stage");
             drawn.push((rows, at));
         }

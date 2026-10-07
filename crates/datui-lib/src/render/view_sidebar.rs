@@ -3,7 +3,7 @@
 //! breakdown. Built on the `widgets::ui` kit; the rail marks focus.
 
 use crate::render::context::RenderContext;
-use crate::render::layout::centered_rect_fixed;
+use crate::render::layout::centered_rect;
 use crate::widgets::ui::{FormRow, FormValue, HintBar, SectionRule, Surface};
 use crate::widgets::view_modal::{FormFocus, ViewModal, ViewModalMode};
 use ratatui::buffer::Buffer;
@@ -72,16 +72,9 @@ fn score_mark(score: f64, max_score: f64, ctx: &RenderContext) -> (&'static str,
 /// Pad or truncate to `width` display columns, marking the cut with the
 /// ellipsis glyph and never splitting a wide character.
 fn fit(text: &str, width: usize) -> String {
-    let g = crate::glyphs::get();
-    let count = crate::glyphs::display_width(text);
-    if count <= width {
-        let pad = width - count;
-        format!("{text}{}", " ".repeat(pad))
-    } else {
-        let ellipsis_width = crate::glyphs::display_width(g.ellipsis);
-        let cut = crate::glyphs::take_columns(text, width.saturating_sub(ellipsis_width));
-        format!("{cut}{}", g.ellipsis)
-    }
+    let fitted = crate::glyphs::fit(text, width);
+    let pad = width.saturating_sub(crate::glyphs::display_width(&fitted));
+    format!("{fitted}{}", " ".repeat(pad))
 }
 
 fn render_list(
@@ -438,7 +431,7 @@ fn render_score_details(area: Rect, buf: &mut Buffer, modal: &mut ViewModal, ctx
     // Sized to the breakdown, not the terminal: a compact centered dialog.
     // The body, the blank above the footer, the footer and the frame.
     let height = (body.lines().count() as u16 + 4).min(area.height);
-    let details_area = centered_rect_fixed(area, 56, height);
+    let details_area = centered_rect(area, 56, height);
     let footer = HintBar::from_ctx(ctx).hint("Esc", "Close");
     let content = Surface::new(title.as_str())
         .footer(&footer)

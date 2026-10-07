@@ -87,14 +87,7 @@ fn draw(app: &mut App) -> String {
     let area = Rect::new(0, 0, 120, 40);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
-    (0..area.height)
-        .map(|y| {
-            (0..area.width)
-                .map(|x| buf[(x, y)].symbol())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    crate::tests::buffer_text(&buf)
 }
 
 fn press(app: &mut App, code: KeyCode) -> Option<AppEvent> {

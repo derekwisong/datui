@@ -299,17 +299,6 @@ mod tests {
     use polars::prelude::DataType;
     use ratatui::buffer::Buffer;
 
-    fn rows_of(buf: &Buffer) -> Vec<String> {
-        let area = buf.area;
-        (area.y..area.y + area.height)
-            .map(|y| {
-                (area.x..area.x + area.width)
-                    .map(|x| buf[(x, y)].symbol().to_string())
-                    .collect()
-            })
-            .collect()
-    }
-
     fn draw(app: &mut crate::App, width: u16, height: u16) -> Vec<String> {
         let area = Rect::new(0, 0, width, height);
         let mut buf = Buffer::empty(area);
@@ -319,7 +308,7 @@ mod tests {
             app,
             &crate::render::context::RenderContext::for_test(),
         );
-        rows_of(&buf)
+        crate::tests::buffer_lines(&buf)
     }
 
     fn command_line(mode: QueryMode) -> crate::App {

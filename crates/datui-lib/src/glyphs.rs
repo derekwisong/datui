@@ -1132,6 +1132,50 @@ pub fn ascii() -> &'static Glyphs {
     &ASCII
 }
 
+/// `text` in `width` columns, cut at its end and marked with the ellipsis.
+pub fn fit(text: &str, width: usize) -> String {
+    fit_cells(text, width, get().ellipsis).into_owned()
+}
+
+/// `text` in `width` columns, cut at its start: a path keeps its leaf. The ellipsis is
+/// measured, since it is three columns on an ASCII terminal.
+pub fn fit_start(text: &str, width: usize) -> String {
+    if display_width(text) <= width {
+        return text.to_string();
+    }
+    let ellipsis = get().ellipsis;
+    let ellipsis_width = display_width(ellipsis);
+    if width <= ellipsis_width {
+        return take_columns_end(text, width).to_string();
+    }
+    format!(
+        "{ellipsis}{}",
+        take_columns_end(text, width - ellipsis_width)
+    )
+}
+
+/// `text` in `width` columns, cut from the middle: `weather/…/daily`.
+pub fn fit_middle(text: &str, width: usize) -> String {
+    if display_width(text) <= width {
+        return text.to_string();
+    }
+    let mark = get().ellipsis;
+    let mark_w = display_width(mark);
+    if width <= mark_w {
+        return take_columns(mark, width).to_string();
+    }
+    let room = width - mark_w;
+    let head = take_columns(text, room.div_ceil(2));
+    let tail = take_columns_end(text, room - display_width(head));
+    format!("{head}{mark}{tail}")
+}
+
+/// Text written with `·` between its parts, in the glyph set's middot: `-` on an ASCII
+/// terminal. A `·` in a UI string is this template, drawn through here.
+pub fn dotted(text: &str) -> String {
+    text.replace('·', get().middot)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1360,18 +1404,6 @@ mod tests {
         buf
     }
 
-    fn buffer_text(buf: &Buffer) -> String {
-        let a = buf.area;
-        (a.top()..a.bottom())
-            .map(|y| {
-                (a.left()..a.right())
-                    .map(|x| buf[(x, y)].symbol())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
     /// The swap finds the axes and the legend frame by shape: a title or a legend
     /// name holding the same characters keeps them, and Unicode changes nothing.
     #[test]
@@ -1382,7 +1414,7 @@ mod tests {
         assert_eq!(buf, before);
 
         ascii().plot.redraw_axes(buf.area, &mut buf);
-        let text = buffer_text(&buf);
+        let text = crate::tests::buffer_text(&buf);
         let rows: Vec<&str> = text.lines().collect();
         assert!(rows[0].ends_with("+----+"), "the legend frame:\n{text}");
         assert!(rows[1].ends_with("|x─│y|"), "the legend name:\n{text}");
@@ -1398,9 +1430,9 @@ mod tests {
     #[test]
     fn redraw_axes_in_a_chart_too_small_for_both_axes() {
         let mut buf = chart_buffer(20, 2, "", "");
-        assert!(!buffer_text(&buf).is_ascii());
+        assert!(!crate::tests::buffer_text(&buf).is_ascii());
         ascii().plot.redraw_axes(buf.area, &mut buf);
-        let text = buffer_text(&buf);
+        let text = crate::tests::buffer_text(&buf);
         assert!(text.is_ascii() && text.contains('|'), "{text}");
     }
 

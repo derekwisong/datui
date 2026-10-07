@@ -32,9 +32,7 @@ fn lines(app: &mut App) -> Vec<String> {
     let area = Rect::new(0, 0, 120, 30);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
-    (0..area.height)
-        .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol()).collect())
-        .collect()
+    common::buffer_lines(&buf)
 }
 
 /// The status footer: the frame's last line.

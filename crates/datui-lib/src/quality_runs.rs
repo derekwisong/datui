@@ -679,12 +679,9 @@ impl App {
             "{} kept {} ({})",
             numfmt::group_chrome(kept.rows),
             if kept.rows == 1 { "row" } else { "rows" },
-            widgets::info::format_bytes(kept.bytes as u64)
+            crate::numfmt::bytes(kept.bytes as u64)
         );
-        let copy = format!(
-            "the local copy ({})",
-            widgets::info::format_bytes(kept.copy_bytes)
-        );
+        let copy = format!("the local copy ({})", crate::numfmt::bytes(kept.copy_bytes));
         self.flash_note(match (kept.samples > 0, kept.copy_bytes > 0) {
             (true, true) => format!("Released {rows} and {copy}; the next run reads again"),
             (false, true) => format!("Released {copy}; the next full scan fetches again"),
@@ -1229,7 +1226,7 @@ impl App {
         if let data_quality::CopyPlan::Fetch { bytes, .. } = self.quality_copy_plan(plan) {
             lines.push(format!(
                 "Fetch: {} once, to a local copy",
-                crate::widgets::info::format_bytes(bytes)
+                crate::numfmt::bytes(bytes)
             ));
         }
         lines.push("Source writes: none".to_string());

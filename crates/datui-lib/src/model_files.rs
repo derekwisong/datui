@@ -1381,7 +1381,7 @@ fn type_mix(types: &[TypeShare], sep: &str) -> String {
 /// The Model tab: the model's totals, then its metadata as key and value, every value
 /// whole.
 pub fn detail(model: &ModelSummary) -> crate::text_formats::Detail {
-    use crate::widgets::info::{count_of, format_bytes, group_u64, short_count};
+    use crate::widgets::info::{count_of, group_u64, short_count};
     let sep = format!(" {} ", crate::glyphs::get().middot);
     let mut head = model.kind.label();
     head.push_str(&sep);
@@ -1401,7 +1401,7 @@ pub fn detail(model: &ModelSummary) -> crate::text_formats::Detail {
             } else {
                 String::new()
             },
-            format_bytes(model.bytes)
+            crate::numfmt::bytes(model.bytes)
         ),
     ];
     if !model.types.is_empty() {

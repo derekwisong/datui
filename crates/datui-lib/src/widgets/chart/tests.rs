@@ -527,9 +527,7 @@ fn other_is_the_legends_last_entry() {
         },
         crate::glyphs::unicode(),
     );
-    let rows: Vec<String> = (0..area.height)
-        .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol()).collect())
-        .collect();
+    let rows: Vec<String> = crate::tests::buffer_lines(&buf);
     let at = |name: &str| {
         rows.iter()
             .position(|r| r.contains(&format!("█ {name}")))
@@ -905,14 +903,7 @@ fn plot_text_with(
         .expect("default theme colors must resolve");
     let mut buf = Buffer::empty(area);
     render_plot(area, &mut buf, modal, &theme, ctx, data, g);
-    (0..area.height)
-        .map(|y| {
-            (0..area.width)
-                .map(|x| buf[(x, y)].symbol())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    crate::tests::buffer_text(&buf)
 }
 
 /// At 40, 60 and 80 columns, in both glyph sets, every plot's x labels stand a
@@ -1614,13 +1605,6 @@ fn the_light_grid_survives_sixteen_colors() {
     assert!(cells.iter().all(|c| c.fg == grid));
 }
 
-fn rows_of(buf: &Buffer) -> Vec<String> {
-    let area = buf.area;
-    (0..area.height)
-        .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol()).collect())
-        .collect()
-}
-
 /// A log scale ticks at the powers of ten, and 2 and 5 between when there is
 /// room, every label in one format; the short form names each tick's own k or M.
 #[test]
@@ -1653,7 +1637,7 @@ fn log_scale_ticks_fall_on_the_decades() {
             numbers: PlotNumbers::default(),
         };
         render_plot(area, &mut buf, &modal, &theme, &ctx, data, g);
-        let rows = rows_of(&buf);
+        let rows = crate::tests::buffer_lines(&buf);
         let labels: Vec<String> = rows
             .iter()
             .filter_map(|row| {
@@ -1726,11 +1710,11 @@ fn the_crosshair_reads_out_every_series() {
         modal.cursor_x = Some(19_786.0);
         let (off, place) = draw(&modal, g);
         let place = place.expect("an XY plot with points says where it is");
-        assert!(!rows_of(&off).concat().contains("price:"));
+        assert!(!crate::tests::buffer_lines(&off).concat().contains("price:"));
 
         modal.plot_focus = true;
         let (on, _) = draw(&modal, g);
-        let rows = rows_of(&on);
+        let rows = crate::tests::buffer_lines(&on);
         let last = rows.last().unwrap().trim_end();
         assert_eq!(
             last, "date: 2024-03-04   price: 4.5   volume: 300",
@@ -1747,7 +1731,7 @@ fn the_crosshair_reads_out_every_series() {
         // A gap in a series reads as one.
         modal.cursor_x = Some(19_787.0);
         let (gap, _) = draw(&modal, g);
-        let rows = rows_of(&gap);
+        let rows = crate::tests::buffer_lines(&gap);
         assert!(
             rows.last()
                 .unwrap()

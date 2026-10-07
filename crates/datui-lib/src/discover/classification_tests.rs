@@ -296,7 +296,7 @@ fn a_cut_short_listing_does_not_claim_a_directory_is_empty() {
 #[test]
 fn a_long_name_keeps_both_ends() {
     let name = ".part-00000-8f3a91c2-7b4d-4e19-a6f0-c1d2e3f4a5b6-c000.snappy.parquet.crc";
-    let line = shorten(name, 24);
+    let line = crate::glyphs::fit_middle(name, 24);
     assert!(line.starts_with(".part-00000"), "the head: {line}");
     // The tail, as much of it as the ellipsis leaves: it takes three characters of
     // the twenty-four in the ASCII glyph set and one in the Unicode one.

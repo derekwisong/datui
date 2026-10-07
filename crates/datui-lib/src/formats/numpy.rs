@@ -1193,7 +1193,10 @@ pub fn tables(path: &Path) -> Result<Vec<Table>> {
 
 /// The columns an array would open with, from its header: a `.npy` file, or an
 /// archive's `member`. `None` for one that would not open.
-pub fn schema_preview(path: &Path, member: Option<&str>) -> Option<crate::discover::SchemaPreview> {
+pub fn schema_preview(
+    path: &Path,
+    member: Option<&str>,
+) -> Option<crate::home::discover::SchemaPreview> {
     let (header, name) = match member {
         Some(name) => {
             let found = members(path).ok()?.into_iter().find(|m| m.name == name)?;

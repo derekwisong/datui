@@ -167,12 +167,12 @@ fn minio_is_discovered_and_its_buckets_listed() {
         .iter()
         .find(|r| r.name == "2024")
         .expect("the prefix row");
-    assert_eq!(prefix.kind, datui::discover::EntryKind::Directory);
+    assert_eq!(prefix.kind, datui::home::discover::EntryKind::Directory);
     let object = rows
         .iter()
         .find(|r| r.name == "top-level.csv")
         .expect("the object row");
-    assert_eq!(object.kind, datui::discover::EntryKind::File);
+    assert_eq!(object.kind, datui::home::discover::EntryKind::File);
     assert!(object.size.unwrap_or(0) > 0, "an object should have a size");
 
     // Descending, which is what pressing Enter on the prefix will do.
@@ -397,7 +397,7 @@ fn the_home_screen_lists_buckets_and_descends_into_one() {
     // Expanding them would be a billed request per bucket on every start, and measuring
     // one would mean reading object bytes to fill in a column nobody asked for.
     for row in &section.rows {
-        assert_eq!(row.kind, datui::discover::EntryKind::Directory);
+        assert_eq!(row.kind, datui::home::discover::EntryKind::Directory);
         assert!(
             row.rows.is_none(),
             "a bucket row must not carry a row count"
@@ -1047,7 +1047,7 @@ fn awkward_names_list_and_open() {
             for row in rows {
                 let path = row.path.to_string_lossy().into_owned();
                 match row.kind {
-                    datui::discover::EntryKind::Directory => pending.push(path),
+                    datui::home::discover::EntryKind::Directory => pending.push(path),
                     _ => files.push((row.name, path)),
                 }
             }
@@ -1234,18 +1234,19 @@ fn first_openable(
         if listings == 1 && rows.is_empty() {
             return Err(format!("{dir} lists nothing"));
         }
-        let parquet =
-            |r: &datui::discover::Entry| datui::discover::is_parquet_key(&r.path.to_string_lossy());
+        let parquet = |r: &datui::home::discover::Entry| {
+            datui::home::discover::is_parquet_key(&r.path.to_string_lossy())
+        };
         if let Some(row) = rows
             .iter()
-            .filter(|r| r.kind == datui::discover::EntryKind::File)
+            .filter(|r| r.kind == datui::home::discover::EntryKind::File)
             .find(|r| parquet(r) || r.size.is_some_and(|s| s < 8 << 20))
         {
             return Ok(Some(row.path.to_string_lossy().into_owned()));
         }
         let mut dirs: Vec<String> = rows
             .iter()
-            .filter(|r| r.kind == datui::discover::EntryKind::Directory)
+            .filter(|r| r.kind == datui::home::discover::EntryKind::Directory)
             .take(3)
             .map(|r| r.path.to_string_lossy().into_owned())
             .collect();
@@ -1273,7 +1274,7 @@ fn every_public_dataset_lists_and_opens() {
         datui::OpenOptions::default().effective_cloud(&datui::config::AppConfig::default().cloud);
     let runtime = common::test_runtime();
     let mut failures = Vec::new();
-    for dataset in datui::catalog::bundled().datasets {
+    for dataset in datui::home::catalog::bundled().datasets {
         let started = std::time::Instant::now();
         let url = dataset.url.as_deref().expect("the catalog is remote");
         // A web file opens as itself; an object-store root is searched for a file.
@@ -1449,11 +1450,11 @@ fn public_data_quirks() {
     assert!(
         yellow
             .iter()
-            .all(|r| r.kind == datui::discover::EntryKind::Directory),
+            .all(|r| r.kind == datui::home::discover::EntryKind::Directory),
         "folder markers are not files: {:?}",
         yellow
             .iter()
-            .filter(|r| r.kind != datui::discover::EntryKind::Directory)
+            .filter(|r| r.kind != datui::home::discover::EntryKind::Directory)
             .map(|r| &r.name)
             .collect::<Vec<_>>()
     );
@@ -1915,8 +1916,8 @@ fn partitioned_cloud_directories_are_hive_datasets() {
     step(&mut app, "Bitcoin and Ethereum");
     step(&mut app, "btc");
     let labelled = pump_until(&mut app, &rx, 60, |app| {
-        row_kind(app, "blocks") == Some(datui::discover::EntryKind::Hive)
-            && row_kind(app, "transactions") == Some(datui::discover::EntryKind::Hive)
+        row_kind(app, "blocks") == Some(datui::home::discover::EntryKind::Hive)
+            && row_kind(app, "transactions") == Some(datui::home::discover::EntryKind::Hive)
     });
     println!("{}", screen_text(&mut app, 120, 20));
     assert!(labelled, "blocks and transactions are partitioned by date");
@@ -1984,7 +1985,7 @@ fn partitioned_cloud_directories_are_hive_datasets() {
     let (kind, holds) = runtime
         .block_on(cloud_browse::peek_kind(&parts, &config))
         .expect("peeking a public prefix");
-    assert_eq!(kind, datui::discover::EntryKind::MultiFile);
+    assert_eq!(kind, datui::home::discover::EntryKind::MultiFile);
     assert_eq!(
         holds.one_format(),
         Some("parquet"),
@@ -2094,7 +2095,7 @@ fn a_partitioned_dataset_is_not_mistaken_for_separate_tables() {
     println!("{parts} -> {kind:?} {:?}", holds.line(true));
     assert_eq!(
         kind,
-        datui::discover::EntryKind::MultiFile,
+        datui::home::discover::EntryKind::MultiFile,
         "the parts of one snapshot are one table"
     );
 
@@ -2104,5 +2105,5 @@ fn a_partitioned_dataset_is_not_mistaken_for_separate_tables() {
         .block_on(cloud_browse::peek_kind(all, &config))
         .expect("peeking a public prefix");
     println!("{all} -> {kind:?}");
-    assert_eq!(kind, datui::discover::EntryKind::Hive);
+    assert_eq!(kind, datui::home::discover::EntryKind::Hive);
 }

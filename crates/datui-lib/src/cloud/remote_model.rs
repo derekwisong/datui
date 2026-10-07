@@ -437,7 +437,7 @@ fn list_prefix(
         .into_iter()
         .flatten()
         .flatten()
-        .filter(|name| crate::discover::data_format(Path::new(name)) == Some(format))
+        .filter(|name| crate::home::discover::data_format(Path::new(name)) == Some(format))
         .map(|name| format!("{base}{name}"))
         .collect();
     urls.sort();

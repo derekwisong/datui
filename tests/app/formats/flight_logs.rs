@@ -247,9 +247,9 @@ fn the_home_screen_lists_an_opened_log() {
     let ulg = flight().join("flight.ulg");
     let (app, _rx) = open_with(ulg.clone(), table("vehicle_status"));
     assert_eq!(app.error_message(), None);
-    let mut entry = datui::discover::Entry::for_test(&ulg, "flight.ulg");
-    datui::discover::enrich(&mut entry);
+    let mut entry = datui::home::discover::Entry::for_test(&ulg, "flight.ulg");
+    datui::home::discover::enrich(&mut entry);
     assert_eq!(entry.cost.tables, Some(5));
-    let row = datui::discover::table_row(&ulg.join("sensor_accel.0")).unwrap();
+    let row = datui::home::discover::table_row(&ulg.join("sensor_accel.0")).unwrap();
     assert_eq!(row.columns.first().map(String::as_str), Some("timestamp"));
 }

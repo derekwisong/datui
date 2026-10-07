@@ -1,6 +1,6 @@
 use super::*;
-use crate::discover::Entry;
 use crate::home::Section;
+use crate::home::discover::Entry;
 
 /// [`preview_head_keyed`] with nothing below it to line up with.
 fn preview_head(
@@ -84,7 +84,7 @@ fn the_pane_s_guidance_is_a_value_not_a_sentence() {
     }
 }
 
-fn row(path: &str, kind: crate::discover::EntryKind) -> Entry {
+fn row(path: &str, kind: crate::home::discover::EntryKind) -> Entry {
     Entry {
         path: std::path::PathBuf::from(path),
         kind,
@@ -193,7 +193,7 @@ fn a_cloud_directory_is_labelled_by_what_it_holds() {
     assert!(text.contains(" dir"), "{text}");
     assert!(!text.contains("prefix"), "{text}");
 
-    directory.holds = crate::discover::Holds {
+    directory.holds = crate::home::discover::Holds {
         formats: vec![("csv".to_string(), 12)],
         ..Default::default()
     };
@@ -276,7 +276,7 @@ fn the_row_that_opens_a_directory_draws_without_a_label() {
         let mut door = row("gs://cloud-samples-data/bigquery/us-states", kind);
         door.name = "us-states (all files)".to_string();
         door.opens_whole_directory = true;
-        door.holds = crate::discover::Holds {
+        door.holds = crate::home::discover::Holds {
             formats: vec![("parquet".to_string(), 9)],
             ..Default::default()
         };
@@ -435,13 +435,13 @@ fn a_wrapped_line_is_counted_by_the_rows_it_takes() {
 #[test]
 fn a_label_gives_way_to_the_name_on_a_narrow_screen() {
     let ctx = RenderContext::for_test();
-    let mut entry = row("/data/exports", crate::discover::EntryKind::MultiFile);
+    let mut entry = row("/data/exports", crate::home::discover::EntryKind::MultiFile);
     // Real metadata, so the meta columns are a string the offset can be found by.
     entry.size = Some(4096);
     entry.rows = Some(12);
     // A shape too: a row with an empty shape cell gives it to the name (#648).
     entry.cols = Some(3);
-    entry.holds = crate::discover::Holds {
+    entry.holds = crate::home::discover::Holds {
         formats: vec![("parquet".to_string(), 5000)],
         truncated: true,
         ..Default::default()
@@ -474,11 +474,11 @@ fn a_label_gives_way_to_the_name_on_a_narrow_screen() {
 
     // The same kind, so only the label's length differs: a `Directory` row carries
     // a trailing slash and would be a character wider for a reason of its own.
-    let mut short = row("/data/exports", crate::discover::EntryKind::MultiFile);
+    let mut short = row("/data/exports", crate::home::discover::EntryKind::MultiFile);
     short.size = Some(4096);
     short.rows = Some(12);
     short.cols = Some(3);
-    short.holds = crate::discover::Holds {
+    short.holds = crate::home::discover::Holds {
         formats: vec![("csv".to_string(), 2)],
         ..Default::default()
     };
@@ -496,7 +496,7 @@ fn a_label_gives_way_to_the_name_on_a_narrow_screen() {
     // a source calls a place it names, and the only thing marking a curated row.
     let mut named = row("s3://bucket/occurrence", EntryKind::Directory);
     named.size = Some(4096);
-    named.holds = crate::discover::Holds {
+    named.holds = crate::home::discover::Holds {
         formats: vec![("parquet".to_string(), 5000)],
         truncated: true,
         ..Default::default()
@@ -534,7 +534,7 @@ fn a_label_gives_way_to_the_name_on_a_narrow_screen() {
     curated_multi.size = Some(4096);
     curated_multi.rows = Some(12);
     curated_multi.cols = Some(3);
-    curated_multi.holds = crate::discover::Holds {
+    curated_multi.holds = crate::home::discover::Holds {
         formats: vec![("parquet".to_string(), 5000)],
         truncated: true,
         ..Default::default()
@@ -620,7 +620,7 @@ fn a_label_gives_way_to_the_name_on_a_narrow_screen() {
     named.size = Some(4096);
     named.rows = Some(12);
     named.cols = Some(3);
-    named.holds = crate::discover::Holds {
+    named.holds = crate::home::discover::Holds {
         formats: vec![("parquet".to_string(), 12000)],
         ..Default::default()
     };
@@ -852,7 +852,7 @@ fn a_nested_row_keeps_the_meta_columns_where_the_place_row_ends() {
     entry.rows = Some(12);
     // A shape too: a row with an empty shape cell gives it to the name (#648).
     entry.cols = Some(3);
-    entry.holds = crate::discover::Holds {
+    entry.holds = crate::home::discover::Holds {
         formats: vec![("parquet".to_string(), 5000)],
         truncated: true,
         ..Default::default()
@@ -1121,7 +1121,7 @@ fn the_pane_does_not_say_what_a_directory_holds_twice() {
     entry.kind = EntryKind::Directory;
     // A directory of one format and nothing else: the label and the line are the same
     // words, and `kind  12 parquet` above `holds  12 parquet` says it twice.
-    entry.holds = crate::discover::Holds {
+    entry.holds = crate::home::discover::Holds {
         formats: vec![("parquet".to_string(), 12)],
         ..Default::default()
     };
@@ -1140,7 +1140,7 @@ fn the_pane_does_not_say_what_a_directory_holds_twice() {
     assert!(text.contains("3 directories"), "{text}");
 
     // Files datui cannot open are not counted here: inside, a row says so.
-    entry.holds = crate::discover::Holds {
+    entry.holds = crate::home::discover::Holds {
         not_read: 10,
         ..Default::default()
     };
@@ -1318,7 +1318,7 @@ fn preview_text(entry: &Entry, width: usize) -> String {
         .join("\n")
 }
 
-fn costed(name: &str, cost: crate::discover::Cost, size: Option<u64>) -> Entry {
+fn costed(name: &str, cost: crate::home::discover::Cost, size: Option<u64>) -> Entry {
     let mut e = Entry::for_test(std::path::Path::new("/tmp/x"), name);
     e.size = size;
     e.cost = cost;
@@ -1331,7 +1331,7 @@ fn costed(name: &str, cost: crate::discover::Cost, size: Option<u64>) -> Entry {
 fn only_a_file_of_real_tables_contains_tables() {
     let db = costed(
         "shop.db",
-        crate::discover::Cost {
+        crate::home::discover::Cost {
             tables: Some(3),
             ..Default::default()
         },
@@ -1346,7 +1346,7 @@ fn only_a_file_of_real_tables_contains_tables() {
     );
     let mut spec_file = costed(
         "day.ord",
-        crate::discover::Cost {
+        crate::home::discover::Cost {
             tables: Some(5),
             ..Default::default()
         },
@@ -1364,7 +1364,7 @@ fn a_network_source_is_named_rather_than_described() {
     // network is a network is a sentence to skip on every row.
     let e = costed(
         "prices.parquet",
-        crate::discover::Cost {
+        crate::home::discover::Cost {
             source: Some("nfs4".into()),
             ..Default::default()
         },
@@ -1378,7 +1378,7 @@ fn a_network_source_is_named_rather_than_described() {
 fn local_disk_gets_no_warning() {
     let e = costed(
         "prices.parquet",
-        crate::discover::Cost {
+        crate::home::discover::Cost {
             source: Some("ext4".into()),
             ..Default::default()
         },
@@ -1397,7 +1397,7 @@ fn what_a_file_weighs_open_is_stated_with_its_ratio() {
     // The number nothing else on screen implies.
     let e = costed(
         "prices.parquet",
-        crate::discover::Cost {
+        crate::home::discover::Cost {
             source: Some("ext4".into()),
             uncompressed: Some(2_000_000_000),
             codec: Some("zstd".into()),
@@ -1418,7 +1418,7 @@ fn a_ratio_too_small_to_matter_is_left_out() {
     // Below about 1.2x the number is noise dressed as insight.
     let e = costed(
         "prices.parquet",
-        crate::discover::Cost {
+        crate::home::discover::Cost {
             source: Some("ext4".into()),
             uncompressed: Some(1_050_000),
             codec: Some("uncompressed".into()),
@@ -1434,9 +1434,9 @@ fn a_ratio_too_small_to_matter_is_left_out() {
 fn a_partition_layout_names_its_keys_and_its_range() {
     let e = costed(
         "events",
-        crate::discover::Cost {
+        crate::home::discover::Cost {
             source: Some("nfs4".into()),
-            partitions: Some(crate::discover::Partitions {
+            partitions: Some(crate::home::discover::Partitions {
                 keys: vec!["year".into(), "region".into()],
                 first_key_values: vec!["2023".into(), "2024".into(), "2025".into()],
                 count: 3,
@@ -1455,8 +1455,8 @@ fn a_partition_layout_names_its_keys_and_its_range() {
 fn a_bounded_partition_count_says_it_is_a_floor() {
     let e = costed(
         "daily",
-        crate::discover::Cost {
-            partitions: Some(crate::discover::Partitions {
+        crate::home::discover::Cost {
+            partitions: Some(crate::home::discover::Partitions {
                 keys: vec!["day".into()],
                 first_key_values: vec!["0001".into()],
                 count: 512,
@@ -1473,12 +1473,12 @@ fn a_bounded_partition_count_says_it_is_a_floor() {
 fn the_preview_never_draws_past_its_pane() {
     let e = costed(
         "a_dataset_with_a_very_long_name_indeed.parquet",
-        crate::discover::Cost {
+        crate::home::discover::Cost {
             source: Some("fuse.sshfs".into()),
             uncompressed: Some(9_000_000_000),
             codec: Some("zstd".into()),
             row_groups: Some(1024),
-            partitions: Some(crate::discover::Partitions {
+            partitions: Some(crate::home::discover::Partitions {
                 keys: vec!["year".into(), "month".into(), "day".into()],
                 first_key_values: vec!["2001".into(), "2025".into()],
                 count: 9999,
@@ -1897,9 +1897,9 @@ fn pane_headings_put_counts_in_a_chip() {
 #[test]
 fn column_notes_are_listed_under_columns_and_counted_when_cut() {
     let ctx = RenderContext::for_test();
-    let columns: Vec<(String, crate::catalog::ColumnNote)> = (0..6)
+    let columns: Vec<(String, crate::home::catalog::ColumnNote)> = (0..6)
         .map(|i| {
-            let note = crate::catalog::ColumnNote {
+            let note = crate::home::catalog::ColumnNote {
                 description: format!("Note {i}"),
                 unit: if i == 0 { "USD".into() } else { String::new() },
                 values: Vec::new(),

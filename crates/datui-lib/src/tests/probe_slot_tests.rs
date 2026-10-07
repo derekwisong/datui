@@ -1,4 +1,4 @@
-use crate::home_app::MAX_CONCURRENT_PROBES;
+use crate::home::home_app::MAX_CONCURRENT_PROBES;
 use crate::*;
 use std::sync::mpsc;
 
@@ -30,7 +30,7 @@ fn rows_so_far_show_until_the_listing_lands() {
     let dir = PathBuf::from("/pretend/share/raw");
     app.home.browsing = Some(dir.clone());
     app.home_app.probes_inflight = vec![dir.clone()];
-    let row = |name: &str| discover::Entry::directory(&dir.join(name));
+    let row = |name: &str| home::discover::Entry::directory(&dir.join(name));
 
     app.event(AppEvent::HomeProbeProgress {
         root: dir.clone(),
@@ -149,7 +149,7 @@ fn batches_read_before_a_frame_are_listed_once() {
     let dir = PathBuf::from("/pretend/share/raw");
     app.home.browsing = Some(dir.clone());
     app.home_app.probes_inflight = vec![dir.clone()];
-    let row = |name: &str| discover::Entry::directory(&dir.join(name));
+    let row = |name: &str| home::discover::Entry::directory(&dir.join(name));
 
     let generation = app.home_app.generation;
     for name in ["a", "b", "c"] {

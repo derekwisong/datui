@@ -129,7 +129,8 @@ pub struct FormatFacts {
 
 /// The columns one table of a file of a format opens with, for the home screen's
 /// preview: the one named, or the one the file opens when none is.
-pub(crate) type TableSchema = fn(&Path, Option<&str>) -> Option<crate::discover::SchemaPreview>;
+pub(crate) type TableSchema =
+    fn(&Path, Option<&str>) -> Option<crate::home::discover::SchemaPreview>;
 
 /// What a scan is given: the files to open as `format`, one unless the format reads
 /// many as one table, and where to report what it found besides the frame.
@@ -334,7 +335,7 @@ pub(crate) struct Trusted {
     pub pipe: bool,
     /// A file opened whose name says no format.
     pub open: Unnamed,
-    /// A file a directory listing looks inside ([`crate::discover::worth_sniffing`]).
+    /// A file a directory listing looks inside ([`crate::home::discover::worth_sniffing`]).
     /// Never ELF, which would list every executable, nor text, which is a parse.
     pub listing: bool,
     /// The bytes say a file of several tables, each a place inside it

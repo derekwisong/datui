@@ -1,4 +1,4 @@
-pub use crate::catalog::is_object_store_dataset;
+pub use crate::home::catalog::is_object_store_dataset;
 use crate::numfmt::{self, Glob, Grouping, NumberFormat, NumberFormatSettings};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
@@ -136,12 +136,12 @@ impl ConfigManager {
         write_private(&config_path, &template)?;
 
         // The catalog is the user's data: written only when absent, even with --force.
-        let catalog = self.config_path(crate::catalog::MINE_FILE);
+        let catalog = self.config_path(crate::home::catalog::MINE_FILE);
         if !catalog.exists() {
-            std::fs::write(&catalog, crate::catalog::MINE_TEMPLATE)?;
+            std::fs::write(&catalog, crate::home::catalog::MINE_TEMPLATE)?;
         }
         // Where more catalogs go: the header's `> catalogs/examples.toml` needs it there.
-        self.ensure_subdir(crate::catalog::FOLDER)?;
+        self.ensure_subdir(crate::home::catalog::FOLDER)?;
         // Where theme files go: `datui theme show NAME` prints one to start from.
         self.ensure_subdir(crate::themes::FOLDER)?;
 
@@ -241,13 +241,13 @@ pub struct AppConfig {
     /// The catalogs read (`catalog.toml`, then each of `catalogs`). Not a key: filled by
     /// [`AppConfig::read_catalog_files`] after merging.
     #[serde(skip)]
-    pub read_catalogs: Vec<crate::catalog::Catalog>,
+    pub read_catalogs: Vec<crate::home::catalog::Catalog>,
     /// The directory `catalog.toml` was looked for in: the config file's.
     #[serde(skip)]
     pub catalog_dir: Option<PathBuf>,
     /// Catalog files left out for a mistake, each with what is wrong.
     #[serde(skip)]
-    pub broken_catalogs: Vec<crate::catalog::Broken>,
+    pub broken_catalogs: Vec<crate::home::catalog::Broken>,
     pub read: ReadConfig,
     pub csv: CsvConfig,
     pub display: DisplayConfig,
@@ -2682,17 +2682,17 @@ impl AppConfig {
 
     /// Every catalog, hidden ones included: `catalog.toml`, the listed files, then the
     /// bundled `examples` (unless a listed `examples.toml` replaces it).
-    pub fn catalogs(&self) -> Vec<crate::catalog::Catalog> {
+    pub fn catalogs(&self) -> Vec<crate::home::catalog::Catalog> {
         let mut all = self.read_catalogs.clone();
-        if !all.iter().any(|c| c.id == crate::catalog::EXAMPLES) {
-            all.push(crate::catalog::bundled());
+        if !all.iter().any(|c| c.id == crate::home::catalog::EXAMPLES) {
+            all.push(crate::home::catalog::bundled());
         }
         all
     }
 
     /// The catalogs home shows: [`Self::catalogs`] less `[home] hide` (a catalog id, or
     /// `catalog/id` for one entry).
-    pub fn shown_catalogs(&self) -> Vec<crate::catalog::Catalog> {
+    pub fn shown_catalogs(&self) -> Vec<crate::home::catalog::Catalog> {
         self.catalogs()
             .into_iter()
             .filter(|c| !self.home.hide.contains(&c.id))
@@ -2712,11 +2712,11 @@ impl AppConfig {
     /// Why `name` in `home.hide` hides nothing, with the fix when it is the bundled
     /// catalog's old id (`public`, now `examples`).
     pub fn hides_nothing(name: &str) -> String {
-        let old = crate::catalog::OLD_EXAMPLES_ID;
+        let old = crate::home::catalog::OLD_EXAMPLES_ID;
         let renamed = match name.split_once('/') {
-            None if name == old => Some(crate::catalog::EXAMPLES.to_string()),
+            None if name == old => Some(crate::home::catalog::EXAMPLES.to_string()),
             Some((catalog, id)) if catalog == old => {
-                Some(format!("{}/{id}", crate::catalog::EXAMPLES))
+                Some(format!("{}/{id}", crate::home::catalog::EXAMPLES))
             }
             _ => None,
         };
@@ -2752,7 +2752,7 @@ impl AppConfig {
     /// file `catalogs` lists. A missing listed file is skipped with a warning (it may be
     /// on an unmounted share).
     pub fn read_catalog_files(&mut self, config_dir: Option<&Path>) -> Result<()> {
-        use crate::catalog::{self, Origin};
+        use crate::home::catalog::{self, Origin};
         let mut read: Vec<catalog::Catalog> = Vec::new();
         let mut broken: Vec<catalog::Broken> = Vec::new();
         let connections = self.cloud.connections.clone();

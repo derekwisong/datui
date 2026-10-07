@@ -314,8 +314,8 @@ fn a_directory_of_activities_is_one_table() {
     for name in ["monday.gpx", "tuesday.gpx"] {
         std::fs::copy(gps().join("ride.gpx"), logs.join(name)).unwrap();
     }
-    let (kind, holds) = datui::discover::look_at_directory(&logs);
-    assert_eq!(kind, datui::discover::EntryKind::MultiFile);
+    let (kind, holds) = datui::home::discover::look_at_directory(&logs);
+    assert_eq!(kind, datui::home::discover::EntryKind::MultiFile);
     assert_eq!(holds.formats, [("gpx".to_string(), 2)]);
 
     let (app, _rx) = open_with(logs.clone(), options);
@@ -354,11 +354,11 @@ fn a_directory_of_activities_is_one_table() {
 #[test]
 fn an_nmea_log_lists_its_tables_and_sums_itself_up() {
     let log = gps().join("drive.nmea");
-    let mut entry = datui::discover::Entry::for_test(&log, "drive.nmea");
-    datui::discover::enrich(&mut entry);
+    let mut entry = datui::home::discover::Entry::for_test(&log, "drive.nmea");
+    datui::home::discover::enrich(&mut entry);
     assert_eq!(entry.cost.tables, Some(9));
     assert!(entry.cost.opens_one && !entry.enter_lists_tables());
-    let rows = datui::discover::database_rows(&log);
+    let rows = datui::home::discover::database_rows(&log);
     let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
     assert_eq!(names[0], "fixes");
     assert!(names.contains(&"GSV"), "{names:?}");

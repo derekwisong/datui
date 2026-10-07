@@ -6,7 +6,7 @@
 
 use crate::common::{self, drain_events, pump_open_until_loaded};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use datui::discover::{self, EntryKind};
+use datui::home::discover::{self, EntryKind};
 use datui::home::{HomeState, Row};
 use datui::{App, AppEvent, InputMode, OpenOptions};
 use polars::prelude::*;

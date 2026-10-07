@@ -360,13 +360,13 @@ pub(crate) enum Answer {
     /// [`Job::LookAtDirectory`]: what the look found; `holds` (a cloud listing) picks
     /// the reader.
     LookedAt {
-        kind: crate::discover::EntryKind,
-        holds: Option<Box<crate::discover::Holds>>,
+        kind: crate::home::discover::EntryKind,
+        holds: Option<Box<crate::home::discover::Holds>>,
         options: Box<OpenOptions>,
     },
     /// [`Job::Classify`]: what the path turned out to be; `None` is a path that is not
     /// there.
-    Kind(Option<crate::discover::EntryKind>),
+    Kind(Option<crate::home::discover::EntryKind>),
     /// [`Job::Rows`]: the rows read.
     Rows(crate::table::CollectResult),
     /// [`Job::Rows`]: the read failed. `conversion` is a value that would not convert,

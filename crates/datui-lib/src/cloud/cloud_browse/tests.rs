@@ -141,7 +141,7 @@ fn a_saved_dataset_dict_prefix_is_arrow() {
         &directories(&["dd/test/", "dd/train/"]),
         &objects(&[("dd/dataset_dict.json", 30)]),
     );
-    assert_eq!(kind, crate::discover::EntryKind::Directory);
+    assert_eq!(kind, crate::home::discover::EntryKind::Directory);
     assert!(holds.dataset_dict);
     assert!(holds.formats.is_empty(), "{:?}", holds.formats);
     assert_eq!(holds.skipped_names, ["dataset_dict.json"]);
@@ -196,7 +196,7 @@ fn sub_prefixes_count_against_a_prefix_being_one_table() {
         &subs,
         &objects(&[("out/a.parquet", 5), ("out/b.parquet", 5)]),
     );
-    assert_eq!(kind, crate::discover::EntryKind::Directory);
+    assert_eq!(kind, crate::home::discover::EntryKind::Directory);
     assert_eq!(holds.label(), "2 parquet");
     assert_eq!(holds.directories, 10);
 }
@@ -242,7 +242,7 @@ fn partitions_carry_a_prefix_only_while_they_are_the_most_of_it() {
     let two = objects(&[("out/a.parquet", 5), ("out/b.parquet", 5)]);
     assert_eq!(
         look_at_listing("out/", &parts, &two).0,
-        crate::discover::EntryKind::Hive,
+        crate::home::discover::EntryKind::Hive,
         "two partitions against two files"
     );
     let three = objects(&[
@@ -252,7 +252,7 @@ fn partitions_carry_a_prefix_only_while_they_are_the_most_of_it() {
     ]);
     assert_ne!(
         look_at_listing("out/", &parts, &three).0,
-        crate::discover::EntryKind::Hive,
+        crate::home::discover::EntryKind::Hive,
         "one more file than partitions"
     );
 }
@@ -281,7 +281,7 @@ fn a_stray_it_cannot_read_counts_against_a_prefix_the_way_it_does_on_disk() {
     assert_eq!(holds.not_read, 5);
     assert_eq!(
         kind,
-        crate::discover::EntryKind::Directory,
+        crate::home::discover::EntryKind::Directory,
         "five it cannot read outvote two it can"
     );
 }
@@ -314,7 +314,7 @@ fn a_pane_never_lists_more_skipped_names_than_it_promised() {
     assert_eq!(holds.skipped, 30, "all of them are counted");
     assert_eq!(
         holds.skipped_names.len(),
-        crate::discover::SKIPPED_NAMES_SHOWN,
+        crate::home::discover::SKIPPED_NAMES_SHOWN,
         "but only a few are named"
     );
 
@@ -359,7 +359,7 @@ fn two_formats_that_tie_are_named_in_the_same_order_every_time() {
 
 #[test]
 fn a_directory_is_classified_by_one_page_of_its_listing() {
-    use crate::discover::EntryKind;
+    use crate::home::discover::EntryKind;
     // Each listing under the prefix it is a listing of. The prefix is only read to
     // drop the prefix's own key, which `the_prefix_being_listed_is_not_something_it_holds`
     // is about — but a prefix that is not the parent of the keys beside it is a
@@ -424,7 +424,7 @@ fn a_directory_is_classified_by_one_page_of_its_listing() {
 /// and is right about the schema and wrong about the rows.
 #[test]
 fn a_lake_table_is_not_a_directory_of_parquet_files() {
-    use crate::discover::EntryKind;
+    use crate::home::discover::EntryKind;
     let parts = objects(&[
         ("t/part-00000.parquet", 10),
         ("t/part-00001.parquet", 10),
@@ -495,11 +495,11 @@ fn refusals_and_job_files() {
         ".crc",
     ] {
         assert!(
-            crate::discover::is_bookkeeping(name),
+            crate::home::discover::is_bookkeeping(name),
             "{name} is a writer's own file"
         );
     }
-    assert!(!crate::discover::is_bookkeeping("part-0000.parquet"));
+    assert!(!crate::home::discover::is_bookkeeping("part-0000.parquet"));
 
     // One thing named twice — the object and the prefix — is one skipped entry,
     // and an empty object standing for no folder is a file nothing can read, which
@@ -545,7 +545,7 @@ fn refusals_and_job_files() {
     // Whether a key counts as data and whether it is worth a row are two questions.
     // `_manifest.parquet` is a writer's own file and still something to open, and
     // the local listing has always shown its equivalent.
-    assert!(crate::discover::is_bookkeeping("_manifest.parquet"));
+    assert!(crate::home::discover::is_bookkeeping("_manifest.parquet"));
     assert!(!is_marker("_manifest.parquet"));
     assert!(!is_marker("_2024_sales.csv"));
     for name in ["_SUCCESS", "_committed_1", "_started_1", "yellow_$folder$"] {

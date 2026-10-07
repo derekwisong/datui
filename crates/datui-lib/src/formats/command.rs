@@ -115,11 +115,12 @@ pub(crate) fn unnamed_may(
     text_only: bool,
 ) -> Option<impl Fn(&Spec) -> bool> {
     let said = (!is_dir)
-        .then(|| crate::discover::data_format(path))
+        .then(|| crate::home::discover::data_format(path))
         .flatten()
         // Text by its name (`.log`, `.txt`) says no more than no name does.
         .filter(|f| !f.is_lines());
-    let parquet_key = crate::discover::is_parquet_key(&crate::discover::directory_and_name(path));
+    let parquet_key =
+        crate::home::discover::is_parquet_key(&crate::home::discover::directory_and_name(path));
     let records_may = said.is_none() && !parquet_key && !text_only;
     let text_may =
         !is_dir && !parquet_key && said.is_none_or(|f| crate::FileFormat::separator(f).is_some());
@@ -140,7 +141,7 @@ pub(crate) fn spec_head(
     compression: Option<crate::CompressionFormat>,
     reach: u64,
 ) -> Option<Vec<u8>> {
-    if compression.is_none() && crate::discover::sniff_format(path).is_some() {
+    if compression.is_none() && crate::home::discover::sniff_format(path).is_some() {
         return None;
     }
     head_of(path, compression, reach)

@@ -9,9 +9,9 @@ pub(crate) mod fixtures;
 
 #[cfg(feature = "cloud")]
 mod cloud_recent_facts {
-    use crate::discover::EntryKind;
     use crate::formats::dataset_files::DatasetFile;
     use crate::formats::schema_union::FileFooter;
+    use crate::home::discover::EntryKind;
     use polars::prelude::{DataType, Field, Schema};
     use std::sync::Arc;
 
@@ -79,7 +79,10 @@ mod cloud_recent_facts {
         assert_eq!(facts.holds.formats, vec![("parquet".to_string(), 2)]);
         assert_eq!(facts.size, 3000);
         assert_eq!(facts.mtime, 20);
-        assert_eq!(facts.classified_by, crate::discover::CLASSIFIER_VERSION);
+        assert_eq!(
+            facts.classified_by,
+            crate::home::discover::CLASSIFIER_VERSION
+        );
         assert!(facts.columns.iter().any(|c| c == "amount"));
 
         // A flat prefix is a directory of files; one object is a file.
@@ -1559,7 +1562,7 @@ fn a_look_waits(app: &crate::App) -> Option<std::path::PathBuf> {
 fn the_look_answers(
     app: &mut crate::App,
     look: crate::jobs::Started,
-    found: Option<crate::discover::EntryKind>,
+    found: Option<crate::home::discover::EntryKind>,
 ) -> Option<crate::AppEvent> {
     let ticket = look.ticket();
     look.end(crate::Outcome::answered(crate::Answer::Kind(found)));
@@ -1610,7 +1613,11 @@ fn a_classify_answer_nobody_is_waiting_for_leaves_the_right_busy_behind() {
         moved_on(&mut app);
         let moved_to = app.home.browsing.clone();
 
-        let follow = the_look_answers(&mut app, look, Some(crate::discover::EntryKind::MultiFile));
+        let follow = the_look_answers(
+            &mut app,
+            look,
+            Some(crate::home::discover::EntryKind::MultiFile),
+        );
 
         assert!(follow.is_none(), "nothing was opened when {what}");
         assert_eq!(
@@ -1659,7 +1666,11 @@ fn a_newer_look_replaces_an_older_one() {
     );
 
     // And the older answer arrives.
-    let follow = the_look_answers(&mut app, look, Some(crate::discover::EntryKind::MultiFile));
+    let follow = the_look_answers(
+        &mut app,
+        look,
+        Some(crate::home::discover::EntryKind::MultiFile),
+    );
 
     assert!(follow.is_none(), "the stale answer opened nothing");
     assert_eq!(

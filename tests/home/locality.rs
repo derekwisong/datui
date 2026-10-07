@@ -1,6 +1,6 @@
 //! Where a dataset lives, and what that says about opening it.
 
-use datui::locality::{Locality, Mounts, Source};
+use datui::home::locality::{Locality, Mounts, Source};
 use std::path::Path;
 
 /// A mountinfo excerpt shaped like a real one, including the autofs/nfs4 pair that

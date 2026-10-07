@@ -188,8 +188,10 @@ fn a_login_that_may_not_own_the_place_tries_then_remembers() {
 fn with_catalog(toml: &str, id: &str, catalog: &str, env: &Environment<'_>) -> CloudConfig {
     let mut app: crate::config::AppConfig = toml::from_str(toml).unwrap();
     if !catalog.is_empty() {
-        app.read_catalogs =
-            vec![crate::catalog::parse(catalog, id, crate::catalog::Origin::Listed, None).unwrap()];
+        app.read_catalogs = vec![
+            crate::home::catalog::parse(catalog, id, crate::home::catalog::Origin::Listed, None)
+                .unwrap(),
+        ];
     }
     app.sync_dataset_access();
     app.validate().unwrap();
@@ -209,7 +211,7 @@ fn the_builtin_catalog_is_read_anonymously_whoever_is_logged_in() {
     );
     with_machine(&machine, |env| {
         let config = with_catalog("", "", "", env);
-        let catalog = crate::catalog::bundled();
+        let catalog = crate::home::catalog::bundled();
         assert!(catalog.datasets.len() >= 6);
         // Web files are fetched, not resolved against a store.
         for dataset in &catalog.datasets {
@@ -219,7 +221,7 @@ fn the_builtin_catalog_is_read_anonymously_whoever_is_logged_in() {
             }
             let resolved = resolve_with(url, &config, env).unwrap();
             assert_eq!(resolved.signing, Signing::Unsigned, "{url}");
-            assert_eq!(resolved.source_id, crate::catalog::EXAMPLES);
+            assert_eq!(resolved.source_id, crate::home::catalog::EXAMPLES);
             assert_eq!(resolved.s3.access_key_id, None);
         }
         let inside = resolve_with(

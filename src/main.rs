@@ -22,9 +22,10 @@ fn run_command(command: &Command, args: &Args) -> ! {
             Ok(manager) => datui::config_command::command(&manager, action, &args.config),
             Err(e) => fail(e),
         },
-        Command::Catalog { action } => {
-            datui::catalog::command(action, datui::AppConfig::load_with(APP_NAME, &args.config))
-        }
+        Command::Catalog { action } => datui::home::catalog::command(
+            action,
+            datui::AppConfig::load_with(APP_NAME, &args.config),
+        ),
         Command::Theme { action } => {
             datui::themes::command(action, datui::AppConfig::load_with(APP_NAME, &args.config))
         }

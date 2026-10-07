@@ -97,12 +97,12 @@ pub async fn list_dataset_files_reporting(
         key.strip_prefix(prefix)
             .unwrap_or("")
             .split('/')
-            .any(crate::discover::is_bookkeeping)
+            .any(crate::home::discover::is_bookkeeping)
     };
     // What counts as data under the prefix, independent of a glob: a file the glob
     // excluded was left out on purpose, not "not Parquet".
     let is_data = |f: &DatasetFile| {
-        f.size > 0 && !bookkeeping_of(&f.key) && crate::discover::is_parquet_key(&f.key)
+        f.size > 0 && !bookkeeping_of(&f.key) && crate::home::discover::is_parquet_key(&f.key)
     };
     // A glob names the files it wants; everything else under the prefix is somebody
     // else's, and is neither read nor counted.
@@ -115,7 +115,7 @@ pub async fn list_dataset_files_reporting(
     // otherwise look dataless and file the skip most worth saying as plumbing.
     for f in all
         .iter()
-        .filter(|f| !bookkeeping_of(&f.key) && crate::discover::is_parquet_key(&f.key))
+        .filter(|f| !bookkeeping_of(&f.key) && crate::home::discover::is_parquet_key(&f.key))
     {
         let mut directory = directory_of(&f.key);
         while !directory.is_empty() && with_data.insert(directory) {
@@ -140,7 +140,7 @@ pub async fn list_dataset_files_reporting(
         if is_data(f) || !wanted(f) {
             continue;
         }
-        let parquet_named = crate::discover::is_parquet_key(&f.key);
+        let parquet_named = crate::home::discover::is_parquet_key(&f.key);
         if bookkeeping_of(&f.key)
             || !beside_data(directory_of(&f.key))
             // Empty and not data-named: a console's folder marker, not a stray or a stopped write.

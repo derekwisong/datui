@@ -3940,7 +3940,7 @@ fn test_a_delta_table_is_labelled_and_not_opened_as_one_table() {
     app.home.classify_now(8);
     assert_eq!(
         app.home.selected_entry().map(|e| e.kind),
-        Some(datui::discover::EntryKind::Delta),
+        Some(datui::home::discover::EntryKind::Delta),
         "the log says what this is"
     );
 
@@ -4005,7 +4005,7 @@ fn test_a_sampled_column_count_is_marked_on_screen() {
     // As a directory past the footer budget comes back from measurement.
     for section in app.home.sections_mut().iter_mut() {
         for entry in section.rows.iter_mut().filter(|e| e.name == "events") {
-            entry.kind = datui::discover::EntryKind::MultiFile;
+            entry.kind = datui::home::discover::EntryKind::MultiFile;
             entry.rows = None;
             entry.cols = Some(39);
             entry.cols_sampled = true;
@@ -4367,7 +4367,7 @@ fn test_a_directory_the_nesting_rule_turns_away_is_still_two_keys_from_one_table
     app.home.measure_now(8);
     assert_eq!(
         app.home.selected_entry().map(|e| e.kind),
-        Some(datui::discover::EntryKind::Directory),
+        Some(datui::home::discover::EntryKind::Directory),
         "neither file's columns are in the other's"
     );
 
@@ -4649,24 +4649,24 @@ fn test_a_remote_name_datui_cannot_read_is_still_a_file_not_a_prefix() {
     // An extension datui reads: a file, as it always was.
     assert_eq!(
         kind("s3://bucket/data.psv"),
-        datui::discover::EntryKind::File
+        datui::home::discover::EntryKind::File
     );
     // One it does not: still a file. It is certainly not a prefix.
     assert_eq!(
         kind("s3://bucket/data.dat"),
-        datui::discover::EntryKind::File,
+        datui::home::discover::EntryKind::File,
         "→ must not offer to go inside it"
     );
     // No extension: genuinely ambiguous — it may be a prefix, or a part file written
     // without one — so it stays Unknown and → goes in, which is the trade #279 made.
     assert_eq!(
         kind("s3://bucket/exports"),
-        datui::discover::EntryKind::Unknown
+        datui::home::discover::EntryKind::Unknown
     );
     // A trailing slash is a prefix whatever the name has in it.
     assert_eq!(
         kind("s3://bucket/2024.01.15/"),
-        datui::discover::EntryKind::Unknown,
+        datui::home::discover::EntryKind::Unknown,
         "a dotted prefix is not a file"
     );
 }
@@ -4692,14 +4692,14 @@ fn test_a_directory_of_files_written_without_extensions_still_opens() {
 
     // No name in there says data, and the signatures do.
     assert_eq!(
-        datui::discover::classify_directory(&parts),
-        datui::discover::EntryKind::MultiFile,
+        datui::home::discover::classify_directory(&parts),
+        datui::home::discover::EntryKind::MultiFile,
         "the bytes say one Parquet table"
     );
 
     // And the read finds them anyway.
-    match datui::discover::directory_format(&parts) {
-        datui::discover::DirectoryFormat::One(format, files) => {
+    match datui::home::discover::directory_format(&parts) {
+        datui::home::discover::DirectoryFormat::One(format, files) => {
             assert_eq!(format, datui::FileFormat::Parquet);
             assert_eq!(files.len(), 2, "both of them");
         }
@@ -4752,8 +4752,8 @@ fn test_a_directory_of_files_written_without_extensions_still_opens() {
         .finish(&mut frame)
         .unwrap();
     std::fs::write(named.join("LICENSE"), b"MIT").unwrap();
-    match datui::discover::directory_format(&named) {
-        datui::discover::DirectoryFormat::One(datui::FileFormat::Parquet, files) => {
+    match datui::home::discover::directory_format(&named) {
+        datui::home::discover::DirectoryFormat::One(datui::FileFormat::Parquet, files) => {
             assert_eq!(files.len(), 1, "the LICENSE is not one of them");
         }
         other => panic!("the names settled it, got {other:?}"),
@@ -4779,8 +4779,8 @@ fn test_a_directory_of_csv_is_judged_by_its_headers_like_one_of_parquet() {
         dir
     };
     let looked_at = |dir: &Path| {
-        let mut entry = datui::discover::Entry::directory(dir);
-        entry.kind = datui::discover::EntryKind::Unknown;
+        let mut entry = datui::home::discover::Entry::directory(dir);
+        entry.kind = datui::home::discover::EntryKind::Unknown;
         datui::home::look_into_as(&entry, &Default::default())
     };
 
@@ -4788,7 +4788,7 @@ fn test_a_directory_of_csv_is_judged_by_its_headers_like_one_of_parquet() {
     let same = directory("same", &["a,b\n1,2\n", "a,b\n3,4\n", "a,b\n5,6\n"]);
     assert_eq!(
         looked_at(&same).kind,
-        datui::discover::EntryKind::MultiFile,
+        datui::home::discover::EntryKind::MultiFile,
         "identical headers are one table"
     );
 
@@ -4800,7 +4800,7 @@ fn test_a_directory_of_csv_is_judged_by_its_headers_like_one_of_parquet() {
     );
     assert_eq!(
         looked_at(&drift).kind,
-        datui::discover::EntryKind::MultiFile,
+        datui::home::discover::EntryKind::MultiFile,
         "a column added later is schema drift, not separate tables"
     );
 
@@ -4809,7 +4809,7 @@ fn test_a_directory_of_csv_is_judged_by_its_headers_like_one_of_parquet() {
     let judged = looked_at(&apart);
     assert_eq!(
         judged.kind,
-        datui::discover::EntryKind::Directory,
+        datui::home::discover::EntryKind::Directory,
         "files that each bring something the others lack are not one table"
     );
     assert_eq!(
@@ -4831,7 +4831,7 @@ fn test_a_directory_of_csv_is_judged_by_its_headers_like_one_of_parquet() {
     let judged = looked_at(&headless);
     assert_eq!(
         judged.kind,
-        datui::discover::EntryKind::Directory,
+        datui::home::discover::EntryKind::Directory,
         "a directory datui can only read as nulls is not one table"
     );
     assert!(
@@ -4866,7 +4866,7 @@ fn test_a_directory_of_csv_is_judged_by_its_headers_like_one_of_parquet() {
     }
     assert_eq!(
         looked_at(&zipped).kind,
-        datui::discover::EntryKind::Directory,
+        datui::home::discover::EntryKind::Directory,
         "a gzipped CSV is judged by its header like any other"
     );
 
@@ -4874,7 +4874,7 @@ fn test_a_directory_of_csv_is_judged_by_its_headers_like_one_of_parquet() {
     let alone = directory("alone", &["a,b\n1,2\n"]);
     assert_eq!(
         looked_at(&alone).kind,
-        datui::discover::EntryKind::Directory,
+        datui::home::discover::EntryKind::Directory,
         "a directory of one data file was never a multi-file dataset"
     );
 }

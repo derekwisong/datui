@@ -44,8 +44,8 @@ pub mod text_formats;
 pub mod ulog;
 pub mod vcd;
 
-use crate::catalog::ColumnNote;
 use crate::formats::fixed_records::{Bytes, ColumnLayout, FixedRecords, Logical, Null, Physical};
+use crate::home::catalog::ColumnNote;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use polars::prelude::{
     AnyValue, DataFrame, LazyFrame, PlSmallStr, PolarsResult, SchemaRef, TimeUnit,

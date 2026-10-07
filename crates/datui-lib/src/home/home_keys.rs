@@ -1,7 +1,7 @@
 //! The home screen's keys.
 
 use crate::feedback::Confirm;
-use crate::{App, AppEvent, cloud::source, discover, home};
+use crate::{App, AppEvent, cloud::source, home, home::discover};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::Path;
 

@@ -172,7 +172,7 @@ impl PlotData {
     /// What the chart says under the plot about the rows and values it drew;
     /// `middot` joins a sample's seed on.
     pub fn notes(&self, middot: &str) -> Vec<String> {
-        let rows_of = |rows: usize| crate::discover::format_rows(rows);
+        let rows_of = |rows: usize| crate::home::discover::format_rows(rows);
         match self {
             Self::Bars(d) => {
                 let mut notes = chart_data::chart_notes(&d.rows, None, middot);

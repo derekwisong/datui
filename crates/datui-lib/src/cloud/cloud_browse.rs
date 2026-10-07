@@ -11,7 +11,7 @@
 use crate::cloud::cloud_sources::{S3Settings, Signing, Source};
 use crate::cloud::source::ProviderKind;
 use crate::config::CloudConfig;
-use crate::discover::is_empty_marker;
+use crate::home::discover::is_empty_marker;
 use std::path::{Path, PathBuf};
 
 /// An object store datui believes it can read, and why it believes that.
@@ -516,7 +516,13 @@ const PEEK_KEYS: usize = 100;
 pub async fn peek_kind(
     url: &str,
     config: &CloudConfig,
-) -> Result<(crate::discover::EntryKind, crate::discover::Holds), String> {
+) -> Result<
+    (
+        crate::home::discover::EntryKind,
+        crate::home::discover::Holds,
+    ),
+    String,
+> {
     let resolved = {
         let (url, config) = (url.to_string(), config.clone());
         tokio::task::spawn_blocking(move || crate::cloud::cloud_sources::resolve(&url, &config))
@@ -536,7 +542,13 @@ pub async fn peek_kind(
 
 async fn peek_page(
     resolved: &crate::cloud::cloud_sources::Resolved,
-) -> Result<(crate::discover::EntryKind, crate::discover::Holds), String> {
+) -> Result<
+    (
+        crate::home::discover::EntryKind,
+        crate::home::discover::Holds,
+    ),
+    String,
+> {
     use object_store::list::PaginatedListOptions;
     let (store, prefix) = store(resolved)?;
     let prefix = format!("{}/", prefix.trim_matches('/'));
@@ -564,7 +576,7 @@ async fn peek_page(
         .map(|o| (o.location.as_ref().to_string(), o.size))
         .collect();
     let (kind, holds) = look_at_page(&prefix, &directories, &objects, page.page_token.as_deref());
-    if kind != crate::discover::EntryKind::MultiFile {
+    if kind != crate::home::discover::EntryKind::MultiFile {
         return Ok((kind, holds));
     }
     // The listing says the files share an extension; whether they are one table needs
@@ -580,7 +592,7 @@ async fn peek_page(
 async fn verified_kind(
     resolved: &crate::cloud::cloud_sources::Resolved,
     objects: &[(String, u64)],
-) -> Option<crate::discover::EntryKind> {
+) -> Option<crate::home::discover::EntryKind> {
     let store: std::sync::Arc<dyn object_store::ObjectStore> = store(resolved).ok()?.0;
     kind_from_footers(&store, objects).await
 }
@@ -589,10 +601,10 @@ async fn verified_kind(
 async fn kind_from_footers(
     store: &std::sync::Arc<dyn object_store::ObjectStore>,
     objects: &[(String, u64)],
-) -> Option<crate::discover::EntryKind> {
+) -> Option<crate::home::discover::EntryKind> {
     let parquet: Vec<&(String, u64)> = objects
         .iter()
-        .filter(|(key, _)| crate::discover::is_parquet_key(key))
+        .filter(|(key, _)| crate::home::discover::is_parquet_key(key))
         .collect();
     if parquet.len() < 2 {
         return None;
@@ -600,7 +612,7 @@ async fn kind_from_footers(
     let meter = std::sync::Arc::new(crate::measurements::Meter::default());
     let store = store.clone();
     let mut reads = tokio::task::JoinSet::new();
-    for index in crate::discover::spread(parquet.len()) {
+    for index in crate::home::discover::spread(parquet.len()) {
         let (key, size) = parquet[index].clone();
         let (store, meter) = (store.clone(), meter.clone());
         reads.spawn(async move {
@@ -622,9 +634,9 @@ async fn kind_from_footers(
             per_file.push(footer.schema.iter_names().map(|n| n.to_string()).collect());
         }
     }
-    crate::discover::one_table_from(&per_file).map(|one| match one {
-        true => crate::discover::EntryKind::MultiFile,
-        false => crate::discover::EntryKind::Directory,
+    crate::home::discover::one_table_from(&per_file).map(|one| match one {
+        true => crate::home::discover::EntryKind::MultiFile,
+        false => crate::home::discover::EntryKind::Directory,
     })
 }
 
@@ -636,20 +648,26 @@ fn look_at_page(
     directories: &[String],
     objects: &[(String, u64)],
     next_page: Option<&str>,
-) -> (crate::discover::EntryKind, crate::discover::Holds) {
+) -> (
+    crate::home::discover::EntryKind,
+    crate::home::discover::Holds,
+) {
     let (kind, mut holds) = look_at_listing(prefix, directories, objects);
     holds.truncated = next_page.is_some();
     (kind, holds)
 }
 
-/// The kind and holdings of a listing by [`crate::discover::classify`], the local rule;
+/// The kind and holdings of a listing by [`crate::home::discover::classify`], the local rule;
 /// a prefix's row label comes from the holdings.
 pub fn look_at_listing(
     prefix: &str,
     directories: &[String],
     objects: &[(String, u64)],
-) -> (crate::discover::EntryKind, crate::discover::Holds) {
-    use crate::discover::Seen;
+) -> (
+    crate::home::discover::EntryKind,
+    crate::home::discover::Holds,
+) {
+    use crate::home::discover::Seen;
     let last = |key: &str| {
         key.trim_end_matches('/')
             .rsplit('/')
@@ -681,12 +699,12 @@ pub fn look_at_listing(
             size: None,
         })
         .chain(objects);
-    let rules = crate::discover::Rules {
+    let rules = crate::home::discover::Rules {
         directory: &last(here),
         sniff: None,
         in_bucket: true,
     };
-    crate::discover::classify(seen, &rules)
+    crate::home::discover::classify(seen, &rules)
 }
 
 /// Split a `gs://` or `s3://` URL into bucket and prefix (no leading or trailing slash,
@@ -717,12 +735,12 @@ pub fn split_bucket_url(url: &str) -> Option<(ProviderKind, String, String)> {
 
 /// The most rows one bucket level lists, as for a local directory; past it the listing
 /// stops and says so (141,000 partitions would be 141 requests held in memory).
-pub const MAX_LEVEL_ROWS: usize = crate::discover::MAX_ENTRIES_PER_DIR;
+pub const MAX_LEVEL_ROWS: usize = crate::home::discover::MAX_ENTRIES_PER_DIR;
 
 /// What one level of a place listed.
 #[derive(Debug, Clone, Default)]
 pub struct Level {
-    pub rows: Vec<crate::discover::Entry>,
+    pub rows: Vec<crate::home::discover::Entry>,
     /// The level held more than [`MAX_LEVEL_ROWS`]; `rows` are the first of them.
     pub truncated: bool,
     /// Stopped between pages because nobody wants it any more; `rows` are what came.
@@ -730,7 +748,7 @@ pub struct Level {
 }
 
 /// What a listing hands each page of rows as it comes.
-pub type Progress = std::sync::Arc<dyn Fn(&[crate::discover::Entry]) + Send + Sync>;
+pub type Progress = std::sync::Arc<dyn Fn(&[crate::home::discover::Entry]) + Send + Sync>;
 
 /// How a listing is watched while it runs.
 #[derive(Clone, Default)]
@@ -754,7 +772,7 @@ impl Watch {
 pub async fn list_objects(
     url: &str,
     config: &CloudConfig,
-) -> Result<Vec<crate::discover::Entry>, String> {
+) -> Result<Vec<crate::home::discover::Entry>, String> {
     list_objects_watched(url, config, &Watch::default())
         .await
         .map(|level| level.rows)
@@ -911,7 +929,7 @@ pub fn is_refusal(error: &str) -> bool {
 }
 
 /// A key that is not data to open: job receipts and folder markers. Narrower than
-/// [`crate::discover::is_bookkeeping`] (which decides a directory's kind): a leading
+/// [`crate::home::discover::is_bookkeeping`] (which decides a directory's kind): a leading
 /// `_` is not enough here, since `_manifest.parquet` may be worth opening.
 pub fn is_marker(name: &str) -> bool {
     name == "_SUCCESS"
@@ -972,7 +990,7 @@ async fn list_level(
                     .unwrap_or(common)
                     .to_string();
                 let path = format!("{base}{common}{directory_end}");
-                crate::discover::Entry::directory(Path::new(&path)).with_name(name)
+                crate::home::discover::Entry::directory(Path::new(&path)).with_name(name)
             })
             .collect();
         let objects = result
@@ -986,10 +1004,10 @@ async fn list_level(
                 let name = location.rsplit('/').next().unwrap_or(&location).to_string();
                 let path = PathBuf::from(format!("{base}{location}"));
                 // Extensionless keys stay openable: a part file may be Parquet.
-                let kind = if crate::discover::unreadable_by_name(&path) {
-                    crate::discover::EntryKind::Other
+                let kind = if crate::home::discover::unreadable_by_name(&path) {
+                    crate::home::discover::EntryKind::Other
                 } else {
-                    crate::discover::EntryKind::File
+                    crate::home::discover::EntryKind::File
                 };
                 object_row(path, kind, name, &object)
             })
@@ -1002,11 +1020,11 @@ async fn list_level(
 /// A listed object as a home-screen row.
 fn object_row(
     path: PathBuf,
-    kind: crate::discover::EntryKind,
+    kind: crate::home::discover::EntryKind,
     name: String,
     object: &object_store::ObjectMeta,
-) -> crate::discover::Entry {
-    let mut row = crate::discover::Entry::new(path, kind).with_name(name);
+) -> crate::home::discover::Entry {
+    let mut row = crate::home::discover::Entry::new(path, kind).with_name(name);
     row.size = Some(object.size);
     row.modified = Some(object.last_modified.into());
     row
@@ -1021,7 +1039,10 @@ async fn list_pages(
     watch: &Watch,
     mut rows_of: impl FnMut(
         object_store::ListResult,
-    ) -> (Vec<crate::discover::Entry>, Vec<crate::discover::Entry>),
+    ) -> (
+        Vec<crate::home::discover::Entry>,
+        Vec<crate::home::discover::Entry>,
+    ),
 ) -> Result<Level, String> {
     let mut key_prefix = if prefix.is_empty() {
         String::new()
@@ -1034,7 +1055,8 @@ async fn list_pages(
     let (mut directories, mut objects) = (Vec::new(), Vec::new());
     let mut token = None;
     // Directories above objects, as every local listing has them.
-    let rows = |directories: &[crate::discover::Entry], objects: &[crate::discover::Entry]| {
+    let rows = |directories: &[crate::home::discover::Entry],
+                objects: &[crate::home::discover::Entry]| {
         let mut rows = directories.to_vec();
         rows.extend_from_slice(objects);
         rows
@@ -1323,7 +1345,7 @@ pub async fn list_account(
     source_id: &str,
     account: &str,
     config: &CloudConfig,
-) -> Result<Vec<crate::discover::Entry>, String> {
+) -> Result<Vec<crate::home::discover::Entry>, String> {
     let (source_id, account, config) = (source_id.to_string(), account.to_string(), config.clone());
     let source = {
         let (source_id, config) = (source_id.clone(), config.clone());
@@ -1352,7 +1374,7 @@ pub async fn list_account(
             .map(|bucket| {
                 // Opening a bucket found here has to use the login that found it.
                 crate::cloud::cloud_sources::remember_bucket(&source, &bucket);
-                crate::discover::Entry::directory(Path::new(&format!("gs://{bucket}")))
+                crate::home::discover::Entry::directory(Path::new(&format!("gs://{bucket}")))
                     .with_name(bucket)
             })
             .collect());
@@ -1367,9 +1389,9 @@ pub async fn list_account(
         Ok(containers
             .into_iter()
             .map(|container| {
-                crate::discover::Entry::directory(Path::new(&crate::cloud::source::azure_url(
-                    &account, &container, "",
-                )))
+                crate::home::discover::Entry::directory(Path::new(
+                    &crate::cloud::source::azure_url(&account, &container, ""),
+                ))
                 .with_name(container)
             })
             .collect())

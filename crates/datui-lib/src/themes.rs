@@ -331,7 +331,7 @@ pub fn command(
                     ),
                 ]);
             }
-            (crate::catalog::table(&rows), SUCCESS)
+            (crate::home::catalog::table(&rows), SUCCESS)
         }
         ThemeAction::Show { name } => {
             let (mode, description) = match library.find(name) {

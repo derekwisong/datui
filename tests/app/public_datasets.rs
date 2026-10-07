@@ -33,10 +33,10 @@ fn config_with(id: &str, name: &str, url: &str) -> datui::config::AppConfig {
     let mut config =
         common::layered_config(&["[home]\ndesktop_recents = false\n[cloud]\ndiscover = false\n"]);
     config.read_catalogs = vec![
-        datui::catalog::parse(
+        datui::home::catalog::parse(
             &format!("[web]\nname = {name:?}\nurl = {url:?}\n"),
             id,
-            datui::catalog::Origin::Listed,
+            datui::home::catalog::Origin::Listed,
             None,
         )
         .unwrap(),

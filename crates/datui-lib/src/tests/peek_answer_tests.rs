@@ -1,4 +1,4 @@
-use crate::discover::{EntryKind, Holds};
+use crate::home::discover::{EntryKind, Holds};
 
 fn counted(format: &str, n: usize) -> Holds {
     Holds {

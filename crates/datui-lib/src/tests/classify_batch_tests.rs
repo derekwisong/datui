@@ -1,4 +1,4 @@
-use crate::home_app::CLASSIFY_BATCH;
+use crate::home::home_app::CLASSIFY_BATCH;
 use crate::*;
 use std::sync::mpsc;
 
@@ -8,8 +8,8 @@ fn unlooked_at(n: usize) -> home::Listing {
     let rows = (0..n)
         .map(|i| {
             let mut entry =
-                discover::Entry::directory(&PathBuf::from(format!("/pretend/share/d{i:04}")));
-            entry.kind = discover::EntryKind::Unknown;
+                home::discover::Entry::directory(&PathBuf::from(format!("/pretend/share/d{i:04}")));
+            entry.kind = home::discover::EntryKind::Unknown;
             entry
         })
         .collect();
@@ -101,7 +101,7 @@ fn a_pass_that_outlives_its_listing_still_counts() {
         measured: vec![(
             path.clone(),
             home::Measured {
-                kind: Some(discover::EntryKind::Hive),
+                kind: Some(home::discover::EntryKind::Hive),
                 ..Default::default()
             },
         )],
@@ -112,7 +112,7 @@ fn a_pass_that_outlives_its_listing_still_counts() {
         home::Row::Entry { entry, .. } if entry.path == path => Some(entry.kind),
         _ => None,
     });
-    assert_eq!(kind, Some(discover::EntryKind::Hive));
+    assert_eq!(kind, Some(home::discover::EntryKind::Hive));
 }
 
 /// Space folds the header under the cursor, and never starts a filter: a filter of
@@ -160,7 +160,7 @@ fn a_label_lands_before_its_batch_is_done() {
         measured: vec![(
             path.clone(),
             home::Measured {
-                kind: Some(discover::EntryKind::Hive),
+                kind: Some(home::discover::EntryKind::Hive),
                 ..Default::default()
             },
         )],
@@ -171,6 +171,6 @@ fn a_label_lands_before_its_batch_is_done() {
         home::Row::Entry { entry, .. } if entry.path == path => Some(entry.kind),
         _ => None,
     });
-    assert_eq!(kind, Some(discover::EntryKind::Hive));
+    assert_eq!(kind, Some(home::discover::EntryKind::Hive));
     assert!(app.home.classify_in_flight, "the batch is still out");
 }

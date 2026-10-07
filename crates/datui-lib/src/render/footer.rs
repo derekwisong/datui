@@ -192,13 +192,13 @@ enum PositionForm {
 impl Position {
     fn text(&self, form: PositionForm, spinner: &str) -> Option<(String, String)> {
         let total = |short: bool| match self.total {
-            Total::Known(n) if short => crate::discover::format_rows(n),
+            Total::Known(n) if short => crate::home::discover::format_rows(n),
             Total::Known(n) => crate::numfmt::group_chrome(n),
-            Total::Partial(n) if short => format!("{}+", crate::discover::format_rows(n)),
+            Total::Partial(n) if short => format!("{}+", crate::home::discover::format_rows(n)),
             Total::Partial(n) => format!("{}+", crate::numfmt::group_chrome(n)),
             // As precise as a sample is, whatever the room.
-            Total::Estimated(n) if short => format!("~{}", crate::discover::format_rows(n)),
-            Total::Estimated(n) => format!("~{} (est.)", crate::discover::format_rows(n)),
+            Total::Estimated(n) if short => format!("~{}", crate::home::discover::format_rows(n)),
+            Total::Estimated(n) => format!("~{} (est.)", crate::home::discover::format_rows(n)),
             Total::Pending => spinner.to_string(),
             Total::Unknown => "?".to_string(),
         };

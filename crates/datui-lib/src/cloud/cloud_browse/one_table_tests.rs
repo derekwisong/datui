@@ -19,7 +19,7 @@ fn parquet(columns: &[&str]) -> Vec<u8> {
 }
 
 /// Put `files` in a store and ask what the directory is.
-fn kind_of(files: &[(&str, &[&str])]) -> Option<crate::discover::EntryKind> {
+fn kind_of(files: &[(&str, &[&str])]) -> Option<crate::home::discover::EntryKind> {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     rt.block_on(async {
@@ -47,7 +47,7 @@ fn separate_tables_in_a_bucket_are_a_directory() {
         ("drivers.parquet", &["driver_id", "code", "nationality"]),
         ("laps.parquet", &["lap", "position", "time_millis"]),
     ]);
-    assert_eq!(kind, Some(crate::discover::EntryKind::Directory));
+    assert_eq!(kind, Some(crate::home::discover::EntryKind::Directory));
 }
 
 #[test]
@@ -57,7 +57,7 @@ fn parts_of_one_table_stay_one_dataset() {
         ("part-00001.parquet", &["id", "ts", "amount"]),
         ("part-00002.parquet", &["id", "ts", "amount"]),
     ]);
-    assert_eq!(kind, Some(crate::discover::EntryKind::MultiFile));
+    assert_eq!(kind, Some(crate::home::discover::EntryKind::MultiFile));
 }
 
 /// A dataset that gained columns over the years is still one dataset, and the
@@ -72,7 +72,7 @@ fn a_dataset_that_gained_columns_stays_one_dataset() {
             &["id", "ts", "fee", "witness", "address"],
         ),
     ]);
-    assert_eq!(kind, Some(crate::discover::EntryKind::MultiFile));
+    assert_eq!(kind, Some(crate::home::discover::EntryKind::MultiFile));
 }
 
 /// Nothing readable means nothing decided, and the listing's answer stands.
@@ -97,7 +97,7 @@ fn a_single_file_decides_nothing() {
 /// be three files of the same table by alphabetical accident.
 #[test]
 fn the_files_read_span_the_listing() {
-    use crate::discover::spread;
+    use crate::home::discover::spread;
     assert_eq!(spread(1), vec![0]);
     assert_eq!(spread(2), vec![0, 1]);
     assert_eq!(spread(3), vec![0, 1, 2]);

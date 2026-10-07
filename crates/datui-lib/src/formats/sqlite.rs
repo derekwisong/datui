@@ -189,7 +189,10 @@ mod unsupported {
         None
     }
 
-    pub fn schema_preview(_path: &Path, _table: &Table) -> Option<crate::discover::SchemaPreview> {
+    pub fn schema_preview(
+        _path: &Path,
+        _table: &Table,
+    ) -> Option<crate::home::discover::SchemaPreview> {
         None
     }
 
@@ -1844,7 +1847,10 @@ mod read {
 
     /// The columns `table` opens with, read from its first rows the way the open
     /// decides them, for the home screen's preview. Gives up after a moment.
-    pub fn schema_preview(path: &Path, table: &Table) -> Option<crate::discover::SchemaPreview> {
+    pub fn schema_preview(
+        path: &Path,
+        table: &Table,
+    ) -> Option<crate::home::discover::SchemaPreview> {
         const SAMPLE: usize = 100;
         let conn = open(path).ok()?;
         let stop = Arc::new(AtomicBool::new(false));

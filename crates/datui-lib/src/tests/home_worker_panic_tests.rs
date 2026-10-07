@@ -102,7 +102,8 @@ fn a_probe_whose_worker_dies_gives_its_slot_back_and_says_so() {
 fn a_schema_read_that_dies_is_not_asked_for_again() {
     let (mut app, rx, dir) = app();
     dies_once(&mut app, |e| matches!(e, AppEvent::HomeSchemaReady { .. }));
-    let entry = discover::Entry::new(dir.path().join("a.csv"), discover::EntryKind::File);
+    let entry =
+        home::discover::Entry::new(dir.path().join("a.csv"), home::discover::EntryKind::File);
     assert!(app.home_schema(&entry).is_none());
     assert!(app.home_schema_pending(&entry.path));
     pump(&mut app, &rx, |a| !a.home_schema_pending(&entry.path));

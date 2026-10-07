@@ -4,7 +4,7 @@
 //! A catalog entry carries it as `documentation` (the link) and `columns`; the Info
 //! panel, the inspector and the home screen's details read it from here.
 
-use crate::catalog::Dataset;
+use crate::home::catalog::Dataset;
 use std::collections::BTreeMap;
 
 /// One column's note.

@@ -414,7 +414,7 @@ impl SampleForm {
                     let count = self
                         .context
                         .view_rows
-                        .map(|rows| format!(" ({})", crate::discover::format_rows(rows)))
+                        .map(|rows| format!(" ({})", crate::home::discover::format_rows(rows)))
                         .unwrap_or_default();
                     if self.context.filtered {
                         format!("All rows as filtered{count}")

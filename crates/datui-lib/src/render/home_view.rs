@@ -10,9 +10,9 @@
 //!
 //! Everything is drawn from the active theme.
 
-use crate::discover::{self, Entry, EntryKind};
 use crate::formats::MatchChip;
 use crate::glyphs;
+use crate::home::discover::{self, Entry, EntryKind};
 use crate::render::context::RenderContext;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -163,7 +163,7 @@ fn render_rows_strip(
 /// The `ROWS` block: a heading, the leading columns' names in their type colors, and
 /// as many first rows and columns as `room` and `width` fit.
 fn rows_block(
-    preview: &crate::home_preview::PreviewRows,
+    preview: &crate::home::home_preview::PreviewRows,
     width: usize,
     room: usize,
     ctx: &RenderContext,
@@ -881,18 +881,18 @@ fn place_line(
     let source = source.unwrap_or("").to_string();
     // Unknown or local: nothing to say. Only places that could be slow or cost money
     // name their filesystem, as the rows' glyph does.
-    let locality = crate::locality::Locality::of_fstype(&source);
+    let locality = crate::home::locality::Locality::of_fstype(&source);
     let source = match locality {
-        crate::locality::Locality::Object
-        | crate::locality::Locality::Network
-        | crate::locality::Locality::Memory => source,
+        crate::home::locality::Locality::Object
+        | crate::home::locality::Locality::Network
+        | crate::home::locality::Locality::Memory => source,
         _ => String::new(),
     };
     let source_style = chrome.base.fg(locality_color(Some(locality), ctx));
     let mut name = crate::home::display_path(path);
     // A file of tables (a SQLite database, a NumPy archive) is a place, and a file.
     if !name.ends_with('/')
-        && !crate::discover::data_format(path).is_some_and(crate::FileFormat::holds_tables)
+        && !crate::home::discover::data_format(path).is_some_and(crate::FileFormat::holds_tables)
     {
         name.push('/');
     }
@@ -1350,24 +1350,24 @@ impl RowChrome {
 }
 
 /// Where a row's data lives, as the glyph drawn before its name.
-fn locality_glyph(locality: Option<crate::locality::Locality>) -> &'static str {
+fn locality_glyph(locality: Option<crate::home::locality::Locality>) -> &'static str {
     let g = glyphs::get();
     match locality {
-        Some(crate::locality::Locality::Object) => g.in_object_store,
-        Some(crate::locality::Locality::Network) => g.over_network,
-        Some(crate::locality::Locality::Memory) => g.in_memory,
-        Some(crate::locality::Locality::Local) => g.here,
-        Some(crate::locality::Locality::Unknown) | None => g.place_unknown,
+        Some(crate::home::locality::Locality::Object) => g.in_object_store,
+        Some(crate::home::locality::Locality::Network) => g.over_network,
+        Some(crate::home::locality::Locality::Memory) => g.in_memory,
+        Some(crate::home::locality::Locality::Local) => g.here,
+        Some(crate::home::locality::Locality::Unknown) | None => g.place_unknown,
     }
 }
 
 /// Places that can stall or cost money are colored; local disk, most rows, is dimmed
 /// to texture.
-fn locality_color(locality: Option<crate::locality::Locality>, ctx: &RenderContext) -> Color {
+fn locality_color(locality: Option<crate::home::locality::Locality>, ctx: &RenderContext) -> Color {
     match locality {
-        Some(crate::locality::Locality::Object) => ctx.keybind_hints,
-        Some(crate::locality::Locality::Network) => ctx.warning,
-        Some(crate::locality::Locality::Memory) => ctx.temporal_col,
+        Some(crate::home::locality::Locality::Object) => ctx.keybind_hints,
+        Some(crate::home::locality::Locality::Network) => ctx.warning,
+        Some(crate::home::locality::Locality::Memory) => ctx.temporal_col,
         _ => ctx.dimmed,
     }
 }
@@ -1408,7 +1408,7 @@ fn entry_line<'a>(
         .cost
         .source
         .as_deref()
-        .map(crate::locality::Locality::of_fstype);
+        .map(crate::home::locality::Locality::of_fstype);
     let place_cell = format!("{} ", locality_glyph(locality));
     let place_w = glyphs::display_width(&place_cell);
     let (name_width, meta) = meta_cells(entry, &notes, locality, show_meta, name_width);
@@ -1499,7 +1499,7 @@ fn entry_line<'a>(
 fn meta_cells(
     entry: &Entry,
     notes: &EntryNotes,
-    locality: Option<crate::locality::Locality>,
+    locality: Option<crate::home::locality::Locality>,
     show_meta: bool,
     name_width: usize,
 ) -> (usize, Option<String>) {
@@ -1512,7 +1512,9 @@ fn meta_cells(
         && entry.kind != EntryKind::Unknown
         && matches!(
             locality,
-            Some(crate::locality::Locality::Object | crate::locality::Locality::Network)
+            Some(
+                crate::home::locality::Locality::Object | crate::home::locality::Locality::Network
+            )
         );
     match show_meta.then(|| meta_columns(entry, unmeasured, notes.size_hint, notes.gone)) {
         Some(meta) if meta.trim().is_empty() => (name_width + META_COLUMNS_WIDTH, None),
@@ -1732,7 +1734,7 @@ const CODEBOOK_ROWS: usize = 12;
 /// A documented file's column notes in the details pane: wrapped when `room` rows hold
 /// them all, else one cut line per column. Ctrl+E shows the whole page.
 fn column_notes_block(
-    columns: &[(String, crate::catalog::ColumnNote)],
+    columns: &[(String, crate::home::catalog::ColumnNote)],
     width: usize,
     room: usize,
     ctx: &RenderContext,
@@ -1741,7 +1743,7 @@ fn column_notes_block(
     let key_w = key_column(columns.iter().map(|(name, _)| name.as_str())).min(22);
     let style = Style::default().fg(ctx.text_secondary);
     // A column with only a legend (a spec's enum) says how long it is, as the page does.
-    let about = |note: &crate::catalog::ColumnNote| match note.about() {
+    let about = |note: &crate::home::catalog::ColumnNote| match note.about() {
         about if about.is_empty() && !note.values.is_empty() => {
             format!("{} values", note.values.len())
         }
@@ -1939,14 +1941,14 @@ fn preview_head_keyed(
         .cost
         .source
         .as_deref()
-        .map(crate::locality::Source::from_fstype)
+        .map(crate::home::locality::Source::from_fstype)
     {
         // The filesystem's own name; color carries the warning.
         let style = match source.locality {
-            crate::locality::Locality::Network | crate::locality::Locality::Object => {
+            crate::home::locality::Locality::Network | crate::home::locality::Locality::Object => {
                 Style::default().fg(ctx.warning)
             }
-            crate::locality::Locality::Memory => Style::default().fg(ctx.success),
+            crate::home::locality::Locality::Memory => Style::default().fg(ctx.success),
             _ => plain,
         };
         facts.push(("storage", source.label().to_string(), style));
@@ -2242,7 +2244,7 @@ fn catalog_details(
         Line::from(""),
         pane_heading("DETAILS", width, ctx),
     ];
-    let bundled = catalog.origin == crate::catalog::Origin::Bundled;
+    let bundled = catalog.origin == crate::home::catalog::Origin::Bundled;
     let for_good = format!("[home] hide = [\"{}\"]", catalog.id);
     let mut facts: Vec<(&str, String)> = vec![("datasets", catalog.datasets.len().to_string())];
     match (&catalog.file, bundled) {
@@ -2461,7 +2463,7 @@ fn render_preview(
         let drawn: usize = lines.iter().map(|line| wrapped_rows(line, width)).sum();
         let room = (area.height as usize)
             .saturating_sub(drawn + 1)
-            .min(2 + crate::home_preview::PREVIEW_ROWS);
+            .min(2 + crate::home::home_preview::PREVIEW_ROWS);
         if room >= STRIP_MIN_HEIGHT {
             lines.push(Line::from(""));
             lines.extend(rows_block(&preview, width, room, ctx));
@@ -2874,12 +2876,12 @@ fn place_details(
         )),
     ];
     let mut facts: Vec<(&str, String, Style)> = Vec::new();
-    if let Some(source) = source.map(crate::locality::Source::from_fstype) {
+    if let Some(source) = source.map(crate::home::locality::Source::from_fstype) {
         let style = match source.locality {
-            crate::locality::Locality::Network | crate::locality::Locality::Object => {
+            crate::home::locality::Locality::Network | crate::home::locality::Locality::Object => {
                 Style::default().fg(ctx.warning)
             }
-            crate::locality::Locality::Memory => Style::default().fg(ctx.success),
+            crate::home::locality::Locality::Memory => Style::default().fg(ctx.success),
             _ => plain,
         };
         facts.push(("storage", source.label().to_string(), style));
@@ -2917,7 +2919,7 @@ fn shows_as_a_place(entry: &Entry) -> bool {
         return false;
     }
     !crate::home::is_remote_path(&entry.path)
-        || (!crate::discover::is_data_file(&entry.path) && entry.path.extension().is_none())
+        || (!crate::home::discover::is_data_file(&entry.path) && entry.path.extension().is_none())
 }
 
 #[cfg(test)]

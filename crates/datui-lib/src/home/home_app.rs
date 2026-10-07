@@ -10,8 +10,8 @@ use crate::open_options::OpenOptions;
 #[cfg(feature = "cloud")]
 use crate::wait_on_runtime;
 use crate::{
-    APP_NAME, App, AppEvent, InputMode, catalog, cloud::source, config, discover, home, loading,
-    widgets,
+    APP_NAME, App, AppEvent, InputMode, cloud::source, config, home, home::catalog, home::discover,
+    loading, widgets,
 };
 use color_eyre::Result;
 use std::collections::HashMap;
@@ -55,7 +55,7 @@ pub struct HomeApp {
     /// Schema previews, memoized for the session only (persisted, they would go stale).
     pub(crate) schema_cache: HashMap<PathBuf, Option<discover::SchemaPreview>>,
     /// The home screen's `ROWS` previews, and the dataset the newest one built.
-    pub previews: crate::home_preview::Previews,
+    pub previews: crate::home::home_preview::Previews,
     /// The pre-0.4.0 Ctrl+D directories in the cache have been moved to `catalog.toml`.
     pub(crate) remembered_moved: bool,
     /// Which home workers panic before starting, for tests. The jobs' own is
@@ -66,7 +66,7 @@ pub struct HomeApp {
     /// is offered only then (`link_open::local_desktop`).
     pub local_desktop: bool,
     /// The reads of data started this session, by kind.
-    pub reads: crate::home_preview::ReadCounts,
+    pub reads: crate::home::home_preview::ReadCounts,
 }
 
 /// Rows measured per background pass: small, so a slow filesystem shows progress.
@@ -323,12 +323,12 @@ impl App {
         &mut self,
         entry: &discover::Entry,
         screen_height: u16,
-    ) -> Option<Arc<crate::home_preview::PreviewRows>> {
+    ) -> Option<Arc<crate::home::home_preview::PreviewRows>> {
         let max = self.app_config.home.preview_max.bytes();
-        if !crate::home_preview::previewable(entry, max) {
+        if !crate::home::home_preview::previewable(entry, max) {
             return None;
         }
-        let stamp = crate::home_preview::Stamp::of_entry(entry);
+        let stamp = crate::home::home_preview::Stamp::of_entry(entry);
         if let Some(known) = self.home_app.previews.rows(&entry.path, stamp) {
             return known;
         }
@@ -348,7 +348,7 @@ impl App {
     fn request_home_preview(
         &mut self,
         path: PathBuf,
-        stamp: crate::home_preview::Stamp,
+        stamp: crate::home::home_preview::Stamp,
         screen_height: u16,
     ) {
         self.home_app.previews.inflight = Some(path.clone());
@@ -366,12 +366,12 @@ impl App {
             stamp,
             read_at: None,
             rows: None,
-            prepared: crate::home_preview::Handoff::default(),
+            prepared: crate::home::home_preview::Handoff::default(),
         });
         self.runtime.spawn_blocking(move || {
             owed.run(|| {
                 let began = std::time::Instant::now();
-                let read_at = crate::home_preview::Stamp::of_file(&path);
+                let read_at = crate::home::home_preview::Stamp::of_file(&path);
                 let read = Self::read_home_preview(
                     &path, &cloud, &formats, &runtime, cache, writes, visible,
                 );
@@ -408,8 +408,8 @@ impl App {
         writes: CacheWrites,
         visible: usize,
     ) -> Option<(
-        crate::home_preview::PreviewRows,
-        crate::home_preview::Prepared,
+        crate::home::home_preview::PreviewRows,
+        crate::home::home_preview::Prepared,
     )> {
         let paths = [path.to_path_buf()];
         let scanned = Self::scan_for_open(
@@ -455,12 +455,12 @@ impl App {
         let request = state.prepare_async_collect(None)?;
         let df = crate::statistics::collect_lazy(request.lf, request.polars_streaming).ok()?;
         let result = request.plan.fit(df);
-        let rows = crate::home_preview::PreviewRows::from_frame(result.rows());
+        let rows = crate::home::home_preview::PreviewRows::from_frame(result.rows());
         state.measurements().read_page(began.elapsed(), Some(1));
         state.apply_async_collect(result);
         Some((
             rows,
-            crate::home_preview::Prepared {
+            crate::home::home_preview::Prepared {
                 state,
                 options,
                 debug_label,
@@ -588,7 +588,7 @@ impl App {
                         let watch = crate::cloud::cloud_browse::Watch {
                             progress: Some(std::sync::Arc::new({
                                 let (tx, root) = (tx.clone(), root.clone());
-                                move |page: &[crate::discover::Entry]| {
+                                move |page: &[crate::home::discover::Entry]| {
                                     let _ = tx.send(AppEvent::HomeProbeProgress {
                                         root: root.clone(),
                                         rows: page.to_vec(),
@@ -640,7 +640,7 @@ impl App {
                     let mut cut_short = false;
                     let rows = if std::fs::read_dir(&root).is_ok() {
                         // What has been read shows while the rest is read (seconds for thousands of files).
-                        let scan = crate::discover::scan_dir_progressive(&root, |read| {
+                        let scan = crate::home::discover::scan_dir_progressive(&root, |read| {
                             let _ = tx.send(AppEvent::HomeProbeProgress {
                                 root: root.clone(),
                                 rows: read.to_vec(),
@@ -650,11 +650,11 @@ impl App {
                         let mut rows = scan.entries;
                         // Measured here too: this thread is already the one allowed to block on the share.
                         for row in rows.iter_mut().take(PROBE_MEASURE_LIMIT) {
-                            crate::discover::enrich(row);
+                            crate::home::discover::enrich(row);
                         }
                         // Remote datasets are measured nowhere else, so remember them here; otherwise a
                         // remote row is blank on every run.
-                        let mounts = crate::locality::Mounts::current();
+                        let mounts = crate::home::locality::Mounts::current();
                         for row in rows.iter_mut() {
                             row.cost.source = Some(mounts.describe(&row.path).fstype);
                         }
@@ -989,7 +989,7 @@ impl App {
             return;
         }
         let Some(root) =
-            crate::search::search_root(self.home.browsing.as_ref(), self.home.network_check)
+            crate::home::search::search_root(self.home.browsing.as_ref(), self.home.network_check)
         else {
             return;
         };
@@ -1019,7 +1019,7 @@ impl App {
                 let batch_tx = tx.clone();
                 let batch_gen = generation;
                 let batch_root = root.clone();
-                let outcome = crate::search::walk_with_specs(
+                let outcome = crate::home::search::walk_with_specs(
                     &walk_root,
                     &config,
                     &formats,
@@ -1066,8 +1066,12 @@ impl App {
         });
         self.runtime.spawn_blocking(move || {
             owed.run(move || {
-                let matches =
-                    crate::search::score(&job.results, &job.query, job.base.as_ref(), job.limit);
+                let matches = crate::home::search::score(
+                    &job.results,
+                    &job.query,
+                    job.base.as_ref(),
+                    job.limit,
+                );
                 let _ = tx.send(AppEvent::HomeSearchScored {
                     epoch,
                     matches: Some(Box::new(matches)),
@@ -1093,7 +1097,7 @@ impl App {
         // Hidden with Delete on its heading: only the bundled catalog, never a user's
         // `examples.toml`.
         if self.cache.examples_hidden() {
-            catalogs.retain(|c| c.origin != crate::catalog::Origin::Bundled);
+            catalogs.retain(|c| c.origin != crate::home::catalog::Origin::Bundled);
         }
         self.home.set_catalogs(catalogs);
         let mut request = home::ListingRequest {
@@ -1354,7 +1358,7 @@ impl App {
         // A catalog's heading: Delete hides the bundled one until the cache is cleared; a
         // user's catalog is hidden by id in the config.
         if let Some(catalog) = self.home.selected_catalog() {
-            if catalog.origin == crate::catalog::Origin::Bundled {
+            if catalog.origin == crate::home::catalog::Origin::Bundled {
                 let message = format!(
                     "Hide {}? It comes back after datui cache clear.",
                     catalog.label
@@ -1707,7 +1711,7 @@ impl App {
     pub(crate) fn home_hides_catalog(&self) -> bool {
         self.home
             .selected_catalog()
-            .is_some_and(|c| c.origin == crate::catalog::Origin::Bundled)
+            .is_some_and(|c| c.origin == crate::home::catalog::Origin::Bundled)
     }
 
     /// What Ctrl+D does on the row under the cursor, as the footer names it: add to

@@ -370,10 +370,10 @@ impl CacheManager {
     /// directory takes its recents with it (else a dead root lingers until fifty opens
     /// push it off). Remote paths are never checked: stat'ing one can hang, and a down
     /// share is when its recents matter most.
-    fn recent_is_worth_keeping(path: &str, mounts: &crate::locality::Mounts) -> bool {
+    fn recent_is_worth_keeping(path: &str, mounts: &crate::home::locality::Mounts) -> bool {
         let path = std::path::Path::new(path);
         // The mount table is passed in: reading it per entry meant fifty reads per open.
-        if crate::locality::object_scheme(path).is_some() || mounts.is_network(path) {
+        if crate::home::locality::object_scheme(path).is_some() || mounts.is_network(path) {
             return true;
         }
         match path.parent() {
@@ -405,7 +405,7 @@ impl CacheManager {
         let entry = stored.to_string_lossy().into_owned();
 
         // One mount table read for the whole prune; kernel-generated, so it cannot block.
-        let mounts = crate::locality::Mounts::current();
+        let mounts = crate::home::locality::Mounts::current();
 
         let now = unix_now();
         self.update_history_file("recents", |recents| {
@@ -498,19 +498,22 @@ pub struct DatasetFacts {
     /// What the dataset turned out to be: recorded since a remote path cannot be
     /// classified without reading, and a row should read the same in every section.
     #[serde(default)]
-    pub kind: Option<crate::discover::EntryKind>,
-    /// The build rules `kind` came from (see [`crate::discover::CLASSIFIER_VERSION`]); `0`
+    pub kind: Option<crate::home::discover::EntryKind>,
+    /// The build rules `kind` came from (see [`crate::home::discover::CLASSIFIER_VERSION`]); `0`
     /// in records older than this field.
     #[serde(default)]
     pub classified_by: u32,
     /// What opening costs (compression, layout, partitioning), from a footer read a
     /// remote dataset may not get twice.
     #[serde(default)]
-    pub cost: crate::discover::Cost,
+    pub cost: crate::home::discover::Cost,
     /// What one listing of the directory found (its label), restored beside `kind` under
     /// the same classifier version.
-    #[serde(default, skip_serializing_if = "crate::discover::Holds::is_empty")]
-    pub holds: crate::discover::Holds,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::home::discover::Holds::is_empty"
+    )]
+    pub holds: crate::home::discover::Holds,
 }
 
 /// What an open learned about a dataset's files, so the next open shows columns and
@@ -1857,7 +1860,7 @@ mod store_harness_tests {
 #[cfg(test)]
 mod facts_compat_tests {
     use super::DatasetFacts;
-    use crate::discover::EntryKind;
+    use crate::home::discover::EntryKind;
 
     /// A kind this build does not recognize costs its own row, not the whole index.
     ///

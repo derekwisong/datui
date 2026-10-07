@@ -722,7 +722,7 @@ fn reader_target(path: &Path, record: &OpenRecord) -> Option<Target> {
             .iter()
             .any(|n| FileFormat::from_path(Path::new(n)) == Some(FileFormat::Arrow))
         {
-            names.retain(|n| !crate::discover::is_hugging_face_metadata(n));
+            names.retain(|n| !crate::home::discover::is_hugging_face_metadata(n));
         }
         let has_dirs = entries.iter().any(|e| e.path().is_dir());
         let format = record

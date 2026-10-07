@@ -11,7 +11,17 @@
 //! lives in; `Enter` on such a place row browses it. It is derived state, cheap to
 //! rebuild or discard.
 
-use crate::discover::{self, Entry, EntryKind};
+pub mod catalog;
+pub mod codebook;
+pub mod discover;
+pub mod fuzzy;
+pub(crate) mod home_app;
+pub(crate) mod home_keys;
+pub mod home_preview;
+pub mod locality;
+pub mod search;
+
+use crate::home::discover::{Entry, EntryKind};
 use std::path::{Path, PathBuf};
 
 /// Where a root came from, shown subtly in the UI.
@@ -57,7 +67,7 @@ pub fn dirs_from_xbel(contents: &str) -> Vec<PathBuf> {
         let decoded = percent_decode(&chunk[..end]);
         let file = PathBuf::from(decoded);
         // Only files datui can open that still exist.
-        if !crate::discover::is_data_file(&file) || !file.is_file() {
+        if !crate::home::discover::is_data_file(&file) || !file.is_file() {
             continue;
         }
         let Some(parent) = file.parent() else {
@@ -451,7 +461,7 @@ fn whole_directory_row(dir: &Path, rows: &[Entry], remote: bool) -> Option<Entry
             (EntryKind::Unknown, Default::default())
         }
     } else {
-        crate::discover::look_at_directory(dir)
+        crate::home::discover::look_at_directory(dir)
     };
     // No door into a directory with nothing to open (empty, or only `_SUCCESS`).
     // Judged by what the directory holds, not only the listed rows: Spark and GBIF
@@ -756,16 +766,16 @@ pub fn is_remote_path(path: &Path) -> bool {
 
 /// Whether `path` is on a network filesystem by the mount table (longest matching
 /// mount point). False where the table is unavailable: a hint, never a gate. Uses
-/// [`crate::locality::Mounts::cached`], since this is asked per row per frame.
+/// [`crate::home::locality::Mounts::cached`], since this is asked per row per frame.
 pub fn is_network_path(path: &Path) -> bool {
-    crate::locality::Mounts::cached().is_network(path)
+    crate::home::locality::Mounts::cached().is_network(path)
 }
 
 /// The mount-table logic against a fixture, for tests (e.g. an NFS share shadowing
 /// an autofs entry at the same path).
 #[doc(hidden)]
 pub fn network_fs_for_test(mountinfo: &str, path: &Path) -> bool {
-    crate::locality::Mounts::parse(mountinfo).is_network(path)
+    crate::home::locality::Mounts::parse(mountinfo).is_network(path)
 }
 
 /// A place datui will look, and whether it can currently be read.
@@ -928,7 +938,7 @@ pub struct ShownCatalog {
     /// The section's title.
     pub label: String,
     /// `catalog.toml`, a listed file, or the bundled catalog.
-    pub origin: crate::catalog::Origin,
+    pub origin: crate::home::catalog::Origin,
     /// What the catalog says it is, for its heading's details.
     pub description: String,
     /// The file it was read from; none for the bundled one.
@@ -950,16 +960,16 @@ pub struct ShownDataset {
     /// What the catalog says a remote file weighs, until it is measured.
     pub size: Option<u64>,
     /// What its columns mean, when the catalog says.
-    pub codebook: Option<std::sync::Arc<crate::codebook::Codebook>>,
+    pub codebook: Option<std::sync::Arc<crate::home::codebook::Codebook>>,
     /// Places inside it to start from, by name, listed under its row.
     pub bookmarks: Vec<(String, PathBuf)>,
     /// The entry as its catalog writes it: what the Documentation view shows.
-    pub entry: std::sync::Arc<crate::catalog::Dataset>,
+    pub entry: std::sync::Arc<crate::home::catalog::Dataset>,
 }
 
 impl ShownCatalog {
     /// A catalog as the home screen shows it.
-    pub fn from_catalog(catalog: &crate::catalog::Catalog) -> Self {
+    pub fn from_catalog(catalog: &crate::home::catalog::Catalog) -> Self {
         Self {
             id: catalog.id.clone(),
             label: catalog.label.clone(),
@@ -994,7 +1004,8 @@ impl ShownCatalog {
                         location,
                         details,
                         size: dataset.size,
-                        codebook: crate::codebook::Codebook::of(dataset).map(std::sync::Arc::new),
+                        codebook: crate::home::codebook::Codebook::of(dataset)
+                            .map(std::sync::Arc::new),
                         bookmarks: dataset
                             .bookmarks
                             .iter()
@@ -1009,7 +1020,7 @@ impl ShownCatalog {
     }
 
     /// A catalog file left out for a mistake, as a section that says what is wrong.
-    pub fn from_broken(broken: &crate::catalog::Broken) -> Self {
+    pub fn from_broken(broken: &crate::home::catalog::Broken) -> Self {
         Self {
             id: broken.id.clone(),
             label: broken.id.clone(),
@@ -1025,9 +1036,11 @@ impl ShownCatalog {
     /// one of [`CATALOG_ORIGINS`].
     pub fn origin_note(&self) -> &'static str {
         match self.origin {
-            crate::catalog::Origin::Mine => "catalog.toml",
-            crate::catalog::Origin::Listed | crate::catalog::Origin::Folder => "catalog",
-            crate::catalog::Origin::Bundled => BUNDLED_ORIGIN,
+            crate::home::catalog::Origin::Mine => "catalog.toml",
+            crate::home::catalog::Origin::Listed | crate::home::catalog::Origin::Folder => {
+                "catalog"
+            }
+            crate::home::catalog::Origin::Bundled => BUNDLED_ORIGIN,
         }
     }
 }
@@ -1044,7 +1057,7 @@ pub fn is_catalog_origin(origin: &str) -> bool {
 }
 
 /// How a catalog URL is read, in words: what `auth` and `connection` say.
-pub fn login_of(dataset: &crate::catalog::Dataset) -> String {
+pub fn login_of(dataset: &crate::home::catalog::Dataset) -> String {
     match dataset.object_store_auth() {
         Some(crate::config::DatasetAuth::Connection(connection)) => connection,
         Some(crate::config::DatasetAuth::Anonymous) | None => "none".to_string(),
@@ -1061,7 +1074,7 @@ pub fn catalogs(config: &crate::config::AppConfig) -> Vec<ShownCatalog> {
         .iter()
         .filter_map(|catalog| {
             let mut shown = ShownCatalog::from_catalog(catalog);
-            if catalog.origin == crate::catalog::Origin::Bundled {
+            if catalog.origin == crate::home::catalog::Origin::Bundled {
                 shown
                     .datasets
                     .retain(|d| crate::cloud::source::opens_in_this_build(&d.location));
@@ -1072,7 +1085,7 @@ pub fn catalogs(config: &crate::config::AppConfig) -> Vec<ShownCatalog> {
     // A broken file's section says so, before the bundled catalog, unless it is hidden.
     let at = out
         .iter()
-        .position(|c| c.origin == crate::catalog::Origin::Bundled)
+        .position(|c| c.origin == crate::home::catalog::Origin::Bundled)
         .unwrap_or(out.len());
     let broken: Vec<ShownCatalog> = config
         .broken_catalogs
@@ -1121,7 +1134,7 @@ fn catalog_entry(
 pub fn codebook_for(
     catalogs: &[ShownCatalog],
     path: &Path,
-) -> Option<std::sync::Arc<crate::codebook::Codebook>> {
+) -> Option<std::sync::Arc<crate::home::codebook::Codebook>> {
     let text = path.to_string_lossy();
     catalogs
         .iter()
@@ -1137,7 +1150,7 @@ pub fn codebook_for(
 pub fn catalog_entry_for(
     catalogs: &[ShownCatalog],
     path: &Path,
-) -> Option<(String, std::sync::Arc<crate::catalog::Dataset>)> {
+) -> Option<(String, std::sync::Arc<crate::home::catalog::Dataset>)> {
     let text = path.to_string_lossy();
     catalogs
         .iter()
@@ -1200,20 +1213,20 @@ fn catalog_section(
 pub struct Measured {
     pub rows: Option<usize>,
     pub cols: Option<usize>,
-    /// Whether `cols` is a floor rather than a total. See [`crate::discover::Entry`].
+    /// Whether `cols` is a floor rather than a total. See [`crate::home::discover::Entry`].
     pub cols_sampled: bool,
     pub size: Option<u64>,
     /// Column names, when the format gave them up for free.
     pub columns: Vec<String>,
     /// What opening it costs: compression, layout, partitioning, carried to the screen
     /// with the row count.
-    pub cost: crate::discover::Cost,
+    pub cost: crate::home::discover::Cost,
     /// What the footers said it is when that differs from its filenames (separate tables
-    /// make a plain directory); usually `None`. See [`crate::discover::enrich`].
-    pub kind: Option<crate::discover::EntryKind>,
+    /// make a plain directory); usually `None`. See [`crate::home::discover::enrich`].
+    pub kind: Option<crate::home::discover::EntryKind>,
     /// What one listing found, which the row's label says; only the classify pass counts
     /// a local directory.
-    pub holds: crate::discover::Holds,
+    pub holds: crate::home::discover::Holds,
 }
 
 /// How rows are ordered within each section.
@@ -1514,7 +1527,7 @@ pub struct HomeState {
     pub narrowed: Option<Narrowed>,
     /// What peeked cloud directories hold (`hive`, `multi`), kept for the session so each
     /// is peeked once.
-    pub cloud_kinds: std::collections::HashMap<PathBuf, (EntryKind, crate::discover::Holds)>,
+    pub cloud_kinds: std::collections::HashMap<PathBuf, (EntryKind, crate::home::discover::Holds)>,
     /// How rows are ordered inside each section.
     pub sort: SortMode,
     /// A listing is being built on a worker; the previous one stays on screen.
@@ -1613,7 +1626,7 @@ pub struct SearchState {
     pub indexed: usize,
     /// The last scored matches, possibly for an older filter or fewer files while a
     /// scoring is out.
-    pub matches: Option<crate::search::Matches>,
+    pub matches: Option<crate::home::search::Matches>,
     /// A scoring is out on a worker.
     pub scoring: bool,
     /// Directory entries examined, for the progress note.
@@ -1640,7 +1653,7 @@ pub struct ScoreJob {
     pub epoch: u64,
     pub results: Vec<std::sync::Arc<[Entry]>>,
     pub query: String,
-    pub base: Option<crate::search::Matches>,
+    pub base: Option<crate::home::search::Matches>,
     pub limit: usize,
 }
 
@@ -1670,7 +1683,7 @@ impl SearchState {
     }
 
     /// The matches to narrow from for `query`, and how many files scoring it will look at.
-    fn base_for(&self, query: &str) -> (Option<&crate::search::Matches>, usize) {
+    fn base_for(&self, query: &str) -> (Option<&crate::home::search::Matches>, usize) {
         match self.matches.as_ref() {
             Some(m) if m.narrows_to(query) && m.upto <= self.indexed => {
                 (Some(m), m.ids.len() + self.indexed - m.upto)
@@ -1880,7 +1893,7 @@ pub fn measured_from(probe: &Entry, original: &Entry) -> Measured {
         holds: probe.holds.clone(),
         // The source is resolved from the live mount table on every listing; only what the
         // file said of itself carries forward.
-        cost: crate::discover::Cost {
+        cost: crate::home::discover::Cost {
             source: None,
             ..probe.cost.clone()
         },
@@ -2053,7 +2066,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
     let network_check = *network_check;
     // One read of the mount table for the listing: a kernel-generated file, so it cannot
     // block on a share that stopped answering.
-    let mounts = crate::locality::Mounts::current();
+    let mounts = crate::home::locality::Mounts::current();
     let mut sections: Vec<Section> = Vec::new();
 
     // Inside a cloud source: its buckets, and nothing else.
@@ -2459,7 +2472,7 @@ fn place_labels(
         let Some(facts) = known_facts(known, &place) else {
             continue;
         };
-        if facts.classified_by != crate::discover::CLASSIFIER_VERSION {
+        if facts.classified_by != crate::home::discover::CLASSIFIER_VERSION {
             continue;
         }
         if !network_check(&place) {
@@ -2492,7 +2505,7 @@ fn annotate(
     sections: &mut [Section],
     known: &std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
     network_check: fn(&Path) -> bool,
-    mounts: &crate::locality::Mounts,
+    mounts: &crate::home::locality::Mounts,
 ) {
     for section in sections {
         for row in &mut section.rows {
@@ -2545,7 +2558,7 @@ fn apply_known_facts(
     // Gated on the classifier version, since `is_one_table` is version-sensitive.
     if !remote
         && matches!(row.kind, EntryKind::Unknown | EntryKind::MultiFile)
-        && facts.classified_by == crate::discover::CLASSIFIER_VERSION
+        && facts.classified_by == crate::home::discover::CLASSIFIER_VERSION
         && let Some(kind) = facts.kind
     {
         let same_mtime = row
@@ -2596,7 +2609,7 @@ fn apply_known_facts(
         // same in every section. Only from this classifier version: an older record could
         // call a Delta root `multifile`.
         if row.kind == EntryKind::Unknown
-            && facts.classified_by == crate::discover::CLASSIFIER_VERSION
+            && facts.classified_by == crate::home::discover::CLASSIFIER_VERSION
             && let Some(kind) = facts.kind
         {
             row.kind = kind;
@@ -2630,9 +2643,9 @@ pub fn facts_for(entry: &Entry) -> Option<(PathBuf, crate::cache::DatasetFacts)>
             columns: entry.columns.clone(),
             kind: Some(entry.kind),
             holds: entry.holds.clone(),
-            classified_by: crate::discover::CLASSIFIER_VERSION,
+            classified_by: crate::home::discover::CLASSIFIER_VERSION,
             // The source is where it is now: paths move between mounts.
-            cost: crate::discover::Cost {
+            cost: crate::home::discover::Cost {
                 source: None,
                 ..entry.cost.clone()
             },
@@ -2642,9 +2655,9 @@ pub fn facts_for(entry: &Entry) -> Option<(PathBuf, crate::cache::DatasetFacts)>
 
 /// How well an entry answers the filter, by name or by column (the footer's column
 /// names: "which has a `customer_id`?"). A name match always outranks a column
-/// match. Higher is better, as in fzf; see [`crate::fuzzy`].
+/// match. Higher is better, as in fzf; see [`crate::home::fuzzy`].
 pub fn match_score(filter: &str, entry: &Entry) -> Option<i32> {
-    match crate::fuzzy::best_match(filter, &entry.name) {
+    match crate::home::fuzzy::best_match(filter, &entry.name) {
         Some(m) => Some(m.score),
         // Below every name match; a column match is a substring test with no score of its
         // own.
@@ -2654,7 +2667,7 @@ pub fn match_score(filter: &str, entry: &Entry) -> Option<i32> {
 
 /// [`match_score`], with what the row is marked by when drawn.
 pub fn match_hit(filter: &str, entry: &Entry) -> Option<Hit> {
-    if let Some(m) = crate::fuzzy::best_match(filter, &entry.name) {
+    if let Some(m) = crate::home::fuzzy::best_match(filter, &entry.name) {
         return Some(Hit {
             score: m.score,
             positions: m.positions.into(),
@@ -2693,7 +2706,7 @@ fn matching_column_index(filter: &str, entry: &Entry) -> Option<usize> {
 /// Character positions in `haystack` that `needle` matched, from the same alignment
 /// that scored it.
 pub fn fuzzy_positions(needle: &str, haystack: &str) -> Vec<usize> {
-    crate::fuzzy::best_match(needle, haystack)
+    crate::home::fuzzy::best_match(needle, haystack)
         .map(|m| m.positions)
         .unwrap_or_default()
 }
@@ -2718,9 +2731,9 @@ pub fn substring_positions(needle: &str, haystack: &str) -> Vec<usize> {
 }
 
 /// Whether and how well `needle` matches `haystack` (higher is better), through
-/// [`crate::fuzzy::best_match`] like every ranking and highlight.
+/// [`crate::home::fuzzy::best_match`] like every ranking and highlight.
 pub fn fuzzy_score(needle: &str, haystack: &str) -> Option<i32> {
-    crate::fuzzy::best_match(needle, haystack).map(|m| m.score)
+    crate::home::fuzzy::best_match(needle, haystack).map(|m| m.score)
 }
 
 impl HomeState {
@@ -3642,7 +3655,7 @@ impl HomeState {
             return;
         }
         let scored =
-            crate::search::score(&self.search.results, &self.filter, base, self.search_limit);
+            crate::home::search::score(&self.search.results, &self.filter, base, self.search_limit);
         self.search.matches = Some(scored);
     }
 
@@ -3664,7 +3677,7 @@ impl HomeState {
     }
 
     /// A worker's scoring is in.
-    pub fn search_scored(&mut self, epoch: u64, scored: crate::search::Matches) {
+    pub fn search_scored(&mut self, epoch: u64, scored: crate::home::search::Matches) {
         if epoch != self.search.epoch {
             return;
         }
@@ -5047,7 +5060,7 @@ mod holds_flow_tests {
         );
         assert!(curated.curated);
 
-        directory.holds = crate::discover::Holds {
+        directory.holds = crate::home::discover::Holds {
             formats: vec![("parquet".to_string(), 12)],
             ..Default::default()
         };
@@ -5093,8 +5106,8 @@ mod holds_flow_tests {
         assert_eq!(entry_for_path(file, true).kind, EntryKind::File);
     }
 
-    fn counted(n: usize) -> crate::discover::Holds {
-        crate::discover::Holds {
+    fn counted(n: usize) -> crate::home::discover::Holds {
+        crate::home::discover::Holds {
             formats: vec![("parquet".to_string(), n)],
             ..Default::default()
         }
@@ -5102,8 +5115,11 @@ mod holds_flow_tests {
 
     /// The claim `peek_cloud_directories` stakes before its answers arrive, so a rebuild
     /// in the meantime does not ask the store again: a `Directory` that counted nothing.
-    fn in_flight() -> (EntryKind, crate::discover::Holds) {
-        (EntryKind::Directory, crate::discover::Holds::default())
+    fn in_flight() -> (EntryKind, crate::home::discover::Holds) {
+        (
+            EntryKind::Directory,
+            crate::home::discover::Holds::default(),
+        )
     }
 
     #[test]
@@ -5377,7 +5393,7 @@ mod known_facts_tests {
     /// whatever is in its subdirectories.
     #[test]
     fn what_a_directory_holds_is_restored_beside_its_kind() {
-        let holds = crate::discover::Holds {
+        let holds = crate::home::discover::Holds {
             formats: vec![("parquet".to_string(), 15)],
             ..Default::default()
         };
@@ -5400,7 +5416,7 @@ mod known_facts_tests {
                 // A directory of separate tables: the kind the footers settled on, its
                 // width, and no row count, because a sum over them is not a number.
                 kind: Some(EntryKind::Directory),
-                classified_by: crate::discover::CLASSIFIER_VERSION,
+                classified_by: crate::home::discover::CLASSIFIER_VERSION,
                 holds: holds.clone(),
                 cost: Default::default(),
             };
@@ -5444,8 +5460,8 @@ mod known_facts_tests {
             cols_sampled: false,
             columns: vec!["ts".to_string()],
             kind: Some(EntryKind::MultiFile),
-            classified_by: crate::discover::CLASSIFIER_VERSION,
-            holds: crate::discover::Holds {
+            classified_by: crate::home::discover::CLASSIFIER_VERSION,
+            holds: crate::home::discover::Holds {
                 formats: vec![("parquet".to_string(), 15)],
                 ..Default::default()
             },
@@ -5500,7 +5516,11 @@ mod known_facts_tests {
         };
 
         let mut row = unprobed();
-        apply_known_facts(&mut row, &index(crate::discover::CLASSIFIER_VERSION), true);
+        apply_known_facts(
+            &mut row,
+            &index(crate::home::discover::CLASSIFIER_VERSION),
+            true,
+        );
         assert_eq!(
             row.kind,
             EntryKind::MultiFile,
@@ -5533,7 +5553,7 @@ mod build_feature_tests {
     fn the_builtin_catalog_lists_only_what_this_build_opens() {
         let urls: Vec<String> = catalogs(&crate::config::AppConfig::default())
             .into_iter()
-            .filter(|c| c.origin == crate::catalog::Origin::Bundled)
+            .filter(|c| c.origin == crate::home::catalog::Origin::Bundled)
             .flat_map(|c| c.datasets)
             .map(|d| d.location.to_string_lossy().into_owned())
             .collect();
@@ -5556,14 +5576,14 @@ mod build_feature_tests {
         assert_eq!(
             catalogs(&config)
                 .iter()
-                .any(|c| c.origin == crate::catalog::Origin::Bundled),
+                .any(|c| c.origin == crate::home::catalog::Origin::Bundled),
             cfg!(any(feature = "http", feature = "cloud"))
         );
         config.read_catalogs = vec![
-            crate::catalog::parse(
+            crate::home::catalog::parse(
                 "label = \"Mine\"\n",
-                crate::catalog::EXAMPLES,
-                crate::catalog::Origin::Folder,
+                crate::home::catalog::EXAMPLES,
+                crate::home::catalog::Origin::Folder,
                 None,
             )
             .unwrap(),
@@ -5576,7 +5596,7 @@ mod build_feature_tests {
     #[test]
     fn a_users_catalog_is_shown_whole() {
         let mut config = crate::config::AppConfig::default();
-        let mine = crate::catalog::parse(
+        let mine = crate::home::catalog::parse(
             r#"
             [bucket]
             name = "Bucket"
@@ -5585,8 +5605,8 @@ mod build_feature_tests {
             name = "Web"
             url = "https://example.com/data.csv"
             "#,
-            crate::catalog::MINE,
-            crate::catalog::Origin::Mine,
+            crate::home::catalog::MINE,
+            crate::home::catalog::Origin::Mine,
             None,
         )
         .unwrap();
@@ -5594,6 +5614,6 @@ mod build_feature_tests {
         let shown = catalogs(&config);
         let mine = shown.iter().find(|c| c.id == "mine").unwrap();
         assert_eq!(mine.datasets.len(), 2);
-        assert_eq!(mine.label, crate::catalog::MINE_LABEL);
+        assert_eq!(mine.label, crate::home::catalog::MINE_LABEL);
     }
 }

@@ -3,7 +3,7 @@
 //! lives) are modules of it. Filter by module, as in
 //! `scripts/dev/test.sh integration home search::` or `home coming_back::`.
 
-use datui::discover::{self, EntryKind};
+use datui::home::discover::{self, EntryKind};
 use datui::home::{HomeState, RootOrigin, Row, fuzzy_score};
 use std::fs;
 use tempfile::TempDir;
@@ -61,11 +61,11 @@ fn catalog_text(datasets: &[(&str, &std::path::Path)]) -> String {
 fn shown_catalog(
     id: &str,
     label: &str,
-    origin: datui::catalog::Origin,
+    origin: datui::home::catalog::Origin,
     datasets: &[(&str, &std::path::Path)],
 ) -> datui::home::ShownCatalog {
     let text = format!("label = {label:?}\n{}", catalog_text(datasets));
-    let catalog = datui::catalog::parse(&text, id, origin, None).expect("a test catalog");
+    let catalog = datui::home::catalog::parse(&text, id, origin, None).expect("a test catalog");
     datui::home::ShownCatalog::from_catalog(&catalog)
 }
 
@@ -74,14 +74,14 @@ fn mine(datasets: &[(&str, &std::path::Path)]) -> Vec<datui::home::ShownCatalog>
     vec![shown_catalog(
         "mine",
         "My datasets",
-        datui::catalog::Origin::Mine,
+        datui::home::catalog::Origin::Mine,
         datasets,
     )]
 }
 
 /// `catalog.toml` listing everything directly in `dir`, by name: what `[home]
 /// directories` listed before a directory became a catalog entry.
-fn dir_catalog(dir: &std::path::Path) -> datui::catalog::Catalog {
+fn dir_catalog(dir: &std::path::Path) -> datui::home::catalog::Catalog {
     let mut children: Vec<std::path::PathBuf> = fs::read_dir(dir)
         .expect("a directory")
         .map(|e| e.unwrap().path())
@@ -96,10 +96,10 @@ fn dir_catalog(dir: &std::path::Path) -> datui::catalog::Catalog {
         .map(String::as_str)
         .zip(children.iter().map(|p| p.as_path()))
         .collect();
-    datui::catalog::parse(
+    datui::home::catalog::parse(
         &catalog_text(&datasets),
         "mine",
-        datui::catalog::Origin::Mine,
+        datui::home::catalog::Origin::Mine,
         None,
     )
     .expect("a test catalog")
@@ -815,7 +815,7 @@ fn home_with_two_sections() -> (TempDir, HomeState) {
             shown_catalog(
                 "a",
                 "A",
-                datui::catalog::Origin::Listed,
+                datui::home::catalog::Origin::Listed,
                 &[
                     ("one.parquet", &a.join("one.parquet")),
                     ("two.parquet", &a.join("two.parquet")),
@@ -824,7 +824,7 @@ fn home_with_two_sections() -> (TempDir, HomeState) {
             shown_catalog(
                 "b",
                 "B",
-                datui::catalog::Origin::Listed,
+                datui::home::catalog::Origin::Listed,
                 &[("three.parquet", &b.join("three.parquet"))],
             ),
         ],
@@ -1568,8 +1568,8 @@ fn test_applying_a_listing_keeps_the_cursor_where_it_was() {
 // and the answer is already in the Parquet footer datui read to get the row count.
 // ---------------------------------------------------------------------------
 
-fn entry_with_columns(name: &str, columns: &[&str]) -> datui::discover::Entry {
-    datui::discover::Entry {
+fn entry_with_columns(name: &str, columns: &[&str]) -> datui::home::discover::Entry {
+    datui::home::discover::Entry {
         path: std::path::PathBuf::from(name),
         kind: EntryKind::File,
         name: name.to_string(),
@@ -1664,7 +1664,7 @@ fn test_remembered_facts_are_used_only_for_the_same_bytes() {
             cols_sampled: false,
             columns: vec!["customer_id".into()],
             kind: Some(EntryKind::File),
-            classified_by: datui::discover::CLASSIFIER_VERSION,
+            classified_by: datui::home::discover::CLASSIFIER_VERSION,
             holds: Default::default(),
             cost: Default::default(),
         },
@@ -1725,11 +1725,11 @@ fn test_a_recent_opened_from_a_bucket_shows_what_the_open_learned() {
         cols_sampled: false,
         columns: vec!["id".into(), "amount".into(), "year".into()],
         kind: Some(kind),
-        classified_by: datui::discover::CLASSIFIER_VERSION,
+        classified_by: datui::home::discover::CLASSIFIER_VERSION,
         holds,
         cost: Default::default(),
     };
-    let two_parquet = datui::discover::Holds {
+    let two_parquet = datui::home::discover::Holds {
         formats: vec![("parquet".to_string(), 2)],
         ..Default::default()
     };
@@ -1819,7 +1819,7 @@ fn test_a_recent_typed_through_a_named_source_finds_the_record_its_open_wrote() 
         cols_sampled: false,
         columns: vec!["id".into(), "amount".into(), "year".into()],
         kind: Some(EntryKind::Hive),
-        classified_by: datui::discover::CLASSIFIER_VERSION,
+        classified_by: datui::home::discover::CLASSIFIER_VERSION,
         holds: Default::default(),
         cost: Default::default(),
     };
@@ -1892,8 +1892,8 @@ fn test_a_place_label_is_held_to_the_directories_mtime() {
         cols_sampled: false,
         columns: Vec::new(),
         kind: Some(EntryKind::MultiFile),
-        classified_by: datui::discover::CLASSIFIER_VERSION,
-        holds: datui::discover::Holds {
+        classified_by: datui::home::discover::CLASSIFIER_VERSION,
+        holds: datui::home::discover::Holds {
             formats: vec![("parquet".to_string(), 12)],
             ..Default::default()
         },
@@ -1949,7 +1949,7 @@ fn test_a_place_row_says_nothing_it_does_not_know() {
             cols_sampled: false,
             columns: Vec::new(),
             kind: Some(EntryKind::Directory),
-            classified_by: datui::discover::CLASSIFIER_VERSION,
+            classified_by: datui::home::discover::CLASSIFIER_VERSION,
             holds: Default::default(),
             cost: Default::default(),
         },
@@ -2036,7 +2036,7 @@ fn test_a_remote_row_uses_remembered_facts_without_a_stat() {
             cols_sampled: false,
             columns: vec!["vwap".into(), "ticker".into()],
             kind: Some(EntryKind::Hive),
-            classified_by: datui::discover::CLASSIFIER_VERSION,
+            classified_by: datui::home::discover::CLASSIFIER_VERSION,
             holds: Default::default(),
             cost: Default::default(),
         },
@@ -2108,7 +2108,7 @@ fn test_a_changed_local_dataset_ignores_its_remembered_facts() {
             cols_sampled: false,
             columns: vec!["stale".into()],
             kind: Some(EntryKind::File),
-            classified_by: datui::discover::CLASSIFIER_VERSION,
+            classified_by: datui::home::discover::CLASSIFIER_VERSION,
             holds: Default::default(),
             cost: Default::default(),
         },
@@ -2149,8 +2149,8 @@ fn test_a_changed_local_dataset_ignores_its_remembered_facts() {
 // Sorting
 // ---------------------------------------------------------------------------
 
-fn sized(name: &str, size: u64, rows: usize) -> datui::discover::Entry {
-    datui::discover::Entry {
+fn sized(name: &str, size: u64, rows: usize) -> datui::home::discover::Entry {
+    datui::home::discover::Entry {
         path: std::path::PathBuf::from(name),
         kind: EntryKind::File,
         name: name.to_string(),
@@ -2168,7 +2168,7 @@ fn sized(name: &str, size: u64, rows: usize) -> datui::discover::Entry {
     }
 }
 
-fn home_with_rows(rows: Vec<datui::discover::Entry>) -> HomeState {
+fn home_with_rows(rows: Vec<datui::home::discover::Entry>) -> HomeState {
     let mut home = HomeState::default();
     home.apply_listing(datui::home::Listing {
         missing: Default::default(),
@@ -3118,7 +3118,7 @@ fn test_a_small_listing_is_no_more_looked_into_than_a_large_one() {
 
     assert_eq!(small.len(), 4);
     assert_eq!(big.len(), 200);
-    let kinds = |entries: &[datui::discover::Entry]| {
+    let kinds = |entries: &[datui::home::discover::Entry]| {
         let mut kinds: Vec<EntryKind> = entries.iter().map(|e| e.kind).collect();
         kinds.dedup();
         kinds
@@ -3378,7 +3378,7 @@ fn test_search_results_only_appear_once_there_is_a_filter() {
     home.rebuild(&[]);
     home.search.root = Some(tmp.path().to_path_buf());
     home.search
-        .set_results(vec![datui::discover::Entry::for_test(
+        .set_results(vec![datui::home::discover::Entry::for_test(
             &deep,
             "a/b/buried.parquet",
         )]);
@@ -3421,7 +3421,7 @@ fn test_search_results_survive_a_rebuild() {
     };
     home.search.root = Some(tmp.path().to_path_buf());
     home.search
-        .set_results(vec![datui::discover::Entry::for_test(
+        .set_results(vec![datui::home::discover::Entry::for_test(
             &deep,
             "a/found.parquet",
         )]);
@@ -3452,7 +3452,7 @@ fn test_a_dataset_already_on_screen_is_not_listed_twice() {
     home.rebuild(&[]);
     home.search.root = Some(tmp.path().to_path_buf());
     home.search
-        .set_results(vec![datui::discover::Entry::for_test(
+        .set_results(vec![datui::home::discover::Entry::for_test(
             &here,
             "visible.parquet",
         )]);
@@ -3481,7 +3481,10 @@ fn test_a_late_batch_from_an_abandoned_walk_is_dropped() {
 
     home.search_batch(
         &tmp.path().join("old"),
-        vec![datui::discover::Entry::for_test(&stale, "stale.parquet")],
+        vec![datui::home::discover::Entry::for_test(
+            &stale,
+            "stale.parquet",
+        )],
         1,
     );
     assert!(
@@ -3503,7 +3506,7 @@ fn test_a_partial_search_says_so_rather_than_looking_finished() {
     };
     home.search.root = Some(tmp.path().to_path_buf());
     home.search
-        .set_results(vec![datui::discover::Entry::for_test(
+        .set_results(vec![datui::home::discover::Entry::for_test(
             &found,
             "one.parquet",
         )]);
@@ -3536,7 +3539,10 @@ fn test_clearing_the_filter_takes_the_search_section_away() {
     };
     home.search.root = Some(tmp.path().to_path_buf());
     home.search
-        .set_results(vec![datui::discover::Entry::for_test(&deep, "a/x.parquet")]);
+        .set_results(vec![datui::home::discover::Entry::for_test(
+            &deep,
+            "a/x.parquet",
+        )]);
     home.search.done = true;
     home.sync_search_section();
     assert!(
@@ -3686,9 +3692,9 @@ fn test_a_parquet_footer_yields_what_the_file_will_weigh_open() {
     if !path.exists() {
         return; // sample data is generated; skip rather than fail a fresh checkout
     }
-    let mut entry = datui::discover::Entry::for_test(path, "charting_demo.parquet");
+    let mut entry = datui::home::discover::Entry::for_test(path, "charting_demo.parquet");
     entry.size = std::fs::metadata(path).ok().map(|m| m.len());
-    datui::discover::enrich(&mut entry);
+    datui::home::discover::enrich(&mut entry);
 
     let uncompressed = entry.cost.uncompressed.expect("uncompressed size");
     let on_disk = entry.size.expect("size on disk");
@@ -3742,10 +3748,10 @@ fn test_a_dataset_directory_does_not_report_its_inode_as_its_size() {
     // Not valid Parquet, so enrichment cannot total them and takes the early path.
     fs::write(dir.join("part-0.parquet"), b"not parquet").unwrap();
 
-    let mut entry = datui::discover::Entry::for_test(&root, "big");
+    let mut entry = datui::home::discover::Entry::for_test(&root, "big");
     entry.kind = EntryKind::Hive;
     entry.size = Some(198); // what stat'ing the directory would have given
-    datui::discover::enrich(&mut entry);
+    datui::home::discover::enrich(&mut entry);
 
     assert_eq!(
         entry.size, None,
@@ -3810,10 +3816,11 @@ fn test_measuring_a_row_keeps_what_the_footer_said_beyond_the_row_count() {
     // uncompressed size, row groups, partition layout -- used to be read, cached, and
     // then dropped on the way to the screen, because the measurement record did not
     // carry it. A hive dataset measured the ordinary way showed no partitions.
-    use datui::discover::{Cost, Partitions};
+    use datui::home::discover::{Cost, Partitions};
     use datui::home::measured_from;
 
-    let mut probe = datui::discover::Entry::for_test(std::path::Path::new("/tmp/events"), "events");
+    let mut probe =
+        datui::home::discover::Entry::for_test(std::path::Path::new("/tmp/events"), "events");
     probe.rows = Some(1_000);
     probe.cols = Some(4);
     probe.cost = Cost {
@@ -3831,7 +3838,8 @@ fn test_measuring_a_row_keeps_what_the_footer_said_beyond_the_row_count() {
         opens_one: false,
         ipc_stream: false,
     };
-    let original = datui::discover::Entry::for_test(std::path::Path::new("/tmp/events"), "events");
+    let original =
+        datui::home::discover::Entry::for_test(std::path::Path::new("/tmp/events"), "events");
 
     let measured = measured_from(&probe, &original);
     assert_eq!(measured.cost.codec.as_deref(), Some("zstd"));
@@ -3871,7 +3879,7 @@ fn test_a_directory_row_is_labelled_by_what_the_pass_counted() {
         .find(|r| r.path == directory)
         .expect("the directory is listed")
         .clone();
-    assert_eq!(unlooked.kind, datui::discover::EntryKind::Unknown);
+    assert_eq!(unlooked.kind, datui::home::discover::EntryKind::Unknown);
 
     // What the background pass does with it, and what it hands back.
     let probe = datui::home::look_into_as(&unlooked, &Default::default());
@@ -3898,7 +3906,7 @@ fn test_a_directory_row_is_labelled_by_what_the_pass_counted() {
 
 #[test]
 fn test_applying_a_measurement_puts_the_layout_on_the_row() {
-    use datui::discover::Cost;
+    use datui::home::discover::Cost;
 
     let tmp = TempDir::new().unwrap();
     let path = touch(tmp.path(), "events.parquet");
@@ -4219,7 +4227,7 @@ fn test_typing_finds_bucket_names_from_every_source() {
 #[cfg(feature = "cloud")]
 #[test]
 fn test_partitioned_cloud_directories_are_labelled_and_open_whole() {
-    use datui::discover::{Entry, EntryKind};
+    use datui::home::discover::{Entry, EntryKind};
     use std::path::{Path, PathBuf};
     let btc = PathBuf::from("s3://aws-public-blockchain/v1.0/btc");
     let blocks = PathBuf::from("s3://aws-public-blockchain/v1.0/btc/blocks");
@@ -4361,7 +4369,9 @@ fn test_google_steps_through_project_bucket_and_prefix() {
     // The project's listing is what ties a bucket to it.
     home.probe_ready(
         project.clone(),
-        vec![datui::discover::Entry::directory(Path::new("gs://events"))],
+        vec![datui::home::discover::Entry::directory(Path::new(
+            "gs://events",
+        ))],
         false,
     );
     let prefix = Path::new("gs://events/2024/");
@@ -4405,7 +4415,7 @@ fn test_catalogs_are_sections_of_named_datasets() {
             shown_catalog(
                 "mine",
                 "My datasets",
-                datui::catalog::Origin::Mine,
+                datui::home::catalog::Origin::Mine,
                 &[
                     ("Sales", &sales),
                     ("Archive", &archive),
@@ -4418,7 +4428,7 @@ fn test_catalogs_are_sections_of_named_datasets() {
             shown_catalog(
                 "examples",
                 "Example datasets",
-                datui::catalog::Origin::Bundled,
+                datui::home::catalog::Origin::Bundled,
                 &[("Overture Maps", &overture), ("NOAA", &noaa)],
             ),
         ],
@@ -4634,7 +4644,7 @@ fn test_a_directory_found_to_be_separate_tables_stays_a_plain_directory() {
         cols_sampled: false,
         columns: vec!["circuit_id".into(), "driver_id".into()],
         kind: Some(EntryKind::Directory),
-        classified_by: datui::discover::CLASSIFIER_VERSION,
+        classified_by: datui::home::discover::CLASSIFIER_VERSION,
         holds: Default::default(),
         cost: Default::default(),
     };
@@ -4661,7 +4671,7 @@ fn test_a_directory_found_to_be_separate_tables_stays_a_plain_directory() {
 #[cfg(feature = "cloud")]
 #[test]
 fn test_a_directory_of_separate_tables_still_offers_to_read_them_together() {
-    use datui::discover::{Entry, EntryKind};
+    use datui::home::discover::{Entry, EntryKind};
     use std::path::PathBuf;
 
     let exports = PathBuf::from("gs://bucket/exports");
@@ -4720,7 +4730,7 @@ fn test_a_directory_of_separate_tables_still_offers_to_read_them_together() {
 #[cfg(feature = "cloud")]
 #[test]
 fn test_the_whole_directory_row_says_what_the_listing_holds() {
-    use datui::discover::{Entry, EntryKind};
+    use datui::home::discover::{Entry, EntryKind};
     use std::path::PathBuf;
 
     let exports = PathBuf::from("gs://bucket/exports");
@@ -4816,13 +4826,13 @@ fn test_a_directory_is_read_as_every_file_in_it() {
     let directory = tmp.path().join("exports");
     fs::create_dir(&directory).unwrap();
     // One more than the listing cap, so a prefix and the whole thing differ.
-    let want = datui::discover::MAX_ENTRIES_PER_DIR + 1;
+    let want = datui::home::discover::MAX_ENTRIES_PER_DIR + 1;
     for i in 0..want {
         fs::write(directory.join(format!("part-{i:05}.csv")), b"a\n1\n").unwrap();
     }
 
-    match datui::discover::directory_format(&directory) {
-        datui::discover::DirectoryFormat::One(format, files) => {
+    match datui::home::discover::directory_format(&directory) {
+        datui::home::discover::DirectoryFormat::One(format, files) => {
             assert_eq!(format, datui::FileFormat::Csv);
             assert_eq!(
                 files.len(),
@@ -4842,7 +4852,7 @@ fn test_a_directory_is_read_as_every_file_in_it() {
 /// hive schema pass looks, from the outside, exactly like one that guessed right.
 #[test]
 fn test_a_directory_is_read_as_whatever_is_actually_in_it() {
-    use datui::discover::{DirectoryFormat, directory_format};
+    use datui::home::discover::{DirectoryFormat, directory_format};
 
     let tmp = TempDir::new().unwrap();
 
@@ -5057,9 +5067,9 @@ fn test_an_azure_account_place_gets_no_door() {
     };
     home.probe_ready(
         account,
-        vec![datui::discover::Entry::directory(std::path::Path::new(
-            "abfss://raw@storageaccount.dfs.core.windows.net/",
-        ))],
+        vec![datui::home::discover::Entry::directory(
+            std::path::Path::new("abfss://raw@storageaccount.dfs.core.windows.net/"),
+        )],
         false,
     );
     home.rebuild(&[]);
@@ -5172,7 +5182,7 @@ fn test_the_door_on_a_share_is_built_from_the_probe_not_the_disk() {
         browsing: Some(share.clone()),
         ..Default::default()
     };
-    let mut stale = datui::discover::Entry::directory(&share.join("stale.csv"));
+    let mut stale = datui::home::discover::Entry::directory(&share.join("stale.csv"));
     stale.name = "stale.csv".to_string();
     stale.kind = EntryKind::File;
     stale.size = Some(10);
@@ -5205,7 +5215,7 @@ fn test_the_door_is_named_the_way_the_title_is() {
             browsing: Some(place.clone()),
             ..Default::default()
         };
-        let mut object = datui::discover::Entry::directory(&place.join("one.parquet"));
+        let mut object = datui::home::discover::Entry::directory(&place.join("one.parquet"));
         object.name = "one.parquet".to_string();
         object.kind = EntryKind::File;
         object.size = Some(10);
@@ -5297,7 +5307,7 @@ fn test_the_door_is_not_counted_among_what_a_directory_holds() {
 #[test]
 fn a_found_dataset_matches_by_its_remembered_columns() {
     use datui::cache::DatasetFacts;
-    use datui::discover;
+    use datui::home::discover;
 
     let tmp = TempDir::new().unwrap();
     let buried = touch(&tmp.path().join("deep"), "sales.parquet");
@@ -5332,7 +5342,7 @@ fn a_found_dataset_matches_by_its_remembered_columns() {
     home.search.running = true;
 
     let mut walked = Vec::new();
-    datui::search::walk_with_specs(
+    datui::home::search::walk_with_specs(
         tmp.path(),
         &datui::config::SearchConfig::default(),
         &datui::formats::Registry::default(),
@@ -5456,7 +5466,12 @@ fn test_coming_back_waits_for_a_row_still_to_arrive() {
     }
     let sub = tmp.path().join("sub");
     let deep = touch(&sub, "deep/deep.parquet");
-    let found = || vec![datui::discover::Entry::for_test(&deep, "deep.parquet")];
+    let found = || {
+        vec![datui::home::discover::Entry::for_test(
+            &deep,
+            "deep.parquet",
+        )]
+    };
     let mut home = HomeState {
         browsing: Some(tmp.path().to_path_buf()),
         ..Default::default()
@@ -5835,7 +5850,7 @@ mod coming_back {
         std::fs::write(&file, "species,mass\nAdelie,3750\n").unwrap();
         let config = datui::config::AppConfig {
             read_catalogs: vec![
-                datui::catalog::parse(
+                datui::home::catalog::parse(
                     &format!(
                         "label = \"Lab\"\n[penguins]\nname = \"Palmer penguins\"\npath = {:?}\n\
                          description = \"Size measurements for three penguin species observed on \
@@ -5845,7 +5860,7 @@ mod coming_back {
                         file.to_string_lossy().replace('\\', "/")
                     ),
                     "lab",
-                    datui::catalog::Origin::Listed,
+                    datui::home::catalog::Origin::Listed,
                     None,
                 )
                 .unwrap(),
@@ -5982,10 +5997,10 @@ mod coming_back {
             .collect();
         let lab: Vec<(&str, &Path)> = lab.iter().map(|(n, p)| (n.as_str(), p.as_path())).collect();
         config.read_catalogs.push(
-            datui::catalog::parse(
+            datui::home::catalog::parse(
                 &format!("label = \"Lab\"\n{}", crate::catalog_text(&lab)),
                 "lab",
-                datui::catalog::Origin::Listed,
+                datui::home::catalog::Origin::Listed,
                 None,
             )
             .unwrap(),
@@ -6305,7 +6320,9 @@ mod cloud_level_paging {
         let watch = datui::cloud::cloud_browse::Watch {
             progress: Some(std::sync::Arc::new({
                 let progress = progress.clone();
-                move |rows: &[datui::discover::Entry]| progress.lock().unwrap().push(rows.len())
+                move |rows: &[datui::home::discover::Entry]| {
+                    progress.lock().unwrap().push(rows.len())
+                }
             })),
             ..Default::default()
         };
@@ -6776,7 +6793,7 @@ mod landing {
     use super::coming_back::{draw, go_into, home_app, press, select, settle};
     use super::touch;
     use crossterm::event::KeyCode;
-    use datui::discover::EntryKind;
+    use datui::home::discover::EntryKind;
     use datui::{App, AppEvent};
     use polars::prelude::*;
     use std::path::Path;
@@ -6861,7 +6878,7 @@ mod landing {
         (app, rx)
     }
 
-    fn door(app: &App) -> datui::discover::Entry {
+    fn door(app: &App) -> datui::home::discover::Entry {
         app.home
             .sections
             .iter()
@@ -7164,8 +7181,8 @@ mod landing {
 #[cfg(feature = "cloud")]
 #[test]
 fn test_late_footers_move_a_landed_cursor_and_only_a_landed_one() {
-    use datui::discover::{Entry, EntryKind};
     use datui::home::Measured;
+    use datui::home::discover::{Entry, EntryKind};
     use std::path::PathBuf;
 
     let exports = PathBuf::from("gs://bucket/exports");
@@ -7236,7 +7253,7 @@ fn test_late_footers_move_a_landed_cursor_and_only_a_landed_one() {
 #[cfg(feature = "cloud")]
 #[test]
 fn test_a_mixed_prefix_says_it_reads_below() {
-    use datui::discover::{Entry, EntryKind};
+    use datui::home::discover::{Entry, EntryKind};
     use std::path::PathBuf;
 
     let place = PathBuf::from("gs://bucket/mix");
@@ -7482,7 +7499,7 @@ fn a_file_a_specs_magic_names_is_listed_under_the_spec() {
 
     // The search finds what the listing names.
     let mut found = Vec::new();
-    datui::search::walk_with_specs(
+    datui::home::search::walk_with_specs(
         tmp.path(),
         &datui::config::SearchConfig::default(),
         &registry,
@@ -7796,7 +7813,7 @@ fn a_variant_spec_files_pane_shows_chips_and_variants_at_any_width() {
                 size: meta.len(),
                 rows: Some(4),
                 kind: Some(EntryKind::File),
-                classified_by: datui::discover::CLASSIFIER_VERSION,
+                classified_by: datui::home::discover::CLASSIFIER_VERSION,
                 ..Default::default()
             },
         )]);
@@ -8034,7 +8051,7 @@ mod first_rows {
     use super::coming_back::{draw, go_into, home_app, press, select, settle};
     use crossterm::event::KeyCode;
     use datui::AppEvent;
-    use datui::home_preview::Stamp;
+    use datui::home::home_preview::Stamp;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use ratatui::widgets::Widget;
@@ -8427,10 +8444,10 @@ mod catalog {
         )
         .unwrap();
         config.read_catalogs = vec![
-            datui::catalog::parse(
+            datui::home::catalog::parse(
                 &std::fs::read_to_string(&file).unwrap(),
                 "examples",
-                datui::catalog::Origin::Listed,
+                datui::home::catalog::Origin::Listed,
                 Some(&file),
             )
             .unwrap(),
@@ -8559,7 +8576,7 @@ mod catalog {
                     if entry.path == data && entry.holds.directories == 3)
             }) && rows.iter().any(|row| {
                 matches!(row, Row::Entry { entry, .. }
-                    if entry.path == events && entry.kind == datui::discover::EntryKind::Hive)
+                    if entry.path == events && entry.kind == datui::home::discover::EntryKind::Hive)
             })
         };
         settle(&mut app, &rx, labelled);
@@ -8592,7 +8609,7 @@ mod catalog {
             catalogs: vec![crate::shown_catalog(
                 "examples",
                 "Example datasets",
-                datui::catalog::Origin::Bundled,
+                datui::home::catalog::Origin::Bundled,
                 &[("Palmer penguins", &url)],
             )],
             desktop_dirs: Vec::new(),

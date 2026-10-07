@@ -18,9 +18,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 use unicode_width::UnicodeWidthStr;
 
-use crate::catalog::{ColumnNote, Dataset};
 use crate::formats::SpecDocs;
 use crate::glyphs;
+use crate::home::catalog::{ColumnNote, Dataset};
 use crate::render::context::RenderContext;
 use crate::widgets::ui::{HintBar, SectionRule, Surface};
 
@@ -315,7 +315,7 @@ fn format_of(entry: &Dataset) -> String {
     crate::FileFormat::from_path(&location)
         .map(|f| f.name().to_string())
         .unwrap_or_else(|| {
-            if crate::catalog::is_object_store_dataset(&text) {
+            if crate::home::catalog::is_object_store_dataset(&text) {
                 "directory".to_string()
             } else {
                 "file".to_string()
@@ -740,7 +740,7 @@ mod tests {
 
     fn noaa() -> Arc<Dataset> {
         Arc::new(
-            crate::catalog::bundled()
+            crate::home::catalog::bundled()
                 .datasets
                 .into_iter()
                 .find(|d| d.id == "noaa")
@@ -967,7 +967,7 @@ LogIdx = { type = "i64" }
 
     #[test]
     fn a_catalogs_word_stands_over_the_specs() {
-        let catalog = crate::catalog::parse(
+        let catalog = crate::home::catalog::parse(
             r#"
 label = "Mine"
 
@@ -980,7 +980,7 @@ columns.price = { description = "Price the lab quotes" }
 columns.venue = { description = "Where it traded" }
 "#,
             "mine",
-            crate::catalog::Origin::Mine,
+            crate::home::catalog::Origin::Mine,
             None,
         )
         .unwrap();

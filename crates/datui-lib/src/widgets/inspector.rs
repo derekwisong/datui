@@ -1166,7 +1166,7 @@ pub fn render(
     buf: &mut Buffer,
     modal: &mut InspectorModal,
     state: &DataTableState,
-    codebook: Option<&crate::codebook::Codebook>,
+    codebook: Option<&crate::home::codebook::Codebook>,
     ctx: &RenderContext,
 ) {
     let row = state.inspect_row();
@@ -1381,7 +1381,7 @@ pub fn render(
 /// The codebook's lines for a field: its meaning and unit, then what the value under
 /// the cursor stands for when the codebook lists it.
 pub fn codebook_lines(
-    column: &crate::codebook::Column,
+    column: &crate::home::codebook::Column,
     shown: &Shown,
     width: usize,
 ) -> Vec<(String, Tone)> {

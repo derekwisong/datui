@@ -1051,8 +1051,8 @@ impl Loader {
 
     /// Install the dataset home's preview built: scan, schema and first page are read, so
     /// the open goes straight to its (on-hand) first rows.
-    fn install_prepared(&mut self, prepared: crate::home_preview::Prepared) -> Step {
-        let crate::home_preview::Prepared {
+    fn install_prepared(&mut self, prepared: crate::home::home_preview::Prepared) -> Step {
+        let crate::home::home_preview::Prepared {
             state,
             options,
             debug_label,

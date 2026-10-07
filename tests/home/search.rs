@@ -1,8 +1,8 @@
 //! Recursive search below the working directory.
 
 use datui::config::SearchConfig;
-use datui::discover::Entry;
-use datui::search;
+use datui::home::discover::Entry;
+use datui::home::search;
 use std::fs;
 use std::path::Path;
 use tempfile::TempDir;

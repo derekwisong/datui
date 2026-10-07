@@ -395,12 +395,12 @@ fn the_home_screen_lists_an_archives_arrays() {
     };
     home.rebuild(&[]);
     assert_eq!(listed(&home), ["prices", "grid", "trades"]);
-    let mut entry = datui::discover::Entry::for_test(&npz, "run.npz");
-    datui::discover::enrich(&mut entry);
+    let mut entry = datui::home::discover::Entry::for_test(&npz, "run.npz");
+    datui::home::discover::enrich(&mut entry);
     assert_eq!(entry.cost.tables, Some(3));
-    let trades = datui::discover::table_row(&npz.join("trades")).unwrap();
+    let trades = datui::home::discover::table_row(&npz.join("trades")).unwrap();
     assert_eq!(trades.columns, ["ts", "px", "qty"]);
-    let preview = datui::discover::schema_preview(&trades).unwrap();
+    let preview = datui::home::discover::schema_preview(&trades).unwrap();
     assert_eq!(preview[1], ("px".to_string(), DataType::Float64));
 }
 

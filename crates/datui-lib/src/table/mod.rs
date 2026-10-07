@@ -377,7 +377,7 @@ impl Sampled {
             Some(total) if total > self.rows() => {
                 format!(
                     "sample {about}{rows} of {}{cut}",
-                    crate::discover::format_rows(total)
+                    crate::home::discover::format_rows(total)
                 )
             }
             _ => format!("sample {rows}{cut}"),

@@ -6,9 +6,9 @@ use polars::io::cloud::CloudOptions;
 #[test]
 fn the_door_says_why_only_when_enter_would_read_nothing() {
     let door = |formats: &[(&str, usize)], not_read| {
-        let mut entry = discover::Entry::directory(Path::new("s3://b/dir/"));
+        let mut entry = home::discover::Entry::directory(Path::new("s3://b/dir/"));
         entry.opens_whole_directory = true;
-        entry.holds = discover::Holds {
+        entry.holds = home::discover::Holds {
             formats: formats.iter().map(|(f, n)| (f.to_string(), *n)).collect(),
             not_read,
             ..Default::default()
@@ -24,7 +24,7 @@ fn the_door_says_why_only_when_enter_would_read_nothing() {
         None
     );
     let mut hive = door(&[], 3);
-    hive.kind = discover::EntryKind::Hive;
+    hive.kind = home::discover::EntryKind::Hive;
     assert_eq!(App::why_a_door_reads_nothing(&hive), None);
 }
 
@@ -165,7 +165,7 @@ fn a_cloud_directory_named_on_the_command_line_is_looked_at_first() {
 /// What the listing found decides it, as it does for the `(all files)` row.
 #[test]
 fn a_cloud_directory_opens_as_its_listing_says() {
-    use discover::{EntryKind, Holds};
+    use home::discover::{EntryKind, Holds};
     let dir = PathBuf::from("s3://local@b/census/data");
     let holding = |formats: &[(&str, usize)], directories| Holds {
         formats: formats.iter().map(|(f, n)| (f.to_string(), *n)).collect(),

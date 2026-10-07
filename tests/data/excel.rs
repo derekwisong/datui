@@ -248,7 +248,7 @@ fn the_excel_tab_lists_the_sheets() {
 /// first and → lists them; a sheet's place opens that sheet.
 #[test]
 fn the_home_screen_lists_a_workbooks_sheets() {
-    use datui::discover;
+    use datui::home::discover;
     let path = sheets_xlsx();
     let mut entry = discover::Entry::for_test(&path, "sheets.xlsx");
     discover::enrich(&mut entry);

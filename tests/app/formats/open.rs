@@ -847,8 +847,8 @@ fn a_files_variants_are_listed_inside_it_and_open_alone() {
     let registry = Registry::of(vec![spec(ITCH)]);
 
     // Its row upstairs counts the variants and names the spec.
-    let mut rows = vec![datui::discover::Entry::for_test(&data, "listed.itch")];
-    rows[0].kind = datui::discover::EntryKind::Other;
+    let mut rows = vec![datui::home::discover::Entry::for_test(&data, "listed.itch")];
+    rows[0].kind = datui::home::discover::EntryKind::Other;
     datui::home::name_by_spec(&registry, &mut rows);
     assert_eq!(rows[0].format_spec.as_deref(), Some("acme.itch"));
     assert_eq!(rows[0].cost.tables, Some(2));
@@ -861,7 +861,7 @@ fn a_files_variants_are_listed_inside_it_and_open_alone() {
         ..datui::home::HomeState::default()
     };
     home.rebuild(&[]);
-    let listed: Vec<datui::discover::Entry> = home
+    let listed: Vec<datui::home::discover::Entry> = home
         .visible()
         .iter()
         .filter_map(|r| match r {
@@ -874,9 +874,9 @@ fn a_files_variants_are_listed_inside_it_and_open_alone() {
     assert_eq!(listed[1].path, data.join("exec"));
     assert_eq!(listed[1].columns, ["len", "kind", "ref", "shares"]);
     // A recent at that path is listed again by it.
-    let row = datui::discover::variant_row(&data.join("exec"), &registry).unwrap();
+    let row = datui::home::discover::variant_row(&data.join("exec"), &registry).unwrap();
     assert_eq!(row.name, "exec");
-    assert!(datui::discover::variant_row(&data.join("nope"), &registry).is_none());
+    assert!(datui::home::discover::variant_row(&data.join("nope"), &registry).is_none());
 
     // Opened by its path, it is the variant alone, named by that path.
     let (mut app, rx, _tx) = app_with(vec![spec(ITCH)]);

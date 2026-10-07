@@ -317,7 +317,7 @@ fn rows_value(modal: &ChartModal, ctx: &RenderContext) -> Vec<Span<'static>> {
         let mut spans = vec![plain("Every row", ctx)];
         if let Some(rows) = modal.view_rows {
             spans.push(quiet(
-                format!(" ({})", crate::discover::format_rows(rows)),
+                format!(" ({})", crate::home::discover::format_rows(rows)),
                 ctx,
             ));
         }

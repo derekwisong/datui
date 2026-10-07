@@ -88,7 +88,7 @@ const ALLOWED: &[(&str, &str)] = &[
     // An anchor kept so old links land.
     ("docs/user-guide/home-screen.md", "<a id=\"collections\">"),
     // The retired keys, named so a file that still has them is told what to write.
-    ("crates/datui-lib/src/catalog.rs", "codebook"),
+    ("crates/datui-lib/src/home/catalog.rs", "codebook"),
     (
         "crates/datui-lib/src/config.rs",
         "a collection is a catalog file now",

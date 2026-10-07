@@ -2627,8 +2627,9 @@ connection = "onprem"
 /// `catalog` read as the listed catalog `id`, in a config of [`CONNECTION`].
 fn with_catalog(id: &str, catalog: &str) -> Result<AppConfig, String> {
     let mut config = cloud_config(CONNECTION);
-    let parsed = datui::catalog::parse(catalog, id, datui::catalog::Origin::Listed, None)
-        .map_err(|e| e.in_file(&format!("{id}.toml")))?;
+    let parsed =
+        datui::home::catalog::parse(catalog, id, datui::home::catalog::Origin::Listed, None)
+            .map_err(|e| e.in_file(&format!("{id}.toml")))?;
     config.read_catalogs = vec![parsed];
     config.sync_dataset_access();
     config.validate().map_err(|e| e.to_string())?;
@@ -2777,10 +2778,10 @@ fn catalog_mistakes_are_named_with_their_line() {
     let mut azure =
         cloud_config("[[cloud.connections]]\nname = \"az\"\nkind = \"azure\"\naccount = \"one\"\n");
     azure.read_catalogs = vec![
-        datui::catalog::parse(
+        datui::home::catalog::parse(
             "[d]\nname = \"d\"\nurl = \"abfss://c@two.dfs.core.windows.net/p/\"\nconnection = \"az\"\n",
             "x",
-            datui::catalog::Origin::Listed,
+            datui::home::catalog::Origin::Listed,
             None,
         )
         .unwrap(),
@@ -3141,8 +3142,9 @@ fn config_init_writes_an_empty_catalog_and_never_replaces_one() {
     manager.write_default_config(false).expect("writes");
     let catalog = dir.path().join("catalog.toml");
     let written = fs::read_to_string(&catalog).expect("catalog.toml written");
-    let parsed = datui::catalog::parse(&written, "mine", datui::catalog::Origin::Mine, None)
-        .expect("the empty catalog parses");
+    let parsed =
+        datui::home::catalog::parse(&written, "mine", datui::home::catalog::Origin::Mine, None)
+            .expect("the empty catalog parses");
     // Its header says how to hide and take over the example datasets.
     assert!(
         written.contains("hide = [\"examples/nyc-taxis\"]"),

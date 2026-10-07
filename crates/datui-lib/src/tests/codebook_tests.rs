@@ -2,8 +2,8 @@ use crate::*;
 use polars::prelude::{IntoLazy, df};
 
 /// The column notes of a GHCN-like catalog entry, as a catalog would carry them.
-fn codebook() -> codebook::Codebook {
-    let catalog = catalog::parse(
+fn codebook() -> home::codebook::Codebook {
+    let catalog = home::catalog::parse(
         r#"
 [weather]
 name = "Weather"
@@ -23,24 +23,24 @@ TMAX = "Maximum temperature (tenths of degrees C)"
 S = "failed spatial consistency check"
 "#,
         "t",
-        catalog::Origin::Listed,
+        home::catalog::Origin::Listed,
         None,
     )
     .unwrap();
-    codebook::Codebook::of(&catalog.datasets[0]).unwrap()
+    home::codebook::Codebook::of(&catalog.datasets[0]).unwrap()
 }
 
 /// The bundled NOAA entry keeps the readme's source flags under S_FLAG, where they
 /// belong, and only element codes under ELEMENT.
 #[test]
 fn the_noaa_source_flags_are_s_flags_not_elements() {
-    let catalog = catalog::bundled();
+    let catalog = home::catalog::bundled();
     let noaa = catalog
         .datasets
         .iter()
         .find(|d| d.url.as_deref() == Some("s3://noaa-ghcn-pds/parquet/"))
         .expect("the NOAA entry");
-    let book = codebook::Codebook::of(noaa).unwrap();
+    let book = home::codebook::Codebook::of(noaa).unwrap();
     let element = book.column("ELEMENT").unwrap();
     assert!(
         element.values.keys().all(|code| code.len() == 4),

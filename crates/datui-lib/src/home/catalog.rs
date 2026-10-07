@@ -178,7 +178,7 @@ pub(crate) fn dataset_url_place(url: &str) -> Option<UrlPlace> {
             let path = path.split(['?', '#']).next().unwrap_or("");
             (!host.is_empty()
                 && !host.contains('@')
-                && crate::discover::is_data_file(Path::new(path)))
+                && crate::home::discover::is_data_file(Path::new(path)))
             .then_some(UrlPlace::Http)
         }
         crate::cloud::source::InputSource::Local(_) => None,

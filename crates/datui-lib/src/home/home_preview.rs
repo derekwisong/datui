@@ -7,7 +7,7 @@
 //! for that page, and no scan or schema read of its own.
 
 use crate::FileFormat;
-use crate::discover::{Entry, EntryKind};
+use crate::home::discover::{Entry, EntryKind};
 use crate::table::DataTableState;
 use polars::prelude::{DataFrame, DataType};
 use std::collections::{HashMap, VecDeque};

@@ -14,8 +14,8 @@ use crate::table::{DataTableState, OpenFacts};
 #[cfg(feature = "cloud")]
 use crate::wait_on_runtime;
 use crate::{
-    App, AppEvent, UNSUPPORTED, catalog, cli, cloud::source, discover, formats::dataset_files,
-    home, loading, quality_report,
+    App, AppEvent, UNSUPPORTED, cli, cloud::source, formats::dataset_files, home, home::catalog,
+    home::discover, loading, quality_report,
 };
 use color_eyre::Result;
 #[cfg(feature = "cloud")]
@@ -2954,21 +2954,21 @@ impl App {
                     return Self::dataset_dict_split(path, &splits, options, report, formats);
                 }
                 if path.is_dir() {
-                    match crate::discover::directory_format(path) {
+                    match crate::home::discover::directory_format(path) {
                         // Flat and Parquet: the scan below is already right for it.
-                        crate::discover::DirectoryFormat::One(FileFormat::Parquet, _) => {}
+                        crate::home::discover::DirectoryFormat::One(FileFormat::Parquet, _) => {}
                         // Partitions, or empty. Only the hive scan walks `key=value` trees, and hive
                         // partitioning is Parquet-only here (`HiveOptions::new_disabled()` for CSV and
                         // NDJSON), so other formats in partitions are refused with their file names.
-                        crate::discover::DirectoryFormat::Deeper => {
-                            if let crate::discover::DirectoryFormat::One(found, files) =
-                                crate::discover::hive_leaf_format(path)
+                        crate::home::discover::DirectoryFormat::Deeper => {
+                            if let crate::home::discover::DirectoryFormat::One(found, files) =
+                                crate::home::discover::hive_leaf_format(path)
                                 && found != FileFormat::Parquet
                             {
                                 // The extension, as the user sees it on the files, not the format's name.
                                 let named = files
                                     .first()
-                                    .and_then(|f| crate::discover::data_extension(f))
+                                    .and_then(|f| crate::home::discover::data_extension(f))
                                     .unwrap_or_else(|| format!("{found:?}").to_lowercase());
                                 return Err(color_eyre::eyre::eyre!(
                                     "{} is partitioned into key=value directories of .{} \
@@ -2979,7 +2979,7 @@ impl App {
                                 ));
                             }
                         }
-                        crate::discover::DirectoryFormat::One(found, files) => {
+                        crate::home::discover::DirectoryFormat::One(found, files) => {
                             // Read as a list of files typed on the command line would be; `--format`
                             // outranks the names.
                             let format = options.format.unwrap_or(found);
@@ -2989,7 +2989,7 @@ impl App {
                                 &files, options, found, report, formats,
                             );
                         }
-                        crate::discover::DirectoryFormat::Mixed {
+                        crate::home::discover::DirectoryFormat::Mixed {
                             format: found,
                             files,
                             passed_over,
@@ -3051,7 +3051,7 @@ impl App {
             })
             .or_else(|| {
                 (path.extension().is_none()
-                    && crate::discover::is_parquet_key(&path.to_string_lossy()))
+                    && crate::home::discover::is_parquet_key(&path.to_string_lossy()))
                 .then_some(FileFormat::Parquet)
             })
             // Any other unnamed format, by its first bytes (see `crate::formats::readers`).

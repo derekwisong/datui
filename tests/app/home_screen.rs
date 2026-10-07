@@ -323,7 +323,9 @@ fn test_a_big_listing_is_labelled_from_the_viewport_not_from_directory_order() {
     // opens the whole directory, which is not one of the two hundred being looked into.
     pump_home(&mut app, &rx, area, &mut buf, |app| {
         app.home.visible().iter().any(|row| match row {
-            datui::home::Row::Entry { entry, .. } => entry.kind == datui::discover::EntryKind::Hive,
+            datui::home::Row::Entry { entry, .. } => {
+                entry.kind == datui::home::discover::EntryKind::Hive
+            }
             _ => false,
         })
     });
@@ -335,7 +337,7 @@ fn test_a_big_listing_is_labelled_from_the_viewport_not_from_directory_order() {
 
     // And the bottom of the listing still has not been, which is the point: the
     // budget follows the viewport rather than directory order.
-    let kinds: Vec<datui::discover::EntryKind> = app
+    let kinds: Vec<datui::home::discover::EntryKind> = app
         .home
         .visible()
         .iter()
@@ -346,7 +348,7 @@ fn test_a_big_listing_is_labelled_from_the_viewport_not_from_directory_order() {
         .collect();
     assert_eq!(
         kinds.last(),
-        Some(&datui::discover::EntryKind::Unknown),
+        Some(&datui::home::discover::EntryKind::Unknown),
         "the bottom of a two-hundred-row listing is nobody's viewport"
     );
 }
@@ -592,7 +594,10 @@ fn a_load_chosen_at_home_fails_at_home() {
         "nothing was opened"
     );
     // A typed path has no row to dim, so the line says it.
-    assert_eq!(app.home.status.as_deref(), Some(datui::discover::NO_READER));
+    assert_eq!(
+        app.home.status.as_deref(),
+        Some(datui::home::discover::NO_READER)
+    );
 }
 
 /// Esc at a bucket's top goes back to the home listing, not to a directory named `gs:`.
@@ -698,7 +703,7 @@ fn test_right_goes_inside_a_local_multi_file_directory() {
     app.home.classify_now(8);
     assert_eq!(
         app.home.selected_entry().map(|e| e.kind),
-        Some(datui::discover::EntryKind::MultiFile),
+        Some(datui::home::discover::EntryKind::MultiFile),
         "a directory of part files is offered as one dataset"
     );
 
@@ -813,7 +818,7 @@ fn test_ctrl_d_adds_to_the_catalog_and_forgets() {
     let here = recents[0].parent().unwrap().to_path_buf();
     let catalog = config.join("catalog.toml");
     let listed = |path: &Path| {
-        datui::catalog::read(&catalog, "mine", datui::catalog::Origin::Mine)
+        datui::home::catalog::read(&catalog, "mine", datui::home::catalog::Origin::Mine)
             .unwrap()
             .is_some_and(|c| c.dataset_at(path).is_some())
     };
@@ -830,7 +835,7 @@ fn test_ctrl_d_adds_to_the_catalog_and_forgets() {
     assert!(
         std::fs::read_to_string(&catalog)
             .unwrap()
-            .starts_with(datui::catalog::MINE_TEMPLATE),
+            .starts_with(datui::home::catalog::MINE_TEMPLATE),
         "a new catalog.toml says what it is"
     );
 
@@ -888,10 +893,10 @@ fn test_remembered_places_move_into_catalog_toml() {
     app.use_cache(cache.clone());
     app.use_catalog_dir(&config).unwrap();
     app.enter_home();
-    let catalog = datui::catalog::read(
+    let catalog = datui::home::catalog::read(
         &config.join("catalog.toml"),
         "mine",
-        datui::catalog::Origin::Mine,
+        datui::home::catalog::Origin::Mine,
     )
     .unwrap()
     .expect("catalog.toml written");
@@ -980,13 +985,13 @@ fn test_a_tall_list_spaces_its_sections_and_a_short_one_does_not() {
     app.enter_home();
     let config = datui::AppConfig {
         read_catalogs: vec![
-            datui::catalog::parse(
+            datui::home::catalog::parse(
                 &format!(
                     "[configured]\nname = \"Configured\"\npath = {:?}\n",
                     configured.to_string_lossy()
                 ),
                 "mine",
-                datui::catalog::Origin::Mine,
+                datui::home::catalog::Origin::Mine,
                 None,
             )
             .unwrap(),
@@ -1226,7 +1231,7 @@ fn test_right_goes_inside_a_lake_table() {
     app.home.classify_now(8);
     assert_eq!(
         app.home.selected_entry().map(|e| e.kind),
-        Some(datui::discover::EntryKind::Delta)
+        Some(datui::home::discover::EntryKind::Delta)
     );
 
     // Wide on purpose: this is about what the bar says, not where it is cut.
@@ -1284,12 +1289,12 @@ fn test_an_unexamined_lake_root_is_classified_before_it_is_opened() {
     // As a row restored from a cache this build will not take its kind from.
     for section in app.home.sections_mut().iter_mut() {
         for entry in section.rows.iter_mut().filter(|e| e.name == "orders") {
-            entry.kind = datui::discover::EntryKind::Unknown;
+            entry.kind = datui::home::discover::EntryKind::Unknown;
         }
     }
     assert_eq!(
         app.home.selected_entry().map(|e| e.kind),
-        Some(datui::discover::EntryKind::Unknown),
+        Some(datui::home::discover::EntryKind::Unknown),
         "the row the cursor is on is the unexamined one"
     );
 
@@ -1383,7 +1388,7 @@ fn test_an_unexamined_remote_lake_root_is_classified_off_the_event_thread() {
     app.home.selected = row;
     assert_eq!(
         app.home.selected_entry().map(|e| e.kind),
-        Some(datui::discover::EntryKind::Unknown),
+        Some(datui::home::discover::EntryKind::Unknown),
         "nothing has looked at it, which is the whole point"
     );
 
@@ -1465,7 +1470,7 @@ fn test_a_hive_directory_from_home_still_opens_as_one_dataset() {
     app.home.classify_now(8);
     assert_eq!(
         app.home.selected_entry().map(|e| e.kind),
-        Some(datui::discover::EntryKind::Hive)
+        Some(datui::home::discover::EntryKind::Hive)
     );
 
     let opened = app.event(AppEvent::Key(KeyEvent::new(
@@ -1523,7 +1528,7 @@ fn test_a_hive_directory_from_home_still_opens_as_one_dataset() {
     app.home.selected = row;
     assert_eq!(
         app.home.selected_entry().map(|e| e.kind),
-        Some(datui::discover::EntryKind::Hive),
+        Some(datui::home::discover::EntryKind::Hive),
         "the row still says hive"
     );
     match app.event(AppEvent::Key(KeyEvent::new(
@@ -1657,7 +1662,7 @@ fn test_the_door_into_a_lake_table_says_its_files_are_not_the_table() {
     app.home.selected = row;
     assert_eq!(
         app.home.selected_entry().map(|e| e.kind),
-        Some(datui::discover::EntryKind::Delta),
+        Some(datui::home::discover::EntryKind::Delta),
         "the listing under it is a Delta table"
     );
 
@@ -1775,7 +1780,7 @@ fn test_right_goes_inside_a_row_nothing_has_looked_into() {
     // has looked into it, and what every row on a share looks like.
     assert_eq!(
         app.home.selected_entry().map(|e| e.kind),
-        Some(datui::discover::EntryKind::Unknown),
+        Some(datui::home::discover::EntryKind::Unknown),
     );
 
     app.event(key(KeyCode::Right));
@@ -1841,12 +1846,12 @@ fn test_the_door_reads_a_local_directory_with_the_local_rules() {
 
     assert_eq!(
         door_kind(&trips),
-        datui::discover::EntryKind::Hudi,
+        datui::home::discover::EntryKind::Hudi,
         "a dotted marker is not in the listing, so only the local rule can see it"
     );
     assert_eq!(
         door_kind(&project),
-        datui::discover::EntryKind::Directory,
+        datui::home::discover::EntryKind::Directory,
         "two directory names are not an Iceberg table: the local rule wants a \
          .metadata.json in one of them"
     );
@@ -1866,7 +1871,7 @@ fn test_the_door_reads_a_local_directory_with_the_local_rules() {
 #[cfg(feature = "cloud")]
 #[test]
 fn test_the_cloud_door_reads_a_prefix_with_the_reader_its_listing_calls_for() {
-    use datui::discover::{Entry, EntryKind};
+    use datui::home::discover::{Entry, EntryKind};
     use std::path::PathBuf;
 
     // Press Enter on the door of a prefix holding these names, and say what happened.
@@ -2598,6 +2603,6 @@ fn a_hugging_face_cache_lists_its_splits_on_home() {
         text.contains("Resources") && !text.contains("Arrow"),
         "{text}"
     );
-    assert!(datui::discover::split_row(&cache.join("test")).is_some());
-    assert!(datui::discover::split_row(&cache.join("dev")).is_none());
+    assert!(datui::home::discover::split_row(&cache.join("test")).is_some());
+    assert!(datui::home::discover::split_row(&cache.join("dev")).is_none());
 }

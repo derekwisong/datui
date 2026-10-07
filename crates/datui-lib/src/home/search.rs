@@ -5,7 +5,7 @@
 //! listing cap counts matches, so a match is never lost behind non-matches.
 
 use crate::config::SearchConfig;
-use crate::discover::{Entry, EntryKind, is_data_file};
+use crate::home::discover::{Entry, EntryKind, is_data_file};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -56,7 +56,7 @@ const BATCH_INTERVAL: Duration = Duration::from_millis(120);
 /// abandon the walk. Blocks on the filesystem: never call from the drawing thread.
 /// Keeps the files `formats` reads as well, as the listing names them: by a spec's
 /// glob, or by its magic in the first bytes of a file whose name says nothing, at most
-/// `crate::discover::MAX_SNIFFS_PER_DIR` of them a directory.
+/// `crate::home::discover::MAX_SNIFFS_PER_DIR` of them a directory.
 pub fn walk_with_specs<F>(
     root: &Path,
     config: &SearchConfig,
@@ -150,7 +150,7 @@ where
     let mut last_emit = Instant::now();
     // Where the files live, for the row's storage glyph (#547 D10). One filesystem unless the walk
     // may cross into others, and then asked per file.
-    let mounts = crate::locality::Mounts::cached();
+    let mounts = crate::home::locality::Mounts::cached();
     let root_source = mounts.describe(root).fstype;
     // Specs name files only when no extension filter narrows the search.
     let specs = extensions.is_empty() && !formats.is_empty();
@@ -205,7 +205,7 @@ where
 
         let mut entry = Entry::new(path.to_path_buf(), EntryKind::File);
         if let Some(spec) = spec {
-            crate::discover::name_spec_file(&mut entry, &spec);
+            crate::home::discover::name_spec_file(&mut entry, &spec);
         }
         if let Ok(meta) = dir_entry.metadata() {
             entry = entry.with_fs_metadata(&meta);
@@ -252,20 +252,20 @@ fn spec_of(
     if let Some(spec) = formats.by_glob(path, false).into_iter().next() {
         return Some(spec);
     }
-    if !crate::discover::worth_sniffing(path) {
+    if !crate::home::discover::worth_sniffing(path) {
         return None;
     }
     let dir = path.parent().unwrap_or(path);
     if sniffed_in.0 != dir {
         *sniffed_in = (dir.to_path_buf(), 0);
     }
-    if sniffed_in.1 >= crate::discover::MAX_SNIFFS_PER_DIR {
+    if sniffed_in.1 >= crate::home::discover::MAX_SNIFFS_PER_DIR {
         return None;
     }
     sniffed_in.1 += 1;
-    match crate::discover::sniff_listed(path, formats)? {
-        crate::discover::Sniffed::Spec(spec) => Some(spec),
-        crate::discover::Sniffed::Format => None,
+    match crate::home::discover::sniff_listed(path, formats)? {
+        crate::home::discover::Sniffed::Spec(spec) => Some(spec),
+        crate::home::discover::Sniffed::Format => None,
     }
 }
 

@@ -569,7 +569,10 @@ impl App {
             .as_ref()
             .and_then(|s| s.num_rows_if_valid())
         {
-            Some(rows) => format!("Grouping {} rows...", crate::discover::format_rows(rows)),
+            Some(rows) => format!(
+                "Grouping {} rows...",
+                crate::home::discover::format_rows(rows)
+            ),
             None => "Grouping every row...".to_string(),
         }
     }

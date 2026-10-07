@@ -628,7 +628,7 @@ impl Listed {
         read: &[usize],
         footers: &[Option<FileFooter>],
     ) -> Option<crate::cache::DatasetFacts> {
-        use crate::discover::{CLASSIFIER_VERSION, EntryKind, Holds};
+        use crate::home::discover::{CLASSIFIER_VERSION, EntryKind, Holds};
         let columns = self.column_names(footers)?;
         let files = &self.files;
         let every_footer = read.len() == files.len() && footers.iter().all(Option::is_some);
@@ -1250,8 +1250,8 @@ fn walk_dirs(
                     .iter()
                     .filter(|(path, is_dir)| {
                         !is_dir
-                            && crate::discover::is_parquet_key(
-                                &crate::discover::directory_and_name(path),
+                            && crate::home::discover::is_parquet_key(
+                                &crate::home::discover::directory_and_name(path),
                             )
                     })
                     .count();
@@ -1342,7 +1342,7 @@ fn collect_data_files(
                 .file_name()
                 .map(|n| n.to_string_lossy())
                 .as_deref()
-                .is_some_and(crate::discover::is_bookkeeping);
+                .is_some_and(crate::home::discover::is_bookkeeping);
         if *is_dir {
             let (below, deferred) = collect_data_files(
                 walked,
@@ -1358,7 +1358,9 @@ fn collect_data_files(
             // of the dataset).
             passed_over += deferred;
         } else if !bookkeeping
-            && crate::discover::is_parquet_key(&crate::discover::directory_and_name(&child))
+            && crate::home::discover::is_parquet_key(&crate::home::discover::directory_and_name(
+                &child,
+            ))
         {
             // The cloud listing's test, so a directory is the same table anywhere. Given the
             // directory and name, not the whole path: part files in `occurrence.parquet/` are known
@@ -2020,7 +2022,7 @@ mod tests {
         let key = crate::canonical::canonicalize(dir.path()).unwrap();
         let facts = cache.dataset_facts(&key).expect("recorded");
         assert_eq!(facts.rows, Some(9));
-        assert_eq!(facts.kind, Some(crate::discover::EntryKind::Hive));
+        assert_eq!(facts.kind, Some(crate::home::discover::EntryKind::Hive));
         assert_eq!(facts.columns, ["part", "v"]);
         assert!(!facts.cols_sampled);
         assert!(
@@ -2038,7 +2040,7 @@ mod tests {
     /// open kept, reading no footer; one that changed since is sampled again.
     #[test]
     fn the_home_screen_measures_a_large_dataset_from_the_shape_an_open_kept() {
-        use crate::discover::{Entry, EntryKind};
+        use crate::home::discover::{Entry, EntryKind};
         let dir = tempfile::tempdir().unwrap();
         tree(dir.path(), 150);
         let cache_dir = tempfile::tempdir().unwrap();
@@ -2046,7 +2048,7 @@ mod tests {
         let measure = |cache: Option<&crate::cache::CacheManager>| {
             let mut entry = Entry::directory(dir.path());
             entry.kind = EntryKind::Hive;
-            crate::discover::enrich_with(
+            crate::home::discover::enrich_with(
                 &mut entry,
                 &crate::formats::schema_union::ReadAs::default(),
                 cache,

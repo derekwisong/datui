@@ -166,7 +166,7 @@ fn a_failed_peek_stops_spinning_and_is_not_an_answer() {
     assert!(app.home.peek_failed.contains(&path));
     assert!(!app.home.cloud_kinds.contains_key(&path), "not an answer");
 
-    let mut row = datui::discover::Entry::directory(&path);
+    let mut row = datui::home::discover::Entry::directory(&path);
     row.name = "seasons".to_string();
     assert_eq!(
         app.home.cloud_look(&row),

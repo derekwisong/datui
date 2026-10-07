@@ -245,7 +245,7 @@ fn discovery_and_a_pipe_know_a_stream_by_its_bytes() {
         let path = dir.path().join(name);
         std::fs::write(&path, &bytes).unwrap();
         assert_eq!(
-            crate::discover::sniff_format(&path),
+            crate::home::discover::sniff_format(&path),
             Some(crate::FileFormat::Arrow),
             "{name}"
         );

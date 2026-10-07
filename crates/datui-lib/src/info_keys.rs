@@ -16,10 +16,10 @@ pub struct InfoState {
     /// ended, so drawing or reopening never reads again.
     pub(crate) file_facts: Option<(u64, FileFacts)>,
     /// What the dataset's columns mean, when a catalog that lists it says.
-    pub codebook: Option<std::sync::Arc<crate::codebook::Codebook>>,
+    pub codebook: Option<std::sync::Arc<crate::home::codebook::Codebook>>,
     /// The catalog entry the open dataset is, or is inside, and its catalog's label:
     /// what Info's Documentation tab shows.
-    pub catalog_entry: Option<(String, std::sync::Arc<crate::catalog::Dataset>)>,
+    pub catalog_entry: Option<(String, std::sync::Arc<crate::home::catalog::Dataset>)>,
     /// The Documentation view, full screen over home (Ctrl+E).
     pub documentation: crate::widgets::documentation::DocState,
     /// The same page for the open dataset, on Info's Documentation tab.

@@ -19,7 +19,6 @@ pub mod avro_types;
 mod background;
 pub mod cache;
 pub mod canonical;
-pub mod catalog;
 pub mod chart_data;
 pub mod chart_export;
 pub mod chart_export_modal;
@@ -32,7 +31,6 @@ mod chart_recipe;
 pub mod cli;
 pub mod clipboard;
 pub mod cloud;
-pub mod codebook;
 pub mod commands;
 pub mod config;
 pub mod config_command;
@@ -41,7 +39,6 @@ mod copy_keys;
 pub mod copy_modal;
 mod counting;
 pub mod data_quality;
-pub mod discover;
 pub mod distribution_fit;
 mod documentation_keys;
 mod editing_keys;
@@ -60,15 +57,11 @@ pub mod follow;
 mod footer_state;
 pub mod form;
 pub mod formats;
-pub mod fuzzy;
 pub mod glyphs;
 pub mod help;
 mod hex_keys;
 pub mod hex_view;
 pub mod home;
-mod home_app;
-mod home_keys;
-pub mod home_preview;
 mod info_keys;
 pub mod inspector_bytes;
 pub mod inspector_drill;
@@ -81,7 +74,6 @@ pub mod limits;
 pub mod link_open;
 mod loading;
 pub(crate) mod local_glob;
-pub mod locality;
 pub mod logging;
 pub mod measurements;
 pub mod nested_json;
@@ -121,7 +113,6 @@ pub mod query;
 mod render;
 pub mod sanitize;
 mod scan;
-pub mod search;
 mod sort_filter_keys;
 pub mod sort_filter_modal;
 pub mod sort_modal;
@@ -304,17 +295,17 @@ pub enum AppEvent {
     HomePreviewReady {
         path: PathBuf,
         /// The row's stamp when it was asked for: what the rows are kept under.
-        stamp: crate::home_preview::Stamp,
+        stamp: crate::home::home_preview::Stamp,
         /// The file's stamp when it was read: what the dataset is installed under.
-        read_at: Option<crate::home_preview::Stamp>,
-        rows: Option<Arc<crate::home_preview::PreviewRows>>,
-        prepared: crate::home_preview::Handoff,
+        read_at: Option<crate::home::home_preview::Stamp>,
+        rows: Option<Arc<crate::home::home_preview::PreviewRows>>,
+        prepared: crate::home::home_preview::Handoff,
     },
     /// A schema read off-thread for the highlighted dataset.
     HomeSchemaReady {
         generation: u64,
         path: PathBuf,
-        preview: Option<crate::discover::SchemaPreview>,
+        preview: Option<crate::home::discover::SchemaPreview>,
     },
     /// Measurements for home rows, sent per row so a slow one holds back no other.
     /// `done` ends the batch. No generation: a measurement is keyed by path and
@@ -343,14 +334,14 @@ pub enum AppEvent {
     HomeSearchBatch {
         generation: u64,
         root: PathBuf,
-        found: Vec<crate::discover::Entry>,
+        found: Vec<crate::home::discover::Entry>,
         scanned: usize,
     },
     /// The filter scored against the search's files, for the walk `epoch` names.
     HomeSearchScored {
         epoch: u64,
         /// `None` from a worker that died.
-        matches: Option<Box<crate::search::Matches>>,
+        matches: Option<Box<crate::home::search::Matches>>,
     },
     /// The background search stopped; `limited` says why if it stopped short.
     HomeSearchDone {
@@ -379,20 +370,23 @@ pub enum AppEvent {
     /// A network root has been listed off-thread, or could not be.
     HomeProbeReady {
         root: PathBuf,
-        rows: Option<Vec<crate::discover::Entry>>,
-        /// The listing stopped at [`crate::discover::MAX_ENTRIES_PER_DIR`].
+        rows: Option<Vec<crate::home::discover::Entry>>,
+        /// The listing stopped at [`crate::home::discover::MAX_ENTRIES_PER_DIR`].
         cut_short: bool,
     },
     /// Rows of a network directory read since its last batch.
     HomeProbeProgress {
         root: PathBuf,
-        rows: Vec<crate::discover::Entry>,
+        rows: Vec<crate::home::discover::Entry>,
     },
     /// Cloud directories that peeking found to be partitioned or Parquet datasets.
     HomeCloudKinds {
         kinds: Vec<(
             PathBuf,
-            (crate::discover::EntryKind, crate::discover::Holds),
+            (
+                crate::home::discover::EntryKind,
+                crate::home::discover::Holds,
+            ),
         )>,
         /// Directories whose peek failed or was lost, so left unlabeled.
         failed: Vec<PathBuf>,
@@ -407,7 +401,7 @@ pub enum AppEvent {
     HomeNarrowed {
         dir: PathBuf,
         prefix: String,
-        listed: Option<(Vec<crate::discover::Entry>, bool)>,
+        listed: Option<(Vec<crate::home::discover::Entry>, bool)>,
     },
     /// A cloud listing was refused, with the service's reason.
     HomeProbeFailed {
@@ -593,15 +587,17 @@ impl App {
             Some(home::Row::Entry { entry, .. }) => entry,
         };
         // A bookmark opens whole.
-        if entry.kind != discover::EntryKind::File && self.home.bookmark(&entry.path).is_some() {
+        if entry.kind != home::discover::EntryKind::File
+            && self.home.bookmark(&entry.path).is_some()
+        {
             return WhatEnter::OpensDirectory;
         }
         match entry.kind {
-            discover::EntryKind::Unknown => WhatEnter::LooksFirst,
+            home::discover::EntryKind::Unknown => WhatEnter::LooksFirst,
             // A database of several tables lists them.
-            discover::EntryKind::File if entry.enter_lists_tables() => WhatEnter::GoesInside,
-            discover::EntryKind::File => WhatEnter::OpensFile,
-            discover::EntryKind::Other
+            home::discover::EntryKind::File if entry.enter_lists_tables() => WhatEnter::GoesInside,
+            home::discover::EntryKind::File => WhatEnter::OpensFile,
+            home::discover::EntryKind::Other
                 if matches!(
                     cloud::source::input_source(&entry.path),
                     cloud::source::InputSource::Local(_)
@@ -609,13 +605,15 @@ impl App {
             {
                 WhatEnter::OpensHex
             }
-            discover::EntryKind::Other => WhatEnter::Nothing,
-            discover::EntryKind::Hive | discover::EntryKind::MultiFile => WhatEnter::OpensDirectory,
+            home::discover::EntryKind::Other => WhatEnter::Nothing,
+            home::discover::EntryKind::Hive | home::discover::EntryKind::MultiFile => {
+                WhatEnter::OpensDirectory
+            }
             // A plain directory, and a lake table, whose files are not its rows.
-            discover::EntryKind::Directory
-            | discover::EntryKind::Delta
-            | discover::EntryKind::Iceberg
-            | discover::EntryKind::Hudi => WhatEnter::GoesInside,
+            home::discover::EntryKind::Directory
+            | home::discover::EntryKind::Delta
+            | home::discover::EntryKind::Iceberg
+            | home::discover::EntryKind::Hudi => WhatEnter::GoesInside,
         }
     }
 }
@@ -860,7 +858,7 @@ pub struct App {
     /// The dataset's row count, footer pass and line indexing, and what waits on them.
     counting: counting::Counting,
     /// The home screen's work in flight, and what it keeps for the session.
-    pub home_app: home_app::HomeApp,
+    pub home_app: home::home_app::HomeApp,
     /// Home screen state, rebuilt whenever home is entered.
     pub home: home::HomeState,
     /// Where the dataset on screen came from, and how it was opened.
@@ -2683,7 +2681,7 @@ impl App {
                 formats: formats.clone(),
                 ..Default::default()
             },
-            home_app: home_app::HomeApp {
+            home_app: home::home_app::HomeApp {
                 local_desktop: link_open::local_desktop(link_open::Platform::current(), |name| {
                     std::env::var(name).ok()
                 }),
@@ -3966,7 +3964,7 @@ impl App {
                         .and_then(Result::ok);
                         let (kind, holds) = match peeked {
                             Some((kind, holds)) => (kind, Some(Box::new(holds))),
-                            None => (discover::EntryKind::Unknown, None),
+                            None => (home::discover::EntryKind::Unknown, None),
                         };
                         return Ok(Answer::LookedAt {
                             kind,
@@ -3979,13 +3977,13 @@ impl App {
                     // will read, so the rule judges the directory the user is about to see.
                     let as_read = Self::read_as(&options);
                     let looked = logging::catch_panic(|| {
-                        let mut entry = discover::Entry::directory(&looking);
-                        entry.kind = discover::EntryKind::Unknown;
+                        let mut entry = home::discover::Entry::directory(&looking);
+                        entry.kind = home::discover::EntryKind::Unknown;
                         home::look_into_as(&entry, &as_read)
                     });
                     let kind = match looked {
                         Ok(entry) => entry.kind,
-                        Err(_) => discover::EntryKind::Directory,
+                        Err(_) => home::discover::EntryKind::Directory,
                     };
                     Ok(Answer::LookedAt {
                         kind,
@@ -4018,9 +4016,9 @@ impl App {
                     let found = if !looking.exists() {
                         None
                     } else if looking.is_dir() {
-                        Some(crate::discover::classify_directory(&looking))
+                        Some(crate::home::discover::classify_directory(&looking))
                     } else {
-                        Some(crate::discover::EntryKind::File)
+                        Some(crate::home::discover::EntryKind::File)
                     };
                     Ok(Answer::Kind(found))
                 });

@@ -258,7 +258,7 @@ pub(crate) const PARQUET: Reader = Reader {
     // write: the footer is what a reader needs.
     signatures: &[Signature {
         says: |head, file| {
-            head.starts_with(b"PAR1") && file.is_none_or(crate::discover::has_parquet_magic)
+            head.starts_with(b"PAR1") && file.is_none_or(crate::home::discover::has_parquet_magic)
         },
         kind: Kind::Magic,
         trusted: Trusted {

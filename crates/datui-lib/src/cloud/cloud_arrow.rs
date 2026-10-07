@@ -169,10 +169,10 @@ fn one_split(
 ) -> Result<(Vec<(String, u64)>, OpenOptions)> {
     let hugging_face = names
         .iter()
-        .any(|(name, _)| crate::discover::is_hugging_face_metadata(name));
+        .any(|(name, _)| crate::home::discover::is_hugging_face_metadata(name));
     names.retain(|(name, _)| {
-        !crate::discover::is_bookkeeping(name)
-            && crate::discover::data_format(Path::new(name)) == Some(FileFormat::Arrow)
+        !crate::home::discover::is_bookkeeping(name)
+            && crate::home::discover::data_format(Path::new(name)) == Some(FileFormat::Arrow)
     });
     if names.is_empty() {
         return Err(failed(url, "it holds no Arrow files"));

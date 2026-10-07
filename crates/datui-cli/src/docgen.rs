@@ -86,7 +86,9 @@ pub const GENERATED: &[Generated] = &[
     Generated {
         file: "docs/reference/catalogs.md",
         region: Some("public-catalog"),
-        render: |read| render_public_catalog(&read("crates/datui-lib/src/public_catalog.toml")),
+        render: |read| {
+            render_public_catalog(&read("crates/datui-lib/src/home/public_catalog.toml"))
+        },
     },
     Generated {
         file: "docs/reference/manual-pages.md",

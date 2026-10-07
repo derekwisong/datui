@@ -41,7 +41,8 @@ impl PickerState {
             .iter()
             .enumerate()
             .filter_map(|(i, item)| {
-                crate::fuzzy::substring_rank(&self.filter, item).map(|r| (r, i, item.as_str()))
+                crate::home::fuzzy::substring_rank(&self.filter, item)
+                    .map(|r| (r, i, item.as_str()))
             })
             .collect();
         ranked.sort_by_key(|(rank, i, _)| (*rank, *i));
@@ -139,7 +140,7 @@ impl PickerState {
         let filtered = self.filtered();
         let named = filtered
             .first()
-            .filter(|(_, item)| crate::fuzzy::substring_rank(&self.filter, item) == Some(0));
+            .filter(|(_, item)| crate::home::fuzzy::substring_rank(&self.filter, item) == Some(0));
         if let Some((exact, _)) = named {
             self.selected = *exact;
         } else if filtered.iter().all(|(i, _)| *i != self.selected)

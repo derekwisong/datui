@@ -681,7 +681,7 @@ pub struct DataTableInfo<'a> {
     /// The dataset is delimited text, whose first row `H` reads the other way.
     pub header_toggle: bool,
     /// What the columns mean, from the catalog that lists the dataset.
-    pub codebook: Option<&'a crate::codebook::Codebook>,
+    pub codebook: Option<&'a crate::home::codebook::Codebook>,
     /// The Documentation tab's page, when a catalog lists the dataset.
     pub documentation: Option<&'a mut crate::widgets::documentation::DocState>,
     /// The row count from a sample of the dataset's footers, until it is counted.
@@ -723,7 +723,7 @@ fn estimated_rows_and_columns(
     let middot = crate::glyphs::get().middot;
     format!(
         "Rows (total): ~{} (est. from {} of {} files; c counts) {middot} Columns: {columns}",
-        crate::discover::format_rows(estimate.rows as usize),
+        crate::home::discover::format_rows(estimate.rows as usize),
         format_int(estimate.sampled),
         format_int(estimate.files),
     )
@@ -750,7 +750,7 @@ impl<'a> DataTableInfo<'a> {
     }
 
     /// The codebook, when it has a note for one of the columns on screen.
-    fn codebook_here(&self) -> Option<&'a crate::codebook::Codebook> {
+    fn codebook_here(&self) -> Option<&'a crate::home::codebook::Codebook> {
         self.codebook
             .filter(|book| book.covers(self.state.schema().iter_names().map(|n| n.as_str())))
     }

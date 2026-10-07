@@ -245,7 +245,7 @@ pub fn chart_notes(rows: &RowsRead, clipped: Option<&Clipped>, middot: &str) -> 
     if let Some(steps) = rows.envelope_steps {
         notes.push(format!(
             "min and max of {} rows in {} steps",
-            crate::discover::format_rows(rows.total_rows),
+            crate::home::discover::format_rows(rows.total_rows),
             crate::numfmt::group_chrome(steps)
         ));
     }
@@ -253,7 +253,7 @@ pub fn chart_notes(rows: &RowsRead, clipped: Option<&Clipped>, middot: &str) -> 
         let mut note = format!(
             "sample of {} of {} rows",
             crate::numfmt::group_chrome(n),
-            crate::discover::format_rows(rows.total_rows)
+            crate::home::discover::format_rows(rows.total_rows)
         );
         if let Some(seed) = rows.seed {
             note.push_str(&format!(" {middot} seed {seed}"));

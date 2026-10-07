@@ -667,7 +667,7 @@ fn finding_status(spec: &FindSpec, read: Option<usize>) -> String {
         Some(rows) if rows > 0 => format!(
             "Finding {}... {} rows",
             spec.label(),
-            crate::discover::format_rows(rows)
+            crate::home::discover::format_rows(rows)
         ),
         _ => format!("Finding {}...", spec.label()),
     }

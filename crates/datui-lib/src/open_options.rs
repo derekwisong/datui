@@ -183,7 +183,7 @@ pub struct OpenOptions {
     pub force: bool,
     /// The dataset the home screen's preview built and read the first page of, for
     /// this open to install rather than read again. Taken once.
-    pub prepared: Option<crate::home_preview::Handoff>,
+    pub prepared: Option<crate::home::home_preview::Handoff>,
     /// A file of the built-in catalog: downloaded without asking when it is small.
     pub download_unasked: Option<UnaskedDownload>,
 }

@@ -110,7 +110,7 @@ fn endpoints_follow_the_sdk_precedence() {
 
 fn environment<'a>(
     var: &'a dyn Fn(&str) -> Option<String>,
-    run: &'a crate::cloud_command::Runner<'a>,
+    run: &'a crate::cloud::cloud_command::Runner<'a>,
 ) -> Environment<'a> {
     Environment {
         var,

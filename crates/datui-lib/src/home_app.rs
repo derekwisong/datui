@@ -10,7 +10,8 @@ use crate::open_options::OpenOptions;
 #[cfg(feature = "cloud")]
 use crate::wait_on_runtime;
 use crate::{
-    APP_NAME, App, AppEvent, InputMode, catalog, config, discover, home, loading, source, widgets,
+    APP_NAME, App, AppEvent, InputMode, catalog, cloud::source, config, discover, home, loading,
+    widgets,
 };
 use color_eyre::Result;
 use std::collections::HashMap;
@@ -92,7 +93,7 @@ fn next_search_epoch() -> u64 {
 /// A source as a home-screen row, with the last run's buckets when they still apply.
 #[cfg(feature = "cloud")]
 pub(crate) fn home_cloud_source(
-    source: &crate::cloud_sources::Source,
+    source: &crate::cloud::cloud_sources::Source,
     cached: Option<&crate::cache::CloudListing>,
     listing: bool,
 ) -> home::CloudSource {
@@ -549,7 +550,7 @@ impl App {
                     #[cfg(feature = "cloud")]
                     if let Some((id, account)) = home::cloud_account(&root) {
                         let listed = wait_on_runtime(&runtime, async move {
-                            crate::cloud_browse::list_account(&id, &account, &cloud).await
+                            crate::cloud::cloud_browse::list_account(&id, &account, &cloud).await
                         });
                         match listed {
                             Some(Ok(rows)) => {
@@ -578,12 +579,13 @@ impl App {
                         return;
                     }
                     #[cfg(feature = "cloud")]
-                    if crate::cloud_browse::split_bucket_url(&root.to_string_lossy()).is_some()
+                    if crate::cloud::cloud_browse::split_bucket_url(&root.to_string_lossy())
+                        .is_some()
                         || source::azure_parts(&root.to_string_lossy()).is_some()
                     {
                         let url = root.to_string_lossy().into_owned();
                         // Each page's rows are drawn as they come; leaving the place stops the listing.
-                        let watch = crate::cloud_browse::Watch {
+                        let watch = crate::cloud::cloud_browse::Watch {
                             progress: Some(std::sync::Arc::new({
                                 let (tx, root) = (tx.clone(), root.clone());
                                 move |page: &[crate::discover::Entry]| {
@@ -597,7 +599,8 @@ impl App {
                             names_from: None,
                         };
                         let listed = wait_on_runtime(&runtime, async move {
-                            crate::cloud_browse::list_objects_watched(&url, &cloud, &watch).await
+                            crate::cloud::cloud_browse::list_objects_watched(&url, &cloud, &watch)
+                                .await
                         });
                         // A refused listing says why, rather than reading as a place that stopped
                         // answering.
@@ -715,7 +718,7 @@ impl App {
             }
             let rows = self.home.probes.listed(dir)?;
             let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
-            crate::cloud_browse::narrowing_prefix(&self.home.filter, &names)
+            crate::cloud::cloud_browse::narrowing_prefix(&self.home.filter, &names)
         });
         let (Some(dir), Some(prefix)) = (dir, prefix) else {
             if let Some((_, _, cancelled)) = self.home_app.narrowing.take() {
@@ -754,13 +757,13 @@ impl App {
         std::thread::spawn(move || {
             owed.run(|| {
                 let url = dir.to_string_lossy().into_owned();
-                let watch = crate::cloud_browse::Watch {
+                let watch = crate::cloud::cloud_browse::Watch {
                     progress: None,
                     cancelled,
                     names_from: Some(prefix.clone()),
                 };
                 let listed = wait_on_runtime(&runtime, async move {
-                    crate::cloud_browse::list_objects_watched(&url, &cloud, &watch).await
+                    crate::cloud::cloud_browse::list_objects_watched(&url, &cloud, &watch).await
                 });
                 let listed = match listed {
                     Some(Ok(level)) if !level.cancelled => Some((level.rows, level.truncated)),
@@ -820,23 +823,23 @@ impl App {
         self.runtime.spawn(async move {
             let mut hidden = cache.load_hidden_cloud_sources();
             hidden.extend(cloud.hide.iter().cloned());
-            let cached_for = |source: &crate::cloud_sources::Source| {
+            let cached_for = |source: &crate::cloud::cloud_sources::Source| {
                 cache.cloud_listing(&source.id, &source.fingerprint())
             };
             // Looked for again, and kept for the opens and listings that follow.
-            let found = crate::cloud_sources::rediscover(&cloud).to_vec();
+            let found = crate::cloud::cloud_sources::rediscover(&cloud).to_vec();
             // A bucket under Recent opens with the login that listed it, shown or not, unless
             // its source is hidden (perhaps for a dead login; the default opens it then).
             // Only with the rows, so an old listing never overrides a newer one.
             if only.is_none() {
                 for source in found.iter().filter(|s| !hidden.contains(&s.id)) {
                     if let Some(cached) = cached_for(source) {
-                        crate::cloud_sources::remember_listed(source, &cached.buckets);
+                        crate::cloud::cloud_sources::remember_listed(source, &cached.buckets);
                     }
                 }
             }
-            let sources: Vec<crate::cloud_sources::Source> =
-                crate::cloud_sources::on_home(found, &cloud)
+            let sources: Vec<crate::cloud::cloud_sources::Source> =
+                crate::cloud::cloud_sources::on_home(found, &cloud)
                     .into_iter()
                     .filter(|s| !hidden.contains(&s.id))
                     .collect();
@@ -881,7 +884,7 @@ impl App {
                 let permits = permits.clone();
                 listings.spawn(async move {
                     let _permit = permits.acquire_owned().await;
-                    let result = crate::cloud_browse::list_first_level(&source).await;
+                    let result = crate::cloud::cloud_browse::list_first_level(&source).await;
                     (source, result)
                 });
             }
@@ -896,7 +899,7 @@ impl App {
                 let failure = match result {
                     Ok(listed) => {
                         for item in listed {
-                            crate::cloud_sources::remember_bucket(&source, &item.name);
+                            crate::cloud::cloud_sources::remember_bucket(&source, &item.name);
                             if !item.details.is_empty() {
                                 details.push((item.place.clone(), item.details));
                             }
@@ -1835,7 +1838,8 @@ impl App {
                     let directory = task_directory;
                     let _permit = permits.acquire_owned().await;
                     let kind =
-                        crate::cloud_browse::peek_kind(&directory.to_string_lossy(), &cloud).await;
+                        crate::cloud::cloud_browse::peek_kind(&directory.to_string_lossy(), &cloud)
+                            .await;
                     (directory, kind)
                 });
                 asked.insert(task.id(), directory);
@@ -2528,7 +2532,7 @@ impl App {
                 // An account read with its keys (the sign-in has no data role) says so.
                 #[cfg(feature = "cloud")]
                 if let Some((account, _, _)) = source::azure_parts(&root.to_string_lossy())
-                    && crate::azure::remembered_key(&account).is_some()
+                    && crate::cloud::azure::remembered_key(&account).is_some()
                 {
                     for source in &mut self.home.cloud {
                         let place = source

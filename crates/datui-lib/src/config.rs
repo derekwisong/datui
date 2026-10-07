@@ -1622,7 +1622,7 @@ pub struct ColorConfig {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HttpConfig {
-    /// The User-Agent header; empty sends [`crate::user_agent::DEFAULT`].
+    /// The User-Agent header; empty sends [`crate::cloud::user_agent::DEFAULT`].
     pub user_agent: String,
 }
 
@@ -2954,7 +2954,7 @@ impl AppConfig {
         if self.clipboard.osc52_limit.bytes() == 0 {
             return Err(eyre!("[clipboard] osc52_limit must be greater than 0"));
         }
-        if !crate::user_agent::is_valid(&self.http.user_agent) {
+        if !crate::cloud::user_agent::is_valid(&self.http.user_agent) {
             return Err(eyre!(
                 "[http] user_agent must be printable ASCII, got {:?}",
                 self.http.user_agent

@@ -44,10 +44,10 @@
 
 mod common;
 
-use datui::cloud_browse::{self, Environment};
-use datui::cloud_sources;
+use datui::cloud::cloud_browse::{self, Environment};
+use datui::cloud::cloud_sources;
+use datui::cloud::source::ProviderKind;
 use datui::config::CloudConfig;
-use datui::source::ProviderKind;
 
 /// The MinIO credentials the documented container runs with. Not a secret in any sense:
 /// they are the defaults printed in MinIO's own quick-start, and this only ever points
@@ -1673,15 +1673,15 @@ fn azure_keys_connection_strings_and_sas_tokens_open() {
         return;
     };
     let url = format!("abfss://datui-test@{account}.dfs.core.windows.net/demo/penguins.parquet");
-    let key = datui::azure::fetch_account_key(
+    let key = datui::cloud::azure::fetch_account_key(
         &account,
-        &datui::azure::AzureAuth::AzCli,
+        &datui::cloud::azure::AzureAuth::AzCli,
         &Environment::current(),
     )
     .expect("the signed-in owner can fetch the account's keys");
     assert!(!key.is_empty());
     assert_eq!(
-        datui::azure::remembered_key(&account).as_deref(),
+        datui::cloud::azure::remembered_key(&account).as_deref(),
         Some(key.as_str())
     );
 
@@ -1690,7 +1690,7 @@ fn azure_keys_connection_strings_and_sas_tokens_open() {
     let resolved = cloud_sources::resolve(&url, &config).expect("resolves");
     assert!(matches!(
         resolved.azure.auth,
-        datui::azure::AzureAuth::Key(_)
+        datui::cloud::azure::AzureAuth::Key(_)
     ));
     let headers = open_url(&url, &config).expect("opens with the key");
     assert!(headers.iter().any(|h| h == "species"), "{headers:?}");
@@ -1838,8 +1838,8 @@ fn secret_commands_env_files_and_credentials_files() {
         }],
         ..Default::default()
     };
-    assert!(datui::cloud_env::load(&file_config, dir.path()).is_empty());
-    assert_eq!(datui::cloud_env::var("DATABASE_URL"), None);
+    assert!(datui::cloud::cloud_env::load(&file_config, dir.path()).is_empty());
+    assert_eq!(datui::cloud::cloud_env::var("DATABASE_URL"), None);
     assert!(std::env::var("LAB_KEY").is_err(), "nothing is exported");
     let config = datui::OpenOptions::default().effective_cloud(&file_config);
     assert_eq!(config.s3_endpoint_url.as_deref(), Some(second));
@@ -1872,7 +1872,7 @@ fn secret_commands_env_files_and_credentials_files() {
         println!("{} projects through credentials_file", projects.len());
         assert!(!projects.is_empty());
     }
-    datui::cloud_env::load(&CloudConfig::default(), dir.path());
+    datui::cloud::cloud_env::load(&CloudConfig::default(), dir.path());
 }
 
 /// Partitioned directories in a public dataset are labelled `hive` once peeked into, open

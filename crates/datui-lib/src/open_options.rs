@@ -319,7 +319,9 @@ impl OpenOptions {
         cloud: &crate::config::CloudConfig,
     ) -> crate::config::CloudConfig {
         let mut merged = cloud.clone();
-        merged.overlay(crate::config::CloudConfig::from_env(&crate::cloud_env::var));
+        merged.overlay(crate::config::CloudConfig::from_env(
+            &crate::cloud::cloud_env::var,
+        ));
         merged
     }
 }

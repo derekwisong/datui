@@ -16,10 +16,6 @@ use ratatui::widgets::{Block, Clear};
 mod analysis_keys;
 pub mod analysis_modal;
 pub mod avro_types;
-#[cfg(feature = "cloud")]
-pub mod aws_profiles;
-#[cfg(feature = "cloud")]
-pub mod azure;
 mod background;
 pub mod cache;
 pub mod canonical;
@@ -35,17 +31,7 @@ pub mod chart_plot;
 mod chart_recipe;
 pub mod cli;
 pub mod clipboard;
-#[cfg(feature = "cloud")]
-mod cloud_arrow;
-#[cfg(feature = "cloud")]
-pub mod cloud_browse;
-#[cfg(feature = "cloud")]
-pub mod cloud_command;
-pub mod cloud_env;
-#[cfg(feature = "cloud")]
-mod cloud_hive;
-#[cfg(feature = "cloud")]
-pub mod cloud_sources;
+pub mod cloud;
 pub mod codebook;
 pub mod commands;
 pub mod config;
@@ -58,7 +44,6 @@ pub mod data_quality;
 pub mod discover;
 pub mod distribution_fit;
 mod documentation_keys;
-pub mod download;
 mod editing_keys;
 pub mod error_display;
 pub mod event_pump;
@@ -76,8 +61,6 @@ mod footer_state;
 pub mod form;
 pub mod formats;
 pub mod fuzzy;
-#[cfg(feature = "cloud")]
-pub mod gcloud;
 pub mod glyphs;
 pub mod help;
 mod hex_keys;
@@ -97,7 +80,6 @@ mod jobs;
 pub mod limits;
 pub mod link_open;
 mod loading;
-pub mod local_copy;
 pub(crate) mod local_glob;
 pub mod locality;
 pub mod logging;
@@ -125,14 +107,10 @@ pub mod quality_report;
 mod quality_runs;
 pub mod quality_trends;
 mod query_prompt;
-#[cfg(any(feature = "http", feature = "cloud"))]
-mod remote_model;
 mod retype_keys;
 pub mod retype_modal;
 mod run;
 pub use run::{ended_by_signal, run, run_captured};
-#[cfg(feature = "cloud")]
-pub mod s3_tools;
 mod sample_draw;
 mod sample_keys;
 pub mod sample_modal;
@@ -147,7 +125,6 @@ pub mod search;
 mod sort_filter_keys;
 pub mod sort_filter_modal;
 pub mod sort_modal;
-pub mod source;
 mod sql_assist;
 // Public for the `sql_group_plan` fuzz target.
 #[cfg(feature = "sql")]
@@ -166,7 +143,6 @@ pub mod terminal_input;
 pub mod themes;
 pub mod typed_value;
 mod unfinished;
-pub mod user_agent;
 pub mod value_counts;
 mod value_counts_keys;
 pub mod value_counts_modal;
@@ -488,7 +464,7 @@ pub enum AppEvent {
     /// when the copy did not read as the source.
     BackgroundQualityCopyKept {
         dataset_generation: u64,
-        copy: Option<Arc<crate::local_copy::LocalCopy>>,
+        copy: Option<Arc<crate::cloud::local_copy::LocalCopy>>,
     },
     /// The exact row count for the current LazyFrame, applied only if
     /// `len_generation` still matches. Runs alongside the first paint, never
@@ -627,8 +603,8 @@ impl App {
             discover::EntryKind::File => WhatEnter::OpensFile,
             discover::EntryKind::Other
                 if matches!(
-                    source::input_source(&entry.path),
-                    source::InputSource::Local(_)
+                    cloud::source::input_source(&entry.path),
+                    cloud::source::InputSource::Local(_)
                 ) =>
             {
                 WhatEnter::OpensHex
@@ -647,8 +623,11 @@ impl App {
 impl App {
     /// Whether `download` is held because the dataset came from a remote `path`;
     /// local stream conversions and stdin spools are held the same way.
-    fn was_fetched(download: Option<&crate::download::TempDownload>, path: Option<&Path>) -> bool {
-        download.is_some() && path.is_some_and(source::is_remote_url)
+    fn was_fetched(
+        download: Option<&crate::cloud::download::TempDownload>,
+        path: Option<&Path>,
+    ) -> bool {
+        download.is_some() && path.is_some_and(cloud::source::is_remote_url)
     }
 }
 
@@ -3840,7 +3819,7 @@ impl App {
                 let expanded = match paths
                     .iter()
                     .map(|p| {
-                        crate::cloud_sources::expand_azure_short_url(
+                        crate::cloud::cloud_sources::expand_azure_short_url(
                             p,
                             &self.app_config.cloud,
                             self.home.browsing.as_deref(),
@@ -3982,7 +3961,7 @@ impl App {
                     if home::is_object_store_url(&looking) {
                         let url = looking.to_string_lossy().into_owned();
                         let peeked = wait_on_runtime(&runtime, async move {
-                            crate::cloud_browse::peek_kind(&url, &cloud).await
+                            crate::cloud::cloud_browse::peek_kind(&url, &cloud).await
                         })
                         .and_then(Result::ok);
                         let (kind, holds) = match peeked {
@@ -5366,8 +5345,8 @@ impl App {
         let Some(path) = self.path.clone().filter(|path| {
             !several
                 && !piped
-                && !source::is_remote_url(path)
-                && !source::is_prefix_or_glob(&path.to_string_lossy())
+                && !cloud::source::is_remote_url(path)
+                && !cloud::source::is_prefix_or_glob(&path.to_string_lossy())
         }) else {
             return;
         };

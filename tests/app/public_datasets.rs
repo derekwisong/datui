@@ -86,7 +86,7 @@ fn a_web_file_in_a_catalog_is_fetched_only_when_opened() {
                 head.push(byte[0]);
             }
             counted.fetch_add(1, Ordering::SeqCst);
-            let agent = format!("user-agent: {}", datui::user_agent::DEFAULT);
+            let agent = format!("user-agent: {}", datui::cloud::user_agent::DEFAULT);
             if !String::from_utf8_lossy(&head)
                 .to_ascii_lowercase()
                 .contains(&agent.to_ascii_lowercase())
@@ -350,6 +350,6 @@ fn an_unreachable_web_file_says_so_on_its_row_and_its_open() {
     let seen = seen.lock().unwrap();
     assert!(!seen.is_empty());
     for (method, agent) in seen.iter() {
-        assert_eq!(agent, datui::user_agent::DEFAULT, "{method}");
+        assert_eq!(agent, datui::cloud::user_agent::DEFAULT, "{method}");
     }
 }

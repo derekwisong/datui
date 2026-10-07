@@ -16,9 +16,9 @@ use std::path::Path;
 use polars::prelude::LazyFrame;
 
 use crate::FileFormat;
+use crate::cloud::source::{self, InputSource};
 use crate::error_display::file_message;
 use crate::formats::model_files::{self, ModelSummary, RangeError, RangeSource, Remote};
-use crate::source::{self, InputSource};
 
 /// A remote model read: its table, its summary, and what the read noticed.
 pub(crate) struct Read {
@@ -54,7 +54,7 @@ fn read_from(
     match source::input_source(url) {
         #[cfg(feature = "http")]
         InputSource::Http(url) => {
-            let agent: ureq::Agent = crate::user_agent::ureq_config()
+            let agent: ureq::Agent = crate::cloud::user_agent::ureq_config()
                 .timeout_global(Some(std::time::Duration::from_secs(120)))
                 .build()
                 .into();
@@ -103,7 +103,7 @@ pub(crate) fn fetch_small(
         #[cfg(feature = "http")]
         InputSource::Http(url) => {
             use std::io::Read;
-            let agent: ureq::Agent = crate::user_agent::ureq_config()
+            let agent: ureq::Agent = crate::cloud::user_agent::ureq_config()
                 .timeout_global(Some(std::time::Duration::from_secs(60)))
                 .build()
                 .into();
@@ -143,7 +143,7 @@ pub(crate) fn fetch_small(
             let (_, key) = crate::App::cloud_bucket_and_key(&full).map_err(said)?;
             let mut object = Object {
                 store,
-                path: crate::cloud_browse::object_path(&key),
+                path: crate::cloud::cloud_browse::object_path(&key),
                 runtime: runtime.clone(),
                 url: named.clone(),
             };
@@ -349,7 +349,7 @@ fn read_cloud(
         let (_, key) = crate::App::cloud_bucket_and_key(url)?;
         Ok(Box::new(Object {
             store: store.clone(),
-            path: crate::cloud_browse::object_path(&key),
+            path: crate::cloud::cloud_browse::object_path(&key),
             runtime: runtime.clone(),
             url: url.to_string(),
         }))
@@ -408,7 +408,7 @@ fn list_prefix(
     // The objects a page at a time, stopped at the cap: a listing with a delimiter
     // reads every page before it answers.
     let (listed, more) = crate::wait_on_runtime(runtime, async move {
-        let prefix = (!key.is_empty()).then(|| crate::cloud_browse::object_path(&key));
+        let prefix = (!key.is_empty()).then(|| crate::cloud::cloud_browse::object_path(&key));
         let mut stream = store.list(prefix.as_ref());
         let mut listed = Vec::new();
         while let Some(meta) = stream.next().await {
@@ -569,7 +569,7 @@ mod tests {
     }
 
     fn agent() -> ureq::Agent {
-        crate::user_agent::ureq_config()
+        crate::cloud::user_agent::ureq_config()
             .timeout_global(Some(std::time::Duration::from_secs(10)))
             .build()
             .into()

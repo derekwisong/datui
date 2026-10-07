@@ -5,9 +5,9 @@
 //! Discovery reads only environment variables and file existence; listing is
 //! `cloud_browse`'s, on a worker.
 
-use crate::cloud_browse::Environment;
+use crate::cloud::cloud_browse::Environment;
+use crate::cloud::source::ProviderKind;
 use crate::config::{CloudConfig, CloudConnectionConfig, DatasetAccess, DatasetAuth};
-use crate::source::ProviderKind;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -24,8 +24,8 @@ pub const DEFAULT_AZURE_ENV: &str = "azure-env";
 /// Whether `url` is `root` or somewhere inside it. Azure URLs are compared in their
 /// canonical form, and a trailing slash does not matter.
 pub fn is_within(url: &str, root: &str) -> bool {
-    let url = crate::source::canonical_cloud_place(url);
-    let root = crate::source::canonical_cloud_place(root);
+    let url = crate::cloud::source::canonical_cloud_place(url);
+    let root = crate::cloud::source::canonical_cloud_place(root);
     url == root
         || url
             .strip_prefix(&root)
@@ -97,7 +97,7 @@ pub struct Source {
     /// Only meaningful for [`ProviderKind::S3`].
     pub s3: S3Settings,
     /// Only meaningful for [`ProviderKind::Azure`].
-    pub azure: crate::azure::AzureSettings,
+    pub azure: crate::cloud::azure::AzureSettings,
     /// The GCP project whose buckets are listed.
     pub project: Option<String>,
     /// The AWS profile in use, when one is named.
@@ -230,11 +230,11 @@ pub fn endpoint_host(endpoint: &str) -> Option<String> {
 /// configured source replaces a detected one of the same name. Runs no command: a
 /// profile's CLI credentials are fetched on use ([`Source::with_credentials`]).
 pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
-    let profiles = crate::aws_profiles::load(env);
-    let active = crate::aws_profiles::active_profile(env);
+    let profiles = crate::cloud::aws_profiles::load(env);
+    let active = crate::cloud::aws_profiles::active_profile(env);
     let mut default_uses_profile = false;
 
-    let mut sources: Vec<Source> = crate::cloud_browse::detect(config, env)
+    let mut sources: Vec<Source> = crate::cloud::cloud_browse::detect(config, env)
         .into_iter()
         .map(|provider| {
             let tier = match provider.note.as_str() {
@@ -352,14 +352,14 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
 /// object_store has none (or one it cannot read); other accounts' configurations are
 /// sources of their own.
 fn gcloud_sources(sources: &mut Vec<Source>, env: &Environment<'_>) {
-    let configurations = crate::gcloud::configurations(env);
-    let active_name = crate::gcloud::active_name(env);
+    let configurations = crate::cloud::gcloud::configurations(env);
+    let active_name = crate::cloud::gcloud::active_name(env);
     let active_configuration = configurations
         .iter()
         .find(|c| c.name == active_name && c.account.is_some());
     match sources.iter_mut().find(|s| s.id == DEFAULT_GCS) {
         Some(default) => {
-            if let Some(kind) = crate::cloud_browse::unreadable_google_login(env) {
+            if let Some(kind) = crate::cloud::cloud_browse::unreadable_google_login(env) {
                 match active_configuration {
                     Some(configuration) => {
                         default.gcloud = Some(configuration.name.clone());
@@ -376,7 +376,7 @@ fn gcloud_sources(sources: &mut Vec<Source>, env: &Environment<'_>) {
             if let Some(configuration) = active_configuration {
                 sources.push(Source {
                     label: "Google Cloud".to_string(),
-                    project: crate::cloud_browse::gcp_project(env)
+                    project: crate::cloud::cloud_browse::gcp_project(env)
                         .or_else(|| configuration.project.clone()),
                     gcloud: Some(configuration.name.clone()),
                     ..Source::new(ProviderKind::Gcs, DEFAULT_GCS, Tier::Tools, "gcloud")
@@ -414,21 +414,21 @@ fn gcloud_sources(sources: &mut Vec<Source>, env: &Environment<'_>) {
 /// replaces the alias of the same name in `mc`'s config, as it does for `mc` itself.
 fn tool_sources(env: &Environment<'_>) -> Vec<Source> {
     let mut sources: Vec<Source> = Vec::new();
-    for path in crate::s3_tools::mc_config_paths(env) {
+    for path in crate::cloud::s3_tools::mc_config_paths(env) {
         if let Some(text) = (env.read)(&path) {
-            for server in crate::s3_tools::parse_mc_config(&text) {
+            for server in crate::cloud::s3_tools::parse_mc_config(&text) {
                 sources.push(tool_source(server, Tier::Tools));
             }
         }
     }
-    for server in crate::s3_tools::mc_hosts(&(env.all_vars)()) {
+    for server in crate::cloud::s3_tools::mc_hosts(&(env.all_vars)()) {
         let source = tool_source(server, Tier::Environment);
         sources.retain(|s| s.id != source.id);
         sources.push(source);
     }
-    if let Some(server) = crate::s3_tools::s3cfg_path(env)
+    if let Some(server) = crate::cloud::s3_tools::s3cfg_path(env)
         .and_then(|path| (env.read)(&path))
-        .and_then(|text| crate::s3_tools::parse_s3cfg(&text))
+        .and_then(|text| crate::cloud::s3_tools::parse_s3cfg(&text))
     {
         sources.push(tool_source(server, Tier::Tools));
     }
@@ -438,10 +438,10 @@ fn tool_sources(env: &Environment<'_>) -> Vec<Source> {
 /// Azure: an account or a service principal named in the environment, and a signed-in
 /// `az` or Azure PowerShell, which reaches every account it can see.
 fn azure_sources(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
-    use crate::azure::{AzureAuth, AzureSettings};
+    use crate::cloud::azure::{AzureAuth, AzureSettings};
     let mut sources = Vec::new();
-    let from_environment = crate::azure::from_environment(env.var).or_else(|| {
-        crate::cloud_browse::instance_identity(config, env)
+    let from_environment = crate::cloud::azure::from_environment(env.var).or_else(|| {
+        crate::cloud::cloud_browse::instance_identity(config, env)
             .azure
             .then(|| {
                 let settings = AzureSettings {
@@ -467,9 +467,9 @@ fn azure_sources(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
             )
         });
     }
-    let az = crate::azure::az_login_evidence(env);
-    let powershell = crate::azure::powershell_login_evidence(env);
-    let not_signed_in = crate::azure::not_signed_in(env);
+    let az = crate::cloud::azure::az_login_evidence(env);
+    let powershell = crate::cloud::azure::powershell_login_evidence(env);
+    let not_signed_in = crate::cloud::azure::not_signed_in(env);
     if az || powershell || not_signed_in.is_some() {
         let auth = if az || !powershell {
             AzureAuth::AzCli
@@ -508,7 +508,7 @@ fn normalized_endpoint(s3: &S3Settings) -> String {
 }
 
 /// A server another tool describes, as a source: `mc-<alias>`, or `s3cfg`.
-fn tool_source(server: crate::s3_tools::ToolServer, tier: Tier) -> Source {
+fn tool_source(server: crate::cloud::s3_tools::ToolServer, tier: Tier) -> Source {
     let id = if server.origin == "s3cmd" {
         "s3cfg".to_string()
     } else {
@@ -566,7 +566,7 @@ fn slug_id(prefix: &str, name: &str) -> String {
 /// Take a profile's endpoint and region where `s3` does not already say.
 fn fill_from_profile(
     s3: &mut S3Settings,
-    profile: &crate::aws_profiles::Profile,
+    profile: &crate::cloud::aws_profiles::Profile,
     var: &dyn Fn(&str) -> Option<String>,
 ) {
     if s3.endpoint.is_none() {
@@ -587,7 +587,7 @@ impl Source {
         if let Some(command) = &self.secret_command
             && self.s3.secret_access_key.is_none()
         {
-            self.s3.secret_access_key = Some(crate::cloud_command::secret(command, env)?);
+            self.s3.secret_access_key = Some(crate::cloud::cloud_command::secret(command, env)?);
         }
         let Some(name) = self.profile.clone() else {
             return Ok(self);
@@ -595,12 +595,12 @@ impl Source {
         if self.s3.access_key_id.is_some() {
             return Ok(self);
         }
-        let profiles = crate::aws_profiles::load(env);
+        let profiles = crate::cloud::aws_profiles::load(env);
         let profile = profiles
             .iter()
             .find(|p| p.name == name)
             .ok_or_else(|| format!("profile {name} is not in the AWS config"))?;
-        let credentials = crate::aws_profiles::credentials(profile, env)?;
+        let credentials = crate::cloud::aws_profiles::credentials(profile, env)?;
         self.s3.access_key_id = Some(credentials.access_key_id);
         self.s3.secret_access_key = Some(credentials.secret_access_key);
         self.s3.session_token = credentials.session_token;
@@ -639,7 +639,7 @@ fn configured_source(configured: &CloudConnectionConfig, env: &Environment<'_>) 
                 .project
                 .clone()
                 .or(file_project)
-                .or_else(|| crate::cloud_browse::gcp_project(env)),
+                .or_else(|| crate::cloud::cloud_browse::gcp_project(env)),
             buckets: configured.buckets.clone(),
             problem,
             gcloud: configured.configuration.clone(),
@@ -677,7 +677,7 @@ fn configured_source(configured: &CloudConnectionConfig, env: &Environment<'_>) 
         skip_signature: false,
     };
     if let Some(name) = &configured.profile {
-        match crate::aws_profiles::load(env)
+        match crate::cloud::aws_profiles::load(env)
             .iter()
             .find(|p| &p.name == name)
         {
@@ -730,7 +730,7 @@ fn google_file_project(text: &str) -> Option<String> {
 /// A `kind = "azure"` source: one account, signed in with the named key, SAS or
 /// connection string, or else through `az` or Azure PowerShell.
 fn configured_azure_source(configured: &CloudConnectionConfig, env: &Environment<'_>) -> Source {
-    use crate::azure::{AzureAuth, AzureSettings};
+    use crate::cloud::azure::{AzureAuth, AzureSettings};
     let named = |name: &Option<String>| -> Option<Result<String, String>> {
         let name = name.as_deref()?;
         Some(
@@ -757,7 +757,7 @@ fn configured_azure_source(configured: &CloudConnectionConfig, env: &Environment
             Err(e) => problem = Some(e),
         }
     } else if let Some(text) = named(&configured.connection_string_env) {
-        match text.map(|t| crate::azure::parse_connection_string(&t)) {
+        match text.map(|t| crate::cloud::azure::parse_connection_string(&t)) {
             Ok(Some(parsed)) => {
                 settings = AzureSettings {
                     account: configured.account.clone().or(parsed.account.clone()),
@@ -771,7 +771,8 @@ fn configured_azure_source(configured: &CloudConnectionConfig, env: &Environment
         }
     } else if let Some(command) = &configured.secret_command {
         settings.auth = AzureAuth::KeyCommand(command.clone());
-    } else if !crate::azure::az_login_evidence(env) && crate::azure::powershell_login_evidence(env)
+    } else if !crate::cloud::azure::az_login_evidence(env)
+        && crate::cloud::azure::powershell_login_evidence(env)
     {
         settings.auth = AzureAuth::PowerShell;
     }
@@ -801,7 +802,7 @@ pub struct Resolved {
     pub source_id: String,
     pub s3: S3Settings,
     /// For an Azure URL, the settings with a token in place of `az`.
-    pub azure: crate::azure::AzureSettings,
+    pub azure: crate::cloud::azure::AzureSettings,
     pub signing: Signing,
     /// The bucket or container, as [`access_key`] names it.
     pub place: String,
@@ -835,7 +836,7 @@ impl Resolved {
             skip_signature: true,
             ..Default::default()
         };
-        self.azure.auth = crate::azure::AzureAuth::None;
+        self.azure.auth = crate::cloud::azure::AzureAuth::None;
         self.gcloud = None;
         self.google_credentials = None;
         self.signing = Signing::Unsigned;
@@ -847,11 +848,11 @@ impl Resolved {
 /// `s3://<id>@bucket`, `gs://bucket`, `abfss://container@account`); signing facts are
 /// kept per place.
 pub fn access_key(url: &str) -> Option<String> {
-    if let Some((account, container, _)) = crate::source::azure_parts(url) {
+    if let Some((account, container, _)) = crate::cloud::source::azure_parts(url) {
         return Some(format!("abfss://{container}@{account}"));
     }
-    let (id, _) = crate::source::split_source_id(url);
-    let (kind, bucket, _) = crate::cloud_browse::split_bucket_url(url)?;
+    let (id, _) = crate::cloud::source::split_source_id(url);
+    let (kind, bucket, _) = crate::cloud::cloud_browse::split_bucket_url(url)?;
     Some(match id {
         Some(id) => format!("{}://{id}@{bucket}", kind.scheme()),
         None => format!("{}://{bucket}", kind.scheme()),
@@ -933,8 +934,8 @@ pub fn resolve(url: &str, config: &CloudConfig) -> Result<Resolved, String> {
     let mut resolved = resolve_among(url, config, &sources, &Environment::current())?;
     if resolved.kind == ProviderKind::S3
         && resolved.s3.endpoint.is_none()
-        && let Some((_, bucket, _)) = crate::cloud_browse::split_bucket_url(&resolved.url)
-        && let Some(region) = crate::cloud_browse::s3_bucket_region(&bucket)
+        && let Some((_, bucket, _)) = crate::cloud::cloud_browse::split_bucket_url(&resolved.url)
+        && let Some(region) = crate::cloud::cloud_browse::s3_bucket_region(&bucket)
     {
         resolved.s3.region = Some(region);
     }
@@ -948,7 +949,7 @@ pub fn resolve_for_open(url: &str, config: &CloudConfig) -> Result<Resolved, Str
     // Read unsigned only because the login failed: when that is refused too, the
     // login is what to fix.
     if let Some(error) = &resolved.login_error
-        && crate::cloud_browse::probe_unsigned(&resolved) == Some(false)
+        && crate::cloud::cloud_browse::probe_unsigned(&resolved) == Some(false)
     {
         return Err(error.clone());
     }
@@ -962,23 +963,26 @@ fn with_azure_key_if_refused(resolved: Resolved, config: &CloudConfig) -> Resolv
     if resolved.kind != ProviderKind::Azure
         || resolved.signing == Signing::Unsigned
         || resolved.azure.identity.is_none()
-        || !matches!(resolved.azure.auth, crate::azure::AzureAuth::Bearer(_))
+        || !matches!(
+            resolved.azure.auth,
+            crate::cloud::azure::AzureAuth::Bearer(_)
+        )
         || !enabled
     {
         return resolved;
     }
-    let Some((account, container, path)) = crate::source::azure_parts(&resolved.url) else {
+    let Some((account, container, path)) = crate::cloud::source::azure_parts(&resolved.url) else {
         return resolved;
     };
-    if crate::azure::token_reads(&account) {
+    if crate::cloud::azure::token_reads(&account) {
         return resolved;
     }
-    match crate::azure::check_read(&account, &container, &path, &resolved.azure) {
+    match crate::cloud::azure::check_read(&account, &container, &path, &resolved.azure) {
         Ok(()) => {
-            crate::azure::remember_token_reads(&account);
+            crate::cloud::azure::remember_token_reads(&account);
             resolved
         }
-        Err(refusal) => match crate::azure::with_account_key(
+        Err(refusal) => match crate::cloud::azure::with_account_key(
             &account,
             &resolved.azure,
             &refusal,
@@ -997,7 +1001,7 @@ fn settle_signing(resolved: Resolved) -> Resolved {
     if resolved.signing != Signing::Try {
         return resolved;
     }
-    match crate::cloud_browse::probe_unsigned(&resolved) {
+    match crate::cloud::cloud_browse::probe_unsigned(&resolved) {
         Some(true) => {
             remember_access(&resolved.place, true);
             resolved.unsigned()
@@ -1025,16 +1029,16 @@ pub fn expand_azure_short_url(
     let Some((scheme, rest)) = text.split_once("://") else {
         return Ok(path.to_path_buf());
     };
-    if !crate::source::is_azure_short_scheme(scheme) {
+    if !crate::cloud::source::is_azure_short_scheme(scheme) {
         return Ok(path.to_path_buf());
     }
     let (container, key) = rest.split_once('/').unwrap_or((rest, ""));
     // `az://container@account.dfs.core.windows.net/path` names its account after all.
     if container.contains('@')
         && let Some((account, container, key)) =
-            crate::source::azure_parts(&format!("abfss://{rest}"))
+            crate::cloud::source::azure_parts(&format!("abfss://{rest}"))
     {
-        return Ok(std::path::PathBuf::from(crate::source::azure_url(
+        return Ok(std::path::PathBuf::from(crate::cloud::source::azure_url(
             &account, &container, &key,
         )));
     }
@@ -1044,7 +1048,9 @@ pub fn expand_azure_short_url(
     let from_browsing = browsing.and_then(|place| {
         crate::home::cloud_account(place)
             .map(|(_, account)| account)
-            .or_else(|| crate::source::azure_parts(&place.to_string_lossy()).map(|(a, _, _)| a))
+            .or_else(|| {
+                crate::cloud::source::azure_parts(&place.to_string_lossy()).map(|(a, _, _)| a)
+            })
     });
     let configured: Vec<&str> = config
         .connections
@@ -1054,7 +1060,7 @@ pub fn expand_azure_short_url(
         .collect();
     let account = from_browsing
         .or_else(|| {
-            crate::azure::from_environment(&|k| std::env::var(k).ok())
+            crate::cloud::azure::from_environment(&|k| std::env::var(k).ok())
                 .and_then(|(settings, _)| settings.account)
         })
         .or_else(|| (configured.len() == 1).then(|| configured[0].to_string()))
@@ -1064,7 +1070,7 @@ pub fn expand_azure_short_url(
                  abfss://{container}@<account>.dfs.core.windows.net/{key}"
             )
         })?;
-    Ok(std::path::PathBuf::from(crate::source::azure_url(
+    Ok(std::path::PathBuf::from(crate::cloud::source::azure_url(
         &account, container, key,
     )))
 }
@@ -1073,7 +1079,7 @@ pub fn expand_azure_short_url(
 /// listed catalog winning ties (user catalogs over bundled). A URL naming its source
 /// has already said.
 fn configured_access<'a>(url: &str, config: &'a CloudConfig) -> Option<&'a DatasetAccess> {
-    let (id, plain) = crate::source::split_source_id(url);
+    let (id, plain) = crate::cloud::source::split_source_id(url);
     if id.is_some() {
         return None;
     }
@@ -1082,7 +1088,7 @@ fn configured_access<'a>(url: &str, config: &'a CloudConfig) -> Option<&'a Datas
         .iter()
         .filter(|access| is_within(&plain, &access.url))
         .rev()
-        .max_by_key(|access| crate::source::canonical_cloud_place(&access.url).len())
+        .max_by_key(|access| crate::cloud::source::canonical_cloud_place(&access.url).len())
 }
 
 /// As [`resolve`], with the environment supplied.
@@ -1164,9 +1170,9 @@ fn resolve_among(
         ..
     }) = configured
     {
-        let resolved = match crate::source::azure_parts(url) {
+        let resolved = match crate::cloud::source::azure_parts(url) {
             Some((account, container, path)) => Resolved {
-                url: crate::source::azure_url(&account, &container, &path),
+                url: crate::cloud::source::azure_url(&account, &container, &path),
                 kind: ProviderKind::Azure,
                 source_id: catalog.clone(),
                 s3: S3Settings::default(),
@@ -1178,7 +1184,7 @@ fn resolve_among(
                 login_error: None,
             },
             None => {
-                let (kind, _, _) = crate::cloud_browse::split_bucket_url(url)
+                let (kind, _, _) = crate::cloud::cloud_browse::split_bucket_url(url)
                     .ok_or_else(|| format!("not an object-store URL: {url}"))?;
                 Resolved {
                     url: url.to_string(),
@@ -1212,11 +1218,11 @@ fn resolve_among(
         .ok()
         .and_then(|map| map.get(&place).copied())
         .filter(|_| connection.is_none());
-    if let Some(parts) = crate::source::azure_parts(url) {
+    if let Some(parts) = crate::cloud::source::azure_parts(url) {
         return resolve_azure(&parts, sources, connection.as_ref(), known, place, env);
     }
-    let (id, plain) = crate::source::split_source_id(url);
-    let (kind, bucket, _) = crate::cloud_browse::split_bucket_url(&plain)
+    let (id, plain) = crate::cloud::source::split_source_id(url);
+    let (kind, bucket, _) = crate::cloud::cloud_browse::split_bucket_url(&plain)
         .ok_or_else(|| format!("not an object-store URL: {url}"))?;
     let find = |id: &str| sources.iter().find(|s| s.id == id).cloned();
     // A source that lists this bucket, or is named in the URL, owns it: its login is
@@ -1280,7 +1286,7 @@ fn resolve_among(
     let id = source.id.clone();
     let gcloud = match &source.gcloud {
         Some(configuration) if kind == ProviderKind::Gcs => {
-            match crate::gcloud::token(configuration, env) {
+            match crate::cloud::gcloud::token(configuration, env) {
                 Ok((token, _)) => Some((configuration.clone(), token)),
                 Err(e) => return login_failed(resolved, format!("source \"{id}\": {e}")),
             }
@@ -1350,7 +1356,7 @@ fn resolve_azure(
         (None, None, Some(_)) => Signing::Try,
     };
     let resolved = Resolved {
-        url: crate::source::azure_url(account, container, path),
+        url: crate::cloud::source::azure_url(account, container, path),
         kind: ProviderKind::Azure,
         source_id: String::new(),
         s3: S3Settings::default(),
@@ -1366,13 +1372,13 @@ fn resolve_azure(
             // A sign-in refused for want of a data role reads with the account's key,
             // once the key has been fetched this session.
             if source.azure.auth.is_identity()
-                && let Some(key) = crate::azure::remembered_key(account)
+                && let Some(key) = crate::cloud::azure::remembered_key(account)
             {
                 return Ok(Resolved {
                     source_id: source.id.clone(),
-                    azure: crate::azure::AzureSettings {
+                    azure: crate::cloud::azure::AzureSettings {
                         identity: Some(source.azure.auth.clone()),
-                        auth: crate::azure::AzureAuth::Key(key),
+                        auth: crate::cloud::azure::AzureAuth::Key(key),
                         ..source.azure.clone()
                     },
                     signing: Signing::Signed,

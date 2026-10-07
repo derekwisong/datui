@@ -13,7 +13,7 @@ fn detect_with(vars: &[(&str, &str)]) -> Vec<Provider> {
         home: Some(PathBuf::from("/home/u")),
         windows: false,
         run: &|_, _| {
-            Err(crate::cloud_command::CommandError::Missing(
+            Err(crate::cloud::cloud_command::CommandError::Missing(
                 "test".to_string(),
             ))
         },
@@ -44,7 +44,7 @@ fn a_gcloud_login_on_windows_is_found_under_appdata() {
             home: Some(PathBuf::from(r"C:\Users\u")),
             windows,
             run: &|_, _| {
-                Err(crate::cloud_command::CommandError::Missing(
+                Err(crate::cloud::cloud_command::CommandError::Missing(
                     "test".to_string(),
                 ))
             },

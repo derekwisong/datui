@@ -269,10 +269,10 @@ fn an_az_url_opens_as_abfss_or_says_which_account_is_missing() {
         _ => panic!("expanded to abfss://"),
     }
     assert!(matches!(
-        source::input_source(Path::new(
+        cloud::source::input_source(Path::new(
             "abfss://raw@lake001.dfs.core.windows.net/2024/day.parquet"
         )),
-        source::InputSource::Azure(_)
+        cloud::source::InputSource::Azure(_)
     ));
 
     let accountless = std::env::var("AZURE_STORAGE_ACCOUNT_NAME").is_err()

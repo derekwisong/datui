@@ -69,7 +69,10 @@ pub trait DatasetFiles: Send + Sync {
     /// Polars' options for reading the files where they are, for files in a store.
     fn cloud_options(&self) -> Option<CloudOptions>;
     /// What a local copy of the whole dataset would fetch: nothing, for files here.
-    fn remote_objects(&self, _files: &[DatasetFile]) -> Vec<crate::local_copy::RemoteObject> {
+    fn remote_objects(
+        &self,
+        _files: &[DatasetFile],
+    ) -> Vec<crate::cloud::local_copy::RemoteObject> {
         Vec::new()
     }
     /// The modification time the dataset index records for the dataset.
@@ -1400,7 +1403,7 @@ pub struct StoreFiles {
     /// The glob the user named, where they named one. The listing keeps only the keys
     /// it matches, so everything downstream sees a plain list of files.
     pattern: Option<globset::GlobMatcher>,
-    plan: crate::cloud_hive::ListShards,
+    plan: crate::cloud::cloud_hive::ListShards,
     /// The prefix URL (a glob's part before the star): layout notes take paths relative to
     /// it, so a starred root would empty them all.
     root: String,
@@ -1419,8 +1422,9 @@ impl StoreFiles {
         runtime: &tokio::runtime::Handle,
     ) -> Self {
         Self {
-            root: crate::cloud_hive::url_of_key(full, &prefix).unwrap_or_else(|| full.to_string()),
-            plan: crate::cloud_hive::ListShards::for_url(full),
+            root: crate::cloud::cloud_hive::url_of_key(full, &prefix)
+                .unwrap_or_else(|| full.to_string()),
+            plan: crate::cloud::cloud_hive::ListShards::for_url(full),
             full: full.to_string(),
             prefix,
             pattern,
@@ -1451,7 +1455,7 @@ impl DatasetFiles for StoreFiles {
         );
         let (listed, cancelled) = (listing.counter(), listing.cancel_flag());
         crate::wait_on_runtime(&self.runtime, async move {
-            crate::cloud_hive::list_dataset_files_reporting(
+            crate::cloud::cloud_hive::list_dataset_files_reporting(
                 &store,
                 &prefix,
                 pattern.as_ref(),
@@ -1489,13 +1493,15 @@ impl DatasetFiles for StoreFiles {
             meter.clone(),
         );
         crate::wait_on_runtime(&self.runtime, async move {
-            crate::cloud_hive::footers_of_files_reporting(&store, &files, &read, &progress, &meter)
-                .await
+            crate::cloud::cloud_hive::footers_of_files_reporting(
+                &store, &files, &read, &progress, &meter,
+            )
+            .await
         })
     }
 
     fn name_of(&self, file: &DatasetFile) -> Option<String> {
-        crate::cloud_hive::url_of_key(&self.full, &file.key)
+        crate::cloud::cloud_hive::url_of_key(&self.full, &file.key)
     }
 
     fn partition_path(&self, file: &DatasetFile) -> String {
@@ -1506,11 +1512,11 @@ impl DatasetFiles for StoreFiles {
         Some(self.cloud.clone())
     }
 
-    fn remote_objects(&self, files: &[DatasetFile]) -> Vec<crate::local_copy::RemoteObject> {
+    fn remote_objects(&self, files: &[DatasetFile]) -> Vec<crate::cloud::local_copy::RemoteObject> {
         files
             .iter()
             .filter_map(|file| {
-                Some(crate::local_copy::RemoteObject {
+                Some(crate::cloud::local_copy::RemoteObject {
                     url: self.name_of(file)?,
                     size: file.size,
                     etag: file.etag.clone(),

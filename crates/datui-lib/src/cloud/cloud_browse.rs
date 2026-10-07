@@ -8,10 +8,10 @@
 //! **Nothing here runs on the drawing thread.** Every network function is `async` and
 //! driven from a worker, as remote filesystem roots are.
 
-use crate::cloud_sources::{S3Settings, Signing, Source};
+use crate::cloud::cloud_sources::{S3Settings, Signing, Source};
+use crate::cloud::source::ProviderKind;
 use crate::config::CloudConfig;
 use crate::discover::is_empty_marker;
-use crate::source::ProviderKind;
 use std::path::{Path, PathBuf};
 
 /// An object store datui believes it can read, and why it believes that.
@@ -47,7 +47,7 @@ pub struct Environment<'a> {
     /// Tools keep their files in different places on Windows, so lookups need to know.
     pub windows: bool,
     /// Runs a credential command: `aws`, a profile's `credential_process`.
-    pub run: &'a crate::cloud_command::Runner<'a>,
+    pub run: &'a crate::cloud::cloud_command::Runner<'a>,
     /// Every environment variable, for the ones named by pattern: `MC_HOST_<alias>`.
     pub all_vars: &'a dyn Fn() -> Vec<(String, String)>,
     /// A directory's entries, for tools keeping one file per login (`gcloud`
@@ -59,15 +59,19 @@ impl Environment<'_> {
     /// The real environment.
     pub fn current() -> Environment<'static> {
         Environment {
-            var: &crate::cloud_env::var,
+            var: &crate::cloud::cloud_env::var,
             exists: &|path| path.exists(),
             read: &|path| std::fs::read_to_string(path).ok(),
             home: dirs::home_dir(),
             windows: cfg!(windows),
             run: &|program, args| {
-                crate::cloud_command::run(program, args, crate::cloud_command::CREDENTIAL_TIMEOUT)
+                crate::cloud::cloud_command::run(
+                    program,
+                    args,
+                    crate::cloud::cloud_command::CREDENTIAL_TIMEOUT,
+                )
             },
-            all_vars: &crate::cloud_env::vars,
+            all_vars: &crate::cloud::cloud_env::vars,
             list: &|dir| {
                 std::fs::read_dir(dir)
                     .map(|entries| entries.flatten().map(|e| e.path()).collect())
@@ -151,7 +155,7 @@ pub fn unreadable_google_login(env: &Environment<'_>) -> Option<String> {
     let path = (env.var)("GOOGLE_APPLICATION_CREDENTIALS")
         .map(PathBuf::from)
         .or_else(|| adc_path(env))?;
-    crate::gcloud::unsupported_credential_type(&(env.read)(&path)?)
+    crate::cloud::gcloud::unsupported_credential_type(&(env.read)(&path)?)
 }
 
 /// The application default credentials file where `object_store` reads it
@@ -380,7 +384,7 @@ fn path_tail(path: &[Vec<u8>]) -> (Option<&[u8]>, Option<&[u8]>) {
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 pub(crate) fn http_agent() -> ureq::Agent {
-    crate::user_agent::ureq_config()
+    crate::cloud::user_agent::ureq_config()
         .timeout_global(Some(REQUEST_TIMEOUT))
         .build()
         .into()
@@ -399,8 +403,8 @@ pub fn s3_builder(bucket: &str, settings: &S3Settings) -> object_store::aws::Ama
         object_store::aws::AmazonS3Builder::new()
     };
     let mut builder = builder.with_bucket_name(bucket).with_config(
-        object_store::aws::AmazonS3ConfigKey::Client(crate::user_agent::CLIENT_KEY),
-        crate::user_agent::get(),
+        object_store::aws::AmazonS3ConfigKey::Client(crate::cloud::user_agent::CLIENT_KEY),
+        crate::cloud::user_agent::get(),
     );
     if settings.skip_signature {
         builder = builder.with_skip_signature(true);
@@ -446,10 +450,10 @@ impl<T: object_store::ObjectStore + object_store::list::PaginatedListStore> Stor
 
 /// The store for a resolved place, signed as the resolver decided, and the key inside it.
 pub fn store(
-    resolved: &crate::cloud_sources::Resolved,
+    resolved: &crate::cloud::cloud_sources::Resolved,
 ) -> Result<(std::sync::Arc<dyn Store>, String), String> {
-    if let Some((account, container, key)) = crate::source::azure_parts(&resolved.url) {
-        let store = crate::azure::store(&account, &container, &resolved.azure)?;
+    if let Some((account, container, key)) = crate::cloud::source::azure_parts(&resolved.url) {
+        let store = crate::cloud::azure::store(&account, &container, &resolved.azure)?;
         return Ok((std::sync::Arc::new(store), key));
     }
     let (kind, bucket, key) = split_bucket_url(&resolved.url)
@@ -496,8 +500,8 @@ fn gcs_store(
     builder
         .with_bucket_name(bucket)
         .with_config(
-            object_store::gcp::GoogleConfigKey::Client(crate::user_agent::CLIENT_KEY),
-            crate::user_agent::get(),
+            object_store::gcp::GoogleConfigKey::Client(crate::cloud::user_agent::CLIENT_KEY),
+            crate::cloud::user_agent::get(),
         )
         .build()
         .map_err(|e| format!("Google Cloud Storage is not configured: {e}"))
@@ -515,7 +519,7 @@ pub async fn peek_kind(
 ) -> Result<(crate::discover::EntryKind, crate::discover::Holds), String> {
     let resolved = {
         let (url, config) = (url.to_string(), config.clone());
-        tokio::task::spawn_blocking(move || crate::cloud_sources::resolve(&url, &config))
+        tokio::task::spawn_blocking(move || crate::cloud::cloud_sources::resolve(&url, &config))
             .await
             .map_err(|e| format!("{e}"))??
     };
@@ -531,7 +535,7 @@ pub async fn peek_kind(
 }
 
 async fn peek_page(
-    resolved: &crate::cloud_sources::Resolved,
+    resolved: &crate::cloud::cloud_sources::Resolved,
 ) -> Result<(crate::discover::EntryKind, crate::discover::Holds), String> {
     use object_store::list::PaginatedListOptions;
     let (store, prefix) = store(resolved)?;
@@ -574,7 +578,7 @@ async fn peek_page(
 /// Whether a `multi` directory is one table, from a few footers; `None` when
 /// undecided, leaving the listing's (reversible, optimistic) answer.
 async fn verified_kind(
-    resolved: &crate::cloud_sources::Resolved,
+    resolved: &crate::cloud::cloud_sources::Resolved,
     objects: &[(String, u64)],
 ) -> Option<crate::discover::EntryKind> {
     let store: std::sync::Arc<dyn object_store::ObjectStore> = store(resolved).ok()?.0;
@@ -606,7 +610,7 @@ async fn kind_from_footers(
                 stamp: 0,
                 etag: None,
             };
-            crate::cloud_hive::footer_of_file(&store, &file, &meter)
+            crate::cloud::cloud_hive::footer_of_file(&store, &file, &meter)
                 .await
                 .ok()
         });
@@ -689,7 +693,7 @@ pub fn look_at_listing(
 /// empty for the root, as `object_store` wants). A source id (`s3://<id>@bucket`) is
 /// dropped.
 pub fn split_bucket_url(url: &str) -> Option<(ProviderKind, String, String)> {
-    let (_, plain) = crate::source::split_source_id(url);
+    let (_, plain) = crate::cloud::source::split_source_id(url);
     let (scheme, rest) = plain.split_once("://")?;
     let kind = match scheme {
         "gs" | "gcs" => ProviderKind::Gcs,
@@ -766,7 +770,7 @@ pub async fn list_objects_watched(
     // Resolving can run a credential command, which blocks: off the runtime's threads.
     let resolved = {
         let (url, config) = (url.to_string(), config.clone());
-        tokio::task::spawn_blocking(move || crate::cloud_sources::resolve(&url, &config))
+        tokio::task::spawn_blocking(move || crate::cloud::cloud_sources::resolve(&url, &config))
             .await
             .map_err(|e| format!("{e}"))??
     };
@@ -777,23 +781,23 @@ pub async fn list_objects_watched(
     let (listed, resolved) = match listed {
         Err(refusal)
             if resolved.kind == ProviderKind::Azure
-                && crate::azure::is_permission_mismatch(&refusal)
+                && crate::cloud::azure::is_permission_mismatch(&refusal)
                 && resolved.azure.identity.is_some() =>
         {
             let enabled = config.use_azure_account_keys;
             let keyed = {
                 let (resolved, refusal) = (resolved.clone(), refusal.clone());
                 tokio::task::spawn_blocking(move || {
-                    let (account, _, _) =
-                        crate::source::azure_parts(&resolved.url).ok_or_else(|| refusal.clone())?;
-                    crate::azure::with_account_key(
+                    let (account, _, _) = crate::cloud::source::azure_parts(&resolved.url)
+                        .ok_or_else(|| refusal.clone())?;
+                    crate::cloud::azure::with_account_key(
                         &account,
                         &resolved.azure,
                         &refusal,
                         enabled,
                         &Environment::current(),
                     )
-                    .map(|azure| crate::cloud_sources::Resolved { azure, ..resolved })
+                    .map(|azure| crate::cloud::cloud_sources::Resolved { azure, ..resolved })
                 })
                 .await
                 .map_err(|e| format!("{e}"))?
@@ -807,10 +811,13 @@ pub async fn list_objects_watched(
     };
     if resolved.kind == ProviderKind::Azure
         && listed.is_ok()
-        && matches!(resolved.azure.auth, crate::azure::AzureAuth::Bearer(_))
-        && let Some((account, _, _)) = crate::source::azure_parts(&resolved.url)
+        && matches!(
+            resolved.azure.auth,
+            crate::cloud::azure::AzureAuth::Bearer(_)
+        )
+        && let Some((account, _, _)) = crate::cloud::source::azure_parts(&resolved.url)
     {
-        crate::azure::remember_token_reads(&account);
+        crate::cloud::azure::remember_token_reads(&account);
     }
     match listed {
         Err(refused) if signing == Signing::Try && is_refusal(&refused) => {
@@ -818,12 +825,12 @@ pub async fn list_objects_watched(
             let level = list_level(url, &resolved.unsigned(), watch)
                 .await
                 .map_err(|_| refused)?;
-            crate::cloud_sources::remember_access(&place, true);
+            crate::cloud::cloud_sources::remember_access(&place, true);
             Ok(level)
         }
         Ok(level) => {
             if signing == Signing::Try {
-                crate::cloud_sources::remember_access(&place, false);
+                crate::cloud::cloud_sources::remember_access(&place, false);
             }
             Ok(level)
         }
@@ -920,7 +927,7 @@ fn is_listed_object(location: &str, size: u64, prefix: &str, prefixes: &[String]
     let name = location.rsplit('/').next().unwrap_or(location);
     !(name.is_empty()
         || is_marker(name)
-        || crate::azure::is_folder_marker(location, size, prefixes)
+        || crate::cloud::azure::is_folder_marker(location, size, prefixes)
         || is_empty_marker(name, size)
         || location.trim_end_matches('/') == prefix)
 }
@@ -928,19 +935,22 @@ fn is_listed_object(location: &str, size: u64, prefix: &str, prefixes: &[String]
 /// One level of a place, signed or not as `resolved` says.
 async fn list_level(
     url: &str,
-    resolved: &crate::cloud_sources::Resolved,
+    resolved: &crate::cloud::cloud_sources::Resolved,
     watch: &Watch,
 ) -> Result<Level, String> {
     let (pager, prefix) = store(resolved)?;
     let prefix = prefix.trim_matches('/').to_string();
     // Rows keep the listing's source so opening reaches the same server; Azure places by
     // canonical URL, directories with their slash.
-    let (base, directory_end) = match crate::source::azure_parts(&resolved.url) {
-        Some((account, container, _)) => (crate::source::azure_url(&account, &container, ""), "/"),
+    let (base, directory_end) = match crate::cloud::source::azure_parts(&resolved.url) {
+        Some((account, container, _)) => (
+            crate::cloud::source::azure_url(&account, &container, ""),
+            "/",
+        ),
         None => {
             let (kind, bucket, _) = split_bucket_url(&resolved.url)
                 .ok_or_else(|| format!("not an object-store URL: {url}"))?;
-            let base = match crate::source::split_source_id(url).0 {
+            let base = match crate::cloud::source::split_source_id(url).0 {
                 Some(id) => format!("{}://{id}@{bucket}/", kind.scheme()),
                 None => format!("{}://{bucket}/", kind.scheme()),
             };
@@ -1135,7 +1145,7 @@ pub async fn list_first_level(source: &Source) -> Result<Vec<Listed>, String> {
             }]);
         }
         let accounts =
-            crate::azure::discover_accounts(&source.azure.auth, &Environment::current())?;
+            crate::cloud::azure::discover_accounts(&source.azure.auth, &Environment::current())?;
         Ok(accounts
             .into_iter()
             .map(|account| {
@@ -1205,7 +1215,7 @@ pub fn s3_bucket_region(bucket: &str) -> Option<String> {
 /// A client for one short request whose status is the answer: errors are statuses,
 /// redirects not followed.
 fn probe_agent() -> ureq::Agent {
-    crate::user_agent::ureq_config()
+    crate::cloud::user_agent::ureq_config()
         .timeout_global(Some(std::time::Duration::from_secs(10)))
         .http_status_as_error(false)
         .max_redirects(0)
@@ -1216,7 +1226,7 @@ fn probe_agent() -> ureq::Agent {
 /// Whether `resolved`'s place reads unsigned: `Some(true)` if an unsigned request
 /// succeeds, `Some(false)` if refused, `None` otherwise (no network, missing object,
 /// custom endpoint). One request: a `HEAD`, or a one-key listing.
-pub fn probe_unsigned(resolved: &crate::cloud_sources::Resolved) -> Option<bool> {
+pub fn probe_unsigned(resolved: &crate::cloud::cloud_sources::Resolved) -> Option<bool> {
     let url = probe_url(resolved)?;
     let agent = probe_agent();
     let mut request = if url.contains('?') {
@@ -1225,7 +1235,7 @@ pub fn probe_unsigned(resolved: &crate::cloud_sources::Resolved) -> Option<bool>
         agent.head(&url)
     };
     if resolved.kind == ProviderKind::Azure {
-        request = request.header("x-ms-version", crate::azure::API_VERSION);
+        request = request.header("x-ms-version", crate::cloud::azure::API_VERSION);
     }
     let response = request.call().ok()?;
     match response.status().as_u16() {
@@ -1237,7 +1247,7 @@ pub fn probe_unsigned(resolved: &crate::cloud_sources::Resolved) -> Option<bool>
 
 /// The plain HTTPS URL for an unsigned look; `None` for custom endpoints and
 /// emulators.
-fn probe_url(resolved: &crate::cloud_sources::Resolved) -> Option<String> {
+fn probe_url(resolved: &crate::cloud::cloud_sources::Resolved) -> Option<String> {
     let encode = |key: &str| key.split('/').map(urlencode).collect::<Vec<_>>().join("/");
     // The object, or for a prefix or glob the directory part to list one key from.
     let split = |key: &str| -> (String, bool) {
@@ -1295,7 +1305,7 @@ fn probe_url(resolved: &crate::cloud_sources::Resolved) -> Option<String> {
             if resolved.azure.blob_endpoint.is_some() || resolved.azure.use_emulator {
                 return None;
             }
-            let (account, container, key) = crate::source::azure_parts(&resolved.url)?;
+            let (account, container, key) = crate::cloud::source::azure_parts(&resolved.url)?;
             let base = format!("https://{account}.blob.core.windows.net/{container}");
             Some(match split(&key) {
                 (directory, true) => format!(
@@ -1318,7 +1328,7 @@ pub async fn list_account(
     let source = {
         let (source_id, config) = (source_id.clone(), config.clone());
         tokio::task::spawn_blocking(move || {
-            crate::cloud_sources::session_sources(&config)
+            crate::cloud::cloud_sources::session_sources(&config)
                 .iter()
                 .find(|s| s.id == source_id)
                 .cloned()
@@ -1341,7 +1351,7 @@ pub async fn list_account(
             .into_iter()
             .map(|bucket| {
                 // Opening a bucket found here has to use the login that found it.
-                crate::cloud_sources::remember_bucket(&source, &bucket);
+                crate::cloud::cloud_sources::remember_bucket(&source, &bucket);
                 crate::discover::Entry::directory(Path::new(&format!("gs://{bucket}")))
                     .with_name(bucket)
             })
@@ -1353,11 +1363,11 @@ pub async fn list_account(
             return Err(format!("{source_id} has no accounts"));
         }
         let settings = source.azure.with_token(&env)?;
-        let containers = crate::azure::list_containers(&account, &settings)?;
+        let containers = crate::cloud::azure::list_containers(&account, &settings)?;
         Ok(containers
             .into_iter()
             .map(|container| {
-                crate::discover::Entry::directory(Path::new(&crate::source::azure_url(
+                crate::discover::Entry::directory(Path::new(&crate::cloud::source::azure_url(
                     &account, &container, "",
                 )))
                 .with_name(container)
@@ -1399,7 +1409,7 @@ async fn list_gcs_buckets(source: &Source) -> Result<Vec<String>, String> {
     })?;
     let bearer = google_bearer(source).await?;
 
-    let mut buckets = crate::cloud_command::paged(MAX_BUCKET_PAGES, |token| {
+    let mut buckets = crate::cloud::cloud_command::paged(MAX_BUCKET_PAGES, |token| {
         let mut url = format!(
             "https://storage.googleapis.com/storage/v1/b?project={}&maxResults=1000",
             urlencode(project)
@@ -1407,7 +1417,7 @@ async fn list_gcs_buckets(source: &Source) -> Result<Vec<String>, String> {
         if let Some(token) = token {
             url.push_str(&format!("&pageToken={}", urlencode(token)));
         }
-        let body = crate::gcloud::get(&url, &bearer)?;
+        let body = crate::cloud::gcloud::get(&url, &bearer)?;
         Ok((parse_gcs_buckets(&body)?, gcs_next_page_token(&body)))
     })?;
     buckets.sort();
@@ -1422,7 +1432,8 @@ async fn google_bearer(source: &Source) -> Result<String, String> {
     }
     if let Some(configuration) = source.gcloud.clone() {
         return tokio::task::spawn_blocking(move || {
-            crate::gcloud::token(&configuration, &Environment::current()).map(|(token, _)| token)
+            crate::cloud::gcloud::token(&configuration, &Environment::current())
+                .map(|(token, _)| token)
         })
         .await
         .map_err(|e| format!("{e}"))?;
@@ -1448,13 +1459,13 @@ async fn list_gcs_projects(source: &Source) -> Result<Vec<Listed>, String> {
     let bearer = google_bearer(source).await?;
     let searched = {
         let bearer = bearer.clone();
-        tokio::task::spawn_blocking(move || crate::gcloud::search_projects(&bearer))
+        tokio::task::spawn_blocking(move || crate::cloud::gcloud::search_projects(&bearer))
             .await
             .map_err(|e| format!("{e}"))?
     };
     let mut projects = match (searched, &source.project) {
         (Ok(projects), _) => projects,
-        (Err(_), Some(project)) => vec![crate::gcloud::Project {
+        (Err(_), Some(project)) => vec![crate::cloud::gcloud::Project {
             id: project.clone(),
             name: None,
         }],
@@ -1468,7 +1479,7 @@ async fn list_gcs_projects(source: &Source) -> Result<Vec<Listed>, String> {
             }
             None => projects.insert(
                 0,
-                crate::gcloud::Project {
+                crate::cloud::gcloud::Project {
                     id: configured.clone(),
                     name: None,
                 },

@@ -7,8 +7,8 @@
 //! run, and everything else a profile can be (SSO, assume-role, web identity) comes
 //! from `aws configure export-credentials`, so none of it is reimplemented here.
 
-use crate::cloud_browse::Environment;
-use crate::cloud_command::CommandError;
+use crate::cloud::cloud_browse::Environment;
+use crate::cloud::cloud_command::CommandError;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -250,8 +250,8 @@ pub struct Credentials {
 
 /// Temporary credentials by profile, so a command runs once per expiry rather than once
 /// per open.
-fn cached() -> &'static crate::cloud_command::Expiring<Credentials> {
-    static CACHE: OnceLock<crate::cloud_command::Expiring<Credentials>> = OnceLock::new();
+fn cached() -> &'static crate::cloud::cloud_command::Expiring<Credentials> {
+    static CACHE: OnceLock<crate::cloud::cloud_command::Expiring<Credentials>> = OnceLock::new();
     CACHE.get_or_init(Default::default)
 }
 
@@ -275,7 +275,7 @@ pub fn credentials(profile: &Profile, env: &Environment<'_>) -> Result<Credentia
     }
 
     let output = if let Some(line) = &profile.credential_process {
-        let words = crate::cloud_command::split_command_line(line)
+        let words = crate::cloud::cloud_command::split_command_line(line)
             .ok_or_else(|| format!("credential_process for {} cannot be read", profile.name))?;
         let args: Vec<&str> = words[1..].iter().map(String::as_str).collect();
         (env.run)(&words[0], &args).map_err(|e| match e {

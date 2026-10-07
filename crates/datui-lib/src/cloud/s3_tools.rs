@@ -5,7 +5,7 @@
 //! from a terminal often has s3cmd. Both keep an endpoint and its keys in a file datui
 //! can read, so those servers appear without being described again in datui's config.
 
-use crate::cloud_browse::Environment;
+use crate::cloud::cloud_browse::Environment;
 use std::path::PathBuf;
 
 /// One S3-compatible server another tool describes.

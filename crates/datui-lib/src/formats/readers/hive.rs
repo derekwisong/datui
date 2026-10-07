@@ -12,7 +12,7 @@ use polars::prelude::*;
 /// Build a LazyFrame for hive-partitioned Parquet only (no schema collection, no partition discovery).
 /// Use this for phased loading so "Scanning input" is instant; schema and partition handling are the schema phase's.
 pub fn scan_parquet_hive(path: &Path) -> Result<LazyFrame> {
-    let is_glob = crate::source::expands_as_glob(path);
+    let is_glob = crate::cloud::source::expands_as_glob(path);
     let pl_path = PlRefPath::try_from_path(path)?;
     let args = ScanArgsParquet {
         hive_options: HiveOptions::new_enabled(),

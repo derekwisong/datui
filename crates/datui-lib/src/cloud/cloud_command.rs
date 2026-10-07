@@ -93,7 +93,10 @@ pub const CREDENTIAL_TIMEOUT: Duration = Duration::from_secs(30);
 /// The secret a `secret_command` prints, run once per session: split into arguments with
 /// no shell, through `env`'s runner, its output trimmed and kept in memory. An error
 /// never includes what the command printed on its standard output.
-pub fn secret(command: &str, env: &crate::cloud_browse::Environment<'_>) -> Result<String, String> {
+pub fn secret(
+    command: &str,
+    env: &crate::cloud::cloud_browse::Environment<'_>,
+) -> Result<String, String> {
     static SECRETS: std::sync::OnceLock<
         std::sync::Mutex<std::collections::HashMap<String, String>>,
     > = std::sync::OnceLock::new();

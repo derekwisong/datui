@@ -8,10 +8,10 @@ use polars::prelude::*;
 use ratatui::widgets::TableState;
 
 use crate::OpenOptions;
+use crate::cloud::local_copy::RemoteObject;
 use crate::filter_modal::FilterStatement;
 use crate::formats::readers::csv::Decompressed;
 use crate::formats::readers::{Read, Typing};
-use crate::local_copy::RemoteObject;
 use crate::numfmt::{self};
 use crate::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec, ReshapeSource};
 use crate::python_script::{SidebarFilter, Step};
@@ -279,9 +279,9 @@ pub struct DataTableState {
     /// with views scanning it, removed with the last.
     decompress_temp_file: Option<Arc<Decompressed>>,
     /// The downloaded remote file this dataset was opened from, held while it is scanned.
-    download: Option<crate::download::TempDownload>,
+    download: Option<crate::cloud::download::TempDownload>,
     /// The files a GPS log was read into, which the frame scans; held as `download` is.
-    converted: Vec<crate::download::TempDownload>,
+    converted: Vec<crate::cloud::download::TempDownload>,
     /// The file's other tables, as `--table` names them; see [`OpenFacts::other_tables`].
     other_tables: Vec<String>,
     /// When true, use Polars streaming engine for LazyFrame collect when the streaming feature is enabled.
@@ -419,9 +419,9 @@ pub struct OpenFacts {
     /// What a read through a delimited spec found.
     pub delimited: Option<Arc<crate::formats::delimited_spec::DelimitedRead>>,
     /// The downloaded file the frame scans, held for as long as the state lives.
-    pub download: Option<crate::download::TempDownload>,
+    pub download: Option<crate::cloud::download::TempDownload>,
     /// The files a GPS log was read into, which the frame scans.
-    pub converted: Vec<crate::download::TempDownload>,
+    pub converted: Vec<crate::cloud::download::TempDownload>,
     /// The file's other tables as `--table` names them, with row counts where known, for
     /// Info's Schema tab. Empty for a file of one.
     pub other_tables: Vec<String>,

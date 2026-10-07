@@ -17,7 +17,7 @@
 //!   `Conversion::Streams`); Hugging Face caches and DatasetDicts, a split at a time.
 //! - JSON: Hugging Face metadata and model configs are not data left out.
 //! - SafeTensors and GGUF: a directory of weights is the model; remote models read by
-//!   headers (`crate::remote_model`).
+//!   headers (`crate::cloud::remote_model`).
 //! - CSV: the reader delimited specs read through.
 //! - Text, and unnamed CSV, TSV, JSON and NDJSON: told apart by [`crate::formats::lines::guess`],
 //!   not `sniff`; a text name still has its bytes asked ([`FileFormat::TEXT`]); followed

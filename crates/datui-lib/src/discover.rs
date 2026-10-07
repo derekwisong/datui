@@ -396,9 +396,11 @@ pub fn how_read(entry: &Entry) -> Option<HowRead> {
         None => crate::cli::FormatChoice::Builtin(data_format(&entry.path)?),
     };
     let mode = choice.read_mode(stored)?;
-    let download = match crate::source::input_source(&entry.path) {
-        crate::source::InputSource::Local(_) => false,
-        crate::source::InputSource::Http(_) => choice.http_file() == crate::RemoteRead::Downloaded,
+    let download = match crate::cloud::source::input_source(&entry.path) {
+        crate::cloud::source::InputSource::Local(_) => false,
+        crate::cloud::source::InputSource::Http(_) => {
+            choice.http_file() == crate::RemoteRead::Downloaded
+        }
         // A remote Arrow file is not peeked at here, so it is taken for an IPC file.
         _ => choice.bucket_object(stored) == crate::RemoteRead::Downloaded,
     };

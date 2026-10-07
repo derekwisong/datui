@@ -19,9 +19,9 @@ on:
       - 'crates/datui-lib/src/public_catalog.toml'
       - 'crates/datui-lib/src/config.rs'
       - 'crates/datui-lib/src/catalog.rs'
-      - 'crates/datui-lib/src/cloud_sources.rs'
-      - 'crates/datui-lib/src/cloud_browse.rs'
-      - 'crates/datui-lib/src/azure.rs'
+      - 'crates/datui-lib/src/cloud/cloud_sources.rs'
+      - 'crates/datui-lib/src/cloud/cloud_browse.rs'
+      - 'crates/datui-lib/src/cloud/azure.rs'
       - 'tests/cloud_live_test.rs'
       - '.github/workflows/public-datasets.yml'
 

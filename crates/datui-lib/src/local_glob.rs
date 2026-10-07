@@ -25,7 +25,7 @@ pub fn expand(pattern: &Path) -> Vec<PathBuf> {
     let mut in_glob = false;
     for part in pattern.components() {
         let text = part.as_os_str().to_string_lossy();
-        if !in_glob && !crate::source::has_glob_chars(Path::new(text.as_ref())) {
+        if !in_glob && !crate::cloud::source::has_glob_chars(Path::new(text.as_ref())) {
             base.push(part);
             continue;
         }

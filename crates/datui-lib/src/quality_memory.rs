@@ -53,10 +53,10 @@ pub(crate) enum QualityCopyJob {
     /// The source, in each pass.
     Source,
     /// A copy fetched earlier.
-    Kept(Arc<crate::local_copy::LocalCopy>),
+    Kept(Arc<crate::cloud::local_copy::LocalCopy>),
     /// A copy of `objects` fetched under `root` first.
     Fetch {
-        objects: Vec<crate::local_copy::RemoteObject>,
+        objects: Vec<crate::cloud::local_copy::RemoteObject>,
         root: PathBuf,
     },
 }
@@ -66,7 +66,7 @@ pub(crate) enum QualityCopyJob {
 #[derive(Debug, Clone)]
 pub struct RetainedCopy {
     pub(crate) dataset_generation: u64,
-    pub(crate) copy: Arc<crate::local_copy::LocalCopy>,
+    pub(crate) copy: Arc<crate::cloud::local_copy::LocalCopy>,
 }
 
 /// Acquisitions released to the budget that Setup still names, so a Run that reads

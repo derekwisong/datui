@@ -113,7 +113,7 @@ impl MatchCriteria {
             self.exact_path = Some(url);
         }
         if let Some(relative) = self.relative_path.take() {
-            if crate::source::is_remote_url(Path::new(&relative)) {
+            if crate::cloud::source::is_remote_url(Path::new(&relative)) {
                 self.exact_path
                     .get_or_insert_with(|| PathBuf::from(&relative));
             } else {
@@ -130,7 +130,7 @@ fn unmangled_url(path: &Path) -> Option<PathBuf> {
     let scheme_end = text.find("://")?;
     let start = text[..scheme_end].rfind(['/', '\\'])? + 1;
     let url = PathBuf::from(&text[start..]);
-    crate::source::is_remote_url(&url).then_some(url)
+    crate::cloud::source::is_remote_url(&url).then_some(url)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -853,7 +853,7 @@ impl<'a> Dataset<'a> {
 /// A dataset location as a view records it (URL as written, local path absolute and
 /// resolved), shared by the save form and matching.
 pub fn exact_location(path: &Path) -> PathBuf {
-    if crate::source::is_remote_url(path) {
+    if crate::cloud::source::is_remote_url(path) {
         return path.to_path_buf();
     }
     let absolute = if path.is_absolute() {
@@ -889,7 +889,7 @@ fn canonical_prefix(path: &Path) -> Option<PathBuf> {
 /// A local dataset's path relative to the working directory, when it is under it.
 /// A URL has none: it names the same data wherever datui runs.
 pub fn relative_location(path: &Path) -> Option<String> {
-    if crate::source::is_remote_url(path) {
+    if crate::cloud::source::is_remote_url(path) {
         return None;
     }
     let cwd = exact_location(&std::env::current_dir().ok()?);
@@ -910,7 +910,8 @@ pub fn exact_path_matches<'a>(criteria: &MatchCriteria, dataset: impl Into<Datas
     ) else {
         return false;
     };
-    if crate::source::is_remote_url(stored) || crate::source::is_remote_url(file_path) {
+    if crate::cloud::source::is_remote_url(stored) || crate::cloud::source::is_remote_url(file_path)
+    {
         return url_key(stored) == url_key(file_path);
     }
     stored == file_path || stored == exact_location(file_path)

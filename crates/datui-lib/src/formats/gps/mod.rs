@@ -15,7 +15,7 @@ use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use polars::prelude::*;
 
-use crate::download::TempDownload;
+use crate::cloud::download::TempDownload;
 use crate::formats::segments::Converted;
 use crate::formats::text_formats::{count, note, read_through};
 use crate::notes::Note;

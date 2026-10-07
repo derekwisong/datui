@@ -62,10 +62,10 @@ impl DataTableState {
 #[test]
 fn evidence_rows_hold_the_download_they_scan() {
     let dir = tempfile::tempdir().unwrap();
-    let mut file =
-        crate::download::TempDownload::create(Some(dir.path()), Some("csv")).expect("a temp file");
+    let mut file = crate::cloud::download::TempDownload::create(Some(dir.path()), Some("csv"))
+        .expect("a temp file");
     std::io::Write::write_all(&mut file, b"id\n1\n2\n").unwrap();
-    let download = crate::download::TempDownload::keep(file);
+    let download = crate::cloud::download::TempDownload::keep(file);
     let state = DataTableState::from_csv(download.path(), &Default::default())
         .unwrap()
         .with_open(OpenFacts {

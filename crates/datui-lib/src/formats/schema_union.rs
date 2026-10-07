@@ -569,7 +569,7 @@ pub fn column_schema_of(
                 .ok()?
         }
         Some(crate::cli::Lines::Json) => {
-            LazyJsonLineReader::new(crate::source::polars_literal_path(path).ok()?)
+            LazyJsonLineReader::new(crate::cloud::source::polars_literal_path(path).ok()?)
                 .finish()
                 .ok()?
         }

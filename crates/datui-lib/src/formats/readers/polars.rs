@@ -454,7 +454,7 @@ fn each(paths: &[PathBuf], read: impl Fn(&Path) -> Result<LazyFrame>) -> Result<
 
 pub(super) fn parquet(path: &Path) -> Result<LazyFrame> {
     let args = ScanArgsParquet {
-        glob: crate::source::expands_as_glob(path),
+        glob: crate::cloud::source::expands_as_glob(path),
         ..Default::default()
     };
     Ok(LazyFrame::scan_parquet(
@@ -466,7 +466,7 @@ pub(super) fn parquet(path: &Path) -> Result<LazyFrame> {
 /// An Arrow IPC / Feather v2 file, scanned.
 pub(super) fn ipc(path: &Path) -> Result<LazyFrame> {
     let args = UnifiedScanArgs {
-        glob: crate::source::expands_as_glob(path),
+        glob: crate::cloud::source::expands_as_glob(path),
         ..Default::default()
     };
     Ok(LazyFrame::scan_ipc(

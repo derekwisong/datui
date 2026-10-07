@@ -10,7 +10,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
 
-use crate::download::{Opened, StreamError, TempDownload};
+use crate::cloud::download::{Opened, StreamError, TempDownload};
 use crate::unfinished::Writer;
 use crate::{CompressionFormat, FileFormat, OpenOptions};
 
@@ -220,7 +220,7 @@ fn forget_old_spools(dir: &Path) {
             .is_some_and(|age| age > OLD_SPOOL);
         // Not one a live datui still holds, however long it has been reading.
         #[cfg(unix)]
-        let free = !crate::download::held_elsewhere(&entry.path());
+        let free = !crate::cloud::download::held_elsewhere(&entry.path());
         // Elsewhere a file held open cannot be removed, and the removal fails.
         #[cfg(not(unix))]
         let free = true;
@@ -240,16 +240,19 @@ pub(crate) fn spool<R: Read>(
     writer: &Writer,
     read: &AtomicU64,
 ) -> Result<(TempDownload, OpenOptions), String> {
-    let file = crate::download::spool_to_temp(spool_dir(&options).as_deref(), open, writer, read)
-        .map_err(|error| match error {
-        StreamError::Open(e) | StreamError::Read(e) => {
-            format!("Could not read standard input: {e}")
-        }
-        StreamError::Write(report) => crate::error_display::user_message_from_report(&report, None),
-        StreamError::Short { .. } | StreamError::Cut => {
-            "Reading standard input was stopped.".to_string()
-        }
-    })?;
+    let file =
+        crate::cloud::download::spool_to_temp(spool_dir(&options).as_deref(), open, writer, read)
+            .map_err(|error| match error {
+            StreamError::Open(e) | StreamError::Read(e) => {
+                format!("Could not read standard input: {e}")
+            }
+            StreamError::Write(report) => {
+                crate::error_display::user_message_from_report(&report, None)
+            }
+            StreamError::Short { .. } | StreamError::Cut => {
+                "Reading standard input was stopped.".to_string()
+            }
+        })?;
     let options = described(file.path(), options)?;
     Ok((file, options))
 }

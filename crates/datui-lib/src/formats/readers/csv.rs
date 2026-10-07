@@ -317,7 +317,7 @@ fn csv_header_names<R: std::io::BufRead>(
 /// A lazy CSV reader of the file at `path`, by its path; or, when the file ends in
 /// a run of NULs, of its text before them, mapped and read in place.
 pub(crate) fn csv_reader_of(path: &Path) -> Result<LazyCsvReader> {
-    let glob = crate::source::expands_as_glob(path);
+    let glob = crate::cloud::source::expands_as_glob(path);
     if !glob
         && path.is_file()
         && let Ok(Some(text)) = crate::formats::nul_tail::text_buffer(path)
@@ -948,10 +948,13 @@ pub(crate) fn decompress_to_copy(
     compression: CompressionFormat,
     temp_dir: &Path,
     writer: &Writer,
-) -> Result<crate::download::TempDownload> {
+) -> Result<crate::cloud::download::TempDownload> {
     let Decompressed { file, _claim } =
         decompress_compressed_csv_to_temp(path, compression, temp_dir, writer)?;
-    Ok(crate::download::TempDownload::held(file, Some(_claim)))
+    Ok(crate::cloud::download::TempDownload::held(
+        file,
+        Some(_claim),
+    ))
 }
 
 /// A delimited text file, split on `delimiter` (its format's separator) unless

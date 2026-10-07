@@ -101,7 +101,7 @@ impl App {
                 && !parent_str.is_empty()
                 && let Some(ext) = absolute_path.extension()
             {
-                let separator = if crate::source::is_remote_url(path) {
+                let separator = if crate::cloud::source::is_remote_url(path) {
                     '/'
                 } else {
                     std::path::MAIN_SEPARATOR

@@ -9,8 +9,8 @@
 //! Everything here that touches the network or runs `az` blocks, and is only called
 //! from a worker.
 
-use crate::cloud_browse::Environment;
-use crate::cloud_command::CommandError;
+use crate::cloud::cloud_browse::Environment;
+use crate::cloud::cloud_command::CommandError;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -131,7 +131,7 @@ impl AzureSettings {
     /// asks Entra ID.
     pub fn with_token(mut self, env: &Environment<'_>) -> Result<Self, String> {
         if let AzureAuth::KeyCommand(command) = &self.auth {
-            self.auth = AzureAuth::Key(crate::cloud_command::secret(command, env)?);
+            self.auth = AzureAuth::Key(crate::cloud::cloud_command::secret(command, env)?);
         }
         if self.auth.is_identity() {
             let token = identity_token(&self.auth, STORAGE_SCOPE, env)?;
@@ -356,8 +356,8 @@ pub fn identity_token(
 }
 
 /// Tokens by scope or login, until shortly before they expire.
-fn tokens() -> &'static crate::cloud_command::Expiring<String> {
-    static TOKENS: OnceLock<crate::cloud_command::Expiring<String>> = OnceLock::new();
+fn tokens() -> &'static crate::cloud::cloud_command::Expiring<String> {
+    static TOKENS: OnceLock<crate::cloud::cloud_command::Expiring<String>> = OnceLock::new();
     TOKENS.get_or_init(Default::default)
 }
 
@@ -514,15 +514,15 @@ fn service_principal_token(
     }
     let body = form
         .iter()
-        .map(|(k, v)| format!("{k}={}", crate::cloud_browse::urlencode(v)))
+        .map(|(k, v)| format!("{k}={}", crate::cloud::cloud_browse::urlencode(v)))
         .collect::<Vec<_>>()
         .join("&");
     let url = format!(
         "{}/{}/oauth2/v2.0/token",
         sp.authority.trim_end_matches('/'),
-        crate::cloud_browse::urlencode(&sp.tenant)
+        crate::cloud::cloud_browse::urlencode(&sp.tenant)
     );
-    let mut response = crate::cloud_browse::http_agent()
+    let mut response = crate::cloud::cloud_browse::http_agent()
         .post(&url)
         .config()
         .http_status_as_error(false)
@@ -557,9 +557,9 @@ fn managed_identity_token(scope: &str, env: &Environment<'_>) -> Result<String, 
     if let Some(token) = tokens().get(&key) {
         return Ok(token);
     }
-    let resource = crate::cloud_browse::urlencode(scope.trim_end_matches(".default"));
+    let resource = crate::cloud::cloud_browse::urlencode(scope.trim_end_matches(".default"));
     let client = (env.var)("AZURE_CLIENT_ID")
-        .map(|id| format!("&client_id={}", crate::cloud_browse::urlencode(&id)))
+        .map(|id| format!("&client_id={}", crate::cloud::cloud_browse::urlencode(&id)))
         .unwrap_or_default();
     let set = |k: &str| (env.var)(k).filter(|v| !v.trim().is_empty());
     let (url, header) = if let (Some(endpoint), Some(secret)) =
@@ -587,7 +587,7 @@ fn managed_identity_token(scope: &str, env: &Environment<'_>) -> Result<String, 
             ("Metadata", "true".to_string()),
         )
     };
-    let mut response = crate::user_agent::ureq_config()
+    let mut response = crate::cloud::user_agent::ureq_config()
         .timeout_global(Some(Duration::from_secs(5)))
         .http_status_as_error(false)
         .build()
@@ -684,8 +684,8 @@ pub fn check_read(
     let url = format!(
         "{}{}?restype=container&comp=list&maxresults=1&prefix={}",
         settings.blob_endpoint_for(account),
-        crate::cloud_browse::urlencode(container),
-        crate::cloud_browse::urlencode(&directory)
+        crate::cloud::cloud_browse::urlencode(container),
+        crate::cloud::cloud_browse::urlencode(&directory)
     );
     send_signed(&url, account, settings).map(|_| ())
 }
@@ -713,7 +713,7 @@ pub fn fetch_account_key(
         account.replace('\'', "")
     );
     let body = serde_json::json!({ "query": query });
-    let text = crate::cloud_browse::http_agent()
+    let text = crate::cloud::cloud_browse::http_agent()
         .post("https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=2024-04-01")
         .header("Authorization", &format!("Bearer {management}"))
         .header("Content-Type", "application/json")
@@ -727,7 +727,7 @@ pub fn fetch_account_key(
     if !shared_key {
         return Err("shared-key access is disabled on the account".to_string());
     }
-    let mut response = crate::cloud_browse::http_agent()
+    let mut response = crate::cloud::cloud_browse::http_agent()
         .post(&format!(
             "https://management.azure.com{id}/listKeys?api-version=2023-01-01"
         ))
@@ -838,13 +838,13 @@ pub fn discover_accounts(
     env: &Environment<'_>,
 ) -> Result<Vec<Account>, String> {
     let token = identity_token(identity, MANAGEMENT_SCOPE, env)?;
-    crate::cloud_command::paged(MAX_ACCOUNT_PAGES, |skip| {
+    crate::cloud::cloud_command::paged(MAX_ACCOUNT_PAGES, |skip| {
         let mut options = serde_json::json!({ "$top": 1000 });
         if let Some(skip) = skip {
             options["$skipToken"] = serde_json::Value::String(skip.to_string());
         }
         let body = serde_json::json!({ "query": ACCOUNTS_QUERY, "options": options });
-        let text = crate::cloud_browse::http_agent()
+        let text = crate::cloud::cloud_browse::http_agent()
             .post("https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=2024-04-01")
             .header("Authorization", &format!("Bearer {token}"))
             .header("Content-Type", "application/json")
@@ -904,12 +904,12 @@ pub fn parse_accounts(text: &str) -> Result<(Vec<Account>, Option<String>), Stri
 /// Containers in one account. `settings` must already hold a token or key, not `AzCli`.
 pub fn list_containers(account: &str, settings: &AzureSettings) -> Result<Vec<String>, String> {
     let endpoint = settings.blob_endpoint_for(account);
-    let mut names = crate::cloud_command::paged(MAX_ACCOUNT_PAGES, |marker| {
+    let mut names = crate::cloud::cloud_command::paged(MAX_ACCOUNT_PAGES, |marker| {
         let mut url = format!("{endpoint}?comp=list&maxresults=5000");
         if let Some(marker) = marker {
             url.push_str(&format!(
                 "&marker={}",
-                crate::cloud_browse::urlencode(marker)
+                crate::cloud::cloud_browse::urlencode(marker)
             ));
         }
         parse_containers(&send_signed(&url, account, settings)?)
@@ -952,7 +952,7 @@ fn send_signed(url: &str, account: &str, settings: &AzureSettings) -> Result<Str
         | AzureAuth::ManagedIdentity
         | AzureAuth::KeyCommand(_) => {}
     }
-    let mut call = crate::cloud_browse::http_agent()
+    let mut call = crate::cloud::cloud_browse::http_agent()
         .get(&url)
         .config()
         .http_status_as_error(false)
@@ -1046,8 +1046,8 @@ pub fn store(
         .with_account(account)
         .with_container_name(container)
         .with_config(
-            object_store::azure::AzureConfigKey::Client(crate::user_agent::CLIENT_KEY),
-            crate::user_agent::get(),
+            object_store::azure::AzureConfigKey::Client(crate::cloud::user_agent::CLIENT_KEY),
+            crate::cloud::user_agent::get(),
         );
     if settings.use_emulator {
         builder = builder.with_use_emulator(true);

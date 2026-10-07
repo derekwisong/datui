@@ -135,7 +135,7 @@ fn listing_and_opening_sign_with_the_active_profile() {
 
     // Both listings answered: the default source's, and the `default` profile's own,
     // which runs alongside it and can land after it.
-    let default_profile = datui::cloud_sources::profile_source_id("default");
+    let default_profile = datui::cloud::cloud_sources::profile_source_id("default");
     pump(
         &mut app,
         "the default source and the default profile list",

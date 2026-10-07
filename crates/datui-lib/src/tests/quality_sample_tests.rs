@@ -33,7 +33,7 @@ fn the_grain_follows_an_equal_per_value_sample_once() {
 #[test]
 fn a_copy_that_does_not_read_as_the_source_is_let_go() {
     let root = tempfile::tempdir().unwrap();
-    let objects = vec![crate::local_copy::RemoteObject {
+    let objects = vec![crate::cloud::local_copy::RemoteObject {
         url: "s3://lake/a.parquet".into(),
         size: 3,
         etag: None,
@@ -53,7 +53,7 @@ fn a_copy_that_does_not_read_as_the_source_is_let_go() {
         },
         &data_quality::QualityWatch::default(),
         |objects, root| {
-            crate::local_copy::LocalCopy::fetch(
+            crate::cloud::local_copy::LocalCopy::fetch(
                 root,
                 objects,
                 &sampling::ReadWatch::default(),
@@ -66,7 +66,7 @@ fn a_copy_that_does_not_read_as_the_source_is_let_go() {
     assert_eq!(heard, Some(false), "nothing to keep");
     assert!(held.is_none());
     assert_eq!(
-        crate::local_copy::scan_paths(&read),
+        crate::cloud::local_copy::scan_paths(&read),
         ["s3://lake/b.parquet"]
     );
     let left = std::fs::read_dir(root.path())

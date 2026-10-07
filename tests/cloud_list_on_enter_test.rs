@@ -176,8 +176,8 @@ fn a_source_is_listed_when_entered_not_when_the_home_screen_opens() {
     assert!(!config.cloud.list_on_start, "the default is under test");
 
     // What an earlier run listed for `cached` and `hidden-old`.
-    let env = datui::cloud_browse::Environment::current();
-    let found = datui::cloud_sources::discover(&config.cloud, &env);
+    let env = datui::cloud::cloud_browse::Environment::current();
+    let found = datui::cloud::cloud_sources::discover(&config.cloud, &env);
     for (id, bucket) in [("cached", "from-last-run"), ("hidden-old", "shared-bucket")] {
         let source = found.iter().find(|s| s.id == id).expect(id);
         datui::CacheManager::new("datui")
@@ -225,14 +225,20 @@ fn a_source_is_listed_when_entered_not_when_the_home_screen_opens() {
     );
     assert!(!last_run.busy(), "the cached rows are not being refreshed");
     // A bucket under Recent still opens with the login that listed it last time.
-    let resolved =
-        datui::cloud_sources::resolve_with("s3://from-last-run/x.parquet", &config.cloud, &env)
-            .expect("resolves");
+    let resolved = datui::cloud::cloud_sources::resolve_with(
+        "s3://from-last-run/x.parquet",
+        &config.cloud,
+        &env,
+    )
+    .expect("resolves");
     assert_eq!(resolved.source_id, "cached");
     // A hidden source does not claim its old buckets from the login that should open them.
-    let resolved =
-        datui::cloud_sources::resolve_with("s3://shared-bucket/x.parquet", &config.cloud, &env)
-            .expect("resolves");
+    let resolved = datui::cloud::cloud_sources::resolve_with(
+        "s3://shared-bucket/x.parquet",
+        &config.cloud,
+        &env,
+    )
+    .expect("resolves");
     assert_ne!(resolved.source_id, "hidden-old");
 
     // Entering the source is the request.

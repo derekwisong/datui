@@ -891,11 +891,11 @@ impl App {
         job: QualityCopyJob,
         watch: &data_quality::QualityWatch,
         fetch: impl FnOnce(
-            &[crate::local_copy::RemoteObject],
+            &[crate::cloud::local_copy::RemoteObject],
             &Path,
-        ) -> Result<crate::local_copy::LocalCopy>,
-        kept: impl FnOnce(Option<Arc<crate::local_copy::LocalCopy>>),
-    ) -> Result<(LazyFrame, Option<Arc<crate::local_copy::LocalCopy>>)> {
+        ) -> Result<crate::cloud::local_copy::LocalCopy>,
+        kept: impl FnOnce(Option<Arc<crate::cloud::local_copy::LocalCopy>>),
+    ) -> Result<(LazyFrame, Option<Arc<crate::cloud::local_copy::LocalCopy>>)> {
         let (copy, fetched) = match job {
             QualityCopyJob::Source => return Ok((lf, None)),
             QualityCopyJob::Kept(copy) => (copy, false),
@@ -936,34 +936,34 @@ impl App {
     /// next chunk and removes the partial copy.
     #[cfg(feature = "cloud")]
     fn fetch_quality_copy(
-        objects: &[crate::local_copy::RemoteObject],
+        objects: &[crate::cloud::local_copy::RemoteObject],
         root: &Path,
         cloud: &crate::config::CloudConfig,
         runtime: &tokio::runtime::Handle,
         stop: &crate::sampling::ReadWatch,
-    ) -> Result<crate::local_copy::LocalCopy> {
-        use crate::download::StreamError;
+    ) -> Result<crate::cloud::local_copy::LocalCopy> {
+        use crate::cloud::download::StreamError;
         use object_store::ObjectStoreExt;
 
-        crate::local_copy::LocalCopy::fetch(root, objects, stop, |object, write| {
+        crate::cloud::local_copy::LocalCopy::fetch(root, objects, stop, |object, write| {
             let url = object.url.as_str();
             let (_, _, store) = Self::cloud_store_for(Path::new(url), cloud, runtime)?;
             let (_, key) = Self::cloud_bucket_and_key(url)?;
-            let path = crate::cloud_browse::object_path(&key);
+            let path = crate::cloud::cloud_browse::object_path(&key);
             let listed = object.etag.clone();
             let open = async move {
                 let got = store.get(&path).await.map_err(|e| e.to_string())?;
                 // Rewritten since opened (perhaps same size): the copy would not be the dataset on
                 // screen.
                 if let (Some(listed), Some(fetched)) = (&listed, &got.meta.e_tag)
-                    && !crate::local_copy::same_etag(listed, fetched)
+                    && !crate::cloud::local_copy::same_etag(listed, fetched)
                 {
                     return Err("it changed since it opened. Open the dataset again".to_string());
                 }
                 Ok((got.into_stream(), None))
             };
             let watch = stop.clone();
-            crate::download::stream_into(runtime, open, move || watch.stopped(), write)
+            crate::cloud::download::stream_into(runtime, open, move || watch.stopped(), write)
                 .map(drop)
                 .map_err(|error| match error {
                     StreamError::Write(report) => report,
@@ -980,7 +980,9 @@ impl App {
 
     /// Where Data Quality's local copies are written.
     fn quality_copies_root(&self) -> PathBuf {
-        self.cache.cache_dir().join(crate::local_copy::COPIES_DIR)
+        self.cache
+            .cache_dir()
+            .join(crate::cloud::local_copy::COPIES_DIR)
     }
 
     /// `analysis.quality_local_copy`, in bytes.
@@ -998,7 +1000,7 @@ impl App {
     }
 
     /// The copy this dataset's objects were fetched into this session, while kept.
-    fn quality_copy_kept(&self) -> Option<&Arc<crate::local_copy::LocalCopy>> {
+    fn quality_copy_kept(&self) -> Option<&Arc<crate::cloud::local_copy::LocalCopy>> {
         let state = self.data_table_state.as_ref()?;
         self.quality
             .copies
@@ -1018,12 +1020,12 @@ impl App {
     fn quality_copy_free_space(&self) -> Option<u64> {
         let root = self.quality_copies_root();
         let Ok(mut cached) = self.quality.copy_free.lock() else {
-            return crate::local_copy::free_space(&root);
+            return crate::cloud::local_copy::free_space(&root);
         };
         match *cached {
             Some((asked, free)) if asked.elapsed() < std::time::Duration::from_secs(5) => free,
             _ => {
-                let free = crate::local_copy::free_space(&root);
+                let free = crate::cloud::local_copy::free_space(&root);
                 *cached = Some((std::time::Instant::now(), free));
                 free
             }
@@ -1083,7 +1085,7 @@ impl App {
     pub(crate) fn retain_quality_copy(
         &mut self,
         dataset_generation: u64,
-        copy: Option<Arc<crate::local_copy::LocalCopy>>,
+        copy: Option<Arc<crate::cloud::local_copy::LocalCopy>>,
     ) {
         if dataset_generation != self.dataset_generation {
             return;
@@ -1486,7 +1488,7 @@ impl App {
                 let lf = data_quality::apply_quality_scope(lf, &plan.scope, source.as_ref())
                     .map_err(|error| format!("{error}"))?;
                 // Held to the end of the run: the copy stays on disk while read, released or not.
-                let fetch = |objects: &[crate::local_copy::RemoteObject], root: &Path| {
+                let fetch = |objects: &[crate::cloud::local_copy::RemoteObject], root: &Path| {
                     #[cfg(feature = "cloud")]
                     {
                         Self::fetch_quality_copy(objects, root, &cloud, &runtime, watch.read())
@@ -1497,7 +1499,7 @@ impl App {
                         Err(color_eyre::eyre::eyre!("Built without cloud support"))
                     }
                 };
-                let kept_copy = |copy: Option<Arc<crate::local_copy::LocalCopy>>| {
+                let kept_copy = |copy: Option<Arc<crate::cloud::local_copy::LocalCopy>>| {
                     worker.send(AppEvent::BackgroundQualityCopyKept {
                         dataset_generation,
                         copy,

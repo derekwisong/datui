@@ -12,8 +12,8 @@
 //! Everything here that runs `gcloud` or touches the network blocks, and is only called
 //! from a worker.
 
-use crate::cloud_browse::Environment;
-use crate::cloud_command::CommandError;
+use crate::cloud::cloud_browse::Environment;
+use crate::cloud::cloud_command::CommandError;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -121,8 +121,9 @@ pub fn unsupported_credential_type(text: &str) -> Option<String> {
     (!matches!(kind, "service_account" | "authorized_user")).then(|| kind.to_string())
 }
 
-fn tokens() -> &'static crate::cloud_command::Expiring<(String, SystemTime)> {
-    static TOKENS: OnceLock<crate::cloud_command::Expiring<(String, SystemTime)>> = OnceLock::new();
+fn tokens() -> &'static crate::cloud::cloud_command::Expiring<(String, SystemTime)> {
+    static TOKENS: OnceLock<crate::cloud::cloud_command::Expiring<(String, SystemTime)>> =
+        OnceLock::new();
     TOKENS.get_or_init(Default::default)
 }
 
@@ -229,13 +230,13 @@ const MAX_PROJECT_PAGES: usize = 10;
 
 /// Every active project `bearer` can see, through Resource Manager's `projects:search`.
 pub fn search_projects(bearer: &str) -> Result<Vec<Project>, String> {
-    crate::cloud_command::paged(MAX_PROJECT_PAGES, |token| {
+    crate::cloud::cloud_command::paged(MAX_PROJECT_PAGES, |token| {
         let mut url = "https://cloudresourcemanager.googleapis.com/v3/projects:search?pageSize=50"
             .to_string();
         if let Some(token) = token {
             url.push_str(&format!(
                 "&pageToken={}",
-                crate::cloud_browse::urlencode(token)
+                crate::cloud::cloud_browse::urlencode(token)
             ));
         }
         parse_projects(&get(&url, bearer)?)
@@ -244,7 +245,7 @@ pub fn search_projects(bearer: &str) -> Result<Vec<Project>, String> {
 
 /// The body of a Google API's answer to a GET signed with `bearer`, or why it refused.
 pub fn get(url: &str, bearer: &str) -> Result<String, String> {
-    let mut response = crate::cloud_browse::http_agent()
+    let mut response = crate::cloud::cloud_browse::http_agent()
         .get(url)
         .config()
         .http_status_as_error(false)

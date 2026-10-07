@@ -608,14 +608,14 @@ pub struct OpenRecord<'a> {
 }
 
 fn is_url(path: &Path) -> bool {
-    crate::source::is_remote_url(path)
+    crate::cloud::source::is_remote_url(path)
 }
 
 /// `url` without possible secrets: user and password before the host, and for HTTP the
 /// query and fragment (signatures, tokens). The bool says whether anything was removed.
 fn without_secrets(url: &str) -> (String, bool) {
     // An S3 source ID before the bucket is datui's name for the source, not a user.
-    let url = &*crate::source::split_source_id(url).1;
+    let url = &*crate::cloud::source::split_source_id(url).1;
     let Some(scheme_end) = url.find("://").map(|i| i + 3) else {
         return (url.to_string(), false);
     };
@@ -686,7 +686,7 @@ fn reader_target(path: &Path, record: &OpenRecord) -> Option<Target> {
     if is_url(path) {
         let (text, _) = without_secrets(&text);
         if let Some(format) = file_format(Path::new(&text), record) {
-            let pattern = crate::source::has_glob_chars(Path::new(&text));
+            let pattern = crate::cloud::source::has_glob_chars(Path::new(&text));
             return Some(Target {
                 text,
                 format,
@@ -730,7 +730,7 @@ fn reader_target(path: &Path, record: &OpenRecord) -> Option<Target> {
             .or(record.options.format)
             .or_else(|| commonest_format(names.iter().map(String::as_str)));
         // The directory is there, so its name is no pattern, `[` and all (#625).
-        let base = crate::source::escape_glob(text.trim_end_matches(['/', '\\']));
+        let base = crate::cloud::source::escape_glob(text.trim_end_matches(['/', '\\']));
         // A directory of Parquet with subdirectories, or with no files of its own, is
         // scanned whole for Parquet; otherwise the files of its commonest format.
         let (text, format, below) = match format {
@@ -753,11 +753,11 @@ fn reader_target(path: &Path, record: &OpenRecord) -> Option<Target> {
         });
     }
     let format = file_format(path, record)?;
-    let pattern = crate::source::expands_as_glob(path);
+    let pattern = crate::cloud::source::expands_as_glob(path);
     Some(Target {
         // Polars' scans read every name as a pattern: an existing `d[1].csv` is that
         // file alone (#625).
-        literal: !pattern && scans_by_pattern(format) && crate::source::has_glob_chars(path),
+        literal: !pattern && scans_by_pattern(format) && crate::cloud::source::has_glob_chars(path),
         text,
         format,
         below: false,
@@ -927,7 +927,8 @@ fn storage_options(name: &str, record: &OpenRecord, endpoint: Option<&str>) -> O
         }
         "azure" => {
             pairs.extend(
-                crate::source::azure_parts(name).map(|(account, ..)| ("account_name", account)),
+                crate::cloud::source::azure_parts(name)
+                    .map(|(account, ..)| ("account_name", account)),
             );
         }
         _ => {}
@@ -1316,7 +1317,7 @@ pub fn source(record: &OpenRecord) -> Source {
         .into_iter()
         .map(|t| {
             if t.literal && !no_glob {
-                crate::source::escape_glob(&t.text)
+                crate::cloud::source::escape_glob(&t.text)
             } else {
                 t.text
             }

@@ -60,7 +60,7 @@ pub(crate) fn read(input: RunInput, config: Option<AppConfig>) -> Result<Setting
         Some(config) => config,
         None => load_config(&input)?,
     };
-    crate::user_agent::configure(&config.http.user_agent);
+    crate::cloud::user_agent::configure(&config.http.user_agent);
     let (input, config) = match input {
         RunInput::Cli(args) => {
             let mut config = config;
@@ -119,7 +119,7 @@ pub(crate) fn read(input: RunInput, config: Option<AppConfig>) -> Result<Setting
     let mut notes = Vec::new();
     // Variables from `[cloud] env_files` first, so everything below sees them.
     if let Ok(dir) = std::env::current_dir() {
-        notes.extend(crate::cloud_env::load(&config.cloud, &dir));
+        notes.extend(crate::cloud::cloud_env::load(&config.cloud, &dir));
     }
     config.cloud = opts.effective_cloud(&config.cloud);
     // Said on stderr while it was the log: said again once the terminal is back.
@@ -150,7 +150,7 @@ pub(crate) fn read(input: RunInput, config: Option<AppConfig>) -> Result<Setting
         .into_iter()
         .flatten()
         {
-            if let Some(value) = crate::cloud_env::var(name) {
+            if let Some(value) = crate::cloud::cloud_env::var(name) {
                 logging::keep_out_of_log(&value);
             }
         }

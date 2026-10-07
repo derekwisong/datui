@@ -248,16 +248,22 @@ connection = "onprem"
 
     // Weather is read anonymously; Orders only through its connection, whose keys are
     // not set here, so it says whose they are rather than trying anyone else's.
-    let env = datui::cloud_browse::Environment::current();
+    let env = datui::cloud::cloud_browse::Environment::current();
     let cloud = &config_in(dir.path(), config).cloud;
-    let read =
-        datui::cloud_sources::resolve_with("s3://noaa-ghcn-pds/parquet/by_year/", cloud, &env)
-            .unwrap();
-    assert_eq!(read.signing, datui::cloud_sources::Signing::Unsigned);
+    let read = datui::cloud::cloud_sources::resolve_with(
+        "s3://noaa-ghcn-pds/parquet/by_year/",
+        cloud,
+        &env,
+    )
+    .unwrap();
+    assert_eq!(read.signing, datui::cloud::cloud_sources::Signing::Unsigned);
     assert_eq!(read.source_id, "mine");
-    let refused =
-        datui::cloud_sources::resolve_with("s3://datui-test-orders/2024/q1.csv", cloud, &env)
-            .expect_err("the connection has no keys");
+    let refused = datui::cloud::cloud_sources::resolve_with(
+        "s3://datui-test-orders/2024/q1.csv",
+        cloud,
+        &env,
+    )
+    .expect_err("the connection has no keys");
     assert!(refused.contains("onprem"), "{refused}");
 
     // A missing file stays listed, and says so where it was asked for.

@@ -12,7 +12,7 @@ use polars::io::ipc::BatchedWriter;
 use polars::prelude::*;
 
 use crate::OpenOptions;
-use crate::download::TempDownload;
+use crate::cloud::download::TempDownload;
 use crate::notes::Note;
 use crate::unfinished::Writer;
 

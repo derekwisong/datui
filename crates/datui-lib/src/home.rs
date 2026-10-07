@@ -106,7 +106,7 @@ pub fn object_place_label(path: &Path) -> Option<&'static str> {
         return Some("account");
     }
     let text = path.to_string_lossy();
-    if let Some((_, _, key)) = crate::source::azure_parts(&text) {
+    if let Some((_, _, key)) = crate::cloud::source::azure_parts(&text) {
         return key.trim_matches('/').is_empty().then_some("container");
     }
     let (scheme, rest) = text.split_once("://")?;
@@ -185,7 +185,7 @@ pub fn describe(
     // Two stores can hold the same bucket and key, so a row named by source says
     // which, or that the source has left the config.
     let path_text = entry.path.to_string_lossy();
-    let named = crate::source::split_source_id(&path_text).0;
+    let named = crate::cloud::source::split_source_id(&path_text).0;
     let missing_source = named
         .is_some_and(|id| known_sources.is_some_and(|known| !known.iter().any(|k| k.name == id)));
     let (short, source) = match (named, known_sources) {
@@ -297,7 +297,7 @@ pub fn cloud_account(path: &Path) -> Option<(String, String)> {
 fn within(url: &str, root: &str) -> bool {
     #[cfg(feature = "cloud")]
     {
-        crate::cloud_sources::is_within(url, root)
+        crate::cloud::cloud_sources::is_within(url, root)
     }
     #[cfg(not(feature = "cloud"))]
     {
@@ -317,7 +317,7 @@ fn place_key(path: &Path) -> String {
     let text = path.to_string_lossy();
     #[cfg(feature = "cloud")]
     {
-        crate::source::canonical_cloud_place(&text)
+        crate::cloud::source::canonical_cloud_place(&text)
     }
     #[cfg(not(feature = "cloud"))]
     {
@@ -376,8 +376,10 @@ impl CatalogPlaces {
 
 /// What is left of `url` below `root`, which it is [`within`].
 fn within_rest(url: &str, root: &str) -> String {
-    let canonical = |u: &str| match crate::source::azure_parts(u) {
-        Some((account, container, path)) => crate::source::azure_url(&account, &container, &path),
+    let canonical = |u: &str| match crate::cloud::source::azure_parts(u) {
+        Some((account, container, path)) => {
+            crate::cloud::source::azure_url(&account, &container, &path)
+        }
         None => u.to_string(),
     };
     let (url, root) = (canonical(url), canonical(root));
@@ -394,7 +396,7 @@ pub fn is_object_store_url(path: &Path) -> bool {
         .map(|(s, _)| s.to_ascii_lowercase())
         .unwrap_or_default();
     matches!(scheme.as_str(), "s3" | "s3a" | "gs" | "gcs")
-        || crate::source::azure_parts(&text).is_some()
+        || crate::cloud::source::azure_parts(&text).is_some()
 }
 
 /// The URL that opens a cloud directory as one dataset: with a trailing slash, so
@@ -434,7 +436,11 @@ fn whole_directory_row(dir: &Path, rows: &[Entry], remote: bool) -> Option<Entry
     let (kind, holds) = if remote || is_object_store_url(dir) {
         #[cfg(feature = "cloud")]
         {
-            crate::cloud_browse::look_at_listing(&dir.to_string_lossy(), &directories, &objects)
+            crate::cloud::cloud_browse::look_at_listing(
+                &dir.to_string_lossy(),
+                &directories,
+                &objects,
+            )
         }
         // Without the cloud feature there is no remote classifier, and reading the share
         // is what this avoids: the door is offered without a kind (losing only the lake
@@ -470,7 +476,7 @@ fn whole_directory_row(dir: &Path, rows: &[Entry], remote: bool) -> Option<Entry
 /// `file_name` rather than splitting on `/`, for the filesystem root and Windows.
 fn door_base_name(dir: &Path) -> String {
     let text = dir.to_string_lossy();
-    if let Some((_, container, key)) = crate::source::azure_parts(&text) {
+    if let Some((_, container, key)) = crate::cloud::source::azure_parts(&text) {
         let leaf = key.trim_matches('/').rsplit('/').next().unwrap_or("");
         if leaf.is_empty() {
             container
@@ -478,7 +484,7 @@ fn door_base_name(dir: &Path) -> String {
             leaf.to_string()
         }
     } else {
-        let (_, plain) = crate::source::split_source_id(&text);
+        let (_, plain) = crate::cloud::source::split_source_id(&text);
         std::path::Path::new(plain.as_ref())
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -707,7 +713,7 @@ pub fn is_cloud_place(path: &Path) -> bool {
 /// `gs://bucket`, with no prefix.
 fn is_bucket_root(path: &Path) -> bool {
     let text = path.to_string_lossy();
-    if let Some((_, _, key)) = crate::source::azure_parts(&text) {
+    if let Some((_, _, key)) = crate::cloud::source::azure_parts(&text) {
         return key.trim_matches('/').is_empty();
     }
     let Some((scheme, rest)) = text.split_once("://") else {
@@ -723,8 +729,8 @@ fn is_bucket_root(path: &Path) -> bool {
 /// bucket or host (`Path::parent` would make `gs://bucket` into `gs:`).
 pub fn parent_location(path: &Path) -> Option<PathBuf> {
     if !matches!(
-        crate::source::input_source(path),
-        crate::source::InputSource::Local(_)
+        crate::cloud::source::input_source(path),
+        crate::cloud::source::InputSource::Local(_)
     ) {
         let s = path.to_string_lossy();
         let (scheme, rest) = s.split_once("://")?;
@@ -742,8 +748,8 @@ pub fn parent_location(path: &Path) -> Option<PathBuf> {
 pub fn is_remote_path(path: &Path) -> bool {
     is_cloud_place(path)
         || !matches!(
-            crate::source::input_source(path),
-            crate::source::InputSource::Local(_)
+            crate::cloud::source::input_source(path),
+            crate::cloud::source::InputSource::Local(_)
         )
         || is_network_path(path)
 }
@@ -850,7 +856,7 @@ pub struct CloudSource {
     /// The row's name.
     pub label: String,
     /// The API spoken.
-    pub api: crate::source::ProviderKind,
+    pub api: crate::cloud::source::ProviderKind,
     /// The account, endpoint or project, and where the login came from.
     pub note: String,
     /// Bucket URLs, most useful first: `s3://bucket`, `s3://<id>@bucket`, `gs://bucket`.
@@ -878,9 +884,9 @@ impl CloudSource {
             CloudStatus::Unlisted if self.buckets.is_empty() => "not listed".to_string(),
             _ => {
                 let (one, many) = match self.api {
-                    crate::source::ProviderKind::Azure => ("account", "accounts"),
-                    crate::source::ProviderKind::Gcs => ("project", "projects"),
-                    crate::source::ProviderKind::S3 => ("bucket", "buckets"),
+                    crate::cloud::source::ProviderKind::Azure => ("account", "accounts"),
+                    crate::cloud::source::ProviderKind::Gcs => ("project", "projects"),
+                    crate::cloud::source::ProviderKind::S3 => ("bucket", "buckets"),
                 };
                 match self.buckets.len() {
                     0 => format!("no {many}"),
@@ -1058,7 +1064,7 @@ pub fn catalogs(config: &crate::config::AppConfig) -> Vec<ShownCatalog> {
             if catalog.origin == crate::catalog::Origin::Bundled {
                 shown
                     .datasets
-                    .retain(|d| crate::source::opens_in_this_build(&d.location));
+                    .retain(|d| crate::cloud::source::opens_in_this_build(&d.location));
             }
             (!shown.datasets.is_empty()).then_some(shown)
         })
@@ -1087,8 +1093,8 @@ fn catalog_entry(
 ) -> Entry {
     let path = &dataset.location;
     let local = matches!(
-        crate::source::input_source(path),
-        crate::source::InputSource::Local(_)
+        crate::cloud::source::input_source(path),
+        crate::cloud::source::InputSource::Local(_)
     );
     let mut entry = if is_object_store_url(path) {
         if names_a_file(path) {
@@ -1149,8 +1155,8 @@ pub fn catalog_entry_for(
 /// The row for a bookmark inside one of a catalog's datasets.
 fn bookmark_entry(name: &str, place: &Path, network_check: fn(&Path) -> bool) -> Entry {
     let local = matches!(
-        crate::source::input_source(place),
-        crate::source::InputSource::Local(_)
+        crate::cloud::source::input_source(place),
+        crate::cloud::source::InputSource::Local(_)
     );
     let mut entry = if is_object_store_url(place) && !names_a_file(place) {
         Entry::directory(place)
@@ -1431,8 +1437,8 @@ pub fn place_is_browsable(path: &Path) -> bool {
     is_cloud_place(path)
         || is_object_store_url(path)
         || matches!(
-            crate::source::input_source(path),
-            crate::source::InputSource::Local(_)
+            crate::cloud::source::input_source(path),
+            crate::cloud::source::InputSource::Local(_)
         )
 }
 
@@ -2173,12 +2179,12 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
                 dataset.name.clone()
             } else if let Some((_, account)) = cloud_account(&dir) {
                 account
-            } else if let Some((_, container, key)) = crate::source::azure_parts(&text) {
+            } else if let Some((_, container, key)) = crate::cloud::source::azure_parts(&text) {
                 format!("{container}/{}", key.trim_matches('/'))
                     .trim_end_matches('/')
                     .to_string()
             } else {
-                match crate::source::split_source_id(&text) {
+                match crate::cloud::source::split_source_id(&text) {
                     (Some(_), plain) => plain.into_owned(),
                     (None, _) => display_path(&dir),
                 }
@@ -2418,10 +2424,10 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
 /// spelling for Azure) while recents are stored as typed; both must meet here.
 pub fn index_key(path: &Path) -> PathBuf {
     let text = path.to_string_lossy();
-    if let Some((account, container, key)) = crate::source::azure_parts(&text) {
-        return PathBuf::from(crate::source::azure_url(&account, &container, &key));
+    if let Some((account, container, key)) = crate::cloud::source::azure_parts(&text) {
+        return PathBuf::from(crate::cloud::source::azure_url(&account, &container, &key));
     }
-    match crate::source::split_source_id(&text) {
+    match crate::cloud::source::split_source_id(&text) {
         (Some(_), plain) => PathBuf::from(plain.into_owned()),
         (None, _) => path.to_path_buf(),
     }
@@ -3144,12 +3150,12 @@ impl HomeState {
             return self.cloud.iter().find(|s| s.id == id);
         }
         let text = path.to_string_lossy();
-        if let Some((account, _, _)) = crate::source::azure_parts(&text) {
+        if let Some((account, _, _)) = crate::cloud::source::azure_parts(&text) {
             return self.azure_account_place(&account).and_then(|place| {
                 cloud_account(&place).and_then(|(id, _)| self.cloud.iter().find(|s| s.id == id))
             });
         }
-        if let (Some(id), _) = crate::source::split_source_id(&text) {
+        if let (Some(id), _) = crate::cloud::source::split_source_id(&text) {
             return self.cloud.iter().find(|s| s.id == id);
         }
         if let Some(project) =
@@ -3158,7 +3164,7 @@ impl HomeState {
             return cloud_account(&project)
                 .and_then(|(id, _)| self.cloud.iter().find(|s| s.id == id));
         }
-        let (_, plain) = crate::source::split_source_id(&text);
+        let (_, plain) = crate::cloud::source::split_source_id(&text);
         let (scheme, rest) = plain.split_once("://")?;
         let bucket = rest.split('/').next()?;
         let root = PathBuf::from(format!("{scheme}://{bucket}"));
@@ -3190,7 +3196,7 @@ impl HomeState {
             return Some(cloud_place(&id));
         }
         let text = path.to_string_lossy();
-        if let Some((account, container, key)) = crate::source::azure_parts(&text) {
+        if let Some((account, container, key)) = crate::cloud::source::azure_parts(&text) {
             let key = key.trim_matches('/');
             if key.is_empty() {
                 return self.azure_account_place(&account);
@@ -3201,7 +3207,7 @@ impl HomeState {
             } else {
                 format!("{up}/")
             };
-            return Some(PathBuf::from(crate::source::azure_url(
+            return Some(PathBuf::from(crate::cloud::source::azure_url(
                 &account, &container, &up,
             )));
         }
@@ -3218,7 +3224,7 @@ impl HomeState {
     /// One level up inside a bucket or container, whatever the provider.
     fn parent_within(&self, path: &Path) -> Option<PathBuf> {
         let text = path.to_string_lossy();
-        if let Some((account, container, key)) = crate::source::azure_parts(&text) {
+        if let Some((account, container, key)) = crate::cloud::source::azure_parts(&text) {
             let key = key.trim_matches('/');
             let up = key.rsplit_once('/').map(|(up, _)| up).unwrap_or("");
             let up = if up.is_empty() {
@@ -3226,7 +3232,7 @@ impl HomeState {
             } else {
                 format!("{up}/")
             };
-            return Some(PathBuf::from(crate::source::azure_url(
+            return Some(PathBuf::from(crate::cloud::source::azure_url(
                 &account, &container, &up,
             )));
         }
@@ -3345,7 +3351,7 @@ impl HomeState {
             return self
                 .cloud
                 .iter()
-                .any(|s| s.id == id && s.api == crate::source::ProviderKind::Gcs)
+                .any(|s| s.id == id && s.api == crate::cloud::source::ProviderKind::Gcs)
                 .then_some("project");
         }
         // A bookmark inside a catalog dataset opens whole, as a dataset does.
@@ -3414,7 +3420,8 @@ impl HomeState {
             let text = path.to_string_lossy();
             if let Some((_, account)) = cloud_account(path) {
                 parts.push(account);
-            } else if let Some((account, container, key)) = crate::source::azure_parts(&text) {
+            } else if let Some((account, container, key)) = crate::cloud::source::azure_parts(&text)
+            {
                 parts.push(account);
                 parts.push(container);
                 parts.extend(key.split('/').filter(|p| !p.is_empty()).map(str::to_string));
@@ -3426,7 +3433,7 @@ impl HomeState {
                 {
                     parts.push(project);
                 }
-                let (_, plain) = crate::source::split_source_id(&text);
+                let (_, plain) = crate::cloud::source::split_source_id(&text);
                 if let Some((_, rest)) = plain.split_once("://") {
                     parts.extend(
                         rest.split('/')
@@ -4717,7 +4724,7 @@ fn bucket_entry(url: &Path) -> Entry {
     let mut entry = Entry::directory(url);
     // The bucket name, without a source id, rather than the URL's last segment.
     let text = url.to_string_lossy();
-    let (_, plain) = crate::source::split_source_id(&text);
+    let (_, plain) = crate::cloud::source::split_source_id(&text);
     entry.name = plain
         .rsplit('/')
         .find(|part| !part.is_empty())
@@ -4960,7 +4967,7 @@ pub fn names_under(dir: &str, urls: impl IntoIterator<Item = String>) -> PathLis
     let mut names: Vec<PathName> = Vec::new();
     for url in urls {
         // An Azure URL is known in its full form; `az://container/` is how one is typed.
-        let forms = match crate::source::azure_parts(&url) {
+        let forms = match crate::cloud::source::azure_parts(&url) {
             Some((_, container, key)) => vec![url.clone(), format!("az://{container}/{key}")],
             None => vec![url],
         };

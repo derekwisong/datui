@@ -17,7 +17,7 @@ use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use polars::prelude::{DataFrame, LazyFrame, PolarsResult};
 
-use crate::download::TempDownload;
+use crate::cloud::download::TempDownload;
 use crate::formats::model_files::MetaValue;
 use crate::formats::readers::{ConvertIn, ConvertOut};
 use crate::formats::segments::{Converted, Segments};

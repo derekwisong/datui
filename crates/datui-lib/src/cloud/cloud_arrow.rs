@@ -14,7 +14,7 @@ use std::sync::atomic::AtomicU64;
 use color_eyre::Result;
 use object_store::{ObjectStore, ObjectStoreExt};
 
-use crate::download::TempDownload;
+use crate::cloud::download::TempDownload;
 use crate::error_display::{FileError, file_message, store_message};
 use crate::formats::ipc_stream::{Merge, Part};
 use crate::unfinished::Writer;
@@ -71,7 +71,7 @@ pub(crate) fn list(
             .collect();
         (objects, options)
     } else {
-        let path = crate::cloud_browse::object_path(&key);
+        let path = crate::cloud::cloud_browse::object_path(&key);
         let store = store.clone();
         let meta = crate::wait_on_runtime(runtime, async move { store.head(&path).await })
             .ok_or_else(|| failed(url, "looking at it was cancelled"))?
@@ -145,7 +145,7 @@ fn names_under(
     runtime: &tokio::runtime::Handle,
 ) -> Result<Vec<(String, u64)>> {
     let store = store.clone();
-    let prefix = (!key.is_empty()).then(|| crate::cloud_browse::object_path(key));
+    let prefix = (!key.is_empty()).then(|| crate::cloud::cloud_browse::object_path(key));
     let listed = crate::wait_on_runtime(runtime, async move {
         store.list_with_delimiter(prefix.as_ref()).await
     })
@@ -196,7 +196,7 @@ fn get_text(
     runtime: &tokio::runtime::Handle,
 ) -> Result<String> {
     let store = store.clone();
-    let path = crate::cloud_browse::object_path(key);
+    let path = crate::cloud::cloud_browse::object_path(key);
     let bytes = crate::wait_on_runtime(
         runtime,
         async move { store.get(&path).await?.bytes().await },
@@ -220,7 +220,7 @@ fn peek(
                 let store = store.clone();
                 async move {
                     let (_, key) = App::cloud_bucket_and_key(&url)?;
-                    let path = crate::cloud_browse::object_path(&key);
+                    let path = crate::cloud::cloud_browse::object_path(&key);
                     let head = store
                         .get_range(&path, 0..size.min(6))
                         .await
@@ -279,7 +279,7 @@ pub(crate) fn download(
 }
 
 /// An object's bytes as they arrive, read on this thread: the stream fed to the
-/// conversion. A few chunks are queued at a time; see [`crate::download::stream_into`].
+/// conversion. A few chunks are queued at a time; see [`crate::cloud::download::stream_into`].
 struct Body {
     chunks: std::sync::mpsc::Receiver<std::result::Result<Vec<u8>, String>>,
     chunk: Vec<u8>,
@@ -293,16 +293,16 @@ impl Body {
         runtime: &tokio::runtime::Handle,
         writer: &Writer,
     ) -> Result<Body> {
-        use crate::download::StreamError;
+        use crate::cloud::download::StreamError;
         let (_, key) = App::cloud_bucket_and_key(url)?;
         let (_, _, store) = App::cloud_store_for(Path::new(url), cloud, runtime)?;
-        let path = crate::cloud_browse::object_path(&key);
+        let path = crate::cloud::cloud_browse::object_path(&key);
         let open = async move {
             let got = store.get(&path).await.map_err(|e| store_message(&e))?;
             let len = got.range.end - got.range.start;
             Ok((got.into_stream(), Some(len)))
         };
-        let (tx, chunks) = std::sync::mpsc::sync_channel(crate::download::QUEUED_CHUNKS);
+        let (tx, chunks) = std::sync::mpsc::sync_channel(crate::cloud::download::QUEUED_CHUNKS);
         let runtime = runtime.clone();
         let stop = {
             let writer = writer.clone();
@@ -312,7 +312,7 @@ impl Body {
         std::thread::Builder::new()
             .name("datui-arrow-download".to_string())
             .spawn(move || {
-                let sent = crate::download::stream_into(&runtime, open, stop, |chunk| {
+                let sent = crate::cloud::download::stream_into(&runtime, open, stop, |chunk| {
                     tx.send(Ok(chunk.to_vec()))
                         .map_err(|_| color_eyre::eyre::eyre!("the conversion stopped"))
                 });

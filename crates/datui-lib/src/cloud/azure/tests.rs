@@ -4,7 +4,7 @@ use std::path::Path;
 fn env_with<'a>(
     vars: &'a HashMap<&'a str, String>,
     files: &'a HashMap<PathBuf, String>,
-    run: &'a crate::cloud_command::Runner<'a>,
+    run: &'a crate::cloud::cloud_command::Runner<'a>,
     body: impl FnOnce(&Environment<'_>),
 ) {
     let var = |k: &str| vars.get(k).cloned();

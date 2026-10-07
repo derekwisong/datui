@@ -148,7 +148,7 @@ fn a_file_datui_does_not_read_does_not_disqualify_a_directory() {
     #[cfg(feature = "cloud")]
     assert_eq!(
         classify_directory(dir.path()),
-        crate::cloud_browse::look_at_listing("out/", &[], &objects).0,
+        crate::cloud::cloud_browse::look_at_listing("out/", &[], &objects).0,
         "the two routes answer the same directory alike"
     );
     assert_eq!(classify_directory(dir.path()), EntryKind::MultiFile);
@@ -872,7 +872,7 @@ fn extensionless_part_files_are_data_on_both_routes() {
 
     assert_eq!(
         classify_directory(&table),
-        crate::cloud_browse::look_at_listing("gbif/occurrence.parquet/", &[], &objects).0,
+        crate::cloud::cloud_browse::look_at_listing("gbif/occurrence.parquet/", &[], &objects).0,
         "the two routes answer the same directory alike"
     );
     assert_eq!(classify_directory(&table), EntryKind::MultiFile);
@@ -934,7 +934,12 @@ fn one_partition_beside_files_datui_cannot_read_answers_alike() {
 
     assert_eq!(
         classify_directory(dir.path()),
-        crate::cloud_browse::look_at_listing("out/", &["out/notes=old/".to_string()], &objects).0,
+        crate::cloud::cloud_browse::look_at_listing(
+            "out/",
+            &["out/notes=old/".to_string()],
+            &objects
+        )
+        .0,
         "the two routes answer the same directory alike"
     );
 }
@@ -954,7 +959,7 @@ fn a_partition_named_like_a_writers_file_is_still_a_partition() {
     #[cfg(feature = "cloud")]
     assert_eq!(
         classify_directory(dir.path()),
-        crate::cloud_browse::look_at_listing("events/", &directories, &[]).0,
+        crate::cloud::cloud_browse::look_at_listing("events/", &directories, &[]).0,
         "the two routes answer the same directory alike"
     );
     assert_eq!(classify_directory(dir.path()), EntryKind::Hive);
@@ -987,7 +992,7 @@ fn a_writers_own_directory_is_skipped_on_both_routes() {
     .iter()
     .map(|(k, s)| ((*k).to_string(), *s))
     .collect();
-    let cloud = crate::cloud_browse::look_at_listing("out/", &directories, &objects).0;
+    let cloud = crate::cloud::cloud_browse::look_at_listing("out/", &directories, &objects).0;
 
     assert_eq!(
         local, cloud,
@@ -1152,7 +1157,7 @@ fn a_writers_own_file_is_skipped_whatever_order_it_is_listed_in() {
         keys.push((format!("jolpica/2000/{part}.parquet"), 100));
     }
     keys.sort();
-    let cloud = crate::cloud_browse::look_at_listing("jolpica/2000/", &[], &keys).0;
+    let cloud = crate::cloud::cloud_browse::look_at_listing("jolpica/2000/", &[], &keys).0;
 
     assert_eq!(
         local, cloud,
@@ -1198,7 +1203,7 @@ fn job_files_are_skipped_on_every_route() {
     .collect();
     #[cfg(feature = "cloud")]
     assert_eq!(
-        crate::cloud_browse::look_at_listing("out/", &[], &keys).0,
+        crate::cloud::cloud_browse::look_at_listing("out/", &[], &keys).0,
         EntryKind::MultiFile,
         "and the same in a bucket"
     );

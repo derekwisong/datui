@@ -1,5 +1,5 @@
 use super::*;
-use crate::cloud_command::CommandError;
+use crate::cloud::cloud_command::CommandError;
 use std::path::{Path, PathBuf};
 
 fn minio(name: &str, endpoint: &str) -> CloudConnectionConfig {
@@ -149,7 +149,7 @@ fn with_no_login_for_a_provider_its_urls_are_read_unsigned() {
         )
         .unwrap();
         assert_eq!(azure.signing, Signing::Unsigned);
-        assert_eq!(azure.azure.auth, crate::azure::AzureAuth::None);
+        assert_eq!(azure.azure.auth, crate::cloud::azure::AzureAuth::None);
     });
 }
 
@@ -485,7 +485,7 @@ fn configured_azure_sources() {
     with_machine(&machine, |env| {
         let found = discover(&config, env);
         let get = |id: &str| found.iter().find(|s| s.id == id).unwrap();
-        use crate::azure::AzureAuth;
+        use crate::cloud::azure::AzureAuth;
         assert_eq!(
             get("research").azure.auth,
             AzureAuth::Key("a2V5".to_string())
@@ -507,7 +507,7 @@ fn configured_azure_sources() {
         );
 
         // A key fetched after a 403 is used for the account from then on.
-        crate::azure::remember_key_for_test("signinacct", "a2V5Mg==");
+        crate::cloud::azure::remember_key_for_test("signinacct", "a2V5Mg==");
         let resolved = resolve_with(
             "abfss://data@signinacct.dfs.core.windows.net/x.parquet",
             &config,
@@ -666,7 +666,7 @@ fn secret_commands_supply_the_secret() {
         let settings = research.azure.clone().with_token(env).unwrap();
         assert_eq!(
             settings.auth,
-            crate::azure::AzureAuth::Key("YWNjb3VudC1rZXk=".to_string())
+            crate::cloud::azure::AzureAuth::Key("YWNjb3VudC1rZXk=".to_string())
         );
     });
 }

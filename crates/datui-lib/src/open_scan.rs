@@ -3,7 +3,7 @@
 
 use crate::cli::{CompressionFormat, FileFormat};
 #[cfg(feature = "cloud")]
-use crate::cloud_hive;
+use crate::cloud::cloud_hive;
 use crate::feedback::Confirm;
 use crate::jobs::{Answer, Job};
 use crate::open_options::{OpenOptions, ReadReport, UnaskedDownload};
@@ -14,8 +14,8 @@ use crate::table::{DataTableState, OpenFacts};
 #[cfg(feature = "cloud")]
 use crate::wait_on_runtime;
 use crate::{
-    App, AppEvent, UNSUPPORTED, catalog, cli, discover, formats::dataset_files, home, loading,
-    quality_report, source,
+    App, AppEvent, UNSUPPORTED, catalog, cli, cloud::source, discover, formats::dataset_files,
+    home, loading, quality_report,
 };
 use color_eyre::Result;
 #[cfg(feature = "cloud")]
@@ -842,7 +842,7 @@ impl App {
 
     /// Polars' view of one source's S3 settings, for `scan_parquet`.
     #[cfg(feature = "cloud")]
-    fn build_s3_cloud_options(settings: &crate::cloud_sources::S3Settings) -> CloudOptions {
+    fn build_s3_cloud_options(settings: &crate::cloud::cloud_sources::S3Settings) -> CloudOptions {
         let settings = settings.clone();
         let virtual_hosted = (settings.endpoint.is_some() || settings.virtual_hosted.is_some())
             .then(|| settings.virtual_hosted_style().to_string());
@@ -864,8 +864,8 @@ impl App {
         .into_iter()
         .filter_map(|(key, value)| value.map(|v| (key, v)))
         .chain([(
-            AmazonS3ConfigKey::Client(crate::user_agent::CLIENT_KEY),
-            crate::user_agent::get(),
+            AmazonS3ConfigKey::Client(crate::cloud::user_agent::CLIENT_KEY),
+            crate::cloud::user_agent::get(),
         )])
         .collect();
         CloudOptions::default().with_aws(configs)
@@ -878,7 +878,7 @@ impl App {
         if let Some((_, container, key)) = source::azure_parts(url) {
             return Ok((container, key.trim_matches('/').to_string()));
         }
-        crate::cloud_browse::split_bucket_url(url)
+        crate::cloud::cloud_browse::split_bucket_url(url)
             .map(|(_, bucket, key)| (bucket, key))
             .ok_or_else(|| {
                 color_eyre::eyre::eyre!("URL must be s3://bucket/key or gs://bucket/key")
@@ -914,7 +914,7 @@ impl App {
     /// byte every 29 seconds cannot hang the TUI.
     #[cfg(feature = "http")]
     fn http_agent(total: std::time::Duration) -> ureq::Agent {
-        crate::user_agent::ureq_config()
+        crate::cloud::user_agent::ureq_config()
             .timeout_global(Some(total))
             .build()
             .into()
@@ -953,15 +953,15 @@ impl App {
             return Ok(None);
         }
         let (_, _, store) = Self::cloud_store_for(Path::new(url), cloud, runtime)?;
-        let path = crate::cloud_browse::object_path(&key);
+        let path = crate::cloud::cloud_browse::object_path(&key);
         let head = wait_on_runtime(runtime, async move { store.head(&path).await });
         Ok(head.and_then(|r| r.ok()).map(|meta| meta.size))
     }
 
     /// Download `url` to a temp file; `stop` ends it early, even while the server is
     /// silent, and any failure removes the file (see
-    /// [`crate::download::read_to_temp`]). Past `limit` bytes it fails with
-    /// [`crate::download::PastLimit`].
+    /// [`crate::cloud::download::read_to_temp`]). Past `limit` bytes it fails with
+    /// [`crate::cloud::download::PastLimit`].
     #[cfg(feature = "http")]
     fn download_http_to_temp(
         url: &str,
@@ -969,8 +969,8 @@ impl App {
         extension: Option<&str>,
         limit: Option<u64>,
         writer: &crate::unfinished::Writer,
-    ) -> Result<crate::download::TempDownload> {
-        use crate::download::StreamError;
+    ) -> Result<crate::cloud::download::TempDownload> {
+        use crate::cloud::download::StreamError;
 
         let url = url.to_string();
         let open = move || {
@@ -983,8 +983,8 @@ impl App {
             // No length: ureq decompresses, and the Content-Length was the wire's.
             Ok((response.into_body().into_reader(), None))
         };
-        crate::download::read_to_temp(temp_dir, extension, open, writer, limit).map_err(|error| {
-            match error {
+        crate::cloud::download::read_to_temp(temp_dir, extension, open, writer, limit).map_err(
+            |error| match error {
                 StreamError::Open(message) => color_eyre::eyre::eyre!(message),
                 StreamError::Read(e) => {
                     color_eyre::eyre::eyre!("Download failed partway. Check your connection: {e}")
@@ -994,12 +994,12 @@ impl App {
                 ),
                 StreamError::Write(report) => report,
                 StreamError::Cut => color_eyre::eyre::eyre!("Download was cancelled."),
-            }
-        })
+            },
+        )
     }
 
     /// Stream one S3, GCS or Azure object to a temp file, a few chunks in memory at a
-    /// time ([`crate::download`]). Errors name its scheme; `writer`'s open stopping ends
+    /// time ([`crate::cloud::download`]). Errors name its scheme; `writer`'s open stopping ends
     /// it, and any failure removes the file.
     #[cfg(feature = "cloud")]
     fn download_cloud_to_temp(
@@ -1008,8 +1008,8 @@ impl App {
         options: &OpenOptions,
         runtime: &tokio::runtime::Handle,
         writer: &crate::unfinished::Writer,
-    ) -> Result<crate::download::TempDownload> {
-        use crate::download::StreamError;
+    ) -> Result<crate::cloud::download::TempDownload> {
+        use crate::cloud::download::StreamError;
         use object_store::ObjectStoreExt;
 
         let (label, example) = match source::input_source(Path::new(url)) {
@@ -1031,7 +1031,7 @@ impl App {
         }
         let (_, _, store) = Self::cloud_store_for(Path::new(url), cloud, runtime)?;
 
-        let path = crate::cloud_browse::object_path(&key);
+        let path = crate::cloud::cloud_browse::object_path(&key);
         let open = async move {
             let got = store
                 .get(&path)
@@ -1043,7 +1043,7 @@ impl App {
         let failed = |what: String| -> color_eyre::Report {
             crate::error_display::FileError::new(Path::new(url), what).into()
         };
-        crate::download::stream_to_temp(
+        crate::cloud::download::stream_to_temp(
             runtime,
             options.temp_dir.as_deref(),
             ext.as_deref(),
@@ -1289,10 +1289,11 @@ impl App {
                 writer,
             } => {
                 self.spawn_job(job, Some("Reading headers..."), move |_| {
-                    let read = crate::remote_model::read(&url, format, &cloud, &runtime, &|| {
-                        writer.stopped()
-                    });
-                    let crate::remote_model::Read { lf, summary, notes } = match read {
+                    let read =
+                        crate::cloud::remote_model::read(&url, format, &cloud, &runtime, &|| {
+                            writer.stopped()
+                        });
+                    let crate::cloud::remote_model::Read { lf, summary, notes } = match read {
                         Ok(read) => read,
                         Err(crate::formats::model_files::RangeError::NoRanges) => {
                             return Ok(Answer::Load(Box::new(LoadAnswer::NoRanges { options })));
@@ -1339,11 +1340,12 @@ impl App {
                     #[cfg(feature = "cloud")]
                     if let loading::PendingDownload::Arrow { url, .. } = &pending {
                         let (_, _, options) = pending.parts();
-                        let (objects, options) = crate::cloud_arrow::list(
-                            url, options, &cloud, &runtime,
-                        )
-                        .map_err(|e| crate::error_display::user_message_from_report(&e, None))?;
-                        let size = crate::cloud_arrow::stream_bytes(&objects);
+                        let (objects, options) =
+                            crate::cloud::cloud_arrow::list(url, options, &cloud, &runtime)
+                                .map_err(|e| {
+                                    crate::error_display::user_message_from_report(&e, None)
+                                })?;
+                        let size = crate::cloud::cloud_arrow::stream_bytes(&objects);
                         return Ok(Answer::Load(Box::new(LoadAnswer::Sized(
                             loading::PendingDownload::Arrow {
                                 url: url.clone(),
@@ -1434,7 +1436,7 @@ impl App {
                         // Its streams, converted as they arrive; its IPC files stay put.
                         #[cfg(feature = "cloud")]
                         loading::PendingDownload::Arrow { objects, .. } => {
-                            crate::cloud_arrow::download(
+                            crate::cloud::cloud_arrow::download(
                                 objects, options, &cloud, &runtime, &writer,
                             )
                             .map(|(file, parts)| {
@@ -1449,7 +1451,10 @@ impl App {
                         }
                     };
                     let (download, options) = match fetched {
-                        Err(e) if e.downcast_ref::<crate::download::PastLimit>().is_some() => {
+                        Err(e)
+                            if e.downcast_ref::<crate::cloud::download::PastLimit>()
+                                .is_some() =>
+                        {
                             return Ok(Answer::Load(Box::new(LoadAnswer::PastLimit(pending))));
                         }
                         fetched => fetched.map_err(|e| {
@@ -1472,9 +1477,10 @@ impl App {
                 let piped = self.pipes.stdin_reader.take();
                 let stdout = self.pipes.stdout_pass.take();
                 self.spawn_job(job, Some("Reading stdin..."), move |_| {
-                    let open = move || -> crate::download::Opened<Box<dyn std::io::Read + Send>> {
-                        Ok((piped.unwrap_or_else(|| Box::new(std::io::stdin())), None))
-                    };
+                    let open =
+                        move || -> crate::cloud::download::Opened<Box<dyn std::io::Read + Send>> {
+                            Ok((piped.unwrap_or_else(|| Box::new(std::io::stdin())), None))
+                        };
                     // Followed, the copy goes on behind the first rows; recorded, it goes to the
                     // named file; and it is read as it arrives when its format allows.
                     let (download, options) = if options.follow
@@ -1508,7 +1514,7 @@ impl App {
             } => {
                 self.spawn_job(job, Some("Reading spec..."), move |_| {
                     #[cfg(any(feature = "http", feature = "cloud"))]
-                    let fetched = crate::remote_model::fetch_small(
+                    let fetched = crate::cloud::remote_model::fetch_small(
                         &url,
                         crate::formats::MAX_SPEC_BYTES,
                         &cloud,
@@ -2172,27 +2178,29 @@ impl App {
         cloud: &crate::config::CloudConfig,
     ) -> Result<(String, CloudOptions)> {
         let text = path.to_string_lossy();
-        let resolved = crate::cloud_sources::resolve_for_open(&text, cloud)
+        let resolved = crate::cloud::cloud_sources::resolve_for_open(&text, cloud)
             .map_err(|e| color_eyre::eyre::eyre!(e))?;
         use object_store::azure::AzureConfigKey;
         use polars::io::cloud::GoogleConfigKey;
         let gcs_agent = (
-            GoogleConfigKey::Client(crate::user_agent::CLIENT_KEY),
-            crate::user_agent::get(),
+            GoogleConfigKey::Client(crate::cloud::user_agent::CLIENT_KEY),
+            crate::cloud::user_agent::get(),
         );
         let options = match resolved.kind {
-            crate::source::ProviderKind::S3 => Self::build_s3_cloud_options(&resolved.s3),
-            crate::source::ProviderKind::Gcs
-                if resolved.signing == crate::cloud_sources::Signing::Unsigned =>
+            crate::cloud::source::ProviderKind::S3 => Self::build_s3_cloud_options(&resolved.s3),
+            crate::cloud::source::ProviderKind::Gcs
+                if resolved.signing == crate::cloud::cloud_sources::Signing::Unsigned =>
             {
                 CloudOptions::default()
                     .with_gcp([(GoogleConfigKey::SkipSignature, "true".into()), gcs_agent])
             }
-            crate::source::ProviderKind::Gcs => match &resolved.gcloud {
+            crate::cloud::source::ProviderKind::Gcs => match &resolved.gcloud {
                 // The token comes from `gcloud` whenever Polars asks, so long scans outlive it.
                 Some((configuration, _)) => CloudOptions::default()
                     .with_gcp([gcs_agent])
-                    .with_credential_provider(Some(crate::gcloud::polars_provider(configuration))),
+                    .with_credential_provider(Some(crate::cloud::gcloud::polars_provider(
+                        configuration,
+                    ))),
                 None => match &resolved.google_credentials {
                     Some(file) => CloudOptions::default().with_gcp([
                         (
@@ -2204,13 +2212,13 @@ impl App {
                     None => CloudOptions::default().with_gcp([gcs_agent]),
                 },
             },
-            crate::source::ProviderKind::Azure => {
+            crate::cloud::source::ProviderKind::Azure => {
                 let (account, _, _) = source::azure_parts(&resolved.url)
                     .ok_or_else(|| color_eyre::eyre::eyre!("not an Azure URL"))?;
-                let mut azure = crate::azure::polars_options(&account, &resolved.azure);
+                let mut azure = crate::cloud::azure::polars_options(&account, &resolved.azure);
                 azure.push((
-                    AzureConfigKey::Client(crate::user_agent::CLIENT_KEY),
-                    crate::user_agent::get(),
+                    AzureConfigKey::Client(crate::cloud::user_agent::CLIENT_KEY),
+                    crate::cloud::user_agent::get(),
                 ));
                 CloudOptions::default().with_azure(azure)
             }
@@ -2268,7 +2276,7 @@ impl App {
         let column_bytes =
             crate::formats::schema_union::column_bytes_per_row(&[Some(footer.clone())]);
         let facts = OpenFacts {
-            remote_objects: vec![crate::local_copy::RemoteObject {
+            remote_objects: vec![crate::cloud::local_copy::RemoteObject {
                 url: full,
                 size: footer.file_bytes as u64,
                 etag,

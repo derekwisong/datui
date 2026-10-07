@@ -46,8 +46,8 @@ impl App {
             self.data_table_state.is_some()
                 && !several
                 && !self.reads_stdin()
-                && !crate::source::is_remote_url(path)
-                && !crate::source::is_prefix_or_glob(&path.to_string_lossy())
+                && !crate::cloud::source::is_remote_url(path)
+                && !crate::cloud::source::is_prefix_or_glob(&path.to_string_lossy())
         })
     }
 

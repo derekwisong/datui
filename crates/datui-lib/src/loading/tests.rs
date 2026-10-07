@@ -11,16 +11,16 @@ fn remote_files_are_routed_as_their_format_says() {
     use crate::{FileFormat, RemoteRead, Stored};
     let in_place = |url: &str, stream: bool| {
         let path = Path::new(url);
-        crate::remote_model::model_format(path, None).is_some()
+        crate::cloud::remote_model::model_format(path, None).is_some()
             || match remote_download(&source::input_source(path), &OpenOptions::default()) {
                 None => true,
                 Some(PendingDownload::Arrow { .. }) => {
-                    let object = crate::cloud_arrow::Object {
+                    let object = crate::cloud::cloud_arrow::Object {
                         url: url.to_string(),
                         size: 10,
                         stream,
                     };
-                    crate::cloud_arrow::in_place(&[object]).is_some()
+                    crate::cloud::cloud_arrow::in_place(&[object]).is_some()
                 }
                 Some(_) => false,
             }
@@ -1207,7 +1207,7 @@ fn arrow_in_a_bucket_is_listed_first() {
         Step::Scan { .. }
     ));
 
-    let object = |name: &str, stream: bool| crate::cloud_arrow::Object {
+    let object = |name: &str, stream: bool| crate::cloud::cloud_arrow::Object {
         url: format!("s3://lake/hf/{name}"),
         size: 10,
         stream,
@@ -1479,7 +1479,7 @@ fn quitting_mid_schema_read_sweeps_the_download_the_worker_holds() {
     let Step::Download { writer, .. } = loader.confirmed() else {
         panic!("agreed to, it downloads");
     };
-    let file = crate::download::read_to_temp(
+    let file = crate::cloud::download::read_to_temp(
         Some(dir.path()),
         Some("csv"),
         || Ok((std::io::Cursor::new(b"a\n1\n".to_vec()), Some(4))),

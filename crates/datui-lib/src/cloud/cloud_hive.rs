@@ -32,7 +32,7 @@ pub async fn footer_of_cloud_parquet(
     meter: &crate::measurements::Meter,
 ) -> Result<(FileFooter, Option<String>)> {
     let began = std::time::Instant::now();
-    let path = crate::cloud_browse::object_path(key);
+    let path = crate::cloud::cloud_browse::object_path(key);
     let read = async {
         let head = store.head(&path).await;
         // A `head` returns no body, so it is a request that brought back nothing.
@@ -75,7 +75,7 @@ pub async fn list_dataset_files_reporting(
     cancelled: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(Vec<DatasetFile>, crate::formats::schema_union::SkippedFiles)> {
     let prefix = prefix.trim_matches('/');
-    let prefix_path = (!prefix.is_empty()).then(|| crate::cloud_browse::object_path(prefix));
+    let prefix_path = (!prefix.is_empty()).then(|| crate::cloud::cloud_browse::object_path(prefix));
     let objects = list_objects(store, prefix_path.as_ref(), plan, listed, cancelled).await?;
     // Counted as passed over, in the one place that sees every name.
     fn directory_of(key: &str) -> &str {
@@ -616,7 +616,7 @@ pub(crate) async fn footer_of_file(
     file: &DatasetFile,
     meter: &crate::measurements::Meter,
 ) -> Result<FileFooter> {
-    let path = crate::cloud_browse::object_path(&file.key);
+    let path = crate::cloud::cloud_browse::object_path(&file.key);
     let tail_start = file.size.saturating_sub(COUNT_TAIL_BYTES);
     let tail = counted_range!(store, &path, tail_start..file.size, meter)?;
     let footer_len = footer_length(&tail)

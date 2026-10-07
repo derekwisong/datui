@@ -16,7 +16,7 @@ use polars_arrow::io::ipc::format::ipc::{MessageHeaderRef, MessageRef};
 use polars_arrow::io::ipc::read::{StreamReader, StreamState, read_stream_metadata};
 use polars_arrow::io::ipc::write::{FileWriter, WriteOptions};
 
-use crate::download::TempDownload;
+use crate::cloud::download::TempDownload;
 use crate::error_display::{FileError, user_message_from_io};
 use crate::unfinished::Writer;
 
@@ -369,7 +369,7 @@ pub(crate) fn has_room(needs: u64, temp_dir: Option<&Path>) -> Result<()> {
     let dir = temp_dir
         .map(Path::to_path_buf)
         .unwrap_or_else(std::env::temp_dir);
-    room(needs, crate::local_copy::free_space(&dir), &dir)
+    room(needs, crate::cloud::local_copy::free_space(&dir), &dir)
 }
 
 /// The copy is about the size of the streams, larger where their buffers are

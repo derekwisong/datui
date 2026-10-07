@@ -3967,7 +3967,7 @@ fn test_sections_are_ordered_by_intent_and_elsewhere_starts_folded() {
         cloud: vec![CloudSource {
             id: "s3-default".to_string(),
             label: "Amazon S3".to_string(),
-            api: datui::source::ProviderKind::S3,
+            api: datui::cloud::source::ProviderKind::S3,
             buckets: vec![std::path::PathBuf::from("s3://bucket")],
             ..Default::default()
         }],
@@ -4065,7 +4065,7 @@ fn cloud_home() -> HomeState {
         CloudSource {
             id: "lab".to_string(),
             label: "Lab MinIO".to_string(),
-            api: datui::source::ProviderKind::S3,
+            api: datui::cloud::source::ProviderKind::S3,
             note: "127.0.0.1:9000 · datui config".to_string(),
             buckets: vec![
                 PathBuf::from("s3://lab@data"),
@@ -4077,7 +4077,7 @@ fn cloud_home() -> HomeState {
         CloudSource {
             id: "onprem".to_string(),
             label: "onprem".to_string(),
-            api: datui::source::ProviderKind::S3,
+            api: datui::cloud::source::ProviderKind::S3,
             buckets: vec![PathBuf::from("s3://onprem@data")],
             status: CloudStatus::Failed {
                 short: "403".to_string(),
@@ -4088,7 +4088,7 @@ fn cloud_home() -> HomeState {
         CloudSource {
             id: "s3-default".to_string(),
             label: "Amazon S3".to_string(),
-            api: datui::source::ProviderKind::S3,
+            api: datui::cloud::source::ProviderKind::S3,
             status: CloudStatus::Listing,
             ..Default::default()
         },
@@ -4344,7 +4344,7 @@ fn test_google_steps_through_project_bucket_and_prefix() {
         cloud: vec![CloudSource {
             id: "gcs-default".to_string(),
             label: "Google Cloud".to_string(),
-            api: datui::source::ProviderKind::Gcs,
+            api: datui::cloud::source::ProviderKind::Gcs,
             buckets: vec![
                 project.clone(),
                 PathBuf::from("cloud://gcs-default/billing"),
@@ -4514,7 +4514,7 @@ fn test_azure_steps_through_account_container_and_directory() {
         cloud: vec![CloudSource {
             id: "az".to_string(),
             label: "Azure".to_string(),
-            api: datui::source::ProviderKind::Azure,
+            api: datui::cloud::source::ProviderKind::Azure,
             buckets: vec![
                 PathBuf::from("cloud://az/datalake001"),
                 PathBuf::from("cloud://az/archive002"),
@@ -6302,7 +6302,7 @@ mod cloud_level_paging {
     fn a_level_lists_a_page_at_a_time_and_stops_at_the_cap() {
         let s3 = lake();
         let progress = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let watch = datui::cloud_browse::Watch {
+        let watch = datui::cloud::cloud_browse::Watch {
             progress: Some(std::sync::Arc::new({
                 let progress = progress.clone();
                 move |rows: &[datui::discover::Entry]| progress.lock().unwrap().push(rows.len())
@@ -6310,7 +6310,7 @@ mod cloud_level_paging {
             ..Default::default()
         };
         let level = crate::common::test_runtime()
-            .block_on(datui::cloud_browse::list_objects_watched(
+            .block_on(datui::cloud::cloud_browse::list_objects_watched(
                 "s3://lake/by_station",
                 &s3.cloud_config(),
                 &watch,
@@ -6319,17 +6319,17 @@ mod cloud_level_paging {
         // Five pages of a thousand, each shown as it came; the sixth says there is more.
         assert_eq!(*progress.lock().unwrap(), vec![1000; 5]);
         assert_eq!(s3.wire.level_pages("by_station/"), 6);
-        assert_eq!(level.rows.len(), datui::cloud_browse::MAX_LEVEL_ROWS);
+        assert_eq!(level.rows.len(), datui::cloud::cloud_browse::MAX_LEVEL_ROWS);
         assert!(level.truncated && !level.cancelled);
         assert_eq!(level.rows[0].name, station(0));
         assert_eq!(level.rows[4999].name, station(4999));
 
         // A level under the cap is all of it, and not marked.
         let level = crate::common::test_runtime()
-            .block_on(datui::cloud_browse::list_objects_watched(
+            .block_on(datui::cloud::cloud_browse::list_objects_watched(
                 "s3://lake/by_station",
                 &s3.cloud_config(),
-                &datui::cloud_browse::Watch {
+                &datui::cloud::cloud_browse::Watch {
                     names_from: Some("STATION=P50".to_string()),
                     ..Default::default()
                 },
@@ -6360,7 +6360,7 @@ mod cloud_level_paging {
         settle(&mut app, &rx, |_| true);
         assert_eq!(
             app.home.probes.listed(&level).unwrap().len(),
-            datui::cloud_browse::MAX_LEVEL_ROWS
+            datui::cloud::cloud_browse::MAX_LEVEL_ROWS
         );
         assert!(app.home.probes.cut_short(&level));
         assert_eq!(subtitle(&app).as_deref(), Some("first 5,000"));

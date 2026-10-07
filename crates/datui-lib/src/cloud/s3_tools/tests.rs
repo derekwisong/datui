@@ -87,8 +87,11 @@ fn s3cmd_config_for_ceph_and_for_aws() {
 
 #[test]
 fn where_each_tool_keeps_its_config() {
-    let run =
-        |_: &str, _: &[&str]| Err(crate::cloud_command::CommandError::Missing("x".to_string()));
+    let run = |_: &str, _: &[&str]| {
+        Err(crate::cloud::cloud_command::CommandError::Missing(
+            "x".to_string(),
+        ))
+    };
     let env_with = |vars: &'static [(&'static str, &'static str)], windows: bool| {
         move |f: &dyn Fn(&Environment<'_>)| {
             let var = |key: &str| {

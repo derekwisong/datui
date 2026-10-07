@@ -2300,7 +2300,7 @@ fn source_details(
         _ => String::new(),
     };
     let noun = match source.api {
-        crate::source::ProviderKind::Azure => "accounts",
+        crate::cloud::source::ProviderKind::Azure => "accounts",
         _ => "buckets",
     };
     match &source.status {

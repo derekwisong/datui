@@ -243,7 +243,7 @@ fn safe_component(part: &str, windows: bool) -> String {
 }
 
 fn is_remote(path: &str) -> bool {
-    crate::source::is_remote_url(Path::new(path))
+    crate::cloud::source::is_remote_url(Path::new(path))
 }
 
 /// Every path a plan's scans read.

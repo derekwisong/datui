@@ -1258,7 +1258,7 @@ pub(crate) fn convert(
     writer: &crate::unfinished::Writer,
     read: &std::sync::atomic::AtomicU64,
 ) -> Result<(
-    crate::download::TempDownload,
+    crate::cloud::download::TempDownload,
     LazyFrame,
     crate::formats::members::Opened,
 )> {
@@ -1275,7 +1275,7 @@ pub(crate) fn convert(
         .map_err(|e| FileError::new(path, format!("array \"{name}\": {e}")))?;
     let compressed = entry.compressed_size();
     let Some((mut file, claim)) = writer.create(|| {
-        crate::download::TempDownload::create(options.temp_dir.as_deref(), Some("npy"))
+        crate::cloud::download::TempDownload::create(options.temp_dir.as_deref(), Some("npy"))
     })?
     else {
         return Err(eyre!("Reading was stopped."));
@@ -1304,7 +1304,7 @@ pub(crate) fn convert(
         }
     }
     file.flush()?;
-    let held = crate::download::TempDownload::held(file, Some(claim));
+    let held = crate::cloud::download::TempDownload::held(file, Some(claim));
     let bytes = Bytes::map(held.path())?;
     let array = open_in(Arc::new(bytes), 0, written as usize, name)
         .map_err(|e| FileError::new(path, format!("array \"{name}\" is not read: {e}")))?;

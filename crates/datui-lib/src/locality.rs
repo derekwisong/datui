@@ -238,12 +238,12 @@ fn classify(fstype: &str) -> Locality {
 /// The URL scheme of an object-store path, if any: never in the mount table, never
 /// walked or measured, only listed from history.
 pub fn object_scheme(path: &Path) -> Option<String> {
-    match crate::source::input_source(path) {
-        crate::source::InputSource::Local(_) => None,
-        crate::source::InputSource::S3(_) => Some("s3".to_string()),
-        crate::source::InputSource::Gcs(_) => Some("gs".to_string()),
-        crate::source::InputSource::Azure(_) => Some("az".to_string()),
-        crate::source::InputSource::Http(_) => Some("http".to_string()),
+    match crate::cloud::source::input_source(path) {
+        crate::cloud::source::InputSource::Local(_) => None,
+        crate::cloud::source::InputSource::S3(_) => Some("s3".to_string()),
+        crate::cloud::source::InputSource::Gcs(_) => Some("gs".to_string()),
+        crate::cloud::source::InputSource::Azure(_) => Some("az".to_string()),
+        crate::cloud::source::InputSource::Http(_) => Some("http".to_string()),
     }
 }
 

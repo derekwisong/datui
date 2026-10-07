@@ -166,7 +166,7 @@ pub fn route(path: &Path, asked: &Asked, registry: &Registry) -> Result<Route, S
             also: Vec::new(),
         })
     } else if let Some(file) = &asked.spec_file {
-        if crate::source::is_remote_url(file) {
+        if crate::cloud::source::is_remote_url(file) {
             return Err(format!(
                 "{}: a remote spec is fetched by the open, and was not",
                 file.display()

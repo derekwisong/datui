@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use polars::prelude::*;
 
-use crate::download::TempDownload;
+use crate::cloud::download::TempDownload;
 use crate::unfinished::Writer;
 use crate::{AppEvent, CompressionFormat, FileFormat, OpenOptions};
 
@@ -118,8 +118,8 @@ pub fn refuse_paths(paths: &[PathBuf], options: &OpenOptions) -> Option<String> 
         return None;
     }
     if !matches!(
-        crate::source::input_source(path),
-        crate::source::InputSource::Local(_)
+        crate::cloud::source::input_source(path),
+        crate::cloud::source::InputSource::Local(_)
     ) {
         return Some("Only a local file or standard input can be followed.".to_string());
     }
@@ -2096,7 +2096,7 @@ pub enum Spooled {
 /// does. Unfollowed stdin is still read as it arrives when its format allows
 /// (`OpenOptions::pipe`); otherwise (Parquet, compressed) it is copied to the end first.
 pub(crate) fn spool<R: Read + Send + 'static>(
-    open: impl FnOnce() -> crate::download::Opened<R>,
+    open: impl FnOnce() -> crate::cloud::download::Opened<R>,
     options: OpenOptions,
     writer: &Writer,
     read: &AtomicU64,

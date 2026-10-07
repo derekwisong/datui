@@ -160,9 +160,10 @@ pub(crate) fn dataset_url_place(url: &str) -> Option<UrlPlace> {
     if url.chars().any(char::is_whitespace) {
         return None;
     }
-    match crate::source::input_source(Path::new(url)) {
-        crate::source::InputSource::Azure(_) => Some(UrlPlace::ObjectStore("azure")),
-        crate::source::InputSource::S3(rest) | crate::source::InputSource::Gcs(rest) => {
+    match crate::cloud::source::input_source(Path::new(url)) {
+        crate::cloud::source::InputSource::Azure(_) => Some(UrlPlace::ObjectStore("azure")),
+        crate::cloud::source::InputSource::S3(rest)
+        | crate::cloud::source::InputSource::Gcs(rest) => {
             let host = rest.split('/').next().unwrap_or("");
             let kind = if url.to_ascii_lowercase().starts_with("s3") {
                 "s3"
@@ -171,7 +172,7 @@ pub(crate) fn dataset_url_place(url: &str) -> Option<UrlPlace> {
             };
             (!host.is_empty() && !host.contains('@')).then_some(UrlPlace::ObjectStore(kind))
         }
-        crate::source::InputSource::Http(_) => {
+        crate::cloud::source::InputSource::Http(_) => {
             let (_, rest) = url.split_once("://")?;
             let (host, path) = rest.split_once('/')?;
             let path = path.split(['?', '#']).next().unwrap_or("");
@@ -180,7 +181,7 @@ pub(crate) fn dataset_url_place(url: &str) -> Option<UrlPlace> {
                 && crate::discover::is_data_file(Path::new(path)))
             .then_some(UrlPlace::Http)
         }
-        crate::source::InputSource::Local(_) => None,
+        crate::cloud::source::InputSource::Local(_) => None,
     }
 }
 
@@ -501,7 +502,7 @@ fn check_dataset(dataset: &Dataset) -> Result<(), String> {
             None
         }
         (None, Some(url)) => Some(dataset_url_place(url).ok_or_else(|| {
-            if crate::source::split_source_id(url).0.is_some() {
+            if crate::cloud::source::split_source_id(url).0.is_some() {
                 format!(
                     "{what}: name the connection with connection = \"...\" rather than in \
                      the URL"
@@ -722,7 +723,7 @@ impl Catalog {
             }
             if let (Some(account), Some((url_account, _, _))) = (
                 configured.account.as_deref(),
-                crate::source::azure_parts(url),
+                crate::cloud::source::azure_parts(url),
             ) && !account.eq_ignore_ascii_case(&url_account)
             {
                 return Err(fail(format!(
@@ -755,8 +756,8 @@ impl Catalog {
 pub fn place_key_of(location: &Path) -> String {
     let text = location.to_string_lossy();
     if matches!(
-        crate::source::input_source(location),
-        crate::source::InputSource::Local(_)
+        crate::cloud::source::input_source(location),
+        crate::cloud::source::InputSource::Local(_)
     ) {
         format!("path:{}", crate::config::path_place(location).display())
     } else {
@@ -766,8 +767,11 @@ pub fn place_key_of(location: &Path) -> String {
 
 /// A URL's place key: the place, whichever source a `s3://<id>@bucket` spelling names.
 fn url_key(url: &str) -> String {
-    let (_, plain) = crate::source::split_source_id(url);
-    format!("url:{}", crate::source::canonical_cloud_place(&plain))
+    let (_, plain) = crate::cloud::source::split_source_id(url);
+    format!(
+        "url:{}",
+        crate::cloud::source::canonical_cloud_place(&plain)
+    )
 }
 
 /// The bundled `examples` catalog.

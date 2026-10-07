@@ -7,7 +7,7 @@ use crate::form::FormKey;
 use crate::jobs::{Answer, Job};
 use crate::open_options::OpenOptions;
 use crate::table::DataTableState;
-use crate::{App, AppEvent, clipboard, copy_modal, python_script, source};
+use crate::{App, AppEvent, clipboard, cloud::source, copy_modal, python_script};
 use color_eyre::Result;
 use crossterm::event::{KeyCode, KeyEvent};
 use std::path::Path;
@@ -202,7 +202,7 @@ impl App {
         #[cfg(feature = "cloud")]
         let unsigned = remote
             .as_deref()
-            .and_then(crate::cloud_sources::known_access)
+            .and_then(crate::cloud::cloud_sources::known_access)
             .unwrap_or(false);
         #[cfg(not(feature = "cloud"))]
         let unsigned = false;

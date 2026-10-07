@@ -283,7 +283,7 @@ pub fn keep_out_of_log(secret: &str) {
 /// Values of variables whose names say they hold a credential, the `[cloud] env_files`
 /// ones included.
 fn keep_out_of_log_from_env() {
-    for (name, value) in crate::cloud_env::vars() {
+    for (name, value) in crate::cloud::cloud_env::vars() {
         if holds_a_credential(&name, &value) {
             keep_out_of_log(&value);
         }

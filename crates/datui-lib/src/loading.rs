@@ -25,11 +25,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use polars::prelude::LazyFrame;
 
-use crate::download::TempDownload;
+use crate::cloud::download::TempDownload;
 use crate::formats::schema_union::FooterProgress;
 use crate::table::DataTableState;
 use crate::unfinished::{Unfinished, Writer};
-use crate::{CompressionFormat, FileFormat, OpenOptions, source, stdin};
+use crate::{CompressionFormat, FileFormat, OpenOptions, cloud::source, stdin};
 
 use crate::jobs::Hold;
 #[cfg(any(feature = "http", feature = "cloud"))]
@@ -81,7 +81,7 @@ pub(crate) enum PendingDownload {
     #[cfg(feature = "cloud")]
     Arrow {
         url: String,
-        objects: Vec<crate::cloud_arrow::Object>,
+        objects: Vec<crate::cloud::cloud_arrow::Object>,
         size: Option<u64>,
         options: OpenOptions,
     },
@@ -1195,7 +1195,7 @@ impl Loader {
         // A remote model's headers are all it needs: read by range, not downloaded.
         #[cfg(any(feature = "http", feature = "cloud"))]
         if paths.len() == 1
-            && let Some(format) = crate::remote_model::model_format(&first, options.format)
+            && let Some(format) = crate::cloud::remote_model::model_format(&first, options.format)
         {
             let load = self.load.as_mut().expect("an open has a load");
             load.phase = Phase::ReadingHeaders;
@@ -1608,9 +1608,9 @@ impl Loader {
                     ..
                 }),
                 Phase::CheckingSize { .. },
-            ) if crate::cloud_arrow::in_place(&objects).is_some() => {
+            ) if crate::cloud::cloud_arrow::in_place(&objects).is_some() => {
                 load.phase = Phase::Scanning { downloaded: false };
-                let parts = crate::cloud_arrow::in_place(&objects).unwrap_or_default();
+                let parts = crate::cloud::cloud_arrow::in_place(&objects).unwrap_or_default();
                 Step::Scan {
                     paths: vec![PathBuf::from(url)],
                     options: OpenOptions {

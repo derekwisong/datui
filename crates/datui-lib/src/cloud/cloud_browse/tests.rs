@@ -27,15 +27,15 @@ fn a_filter_narrows_by_the_prefix_the_names_share() {
     assert_eq!(narrowing_prefix("x", &[]), None);
 }
 
-fn resolved(url: &str, kind: ProviderKind) -> crate::cloud_sources::Resolved {
-    crate::cloud_sources::Resolved {
+fn resolved(url: &str, kind: ProviderKind) -> crate::cloud::cloud_sources::Resolved {
+    crate::cloud::cloud_sources::Resolved {
         url: url.to_string(),
         kind,
         source_id: String::new(),
         s3: S3Settings::default(),
         azure: Default::default(),
         signing: Signing::Try,
-        place: crate::cloud_sources::access_key(url).unwrap(),
+        place: crate::cloud::cloud_sources::access_key(url).unwrap(),
         gcloud: None,
         google_credentials: None,
         login_error: None,
@@ -600,7 +600,7 @@ macro_rules! environment {
             home: $home.clone(),
             windows: false,
             run: &|_, _| {
-                Err(crate::cloud_command::CommandError::Missing(
+                Err(crate::cloud::cloud_command::CommandError::Missing(
                     "test".to_string(),
                 ))
             },
@@ -616,7 +616,7 @@ macro_rules! environment {
             home: $home.clone(),
             windows: false,
             run: &|_, _| {
-                Err(crate::cloud_command::CommandError::Missing(
+                Err(crate::cloud::cloud_command::CommandError::Missing(
                     "test".to_string(),
                 ))
             },

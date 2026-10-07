@@ -160,7 +160,7 @@ mod cloud_recent_facts {
         let tmp = tempfile::tempdir().unwrap();
         let cache = crate::cache::CacheManager::with_dir(tmp.path().to_path_buf());
         let schema = Schema::from_iter([Field::new("id".into(), DataType::Int64)]);
-        let footer = crate::cloud_hive::FileFooter {
+        let footer = crate::cloud::cloud_hive::FileFooter {
             schema: Arc::new(schema),
             row_group_rows: vec![3, 4],
             row_group_bytes: Vec::new(),

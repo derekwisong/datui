@@ -31,8 +31,8 @@
 //!   continuation the event pump has not dispatched, and a download waiting on the
 //!   user ([`Hold`]).
 //!
-//! Not owned here: the row count (`OwedCount`), the footer pass, chart preparation
-//! and the home screen's workers. Each is keyed by something other than the
+//! Not owned here: the row count (`OwedCount`), the footer pass and the home
+//! screen's workers. Each is keyed by something other than the
 //! generation and answers what its own marker waits for.
 //!
 //! One handoff goes around the holds: `reread_after_the_footers_joined` sends its
@@ -80,6 +80,7 @@ pub enum JobKind {
     QualityReport,
     FileFacts,
     ChartExport,
+    ChartPrepare,
     Find,
     ValueCounts,
     HexOpen,
@@ -174,6 +175,9 @@ pub(crate) enum Job {
         path: PathBuf,
         format: crate::chart_export::ChartExportFormat,
     },
+    /// Preparing a chart's data for the selection on screen. Judged by itself, not
+    /// the generation: see [`ChartPrep`].
+    ChartPrepare(Box<ChartPrep>),
     /// A find reading the view for its next match.
     Find(crate::find::FindRun),
     /// Counting a column's values for the Value Counts screen.
@@ -208,6 +212,22 @@ pub(crate) struct Classify {
     pub(crate) browsing: Option<PathBuf>,
     /// A path typed at `~` rather than a row already listed.
     pub(crate) jump: bool,
+}
+
+/// A chart's data being prepared. One runs at a time: a burst of selection changes
+/// must not fan out into a collect per column, so the next waits for this one to
+/// end, superseded or not, and the newest selection is prepared then. Its answer is
+/// kept only while it is current (leaving the view or dataset supersedes it) and
+/// only for the dataset it was read from.
+#[derive(Debug, Clone)]
+pub(crate) struct ChartPrep {
+    pub(crate) request: crate::ChartRequest,
+    /// `len_generation` of the dataset it reads, so an answer is never installed for
+    /// another that happens to share its column names.
+    pub(crate) dataset: Option<u64>,
+    /// Set when the selection moves past the request or its view goes. A streamed
+    /// count or group-by stops at its next batch; a sampled read runs to its end.
+    pub(crate) cancel: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// A view's sample being drawn. Judged by its rows rather than the generation: the
@@ -280,6 +300,7 @@ impl Job {
             Job::QualityReport => JobKind::QualityReport,
             Job::FileFacts { .. } => JobKind::FileFacts,
             Job::ChartExport { .. } => JobKind::ChartExport,
+            Job::ChartPrepare(_) => JobKind::ChartPrepare,
             Job::Find(_) => JobKind::Find,
             Job::ValueCounts => JobKind::ValueCounts,
             Job::HexOpen { .. } => JobKind::HexOpen,
@@ -310,7 +331,9 @@ impl Job {
     ///   thrown away when the user moves on (Ctrl+O out of a long look must not hold
     ///   the next dataset's rows behind it);
     /// - the Info panel's file facts, judged by the dataset rather than the generation;
-    /// - the Pivot & Melt preview, judged by the builder's request.
+    /// - the Pivot & Melt preview, judged by the builder's request;
+    /// - a chart's data, judged by its dataset and asked for again whenever it is
+    ///   missing.
     ///
     /// A page that is owed has nothing running to strand.
     fn leased(&self) -> bool {
@@ -324,13 +347,14 @@ impl Job {
                 | Job::FileFacts { .. }
                 | Job::UnfitCount { .. }
                 | Job::ReshapePreview { .. }
+                | Job::ChartPrepare(_)
         )
     }
 
     /// Whether advancing the generation makes this job's answer stale. The Info
-    /// panel's facts belong to a dataset, a chart export to the chart view, an owed
-    /// page to the dataset it was owed to, and a preview to the builder's request,
-    /// each put down by its own owner.
+    /// panel's facts belong to a dataset, a chart export and a chart's data to the
+    /// chart view, an owed page to the dataset it was owed to, and a preview to the
+    /// builder's request, each put down by its own owner.
     fn follows_the_generation(&self) -> bool {
         !matches!(
             self,
@@ -338,6 +362,7 @@ impl Job {
                 | Job::SampleDraw(_)
                 | Job::UnfitCount { .. }
                 | Job::ChartExport { .. }
+                | Job::ChartPrepare(_)
                 | Job::OwedRows { .. }
                 | Job::ReshapePreview { .. }
         )
@@ -429,6 +454,14 @@ pub(crate) enum Answer {
     QualityReportWritten(PathBuf),
     /// [`Job::ChartExport`]: the chart, written.
     ChartExported,
+    /// [`Job::ChartPrepare`]: the chart's data, and the Color column's values when
+    /// it counted them.
+    ChartPrepared(
+        Box<(
+            crate::chart_plot::PlotData,
+            Option<crate::chart_modal::ColorCounts>,
+        )>,
+    ),
     /// [`Job::FileFacts`]: what the file is.
     FileFacts(crate::widgets::info::FileFacts),
     /// [`Job::Find`]: the cell found, or `None` when nothing in the view matches.
@@ -915,6 +948,11 @@ impl Jobs {
             .filter(|r| r.running() && r.cancelled && which(&r.job))
             .filter_map(|r| r.superseded.map(|since| (since, &r.job)))
             .max_by_key(|(since, _)| *since)
+    }
+
+    /// Whether a job `which` picks is running, its answer wanted or not.
+    pub(crate) fn running(&self, which: impl Fn(&Job) -> bool) -> bool {
+        self.records.iter().any(|r| r.running() && which(&r.job))
     }
 
     /// Whether a job still holding the keys shows `status` on the control bar.

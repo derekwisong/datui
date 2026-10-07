@@ -2,7 +2,7 @@
 //! prepared, the cache of both, and chart exports written from it.
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use color_eyre::Result;
 use polars::prelude::{LazyFrame, Schema};
@@ -10,10 +10,10 @@ use polars::prelude::{LazyFrame, Schema};
 use crate::chart_data::{self, ColorSplit, ValueRange};
 use crate::chart_modal::{Aggregate, ChartModal, ChartSpec, ColorCounts, Mark};
 use crate::chart_plot::{LinesData, PlotContext, PlotData, plot};
-use crate::jobs::{Answer, Job};
+use crate::jobs::{Answer, ChartPrep, Job};
 use crate::output_file::Overwrite;
 use crate::{
-    App, AppEvent, ExportProgress, InputMode, chart_export, logging, numfmt, output_file, sampling,
+    App, AppEvent, ExportProgress, InputMode, chart_export, numfmt, output_file, sampling,
 };
 use chart_export::{ChartExportFormat, ChartExportRequest, ExportOptions, Figure};
 
@@ -434,31 +434,6 @@ impl ChartRequest {
     }
 }
 
-/// The outcome handed from the chart worker to `BackgroundChartReady`, with the
-/// Color column's values when it counted them.
-pub(crate) type ChartResultSlot =
-    Arc<Mutex<Option<Result<(PlotData, Option<ColorCounts>), String>>>>;
-
-/// The chart preparation currently running. There is at most one: a burst of selection
-/// changes must not fan out into a full collect per column, so the next request waits
-/// for this one to land and then the newest selection is the one prepared. Being the
-/// only one is also what ties a `BackgroundChartReady` to it, so no generation is
-/// needed to match them up.
-pub(crate) struct ChartInflight {
-    /// `len_generation` of the dataset the request was spawned against, so a result
-    /// cannot be installed for a different dataset that happens to share column names.
-    pub(crate) dataset: Option<u64>,
-    pub(crate) request: ChartRequest,
-    /// Set when the view or dataset it was spawned for has gone. The worker cannot be
-    /// cancelled, so the record stays until its result lands and is discarded; the next
-    /// request waits for it, which is what keeps the number of collects at one.
-    pub(crate) stale: bool,
-    /// Set when the selection moves past the request or its view goes. A streamed
-    /// count or group-by stops at its next batch; a sampled read is bounded and runs
-    /// to the end.
-    pub(crate) cancel: Arc<std::sync::atomic::AtomicBool>,
-}
-
 /// A chart export with its figure built from the cache; `write` is the slow part and
 /// runs off the UI thread.
 pub(crate) struct ChartExportJob {
@@ -497,15 +472,25 @@ fn rows_note(counted: usize, whole: bool, grouped: bool) -> String {
 }
 
 impl App {
-    /// True while chart data for the current view is being prepared off-thread — either
-    /// its worker is running, or it is waiting its turn behind an orphaned worker that
-    /// cannot be cancelled (see `ChartInflight::stale`). Either way the user is waiting
-    /// on a computation and the throbber should say so.
+    /// True while chart data for the current view is being prepared off-thread: its
+    /// job is running, or it waits its turn behind a superseded one still reading,
+    /// which cannot be stopped mid-read (see [`ChartPrep`]). Either way the user is
+    /// waiting on a computation and the throbber should say so.
     pub fn chart_preparing(&self) -> bool {
-        match self.chart_inflight.as_ref() {
-            Some(inflight) if !inflight.stale => true,
-            Some(_) => self.chart_request_pending(),
-            None => self.chart_settling(),
+        if self.chart_prep().is_some() {
+            true
+        } else if self.jobs.running(is_chart_prep) {
+            self.chart_request_pending()
+        } else {
+            self.chart_settling()
+        }
+    }
+
+    /// The chart preparation running whose answer is still wanted.
+    fn chart_prep(&self) -> Option<&ChartPrep> {
+        match self.jobs.current(is_chart_prep)? {
+            (_, Job::ChartPrepare(prep)) => Some(prep),
+            _ => None,
         }
     }
 
@@ -529,28 +514,23 @@ impl App {
     }
 
     /// Forget everything chart-related that belongs to the view or dataset on its way
-    /// out: the cache, the handed-over slot, an export parked on data that is now never
-    /// coming, and an export write still running (its file may still appear, but its
-    /// result is ignored and `busy` is released). The preparation in flight is marked
-    /// stale rather than forgotten: it cannot be cancelled, so it is waited for and its
-    /// result discarded on arrival. Called when the chart view closes and whenever the
-    /// dataset changes or is left for the home screen.
+    /// out: the cache, an export parked on data that is now never coming, and an export
+    /// write still running (its file may still appear, but its result is ignored and
+    /// `busy` is released). The preparation running is superseded: it is waited for,
+    /// as it cannot be stopped mid-read, and its answer dropped on arrival. Called when
+    /// the chart view closes and whenever the dataset changes or is left for the home
+    /// screen.
     pub(crate) fn reset_chart_state(&mut self) {
         self.chart_cache.clear();
         self.chart_asked = None;
-        if let Some(inflight) = self.chart_inflight.as_mut() {
-            inflight.stale = true;
-            inflight
-                .cancel
+        if let Some(prep) = self.chart_prep() {
+            prep.cancel
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
+        self.jobs.supersede(is_chart_prep);
         // A failed export reopens its modal; it must not follow the user to the next
         // dataset.
         self.chart_export_modal.close();
-        *self
-            .pending_chart_result
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = None;
         let writing = self
             .jobs
             .supersede(|job| matches!(job, Job::ChartExport { .. }));
@@ -566,10 +546,8 @@ impl App {
     /// view, and says how many where the table knows.
     pub(crate) fn chart_status(&self) -> String {
         let aggregating = self
-            .chart_inflight
-            .as_ref()
-            .filter(|i| !i.stale)
-            .map(|i| i.request.aggregates())
+            .chart_prep()
+            .map(|prep| prep.request.aggregates())
             .or_else(|| ChartRequest::from_modal(&self.chart_modal).map(|r| r.aggregates()))
             .unwrap_or(false);
         if !aggregating {
@@ -615,15 +593,12 @@ impl App {
             .as_ref()
             .and_then(|state| state.num_rows_if_valid());
         let request = ChartRequest::from_modal(&self.chart_modal);
-        if let Some(inflight) = self.chart_inflight.as_ref()
-            && !request
-                .as_ref()
-                .is_some_and(|r| r.reads_as(&inflight.request))
+        if let Some(prep) = self.chart_prep()
+            && !request.as_ref().is_some_and(|r| r.reads_as(&prep.request))
         {
             // A count streaming a large view for a selection the cursor has moved
             // past would hold up the next chart for as long as it reads.
-            inflight
-                .cancel
+            prep.cancel
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
         let Some(request) = request else {
@@ -660,7 +635,7 @@ impl App {
             }
             return;
         }
-        if self.chart_inflight.is_some() || self.chart_settling() {
+        if self.jobs.running(is_chart_prep) || self.chart_settling() {
             return;
         }
         let Some(state) = self.data_table_state.as_ref() else {
@@ -686,27 +661,58 @@ impl App {
             held: self.chart_cache.held_rows(dataset),
             cancel: Arc::default(),
         };
-        self.chart_inflight = Some(ChartInflight {
+        let prep = ChartPrep {
             dataset,
             request: request.clone(),
-            stale: false,
             cancel: Arc::clone(&sampling.cancel),
-        });
-        let slot = self.pending_chart_result.clone();
-        let tx = self.events.clone();
-        self.runtime.spawn_blocking(move || {
-            // A panic in the preparation must still report back: without the event the
-            // in-flight record would stand for the rest of the session and every later
-            // selection would be refused.
-            let result = logging::catch_panic(|| request.prepare(&lf, &schema, &sampling))
-                .unwrap_or_else(|_| Err(color_eyre::eyre::eyre!("Chart preparation panicked")))
-                .map_err(|e| crate::error_display::user_message_from_report(&e, None));
-            *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(result);
-            let _ = tx.send(AppEvent::BackgroundChartReady);
+        };
+        self.spawn_job(Job::ChartPrepare(Box::new(prep)), None, move |_| {
+            request
+                .prepare(&lf, &schema, &sampling)
+                .map(|prepared| Answer::ChartPrepared(Box::new(prepared)))
+                .map_err(|e| crate::error_display::user_message_from_report(&e, None))
         });
     }
 
-    /// The chart view's events: an export asked for, and a preparation landing.
+    /// A chart preparation ended with `outcome`. It is installed only while the job is
+    /// `current` (a reset supersedes it when its view or dataset goes) and only into
+    /// the dataset it was read from. Its ending is what lets the next start.
+    pub(crate) fn chart_prepared(
+        &mut self,
+        prep: ChartPrep,
+        current: bool,
+        outcome: Result<(PlotData, Option<ColorCounts>), String>,
+    ) {
+        if !current {
+            return;
+        }
+        // A count stopped part way is no answer, and must not be remembered as a
+        // failure; the selection is prepared again when it comes back.
+        if outcome.is_err() && prep.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        let dataset = self.data_table_state.as_ref().map(|s| s.len_generation());
+        if dataset != prep.dataset {
+            return;
+        }
+        let outcome = outcome.map(|(prepared, colors)| {
+            if let Some(colors) = colors {
+                self.chart_cache.hold_colors(colors.clone());
+                self.chart_modal.color_counts = Some(colors);
+            }
+            prepared
+        });
+        self.chart_cache.insert(prep.request, outcome);
+        // An export parked on chart data resumes against the *current* selection,
+        // whatever just landed: it is written if that selection is now prepared, fails
+        // with the reason if that is the one that failed, and otherwise waits for the
+        // next result (which `ensure_chart_data` starts once this event is handled).
+        if let Some(request) = self.chart_export_waiting.take() {
+            self.start_chart_export(request);
+        }
+    }
+
+    /// The chart view's events: an export asked for, and then started.
     pub(crate) fn chart_event(&mut self, event: &AppEvent) -> Option<AppEvent> {
         match event {
             AppEvent::ChartExport(request) => {
@@ -730,49 +736,6 @@ impl App {
                     return None;
                 }
                 self.start_chart_export(request.clone());
-                None
-            }
-            AppEvent::BackgroundChartReady => {
-                // The result belongs to the one preparation in flight. It is installed
-                // only while that record is current (a reset marks it stale when its
-                // view or dataset goes) and only into the dataset it was computed from.
-                // Taking the record is what lets the next request start; the slot is
-                // emptied either way so a discarded series is not kept around.
-                let inflight = self.chart_inflight.take()?;
-                let outcome = self
-                    .pending_chart_result
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .take()
-                    .unwrap_or_else(|| Err("Chart preparation produced no result".to_string()));
-                if inflight.stale {
-                    return None;
-                }
-                // A count stopped part way is no answer, and must not be remembered as
-                // a failure; the selection is prepared again when it comes back.
-                if outcome.is_err() && inflight.cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                    return None;
-                }
-                let dataset = self.data_table_state.as_ref().map(|s| s.len_generation());
-                if dataset != inflight.dataset {
-                    return None;
-                }
-                let outcome = outcome.map(|(prepared, colors)| {
-                    if let Some(colors) = colors {
-                        self.chart_cache.hold_colors(colors.clone());
-                        self.chart_modal.color_counts = Some(colors);
-                    }
-                    prepared
-                });
-                self.chart_cache.insert(inflight.request, outcome);
-                // An export parked on chart data resumes against the *current*
-                // selection, whatever just landed: it is written if that selection is
-                // now prepared, fails with the reason if that is the one that failed,
-                // and otherwise waits for the next result (which `ensure_chart_data`
-                // starts once this handler returns).
-                if let Some(request) = self.chart_export_waiting.take() {
-                    self.start_chart_export(request);
-                }
                 None
             }
             _ => unreachable!("not an event for chart_event"),
@@ -856,7 +819,7 @@ impl App {
                     Ok(Answer::ChartExported)
                 });
             }
-            // Still being prepared; `BackgroundChartReady` comes back here.
+            // Still being prepared; its job's end comes back here.
             Ok(None) => self.chart_export_waiting = Some(request),
             Err(e) => {
                 let message = Self::format_export_error(&e);
@@ -910,4 +873,9 @@ impl App {
         }
         notes
     }
+}
+
+/// A chart preparation's job.
+fn is_chart_prep(job: &Job) -> bool {
+    matches!(job, Job::ChartPrepare(_))
 }

@@ -278,7 +278,7 @@ fn a_glob_match_reads_the_file_and_a_tie_is_said_and_picked_from() {
     assert!(screen(&mut app).contains(" 2 formats match "));
 
     press(&mut app, KeyCode::Char('b'));
-    assert_eq!(app.input_mode, InputMode::PickFormat);
+    assert_eq!(app.overlay, Overlay::PickFormat);
     assert!(screen(&mut app).contains("acme.other"));
     press(&mut app, KeyCode::Down);
     let reopen = press(&mut app, KeyCode::Enter).expect("Enter reads the file again");
@@ -384,7 +384,7 @@ fields = [{ name = "x", type = "u1" }]"#;
     pump_open_until_loaded(&mut app, &rx, vec![unmatched], OpenOptions::default());
     drain_events(&mut app, &rx);
     assert!(app.error_message().is_none(), "{:?}", app.error_message());
-    assert_eq!(app.input_mode, InputMode::Hex);
+    assert_eq!(app.overlay, Overlay::Hex);
     assert!(app.hex_view().unwrap().fallback);
 }
 

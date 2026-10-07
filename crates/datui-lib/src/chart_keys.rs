@@ -11,7 +11,7 @@ use crate::form::FormKey;
 use crate::logging::LogFailure;
 use crate::output_file::Overwrite;
 use crate::widgets::crosshair::{self, Move};
-use crate::{App, AppEvent, InputMode, home};
+use crate::{App, AppEvent, Overlay, home};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 impl App {
@@ -76,7 +76,7 @@ impl App {
             FormKey::Cancel => {
                 self.chart_modal.close();
                 self.reset_chart_state();
-                self.input_mode = InputMode::Normal;
+                self.overlay = Overlay::None;
                 return None;
             }
             FormKey::Submit | FormKey::Act(_) => {

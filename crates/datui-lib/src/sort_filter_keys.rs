@@ -6,7 +6,7 @@ use crate::filter_modal::FilterEditStep;
 use crate::form::{Form, FormKey, PickerKey};
 use crate::sort_filter_modal::SortFilterField;
 use crate::widgets::column_widths::WidthChoice;
-use crate::{App, AppEvent, InputMode};
+use crate::{App, AppEvent, Overlay};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 impl App {
@@ -76,7 +76,7 @@ impl App {
                 }
                 modal.sort.has_unapplied_changes = false;
                 modal.close();
-                self.input_mode = InputMode::Normal;
+                self.overlay = Overlay::None;
             }
             FormKey::Submit => return self.apply_sort_filter(),
             FormKey::Step(SortFilterField::TabBar, _) => modal.switch_tab(),

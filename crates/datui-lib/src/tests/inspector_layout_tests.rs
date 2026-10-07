@@ -243,8 +243,8 @@ fn a_drill_titles_its_trail_and_tables_a_list_of_structs() {
         press(&mut app, KeyCode::Esc);
         press(&mut app, KeyCode::Esc);
         assert!(app.inspector_modal.drill.is_none());
-        assert_eq!(app.input_mode, InputMode::Inspect);
+        assert_eq!(app.overlay, Overlay::Inspect);
         press(&mut app, KeyCode::Esc);
-        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.at_table());
     }
 }

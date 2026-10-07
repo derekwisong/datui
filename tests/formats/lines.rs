@@ -110,7 +110,7 @@ fn bytes_that_are_not_text_still_open_in_hex() {
     let bytes: Vec<u8> = (0..2048u32).map(|i| (i * 31 % 256) as u8).collect();
     let path = write(dir.path(), "blob", &bytes);
     let (app, _rx) = open(vec![path], OpenOptions::default());
-    assert_eq!(app.input_mode, InputMode::Hex);
+    assert_eq!(app.overlay, Overlay::Hex);
 }
 
 #[test]
@@ -513,7 +513,7 @@ fn home_pauses_the_indexing_and_the_app_gone_stops_it() {
     while let Some(event) = next {
         next = app.event(&event);
     }
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
     let _ = screen(&mut app);
     drain_events(&mut app, &rx);
     let state = app.data_table_state.as_ref().unwrap();

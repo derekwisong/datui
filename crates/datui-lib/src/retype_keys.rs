@@ -3,7 +3,7 @@
 
 use crate::form::FormKey;
 use crate::retype_modal::{Chosen, CombineField, CombineModal, RetypeModal};
-use crate::{App, AppEvent, InputMode};
+use crate::{App, AppEvent, Overlay};
 use crossterm::event::{KeyCode, KeyEvent};
 use polars::prelude::DataType;
 
@@ -53,8 +53,8 @@ impl App {
             current.as_ref(),
             examples,
         ));
-        self.column_forms.retype_from_info = self.input_mode == InputMode::Info;
-        self.input_mode = InputMode::Retype;
+        self.column_forms.retype_from_info = self.overlay == Overlay::Info;
+        self.open_overlay(Overlay::Retype);
     }
 
     /// The combine form, its date the column `date`.
@@ -72,17 +72,17 @@ impl App {
             .collect();
         let taken: Vec<String> = schema.iter_names().map(|n| n.to_string()).collect();
         self.column_forms.combine = Some(CombineModal::new(date.to_string(), columns, &taken));
-        self.column_forms.retype_from_info = self.input_mode == InputMode::Info;
-        self.input_mode = InputMode::Combine;
+        self.column_forms.retype_from_info = self.overlay == Overlay::Info;
+        self.open_overlay(Overlay::Combine);
     }
 
     fn close_retype(&mut self) {
         self.column_forms.retype = None;
         self.column_forms.combine = None;
-        self.input_mode = if self.column_forms.retype_from_info {
-            InputMode::Info
+        self.overlay = if self.column_forms.retype_from_info {
+            Overlay::Info
         } else {
-            InputMode::Normal
+            Overlay::None
         };
     }
 

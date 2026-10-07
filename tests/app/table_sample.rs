@@ -35,7 +35,7 @@ fn key(app: &mut App, code: KeyCode) -> Option<AppEvent> {
 /// `S`, a size typed and a seed, then Enter: the draw starts.
 fn draw(app: &mut App, size: &str) {
     key(app, KeyCode::Char('S'));
-    assert_eq!(app.input_mode, InputMode::Sample);
+    assert_eq!(app.overlay, Overlay::Sample);
     let form = app.sample.form.as_mut().expect("the Sample form");
     form.size.set_value(size);
     form.seed.set_value("7");
@@ -74,7 +74,7 @@ fn s_draws_a_sample_the_table_shows_as_it_arrives() {
     assert!(screen.contains("Sample size:"), "{screen}");
     assert!(screen.contains("Enter Draw"), "{screen}");
     key(&mut app, KeyCode::Esc);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
 
     draw(&mut app, "500");
     assert!(app.sample_drawing());
@@ -184,7 +184,7 @@ fn analysis_and_charts_read_the_views_sample() {
     assert!(!app.analysis_modal.active);
 
     key(&mut app, KeyCode::Char('c'));
-    assert_eq!(app.input_mode, InputMode::Chart);
+    assert_eq!(app.overlay, Overlay::Chart);
     assert!(app.chart_modal.view_sampled);
     assert_eq!(app.chart_modal.row_limit, None);
     assert!(
@@ -233,7 +233,7 @@ fn a_sample_past_the_memory_available_warns_and_enter_again_draws() {
     let (mut app, rx, tx) = open(parquet("table_sample_memory.parquet", 10_000));
     app.set_memory_probe(Arc::new(|| Some(1_000)));
     draw(&mut app, "5000");
-    assert_eq!(app.input_mode, InputMode::Sample, "the form stays");
+    assert_eq!(app.overlay, Overlay::Sample, "the form stays");
     let warning = app
         .sample
         .form

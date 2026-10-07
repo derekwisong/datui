@@ -1,6 +1,6 @@
 use super::*;
 use crate::export_modal::{ExportFocus, ExportFormat};
-use crate::{InputMode, OpenOptions};
+use crate::{InputMode, OpenOptions, Overlay};
 use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 use std::io::Write;
 use std::sync::mpsc;
@@ -94,7 +94,7 @@ fn loaded_pump() -> (EventPump, tempfile::TempDir) {
         pump.app.data_table_state.is_some(),
         "the CSV should have loaded"
     );
-    assert_eq!(pump.app.input_mode, InputMode::Normal);
+    assert!(pump.app.at_table());
     // A frame sets the visible row count, as it has before any key in `run()`.
     rendered(&mut pump.app);
     (pump, dir)
@@ -223,7 +223,7 @@ fn keys_typed_while_the_inspector_reads_wait_their_turn() {
     state.set_column_order(vec!["name".to_string()]);
     rendered(&mut p.app);
     p.terminal_key(plain(KeyCode::Char(' '))).unwrap();
-    assert_eq!(p.app.input_mode, InputMode::Inspect);
+    assert_eq!(p.app.overlay, Overlay::Inspect);
     p.terminal_key(plain(KeyCode::End)).unwrap();
     p.terminal_key(plain(KeyCode::Enter)).unwrap();
     assert!(
@@ -233,14 +233,10 @@ fn keys_typed_while_the_inspector_reads_wait_their_turn() {
     p.terminal_key(plain(KeyCode::Char('k'))).unwrap();
     p.terminal_key(plain(KeyCode::Esc)).unwrap();
     assert_eq!(held(&p), [KeyCode::Char('k'), KeyCode::Esc]);
-    assert_eq!(p.app.input_mode, InputMode::Inspect, "nothing acted yet");
+    assert_eq!(p.app.overlay, Overlay::Inspect, "nothing acted yet");
     settle(&mut p);
     assert!(held(&p).is_empty());
-    assert_eq!(
-        p.app.input_mode,
-        InputMode::Normal,
-        "Esc closed it, in turn"
-    );
+    assert!(p.app.at_table(), "Esc closed it, in turn");
     assert_eq!(
         p.app.inspector_modal.focused().map(|f| f.name.as_str()),
         Some("name"),
@@ -333,15 +329,15 @@ fn a_click_moves_the_cursor_and_a_double_click_inspects() {
     let at = on_screen(&mut p.app, "45");
     assert!(p.terminal_mouse(click(at)).unwrap());
     assert_eq!(cell(&p), (Some(1), Some("age".to_string())));
-    assert_eq!(p.app.input_mode, InputMode::Normal, "one click only moves");
+    assert!(p.app.at_table(), "one click only moves");
 
     // A click on the other row, then twice on it.
     let at = on_screen(&mut p.app, "alan");
     p.terminal_mouse(click(at)).unwrap();
     assert_eq!(cell(&p), (Some(2), Some("name".to_string())));
-    assert_eq!(p.app.input_mode, InputMode::Normal);
+    assert!(p.app.at_table());
     p.terminal_mouse(click(at)).unwrap();
-    assert_eq!(p.app.input_mode, InputMode::Inspect, "Enter inspects");
+    assert_eq!(p.app.overlay, Overlay::Inspect, "Enter inspects");
 
     // In the inspector the table is not under the pointer: nothing to click.
     let before = cell(&p);
@@ -428,7 +424,7 @@ fn a_dropped_click_does_not_make_the_next_a_double_click() {
     p.app.busy = false;
     assert!(p.terminal_mouse(click(alan)).unwrap());
     assert_eq!(cell(&p).0, Some(2));
-    assert_eq!(p.app.input_mode, InputMode::Normal, "one click, no Enter");
+    assert!(p.app.at_table(), "one click, no Enter");
 }
 
 /// A click read behind an event that may have changed the screen waits for the
@@ -820,14 +816,14 @@ fn a_pivot_whose_worker_dies_is_shown_and_the_next_one_installs() {
         aggregation: PivotAggregation::Last,
     };
 
-    p.app.input_mode = InputMode::PivotMelt;
+    p.app.overlay = Overlay::PivotMelt;
     p.app.jobs.worker_dies = crate::tests::worker_dies_once(|job| matches!(job, crate::Job::Pivot));
     p.send(AppEvent::Pivot(spec.clone())).unwrap();
     settle(&mut p);
     assert!(p.app.error_modal.active, "the user is told");
     assert!(!p.app.is_busy());
     assert!(!p.app.pivot_computing(), "the form is not left computing");
-    assert_eq!(p.app.input_mode, InputMode::PivotMelt, "and keeps the spec");
+    assert_eq!(p.app.overlay, Overlay::PivotMelt, "and keeps the spec");
     let state = p.app.data_table_state.as_ref().unwrap();
     assert!(state.last_pivot_spec().is_none(), "the table is as it was");
 
@@ -840,7 +836,7 @@ fn a_pivot_whose_worker_dies_is_shown_and_the_next_one_installs() {
         state.last_pivot_spec().is_some(),
         "the next pivot is installed"
     );
-    assert_eq!(p.app.input_mode, InputMode::Normal);
+    assert!(p.app.at_table());
 }
 
 /// #455: failures from work an open has passed are dropped: the open goes on to its
@@ -1052,11 +1048,7 @@ fn a_query_typed_while_busy_lands_in_the_query_bar() {
     let (mut p, _dir) = loaded_pump();
     p.app.busy = true;
     type_keys(&mut p, ":hello");
-    assert_eq!(
-        p.app.input_mode,
-        InputMode::Normal,
-        "nothing acts while busy"
-    );
+    assert!(p.app.at_table(), "nothing acts while busy");
     assert_eq!(held(&p).len(), 6);
     assert!(matches!(p.drain().unwrap(), Drained::Continue { .. }));
 
@@ -1111,7 +1103,7 @@ fn a_fresh_key_waits_behind_the_held_ones() {
     // The busy-clearing event was handled; the next key read is still behind.
     p.app.busy = false;
     type_keys(&mut p, "d");
-    assert_eq!(p.app.input_mode, InputMode::Normal, "d waited its turn");
+    assert!(p.app.at_table(), "d waited its turn");
 
     settle(&mut p);
     assert_eq!(p.app.prompt.query_input.value(), "abcd");
@@ -1156,7 +1148,7 @@ fn a_held_enter_finishes_its_search_before_the_next_key() {
     );
 
     settle(&mut p);
-    assert_eq!(p.app.input_mode, InputMode::Normal);
+    assert!(p.app.at_table());
     let state = p.app.data_table_state.as_ref().unwrap();
     assert_eq!(state.get_active_query(), "select name where age > 40");
     assert_eq!(state.num_rows(), 2);
@@ -1297,7 +1289,7 @@ fn ctrl_c_quits_from_the_sort_and_chart_search_boxes() {
     use crate::sort_filter_modal::{SortFilterField, SortFilterTab};
 
     let (mut p, _dir) = loaded_pump();
-    p.app.input_mode = InputMode::SortFilter;
+    p.app.overlay = Overlay::SortFilter;
     p.app.sort_filter_modal.active = true;
     p.app.sort_filter_modal.active_tab = SortFilterTab::Columns;
     p.app.sort_filter_modal.focus = SortFilterField::Find;
@@ -1311,7 +1303,7 @@ fn ctrl_c_quits_from_the_sort_and_chart_search_boxes() {
     ));
 
     let (mut p2, _d) = loaded_pump();
-    p2.app.input_mode = InputMode::Chart;
+    p2.app.overlay = Overlay::Chart;
     p2.app.chart_modal.active = true;
     p2.app.chart_modal.open(
         crate::chart_modal::ChartColumns {
@@ -1448,7 +1440,7 @@ fn a_replayed_search_runs_before_a_fresh_key() {
 
     release.send(()).unwrap();
     settle(&mut p);
-    assert_eq!(p.app.input_mode, InputMode::Normal);
+    assert!(p.app.at_table());
     let state = p.app.data_table_state.as_ref().unwrap();
     assert_eq!(state.get_active_query(), "select name where age > 40");
     assert_eq!(state.num_rows(), 2);
@@ -1523,11 +1515,11 @@ fn enter_with_nothing_to_drill_into_waits_as_space() {
     p.app.busy = false;
     settle(&mut p);
     assert!(held(&p).is_empty());
-    assert_eq!(p.app.input_mode, InputMode::Inspect);
+    assert_eq!(p.app.overlay, Overlay::Inspect);
     let state = p.app.data_table_state.as_ref().unwrap();
     assert_eq!(state.table_state.selected(), Some(1), "j moved first");
     p.terminal_key(plain(KeyCode::Esc)).unwrap();
-    assert_eq!(p.app.input_mode, InputMode::Normal);
+    assert!(p.app.at_table());
 
     p.send(AppEvent::QQuery("select n: count age by name".to_string()))
         .unwrap();
@@ -1569,7 +1561,7 @@ fn enter_over_a_loaded_list_column_waits_as_space() {
     assert_eq!(held(&p), [KeyCode::Char('j'), KeyCode::Char(' ')]);
     p.app.busy = false;
     settle(&mut p);
-    assert_eq!(p.app.input_mode, InputMode::Inspect);
+    assert_eq!(p.app.overlay, Overlay::Inspect);
     assert!(!p.app.data_table_state.as_ref().unwrap().is_drilled_down());
 }
 
@@ -1717,7 +1709,7 @@ fn column_paging_acts_live_and_replays_in_order() {
     settle(&mut p);
     rendered(&mut p.app);
     assert_eq!(first_scrolled(&p), 5, "g c05 Enter shows c05 first");
-    assert_eq!(p.app.input_mode, InputMode::Normal);
+    assert!(p.app.at_table());
 }
 
 /// Item 8: F1 and `?` open help during a long load, at once, with nothing held.
@@ -1752,7 +1744,7 @@ fn a_prompt_a_replayed_key_opens_keeps_its_answer_keys() {
         .export_modal
         .path_input
         .set_value(path.display().to_string());
-    p.app.input_mode = InputMode::Export;
+    p.app.overlay = Overlay::Export;
 
     // Keys typed while busy in Export mode are all held (not a plain table view).
     p.app.busy = true;
@@ -1889,7 +1881,7 @@ fn keys_typed_before_the_app_existed_meet_the_loading_screen() {
     ]);
     assert!(matches!(settle(&mut p), Drained::Continue { .. }));
     assert!(held(&p).is_empty());
-    assert_eq!(p.app.input_mode, InputMode::Normal);
+    assert!(p.app.at_table());
     let state = p.app.data_table_state.as_ref().expect("the table opened");
     assert_eq!(state.table_state.selected(), Some(0), "G was not replayed");
 
@@ -1931,7 +1923,7 @@ fn the_loading_screen_never_holds_keys() {
 fn ctrl_c_quits_from_chart_mode_while_busy() {
     for c in ['c', 'q'] {
         let mut p = pump();
-        p.app.input_mode = InputMode::Chart;
+        p.app.overlay = Overlay::Chart;
         p.app.chart_modal.active = true;
         p.app.busy = true;
         assert!(matches!(
@@ -2646,11 +2638,7 @@ fn enter_in_the_help_runs_the_key() {
     p.terminal_key(plain(KeyCode::Enter)).unwrap();
     settle(&mut p);
     assert!(!p.app.help_visible(), "Enter closed the help");
-    assert_eq!(
-        p.app.input_mode,
-        InputMode::ValueCounts,
-        "F ran at the table"
-    );
+    assert_eq!(p.app.overlay, Overlay::ValueCounts, "F ran at the table");
 }
 
 /// While the app is busy, the key Enter presses waits its turn like a typed one.
@@ -2665,15 +2653,11 @@ fn the_key_enter_presses_waits_while_busy() {
     p.app.busy = true;
     p.drain().unwrap();
     assert!(!p.app.help_visible());
-    assert_eq!(p.app.input_mode, InputMode::Normal, "held while busy");
+    assert!(p.app.at_table(), "held while busy");
     assert_eq!(held(&p), [KeyCode::Char('s')]);
     p.app.busy = false;
     settle(&mut p);
-    assert_eq!(
-        p.app.input_mode,
-        InputMode::SortFilter,
-        "replayed once idle"
-    );
+    assert_eq!(p.app.overlay, Overlay::SortFilter, "replayed once idle");
 }
 
 /// Type `text` into the open help's filter, then press Enter.
@@ -2817,7 +2801,7 @@ fn a_click_focuses_a_form_row_and_acts_on_it() {
     use crate::export_modal::{ExportFocus, ExportFormat};
     let (mut p, _dir) = loaded_pump();
     p.terminal_key(plain(KeyCode::Char('e'))).unwrap();
-    assert_eq!(p.app.input_mode, InputMode::Export);
+    assert_eq!(p.app.overlay, Overlay::Export);
     assert_eq!(p.app.export_modal.selected_format, ExportFormat::Csv);
     let header = p.app.export_modal.csv_include_header;
 
@@ -2844,7 +2828,7 @@ fn a_click_focuses_a_form_row_and_acts_on_it() {
     let at = on_screen(&mut p.app, "Parquet");
     p.terminal_mouse(click(at)).unwrap();
     assert_eq!(p.app.export_modal.selected_format, ExportFormat::Parquet);
-    assert_eq!(p.app.input_mode, InputMode::Export, "still open");
+    assert_eq!(p.app.overlay, Overlay::Export, "still open");
 }
 
 /// A click on a tab switches to it: the Sort & Filter sidebar's, through its tab
@@ -2854,7 +2838,7 @@ fn a_click_on_a_tab_switches_to_it() {
     use crate::sort_filter_modal::{SortFilterField, SortFilterTab};
     let (mut p, _dir) = loaded_pump();
     p.terminal_key(plain(KeyCode::Char('s'))).unwrap();
-    assert_eq!(p.app.input_mode, InputMode::SortFilter);
+    assert_eq!(p.app.overlay, Overlay::SortFilter);
     let at = on_screen(&mut p.app, "Columns");
     assert!(p.terminal_mouse(click(at)).unwrap());
     assert_eq!(p.app.sort_filter_modal.active_tab, SortFilterTab::Columns);
@@ -2867,7 +2851,7 @@ fn a_click_on_a_tab_switches_to_it() {
 
     p.terminal_key(plain(KeyCode::Esc)).unwrap();
     p.terminal_key(plain(KeyCode::Char('i'))).unwrap();
-    assert_eq!(p.app.input_mode, InputMode::Info);
+    assert_eq!(p.app.overlay, Overlay::Info);
     let at = on_screen(&mut p.app, "Resources");
     p.terminal_mouse(click(at)).unwrap();
     assert_eq!(
@@ -2885,11 +2869,7 @@ fn the_footer_filters_and_query_are_clickable() {
     settle(&mut p);
     let at = on_screen(&mut p.app, "name = ");
     assert!(p.terminal_mouse(click(at)).unwrap());
-    assert_eq!(
-        p.app.input_mode,
-        InputMode::SortFilter,
-        "the sidebar opened"
-    );
+    assert_eq!(p.app.overlay, Overlay::SortFilter, "the sidebar opened");
     p.terminal_key(plain(KeyCode::Esc)).unwrap();
     settle(&mut p);
 
@@ -2897,7 +2877,7 @@ fn the_footer_filters_and_query_are_clickable() {
     type_keys(&mut p, "select age");
     p.terminal_key(plain(KeyCode::Enter)).unwrap();
     settle(&mut p);
-    assert_eq!(p.app.input_mode, InputMode::Normal);
+    assert!(p.app.at_table());
     let at = on_screen(&mut p.app, " query ");
     assert!(p.terminal_mouse(click((at.0 + 1, at.1))).unwrap());
     assert_eq!(p.app.input_mode, InputMode::Editing);
@@ -2915,7 +2895,7 @@ fn a_click_outside_a_dialog_does_nothing() {
     assert!(!p.terminal_mouse(click(alan)).unwrap());
     assert!(!p.terminal_mouse(right_click(alan)).unwrap());
     assert_eq!(cell(&p), (Some(0), Some("name".to_string())));
-    assert_eq!(p.app.input_mode, InputMode::SortFilter);
+    assert_eq!(p.app.overlay, Overlay::SortFilter);
     assert!(p.app.context_menu.is_none());
 
     // Over a dialog the table is covered, and so is anything else drawn under it.
@@ -2928,7 +2908,7 @@ fn a_click_outside_a_dialog_does_nothing() {
     assert!(!p.terminal_mouse(click(alan)).unwrap());
     assert_eq!(p.app.export_modal.focus, focus);
     assert_eq!(p.app.export_modal.csv_include_header, header);
-    assert_eq!(p.app.input_mode, InputMode::Export);
+    assert_eq!(p.app.overlay, Overlay::Export);
 }
 
 /// A header dragged over another column moves there on release, as `L` would,
@@ -3088,7 +3068,7 @@ fn a_click_on_the_chart_panel_focuses_and_acts() {
     let (mut p, _dir) = loaded_pump();
     p.terminal_key(plain(KeyCode::Char('c'))).unwrap();
     settle(&mut p);
-    assert_eq!(p.app.input_mode, InputMode::Chart);
+    assert_eq!(p.app.overlay, Overlay::Chart);
     let mark = p.app.chart_modal.spec.mark;
     let at = on_screen(&mut p.app, "Type");
     assert!(p.terminal_mouse(click(at)).unwrap());
@@ -3280,7 +3260,7 @@ fn a_click_chooses_from_the_menu_and_outside_closes_it() {
     let counts = on_screen(&mut p.app, "Value counts");
     assert!(p.terminal_mouse(click(counts)).unwrap());
     assert!(p.app.context_menu.is_none());
-    assert_eq!(p.app.input_mode, InputMode::ValueCounts, "F ran");
+    assert_eq!(p.app.overlay, Overlay::ValueCounts, "F ran");
     p.terminal_key(plain(KeyCode::Esc)).unwrap();
     settle(&mut p);
 
@@ -3293,7 +3273,7 @@ fn a_click_chooses_from_the_menu_and_outside_closes_it() {
     p.terminal_mouse(right_click(alan)).unwrap();
     p.terminal_key(plain(KeyCode::Esc)).unwrap();
     assert!(p.app.context_menu.is_none());
-    assert_eq!(p.app.input_mode, InputMode::Normal);
+    assert!(p.app.at_table());
 }
 
 /// Busy, the mouse acts only where a typed key would act at once: no menu opens,

@@ -6,7 +6,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use datui::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
 use datui::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotMeltFocus, PivotSpec};
 use datui::view::MatchCriteria;
-use datui::{App, AppEvent, InputMode, OpenOptions};
+use datui::{App, AppEvent, OpenOptions, Overlay};
 use polars::prelude::AnyValue;
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -337,11 +337,11 @@ fn test_esc_cancels_pivot_melt_without_change() {
         .height();
 
     send_key(&mut app, KeyCode::Char('p'));
-    assert_eq!(app.input_mode, InputMode::PivotMelt);
+    assert_eq!(app.overlay, Overlay::PivotMelt);
     assert!(app.pivot_melt_modal.active);
 
     send_key(&mut app, KeyCode::Esc);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
     assert!(!app.pivot_melt_modal.active);
 
     let rows_after = app
@@ -381,7 +381,7 @@ fn test_pivot_via_modal_apply() {
     drain_events(&mut app, &rx);
 
     assert!(!app.pivot_melt_modal.active);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
     let state = app.data_table_state.as_ref().unwrap();
     let df = state.lf().clone().collect().unwrap();
     let names: Vec<&str> = df.get_column_names().iter().map(|s| s.as_str()).collect();
@@ -420,7 +420,7 @@ fn test_melt_via_modal_apply() {
     }
 
     assert!(!app.pivot_melt_modal.active);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
     let state = app.data_table_state.as_ref().unwrap();
     let df = state.lf().clone().collect().unwrap();
     let names: Vec<&str> = df.get_column_names().iter().map(|s| s.as_str()).collect();
@@ -503,11 +503,11 @@ fn test_esc_closes_the_picker_before_the_modal() {
     send_key(&mut app, KeyCode::Esc);
     assert!(app.pivot_melt_modal.picker.is_none());
     assert!(app.pivot_melt_modal.active, "the modal outlives its picker");
-    assert_eq!(app.input_mode, InputMode::PivotMelt);
+    assert_eq!(app.overlay, Overlay::PivotMelt);
 
     send_key(&mut app, KeyCode::Esc);
     assert!(!app.pivot_melt_modal.active);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
 }
 
 /// Space on a pick-one row's open Picker chooses the highlighted item, like
@@ -640,7 +640,7 @@ fn test_pivot_reads_in_the_background() {
 
     drain_events(&mut app, &rx);
     assert!(!app.pivot_melt_modal.active);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.last_pivot_spec().is_some());
     let df = state.lf().clone().collect().unwrap();
@@ -727,7 +727,7 @@ fn test_esc_stops_a_pivot_being_read() {
         app.pivot_melt_modal.active,
         "the spec is still there to change"
     );
-    assert_eq!(app.input_mode, InputMode::PivotMelt);
+    assert_eq!(app.overlay, Overlay::PivotMelt);
 
     // The worker finishes regardless; what it sends is stale.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
@@ -750,7 +750,7 @@ fn test_esc_stops_a_pivot_being_read() {
 
     send_key(&mut app, KeyCode::Esc);
     assert!(!app.pivot_melt_modal.active);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
 }
 
 // ----- The builder's live preview -----
@@ -844,7 +844,7 @@ fn the_builder_previews_the_pivot_and_applies_it() {
     send_key(&mut app, KeyCode::Enter);
     drain_events(&mut app, &rx);
     assert!(!app.pivot_melt_modal.active);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
     let applied = app
         .data_table_state
         .as_ref()
@@ -960,7 +960,7 @@ fn esc_closes_the_picker_then_the_builder_and_its_preview() {
     assert!(app.pivot_melt_modal.active, "the builder survives");
     send_key(&mut app, KeyCode::Esc);
     assert!(!app.pivot_melt_modal.active);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
     assert!(app.pivot_melt_modal.preview.shown.is_none());
     assert!(app.pivot_melt_modal.preview.input.is_none());
     let state = app.data_table_state.as_ref().unwrap();

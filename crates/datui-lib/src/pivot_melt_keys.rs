@@ -6,7 +6,7 @@ use crate::jobs::{Answer, Job};
 use crate::pivot_melt_modal::{
     PREVIEW_INPUT_ROWS, PivotMeltFocus, PivotMeltTab, PreviewFrame, PreviewInput,
 };
-use crate::{App, AppEvent, InputMode};
+use crate::{App, AppEvent, Overlay};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 impl App {
@@ -27,7 +27,7 @@ impl App {
         modal.open(self.display.history_limit, &self.theme);
         modal.preview.view_rows = view_rows;
         modal.preview.sorted = sorted;
-        self.input_mode = InputMode::PivotMelt;
+        self.open_overlay(Overlay::PivotMelt);
         self.request_reshape_preview();
     }
 

@@ -42,7 +42,7 @@ fn footer(app: &mut App) -> String {
 
 /// In the open table picker, the cursor onto `label`.
 fn pick(app: &mut App, label: &str) {
-    assert_eq!(app.input_mode, InputMode::PickTable);
+    assert_eq!(app.overlay, Overlay::PickTable);
     let at = app
         .pickers
         .table_picker
@@ -90,7 +90,7 @@ fn t_opens_another_worksheet_of_a_workbook() {
 
     pick(&mut app, "2023");
     open_picked(&mut app, &rx, &tx);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
     assert_eq!(column_names(&app), ["month", "total", "note"]);
     assert_eq!(current_rows(&app), 12);
     assert_eq!(app.open_path(), Some(book.join("2023").as_path()));
@@ -143,14 +143,14 @@ fn esc_closes_the_table_picker_and_keeps_the_table() {
     press(&mut app, KeyCode::Char('T'));
     pick(&mut app, "2023");
     assert!(press(&mut app, KeyCode::Esc).is_none(), "nothing is opened");
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
     assert!(!app.is_busy());
     assert_eq!(column_names(&app), ["id", "item"]);
     assert_eq!(app.open_path(), Some(book.as_path()));
     // Enter on the table already open opens nothing either.
     press(&mut app, KeyCode::Char('T'));
     assert!(press(&mut app, KeyCode::Enter).is_none());
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
 }
 
 #[test]
@@ -170,7 +170,7 @@ fn the_footer_offers_t_only_for_a_file_of_several_tables() {
     assert!(!line.contains("T Table"), "{line}");
     // The key says why it does nothing.
     press(&mut app, KeyCode::Char('T'));
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
     assert_eq!(app.flash_message(), Some("Only one table here"));
 
     // A workbook of one sheet is one table too.
@@ -212,10 +212,10 @@ fn enter_on_the_schema_tab_retypes_and_on_the_excel_tab_opens() {
         press(&mut app, KeyCode::Left);
     }
     press(&mut app, KeyCode::Enter);
-    assert_eq!(app.input_mode, InputMode::Retype);
+    assert_eq!(app.overlay, Overlay::Retype);
     assert_eq!(app.open_path(), Some(book.as_path()), "no table opened");
     press(&mut app, KeyCode::Esc);
-    assert_eq!(app.input_mode, InputMode::Info, "back to the panel");
+    assert_eq!(app.overlay, Overlay::Info, "back to the panel");
 
     while app.info_modal.active_tab != InfoTab::Format {
         press(&mut app, KeyCode::Right);
@@ -223,7 +223,7 @@ fn enter_on_the_schema_tab_retypes_and_on_the_excel_tab_opens() {
     press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Enter);
     assert!(app.column_forms.retype.is_none(), "no type picker");
-    assert_ne!(app.input_mode, InputMode::Retype);
+    assert_ne!(app.overlay, Overlay::Retype);
 }
 
 #[cfg(feature = "sqlite")]
@@ -253,12 +253,7 @@ fn t_opens_another_table_of_a_database_and_leaves_the_query_behind() {
     assert!(app.error_message().is_none(), "s {:?}", app.error_message());
 
     press(&mut app, KeyCode::Char('T'));
-    assert_eq!(
-        app.input_mode,
-        InputMode::PickTable,
-        "{:?}",
-        app.error_message()
-    );
+    assert_eq!(app.overlay, Overlay::PickTable, "{:?}", app.error_message());
     // Its own tables and views, each with its kind and columns; not SQLite's own.
     let items = app.pickers.table_picker.items().to_vec();
     assert!(items.contains(&"orders".to_string()), "{items:?}");

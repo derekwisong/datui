@@ -131,7 +131,7 @@ fn a_ulog_lands_on_its_topics() {
     app.home.select(at);
     key(&mut app, &rx, KeyCode::Enter);
     assert_eq!(app.error_message(), None);
-    assert_eq!(app.input_mode, InputMode::Normal, "{:?}", app.home.status);
+    assert!(app.at_table(), "{:?}", app.home.status);
     let df = frame(&app);
     assert_eq!(df.height(), 50);
     assert_eq!(

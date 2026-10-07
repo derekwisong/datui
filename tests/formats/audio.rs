@@ -6,7 +6,7 @@
 
 use crate::common::{self, drain_events, pump_open_until_loaded};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use datui::{App, AppEvent, InputMode, OpenOptions};
+use datui::{App, AppEvent, OpenOptions, Overlay};
 use polars::prelude::*;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -166,7 +166,7 @@ fn a_broadcast_wav_shows_its_format_metadata_and_markers_on_the_audio_tab() {
     // `i` opens on the Audio tab.
     press(&mut app, KeyCode::Char('i'));
     drain_events(&mut app, &rx);
-    assert_eq!(app.input_mode, InputMode::Info);
+    assert_eq!(app.overlay, Overlay::Info);
     let text = screen(&mut app, 120, 40);
     for expected in [
         "WAV (Broadcast WAV)",

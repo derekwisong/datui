@@ -2,7 +2,7 @@
 //! of the same source.
 
 use crate::open_options::OpenOptions;
-use crate::{App, AppEvent, InputMode, table_switch};
+use crate::{App, AppEvent, Overlay, table_switch};
 use crossterm::event::{KeyCode, KeyEvent};
 
 /// The go-to-column, format and table pickers.
@@ -33,14 +33,14 @@ impl App {
             .unwrap_or(0);
         self.pickers.go_to_column = crate::widgets::ui::PickerState::new(names);
         self.pickers.go_to_column.select_original(at);
-        self.input_mode = InputMode::GoToColumn;
+        self.open_overlay(Overlay::GoToColumn);
     }
 
     /// The column picker owns the keys: type to narrow, ↑↓ move, Enter goes, Esc
     /// closes without moving.
     pub(crate) fn go_to_column_key(&mut self, event: &KeyEvent) {
         match event.code {
-            KeyCode::Esc => self.input_mode = InputMode::Normal,
+            KeyCode::Esc => self.overlay = Overlay::None,
             KeyCode::Enter => {
                 let Some(index) = self.pickers.go_to_column.selected_original() else {
                     // Nothing matches; the picker says so and stays.
@@ -51,7 +51,7 @@ impl App {
                 if let Some(state) = self.data_table_state.as_mut() {
                     state.go_to_column(&name);
                 }
-                self.input_mode = InputMode::Normal;
+                self.overlay = Overlay::None;
             }
             KeyCode::Up => self.pickers.go_to_column.move_up(),
             KeyCode::Down => self.pickers.go_to_column.move_down(),
@@ -84,18 +84,18 @@ impl App {
             }
         }
         self.pickers.format_picker = crate::widgets::ui::PickerState::new(names);
-        self.input_mode = InputMode::PickFormat;
+        self.open_overlay(Overlay::PickFormat);
     }
 
     /// The format picker owns the keys: type to narrow, ↑↓ move, Enter reads the file
     /// again with the spec chosen, Esc closes.
     pub(crate) fn format_picker_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         match event.code {
-            KeyCode::Esc => self.input_mode = InputMode::Normal,
+            KeyCode::Esc => self.overlay = Overlay::None,
             KeyCode::Enter => {
                 let index = self.pickers.format_picker.selected_original()?;
                 let name = self.pickers.format_picker.items()[index].clone();
-                self.input_mode = InputMode::Normal;
+                self.overlay = Overlay::None;
                 let current = self
                     .data_table_state
                     .as_ref()
@@ -157,7 +157,7 @@ impl App {
             self.pickers.table_picker.select_original(at);
         }
         self.pickers.table_choices = Some(tables);
-        self.input_mode = InputMode::PickTable;
+        self.open_overlay(Overlay::PickTable);
     }
 
     /// The table picker owns the keys: type to narrow, ↑↓ move, Enter opens the table
@@ -165,13 +165,13 @@ impl App {
     pub(crate) fn table_picker_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         match event.code {
             KeyCode::Esc => {
-                self.input_mode = InputMode::Normal;
+                self.overlay = Overlay::None;
                 self.pickers.table_choices = None;
             }
             KeyCode::Enter => {
                 let index = self.pickers.table_picker.selected_original()?;
                 let tables = self.pickers.table_choices.take()?;
-                self.input_mode = InputMode::Normal;
+                self.overlay = Overlay::None;
                 if tables.current == Some(index) {
                     return None;
                 }

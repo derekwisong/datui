@@ -26,7 +26,7 @@ use ratatui::layout::{Position, Rect};
 
 use crate::form::{FieldKind, Form};
 use crate::table::CellHit;
-use crate::{App, InputMode};
+use crate::{App, InputMode, Overlay};
 
 /// Rows a notch of the wheel moves.
 pub const WHEEL_ROWS: usize = 3;
@@ -693,7 +693,7 @@ impl App {
     /// The chart view is up with nothing over it: no export dialog, Picker, help or
     /// modal.
     fn chart_has_the_keys(&self) -> bool {
-        self.input_mode == InputMode::Chart
+        self.overlay == Overlay::Chart
             && self.chart_modal.active
             && self.chart_modal.picker.is_none()
             && !self.chart_export_modal.active

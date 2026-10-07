@@ -1816,7 +1816,7 @@ fn a_parked_end_does_not_put_its_message_on_the_chart_view() {
     let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
     assert!(footer_text(&mut app).contains("Counting rows"), "parked");
 
-    app.input_mode = crate::InputMode::Chart;
+    app.overlay = crate::Overlay::Chart;
     app.chart_modal.active = true;
 
     let bar = footer_text(&mut app);
@@ -2420,7 +2420,7 @@ fn a_panicking_worker_ends_its_job() {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
     let generation = app.task_generation();
-    app.input_mode = crate::InputMode::PivotMelt;
+    app.overlay = crate::Overlay::PivotMelt;
     let ticket = app.spawn_job(
         Job::Pivot,
         Some(App::COMPUTING_PIVOT),

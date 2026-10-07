@@ -10,7 +10,8 @@ use crate::open_options::OpenOptions;
 #[cfg(feature = "cloud")]
 use crate::wait_on_runtime;
 use crate::{
-    APP_NAME, App, AppEvent, InputMode, catalog, config, discover, home, loading, source, widgets,
+    APP_NAME, App, AppEvent, InputMode, Overlay, catalog, config, discover, home, loading, source,
+    widgets,
 };
 use color_eyre::Result;
 use std::collections::HashMap;
@@ -1383,6 +1384,7 @@ impl App {
                 self.home.selected = idx;
             }
         }
+        self.overlay = Overlay::None;
         self.input_mode = InputMode::Home;
     }
 

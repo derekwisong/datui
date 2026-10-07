@@ -5,7 +5,7 @@ use crate::hex_view::{
     Found, HexFindRun, HexHit, HexSource, HexView, MAX_RECORD_SIZE, Origin, PromptKind,
 };
 use crate::jobs::{Answer, Job, Progress};
-use crate::{App, AppEvent, InputMode};
+use crate::{App, AppEvent, InputMode, Overlay};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -30,7 +30,7 @@ impl App {
         self.hex_view
             .view
             .as_ref()
-            .filter(|_| self.input_mode == InputMode::Hex)
+            .filter(|_| self.overlay == Overlay::Hex)
     }
 
     /// The one local file the dataset on screen was read from, which the Info panel's
@@ -91,7 +91,7 @@ impl App {
         view.input = crate::widgets::text_input::TextInput::new().with_theme(&self.theme);
         self.hex_view.view = Some(view);
         self.info_modal.close();
-        self.input_mode = InputMode::Hex;
+        self.open_overlay(Overlay::Hex);
     }
 
     /// An open found a local file nothing reads, or was asked for its bytes.
@@ -133,15 +133,14 @@ impl App {
             Origin::Table | Origin::Info => {
                 self.stop_hex_find();
                 self.hex_view.view = None;
-                self.input_mode = if self.data_table_state.is_some() {
-                    InputMode::Normal
-                } else {
-                    InputMode::Home
-                };
+                self.overlay = Overlay::None;
+                if self.data_table_state.is_none() {
+                    self.input_mode = InputMode::Home;
+                }
                 // Back to the panel it was opened from, on the tab it was on.
                 if origin == Origin::Info && self.data_table_state.is_some() {
                     self.info_modal.active = true;
-                    self.input_mode = InputMode::Info;
+                    self.open_overlay(Overlay::Info);
                 }
                 None
             }
@@ -481,7 +480,7 @@ impl App {
         // The table takes the screen; a read that fails says why over it.
         self.stop_hex_find();
         self.hex_view.view = None;
-        self.input_mode = InputMode::Normal;
+        self.overlay = Overlay::None;
         self.set_loading_phase("Scanning input", 10);
         self.name_what_is_loading(path.clone());
         Some(AppEvent::Open(vec![path], options))

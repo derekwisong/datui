@@ -3,7 +3,7 @@
 
 use crate::form::ListMove;
 use crate::jobs::{Answer, Job};
-use crate::{App, AppEvent, InputMode, clipboard, copy_modal, value_counts, value_counts_modal};
+use crate::{App, AppEvent, Overlay, clipboard, copy_modal, value_counts, value_counts_modal};
 use crossterm::event::{KeyCode, KeyEvent};
 use std::sync::Arc;
 
@@ -21,28 +21,28 @@ impl App {
             return;
         };
         self.value_counts.open(names, at, state.len_generation());
-        self.input_mode = InputMode::ValueCounts;
+        self.open_overlay(Overlay::ValueCounts);
         self.count_values(false);
     }
 
     /// Whether the Value Counts screen is up: on its own, or under the export
     /// dialog writing its counts.
     pub(crate) fn value_counts_shown(&self) -> bool {
-        self.input_mode == InputMode::ValueCounts
-            || (self.input_mode == InputMode::Export && self.export_counts.is_some())
+        self.overlay == Overlay::ValueCounts
+            || (self.overlay == Overlay::Export && self.export_counts.is_some())
     }
 
     /// Whether a count for the Value Counts screen is being read while it is up.
     pub(crate) fn value_counts_computing(&self) -> bool {
-        self.input_mode == InputMode::ValueCounts && self.value_counts.computing.is_some()
+        self.overlay == Overlay::ValueCounts && self.value_counts.computing.is_some()
     }
 
     /// Where the export dialog goes back to: Value Counts when it is writing them.
-    pub(crate) fn export_returns_to(&self) -> InputMode {
+    pub(crate) fn export_returns_to(&self) -> Overlay {
         if self.export_counts.is_some() {
-            InputMode::ValueCounts
+            Overlay::ValueCounts
         } else {
-            InputMode::Normal
+            Overlay::None
         }
     }
 
@@ -135,7 +135,7 @@ impl App {
                 if counting && self.value_counts.current().is_some() {
                     self.flash_note("Count stopped".to_string());
                 } else {
-                    self.input_mode = InputMode::Normal;
+                    self.overlay = Overlay::None;
                 }
             }
             KeyCode::Char('G') if listing => self.value_counts.move_to_end(),
@@ -218,7 +218,7 @@ impl App {
                 // Inside a group already, Esc goes back past this view to the one
                 // the group came from, so there are no counts to come back to.
                 self.value_counts.drill_return = !nested;
-                self.input_mode = InputMode::Normal;
+                self.overlay = Overlay::None;
                 self.sync_sort_filter_modal();
                 self.spawn_async_collect(Self::LOADING_BUFFER);
             }
@@ -287,6 +287,6 @@ impl App {
             .iter()
             .any(|c| crate::avro_types::renames(c.name(), c.dtype()));
         self.export_counts = Some(table);
-        self.input_mode = InputMode::Export;
+        self.open_overlay(Overlay::Export);
     }
 }

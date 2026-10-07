@@ -307,7 +307,7 @@ fn an_archive_of_several_lands_on_its_arrays() {
     app.home.select(at);
     key(&mut app, &rx, KeyCode::Enter);
     assert_eq!(app.error_message(), None);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
     let df = frame(&app);
     assert_eq!(names(&df), ["ts", "px", "qty"]);
     assert_eq!(df.height(), 500);

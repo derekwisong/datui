@@ -343,7 +343,7 @@ fn the_bar_offers_esc_while_a_pivot_is_computed() {
         KeyCode::Char('p'),
         KeyModifiers::NONE,
     )));
-    assert_eq!(app.input_mode, InputMode::PivotMelt);
+    assert_eq!(app.overlay, Overlay::PivotMelt);
     app.event(&AppEvent::Pivot(pivot_melt_modal::PivotSpec {
         index: vec!["id".to_string()],
         pivot_column: "key".to_string(),

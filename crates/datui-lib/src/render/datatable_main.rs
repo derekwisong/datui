@@ -196,7 +196,7 @@ pub fn render(
     }
 
     if app.inspector_modal.active
-        && app.input_mode == crate::InputMode::Inspect
+        && app.overlay == crate::Overlay::Inspect
         && let Some(state) = app.data_table_state.as_ref()
     {
         // A takeover: the row's fields want the width a long value reads at, and
@@ -211,11 +211,11 @@ pub fn render(
         );
     }
 
-    if app.input_mode == crate::InputMode::GoToColumn {
+    if app.overlay == crate::Overlay::GoToColumn {
         render_go_to_column(data_area, buf, &app.pickers.go_to_column, ctx);
     }
 
-    if app.input_mode == crate::InputMode::PickFormat {
+    if app.overlay == crate::Overlay::PickFormat {
         render_picker(
             data_area,
             buf,
@@ -225,19 +225,19 @@ pub fn render(
         );
     }
 
-    if app.input_mode == crate::InputMode::Retype
+    if app.overlay == crate::Overlay::Retype
         && let Some(modal) = &app.column_forms.retype
     {
         crate::widgets::retype::render_retype(area, buf, modal, ctx);
     }
 
-    if app.input_mode == crate::InputMode::Combine
+    if app.overlay == crate::Overlay::Combine
         && let Some(modal) = &app.column_forms.combine
     {
         crate::widgets::retype::render_combine(area, buf, modal, ctx);
     }
 
-    if app.input_mode == crate::InputMode::Sample
+    if app.overlay == crate::Overlay::Sample
         && let Some(form) = &app.sample.form
     {
         // A dialog over the table: what it covers takes no clicks.
@@ -245,7 +245,7 @@ pub fn render(
         crate::widgets::sample_form::render(form, true, data_area, buf, ctx);
     }
 
-    if app.input_mode == crate::InputMode::PickTable
+    if app.overlay == crate::Overlay::PickTable
         && let Some(tables) = app.pickers.table_choices.as_ref()
     {
         let details: Vec<String> = tables

@@ -134,6 +134,7 @@ mod open_options;
 mod open_scan;
 pub mod output_file;
 mod overlay;
+pub use overlay::Overlay;
 pub mod parquet_footer;
 pub mod past_calendar;
 mod picker_keys;
@@ -779,6 +780,7 @@ pub enum RunInput {
     LazyFrame(Box<LazyFrame>, OpenOptions),
 }
 
+/// The screen keys go to when no overlay is open (see [`Overlay`]).
 #[derive(Debug, Default, PartialEq, Eq)]
 pub enum InputMode {
     #[default]
@@ -787,33 +789,8 @@ pub enum InputMode {
     /// arguments, and from inside a session, which is what makes datui a place you
     /// stay rather than a command you re-run.
     Home,
-    SortFilter,
-    PivotMelt,
+    /// The command line or the find line.
     Editing,
-    Export,
-    /// The copy dialog over the table.
-    Copy,
-    /// The row inspector over the table.
-    Inspect,
-    /// The column picker over the table: type a column's name to go to it.
-    GoToColumn,
-    /// The format picker over a table read through a spec: read it with another.
-    PickFormat,
-    /// A column's type, picked over the table: from the Info panel's Schema tab or
-    /// the cell menu.
-    Retype,
-    /// A datetime made from columns, as a spec's derived column.
-    Combine,
-    /// The table picker over a table of a file of several: open another.
-    PickTable,
-    Info,
-    Chart,
-    /// Value Counts: how often each value of one column occurs in the view.
-    ValueCounts,
-    /// The hex view: a file's bytes.
-    Hex,
-    /// The Sample form over the table (`S`).
-    Sample,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1050,6 +1027,8 @@ pub struct App {
     /// The command line: its inputs per mode, completion, and the query it is running.
     pub prompt: query_prompt::QueryPrompt,
     pub input_mode: InputMode,
+    /// What is open over the table. See [`Overlay`].
+    pub overlay: Overlay,
     pub sort_filter_modal: SortFilterModal,
     pub pivot_melt_modal: PivotMeltModal,
     pub view_modal: ViewModal,
@@ -1438,7 +1417,7 @@ impl App {
 
     /// Whether the Pivot & Melt builder is waiting on a pivot it started.
     pub(crate) fn pivot_computing(&self) -> bool {
-        self.input_mode == InputMode::PivotMelt
+        self.overlay == Overlay::PivotMelt
             && self.jobs.current(|job| matches!(job, Job::Pivot)).is_some()
     }
 
@@ -1837,7 +1816,7 @@ impl App {
     fn follow_mark(&self) -> Option<crate::render::footer::FollowMark> {
         use crate::follow::Standing;
         // The hex view shows a file's bytes, not the table the follow moves.
-        if self.input_mode == InputMode::Hex {
+        if self.overlay == Overlay::Hex {
             return None;
         }
         let state = self.data_table_state.as_ref()?;
@@ -1894,8 +1873,8 @@ impl App {
         let misfits = follow.misfits();
         // What `t` does on this screen: pause or resume at the table; over a surface
         // that keeps the rows it was opened on, read the new ones.
-        let refreshes = self.input_mode == InputMode::ValueCounts
-            || (self.input_mode == InputMode::Chart
+        let refreshes = self.overlay == Overlay::ValueCounts
+            || (self.overlay == Overlay::Chart
                 && self.chart_modal.picker.is_none()
                 && !self.chart_export_modal.active)
             || (self.analysis_modal.active && self.analysis_modal.current_results().is_some());
@@ -2025,9 +2004,8 @@ impl App {
             && self.analysis_modal.computing.is_some()
             && key.code == KeyCode::Esc;
         let cancel_pivot = self.pivot_computing() && key.code == KeyCode::Esc;
-        let leave_quality_evidence = self.quality.evidence_return.is_some()
-            && self.input_mode == InputMode::Normal
-            && key.code == KeyCode::Esc;
+        let leave_quality_evidence =
+            self.quality.evidence_return.is_some() && self.at_table() && key.code == KeyCode::Esc;
         let cancel_view = key.code == KeyCode::Esc && self.view_applying();
         let cancel_find = key.code == KeyCode::Esc && self.finding();
         let stop_sample =
@@ -2139,7 +2117,7 @@ impl App {
     /// The plain table view: Normal mode with no help overlay, modal, or in-view modal
     /// (view, analysis) or context menu drawn over it.
     pub fn in_normal_table_view(&self) -> bool {
-        self.input_mode == InputMode::Normal
+        self.at_table()
             && !self.help.is_open()
             && !self.view_modal.active
             && !self.analysis_modal.active
@@ -2194,7 +2172,7 @@ impl App {
     /// The context menu is open over the plain table view, nothing over it.
     pub(crate) fn menu_showing(&self) -> bool {
         self.context_menu.is_some()
-            && self.input_mode == InputMode::Normal
+            && self.at_table()
             && self.data_table_state.is_some()
             && !self.help.is_open()
             && !self.view_modal.active
@@ -2290,41 +2268,61 @@ impl App {
     /// Whether a text field currently owns typed characters, so the wheel and `?` leave
     /// it alone. The home filter is deliberately excluded.
     pub fn text_field_focused(&self) -> bool {
-        match self.input_mode {
-            InputMode::Editing => true,
-            InputMode::Export => matches!(
+        match self.overlay {
+            Overlay::None => match self.input_mode {
+                InputMode::Editing => true,
+                InputMode::Home => false,
+                InputMode::Normal => {
+                    self.analysis_modal.sample_scope_typing()
+                        || self.analysis_modal.quality_expected_typing()
+                        || self.analysis_modal.intent_typing()
+                        || self.analysis_modal.export_typing()
+                        || (self.view_modal.active
+                            && self.view_modal.mode != ViewModalMode::List
+                            && matches!(
+                                self.view_modal.form_focus,
+                                FormFocus::Name
+                                    | FormFocus::Description
+                                    | FormFocus::ExactPath
+                                    | FormFocus::RelativePath
+                                    | FormFocus::PathPattern
+                                    | FormFocus::FilenamePattern
+                            ))
+                }
+            },
+            Overlay::Export => matches!(
                 self.export_modal.focus,
                 ExportFocus::PathInput | ExportFocus::CsvDelimiter
             ),
             // The Picker narrows by typing, so it types.
-            InputMode::Copy => self.copy_modal.picker.is_some(),
+            Overlay::Copy => self.copy_modal.picker.is_some(),
             // The find line types.
-            InputMode::Inspect => self.inspector_modal.finding,
+            Overlay::Inspect => self.inspector_modal.finding,
             // The Picker narrows by typing, so it types.
-            InputMode::GoToColumn => true,
-            InputMode::PickFormat | InputMode::Retype => true,
-            InputMode::Combine => {
+            Overlay::GoToColumn => true,
+            Overlay::PickFormat | Overlay::Retype => true,
+            Overlay::Combine => {
                 self.column_forms.combine.as_ref().is_some_and(|c| {
                     c.picker.is_some() || c.focus == retype_modal::CombineField::Name
                 })
             }
-            InputMode::PickTable => true,
-            InputMode::Sample => self
+            Overlay::PickTable => true,
+            Overlay::Sample => self
                 .sample
                 .form
                 .as_ref()
                 .is_some_and(|form| form.field.is_text()),
             // The whole inline editor types (pickers narrow, the value edits), as
             // do the add-sort Picker and the Columns tab's find.
-            InputMode::SortFilter => self.sort_filter_modal.typing(),
-            InputMode::PivotMelt => {
+            Overlay::SortFilter => self.sort_filter_modal.typing(),
+            Overlay::PivotMelt => {
                 // The Picker narrows by typing, so it types too.
                 self.pivot_melt_modal.picker.is_some()
                     || self
                         .pivot_melt_modal
                         .is_text_row(self.pivot_melt_modal.focus)
             }
-            InputMode::Chart => {
+            Overlay::Chart => {
                 if self.chart_export_modal.active {
                     // Every row is a choice or a text field.
                     self.chart_export_modal
@@ -2335,26 +2333,9 @@ impl App {
                     self.chart_modal.picker.is_some()
                 }
             }
-            InputMode::Normal => {
-                self.analysis_modal.sample_scope_typing()
-                    || self.analysis_modal.quality_expected_typing()
-                    || self.analysis_modal.intent_typing()
-                    || self.analysis_modal.export_typing()
-                    || (self.view_modal.active
-                        && self.view_modal.mode != ViewModalMode::List
-                        && matches!(
-                            self.view_modal.form_focus,
-                            FormFocus::Name
-                                | FormFocus::Description
-                                | FormFocus::ExactPath
-                                | FormFocus::RelativePath
-                                | FormFocus::PathPattern
-                                | FormFocus::FilenamePattern
-                        ))
-            }
-            InputMode::Home | InputMode::Info | InputMode::ValueCounts => false,
+            Overlay::Info | Overlay::ValueCounts => false,
             // The prompt types, and so does the spec picker's filter.
-            InputMode::Hex => self
+            Overlay::Hex => self
                 .hex_view
                 .view
                 .as_ref()
@@ -3114,6 +3095,7 @@ impl App {
                 inline_failures: 0,
             },
             input_mode: InputMode::Normal,
+            overlay: Overlay::None,
             sort_filter_modal: SortFilterModal::new(),
             pivot_melt_modal: PivotMeltModal::new(),
             view_modal: ViewModal::new(),
@@ -3239,7 +3221,7 @@ impl App {
     /// and the reading is a worker's job — this thread only decides what is worth
     /// asking about.
     pub fn request_what_the_frame_needs(&mut self) {
-        if self.input_mode == InputMode::Normal {
+        if self.at_table() {
             self.load_ahead();
             self.catch_up_follow();
         }
@@ -3323,29 +3305,31 @@ impl App {
         if self.view_modal.active {
             return Context::Views;
         }
-        match self.input_mode {
-            InputMode::Normal => Context::Table,
-            InputMode::Editing => match self.prompt.input_type {
-                Some(InputType::Find) => Context::Find,
-                _ => Context::Query,
+        match self.overlay {
+            Overlay::None => match self.input_mode {
+                InputMode::Normal => Context::Table,
+                InputMode::Editing => match self.prompt.input_type {
+                    Some(InputType::Find) => Context::Find,
+                    _ => Context::Query,
+                },
+                InputMode::Home if self.info.documentation.is_open() => Context::Documentation,
+                InputMode::Home => Context::Home,
             },
-            InputMode::SortFilter => Context::SortFilter,
-            InputMode::PivotMelt => Context::PivotMelt,
-            InputMode::Export => Context::Export,
-            InputMode::Copy => Context::Copy,
-            InputMode::Inspect => Context::Inspector,
-            InputMode::GoToColumn => Context::GoToColumn,
-            InputMode::PickFormat => Context::FormatPicker,
-            InputMode::Retype => Context::Retype,
-            InputMode::Combine => Context::Combine,
-            InputMode::PickTable => Context::TablePicker,
-            InputMode::Sample => Context::Sample,
-            InputMode::Info => Context::Info,
-            InputMode::Chart => Context::Chart,
-            InputMode::Home if self.info.documentation.is_open() => Context::Documentation,
-            InputMode::Home => Context::Home,
-            InputMode::Hex => Context::Hex,
-            InputMode::ValueCounts => Context::ValueCounts,
+            Overlay::SortFilter => Context::SortFilter,
+            Overlay::PivotMelt => Context::PivotMelt,
+            Overlay::Export => Context::Export,
+            Overlay::Copy => Context::Copy,
+            Overlay::Inspect => Context::Inspector,
+            Overlay::GoToColumn => Context::GoToColumn,
+            Overlay::PickFormat => Context::FormatPicker,
+            Overlay::Retype => Context::Retype,
+            Overlay::Combine => Context::Combine,
+            Overlay::PickTable => Context::TablePicker,
+            Overlay::Sample => Context::Sample,
+            Overlay::Info => Context::Info,
+            Overlay::Chart => Context::Chart,
+            Overlay::Hex => Context::Hex,
+            Overlay::ValueCounts => Context::ValueCounts,
         }
     }
 
@@ -3435,7 +3419,7 @@ impl App {
             Some(Confirm::ChartExport(_)) => self.chart_export_modal.resume(),
             Some(Confirm::Export(_)) => {
                 self.export_modal.resume();
-                self.input_mode = InputMode::Export;
+                self.open_overlay(Overlay::Export);
             }
             // Backing out of a download, or a large read, goes home: `enter_home` puts
             // the open down.
@@ -3507,7 +3491,7 @@ impl App {
         }
         // And for a count of footers, at the table its progress line is on.
         if event.code == KeyCode::Esc
-            && self.input_mode == InputMode::Normal
+            && self.at_table()
             && self.in_normal_table_view()
             && self.footers_counted().is_some()
         {
@@ -3516,7 +3500,7 @@ impl App {
         }
 
         if event.code == KeyCode::Esc
-            && self.input_mode == InputMode::Normal
+            && self.at_table()
             && !self.analysis_modal.active
             && !self.error_modal.active
             && !self.confirmation_modal.active
@@ -3645,7 +3629,7 @@ impl App {
         // in Normal). No is_press()/is_release() check: some terminals do not report key
         // kind correctly. Exclude view/analysis modals so they can handle Left/Right
         // themselves.
-        let in_main_table = !(self.input_mode != InputMode::Normal
+        let in_main_table = !(!self.at_table()
             || self.help.is_open()
             || self.view_modal.active
             || self.analysis_modal.active);
@@ -3692,65 +3676,26 @@ impl App {
             }
         }
 
-        if self.input_mode == InputMode::SortFilter {
-            return self.sort_filter_key(event);
-        }
-
-        if self.input_mode == InputMode::Export {
-            return self.export_key(event);
-        }
-
-        if self.input_mode == InputMode::Sample {
-            return self.table_sample_form_key(event);
-        }
-
-        if self.input_mode == InputMode::Inspect {
-            return self.inspector_key(event);
-        }
-
-        if self.input_mode == InputMode::ValueCounts {
-            return self.value_counts_key(event);
-        }
-
-        if self.input_mode == InputMode::Hex {
-            return self.hex_key(event);
-        }
-
-        if self.input_mode == InputMode::GoToColumn {
-            self.go_to_column_key(event);
-            return None;
-        }
-
-        if self.input_mode == InputMode::PickFormat {
-            return self.format_picker_key(event);
-        }
-
-        if self.input_mode == InputMode::Retype {
-            return self.retype_key(event);
-        }
-
-        if self.input_mode == InputMode::Combine {
-            return self.combine_key(event);
-        }
-
-        if self.input_mode == InputMode::PickTable {
-            return self.table_picker_key(event);
-        }
-
-        if self.input_mode == InputMode::Copy {
-            return self.copy_key(event);
-        }
-
-        if self.input_mode == InputMode::PivotMelt {
-            return self.pivot_melt_key(event);
-        }
-
-        if self.input_mode == InputMode::Info {
-            return self.info_key(event);
-        }
-
-        if self.input_mode == InputMode::Chart {
-            return self.chart_key(event);
+        match self.overlay {
+            Overlay::None => {}
+            Overlay::SortFilter => return self.sort_filter_key(event),
+            Overlay::Export => return self.export_key(event),
+            Overlay::Sample => return self.table_sample_form_key(event),
+            Overlay::Inspect => return self.inspector_key(event),
+            Overlay::ValueCounts => return self.value_counts_key(event),
+            Overlay::Hex => return self.hex_key(event),
+            Overlay::GoToColumn => {
+                self.go_to_column_key(event);
+                return None;
+            }
+            Overlay::PickFormat => return self.format_picker_key(event),
+            Overlay::Retype => return self.retype_key(event),
+            Overlay::Combine => return self.combine_key(event),
+            Overlay::PickTable => return self.table_picker_key(event),
+            Overlay::Copy => return self.copy_key(event),
+            Overlay::PivotMelt => return self.pivot_melt_key(event),
+            Overlay::Info => return self.info_key(event),
+            Overlay::Chart => return self.chart_key(event),
         }
 
         if self.analysis_modal.active {
@@ -3912,7 +3857,7 @@ impl App {
                     && let Some(state) = self.data_table_state.as_ref()
                 {
                     self.value_counts.rebase(state.len_generation());
-                    self.input_mode = InputMode::ValueCounts;
+                    self.open_overlay(Overlay::ValueCounts);
                 }
                 if drilled_up {
                     self.spawn_async_collect(Self::LOADING_BUFFER);
@@ -3966,7 +3911,7 @@ impl App {
             }
             KeyCode::PageUp if event.is_press() => self.scroll_key(Scroll::PageUp),
             KeyCode::Enter if event.is_press() => {
-                if self.input_mode != InputMode::Normal {
+                if !self.at_table() {
                     return None;
                 }
                 // With no group to drill into, Enter is Space: the row inspector.
@@ -4004,7 +3949,7 @@ impl App {
                     {
                         self.info_modal.detail_selected = at;
                     }
-                    self.input_mode = InputMode::Info;
+                    self.open_overlay(Overlay::Info);
                     self.read_file_facts();
                     self.count_unfit();
                 }
@@ -4041,7 +3986,7 @@ impl App {
                 None
             }
             KeyCode::Char('S') => {
-                if self.input_mode == InputMode::Normal {
+                if self.at_table() {
                     self.open_table_sample_form();
                 }
                 None
@@ -4062,7 +4007,7 @@ impl App {
                         &self.theme,
                         current.as_deref(),
                     );
-                    self.input_mode = InputMode::SortFilter;
+                    self.open_overlay(Overlay::SortFilter);
                 }
                 None
             }
@@ -4076,7 +4021,7 @@ impl App {
             KeyCode::Char('a') => {
                 // Open analysis modal; no computation until user selects a tool from the sidebar (Enter)
                 if self.data_table_state.is_some()
-                    && self.input_mode == InputMode::Normal
+                    && self.at_table()
                     && self.quality.evidence_return.is_none()
                 {
                     // The results a close put down come back on the view they are of.
@@ -4100,7 +4045,7 @@ impl App {
             }
             KeyCode::Char('c') => {
                 if let Some(state) = &self.data_table_state
-                    && self.input_mode == InputMode::Normal
+                    && self.at_table()
                 {
                     let numeric_columns: Vec<String> = state
                         .schema()
@@ -4162,18 +4107,18 @@ impl App {
                     }
                     self.chart_modal.view_sampled = sampled;
                     self.chart_cache.clear();
-                    self.input_mode = InputMode::Chart;
+                    self.open_overlay(Overlay::Chart);
                 }
                 None
             }
             KeyCode::Char('p') => {
-                if self.data_table_state.is_some() && self.input_mode == InputMode::Normal {
+                if self.data_table_state.is_some() && self.at_table() {
                     self.open_pivot_builder();
                 }
                 None
             }
             KeyCode::Char('e') => {
-                if self.data_table_state.is_some() && self.input_mode == InputMode::Normal {
+                if self.data_table_state.is_some() && self.at_table() {
                     self.export_counts = None;
                     self.export_modal.open(
                         self.source.original_file_format,
@@ -4199,36 +4144,36 @@ impl App {
                                     .is_some_and(|dtype| crate::avro_types::renames(name, dtype))
                             });
                     }
-                    self.input_mode = InputMode::Export;
+                    self.open_overlay(Overlay::Export);
                 }
                 None
             }
             KeyCode::Char(' ') if event.is_press() => {
-                if self.input_mode == InputMode::Normal {
+                if self.at_table() {
                     self.open_inspector();
                 }
                 None
             }
             KeyCode::Char('g') if event.is_press() => {
-                if self.input_mode == InputMode::Normal {
+                if self.at_table() {
                     self.open_go_to_column();
                 }
                 None
             }
             KeyCode::Char('b') if event.is_press() => {
-                if self.input_mode == InputMode::Normal {
+                if self.at_table() {
                     self.open_format_picker();
                 }
                 None
             }
             KeyCode::Char('T') if event.is_press() => {
-                if self.input_mode == InputMode::Normal {
+                if self.at_table() {
                     self.open_table_picker();
                 }
                 None
             }
             KeyCode::Char('y') => {
-                if self.input_mode == InputMode::Normal
+                if self.at_table()
                     && let Some(state) = self.data_table_state.as_ref()
                 {
                     let columns = state.get_column_order().to_vec();
@@ -4240,7 +4185,7 @@ impl App {
                     };
                     let current = state.current_column().map(str::to_string);
                     self.copy_modal.open(columns, current.as_deref(), context);
-                    self.input_mode = InputMode::Copy;
+                    self.open_overlay(Overlay::Copy);
                 }
                 None
             }
@@ -4661,7 +4606,7 @@ impl App {
                     match result {
                         Ok(()) => {
                             self.pivot_melt_modal.close();
-                            self.input_mode = InputMode::Normal;
+                            self.overlay = Overlay::None;
                             self.spawn_async_collect("Computing melt...");
                             None
                         }
@@ -5447,8 +5392,8 @@ impl App {
                     Some(Ok(())) => {
                         self.pivot_melt_modal.close();
                         // Only from the modal: a trip home meanwhile stays home.
-                        if self.input_mode == InputMode::PivotMelt {
-                            self.input_mode = InputMode::Normal;
+                        if self.overlay == Overlay::PivotMelt {
+                            self.overlay = Overlay::None;
                         }
                         // The wait passes to the read of its rows.
                         self.spawn_async_collect(Self::LOADING_BUFFER);
@@ -5828,7 +5773,7 @@ impl App {
                     self.export_progress = None;
                     self.export_modal.resume();
                     self.export_modal.path_error = Some(message.to_string());
-                    self.input_mode = InputMode::Export;
+                    self.open_overlay(Overlay::Export);
                 } else {
                     self.export_modal.close();
                     self.export_counts = None;
@@ -6243,7 +6188,7 @@ impl App {
         let progress_rows = u16::from(progress.is_some() && prompt_rows < prompt_room);
         let footer_lines = 1 + prompt_rows + progress_rows;
         // The inspector is framed; its border sets it off from the footer.
-        let rule = self.input_mode != InputMode::Inspect;
+        let rule = self.overlay != Overlay::Inspect;
         let app_layout = app_layout(area, self.debug.enabled, footer_lines, rule);
         // A terminal too short for all of it keeps the status line first, then the
         // prompt, then the progress.

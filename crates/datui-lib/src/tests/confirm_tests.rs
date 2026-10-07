@@ -179,7 +179,7 @@ fn a_declined_overwrite_returns_to_its_form() {
         app.confirmation_modal
             .show("?".into(), Confirm::Export(Box::new(export_request())));
         decline(&mut app);
-        assert_eq!(app.input_mode, InputMode::Export);
+        assert_eq!(app.overlay, Overlay::Export);
         assert!(app.export_modal.active);
 
         let mut app = new_app();

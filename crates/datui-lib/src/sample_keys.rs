@@ -7,8 +7,8 @@ use crate::sample_modal::SampleForm;
 use crate::table::DataTableState;
 use crate::table_sample::{Limit, MemoryCheck};
 use crate::{
-    App, AppEvent, InputMode, analysis_modal, data_quality, form, sample_keys, sample_modal,
-    sampling,
+    App, AppEvent, InputMode, Overlay, analysis_modal, data_quality, form, sample_keys,
+    sample_modal, sampling,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use polars::datatypes::DataType;
@@ -50,7 +50,7 @@ impl App {
         form.bytes_per_row = Some(state.unsampled().sample_row_bytes(false));
         form.source_bytes_per_row = Some(state.unsampled().sample_row_bytes(true));
         self.sample.form = Some(form);
-        self.input_mode = InputMode::Sample;
+        self.open_overlay(Overlay::Sample);
     }
 
     /// Keys while the table's Sample form is open.
@@ -183,13 +183,15 @@ impl App {
         {
             return false;
         }
-        match self.input_mode {
-            InputMode::Inspect | InputMode::Info => return true,
-            InputMode::Editing if self.prompt.input_type == Some(crate::InputType::Find) => {
+        match (&self.overlay, &self.input_mode) {
+            (Overlay::Inspect | Overlay::Info, _) => return true,
+            (Overlay::None, InputMode::Editing)
+                if self.prompt.input_type == Some(crate::InputType::Find) =>
+            {
                 return true;
             }
-            InputMode::Normal if self.help.is_open() => return true,
-            InputMode::Normal if self.in_normal_table_view() => {}
+            (Overlay::None, InputMode::Normal) if self.help.is_open() => return true,
+            (Overlay::None, InputMode::Normal) if self.in_normal_table_view() => {}
             _ => return false,
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);

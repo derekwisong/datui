@@ -411,7 +411,7 @@ fn a_view_draws_its_sample_again_from_the_seed() {
 
     // A chart of the view, with an option set: the view keeps it.
     press(&mut app, KeyCode::Char('c'));
-    assert_eq!(app.input_mode, datui::InputMode::Chart);
+    assert_eq!(app.overlay, datui::Overlay::Chart);
     app.chart_modal.hist_bins = 17;
     press(&mut app, KeyCode::Esc);
     drain_events(&mut app, &rx);
@@ -458,7 +458,7 @@ fn a_view_draws_its_sample_again_from_the_seed() {
     assert_eq!(app.input_mode, datui::InputMode::Normal);
     assert!(app.chart_modal.restored);
     press(&mut app, KeyCode::Char('c'));
-    assert_eq!(app.input_mode, datui::InputMode::Chart);
+    assert_eq!(app.overlay, datui::Overlay::Chart);
     assert_eq!(app.chart_modal.spec, chart.spec);
     assert_eq!(app.chart_modal.hist_bins, 17);
 }

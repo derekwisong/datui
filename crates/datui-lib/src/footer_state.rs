@@ -7,7 +7,7 @@ use crate::render::footer::{
     Footer, Position, ProgressCount, ProgressLine, QUERY_STAGE, Total, ViewState,
 };
 use crate::render::main_view::MainViewContent;
-use crate::{App, ExportProgress, InputMode, InputType};
+use crate::{App, ExportProgress, InputType, Overlay};
 
 impl App {
     /// The footer for the screen `content` names; `progress_drawn` when its progress
@@ -44,7 +44,7 @@ impl App {
                 footer.dataset = self.dataset_label();
                 // The builder covers the table: its position and view are not on
                 // screen, so the status names where you are instead.
-                if self.input_mode == InputMode::PivotMelt && self.pivot_melt_modal.active {
+                if self.overlay == Overlay::PivotMelt && self.pivot_melt_modal.active {
                     footer.stages.push("pivot & melt".to_string());
                 } else {
                     self.table_status(&mut footer);
@@ -481,6 +481,6 @@ impl App {
 
     /// Whether the footer offers the column's keys: the column cursor moved last.
     pub(crate) fn column_hints_shown(&self) -> bool {
-        self.prompt.column_hints && self.input_mode == InputMode::Normal
+        self.prompt.column_hints && self.at_table()
     }
 }

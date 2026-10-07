@@ -94,7 +94,7 @@ fn an_emptied_find_clears_the_find() {
     key(&mut app, KeyCode::Backspace);
     assert_eq!(app.prompt.find.input.value(), "");
     key(&mut app, KeyCode::Enter);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
     assert_eq!(app.find_mark(), None);
     assert_eq!(app.find_hit(), None);
 
@@ -114,7 +114,7 @@ fn esc_at_the_table_clears_the_find() {
     key(&mut app, KeyCode::Esc);
     assert_eq!(app.find_mark(), None);
     assert_eq!(app.find_hit(), None);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
 }
 
 #[test]
@@ -124,7 +124,7 @@ fn f_then_n_and_capital_n_walk_the_matches_past_the_buffer() {
     assert!(buffered_end < 250_123, "the far match is past the buffer");
 
     find(&mut app, &rx, "needle");
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
     assert_eq!(cursor(&app), 5);
     assert_eq!(app.find_hit(), Some((5, "v".to_string())));
     assert_eq!(

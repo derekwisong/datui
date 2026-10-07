@@ -73,7 +73,7 @@ fn a_file_no_reader_takes_opens_as_hex_rather_than_failing() {
     let (mut app, rx, _tx) = fresh();
     open(&mut app, &rx, path, OpenOptions::default());
     assert!(app.error_message().is_none(), "{:?}", app.error_message());
-    assert_eq!(app.input_mode, InputMode::Hex);
+    assert_eq!(app.overlay, Overlay::Hex);
     let view = app.hex_view().unwrap();
     assert!(view.fallback);
     assert_eq!(view.origin, Origin::Launch);
@@ -250,8 +250,8 @@ fn esc_stops_a_find_on_a_large_file() {
     drain_events(&mut app, &rx);
     assert_eq!(app.flash_message(), Some("Find cancelled"));
     assert_eq!(
-        app.input_mode,
-        InputMode::Hex,
+        app.overlay,
+        Overlay::Hex,
         "Esc stopped the find, not the view"
     );
     assert!(app.hex_view.view.as_ref().unwrap().found.is_none());
@@ -267,7 +267,7 @@ fn an_empty_file_and_a_one_byte_file_open() {
         write("hex_empty.weird", b""),
         OpenOptions::default(),
     );
-    assert_eq!(app.input_mode, InputMode::Hex);
+    assert_eq!(app.overlay, Overlay::Hex);
     let s = screen(&mut app, 60, 20);
     assert!(s.contains("Empty file"), "{s}");
     for code in [
@@ -326,23 +326,23 @@ fn the_info_panel_shows_the_file_as_hex_and_esc_comes_back_to_it() {
     open(&mut app, &rx, path, OpenOptions::default());
     assert!(app.data_table_state.is_some());
     press(&mut app, KeyCode::Char('i'));
-    assert_eq!(app.input_mode, InputMode::Info);
+    assert_eq!(app.overlay, Overlay::Info);
     let s = screen(&mut app, 100, 30);
     assert!(s.contains("x  Hex"), "the panel offers x: {s}");
     press(&mut app, KeyCode::Char('x'));
     drain_events(&mut app, &rx);
-    assert_eq!(app.input_mode, InputMode::Hex);
+    assert_eq!(app.overlay, Overlay::Hex);
     assert_eq!(app.hex_view().unwrap().origin, Origin::Info);
     let s = screen(&mut app, 100, 30);
     assert!(s.contains("61 2c 62 0a"), "{s}");
     assert!(s.contains("Back"), "Esc says where it goes: {s}");
     // Esc goes back where x was pressed: the panel, then the table.
     press(&mut app, KeyCode::Esc);
-    assert_eq!(app.input_mode, InputMode::Info);
+    assert_eq!(app.overlay, Overlay::Info);
     assert!(app.info_modal.active);
     assert!(app.hex_view.view.is_none());
     press(&mut app, KeyCode::Esc);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
     assert!(app.data_table_state.is_some(), "the table is still there");
 }
 
@@ -364,7 +364,7 @@ fields = [
     app.set_formats(datui::formats::Registry::of(vec![spec]));
     let path = write("hex_pick.weird", &records());
     open(&mut app, &rx, path, OpenOptions::default());
-    assert_eq!(app.input_mode, InputMode::Hex);
+    assert_eq!(app.overlay, Overlay::Hex);
     let s = screen(&mut app, 120, 24);
     assert!(s.contains("B reads it with a spec"), "{s}");
     press(&mut app, KeyCode::Char('B'));
@@ -380,7 +380,7 @@ fields = [
     let state = app.data_table_state.as_ref().expect("the table");
     assert_eq!(state.num_rows(), 200);
     assert_eq!(state.format_read().unwrap().spec.name, "acme.sync");
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
 }
 
 #[test]
@@ -420,7 +420,7 @@ fn ctrl_x_at_home_shows_a_file_s_bytes_and_esc_goes_back_home() {
     assert!(selected.ends_with("hex_home.csv"), "{selected:?}");
     ctrl(&mut app, 'x');
     drain_events(&mut app, &rx);
-    assert_eq!(app.input_mode, InputMode::Hex);
+    assert_eq!(app.overlay, Overlay::Hex);
     assert_eq!(app.hex_view().unwrap().origin, Origin::Home);
     press(&mut app, KeyCode::Esc);
     assert_eq!(app.input_mode, InputMode::Home);

@@ -19,7 +19,7 @@ impl App {
         match crate::form::key(&mut self.export_modal, event) {
             FormKey::Cancel => {
                 self.export_modal.close();
-                self.input_mode = self.export_returns_to();
+                self.overlay = self.export_returns_to();
                 self.export_counts = None;
             }
             FormKey::Submit => return self.submit_export(),
@@ -101,13 +101,13 @@ impl App {
             // Suspended, not closed: declining returns to the filled form with the
             // typed path intact.
             self.export_modal.suspend();
-            self.input_mode = self.export_returns_to();
+            self.overlay = self.export_returns_to();
             return None;
         }
         // Suspended while it writes: a failed write brings the form back as it was,
         // with the reason on its status line.
         self.export_modal.suspend();
-        self.input_mode = self.export_returns_to();
+        self.overlay = self.export_returns_to();
         Some(AppEvent::Export(request))
     }
 

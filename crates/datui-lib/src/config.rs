@@ -1887,6 +1887,18 @@ pub struct LimitsConfig {
     pub detail_rows: usize,
     /// Journal JSON read into memory, all files of one open together.
     pub journal_bytes: ByteSize,
+    /// Fields of an SDF file, each a column.
+    pub sdf_fields: usize,
+    /// Signals of a VCD file, each a column.
+    pub vcd_signals: usize,
+    /// Tags of a FIX file, each a column.
+    pub fix_tags: usize,
+    /// Fields of one FIX message.
+    pub fix_fields: usize,
+    /// Extension fields of a GPX file, each a column.
+    pub gpx_fields: usize,
+    /// A NumPy file's header.
+    pub npy_header_bytes: ByteSize,
 }
 
 impl LimitsConfig {
@@ -1897,6 +1909,12 @@ impl LimitsConfig {
         midi_events: 10_000_000,
         detail_rows: 10_000,
         journal_bytes: ByteSize::mib(1024),
+        sdf_fields: 4096,
+        vcd_signals: 1 << 20,
+        fix_tags: 4096,
+        fix_fields: 4096,
+        gpx_fields: 256,
+        npy_header_bytes: ByteSize::mib(4),
     };
 }
 

@@ -9,8 +9,9 @@
 //!
 //! Every length is bounded by the reader: markup (a tag with its attributes, a
 //! comment) is at most [`MAX_MARKUP`] bytes, text is kept to [`MAX_TEXT`] per value,
-//! elements nest at most [`MAX_DEPTH`] deep, and a file adds at most [`MAX_FIELDS`]
-//! columns. Text between tags is never buffered past what is kept, however long.
+//! elements nest at most [`MAX_DEPTH`] deep, and a file adds at most
+//! `limits.gpx_fields` columns. Text between tags is never buffered past what is
+//! kept, however long.
 
 use polars::prelude::*;
 
@@ -22,8 +23,6 @@ pub const MAX_MARKUP: usize = 1 << 20;
 pub const MAX_TEXT: usize = 4096;
 /// How deep elements may nest. GPX's own structure is five deep.
 pub const MAX_DEPTH: usize = 64;
-/// The most columns a file's extension and other fields may add.
-pub const MAX_FIELDS: usize = 256;
 /// The longest field name made a column.
 const MAX_NAME: usize = 64;
 /// Rows held before they are handed over as a batch.
@@ -101,8 +100,10 @@ pub struct Stats {
     pub tracks: u64,
     pub routes: u64,
     pub waypoints: u64,
-    /// Fields not made columns: past [`MAX_FIELDS`], or with names too long.
+    /// Values of fields not made columns, past `limits.gpx_fields`.
     pub fields_dropped: u64,
+    /// Values of fields not made columns, their names too long for one.
+    pub long_names: u64,
     /// Times that are not ISO 8601, left empty.
     pub bad_times: u64,
     /// The file ended inside an element.
@@ -127,6 +128,8 @@ pub struct GpxReader {
     last_time: Option<i64>,
     /// Bytes of text in the rows not yet taken.
     held: usize,
+    /// `limits.gpx_fields`, read once for the file.
+    max_fields: usize,
 }
 
 impl Default for GpxReader {
@@ -359,6 +362,7 @@ impl GpxReader {
             stats: Stats::default(),
             held: 0,
             last_time: None,
+            max_fields: crate::limits::get().gpx_fields,
         }
     }
 
@@ -633,7 +637,11 @@ impl GpxReader {
         };
         let column = match self.fields.iter().position(|f| f.name == name) {
             Some(at) => at,
-            None if self.fields.len() < MAX_FIELDS && name.len() <= MAX_NAME => {
+            None if name.len() > MAX_NAME => {
+                self.stats.long_names += 1;
+                return;
+            }
+            None if self.fields.len() < self.max_fields => {
                 self.rows.add_column(&name, Kind::Str);
                 self.fields.push(FieldColumn {
                     name,

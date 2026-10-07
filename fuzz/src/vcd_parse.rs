@@ -5,7 +5,7 @@
 //! must never panic or hold more than its bounds: every batch has the table's schema,
 //! the rows add up, and the header stays within its limits.
 
-use datui_lib::vcd::{self, MAX_EXTEND, MAX_TEXT, MAX_TOKEN, MAX_VARS, VcdReader};
+use datui_lib::vcd::{self, MAX_EXTEND, MAX_TEXT, MAX_TOKEN, VcdReader};
 
 pub fn run(bytes: &[u8]) {
     let Some((&first, rest)) = bytes.split_first() else {
@@ -35,7 +35,7 @@ pub fn run(bytes: &[u8]) {
     }
     assert_eq!(rows as u64, reader.stats().rows);
     let header = reader.header();
-    assert!(header.vars.len() <= MAX_VARS);
+    assert!(header.vars.len() <= datui_lib::limits::get().vcd_signals);
     assert!(header.vars.iter().all(|v| v.path.len() <= MAX_TEXT));
     let detail = vcd::detail(&reader);
     assert!(detail.list.len() <= header.vars.len() + 1);

@@ -56,10 +56,6 @@ pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
 
 /// The longest message read; a longer one is cut there.
 pub const MAX_MESSAGE: usize = 1 << 20;
-/// The most fields one message may hold; the rest are left out.
-pub const MAX_FIELDS: usize = 4096;
-/// The most tag columns; tags past this are left out.
-pub const MAX_TAGS: usize = 4096;
 /// The longest prefix kept.
 pub const MAX_PREFIX: usize = 4096;
 /// The most distinct names one tag is shown with in the Info panel.
@@ -135,12 +131,13 @@ struct Message {
     complete: bool,
     body_length_ok: Option<bool>,
     checksum_ok: Option<bool>,
-    /// Fields past [`MAX_FIELDS`].
+    /// Fields past `limits.fix_fields`.
     dropped: u64,
 }
 
 /// Read one message from `bytes`, which start at `8=`. `None` when more is needed.
-fn parse_message(bytes: &[u8], eof: bool, layers: &Layers) -> Option<Message> {
+/// Fields past `max_fields` are left out.
+fn parse_message(bytes: &[u8], eof: bool, layers: &Layers, max_fields: usize) -> Option<Message> {
     let mut m = Message::default();
     let mut i = 0;
     let mut delim: Option<&'static [u8]> = None;
@@ -228,7 +225,7 @@ fn parse_message(bytes: &[u8], eof: bool, layers: &Layers) -> Option<Message> {
         {
             sized = Some((data, n));
         }
-        if m.fields.len() < MAX_FIELDS {
+        if m.fields.len() < max_fields {
             m.fields
                 .push((tag, String::from_utf8_lossy(value).into_owned()));
         } else {
@@ -297,9 +294,9 @@ pub struct Stats {
     pub incomplete: u64,
     pub body_length_failed: u64,
     pub checksum_failed: u64,
-    /// Values of tags past [`MAX_TAGS`].
+    /// Values of tags past `limits.fix_tags`.
     pub tags_dropped: u64,
-    /// Fields past [`MAX_FIELDS`] in a message.
+    /// Fields past `limits.fix_fields` in a message.
     pub fields_dropped: u64,
     /// Messages cut at [`MAX_MESSAGE`].
     pub cut: u64,
@@ -376,6 +373,9 @@ pub struct FixReader {
     seen_prefix: bool,
     seen_direction: bool,
     seen_session: bool,
+    /// `limits.fix_tags` and `limits.fix_fields`, read once for the file.
+    max_tags: usize,
+    max_fields: usize,
 }
 
 impl FixReader {
@@ -402,6 +402,8 @@ impl FixReader {
             seen_prefix: false,
             seen_direction: false,
             seen_session: false,
+            max_tags: crate::limits::get().fix_tags,
+            max_fields: crate::limits::get().fix_fields,
         }
     }
 
@@ -477,7 +479,8 @@ impl FixReader {
             }
             let long = rest.len() - at > MAX_MESSAGE;
             let window = &rest[at..rest.len().min(at + MAX_MESSAGE)];
-            let Some(message) = parse_message(window, eof || long, &self.layers) else {
+            let Some(message) = parse_message(window, eof || long, &self.layers, self.max_fields)
+            else {
                 return;
             };
             if long && message.len == window.len() {
@@ -567,7 +570,7 @@ impl FixReader {
         for (tag, value, rest) in order {
             let index = match self.by_tag.get(&tag) {
                 Some(&i) => i,
-                None if self.tags.len() >= MAX_TAGS => {
+                None if self.tags.len() >= self.max_tags => {
                     self.stats.tags_dropped += 1;
                     continue;
                 }
@@ -886,11 +889,22 @@ fn notes(reader: &FixReader) -> Vec<Note> {
             of_messages.clone(),
         ));
     }
-    if stats.tags_dropped > 0 || stats.fields_dropped > 0 {
+    if stats.tags_dropped > 0 {
         notes.push(note(
-            format!(
-                "{} left out: past limits ({MAX_TAGS} tags, {MAX_FIELDS} fields a message)",
-                count(stats.tags_dropped + stats.fields_dropped, "value", "values")
+            crate::limits::left_out(
+                &count(stats.tags_dropped, "value", "values"),
+                crate::limits::get().fix_tags,
+                "fix_tags",
+            ),
+            of_messages.clone(),
+        ));
+    }
+    if stats.fields_dropped > 0 {
+        notes.push(note(
+            crate::limits::left_out(
+                &count(stats.fields_dropped, "field", "fields"),
+                crate::limits::get().fix_fields,
+                "fix_fields",
             ),
             of_messages.clone(),
         ));

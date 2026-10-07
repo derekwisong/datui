@@ -33,7 +33,8 @@ pub struct LinesData {
     /// One per series: its Y column, or its color group.
     pub names: Vec<String>,
     pub series: Vec<Vec<(f64, f64)>>,
-    /// The series as a log scale draws them, made with the series off the UI thread.
+    /// The series as a log scale draws them. Only the chart on screen keeps one
+    /// (`ChartCache::touch`): it is as large as the series.
     pub series_log: Option<Vec<Vec<(f64, f64)>>>,
     /// Per series, where its line starts again after a gap (see `chart_data::segments`).
     pub breaks: Vec<Vec<usize>>,
@@ -63,10 +64,10 @@ pub struct Drawn<'a> {
 
 impl LinesData {
     /// The series a worker grouped, with what is drawn from them worked out now:
-    /// their log copy, their X values in order, and their bounds.
+    /// their X values in order and their bounds.
     pub fn new(grouped: chart_data::GroupedSeries, rows_note: Option<String>) -> Self {
         Self {
-            series_log: Some(log_series(&grouped.series)),
+            series_log: None,
             xs: crate::widgets::crosshair::xs(&grouped.series),
             bounds: extent(&grouped.series),
             names: grouped.names,
@@ -76,6 +77,15 @@ impl LinesData {
             rows: grouped.rows,
             rows_note,
             other: grouped.other,
+        }
+    }
+
+    /// Keep a log copy of the series when `log` wants one, and none otherwise.
+    pub fn keep_log(&mut self, log: bool) {
+        match (log, self.series_log.is_some()) {
+            (true, false) => self.series_log = Some(log_series(&self.series)),
+            (false, true) => self.series_log = None,
+            _ => {}
         }
     }
 
@@ -454,6 +464,13 @@ fn lines<'a>(data: Option<&'a PlotData>, context: &PlotContext<'_>) -> Plot<'a> 
         },
     };
     let data = match data {
+        // A chart standing in while another is prepared has no log copy: made here,
+        // for as long as it stands in.
+        Some(PlotData::Lines(lines)) if modal.log_scale && lines.series_log.is_none() => {
+            let mut lines = lines.clone();
+            lines.keep_log(true);
+            Cow::Owned(PlotData::Lines(lines))
+        }
         Some(data @ (PlotData::Lines(_) | PlotData::XRange(_))) => Cow::Borrowed(data),
         _ => Cow::Owned(PlotData::Lines(LinesData::default())),
     };

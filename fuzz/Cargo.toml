@@ -2,8 +2,9 @@
 #
 # Deliberately its own workspace: the root workspace lists members explicitly, and
 # keeping this crate out of it means `cargo build`, `cargo test` and the clippy
-# pre-commit hook never try to build a crate that needs nightly. Run these with
-# `cargo +nightly fuzz run <target>` from the repository root.
+# pre-commit hook never build it. It needs cargo-fuzz's sanitizer flags, which
+# scripts/code/fuzz.sh allows on the pinned stable toolchain: run the targets
+# with `scripts/code/fuzz.sh run <target>` (docs/for-developers/fuzzing.md).
 [package]
 name = "datui-fuzz"
 version = "0.0.0"

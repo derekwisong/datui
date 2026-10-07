@@ -33,9 +33,10 @@
 //! - SafeTensors and GGUF: a directory of weights is the model, and a remote model is
 //!   read by its headers ([`crate::remote_model`]).
 //! - CSV: the reader a delimited spec reads through.
-//! - Text: what text with nothing else to say is read as ([`FileFormat::TEXT`],
-//!   [`crate::lines::guess`]); a name that says text is still asked its bytes, and a
-//!   followed file's lines are counted by the watcher.
+//! - Text, and CSV, TSV, JSON and NDJSON without a name that says them: told apart by
+//!   [`crate::lines::guess`] from text no signature claims, not by [`sniff`]; a name
+//!   that says text is still asked its bytes ([`FileFormat::TEXT`]), and a followed
+//!   file's lines are counted by the watcher.
 //! - Audio: a full quality run checks a recording's signal ([`crate::audio::recording`]).
 
 use std::path::{Path, PathBuf};
@@ -343,8 +344,9 @@ impl Asked {
 }
 
 /// The format `head`, the first bytes of `file` (none for a pipe), says, as believed
-/// where it is `asked`, of the formats `among` admits. The one sniffer: every format's
-/// signatures, magic numbers first.
+/// where it is `asked`, of the formats `among` admits: every format's signatures,
+/// magic numbers first. Text no signature claims is told apart by [`crate::lines::guess`]
+/// instead (JSON, NDJSON, CSV, TSV or lines), since those formats have no signatures.
 pub(crate) fn sniff(
     head: &[u8],
     file: Option<&Path>,

@@ -3099,10 +3099,6 @@ impl App {
         None
     }
 
-    /// Run a scroll on `data_table_state` and resolve the busy/spawn cycle.
-    /// `scroll` returns true when its movement leaves the buffered window (caller must collect).
-    /// We clear `busy` ourselves when no collect is needed or the spawn no-ops, otherwise
-    /// the busy flag set by the key handler would gate further input forever.
     /// Home, End and G. A jump may need a fill, so it is deferred behind a frame that
     /// shows the throbber — setting `start_row` alone used to leave the old buffer on
     /// screen, drawn from its first row — unless the view is already there, in which
@@ -3173,6 +3169,10 @@ impl App {
         Some(AppEvent::Scroll(jump))
     }
 
+    /// Run a scroll on `data_table_state` and resolve the busy/spawn cycle.
+    /// `scroll` returns true when its movement leaves the buffered window (caller must collect).
+    /// We clear `busy` ourselves when no collect is needed or the spawn no-ops, otherwise
+    /// the busy flag set by the key handler would gate further input forever.
     fn handle_scroll<F>(&mut self, scroll: F) -> Option<AppEvent>
     where
         F: FnOnce(&mut crate::table::DataTableState) -> bool,

@@ -1151,7 +1151,7 @@ pub(crate) mod tests {
             Some("remote")
         );
 
-        let dbc = crate::dbc::parse(crate::dbc::tests::SAMPLE, "car", None).unwrap();
+        let dbc = crate::dbc::parse(crate::tests::fixtures::DBC, "car", None).unwrap();
         let layers = Layers {
             dbcs: vec![Arc::new(dbc)],
         };

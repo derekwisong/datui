@@ -1205,33 +1205,9 @@ fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
-
-    /// A variable-length quantity.
-    pub(crate) fn vlq(mut n: u32) -> Vec<u8> {
-        let mut out = vec![(n & 0x7f) as u8];
-        n >>= 7;
-        while n > 0 {
-            out.insert(0, (n & 0x7f) as u8 | 0x80);
-            n >>= 7;
-        }
-        out
-    }
-
-    /// A file from its header fields and each track's event bytes.
-    pub(crate) fn smf(format: u16, division: u16, tracks: &[&[u8]]) -> Vec<u8> {
-        let mut out = b"MThd\0\0\0\x06".to_vec();
-        out.extend_from_slice(&format.to_be_bytes());
-        out.extend_from_slice(&(tracks.len() as u16).to_be_bytes());
-        out.extend_from_slice(&division.to_be_bytes());
-        for t in tracks {
-            out.extend_from_slice(b"MTrk");
-            out.extend_from_slice(&(t.len() as u32).to_be_bytes());
-            out.extend_from_slice(t);
-        }
-        out
-    }
+    use crate::tests::fixtures::{smf, vlq};
 
     /// Every way a MIDI file is refused names the file, in the one shape; of several
     /// that none can be read, the first is named.

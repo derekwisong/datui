@@ -759,7 +759,8 @@ impl App {
         self.trim_quality_memory();
     }
 
-    /// Hold reports and retained rows to [`QUALITY_MEMORY_BUDGET`](crate::quality_memory::QUALITY_MEMORY_BUDGET). First to go: reports
+    /// Hold reports and retained rows to the memory budget
+    /// ([`QUALITY_MEMORY_BUDGET`](crate::quality_memory::QUALITY_MEMORY_BUDGET)). First to go: reports
     /// whose rows are retained (remade without reading); then the oldest rows (reread
     /// next run, as Setup says); last, row-less full-scan reports (dearest to remake).
     /// The newest report and rows always stay.

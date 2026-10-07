@@ -23,8 +23,8 @@ impl ActiveSidebar {
         }
     }
 
-    /// Get sidebar width for this sidebar type.
-    /// When `config_override` is Some(w), use that for all sidebars; otherwise use built-in defaults.
+    /// This sidebar's width: `config_override` for all sidebars when set, else its own
+    /// default.
     pub fn width(&self, config_override: Option<u16>) -> u16 {
         if let Some(w) = config_override {
             return w;

@@ -316,12 +316,12 @@ impl DataTableState {
         }
     }
 
-    /// Number of rows currently in the buffer. 0 if no buffer loaded.
     /// The rows on hand, first to past the last.
     pub fn buffered_span(&self) -> (usize, usize) {
         (self.view.buffered_start_row, self.view.buffered_end_row)
     }
 
+    /// Rows in the buffer; 0 when none is loaded.
     pub fn buffered_rows(&self) -> usize {
         self.view
             .buffered_end_row

@@ -3,12 +3,10 @@
 //! includes this file.
 
 use std::ffi::OsString;
-use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
-use fs2::FileExt;
 use sha2::{Digest, Sha256};
 
 /// What a contributor runs to set up the fixtures' Python environment.
@@ -55,9 +53,10 @@ fn is_current(dir: &Path, digest: &str) -> bool {
 
 /// Makes sure `tests/sample-data` was generated from the generator and pins in this
 /// checkout, generating it when not. Test processes run side by side (nextest starts
-/// one per test), so the check and the generation happen under a lock file, and the
-/// generator replaces each fixture by a rename: a process with one mapped keeps it.
-/// Every test in a process that could not generate them fails with the same message.
+/// one per test), so the generator checks again and generates under its lock file
+/// (beside the directory it writes, shared by every checkout that links it), and
+/// replaces each fixture by a rename: a process with one mapped keeps it. Every test
+/// in a process that could not generate them fails with the same message.
 pub fn ensure_sample_data() {
     static READY: OnceLock<Result<(), String>> = OnceLock::new();
     if let Err(message) = READY.get_or_init(prepare) {
@@ -72,18 +71,7 @@ fn prepare() -> Result<(), String> {
     if is_current(&dir, &digest) {
         return Ok(());
     }
-    let lock_path = root.join("tests/.sample-data.lock");
-    let lock = File::create(&lock_path)
-        .and_then(|lock| lock.lock_exclusive().map(|()| lock))
-        .map_err(|e| format!("locking {}: {e}", lock_path.display()))?;
-    // Another process may have generated them while this one waited.
-    let generated = if is_current(&dir, &digest) {
-        Ok(())
-    } else {
-        generate(&root, &dir)
-    };
-    drop(lock);
-    generated.map_err(|detail| {
+    generate(&root, &dir).map_err(|detail| {
         format!(
             "Could not generate the test fixtures in {}.\n\
              Run {SETUP} to set up .venv and generate them.\n\n{detail}",
@@ -115,6 +103,8 @@ fn generate(root: &Path, dir: &Path) -> Result<(), String> {
                 .arg(root.join("scripts/generate_sample_data.py"))
                 .arg("--out")
                 .arg(dir)
+                // Another process may generate them while this one waits on the lock.
+                .arg("--if-stale")
                 .output()
                 .ok()
         })

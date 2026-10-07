@@ -26,6 +26,7 @@ Uses Polars for most formats; fastavro for Avro; openpyxl for Excel.
 """
 
 import argparse
+import contextlib
 import hashlib
 import os
 import shutil
@@ -82,7 +83,42 @@ def install(scratch, out):
         target = out / path.relative_to(scratch)
         target.parent.mkdir(parents=True, exist_ok=True)
         os.replace(path, target)
-    (out / STAMP).write_text(inputs_digest() + "\n")
+    # Renamed in too, so a reader never sees half a stamp.
+    stamp = scratch / STAMP
+    stamp.write_text(inputs_digest() + "\n")
+    os.replace(stamp, out / STAMP)
+
+
+@contextlib.contextmanager
+def locked(path):
+    """Hold the lock file at `path` exclusively. The test harness runs this script
+    from every test process that finds the fixtures stale; one generates, the rest
+    wait and then find them current."""
+    with open(path, "a+b") as f:
+        if os.name == "nt":
+            import msvcrt
+
+            f.seek(0)
+            while True:
+                try:
+                    # Retries for about ten seconds, then raises; a run takes longer.
+                    msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:
+                    pass
+            try:
+                yield
+            finally:
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def generate_people_data():
@@ -1856,22 +1892,24 @@ def main():
     args = parser.parse_args()
 
     global OUTPUT_DIR
+    # Resolved, so checkouts that link one directory share its lock and scratch space.
     out = args.out.resolve()
-    stamp = out / STAMP
-    if args.if_stale and stamp.is_file() and stamp.read_text().strip() == inputs_digest():
-        print(f"{out} is up to date.")
-        return
     out.mkdir(parents=True, exist_ok=True)
-    # A sibling, so the renames into `out` stay on one filesystem.
-    scratch = out.parent / f".{out.name}.tmp-{os.getpid()}"
-    shutil.rmtree(scratch, ignore_errors=True)
-    scratch.mkdir()
-    OUTPUT_DIR = scratch
-    try:
-        generate_all()
-        install(scratch, out)
-    finally:
+    with locked(out.parent / f".{out.name}.lock"):
+        stamp = out / STAMP
+        if args.if_stale and stamp.is_file() and stamp.read_text().strip() == inputs_digest():
+            print(f"{out} is up to date.")
+            return
+        # A sibling, so the renames into `out` stay on one filesystem.
+        scratch = out.parent / f".{out.name}.tmp-{os.getpid()}"
         shutil.rmtree(scratch, ignore_errors=True)
+        scratch.mkdir()
+        OUTPUT_DIR = scratch
+        try:
+            generate_all()
+            install(scratch, out)
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
     print(f"\nSample data generation complete: {out}")
 
 

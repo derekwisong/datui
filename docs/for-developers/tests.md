@@ -117,9 +117,11 @@ a test starts and that stamp is missing or holds another digest, the test
 harness regenerates the fixtures, so pulling a generator change needs no manual
 step. It runs `.venv/bin/python` (`.venv\Scripts\python.exe` on Windows),
 falling back to the system Python, so the environment does not need to be
-activated. Test processes take the lock file `tests/.sample-data.lock` first,
-so only one generates and the rest wait for it. If generation fails, the test
-panics with the generator's error and the setup command.
+activated. The generator takes the lock file `.sample-data.lock` beside the
+directory it writes (beside the link's target when `tests/sample-data` is a
+link), so only one run generates and the rest, test processes or a run by hand,
+wait for it and find the fixtures current. If generation fails, the test panics
+with the generator's error and the setup command.
 
 To regenerate by hand:
 

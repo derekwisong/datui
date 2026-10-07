@@ -2059,6 +2059,8 @@ impl FramedRecords {
         let mut rows: u64 = 0;
         let max_rows = MAX_ROWS as u64;
         let needs_walk_everything = plan.deltas.contains(&Delta::All);
+        // Read once: the limits sit behind a lock, and this loop runs per record.
+        let indexed_records = crate::limits::get().indexed_records;
         let mut table = (self.chunks.len() == 1
             && matches!(self.chunks[0].source, ChunkSource::Map(_))
             && plan.chunk_header.is_empty()
@@ -2118,7 +2120,7 @@ impl FramedRecords {
                         if got == Got::Row {
                             rows += 1;
                             if let Some(t) = table.as_mut() {
-                                if t.tags.len() >= crate::limits::get().indexed_records {
+                                if t.tags.len() >= indexed_records {
                                     table = None;
                                 } else {
                                     let tag = match (walker.short, plan.type_slot) {

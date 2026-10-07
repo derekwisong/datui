@@ -441,11 +441,6 @@ impl DataTableState {
         &self.view.lf
     }
 
-    /// Hand back the frame on screen, for a caller that built a state only to load it.
-    pub fn into_lf(self) -> LazyFrame {
-        self.view.lf
-    }
-
     /// The schema of the frame on screen.
     pub fn schema(&self) -> &Arc<Schema> {
         &self.view.schema

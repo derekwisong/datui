@@ -1308,7 +1308,9 @@ pub fn classify(seen: impl Iterator<Item = Seen>, rules: &Rules) -> (EntryKind, 
             holds.partitions += usize::from(is_partition_name(&s.name));
             continue;
         }
-        if s.size == Some(0) && !s.name.contains('.') {
+        if s.size
+            .is_some_and(|size| crate::cloud_browse::is_empty_marker(&s.name, size))
+        {
             holds.not_read += 1;
             continue;
         }

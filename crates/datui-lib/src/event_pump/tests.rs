@@ -2178,13 +2178,13 @@ fn the_pacer_sleeps_until_a_deadline_and_has_none_when_idle() {
     pacer.drew(start);
     assert_eq!(pacer.timeout(None, start), Duration::MAX, "idle: no tick");
 
-    pacer.spinning(true, start);
+    pacer.spinning(true, true, start);
     assert_eq!(pacer.timeout(None, start), SPINNER_FRAME);
     assert!(!pacer.turn_spinner(start + SPINNER_FRAME / 2), "not yet");
     assert!(pacer.turn_spinner(start + SPINNER_FRAME), "a frame on time");
     assert!(!pacer.turn_spinner(start + SPINNER_FRAME), "once per frame");
 
-    pacer.spinning(false, start);
+    pacer.spinning(false, true, start);
     let flash = start + Duration::from_secs(2);
     assert_eq!(pacer.timeout(Some(flash), start), Duration::from_secs(2));
 }
@@ -3338,4 +3338,25 @@ fn mouse_actions_while_busy_obey_the_key_rules() {
     settle(&mut p);
     let state = p.app.data_table_state.as_ref().unwrap();
     assert!(state.view_filters().is_empty(), "and its key was dropped");
+}
+
+/// A spinner for work nobody waits on, a count say, turns about ten times a second:
+/// a third of the frames of one the user waits on, and still moving.
+#[test]
+fn a_spinner_nobody_waits_on_turns_slower() {
+    let frames = |waited_on: bool| {
+        let mut pacer = Pacer::default();
+        let start = Instant::now();
+        let mut drawn = 0;
+        for ms in 0..=1000 {
+            let now = start + Duration::from_millis(ms);
+            pacer.spinning(true, waited_on, now);
+            if pacer.turn_spinner(now) {
+                drawn += 1;
+            }
+        }
+        drawn
+    };
+    assert_eq!(frames(true), 30);
+    assert_eq!(frames(false), 10);
 }

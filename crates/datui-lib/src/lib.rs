@@ -71,7 +71,6 @@ mod pivot_melt_keys;
 pub mod pivot_melt_modal;
 pub mod pointer;
 pub mod python_script;
-mod query_prompt;
 mod retype_keys;
 pub mod retype_modal;
 mod run;
@@ -83,12 +82,6 @@ pub mod sanitize;
 mod sort_filter_keys;
 pub mod sort_filter_modal;
 pub mod sort_modal;
-mod sql_assist;
-// Public for the `sql_group_plan` fuzz target.
-#[cfg(feature = "sql")]
-pub mod sql_group;
-#[cfg(feature = "sql")]
-mod sql_plan;
 pub mod startup;
 pub mod table;
 pub mod table_switch;
@@ -839,7 +832,7 @@ pub struct App {
     /// What the Info panel shows of the dataset beyond its schema.
     pub info: info_keys::InfoState,
     /// The command line: its inputs per mode, completion, and the query it is running.
-    pub prompt: query_prompt::QueryPrompt,
+    pub prompt: query::query_prompt::QueryPrompt,
     pub input_mode: InputMode,
     /// What is open over the table. See [`Overlay`].
     pub overlay: Overlay,
@@ -2682,7 +2675,7 @@ impl App {
                 head_web_rows: !cache::running_as_a_cargo_test(),
                 ..Default::default()
             },
-            prompt: query_prompt::QueryPrompt {
+            prompt: query::query_prompt::QueryPrompt {
                 query_input: TextInput::new()
                     .with_history_limit(app_config.query.history_limit)
                     .with_theme(&theme)

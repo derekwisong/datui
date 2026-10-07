@@ -1,6 +1,6 @@
 use super::*;
 #[cfg(feature = "sql")]
-use crate::sql_plan::asks_per_row;
+use crate::query::sql_plan::asks_per_row;
 use crate::widgets::table::tests::{header_row_string, row_string};
 use crate::widgets::table::*;
 use ratatui::buffer::Buffer;

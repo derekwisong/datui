@@ -1175,7 +1175,7 @@ impl DataTableState {
                         let shown: Vec<&str> = schema.iter_names().map(|n| n.as_str()).collect();
                         traced(
                             &root_lineage,
-                            crate::sql_group::passed_through(trimmed, &names, &shown),
+                            crate::query::sql_group::passed_through(trimmed, &names, &shown),
                         )
                     };
                     let group_source = Self::sql_group_source(
@@ -1230,7 +1230,7 @@ impl DataTableState {
     }
 
     /// What a SQL `GROUP BY` result was grouped from, when simple enough to trace (see
-    /// [`crate::sql_group`]), planned without reading. Without ORDER BY or LIMIT its rows
+    /// [`crate::query::sql_group`]), planned without reading. Without ORDER BY or LIMIT its rows
     /// are sorted by key, as a `by` query's, so pages, counts and drills see one order.
     /// Also says whether it sorted them.
     #[cfg(feature = "sql")]
@@ -1243,10 +1243,10 @@ impl DataTableState {
         result: &Schema,
         lineage: Lineage,
     ) -> Option<(GroupSource, bool)> {
-        use crate::sql_group::KeySource;
+        use crate::query::sql_group::KeySource;
         let columns = root.clone().collect_schema().ok()?;
         let names: Vec<&str> = columns.iter_names().map(|n| n.as_str()).collect();
-        let plan = crate::sql_group::plan(sql, &names, result.len())?;
+        let plan = crate::query::sql_group::plan(sql, &names, result.len())?;
         let mut rows = ctx.execute(&plan.source_sql).ok()?;
         crate::past_calendar::guard_plan(&mut rows.logical_plan);
         let source_schema = rows.clone().collect_schema().ok()?;

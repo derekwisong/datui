@@ -16,11 +16,11 @@ use crate::formats::readers::{Read, Typing};
 use crate::numfmt::{self};
 use crate::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec, ReshapeSource};
 use crate::python_script::{SidebarFilter, Step};
-use crate::query::{ParsedQuery, parse_query_over};
 #[cfg(feature = "sql")]
-use crate::sql_plan::{
+use crate::query::sql_plan::{
     count_subquery_values_once, leftover_subquery_value_columns, ordered_by, stable_order,
 };
+use crate::query::{ParsedQuery, parse_query_over};
 use crate::widgets::column_paging::{ColumnMove, CursorMove, OnScreen, Room};
 use crate::widgets::column_widths::{ColumnWidths, WidthChoice};
 

@@ -1,3 +1,11 @@
+pub(crate) mod query_prompt;
+pub(crate) mod sql_assist;
+// Public for the `sql_group_plan` fuzz target.
+#[cfg(feature = "sql")]
+pub mod sql_group;
+#[cfg(feature = "sql")]
+pub(crate) mod sql_plan;
+
 use polars::prelude::StrptimeOptions;
 use polars::prelude::*;
 use std::ops::{Add, Div, Mul, Rem, Sub};

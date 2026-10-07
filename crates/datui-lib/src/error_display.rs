@@ -436,7 +436,7 @@ impl ConversionFailure {
     /// them. `rows` is `df`'s height if known; "N of M" only when Polars checked all,
     /// otherwise a lower bound from the batch it stopped in.
     pub fn sql_message(&self, rows: Option<usize>) -> String {
-        let column = crate::sql_assist::sql_name(&self.column);
+        let column = crate::query::sql_assist::sql_name(&self.column);
         let exact = rows == Some(self.checked);
         let one = !exact && self.failed == 1;
         let temporal = self.to == "date" || self.to == "time" || self.to.starts_with("datetime");

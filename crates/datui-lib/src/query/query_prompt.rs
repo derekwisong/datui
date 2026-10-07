@@ -3,7 +3,7 @@
 
 use crate::config::QueryMode;
 use crate::widgets::text_input::TextInput;
-use crate::{App, InputMode, InputType, QueryRun, RunOrigin, sql_assist};
+use crate::{App, InputMode, InputType, QueryRun, RunOrigin, query::sql_assist};
 use polars::datatypes::DataType;
 
 /// The command line: its inputs per mode, completion, and the query it is running.

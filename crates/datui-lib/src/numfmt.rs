@@ -361,6 +361,24 @@ pub fn bytes(n: u64) -> String {
     }
 }
 
+/// A length of time to the second while seconds matter: `12s`, `3m 05s`, `1h 02m`,
+/// `2d 03h`; negative with a sign.
+pub fn duration(seconds: i64) -> String {
+    let sign = if seconds < 0 { "-" } else { "" };
+    let s = seconds.unsigned_abs();
+    match s {
+        0..60 => format!("{sign}{s}s"),
+        60..3_600 => format!("{sign}{}m {:02}s", s / 60, s % 60),
+        3_600..86_400 => format!("{sign}{}h {:02}m", s / 3_600, s % 3_600 / 60),
+        _ => format!("{sign}{}d {:02}h", s / 86_400, s % 86_400 / 3_600),
+    }
+}
+
+/// [`duration`], or `-` for none.
+pub fn duration_or_dash(seconds: Option<i64>) -> String {
+    seconds.map_or_else(|| "-".to_string(), duration)
+}
+
 /// Comma-group a count for the application's own chrome — the control bar's
 /// row count, info-panel totals, and similar labels.
 ///
@@ -646,6 +664,15 @@ pub fn system_locale_tag() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn durations_keep_seconds_while_they_matter() {
+        assert_eq!(duration(12), "12s");
+        assert_eq!(duration(185), "3m 05s");
+        assert_eq!(duration(3_720), "1h 02m");
+        assert_eq!(duration(-(2 * 86_400 + 3 * 3_600)), "-2d 03h");
+        assert_eq!(duration_or_dash(None), "-");
+    }
 
     #[test]
     fn bytes_are_binary_units_whole_from_100_up() {

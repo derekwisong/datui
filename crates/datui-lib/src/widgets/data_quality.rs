@@ -301,7 +301,7 @@ fn render_header(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buf
                 "  Cancelling: {} {} {}",
                 cancelling.what(),
                 glyphs::get().middot,
-                crate::render::analysis_view::elapsed(cancelling.since.elapsed())
+                crate::numfmt::duration(cancelling.since.elapsed().as_secs() as i64)
             ),
             Style::default().fg(config.theme.get("warning")),
         ));
@@ -1038,7 +1038,7 @@ fn setup_status(config: &DataQualityWidgetConfig<'_>) -> Option<(String, bool)> 
                 },
                 cancelling.what(),
                 glyphs::get().middot,
-                crate::render::analysis_view::elapsed(cancelling.since.elapsed())
+                crate::numfmt::duration(cancelling.since.elapsed().as_secs() as i64)
             ),
             true,
         ));
@@ -2463,7 +2463,7 @@ fn share(count: usize, of: usize) -> String {
 
 /// The rate of `count` in `of`, or a dash with nothing to take it over.
 fn share_rate(count: usize, of: usize) -> String {
-    // A dash as `duration_label` has it, beside which it sits.
+    // A dash as `numfmt::duration_or_dash` has it, beside which it sits.
     if of == 0 {
         "-".to_string()
     } else {
@@ -2610,11 +2610,11 @@ fn render_intervals(
                     numfmt::group_chrome(profile.missing_start),
                     numfmt::group_chrome(profile.missing_end)
                 ),
-                duration_label(profile.p50_seconds),
-                duration_label(profile.p95_seconds),
+                crate::numfmt::duration_or_dash(profile.p50_seconds),
+                crate::numfmt::duration_or_dash(profile.p95_seconds),
             ]);
         } else {
-            cells.push(duration_label(profile.p50_seconds));
+            cells.push(crate::numfmt::duration_or_dash(profile.p50_seconds));
         }
         cells.push(last(profile, wide));
         Row::new(cells)
@@ -2742,7 +2742,11 @@ fn render_interval_detail(
         .filter_map(fact_row),
     );
     let pair = |left: Option<i64>, right: Option<i64>| {
-        format!("{}, {}", duration_label(left), duration_label(right))
+        format!(
+            "{}, {}",
+            crate::numfmt::duration_or_dash(left),
+            crate::numfmt::duration_or_dash(right)
+        )
     };
     rows.push(plain(
         "p50, p90",
@@ -2752,7 +2756,10 @@ fn render_interval_detail(
         "p95, p99",
         pair(profile.p95_seconds, profile.p99_seconds),
     ));
-    rows.push(plain("Maximum", duration_label(profile.max_seconds)));
+    rows.push(plain(
+        "Maximum",
+        crate::numfmt::duration_or_dash(profile.max_seconds),
+    ));
     rows.push(plain(
         "Threshold",
         match profile.threshold_seconds {
@@ -3774,23 +3781,6 @@ fn put_line(line: Line<'static>, area: Rect, y: &mut u16, buf: &mut Buffer) {
         );
     }
     *y += 1;
-}
-
-fn duration_label(seconds: Option<i64>) -> String {
-    let Some(seconds) = seconds else {
-        return "-".to_string();
-    };
-    let sign = if seconds < 0 { "-" } else { "" };
-    let seconds = seconds.unsigned_abs();
-    if seconds >= 86_400 {
-        format!("{sign}{:.1}d", seconds as f64 / 86_400.0)
-    } else if seconds >= 3_600 {
-        format!("{sign}{:.1}h", seconds as f64 / 3_600.0)
-    } else if seconds >= 60 {
-        format!("{sign}{:.1}m", seconds as f64 / 60.0)
-    } else {
-        format!("{sign}{seconds}s")
-    }
 }
 
 /// One column's findings, then its measurements, as aligned label and value rows

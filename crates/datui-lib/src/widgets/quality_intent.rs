@@ -217,7 +217,9 @@ pub fn render_form(
                     crate::glyphs::dotted("Read by Text as time · change in Setup")
                 }
                 IntentField::ReadAs => "Text that does not read is counted".to_string(),
-                IntentField::Allowed => "Comma-separated · \"a, b\" holds a comma".to_string(),
+                IntentField::Allowed => {
+                    crate::glyphs::dotted("Comma-separated · \"a, b\" holds a comma")
+                }
                 IntentField::Minimum | IntentField::Maximum => crate::glyphs::dotted(&format!(
                     "{} · empty for no bound",
                     upper_first(form.value_kind().bound_hint())
@@ -227,7 +229,7 @@ pub fn render_form(
         ),
     };
     Paragraph::new(Line::styled(
-        crate::glyphs::fit(&crate::glyphs::dotted(&status), content.width as usize),
+        crate::glyphs::fit(&status, content.width as usize),
         Style::default().fg(if warn { ctx.warning } else { ctx.dimmed }),
     ))
     .render(line(content.height - 1), buf);

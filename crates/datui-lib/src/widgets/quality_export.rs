@@ -54,7 +54,7 @@ pub fn render(
         ),
     };
     Paragraph::new(Line::styled(
-        crate::glyphs::fit(&crate::glyphs::dotted(&status), content.width as usize),
+        crate::glyphs::fit(&status, content.width as usize),
         Style::default().fg(if warn { ctx.warning } else { ctx.dimmed }),
     ))
     .render(line(content.height - 1), buf);

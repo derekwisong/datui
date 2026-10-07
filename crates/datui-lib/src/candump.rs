@@ -1188,11 +1188,13 @@ pub(crate) mod tests {
     fn windows_parse_in_parallel() {
         let windows = &Windows::new(9);
         let (parsed_b, b_done) = std::sync::mpsc::channel();
+        let (began_a, a_running) = std::sync::mpsc::channel();
         std::thread::scope(|s| {
             s.spawn(move || {
                 windows.with(
                     &[0, 1],
                     |_| {
+                        began_a.send(()).unwrap();
                         b_done
                             .recv_timeout(std::time::Duration::from_secs(10))
                             .expect("the second window waited on the first");
@@ -1201,8 +1203,8 @@ pub(crate) mod tests {
                 );
             });
             s.spawn(move || {
-                // Let the first parse begin, then parse another window while it runs.
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                // Parse another window while the first parse runs.
+                a_running.recv().unwrap();
                 windows.with(&[5, 6], |_| (), |_| ());
                 parsed_b.send(()).unwrap();
             });

@@ -51,17 +51,36 @@ fn pump(
 ) -> bool {
     let deadline = Instant::now() + Duration::from_secs(seconds);
     while Instant::now() < deadline {
+        // What is already queued first: `done` is about the state after it.
+        while let Ok(event) = rx.try_recv() {
+            handle(app, event);
+        }
         if done(app) {
             return true;
         }
         if let Ok(event) = rx.recv_timeout(Duration::from_millis(20)) {
-            let mut next = Some(event);
-            while let Some(event) = next {
-                next = app.event(event);
-            }
+            handle(app, event);
         }
     }
     done(app)
+}
+
+fn handle(app: &mut datui::App, event: datui::AppEvent) {
+    let mut next = Some(event);
+    while let Some(event) = next {
+        next = app.event(event);
+    }
+}
+
+/// No source is being listed. A listing that started shows here until its answer,
+/// which comes only after its request reached the server.
+fn no_listing(app: &datui::App) -> bool {
+    !app.home.listing_in_flight
+        && app
+            .home
+            .cloud
+            .iter()
+            .all(|s| !s.refreshing && s.status != datui::home::CloudStatus::Listing)
 }
 
 fn key(code: crossterm::event::KeyCode) -> datui::AppEvent {
@@ -190,8 +209,7 @@ fn a_source_is_listed_when_entered_not_when_the_home_screen_opens() {
         "both rows: {:?}",
         app.home.cloud
     );
-    // Long enough for a listing that was going to start to have reached the server.
-    pump(&mut app, &rx, 1, |_| false);
+    assert!(pump(&mut app, &rx, 5, no_listing), "{:?}", app.home.cloud);
     let ids: Vec<&str> = app.home.cloud.iter().map(|s| s.id.as_str()).collect();
     assert_eq!(ids, ["cached", "gone", "lab"], "found logins are not shown");
     assert_eq!(requests.load(Ordering::SeqCst), 0, "no request at launch");
@@ -237,8 +255,8 @@ fn a_source_is_listed_when_entered_not_when_the_home_screen_opens() {
     assert!(pump(&mut app, &rx, 5, |app| app.home.browsing.is_none()
         && row_shown(app, "lab")));
     select(&mut app, "lab");
-    app.event(key(crossterm::event::KeyCode::Enter));
-    pump(&mut app, &rx, 1, |_| false);
+    handle(&mut app, key(crossterm::event::KeyCode::Enter));
+    assert!(pump(&mut app, &rx, 5, no_listing), "{:?}", app.home.cloud);
     assert_eq!(requests.load(Ordering::SeqCst), 1, "listed once a session");
 
     // A source gone since its row was drawn says so, rather than waiting for good.

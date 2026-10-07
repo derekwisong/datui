@@ -615,6 +615,7 @@ fn a_read_stops_when_the_dataset_lets_go() {
     );
     let Opened { lf, hold, .. } = open(&db, "forever");
     let reader = std::thread::spawn(move || lf.collect());
+    // Nothing tells when the read is inside the statement; a moment puts it there.
     std::thread::sleep(std::time::Duration::from_millis(200));
     drop(hold);
     let result = reader.join().unwrap();

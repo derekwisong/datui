@@ -20,6 +20,13 @@ pub struct HexState {
     pub(crate) serial: u64,
 }
 
+impl HexState {
+    /// The hex view is closed; the serial goes on counting.
+    pub(crate) fn close(&mut self) {
+        self.view = None;
+    }
+}
+
 impl App {
     /// Whether any format spec is on the search path: `B` has something to offer.
     pub(crate) fn has_format_specs(&self) -> bool {

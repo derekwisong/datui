@@ -171,6 +171,9 @@ pub struct ExportModal {
     /// Why the form cannot export, or why its last write failed, said inline on
     /// its own status line. Cleared by typing in the path.
     pub path_error: Option<String>,
+    /// The counts the dialog writes, when it was opened from Value Counts. Kept after
+    /// the form closes while the write runs, so a failed one reopens on them.
+    pub(crate) counts: Option<polars::prelude::DataFrame>,
 }
 
 impl ExportModal {
@@ -212,12 +215,20 @@ impl ExportModal {
         self.json_compression = None;
         self.ndjson_compression = None;
         self.path_error = None;
+        self.counts = None;
     }
 
     pub fn close(&mut self) {
         self.focus = ExportFocus::FormatSelector;
         self.path_input.clear();
         self.path_error = None;
+        self.counts = None;
+    }
+
+    /// The dataset the counts were of is left: a write still running exports them, but
+    /// a failure reopens on the view, not on counts of a dataset gone.
+    pub(crate) fn forget_counts(&mut self) {
+        self.counts = None;
     }
 
     /// Follow the typed path's extension with the format choice, so `out.csv` never
@@ -384,6 +395,7 @@ impl Default for ExportModal {
             ndjson_compression: None,
             history_limit: 1000,
             path_error: None,
+            counts: None,
         }
     }
 }

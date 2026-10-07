@@ -777,8 +777,6 @@ pub struct App {
     pub pickers: app::keys::picker_keys::Pickers,
     /// The Value Counts screen (`F`).
     pub value_counts: analysis::value_counts_modal::ValueCountsModal,
-    /// The counts the export dialog writes, when it was opened from Value Counts.
-    export_counts: Option<polars::prelude::DataFrame>,
     /// The retype and combine forms.
     pub column_forms: app::keys::retype_keys::ColumnForms,
     /// The hex view, and the number its next read is tagged with.
@@ -2648,7 +2646,6 @@ impl App {
             pickers: app::keys::picker_keys::Pickers::default(),
             value_counts: analysis::value_counts_modal::ValueCountsModal::default(),
             hex: app::keys::hex_keys::HexState::default(),
-            export_counts: None,
             column_forms: app::keys::retype_keys::ColumnForms::default(),
             error_modal: ErrorModal::new(),
             flash: None,
@@ -3570,7 +3567,6 @@ impl App {
             }
             KeyCode::Char('e') => {
                 if self.data_table_state.is_some() && self.at_table() {
-                    self.export_counts = None;
                     self.export_modal.open(
                         self.source.original_file_format,
                         self.display.history_limit,
@@ -4681,7 +4677,7 @@ impl App {
             }
             (Job::Export, Answer::Exported(path)) => {
                 // Written: the dialog held for a failure is done with.
-                self.forget_export();
+                self.export_modal.close();
                 if current {
                     self.export_progress = None;
                     self.flash_path("Exported to ", &path);
@@ -4916,7 +4912,7 @@ impl App {
             _ if !current => {
                 if matches!(job, Job::Export) {
                     // The dialog held for a failure is done with.
-                    self.forget_export();
+                    self.export_modal.close();
                 }
             }
             Job::Classify(_) => {
@@ -5473,12 +5469,7 @@ impl Drop for App {
         self.counting.stop_footer_pass();
         // Stop indexing so nothing holds the file once the app is gone (the Python
         // binding runs on).
-        self.counting
-            .indexing_stop
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        if let Some(lines) = self.counting.indexing_lines.take() {
-            lines.stop_indexing();
-        }
+        self.counting.stop_indexing();
     }
 }
 

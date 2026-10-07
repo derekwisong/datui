@@ -99,6 +99,25 @@ impl Counting {
         self.footer_progress.cancel();
     }
 
+    /// Stop indexing the lines for good, so nothing holds the file.
+    pub(crate) fn stop_indexing(&mut self) {
+        self.indexing_stop
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(lines) = self.indexing_lines.take() {
+            lines.stop_indexing();
+        }
+    }
+
+    /// Home is up: indexing and the reads waiting on it pause until the table is back
+    /// ([`App::begin_frame`]).
+    pub(crate) fn pause_indexing(&mut self) {
+        if self.indexing_lines.is_some() {
+            self.indexing_stop
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            self.indexing_paused = true;
+        }
+    }
+
     /// The markers a running query keeps for the view it may roll back to.
     pub(crate) fn markers(&self) -> CountMarkers {
         CountMarkers {
@@ -345,17 +364,6 @@ impl App {
                 }
             }
         });
-    }
-
-    /// Home is up: indexing and the reads waiting on it pause until the table is back
-    /// ([`Self::begin_frame`]).
-    pub(crate) fn pause_indexing(&mut self) {
-        if self.counting.indexing_lines.is_some() {
-            self.counting
-                .indexing_stop
-                .store(true, std::sync::atomic::Ordering::Relaxed);
-            self.counting.indexing_paused = true;
-        }
     }
 
     /// More lines are indexed: the frames take them; once all are, the count and any

@@ -1277,7 +1277,7 @@ impl App {
     }
 
     pub fn enter_home(&mut self) {
-        self.pause_indexing();
+        self.counting.pause_indexing();
         if self.return_from_quality_evidence(false) {
             self.analysis_modal.close();
         }
@@ -1285,7 +1285,7 @@ impl App {
         self.stop_find();
         // A count of the dataset being left is read for nobody.
         self.stop_value_count();
-        self.export_counts = None;
+        self.export_modal.forget_counts();
         self.abandon_load();
         // Nobody is watching the file any more.
         if let Some(state) = self.data_table_state.as_mut() {

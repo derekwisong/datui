@@ -103,7 +103,7 @@ impl App {
             Overlay::Inspect => self.inspector_modal.close(),
             Overlay::SortFilter => self.sort_filter_modal.close(),
             Overlay::PivotMelt => self.pivot_melt_modal.close(),
-            Overlay::Export { .. } => self.forget_export(),
+            Overlay::Export { .. } => self.export_modal.close(),
             Overlay::Retype { .. } | Overlay::Combine { .. } => {
                 self.column_forms.retype = None;
                 self.column_forms.combine = None;
@@ -112,7 +112,7 @@ impl App {
             Overlay::PickTable => self.pickers.table_choices = None,
             Overlay::Hex => {
                 self.stop_hex_find();
-                self.hex.view = None;
+                self.hex.close();
             }
             Overlay::Chart => {
                 self.chart.modal.close();
@@ -137,12 +137,6 @@ impl App {
     /// behind a question, or while it runs, to come back as it was.
     pub(crate) fn step_back(&mut self) {
         self.overlay = std::mem::take(&mut self.overlay).back();
-    }
-
-    /// The export dialog's form and the counts it was to write, put down.
-    pub(crate) fn forget_export(&mut self) {
-        self.export_modal.close();
-        self.export_counts = None;
     }
 
     /// The plain table or the query line: no overlay, and not home.

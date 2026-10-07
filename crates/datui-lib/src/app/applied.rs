@@ -196,7 +196,7 @@ impl App {
                     return None;
                 };
                 // Cloned, not taken: a failed write reopens the dialog on the same counts.
-                let frame = match self.export_counts.clone() {
+                let frame = match self.export_modal.counts.clone() {
                     Some(counts) => {
                         crate::table::ExportFrame::of(polars::prelude::IntoLazy::lazy(counts))
                     }

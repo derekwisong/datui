@@ -2,7 +2,7 @@
 
 use crate::app::modals::retype_modal::{CombineField, CombineModal, RetypeModal, Stage};
 use crate::render::context::RenderContext;
-use crate::widgets::ui::{FormValue, FormView, HintBar, Picker, Surface};
+use crate::widgets::ui::{FormLine, FormValue, FormView, HintBar, Picker, Surface};
 use datui_cli::keys::Context;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -144,22 +144,23 @@ pub fn render_combine(area: Rect, buf: &mut Buffer, modal: &CombineModal, ctx: &
                 },
                 CombineField::Name => FormValue::Input(&modal.name),
             };
-            (field, label(field), value)
+            FormLine::Field(field, label(field), value)
         })
         .collect();
     let status = match &modal.problem {
         Some(problem) => (problem.clone(), Style::default().fg(ctx.warning)),
         None => (modal.spec_line(), Style::default().fg(ctx.text_primary)),
     };
+    crate::app::pointer::record(popup, crate::app::pointer::Hit::Modal);
     FormView {
         title: "Combine into Datetime",
         screen: Context::Combine,
-        footer,
+        footer: Some(footer),
         label_width: LABEL_WIDTH,
         rows,
-        focused: modal.focus,
+        focused: Some(modal.focus),
         picker: modal.picker.as_ref().map(|(_, state)| state),
-        status,
+        status: Some(status),
     }
     .render::<CombineModal>(popup, buf, ctx);
 }

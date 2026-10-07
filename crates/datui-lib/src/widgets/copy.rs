@@ -2,7 +2,7 @@
 
 use crate::app::modals::copy_modal::{CopyFocus, CopyModal};
 use crate::render::context::RenderContext;
-use crate::widgets::ui::{FormValue, FormView, HintBar};
+use crate::widgets::ui::{FormLine, FormValue, FormView, HintBar};
 use datui_cli::keys::Context;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -45,7 +45,7 @@ pub fn render_copy_modal(area: Rect, buf: &mut Buffer, modal: &mut CopyModal, ct
                     None => FormValue::Placeholder("none"),
                 },
             };
-            (row, row_label(row), value)
+            FormLine::Field(row, row_label(row), value)
         })
         .collect();
     // What Enter will do, echoed live; the gap re-accents when Enter hit it.
@@ -54,15 +54,16 @@ pub fn render_copy_modal(area: Rect, buf: &mut Buffer, modal: &mut CopyModal, ct
         Err(gap) if modal.attention => (gap, Style::default().fg(ctx.warning)),
         Err(gap) => (gap, Style::default().fg(ctx.dimmed)),
     };
+    crate::app::pointer::record(area, crate::app::pointer::Hit::Modal);
     FormView {
         title: "Copy",
         screen: Context::Copy,
-        footer,
+        footer: Some(footer),
         label_width: LABEL_WIDTH,
         rows,
-        focused: modal.focus,
+        focused: Some(modal.focus),
         picker: modal.picker.as_ref(),
-        status,
+        status: Some(status),
     }
     .render::<CopyModal>(area, buf, ctx);
 }

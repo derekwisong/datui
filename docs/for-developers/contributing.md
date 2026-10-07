@@ -66,6 +66,12 @@ CI; `rustup install` in the checkout fetches it. Bump it on purpose, in its own
 pull request with whatever the new clippy asks for. CI's MSRV job checks
 `rust-version` separately.
 
+## CI setup
+
+Jobs set up through `.github/actions/setup` (Rust, apt packages, the cargo
+cache, Python, the test fixtures) and install cargo tools through
+`.github/actions/install-tools`, at the versions in `.github/tool-versions`.
+
 ## Workflow timeouts
 
 Every job sets `timeout-minutes`, and every apt step its own 5-minute limit, so

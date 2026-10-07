@@ -139,11 +139,11 @@ to the generator:
 
 | Key part | Input |
 |---|---|
-| `scripts/generate_sample_data.py` | The generator; it reads no other file but the next one, for the stamp |
+| `scripts/generate_sample_data.py` | The generator; it reads only itself and the next one, for the stamp |
 | `scripts/requirements-fixtures.txt` | Every package it imports, and their dependencies, at exact versions |
 | Python version | As `setup-python` resolved it |
 | Runner OS and arch | |
-| `sample-data-v1` | Schema version; bump it in `ci.yml` to discard every entry |
+| `sample-data-v1` | Schema version; bump it in `.github/actions/setup/action.yml` to discard every entry |
 
 A restored copy is checked against the SHA-256 manifest saved with it, and
 regenerated if anything differs. Only runs on `main` save an entry. If the

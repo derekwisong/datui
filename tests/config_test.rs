@@ -651,20 +651,20 @@ fn test_new_color_fields() {
     // Test that new colors can be parsed and retrieved from theme
     let theme = Theme::from_config(&config.theme).unwrap();
     if std::env::var("NO_COLOR").is_err() {
-        assert_ne!(theme.get("chart_1"), Color::Reset);
-        assert_ne!(theme.get("dimmed"), Color::Reset);
-        assert_ne!(theme.get("chart_1"), Color::Reset);
-        assert_ne!(theme.get("chart_7"), Color::Reset);
+        assert_ne!(theme.chart_1(), Color::Reset);
+        assert_ne!(theme.dimmed(), Color::Reset);
+        assert_ne!(theme.chart_1(), Color::Reset);
+        assert_ne!(theme.colors["chart_7"], Color::Reset);
         // The chrome tiers resolve to real colours. (Whether they stay distinct
         // depends on the terminal: under a test harness stdout is not a terminal, so
         // every hex colour degrades to basic ANSI. The strings are checked above.)
-        assert_ne!(theme.get("controls_bg"), Color::Reset);
-        assert_ne!(theme.get("table_header_bg"), Color::Reset);
-        assert_ne!(theme.get("table_column_separator"), Color::Reset);
-        assert_ne!(theme.get("sidebar_border"), Color::Reset);
+        assert_ne!(theme.controls_bg(), Color::Reset);
+        assert_ne!(theme.table_header_bg(), Color::Reset);
+        assert_ne!(theme.table_column_separator(), Color::Reset);
+        assert_ne!(theme.sidebar_border(), Color::Reset);
         // The sidebars read their resting border from "modal_border", which is the
         // documented `sidebar_border` slot under the name the widgets use.
-        assert_eq!(theme.get("modal_border"), theme.get("sidebar_border"));
+        assert_eq!(theme.modal_border(), theme.sidebar_border());
         // A tinted selection is a colour; "reversed" would leave the slot unset.
         assert!(theme.get_optional("table_selected").is_some());
     }

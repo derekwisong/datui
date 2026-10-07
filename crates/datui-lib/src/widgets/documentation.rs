@@ -729,18 +729,18 @@ pub fn render_view(state: &mut DocState, area: Rect, buf: &mut Buffer, ctx: &Ren
     let Some(title) = state.doc.as_ref().map(|d| d.title().to_string()) else {
         return;
     };
-    let mut footer = HintBar::from_ctx(ctx);
+    let mut footer = HintBar::from_ctx(ctx).screen(datui_cli::keys::Context::Documentation);
     let lines = state.lines();
     match lines.get(state.cursor) {
         Some(DocLine::Column { values: 1.., .. }) | Some(DocLine::Legend(..)) => {
-            footer = footer.hint("Enter", "Values");
+            footer = footer.key("Enter");
         }
         _ => {}
     }
     if state.offers_open() {
-        footer = footer.hint("o", "Open");
+        footer = footer.key("o");
     }
-    footer = footer.hint("y", "Copy").hint("Esc", "Back");
+    footer = footer.key("y").key("Esc");
     let title = format!("Documentation {} {title}", glyphs::get().trail);
     let inner = Surface::new(&title).footer(&footer).render(area, buf, ctx);
     render_page(state, inner, buf, ctx);

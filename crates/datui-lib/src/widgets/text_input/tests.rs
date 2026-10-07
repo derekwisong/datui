@@ -377,7 +377,7 @@ fn a_theme_colours_the_text_and_the_cursor() {
     let rect = Rect::new(0, 0, 2, 1);
     let mut buf = Buffer::empty(rect);
     (&input).render(rect, &mut buf);
-    assert_eq!(buf[(1, 0)].style().fg, Some(theme.get("text_primary")));
+    assert_eq!(buf[(1, 0)].style().fg, Some(theme.text_primary()));
 }
 
 #[test]

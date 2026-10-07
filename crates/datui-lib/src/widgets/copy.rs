@@ -3,6 +3,7 @@
 use crate::copy_modal::{CopyFocus, CopyModal};
 use crate::render::context::RenderContext;
 use crate::widgets::ui::{FormValue, FormView, HintBar};
+use datui_cli::keys::Context;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -20,17 +21,17 @@ fn row_label(focus: CopyFocus) -> &'static str {
 }
 
 pub fn render_copy_modal(area: Rect, buf: &mut Buffer, modal: &mut CopyModal, ctx: &RenderContext) {
-    let g = crate::glyphs::get();
-    let (key, label) = match modal.focus {
-        CopyFocus::Header => ("Space", "Toggle"),
-        CopyFocus::Column => ("Space", "Pick"),
-        CopyFocus::Scope | CopyFocus::Format => (g.updown_lr, "Change"),
-    };
     let footer = HintBar::from_ctx(ctx)
-        .hint_weighted("Enter", "Copy", 3)
-        .hint_weighted(key, label, 2)
-        .hint_weighted("Tab", "Next", 1)
-        .hint_weighted("Esc", "Cancel", 4);
+        .screen(Context::Copy)
+        .group("Form")
+        .key("Enter")
+        .weight(3);
+    let footer = match modal.focus {
+        CopyFocus::Header => footer.key_as("Space", "Toggle"),
+        CopyFocus::Column => footer.key_as("Space", "Pick"),
+        CopyFocus::Scope | CopyFocus::Format => footer.key("← / →"),
+    };
+    let footer = footer.weight(2).key("Tab").weight(1).key("Esc").weight(4);
     let rows = modal
         .row_order()
         .into_iter()
@@ -55,6 +56,7 @@ pub fn render_copy_modal(area: Rect, buf: &mut Buffer, modal: &mut CopyModal, ct
     };
     FormView {
         title: "Copy",
+        screen: Context::Copy,
         footer,
         label_width: LABEL_WIDTH,
         rows,

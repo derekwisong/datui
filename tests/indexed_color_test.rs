@@ -48,12 +48,12 @@ outlier_marker = "red"
         Theme::from_config(&config.theme).expect("Failed to create theme with indexed colors");
 
     // Verify indexed colors are parsed correctly
-    assert_eq!(theme.get("controls_bg"), Color::Indexed(236));
-    assert_eq!(theme.get("surface"), Color::Indexed(239));
+    assert_eq!(theme.controls_bg(), Color::Indexed(236));
+    assert_eq!(theme.surface(), Color::Indexed(239));
 
     // Verify other colors still work
-    assert_eq!(theme.get("chip_key"), Color::Cyan);
-    assert_eq!(theme.get("error"), Color::Red);
+    assert_eq!(theme.chip_key(), Color::Cyan);
+    assert_eq!(theme.error(), Color::Red);
 }
 
 #[test]
@@ -69,8 +69,8 @@ fn test_indexed_colors_in_default_config() {
     config.theme.colors.table_header_bg = "indexed(236)".to_string();
     let theme = Theme::from_config(&config.theme).expect("Failed to create theme");
 
-    assert_eq!(theme.get("controls_bg"), Color::Indexed(235));
-    assert_eq!(theme.get("table_header_bg"), Color::Indexed(236));
+    assert_eq!(theme.controls_bg(), Color::Indexed(235));
+    assert_eq!(theme.table_header_bg(), Color::Indexed(236));
 }
 
 #[test]

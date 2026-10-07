@@ -1287,32 +1287,24 @@ fn catalog_section(
     network_check: fn(&Path) -> bool,
     missing: &mut std::collections::HashSet<PathBuf>,
 ) -> Section {
+    // Each dataset, and under it its bookmarks.
+    let rows = catalog
+        .datasets
+        .iter()
+        .flat_map(|dataset| {
+            std::iter::once(catalog_entry(dataset, network_check, missing)).chain(
+                dataset
+                    .bookmarks
+                    .iter()
+                    .map(|(name, place)| bookmark_entry(name, place, network_check)),
+            )
+        })
+        .collect();
     Section {
-        title: catalog.label.clone(),
-        subtitle: None,
         origin: Some(catalog.origin_note()),
-        root: None,
         unavailable: catalog.broken.is_some(),
         unavailable_note: catalog.broken.clone(),
-        // Each dataset, and under it its bookmarks.
-        rows: catalog
-            .datasets
-            .iter()
-            .flat_map(|dataset| {
-                std::iter::once(catalog_entry(dataset, network_check, missing)).chain(
-                    dataset
-                        .bookmarks
-                        .iter()
-                        .map(|(name, place)| bookmark_entry(name, place, network_check)),
-                )
-            })
-            .collect(),
-        folded_by_default: false,
-        remote_root: None,
-        waiting: false,
-        grouped_by_place: false,
-        door: None,
-        place_labels: Default::default(),
+        ..Section::titled(catalog.label.clone(), rows)
     }
 }
 
@@ -4309,21 +4301,22 @@ impl HomeState {
             if collapsed {
                 continue;
             }
-            // First inside the directory, before the rows and whatever the sort, because
-            // being the first row inside a directory is the whole of what it is.
+            // The way up comes first of all, as `..` does in any listing: where
+            // Backspace goes while browsing, the same place above a root.
+            let root = section.root.as_deref();
+            if self.filter.is_empty()
+                && root
+                    .is_some_and(|root| self.browsing.is_some() || self.parent_of(root).is_some())
+            {
+                out.push(Slot::Plain(Row::Up { section: si }));
+            }
+            // The door next, before the rows and whatever the sort, because being the
+            // first row inside a directory is the whole of what it is.
             //
             // Not while a filter is on. Its name carries the words `all files`, which a
             // fuzzy filter matches for most of the alphabet — `sal` found it beside
             // `sales.parquet` — so it steps out of the way and comes back when the
             // filter is cleared.
-            // The way up comes first of all, as `..` does in any listing.
-            let root = section.root.as_deref();
-            if self.filter.is_empty()
-                && root
-                    .is_some_and(|root| self.browsing.is_some() || parent_location(root).is_some())
-            {
-                out.push(Slot::Plain(Row::Up { section: si }));
-            }
             if has_door {
                 out.push(Slot::Door { section: si });
             }

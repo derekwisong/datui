@@ -2123,7 +2123,7 @@ impl App {
                     .sections
                     .get(section)
                     .and_then(|s| s.root.as_deref())
-                    .and_then(home::parent_location)
+                    .and_then(|root| self.home.parent_of(root))
                 {
                     self.home_browse_into(parent);
                 }

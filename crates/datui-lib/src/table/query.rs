@@ -766,24 +766,32 @@ impl DataTableState {
     /// Rebuild `lf` as `base_lf` → filters → sort. Column order is applied at collect.
     /// A source that runs the filters and sort itself gives the frame instead.
     pub(super) fn apply_transformations(&mut self) {
-        if let Some(view) = self.pushed_view() {
-            let sorted = !self.sort_columns.is_empty() || !self.sort_ascending;
-            self.unsorted_lf = sorted
-                .then(|| {
-                    self.pushdown
-                        .as_ref()
-                        .and_then(|p| p.view(&self.filters, &[], false))
-                        .map(|unsorted| unsorted.lf)
-                })
-                .flatten();
-            self.view_notes = Vec::new();
-            self.view_numbered = false;
-            self.invalidate_num_rows();
-            self.lf = self.with_column_changes(view.lf).0;
-            self.restore_footer_count();
-            self.collect();
-            return;
-        }
+        let lf = match self.pushed_view() {
+            Some(view) => {
+                let sorted = !self.sort_columns.is_empty() || !self.sort_ascending;
+                self.unsorted_lf = sorted
+                    .then(|| {
+                        self.pushdown
+                            .as_ref()
+                            .and_then(|p| p.view(&self.filters, &[], false))
+                            .map(|unsorted| unsorted.lf)
+                    })
+                    .flatten();
+                self.view_notes = Vec::new();
+                self.view_numbered = false;
+                self.with_column_changes(view.lf).0
+            }
+            None => self.build_view(),
+        };
+        self.invalidate_num_rows();
+        self.lf = lf;
+        self.restore_footer_count();
+        self.collect();
+    }
+
+    /// `base_lf` with the view's column changes, row numbers, filters and order, in
+    /// that order; the frame before the order is kept as `unsorted_lf`.
+    fn build_view(&mut self) -> LazyFrame {
         let mut lf = self.with_column_changes(self.base_lf.clone()).0;
         self.view_numbered = self.row_numbers && self.wants_view_numbers();
         if self.view_numbered {
@@ -815,11 +823,7 @@ impl DataTableState {
         } else if !self.sort_ascending {
             lf = lf.reverse();
         }
-
-        self.invalidate_num_rows();
-        self.lf = lf;
-        self.restore_footer_count();
-        self.collect();
+        lf
     }
 
     /// Sort with one direction for every column. `ascending` also sets the natural
@@ -850,39 +854,16 @@ impl DataTableState {
         self.apply_transformations();
     }
 
+    /// The view the other way round: every sort column's direction flipped, or the
+    /// natural order reversed, so `r` twice is always the identity.
     pub fn reverse(&mut self) {
-        // The order is laid on top of what is there, so what is there is the frame
-        // before it — unless an order was already laid, whose own frame is kept.
-        if self.unsorted_lf.is_none() {
-            self.unsorted_lf = Some(self.lf.clone());
-        }
         self.sort_ascending = !self.sort_ascending;
         self.widths.relearn();
-        // Reversing a sorted view flips every column's direction, so `r` twice is
-        // always the identity whatever mix of directions was applied.
         for direction in &mut self.sort_descending {
             *direction = !*direction;
         }
-
         self.drop_buffer();
-
-        // A source that runs the order runs it backward too.
-        if self.pushed_view().is_some() {
-            self.apply_transformations();
-            return;
-        }
-        if !self.sort_columns.is_empty() {
-            self.invalidate_num_rows();
-            self.lf = self.lf.clone().sort_by_exprs(
-                self.sort_columns.iter().map(col).collect::<Vec<_>>(),
-                sort_options(self.sort_descending.clone()),
-            );
-            self.collect();
-        } else {
-            self.invalidate_num_rows();
-            self.lf = self.lf.clone().reverse();
-            self.collect();
-        }
+        self.apply_transformations();
     }
 
     pub fn filter(&mut self, filters: Vec<FilterStatement>) {

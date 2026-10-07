@@ -7,7 +7,7 @@ use std::sync::{Arc, mpsc::Sender};
 use polars::datatypes::AnyValue;
 use polars::prelude::LazyFrame;
 
-use crate::widgets::datatable::DataTableState;
+use crate::table::DataTableState;
 use crate::{AppEvent, logging};
 
 /// The buffer collect in flight: what it will fill, and for which data.
@@ -84,7 +84,7 @@ impl InflightCollect {
 pub(crate) struct LenCount {
     pub(crate) len_generation: u64,
     pub(crate) count_dir: Option<PathBuf>,
-    pub(crate) files: Option<crate::widgets::datatable::FileCounter>,
+    pub(crate) files: Option<crate::table::FileCounter>,
     /// The view's own count, from a source that runs the view (a SQLite table).
     pub(crate) counter: Option<crate::pushdown::Counter>,
     pub(crate) lf: LazyFrame,
@@ -193,7 +193,7 @@ impl LenCount {
                 .map_err(|e| log::warn!(target: "datui", "row count failed: {e:#}")),
             None => {
                 match crate::statistics::collect_lazy(
-                    crate::widgets::datatable::row_count_lf(&self.lf),
+                    crate::table::row_count_lf(&self.lf),
                     self.streaming,
                 ) {
                     Ok(df) => Ok(match df.get(0) {

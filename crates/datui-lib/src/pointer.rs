@@ -25,7 +25,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use ratatui::layout::{Position, Rect};
 
 use crate::form::{FieldKind, Form};
-use crate::widgets::datatable::CellHit;
+use crate::table::CellHit;
 use crate::{App, InputMode};
 
 /// Rows a notch of the wheel moves.
@@ -411,7 +411,7 @@ impl Pointing {
 
 /// The key a double click on `column`'s header presses: `[` sorts up by it, `]` turns
 /// that sort down, and `]` again takes it away, as the same key again does.
-fn header_sort_key(state: &crate::widgets::datatable::DataTableState, column: &str) -> char {
+fn header_sort_key(state: &crate::table::DataTableState, column: &str) -> char {
     if state.view_sort_columns() == [column] {
         ']'
     } else {

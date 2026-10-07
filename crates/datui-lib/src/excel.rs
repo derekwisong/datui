@@ -1,10 +1,10 @@
 //! Excel workbooks: the sheets of one, listed on the home screen and summed up on the
 //! Info panel.
 //!
-//! A sheet is read whole by calamine when it is opened (see
-//! `DataTableState::from_excel`). What is said of the others comes from what that open
-//! read anyway, or from the start of each sheet: an `.xlsx` sheet declares its range
-//! (`<dimension ref="A1:D100"/>`) before its cells, so its size costs no read of them.
+//! A sheet is read whole by calamine when it is opened (see [`read`]). What is said of
+//! the others comes from what that open read anyway, or from the start of each sheet:
+//! an `.xlsx` sheet declares its range (`<dimension ref="A1:D100"/>`) before its
+//! cells, so its size costs no read of them.
 //!
 //! The home screen lists an `.xlsx` or `.xlsm` workbook's sheets from its directory and
 //! `xl/workbook.xml`, a few KB however large the workbook. An `.xls` or `.xlsb` file
@@ -14,13 +14,15 @@
 use std::io::Read;
 use std::path::Path;
 
-use calamine::{Data, Dimensions, Range, Reader, Sheets};
+use calamine::{Data, Dimensions, Range, Reader, Sheets, open_workbook_auto};
+use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use color_eyre::Result;
+use polars::prelude::*;
 
-use crate::FileFormat;
 use crate::model_files::MetaValue;
 use crate::sqlite::Table;
 use crate::text_formats::{Detail, count};
+use crate::{FileFormat, OpenOptions};
 
 /// The workbook part of an `.xlsx` or `.xlsm` file, and its relationships.
 const WORKBOOK: &str = "xl/workbook.xml";
@@ -35,7 +37,7 @@ pub fn is_listable(head: &[u8], file: Option<&Path>) -> bool {
         && file.is_some_and(|file| {
             std::fs::File::open(file)
                 .ok()
-                .and_then(|f| zip::ZipArchive::new(f).ok())
+                .and_then(|f| ::zip::ZipArchive::new(f).ok())
                 .is_some_and(|zip| zip.index_for_name(WORKBOOK).is_some())
         })
 }
@@ -44,7 +46,7 @@ pub fn is_listable(head: &[u8], file: Option<&Path>) -> bool {
 /// and `--table`. A hidden sheet is the workbook's own, listed after Ctrl+A; a chart
 /// sheet holds no cells and is left out.
 pub fn sheets(path: &Path) -> Result<Vec<Table>> {
-    let mut zip = zip::ZipArchive::new(std::fs::File::open(path)?)?;
+    let mut zip = ::zip::ZipArchive::new(std::fs::File::open(path)?)?;
     let workbook = part(&mut zip, WORKBOOK)?;
     let rels = part(&mut zip, WORKBOOK_RELS).unwrap_or_default();
     let charts: Vec<String> = tags(&rels, "Relationship")
@@ -67,7 +69,7 @@ pub fn sheets(path: &Path) -> Result<Vec<Table>> {
 }
 
 /// One part of a zip file as text.
-fn part(zip: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Result<String> {
+fn part(zip: &mut ::zip::ZipArchive<std::fs::File>, name: &str) -> Result<String> {
     let mut text = String::new();
     zip.by_name(name)?
         .take(MAX_PART)
@@ -323,9 +325,9 @@ mod tests {
 </Relationships>"#;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("book.xlsx");
-        let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        let mut zip = ::zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
         for (name, text) in [(WORKBOOK, workbook), (WORKBOOK_RELS, rels)] {
-            zip.start_file(name, zip::write::SimpleFileOptions::default())
+            zip.start_file(name, ::zip::write::SimpleFileOptions::default())
                 .unwrap();
             std::io::Write::write_all(&mut zip, text.as_bytes()).unwrap();
         }
@@ -344,4 +346,265 @@ mod tests {
     fn entities_resolve() {
         assert_eq!(unescape("a&lt;b&gt;&#65;&#x42;&bogus;"), "a<b>AB&bogus;");
     }
+}
+
+/// One sheet of a workbook (xls, xlsx, xlsm, xlsb), read whole by calamine, with the
+/// workbook's Excel tab for the Info panel. The sheet is the one `options.table`
+/// (`--table`) names, or by 0-based index when no sheet is so named.
+pub fn read(path: &Path, options: &OpenOptions) -> Result<(LazyFrame, Detail)> {
+    let mut workbook =
+        open_workbook_auto(path).map_err(|e| color_eyre::eyre::eyre!("Excel: {}", e))?;
+    let sheet_names = workbook.sheet_names().to_vec();
+    if sheet_names.is_empty() {
+        return Err(color_eyre::eyre::eyre!("Excel file has no worksheets"));
+    }
+    // Named so a bad --table says what to ask for instead: "0 'Sales', 1 'Summary'".
+    let sheets_on_offer = || {
+        sheet_names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| format!("{} '{}'", i, name))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    // A sheet's name before an index: the home screen names a sheet called `2023`.
+    let opened = match options.table.as_deref() {
+        None => sheet_names[0].clone(),
+        Some(name) if sheet_names.iter().any(|n| n == name) => name.to_string(),
+        Some(sheet_sel) => match sheet_sel.parse::<usize>() {
+            Ok(idx) => sheet_names.get(idx).cloned().ok_or_else(|| {
+                color_eyre::eyre::eyre!(
+                    "Excel: no worksheet at index {}; this file has: {}",
+                    idx,
+                    sheets_on_offer()
+                )
+            })?,
+            Err(_) => {
+                return Err(color_eyre::eyre::eyre!(
+                    "Excel: no worksheet named '{}'; this file has: {}",
+                    sheet_sel,
+                    sheets_on_offer()
+                ));
+            }
+        },
+    };
+    let range = workbook
+        .worksheet_range(&opened)
+        .map_err(|e| color_eyre::eyre::eyre!("Excel: {}", e))?;
+    let detail = crate::excel::detail(&mut workbook, &opened, &range);
+    drop(workbook);
+    let rows: Vec<Vec<Data>> = range.rows().map(|r| r.to_vec()).collect();
+    if rows.is_empty() {
+        let empty_df = DataFrame::empty();
+        return Ok((empty_df.lazy(), detail));
+    }
+    let headers: Vec<String> = rows[0]
+        .iter()
+        .map(|c| calamine::DataType::as_string(c).unwrap_or_else(|| c.to_string()))
+        .collect();
+    let n_cols = headers.len();
+    let mut series_vec = Vec::with_capacity(n_cols);
+    for (col_idx, header) in headers.iter().enumerate() {
+        let col_cells: Vec<Option<&Data>> = rows[1..].iter().map(|row| row.get(col_idx)).collect();
+        let inferred = excel_infer_column_type(&col_cells);
+        let name = if header.is_empty() {
+            format!("column_{}", col_idx + 1)
+        } else {
+            header.clone()
+        };
+        let series = excel_column_to_series(name.as_str(), &col_cells, inferred)?;
+        series_vec.push(series.into());
+    }
+    let df = DataFrame::new_infer_height(series_vec)?;
+    Ok((df.lazy(), detail))
+}
+
+/// Infers column type: prefers Int64 for whole-number floats; infers Date/Datetime for
+/// calamine DateTime/DateTimeIso or for string columns that parse as ISO date/datetime.
+fn excel_infer_column_type(cells: &[Option<&Data>]) -> ExcelColType {
+    use calamine::DataType as CalamineTrait;
+    let mut has_string = false;
+    let mut has_float = false;
+    let mut has_int = false;
+    let mut has_bool = false;
+    let mut has_datetime = false;
+    for cell in cells.iter().flatten() {
+        if CalamineTrait::is_string(*cell) {
+            has_string = true;
+            break;
+        }
+        if CalamineTrait::is_float(*cell)
+            || CalamineTrait::is_datetime(*cell)
+            || CalamineTrait::is_datetime_iso(*cell)
+        {
+            has_float = true;
+        }
+        if CalamineTrait::is_int(*cell) {
+            has_int = true;
+        }
+        if CalamineTrait::is_bool(*cell) {
+            has_bool = true;
+        }
+        if CalamineTrait::is_datetime(*cell) || CalamineTrait::is_datetime_iso(*cell) {
+            has_datetime = true;
+        }
+    }
+    if has_string {
+        let any_parsed = cells
+            .iter()
+            .flatten()
+            .any(|c| excel_cell_to_naive_datetime(c).is_some());
+        let all_non_empty_parse = cells
+            .iter()
+            .flatten()
+            .all(|c| CalamineTrait::is_empty(*c) || excel_cell_to_naive_datetime(c).is_some());
+        if any_parsed && all_non_empty_parse {
+            if excel_parsed_cells_all_midnight(cells) {
+                ExcelColType::Date
+            } else {
+                ExcelColType::Datetime
+            }
+        } else {
+            ExcelColType::Utf8
+        }
+    } else if has_int {
+        ExcelColType::Int64
+    } else if has_datetime {
+        if excel_parsed_cells_all_midnight(cells) {
+            ExcelColType::Date
+        } else {
+            ExcelColType::Datetime
+        }
+    } else if has_float {
+        let all_whole = cells.iter().flatten().all(|cell| {
+            cell.as_f64()
+                .is_none_or(|f| f.is_finite() && (f - f.trunc()).abs() < 1e-10)
+        });
+        if all_whole {
+            ExcelColType::Int64
+        } else {
+            ExcelColType::Float64
+        }
+    } else if has_bool {
+        ExcelColType::Boolean
+    } else {
+        ExcelColType::Utf8
+    }
+}
+
+/// True if every cell that parses as datetime has time 00:00:00.
+fn excel_parsed_cells_all_midnight(cells: &[Option<&Data>]) -> bool {
+    let midnight = NaiveTime::from_hms_opt(0, 0, 0).expect("valid time");
+    cells
+        .iter()
+        .flatten()
+        .filter_map(|c| excel_cell_to_naive_datetime(c))
+        .all(|dt| dt.time() == midnight)
+}
+
+/// Converts a calamine cell to NaiveDateTime (Excel serial, DateTimeIso, or parseable string).
+fn excel_cell_to_naive_datetime(cell: &Data) -> Option<NaiveDateTime> {
+    use calamine::DataType;
+    if let Some(dt) = cell.as_datetime() {
+        return Some(dt);
+    }
+    let s = cell.get_datetime_iso().or_else(|| cell.get_string())?;
+    parse_naive_datetime_str(s)
+}
+
+/// Parses an ISO-style date/datetime string; tries FORMATS in order.
+fn parse_naive_datetime_str(s: &str) -> Option<NaiveDateTime> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    const FORMATS: &[&str] = &[
+        "%Y-%m-%dT%H:%M:%S%.f",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S%.f",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d",
+    ];
+    for fmt in FORMATS {
+        if let Ok(dt) = NaiveDateTime::parse_from_str(s, fmt) {
+            return Some(dt);
+        }
+    }
+    if let Ok(d) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        return Some(d.and_hms_opt(0, 0, 0).expect("midnight"));
+    }
+    None
+}
+
+/// Build a Polars Series from a column of calamine cells using the inferred type.
+fn excel_column_to_series(
+    name: &str,
+    cells: &[Option<&Data>],
+    col_type: ExcelColType,
+) -> Result<Series> {
+    use calamine::DataType as CalamineTrait;
+    use polars::datatypes::TimeUnit;
+    let series = match col_type {
+        ExcelColType::Int64 => {
+            let v: Vec<Option<i64>> = cells
+                .iter()
+                .map(|c| c.and_then(|cell| cell.as_i64()))
+                .collect();
+            Series::new(name.into(), v)
+        }
+        ExcelColType::Float64 => {
+            let v: Vec<Option<f64>> = cells
+                .iter()
+                .map(|c| c.and_then(|cell| cell.as_f64()))
+                .collect();
+            Series::new(name.into(), v)
+        }
+        ExcelColType::Boolean => {
+            let v: Vec<Option<bool>> = cells
+                .iter()
+                .map(|c| c.and_then(|cell| cell.get_bool()))
+                .collect();
+            Series::new(name.into(), v)
+        }
+        ExcelColType::Utf8 => {
+            let v: Vec<Option<String>> = cells
+                .iter()
+                .map(|c| c.and_then(|cell| cell.as_string()))
+                .collect();
+            Series::new(name.into(), v)
+        }
+        ExcelColType::Date => {
+            let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).expect("valid date");
+            let v: Vec<Option<i32>> = cells
+                .iter()
+                .map(|c| {
+                    c.and_then(excel_cell_to_naive_datetime)
+                        .map(|dt| (dt.date() - epoch).num_days() as i32)
+                })
+                .collect();
+            Series::new(name.into(), v).cast(&DataType::Date)?
+        }
+        ExcelColType::Datetime => {
+            let v: Vec<Option<i64>> = cells
+                .iter()
+                .map(|c| {
+                    c.and_then(excel_cell_to_naive_datetime)
+                        .map(|dt| dt.and_utc().timestamp_micros())
+                })
+                .collect();
+            Series::new(name.into(), v).cast(&DataType::Datetime(TimeUnit::Microseconds, None))?
+        }
+    };
+    Ok(series)
+}
+
+/// Inferred type for an Excel column (preserves numbers, bools, dates; avoids stringifying).
+#[derive(Clone, Copy)]
+enum ExcelColType {
+    Int64,
+    Float64,
+    Boolean,
+    Utf8,
+    Date,
+    Datetime,
 }

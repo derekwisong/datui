@@ -90,9 +90,9 @@ on a sleep or a quiet channel.
 | `scripts/` | Python tooling: `bump_version.py`, `docs/`, `demos/`, `packaging/`, `dev/` |
 
 Modules worth knowing: `query.rs` (the DSL parser), `jobs.rs` (background
-jobs), `loading.rs` (opening a dataset), `widgets/datatable.rs`
-(`DataTableState`: the LazyFrame pipeline and the
-row buffer), `config.rs` (config structs, merging, theme), `home.rs` +
+jobs), `loading.rs` (opening a dataset), `readers/` (each format's reader),
+`table/` (`DataTableState`: the LazyFrame pipeline and the row buffer, one
+module per concern), `widgets/table.rs` (the table widget), `config.rs` (config structs, merging, theme), `home.rs` +
 `discover.rs` + `search.rs` (the home screen), `cloud_browse.rs` +
 `cloud_hive.rs` + `source.rs` (S3, GCS, HTTP), `statistics.rs` (analysis),
 `chart_data.rs` (chart preparation), `view.rs` (saved views), `cache.rs`, `glyphs.rs`,

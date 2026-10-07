@@ -1066,7 +1066,7 @@ fn the_builder_stacks_on_a_narrow_terminal() {
 /// the preview warns about a wide pivot before it is applied.
 #[test]
 fn a_pivot_past_the_column_limit_is_refused() {
-    use datui::widgets::datatable::PIVOT_COLUMN_LIMIT;
+    use datui::table::PIVOT_COLUMN_LIMIT;
     use polars::prelude::*;
     ensure_sample_data();
     let rows = PIVOT_COLUMN_LIMIT + 1;

@@ -7,7 +7,7 @@ use crate::jobs::{Answer, Job, Progress};
 use crate::quality_memory::{
     KeptQualitySample, QUALITY_RELEASED_REMEMBERED, QualityCacheEntry, QualityCopyJob, RetainedCopy,
 };
-use crate::widgets::datatable::DataTableState;
+use crate::table::DataTableState;
 use crate::{
     App, AppEvent, QUALITY_RUN_WAITS, analysis_modal, data_quality, glyphs, jobs, numfmt,
     quality_report, sampling, widgets,
@@ -237,7 +237,7 @@ impl App {
             .iter()
             .map(|(name, dtype)| {
                 if matches!(dtype, polars::prelude::DataType::Binary) {
-                    polars::prelude::lit(widgets::datatable::binary_stub()).alias(name.clone())
+                    polars::prelude::lit(crate::table::binary_stub()).alias(name.clone())
                 } else {
                     polars::prelude::col(name.clone())
                 }
@@ -332,7 +332,7 @@ impl App {
         if partitions.is_empty()
             && let Some(dir) = self.path.as_ref().filter(|path| path.is_dir())
         {
-            partitions = DataTableState::discover_hive_partition_columns(dir)
+            partitions = crate::readers::hive::discover_hive_partition_columns(dir)
                 .into_iter()
                 .filter(|column| schema.get(column).is_some())
                 .collect();

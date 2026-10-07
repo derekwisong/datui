@@ -16,9 +16,9 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{HighlightSpacing, Paragraph, Row, StatefulWidget, Table, Widget};
 
-use super::datatable::DataTableState;
 use crate::export_modal::ExportFormat;
 use crate::render::context::RenderContext;
+use crate::table::DataTableState;
 use crate::widgets::ui::{HintBar, SectionRule, Surface};
 
 /// One drawn line of the Notes tab.
@@ -2160,7 +2160,7 @@ mod tests {
     /// the bug was.
     #[test]
     fn the_schema_tab_does_not_call_a_partial_the_total() {
-        use crate::widgets::datatable::DataTableState;
+        use crate::table::DataTableState;
         use polars::prelude::*;
 
         let rows = || df!("id" => (0..70i64).collect::<Vec<_>>()).unwrap().lazy();
@@ -2228,7 +2228,7 @@ mod tests {
     /// panel names its keys in a footer.
     #[test]
     fn a_tall_schema_counts_its_hidden_columns() {
-        use crate::widgets::datatable::DataTableState;
+        use crate::table::DataTableState;
         use polars::prelude::*;
 
         let wide = || {
@@ -2286,7 +2286,7 @@ mod tests {
     /// tab does.
     #[test]
     fn the_schema_footer_offers_h_only_where_it_works() {
-        use crate::widgets::datatable::DataTableState;
+        use crate::table::DataTableState;
         use polars::prelude::*;
 
         let lf = || df!("a" => &[1i64], "b" => &[2i64]).unwrap().lazy();
@@ -2371,7 +2371,7 @@ mod tests {
     /// open found.
     #[test]
     fn the_resources_tab_says_how_the_data_is_read() {
-        use crate::widgets::datatable::{DataTableState, OpenFacts};
+        use crate::table::{DataTableState, OpenFacts};
         let painted = |read_mode: Option<crate::ReadMode>| {
             let rows = || df!("id" => [1i64, 2]).unwrap().lazy();
             let schema = Arc::new((*rows().collect_schema().unwrap()).clone());
@@ -2432,7 +2432,7 @@ mod tests {
     #[test]
     fn the_resources_tab_shows_what_was_measured_and_nothing_else() {
         use crate::measurements::Meter;
-        use crate::widgets::datatable::DataTableState;
+        use crate::table::DataTableState;
         use polars::prelude::*;
         use std::time::Duration;
 
@@ -2449,7 +2449,7 @@ mod tests {
                 None,
             )
             .unwrap()
-            .with_open(crate::widgets::datatable::OpenFacts {
+            .with_open(crate::table::OpenFacts {
                 measurements: meter.clone(),
                 ..Default::default()
             })
@@ -2635,7 +2635,7 @@ mod tests {
     /// one adds no line.
     #[test]
     fn the_schema_tab_names_a_file_s_other_tables() {
-        use crate::widgets::datatable::{DataTableState, OpenFacts};
+        use crate::table::{DataTableState, OpenFacts};
         use polars::prelude::*;
 
         let theme = RenderContext::for_test();
@@ -2694,8 +2694,8 @@ mod tests {
     #[test]
     fn the_format_tab_shows_its_lines_and_list() {
         use crate::model_files::MetaValue;
+        use crate::table::{DataTableState, OpenFacts};
         use crate::text_formats::Detail;
-        use crate::widgets::datatable::{DataTableState, OpenFacts};
         use polars::prelude::*;
 
         let theme = RenderContext::for_test();
@@ -2764,7 +2764,7 @@ mod tests {
     /// footer inside it.
     #[test]
     fn the_body_has_the_accent_and_the_tab_bar_none() {
-        use crate::widgets::datatable::DataTableState;
+        use crate::table::DataTableState;
         use polars::prelude::*;
 
         let rows = || {

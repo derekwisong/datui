@@ -10,15 +10,7 @@ fn a_cached_report_serves_other_expected_windows() {
     let mut app = App::new(tx, crate::tests::test_runtime());
     let df = polars::df!("id" => (0..100i64).collect::<Vec<_>>()).unwrap();
     app.data_table_state = Some(
-        crate::widgets::datatable::DataTableState::new(
-            df.clone().lazy(),
-            None,
-            None,
-            None,
-            None,
-            true,
-        )
-        .unwrap(),
+        crate::table::DataTableState::new(df.clone().lazy(), None, None, None, None, true).unwrap(),
     );
     let plan = data_quality::DataQualityPlan::default();
     let report = data_quality::compute_data_quality(&df.lazy(), None, &plan, None, false).unwrap();
@@ -51,15 +43,7 @@ fn the_budget_releases_remakeable_reports_then_the_oldest_rows() {
     )
     .unwrap();
     app.data_table_state = Some(
-        crate::widgets::datatable::DataTableState::new(
-            df.clone().lazy(),
-            None,
-            None,
-            None,
-            None,
-            true,
-        )
-        .unwrap(),
+        crate::table::DataTableState::new(df.clone().lazy(), None, None, None, None, true).unwrap(),
     );
     let view_generation = app.data_table_state.as_ref().unwrap().len_generation();
     let plan = |seed: u64| data_quality::DataQualityPlan {

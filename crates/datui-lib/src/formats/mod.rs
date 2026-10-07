@@ -1,13 +1,9 @@
-//! Binary formats described by specs: one TOML file per format, found on a search path.
-//!
-//! A spec names its format (`acme.l2feed`), says which files are in it (`match`: a
-//! glob, magic bytes, header values), and lays out its header and its records. Specs
-//! are data: no expressions and no code. A field refers to an earlier one by name
-//! instead, and every size read from a file is bounded.
-//!
-//! What a spec describes is decoded by [`crate::fixed_records`] when every record is
-//! one fixed size and by [`crate::framed_records`] otherwise (length prefixes,
-//! variants, sync markers, blocks, captures); [`files`] reads a directory of one spec's
+//! Binary formats described by specs: one TOML file per format, on a search path. A
+//! spec names its format (`acme.l2feed`), says which files match (glob, magic, header
+//! values), and lays out header and records. Specs are data (no expressions or code:
+//! fields refer to earlier ones by name), and every size read from a file is bounded.
+//! Decoding is [`crate::fixed_records`]' for fixed-size records and
+//! [`crate::framed_records`]' otherwise; [`files`] reads a directory of one spec's
 //! files. This module turns a spec and a file into that reader's columns.
 
 use crate::catalog::ColumnNote;
@@ -594,10 +590,9 @@ pub enum Expected {
     Text(String),
 }
 
-/// One condition of a spec's `match`, as the home pane, the Info panel and `datui
-/// formats` show it: `magic MKTD`, `version 1`, `glob *.bin *.dat`. Separate chips must
-/// all hold, but for a glob and a magic: a file the glob names is not asked for its
-/// magic. Alternatives live inside one chip.
+/// One condition of a spec's `match`, as home, Info and `datui formats` show it (`magic
+/// MKTD`, `version 1`, `glob *.bin *.dat`). Chips must all hold, except that a file the
+/// glob names is not asked its magic; alternatives live inside one chip.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatchChip {
     pub name: String,

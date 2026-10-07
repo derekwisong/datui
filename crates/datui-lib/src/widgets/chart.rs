@@ -1136,9 +1136,8 @@ fn render_xy_chart(
     );
     let x_bounds = [x_min_bounds, x_max_bounds];
     let sub = resolution(marker).0;
-    // The crosshair's readout takes the rows under the plot while the plot has the
-    // keys.
-    // Before any log: what the readout reads.
+    // The crosshair's readout takes the rows under the plot while the plot has the keys;
+    // it reads values before any log scaling.
     let values = &lines.series[..];
     let cursor = modal
         .cursor_x
@@ -1289,8 +1288,6 @@ fn series_style(theme: &Theme, i: usize, other_at: Option<usize>) -> Style {
     Style::default().fg(colors[i % colors.len()])
 }
 
-/// A histogram: filled bars, or split by a color, each group's bins as a step
-/// outline over the others, since filled bars would hide one another.
 /// How a histogram is drawn: its grid and its legend.
 pub struct HistogramLook {
     pub grid: bool,
@@ -1332,6 +1329,8 @@ pub fn render_histogram(
     );
 }
 
+/// A histogram: filled bars, or, split by a color, each group's bins as a step
+/// outline over the others (filled bars would hide one another).
 fn render_histogram_chart(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,

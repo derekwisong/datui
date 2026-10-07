@@ -909,12 +909,11 @@ impl Scale {
     }
 }
 
-/// An axis's ticks and labels over `lo..hi`, chosen by the screen's tick engine
-/// for an axis `length` long whose labels are `tick` high: on nice numbers, the
-/// calendar or a log scale's powers, about a label per six label heights across or
-/// three down. A Y axis widens to the ticks either side of its range, as on screen;
-/// the range it ends up with comes back with the ticks. Across, the finest set and
-/// fullest labels that stand apart; down, the first whose labels differ.
+/// An axis's ticks and labels over `lo..hi` from the screen's tick engine, for an axis
+/// `length` long with labels `tick` high (nice numbers, calendar, or log powers; about a
+/// label per six label heights across, three down). Y widens to the ticks around its
+/// range, returned with them. Across: the finest set whose fullest labels stand apart;
+/// down: the first whose labels differ.
 fn axis_ticks(
     (lo, hi): (f64, f64),
     axis: &Axis,

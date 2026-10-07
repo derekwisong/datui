@@ -366,10 +366,9 @@ pub(crate) fn text_source(
     })
 }
 
-/// What every CSV read does once Polars has parsed it: name the columns (trimmed,
-/// or from `--header-rows`), skip the padding after a delimiter, type the text
-/// columns, and drop the footer.
-/// `read` gets the steps that Python can repeat.
+/// What every CSV read does after Polars parses it: name the columns (trimmed, or from
+/// `--header-rows`), skip post-delimiter padding, type text columns, drop the footer.
+/// `read` gets the steps Python can repeat.
 fn finish_csv_frame(
     lf: LazyFrame,
     options: &OpenOptions,
@@ -479,12 +478,10 @@ fn declare_types(
     Ok(lf.with_columns(exprs))
 }
 
-/// `reader`, the scan of the file at `path`, reading some columns as text: those a
-/// spec gives a type, which [`declare_types`] types, a value that does not fit
-/// null rather than a failed read; and, while `read.infer_types` types text, those
-/// whose first rows hold a number with a leading zero (`02134`), which Polars would
-/// read as an integer and lose. `window` is those rows when the read has them;
-/// otherwise they are read, up to the rows a scan infers its types from.
+/// `reader` (the scan of `path`) reading some columns as text: those a spec types (via
+/// [`declare_types`], misfits null rather than failing), and, while `read.infer_types`
+/// types text, those with a leading-zero number in their first rows (`02134`, which an
+/// integer read would lose). `window` is those rows if already read.
 pub(crate) fn scan_some_as_text(
     reader: LazyCsvReader,
     options: &OpenOptions,
@@ -595,8 +592,8 @@ fn infer_datetime_format_from_sample(sample: &str) -> Option<&'static str> {
         .copied()
 }
 
-/// Parse a string ChunkedArray into a Duration ChunkedArray (nanoseconds). Uses Polars duration
-/// format (e.g. `1d`, `2h30m`, `-1w2d`). Invalid or null inputs become null in the output.
+/// Parse a string array into nanosecond durations in Polars' format (`1d`, `2h30m`,
+/// `-1w2d`); invalid or null inputs become null.
 fn string_chunked_to_duration_ns(str_ca: &StringChunked) -> DurationChunked {
     let name = str_ca.name().clone();
     let vals: Vec<Option<i64>> = str_ca
@@ -619,8 +616,8 @@ fn infer_time_format_from_sample(sample: &str) -> Option<&'static str> {
         .copied()
 }
 
-/// Apply trim and type inference to CSV string columns when --infer-types is enabled.
-/// Samples up to `options.parse_strings_sample_rows` rows to infer types, then overlays lazy exprs (trim then cast) on the LazyFrame.
+/// With `--infer-types`, trim and type CSV string columns: sample up to
+/// `options.parse_strings_sample_rows` rows, then overlay lazy trim-and-cast exprs.
 fn apply_parse_strings_to_csv_lazyframe(
     lf: LazyFrame,
     options: &OpenOptions,

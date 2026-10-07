@@ -787,8 +787,9 @@ pub fn read_gguf<R: Read>(reader: R, len: u64) -> Result<Header> {
     })
 }
 
-/// Parse `bytes` as whichever model header it starts with. For the fuzz target and the
-/// tests: both parsers over a slice, with no file.
+/// Parse `bytes` as whichever model header it starts with: both parsers over a slice,
+/// with no file.
+#[cfg(test)]
 pub fn parse_header(bytes: &[u8]) -> Result<Header> {
     if looks_like_gguf(bytes) {
         read_gguf(bytes, bytes.len() as u64)

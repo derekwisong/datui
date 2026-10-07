@@ -154,6 +154,7 @@ impl<K: Kind> Store<K> {
     }
 
     /// Entries on disk.
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         fs::read_dir(self.dir()).map_or(0, |entries| {
             entries

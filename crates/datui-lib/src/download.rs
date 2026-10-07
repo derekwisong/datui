@@ -43,7 +43,7 @@ pub(crate) fn held_elsewhere(path: &Path) -> bool {
 
 impl TempDownload {
     /// An empty file in `dir` (the system temp directory when `None`) ending in
-    /// `.extension`, or `.tmp` without one. Removed if dropped before [`Self::keep`].
+    /// `.extension`, or `.tmp` without one. Removed if dropped before it is held.
     pub fn create(dir: Option<&Path>, extension: Option<&str>) -> Result<tempfile::NamedTempFile> {
         let dir = dir
             .map(Path::to_path_buf)
@@ -58,6 +58,7 @@ impl TempDownload {
     }
 
     /// A finished file from [`Self::create`], closed and held.
+    #[cfg(test)]
     pub fn keep(file: tempfile::NamedTempFile) -> TempDownload {
         Self::held(file, None)
     }

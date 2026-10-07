@@ -18,17 +18,6 @@ pub const DEFAULT: &str = concat!(
 /// global because the clients are built deep in workers that hold no config.
 static CONFIGURED: RwLock<Option<String>> = RwLock::new(None);
 
-/// The header for a `[http] user_agent` setting: the setting, or the default when it
-/// is blank.
-pub fn resolve(setting: &str) -> String {
-    let setting = setting.trim();
-    if setting.is_empty() {
-        DEFAULT.to_string()
-    } else {
-        setting.to_string()
-    }
-}
-
 /// Whether `value` can be sent as a header: printable ASCII, so neither ureq nor
 /// object_store refuses it at request time.
 pub fn is_valid(value: &str) -> bool {
@@ -79,13 +68,6 @@ mod tests {
             )
         );
         assert!(is_valid(DEFAULT));
-    }
-
-    #[test]
-    fn a_blank_setting_is_the_default_and_anything_else_replaces_it() {
-        assert_eq!(resolve(""), DEFAULT);
-        assert_eq!(resolve("   "), DEFAULT);
-        assert_eq!(resolve(" research-crawler/2 "), "research-crawler/2");
     }
 
     #[test]

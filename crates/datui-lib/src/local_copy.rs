@@ -60,6 +60,7 @@ impl LocalCopy {
         self.paths.len()
     }
 
+    #[cfg(test)]
     pub fn dir(&self) -> &Path {
         self.dir.path()
     }
@@ -246,6 +247,7 @@ fn is_remote(path: &str) -> bool {
 }
 
 /// Every path a plan's scans read.
+#[cfg(test)]
 pub fn scan_paths(lf: &LazyFrame) -> Vec<String> {
     let mut paths = Vec::new();
     for node in &lf.logical_plan {

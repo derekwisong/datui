@@ -143,6 +143,7 @@ pub struct ChartSampling {
 
 impl ChartSampling {
     /// Up to `limit` rows, with the analysis tools' default seed.
+    #[cfg(test)]
     pub fn rows(limit: Option<usize>) -> Self {
         Self {
             limit,
@@ -934,17 +935,6 @@ fn sort_and_clip(values: &mut Vec<f64>, range: ValueRange) -> usize {
 
 fn clipped(range: ValueRange, outside: usize) -> Option<Clipped> {
     (range != ValueRange::All).then_some(Clipped { range, outside })
-}
-
-/// Prepare histogram data for a numeric column.
-pub fn prepare_histogram_data(
-    lf: &LazyFrame,
-    column: &str,
-    bins: usize,
-    range: ValueRange,
-    sampling: &ChartSampling,
-) -> Result<HistogramData> {
-    prepare_histogram_by(lf, column, bins, range, false, None, sampling)
 }
 
 /// A histogram of `column`, split by `color` into groups on the same bins. With `share`,

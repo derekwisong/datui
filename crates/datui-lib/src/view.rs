@@ -975,19 +975,7 @@ pub fn filename_pattern_matches<'a>(
     })
 }
 
-/// Whether the view's own criteria match this file: a path or pattern hit, or every
-/// requested schema column present. Unlike the relevance score (a ranking, never zero
-/// for a used view), a claim of fit.
-pub fn criteria_match<'a>(
-    view: &SavedView,
-    dataset: impl Into<Dataset<'a>>,
-    schema: &Schema,
-) -> bool {
-    match_reason(view, dataset, schema).is_some()
-}
-
-/// The strongest fitting criterion, or `None`: the same test as `criteria_match`, so
-/// the list's annotation never disagrees with `V` and auto-apply.
+/// The strongest fitting criterion, or `None`: one test, so the list's annotation never disagrees with `V` and auto-apply.
 pub fn match_reason<'a>(
     view: &SavedView,
     dataset: impl Into<Dataset<'a>>,
@@ -1321,7 +1309,7 @@ mod tests {
                 ..no_criteria()
             },
         );
-        assert!(!criteria_match(&unrelated, path, &schema));
+        assert!(!match_reason(&unrelated, path, &schema).is_some());
         assert!(calculate_relevance(&unrelated, path.into(), &schema) > 0.0);
 
         let fits = a_view(
@@ -1331,7 +1319,7 @@ mod tests {
                 ..no_criteria()
             },
         );
-        assert!(criteria_match(&fits, path, &schema));
+        assert!(match_reason(&fits, path, &schema).is_some());
     }
 
     /// Data piped in matches by its columns alone: no path or pattern fits `-`, even
@@ -1382,10 +1370,10 @@ mod tests {
                 ..no_criteria()
             },
         );
-        assert!(criteria_match(&view, Path::new("/x.parquet"), &schema));
+        assert!(match_reason(&view, Path::new("/x.parquet"), &schema).is_some());
 
         let narrower = Schema::from_iter([("a".into(), DataType::Int64)]);
-        assert!(!criteria_match(&view, Path::new("/x.parquet"), &narrower));
+        assert!(!match_reason(&view, Path::new("/x.parquet"), &narrower).is_some());
     }
 
     #[test]
@@ -1456,7 +1444,7 @@ mod tests {
             },
         );
         assert_eq!(match_reason(&fits_nothing, path, &schema), None);
-        assert!(!criteria_match(&fits_nothing, path, &schema));
+        assert!(!match_reason(&fits_nothing, path, &schema).is_some());
     }
 
     /// A URL is recorded as written and matches itself, with or without the

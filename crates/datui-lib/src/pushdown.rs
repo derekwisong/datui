@@ -52,6 +52,7 @@ pub trait Pushdown: Send + Sync {
     fn notes(&self) -> Vec<crate::notes::Note>;
 
     /// The source itself, for its tests.
+    #[cfg(test)]
     fn as_any(&self) -> &dyn std::any::Any;
 }
 

@@ -333,6 +333,7 @@ impl Durations {
     }
 
     /// How many were ever recorded.
+    #[cfg(test)]
     pub fn count(&self) -> u64 {
         self.count
     }

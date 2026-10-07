@@ -6,7 +6,7 @@
 use crate::data_quality::{
     DataQualityPlan, DataQualityResults, QualityComparison, QualityGrain, QualityMetric,
     QualityPrecision, QualityScope, SegmentQualityProfile, beyond_noise, parse_scope_time,
-    segment_cmp, time_window_label,
+    segment_cmp,
 };
 use crate::quality_report::THIN_SEGMENT_ROWS;
 use chrono::{Datelike, Duration, Months, NaiveDate, NaiveDateTime, Timelike, Weekday};
@@ -434,15 +434,6 @@ pub fn floor_window(time: NaiveDateTime, every: &str) -> NaiveDateTime {
     }
 }
 
-/// A window's label, as a run names the window starting at `start`.
-pub fn window_label(column: &str, every: &str, start: NaiveDateTime) -> String {
-    time_window_label(
-        column,
-        every,
-        Some(&start.format("%Y-%m-%d %H:%M:%S").to_string()),
-    )
-}
-
 /// A span of windows in calendar terms, inclusive: `2024-01-01 to 2024-01-28` for
 /// days, weeks and months, to the minute for hours.
 pub fn calendar_span(first: NaiveDateTime, last: NaiveDateTime, every: &str) -> String {
@@ -769,7 +760,11 @@ mod tests {
             ("1w", "2024-03-04 00:00", "week of 2024-03-04"),
             ("1mo", "2024-03-01 00:00", "2024-03"),
         ] {
-            assert_eq!(window_label("day", every, at(start)), label);
+            let start_text = at(start).format("%Y-%m-%d %H:%M:%S").to_string();
+            assert_eq!(
+                crate::data_quality::time_window_label("day", every, Some(&start_text)),
+                label
+            );
             assert_eq!(window_start(label, every), Some(at(start)), "{label}");
             assert_eq!(floor_window(at("2024-03-05 13:27"), every), at(start));
         }

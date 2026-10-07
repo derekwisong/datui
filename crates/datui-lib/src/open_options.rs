@@ -284,6 +284,7 @@ impl Default for OpenOptions {
 }
 
 impl OpenOptions {
+    #[cfg(test)]
     pub fn with_skip_lines(mut self, skip_lines: usize) -> Self {
         self.skip_lines = Some(skip_lines);
         self

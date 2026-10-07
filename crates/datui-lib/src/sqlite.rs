@@ -1790,6 +1790,7 @@ mod read {
             self.0.notes()
         }
 
+        #[cfg(test)]
         fn as_any(&self) -> &dyn std::any::Any {
             self
         }

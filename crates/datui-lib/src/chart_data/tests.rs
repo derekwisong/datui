@@ -268,11 +268,13 @@ fn a_parquet_file_is_sampled_in_runs() {
     assert!(crate::sampling::slices_reach_into_the_scan(
         &lf.clone().select([col("id"), col("fare")])
     ));
-    let data = prepare_histogram_data(
+    let data = prepare_histogram_by(
         &lf,
         "fare",
         10,
         ValueRange::All,
+        false,
+        None,
         &ChartSampling::rows(Some(2_000)),
     )
     .unwrap();
@@ -322,11 +324,21 @@ fn rows_already_read_are_not_read_again() {
         .finish()
         .unwrap();
     let sampling = ChartSampling::rows(Some(10_000));
-    let first = prepare_histogram_data(&lf, "a", 10, ValueRange::All, &sampling).unwrap();
+    let first =
+        prepare_histogram_by(&lf, "a", 10, ValueRange::All, false, None, &sampling).unwrap();
     assert_eq!(first.x_min, 0.0);
 
     write(1_000, 1_000);
-    let held = prepare_histogram_data(&lf, "a", 5, ValueRange::Percentile1To99, &sampling).unwrap();
+    let held = prepare_histogram_by(
+        &lf,
+        "a",
+        5,
+        ValueRange::Percentile1To99,
+        false,
+        None,
+        &sampling,
+    )
+    .unwrap();
     assert!(
         held.x_max < 100.0,
         "drawn from the rows held: {}",
@@ -335,9 +347,11 @@ fn rows_already_read_are_not_read_again() {
     let boxed = prepare_box_plot_data(&lf, "a", ValueRange::All, &sampling).unwrap();
     assert_eq!(boxed.stats[0].max, 99.0);
 
-    let with_b = prepare_histogram_data(&lf, "b", 10, ValueRange::All, &sampling).unwrap();
+    let with_b =
+        prepare_histogram_by(&lf, "b", 10, ValueRange::All, false, None, &sampling).unwrap();
     assert_eq!(with_b.x_min, 1_000.0, "b was not held: read");
-    let a_again = prepare_histogram_data(&lf, "a", 10, ValueRange::All, &sampling).unwrap();
+    let a_again =
+        prepare_histogram_by(&lf, "a", 10, ValueRange::All, false, None, &sampling).unwrap();
     assert_eq!(a_again.x_min, 1_000.0, "read along with b");
 
     write(5_000, 5_000);
@@ -345,7 +359,8 @@ fn rows_already_read_are_not_read_again() {
         limit: Some(50),
         ..sampling.clone()
     };
-    let resampled = prepare_histogram_data(&lf, "a", 10, ValueRange::All, &other_size).unwrap();
+    let resampled =
+        prepare_histogram_by(&lf, "a", 10, ValueRange::All, false, None, &other_size).unwrap();
     assert!(resampled.x_min >= 5_000.0, "another size reads afresh");
 }
 
@@ -456,12 +471,21 @@ fn with_outliers() -> LazyFrame {
 #[test]
 fn a_histogram_range_clips_the_tails_and_counts_them() {
     let lf = with_outliers();
-    let all = prepare_histogram_data(&lf, "fare", 10, ValueRange::All, &all_rows()).unwrap();
+    let all =
+        prepare_histogram_by(&lf, "fare", 10, ValueRange::All, false, None, &all_rows()).unwrap();
     assert_eq!(all.x_min, -10_000.0);
     assert!(all.clipped.is_none());
 
-    let clipped =
-        prepare_histogram_data(&lf, "fare", 10, ValueRange::Percentile1To99, &all_rows()).unwrap();
+    let clipped = prepare_histogram_by(
+        &lf,
+        "fare",
+        10,
+        ValueRange::Percentile1To99,
+        false,
+        None,
+        &all_rows(),
+    )
+    .unwrap();
     // Of 102 values the 1st percentile falls at 1.01 and the 99th at 99.99: each
     // tail loses its outlier and the value next to it.
     assert_eq!((clipped.x_min, clipped.x_max), (2.0, 99.0));
@@ -497,7 +521,8 @@ fn a_histogram_keeps_every_value_of_its_column() {
     let lf = df!("a" => &[Some(1.0_f64), Some(2.0), None, Some(4.0)])
         .unwrap()
         .lazy();
-    let data = prepare_histogram_data(&lf, "a", 5, ValueRange::All, &all_rows()).unwrap();
+    let data =
+        prepare_histogram_by(&lf, "a", 5, ValueRange::All, false, None, &all_rows()).unwrap();
     let counted: f64 = data.bins.iter().map(|b| b.count).sum();
     assert_eq!(counted, 3.0);
 }
@@ -956,7 +981,7 @@ fn counts_come_from_the_rows_held_and_are_held() {
         .finish()
         .unwrap();
     let sampling = all_rows();
-    prepare_histogram_data(&lf, "delay", 10, ValueRange::All, &sampling).unwrap();
+    prepare_histogram_by(&lf, "delay", 10, ValueRange::All, false, None, &sampling).unwrap();
     std::fs::write(&path, "carrier,delay\nZZ,1\n").unwrap();
     // The rows held have no carrier: read, one count per category.
     let data = prepare_bar_counts(&lf, "carrier", BarOrder::Value, BAR_CAP, &sampling).unwrap();

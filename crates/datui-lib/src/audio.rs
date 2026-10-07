@@ -957,22 +957,6 @@ impl AudioSource {
         (declared > held).then_some((declared, held))
     }
 
-    /// Remap at the current size and take in new frames, returning how many. A stated data
-    /// size keeps its cap; a placeholder grows with the file (what following a recording
-    /// needs).
-    pub fn extend(&mut self) -> Result<u64> {
-        let Some(file) = &self.file else {
-            return Ok(0);
-        };
-        // SAFETY: as in `open`.
-        let map = unsafe { Mmap::map(file)? };
-        let frames = self.header.frames(map.len() as u64).min(MAX_FRAMES);
-        let added = frames.saturating_sub(self.frames);
-        self.map = map;
-        self.frames = frames;
-        Ok(added)
-    }
-
     pub fn schema(&self) -> Schema {
         let mut schema = Schema::with_capacity(self.header.channels as usize + 2);
         schema.insert(FRAME.into(), DataType::Int64);
@@ -1712,7 +1696,7 @@ mod tests {
     }
 
     #[test]
-    fn a_recording_in_progress_is_counted_by_the_file_and_grows() {
+    fn a_recording_in_progress_is_counted_by_the_file() {
         // A placeholder data size: the frames are what the file holds, and a partial
         // last frame waits.
         let mut bytes = wav(&[chunk(b"fmt ", &fmt(1, 1, 8000, 16))]);
@@ -1720,20 +1704,10 @@ mod tests {
         bytes.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
         bytes.extend_from_slice(&i16s(&[1, 2, 3]));
         bytes.push(0x04);
-        let (mut file, mut source) = open(&bytes, false);
+        let (_file, source) = open(&bytes, false);
         assert_eq!(source.header().data_declared, None);
         assert_eq!(source.frames(), 3);
         assert_eq!(source.trailing_bytes(), 1);
-
-        file.write_all(&[0x00]).unwrap();
-        file.write_all(&i16s(&[5, 6])).unwrap();
-        file.flush().unwrap();
-        assert_eq!(
-            source.extend().unwrap(),
-            3,
-            "the finished frame and two more"
-        );
-        assert_eq!(ints(&source.window(3, 3, None).unwrap(), "ch1"), [4, 5, 6]);
     }
 
     /// A file cut short while it is open is an error to read, not a SIGBUS from the

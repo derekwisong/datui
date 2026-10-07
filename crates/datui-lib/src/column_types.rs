@@ -222,6 +222,7 @@ impl ColumnType {
     }
 
     /// The type an inline table such as `{ type = "date", format = "%d/%m/%Y" }` says.
+    #[cfg(test)]
     pub fn from_toml(text: &str) -> Result<Self, String> {
         let value: toml_edit::Value = text.parse().map_err(|e| format!("{e}"))?;
         let table = value

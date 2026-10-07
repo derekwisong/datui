@@ -932,6 +932,7 @@ fn decode_shape(bytes: &[u8]) -> Option<DatasetShape> {
 
 impl CacheManager {
     /// How many dataset shapes are kept.
+    #[cfg(test)]
     pub fn dataset_shapes_kept(&self) -> usize {
         Store::<Shapes>::new(self).len()
     }

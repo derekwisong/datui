@@ -101,11 +101,6 @@ pub enum MenuKey {
 }
 
 impl ContextMenu {
-    /// The cell's keys, then `extra`.
-    pub fn new(at: Position) -> Self {
-        Self::with(at, Vec::new())
-    }
-
     pub fn with(at: Position, extra: Vec<MenuItem>) -> Self {
         let mut items = ITEMS.to_vec();
         items.extend(extra);
@@ -252,7 +247,7 @@ mod tests {
 
     #[test]
     fn the_arrows_move_round_and_enter_runs_the_line() {
-        let mut menu = ContextMenu::new(Position { x: 0, y: 0 });
+        let mut menu = ContextMenu::with(Position { x: 0, y: 0 }, Vec::new());
         let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
         assert_eq!(menu.key(&press(KeyCode::Up)), MenuKey::Moved);
         assert_eq!(menu.selected, ITEMS.len() - 1, "↑ from the top wraps");
@@ -275,7 +270,7 @@ mod tests {
     #[test]
     fn the_menu_opens_at_the_point_and_stays_on_screen() {
         let screen = Rect::new(0, 0, 80, 24);
-        let at = |x, y| ContextMenu::new(Position { x, y }).area(screen);
+        let at = |x, y| ContextMenu::with(Position { x, y }, Vec::new()).area(screen);
         let menu = at(10, 5);
         assert_eq!((menu.x, menu.y), (11, 6));
         assert_eq!(menu.height, ITEMS.len() as u16 + 2);
@@ -285,7 +280,8 @@ mod tests {
         assert_eq!(corner.bottom(), 24);
         assert_eq!(corner.width, menu.width);
         // A screen smaller than the menu: it fits as much as there is.
-        let tiny = ContextMenu::new(Position { x: 3, y: 3 }).area(Rect::new(0, 0, 12, 5));
+        let tiny =
+            ContextMenu::with(Position { x: 3, y: 3 }, Vec::new()).area(Rect::new(0, 0, 12, 5));
         assert_eq!(tiny, Rect::new(0, 0, 12, 5));
     }
 
@@ -296,7 +292,7 @@ mod tests {
         let mut buf = Buffer::empty(screen);
         let menu = ContextMenu {
             selected: 2,
-            ..ContextMenu::new(Position { x: 2, y: 2 })
+            ..ContextMenu::with(Position { x: 2, y: 2 }, Vec::new())
         };
         menu.render(screen, &mut buf, &ctx);
         let area = menu.area(screen);

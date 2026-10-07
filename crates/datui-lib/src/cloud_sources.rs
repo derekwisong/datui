@@ -667,10 +667,6 @@ fn configured_source(configured: &CloudConnectionConfig, env: &Environment<'_>) 
         };
     }
     let var = env.var;
-    let kind = match configured.kind.as_deref() {
-        Some("gcs") => ProviderKind::Gcs,
-        _ => ProviderKind::S3,
-    };
     let mut problem = None;
     // A variable that is named but unset is a mistake worth reporting, not a reason to
     // fall back to whatever the shell happens to hold.
@@ -716,7 +712,7 @@ fn configured_source(configured: &CloudConnectionConfig, env: &Environment<'_>) 
         problem,
         secret_command: configured.secret_command.clone(),
         ..Source::new(
-            kind,
+            ProviderKind::S3,
             configured.name.clone(),
             Tier::Config,
             "datui config".to_string(),

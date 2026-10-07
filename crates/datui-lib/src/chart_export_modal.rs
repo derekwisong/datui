@@ -32,6 +32,30 @@ pub enum ChartExportFocus {
 }
 
 impl ChartExportFocus {
+    /// Whether the field is typed into; every other one is a choice. Every field is
+    /// named, so a new one has to say which it is.
+    pub fn is_text(self) -> bool {
+        match self {
+            Self::PathInput
+            | Self::WidthInput
+            | Self::HeightInput
+            | Self::TitleInput
+            | Self::DescriptionInput
+            | Self::NotesInput
+            | Self::SourceInput
+            | Self::BylineInput => true,
+            Self::Format
+            | Self::Style
+            | Self::Size
+            | Self::Legend
+            | Self::PointOpacity
+            | Self::PointSize
+            | Self::LineWidth
+            | Self::YFromZero
+            | Self::Recipe => false,
+        }
+    }
+
     /// The field's label.
     pub fn label(self) -> &'static str {
         FIELDS
@@ -388,11 +412,7 @@ impl crate::form::Form for ChartExportModal {
         self.shown()
             .into_iter()
             .map(|f| {
-                let kind = if self.choice(f).is_some() {
-                    Choice
-                } else {
-                    Text
-                };
+                let kind = if f.is_text() { Text } else { Choice };
                 (f, kind)
             })
             .collect()
@@ -491,6 +511,20 @@ mod tests {
         assert_eq!(modal.legend, LegendPlace::Off);
         // A line takes its width and Y from zero, not the points' rows.
         assert_eq!(modal.fields().len(), FIELDS.len() - 2);
+    }
+
+    /// A text field has an input and no choice; every other field, a choice.
+    #[test]
+    fn a_field_is_text_or_a_choice() {
+        let mut modal = opened();
+        for (field, _) in FIELDS {
+            assert_eq!(modal.choice(field).is_none(), field.is_text(), "{field:?}");
+            assert_eq!(
+                modal.input_mut(field).is_some(),
+                field.is_text(),
+                "{field:?}"
+            );
+        }
     }
 
     /// A mark row shows only for the chart types it changes, so focus never lands

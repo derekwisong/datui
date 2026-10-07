@@ -915,7 +915,7 @@ fn a_nested_row_keeps_the_meta_columns_where_the_place_row_ends() {
             &ctx,
         );
         assert_eq!(drawn(place), entry_width, "{name_width}");
-        let more = more_line(3, 2, false, name_width, true, &ctx);
+        let more = more_line(3, 2, false, false, name_width, true, &ctx);
         assert_eq!(drawn(more), entry_width, "{name_width}");
     }
 }
@@ -979,8 +979,8 @@ fn a_place_row_names_only_a_filesystem_worth_naming() {
 #[test]
 fn the_more_row_counts_rows_and_places() {
     let ctx = RenderContext::for_test();
-    let text = |hidden: usize, places: usize| -> String {
-        more_line(hidden, places, false, 40, false, &ctx)
+    let text = |hidden: usize, places: usize, measuring: bool| -> String {
+        more_line(hidden, places, measuring, false, 40, false, &ctx)
             .spans
             .iter()
             .map(|s| s.content.to_string())
@@ -990,12 +990,24 @@ fn the_more_row_counts_rows_and_places() {
     };
     let g = glyphs::get();
     assert_eq!(
-        text(13, 5),
+        text(13, 5, false),
         format!("{}{} 13 more in 5 places", g.selector_blank, g.ellipsis)
     );
     assert_eq!(
-        text(1, 1),
+        text(1, 1, false),
         format!("{}{} 1 more in 1 place", g.selector_blank, g.ellipsis)
+    );
+    // A directory's: files and directories both, so no noun.
+    assert_eq!(
+        text(4958, 0, false),
+        format!("{}{} 4,958 more", g.selector_blank, g.ellipsis)
+    );
+    assert_eq!(
+        text(4958, 0, true),
+        format!(
+            "{}{} 4,958 more {} measuring",
+            g.selector_blank, g.ellipsis, g.middot
+        )
     );
 }
 

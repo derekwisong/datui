@@ -1829,8 +1829,8 @@ impl App {
         let Some(section) = self.home.selected_section() else {
             return;
         };
-        // A directory cut to its first rows shows them all, and is cut again, before
-        // its section folds.
+        // → on a section's more row shows it whole (a directory, or RECENT); ← on a
+        // row that its cut would hide cuts it back. Anywhere else they fold.
         if collapse && self.home.cut_again(section) {
             return;
         }
@@ -2182,7 +2182,7 @@ impl App {
                     .sections
                     .get(section)
                     .and_then(|s| s.root.as_deref())
-                    .and_then(home::parent_location)
+                    .and_then(|root| self.home.parent_of(root))
                 {
                     self.home_browse_into(parent);
                 }

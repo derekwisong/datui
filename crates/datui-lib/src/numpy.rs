@@ -83,10 +83,6 @@ pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
 /// The first six bytes of every `.npy` file.
 pub const MAGIC: &[u8; 6] = b"\x93NUMPY";
 
-/// The longest header read. NumPy's own reader refuses past 10,000 bytes unless told
-/// otherwise; a structured type of many fields can be longer, and this is still small.
-pub const MAX_HEADER: usize = 4 << 20;
-
 /// Nesting of the header's literal, and of structured types inside structured types.
 const MAX_DEPTH: usize = 32;
 
@@ -734,10 +730,15 @@ pub fn header_len(head: &[u8]) -> std::result::Result<(usize, usize), String> {
             ));
         }
     };
-    if len > MAX_HEADER {
+    // NumPy's own reader refuses past 10,000 bytes unless told otherwise; a structured
+    // type of many fields can be longer, and the default is still small.
+    let most = crate::limits::get().npy_header_bytes.bytes();
+    if len as u64 > most {
+        let size = crate::numfmt::bytes;
         return Err(format!(
-            "its header is {len} bytes, more than the {} MiB datui reads",
-            MAX_HEADER >> 20
+            "its header is {}; datui reads headers up to {}, and limits.npy_header_bytes raises it",
+            size(len as u64),
+            size(most)
         ));
     }
     Ok((prefix, len))
@@ -1387,6 +1388,18 @@ fn arrays(members: &[Member]) -> Vec<Table> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A header past `limits.npy_header_bytes` is refused, naming the key.
+    #[test]
+    fn a_header_past_the_limit_names_its_key() {
+        let mut head = b"\x93NUMPY\x02\x00".to_vec();
+        let past = crate::limits::get().npy_header_bytes.bytes() as u32 + 1;
+        head.extend_from_slice(&past.to_le_bytes());
+        let refused = header_len(&head).unwrap_err();
+        assert!(refused.contains("limits.npy_header_bytes"), "{refused}");
+        head[8..12].copy_from_slice(&64u32.to_le_bytes());
+        assert_eq!(header_len(&head), Ok((12, 64)));
+    }
 
     /// Every way an array is refused names the file, in the one shape.
     #[test]

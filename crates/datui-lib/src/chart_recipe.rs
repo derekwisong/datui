@@ -8,13 +8,13 @@ impl App {
     /// The chart drawn of the dataset on screen, as a view keeps it; `None` before a
     /// chart of it has been chosen.
     pub(crate) fn saved_chart(&self) -> Option<SavedChart> {
-        let modal = &self.chart_modal;
+        let modal = &self.chart.modal;
         if modal.dataset != Some(self.dataset_generation)
             || modal.x().is_none() && modal.y().is_empty()
         {
             return None;
         }
-        let export = self.chart_export_modal.saved();
+        let export = self.chart.export_modal.saved();
         Some(modal.saved(self.analysis_modal.sample.seed, Some(export)))
     }
 
@@ -24,7 +24,7 @@ impl App {
         let Some(chart) = chart else {
             return;
         };
-        self.chart_modal.restore(chart, self.dataset_generation);
+        self.chart.modal.restore(chart, self.dataset_generation);
         // The chart's own sample is drawn from the tools' seed; a view's sample is
         // read whole and needs none.
         if let Some(seed) = chart.seed
@@ -32,7 +32,7 @@ impl App {
         {
             self.analysis_modal.sample.seed = seed;
         }
-        self.chart_export_modal.restore = chart.export.clone();
+        self.chart.export_modal.restore = chart.export.clone();
     }
 
     /// How the chart on screen was made, as a view's JSON that reads back as one:

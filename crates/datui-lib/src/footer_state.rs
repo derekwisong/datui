@@ -220,16 +220,7 @@ impl App {
             .as_deref()
             .map(|path| self.home.location_label(path));
         if !self.home.filter.is_empty() {
-            let matches: usize = self
-                .home
-                .visible()
-                .iter()
-                .map(|row| match row {
-                    crate::home::Row::Header { matches, .. } => *matches,
-                    _ => 0,
-                })
-                .sum();
-            footer.stages.push(match matches {
+            footer.stages.push(match self.home.matched() {
                 1 => "1 match".to_string(),
                 n => format!("{} matches", crate::numfmt::group_chrome(n)),
             });

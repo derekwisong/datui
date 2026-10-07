@@ -9244,3 +9244,212 @@ fn test_a_big_directory_shows_its_first_rows_and_a_row_for_the_rest() {
         "the cursor goes to the row standing for the row it was on"
     );
 }
+
+/// Coming back to a row past a directory's cut (entered through the filter, which
+/// is then cleared) shows the directory whole, the cursor on that row.
+#[test]
+fn test_returning_to_a_row_past_the_cut_shows_it() {
+    let tmp = TempDir::new().unwrap();
+    for i in 0..60 {
+        touch(tmp.path(), &format!("f{i:02}.csv"));
+    }
+    let _cwd = in_cwd(tmp.path());
+    let mut home = HomeState {
+        view_height: 20,
+        ..Default::default()
+    };
+    home.rebuild(&[]);
+    let f50 = home
+        .sections
+        .iter()
+        .flat_map(|s| s.rows.iter())
+        .find(|r| r.name == "f50.csv")
+        .map(|r| r.path.clone())
+        .unwrap();
+    assert!(
+        !home
+            .visible()
+            .iter()
+            .any(|r| matches!(r, Row::Entry { entry, .. } if entry.path == f50)),
+        "past the cut"
+    );
+    assert!(home.reselect(Some(datui::home::RowKey::Entry(f50.clone()))));
+    assert!(
+        matches!(home.selected_row(), Some(Row::Entry { entry, .. }) if entry.path == f50),
+        "{:?}",
+        home.selected_row()
+    );
+    assert!(
+        !home.visible().iter().any(|r| matches!(r, Row::More { .. })),
+        "the directory is shown whole"
+    );
+}
+
+/// Sorted by rows, the rows past a directory's cut are measured too, so the biggest
+/// of the whole directory comes first; the more row says so until they are. In the
+/// natural order only the rows listed are measured.
+#[test]
+fn test_sorting_by_rows_measures_past_the_cut() {
+    let tmp = TempDir::new().unwrap();
+    for i in 0..30i32 {
+        let mut frame = polars::prelude::DataFrame::new(
+            (i + 1) as usize,
+            vec![polars::prelude::Column::new(
+                "n".into(),
+                (0..=i).collect::<Vec<i32>>(),
+            )],
+        )
+        .unwrap();
+        let file = fs::File::create(tmp.path().join(format!("f{i:02}.parquet"))).unwrap();
+        polars::prelude::ParquetWriter::new(file)
+            .finish(&mut frame)
+            .unwrap();
+    }
+    let _cwd = in_cwd(tmp.path());
+    let mut home = HomeState {
+        view_height: 20,
+        ..Default::default()
+    };
+    home.rebuild(&[]);
+    let at = home
+        .sections
+        .iter()
+        .position(|s| s.rows.len() == 30)
+        .expect("the working directory's section");
+    let more = |home: &HomeState| {
+        home.visible().into_iter().find_map(|r| match r {
+            Row::More {
+                section, measuring, ..
+            } if section == at => Some(measuring),
+            _ => None,
+        })
+    };
+    while home.measure_now(100) {}
+    assert_eq!(home.enriched.len(), 8, "only the rows listed");
+    assert_eq!(more(&home), Some(false));
+
+    home.sort = datui::home::SortMode::Rows;
+    assert_eq!(more(&home), Some(true), "the rest are still to measure");
+    while home.measure_now(100) {}
+    assert_eq!(home.enriched.len(), 30);
+    assert_eq!(more(&home), Some(false));
+    let first = home.visible().into_iter().find_map(|r| match r {
+        Row::Entry { section, entry, .. } if section == at => Some(entry.name.clone()),
+        _ => None,
+    });
+    assert_eq!(first.as_deref(), Some("f29.parquet"), "the biggest of all");
+}
+
+/// At the root listing the working directory's section starts with `..` too, and
+/// Enter on it goes inside the directory above.
+#[test]
+fn test_dot_dot_at_the_root_listing_goes_above_the_root() {
+    common::isolate_cache();
+    let tmp = TempDir::new().unwrap();
+    let listed = tmp.path().join("listed");
+    touch(&listed, "a.csv");
+    let _cwd = in_cwd(&listed);
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = datui::App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.rebuild(&[]);
+    assert_eq!(app.home.browsing, None);
+    let (up, root) = app
+        .home
+        .visible()
+        .iter()
+        .enumerate()
+        .find_map(|(i, row)| match row {
+            Row::Up { section } => Some((i, app.home.sections[*section].root.clone()?)),
+            _ => None,
+        })
+        .expect("a way up above the root");
+    app.home.selected = up;
+    assert_eq!(app.what_enter_does(), datui::WhatEnter::GoesUp);
+    let _ = app.event(&datui::AppEvent::Key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Enter,
+        crossterm::event::KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        app.home.browsing,
+        root.parent().map(std::path::Path::to_path_buf)
+    );
+    assert_eq!(app.home.browsing.as_deref(), Some(tmp.path()));
+}
+
+/// → on a directory's more row shows it whole. ← on a row past its first ones cuts
+/// it back, the cursor on the more row; ← on one of its first rows folds the section.
+#[test]
+fn test_left_and_right_show_and_cut_a_big_directory() {
+    common::isolate_cache();
+    let tmp = TempDir::new().unwrap();
+    for i in 0..60 {
+        touch(tmp.path(), &format!("f{i:02}.csv"));
+    }
+    let _cwd = in_cwd(tmp.path());
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = datui::App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.set_view_height(20);
+    app.home.rebuild(&[]);
+    let at = app
+        .home
+        .sections
+        .iter()
+        .position(|s| s.rows.len() == 60)
+        .expect("the working directory's section");
+    let press = |app: &mut datui::App, code| {
+        let _ = app.event(&datui::AppEvent::Key(crossterm::event::KeyEvent::new(
+            code,
+            crossterm::event::KeyModifiers::NONE,
+        )));
+    };
+    let entries = |app: &datui::App| {
+        app.home
+            .visible()
+            .iter()
+            .filter(|r| matches!(r, Row::Entry { section, .. } if *section == at))
+            .count()
+    };
+    let select = |app: &mut datui::App, name: &str| {
+        app.home.selected = app
+            .home
+            .visible()
+            .iter()
+            .position(|r| matches!(r, Row::Entry { entry, .. } if entry.name == name))
+            .unwrap();
+    };
+    use crossterm::event::KeyCode;
+    assert_eq!(entries(&app), 8);
+
+    app.home.selected = app
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, Row::More { section, .. } if *section == at))
+        .unwrap();
+    press(&mut app, KeyCode::Right);
+    assert_eq!(entries(&app), 60, "→ on the more row shows them all");
+
+    select(&mut app, "f50.csv");
+    press(&mut app, KeyCode::Left);
+    assert_eq!(
+        entries(&app),
+        8,
+        "← on a row past the first ones cuts it back"
+    );
+    assert!(!app.home.is_collapsed(at));
+    assert!(
+        matches!(app.home.selected_row(), Some(Row::More { section, .. }) if section == at),
+        "{:?}",
+        app.home.selected_row()
+    );
+
+    press(&mut app, KeyCode::Right);
+    assert_eq!(entries(&app), 60);
+    select(&mut app, "f01.csv");
+    press(&mut app, KeyCode::Left);
+    assert!(app.home.is_collapsed(at), "← on a first row folds");
+    press(&mut app, KeyCode::Right);
+    assert_eq!(entries(&app), 60, "unfolded, still whole");
+}

@@ -44,8 +44,8 @@ impl App {
     /// text depend on the row's values, which a key may have moved.
     fn refresh_inspector_list(&mut self) {
         if let Some(state) = self.data_table_state.as_ref() {
-            let visible = crate::widgets::inspector::visible_fields(&self.inspector_modal, state);
-            self.inspector_modal.set_visible(visible);
+            let row = state.inspect_row();
+            crate::widgets::inspector::refresh_list(&mut self.inspector_modal, state, row.as_ref());
         }
     }
 

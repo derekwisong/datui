@@ -86,6 +86,8 @@ pub enum JobKind {
     HexOpen,
     HexFind,
     UnfitCount,
+    FootersJoin,
+    JournalDetail,
 }
 
 /// One started operation. Issued when it starts, carried by its worker, and handed
@@ -194,6 +196,12 @@ pub(crate) enum Job {
     /// by the `dataset_generation` it was asked for, as the file facts are.
     /// `version` is the view's column changes counted; `None` for the read's types.
     UnfitCount { dataset: u64, version: Option<u64> },
+    /// The pass behind a staged open reading every footer, for the `dataset_generation`
+    /// it was started for: judged by that, since it outlives several collects.
+    FootersJoin { dataset: u64 },
+    /// A piped journal's Info tab read again once it ended, for the
+    /// `dataset_generation` it was read for.
+    JournalDetail { dataset: u64 },
 }
 
 /// A look at a path chosen on the home screen. Every key acts on the home screen even
@@ -306,6 +314,8 @@ impl Job {
             Job::HexOpen { .. } => JobKind::HexOpen,
             Job::HexFind(_) => JobKind::HexFind,
             Job::UnfitCount { .. } => JobKind::UnfitCount,
+            Job::FootersJoin { .. } => JobKind::FootersJoin,
+            Job::JournalDetail { .. } => JobKind::JournalDetail,
         }
     }
 
@@ -330,7 +340,8 @@ impl Job {
     /// - the looks at a path named on the command line, whose answers are meant to be
     ///   thrown away when the user moves on (Ctrl+O out of a long look must not hold
     ///   the next dataset's rows behind it);
-    /// - the Info panel's file facts, judged by the dataset rather than the generation;
+    /// - the Info panel's file facts, a journal's detail and the footer pass, judged
+    ///   by the dataset rather than the generation;
     /// - the Pivot & Melt preview, judged by the builder's request;
     /// - a chart's data, judged by its dataset and asked for again whenever it is
     ///   missing.
@@ -346,6 +357,8 @@ impl Job {
                 | Job::LookAtDirectory { .. }
                 | Job::FileFacts { .. }
                 | Job::UnfitCount { .. }
+                | Job::FootersJoin { .. }
+                | Job::JournalDetail { .. }
                 | Job::ReshapePreview { .. }
                 | Job::ChartPrepare(_)
         )
@@ -361,6 +374,8 @@ impl Job {
             Job::FileFacts { .. }
                 | Job::SampleDraw(_)
                 | Job::UnfitCount { .. }
+                | Job::FootersJoin { .. }
+                | Job::JournalDetail { .. }
                 | Job::ChartExport { .. }
                 | Job::ChartPrepare(_)
                 | Job::OwedRows { .. }
@@ -477,6 +492,11 @@ pub(crate) enum Answer {
     /// A test's answer, which says when it is dropped.
     #[cfg(test)]
     Probe(Arc<()>),
+    /// [`Job::FootersJoin`]: what the footers say; `None` when the pass could not read
+    /// them, so the dataset stops waiting for it.
+    FootersJoined(Option<Box<crate::table::FootersFound>>),
+    /// [`Job::JournalDetail`]: the journal's Info tab, when it could be read.
+    JournalDescribed(Option<Box<crate::text_formats::Detail>>),
 }
 
 impl Answer {
@@ -1507,6 +1527,8 @@ mod tests {
         let look = jobs.start(Job::LookAtDirectory { load, path }, None);
         let named = jobs.start(Job::OpenNamed(load), None);
         let facts = jobs.start(Job::FileFacts { dataset: 1 }, None);
+        let footers = jobs.start(Job::FootersJoin { dataset: 1 }, None);
+        let journal = jobs.start(Job::JournalDetail { dataset: 1 }, None);
         assert!(!jobs.would_strand());
         assert!(jobs.try_advance());
         assert!(!jobs.is_current(rows.ticket()));
@@ -1516,6 +1538,10 @@ mod tests {
             jobs.is_current(facts.ticket()),
             "file facts follow the dataset"
         );
+        // The footer pass outlives every collect of its dataset, which bumps the
+        // generation; its answer is judged by the dataset alone. So is a journal's.
+        assert!(jobs.is_current(footers.ticket()));
+        assert!(jobs.is_current(journal.ticket()));
     }
 
     /// Progress is sent with the job's ticket; what runs after the answer runs after

@@ -337,6 +337,12 @@ pub struct PivotMeltModal {
     pub melt_explicit_list: Vec<String>,
     pub melt_variable_input: TextInput,
     pub melt_value_input: TextInput,
+    /// The pattern last compiled and what it compiled to: asked for per frame and per
+    /// key, compiled once per change.
+    melt_pattern: std::sync::Mutex<Option<(String, Result<regex::Regex, String>)>>,
+    /// Times a pattern was compiled, for a test that a frame reuses it.
+    #[cfg(test)]
+    pattern_compiles: std::sync::atomic::AtomicUsize,
 }
 
 impl Default for PivotMeltModal {
@@ -361,6 +367,9 @@ impl Default for PivotMeltModal {
             melt_explicit_list: Vec::new(),
             melt_variable_input: TextInput::new(),
             melt_value_input: TextInput::new(),
+            melt_pattern: Default::default(),
+            #[cfg(test)]
+            pattern_compiles: Default::default(),
         };
         modal.melt_variable_input.suggest("variable");
         modal.melt_value_input.suggest("value");
@@ -833,6 +842,24 @@ impl PivotMeltModal {
         }
     }
 
+    /// The melt pattern compiled, or why it does not compile.
+    fn melt_pattern_regex(&self) -> Result<regex::Regex, String> {
+        let pattern = self.melt_pattern_input.value();
+        let mut kept = self.melt_pattern.lock().unwrap_or_else(|e| e.into_inner());
+        match kept.as_ref() {
+            Some((seen, compiled)) if seen == pattern => compiled.clone(),
+            _ => {
+                let compiled =
+                    regex::Regex::new(pattern).map_err(|e| format!("Invalid pattern: {}", e));
+                #[cfg(test)]
+                self.pattern_compiles
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                *kept = Some((pattern.to_string(), compiled.clone()));
+                compiled
+            }
+        }
+    }
+
     pub fn melt_resolve_value_columns(&self) -> Result<Vec<String>, String> {
         let pool = self.melt_value_pool();
         match self.melt_value_strategy {
@@ -843,8 +870,7 @@ impl PivotMeltModal {
                 Ok(pool)
             }
             MeltValueStrategy::ByPattern => {
-                let re = regex::Regex::new(self.melt_pattern_input.value())
-                    .map_err(|e| format!("Invalid pattern: {}", e))?;
+                let re = self.melt_pattern_regex()?;
                 let matched: Vec<String> = pool.into_iter().filter(|c| re.is_match(c)).collect();
                 if matched.is_empty() {
                     return Err("Pattern matches no columns.".to_string());
@@ -1179,6 +1205,33 @@ mod tests {
             m.melt_spec_line().unwrap(),
             "melt 2 value columns by pattern \"q[12]\""
         );
+    }
+
+    /// A pattern is compiled once per change, however often the form asks for it.
+    #[test]
+    fn the_melt_pattern_is_compiled_once_per_change() {
+        let compiles = |m: &PivotMeltModal| {
+            m.pattern_compiles
+                .load(std::sync::atomic::Ordering::Relaxed)
+        };
+        let mut m = modal_with_columns(&["id", "q1", "q2", "q3"]);
+        m.switch_tab();
+        m.melt_index_columns = vec!["id".to_string()];
+        m.melt_value_strategy = MeltValueStrategy::ByPattern;
+        m.melt_pattern_input.set_value("q[12]");
+        for _ in 0..4 {
+            assert!(m.staged_spec().is_some());
+            m.melt_spec_line().unwrap();
+        }
+        assert_eq!(compiles(&m), 1);
+        m.melt_pattern_input.set_value("q[");
+        assert!(m.staged_spec().is_none());
+        assert!(
+            m.melt_spec_line()
+                .unwrap_err()
+                .starts_with("Invalid pattern")
+        );
+        assert_eq!(compiles(&m), 2);
     }
 
     #[test]

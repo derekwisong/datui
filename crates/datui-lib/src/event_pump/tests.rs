@@ -1306,8 +1306,8 @@ fn ctrl_c_quits_from_the_sort_and_chart_search_boxes() {
 
     let (mut p2, _d) = loaded_pump();
     p2.app.overlay = Overlay::Chart;
-    p2.app.chart_modal.active = true;
-    p2.app.chart_modal.open(
+    p2.app.chart.modal.active = true;
+    p2.app.chart.modal.open(
         crate::chart_modal::ChartColumns {
             numeric: &["a".to_string(), "b".to_string()],
             ..Default::default()
@@ -1317,8 +1317,8 @@ fn ctrl_c_quits_from_the_sort_and_chart_search_boxes() {
         false,
         0,
     );
-    p2.app.chart_modal.focus = ChartFocus::X;
-    p2.app.chart_modal.open_picker();
+    p2.app.chart.modal.focus = ChartFocus::X;
+    p2.app.chart.modal.open_picker();
     assert!(
         p2.app.text_field_focused(),
         "the open Picker narrows by typing"
@@ -1927,7 +1927,7 @@ fn ctrl_c_quits_from_chart_mode_while_busy() {
     for c in ['c', 'q'] {
         let mut p = pump();
         p.app.overlay = Overlay::Chart;
-        p.app.chart_modal.active = true;
+        p.app.chart.modal.active = true;
         p.app.busy = true;
         assert!(matches!(
             p.app.handle(&AppEvent::Key(ctrl(c))),
@@ -3075,18 +3075,18 @@ fn a_click_on_the_chart_panel_focuses_and_acts() {
     p.terminal_key(plain(KeyCode::Char('c'))).unwrap();
     settle(&mut p);
     assert_eq!(p.app.overlay, Overlay::Chart);
-    let mark = p.app.chart_modal.spec.mark;
+    let mark = p.app.chart.modal.spec.mark;
     let at = on_screen(&mut p.app, "Type");
     assert!(p.terminal_mouse(click(at)).unwrap());
     settle(&mut p);
-    assert_eq!(p.app.chart_modal.focus, ChartFocus::Type);
-    assert_ne!(p.app.chart_modal.spec.mark, mark, "the type stepped");
-    let grid = p.app.chart_modal.grid;
+    assert_eq!(p.app.chart.modal.focus, ChartFocus::Type);
+    assert_ne!(p.app.chart.modal.spec.mark, mark, "the type stepped");
+    let grid = p.app.chart.modal.grid;
     let at = on_screen(&mut p.app, "Grid");
     p.terminal_mouse(click(at)).unwrap();
     settle(&mut p);
-    assert_eq!(p.app.chart_modal.focus, ChartFocus::Grid);
-    assert_ne!(p.app.chart_modal.grid, grid, "the grid flipped");
+    assert_eq!(p.app.chart.modal.focus, ChartFocus::Grid);
+    assert_ne!(p.app.chart.modal.grid, grid, "the grid flipped");
 }
 
 /// A header carried off the columns is over itself again: let go there, nothing
@@ -3326,6 +3326,40 @@ fn mouse_actions_while_busy_obey_the_key_rules() {
     settle(&mut p);
     let state = p.app.data_table_state.as_ref().unwrap();
     assert!(state.view_filters().is_empty(), "and its key was dropped");
+}
+
+/// The loop draws a background count's spinner about ten times a second with the
+/// user idle, and thirty while the user waits: frames the loop drew in one second.
+#[test]
+fn a_background_count_redraws_at_the_idle_cadence() {
+    let frames = |waited_on: bool| {
+        let mut p = pump();
+        // A count in flight that never reports: the spinner turns until the exit.
+        p.app.counting.len_count_inflight = Some(p.app.task_generation());
+        p.app.busy = waited_on;
+        assert!(p.app.something_is_spinning());
+        assert_eq!(p.app.is_busy(), waited_on);
+        let tx = p.tx.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(1));
+            let _ = tx.send(AppEvent::Exit);
+        });
+        let mut drawn = 0;
+        assert_eq!(
+            p.run(|_| {
+                drawn += 1;
+                Ok(())
+            })
+            .unwrap(),
+            Ended::Quit
+        );
+        drawn
+    };
+    let idle = frames(false);
+    // The first frame, ten turns, and one for the exit; never the waited-on rate.
+    assert!((5..=13).contains(&idle), "{idle} frames idle");
+    let waiting = frames(true);
+    assert!(waiting > 13, "{waiting} frames while the user waits");
 }
 
 /// A spinner for work nobody waits on, a count say, turns about ten times a second:

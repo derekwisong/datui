@@ -190,11 +190,4 @@ datui run.npz/weights
 - A file shorter than its shape says shows the rows it holds; the Notes tab
   says so.
 - A file named without `.npy` is known by its first bytes, `\x93NUMPY`.
-
-- `NaT` is null.
-- Big-endian (`>i4`) and little-endian fields mix in one array.
-- Fortran (column-major) order reads the same as C order.
-- Padding fields (`align=True`) are left out, and fields at offsets
-  (`offsets`, `itemsize`) are read where they are.
-- A file shorter than its shape says shows the rows it holds; the Notes tab
-  says so.
+- A header over 4 MiB (`npy_header_bytes` in `[limits]`) is refused.

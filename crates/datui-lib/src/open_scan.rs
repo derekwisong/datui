@@ -178,11 +178,6 @@ impl App {
         // app, so a load that never reaches the screen never has one installed. See
         // `DataTableState::measurements`.
         self.counting.footer_progress.cancel();
-        *self
-            .counting
-            .pending_footers_result
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     /// Put down what the app keeps for a load the loader has retired: its jobs, whose

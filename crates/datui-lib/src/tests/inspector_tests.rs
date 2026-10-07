@@ -212,3 +212,36 @@ fn enter_reads_an_unread_field_and_the_footer_says_so() {
         "{screen}"
     );
 }
+
+/// The fields listed are worked out once per change: a frame with nothing changed
+/// reuses them; a change of order or of row works them out again.
+#[test]
+fn the_field_list_is_worked_out_once_per_change() {
+    let (mut app, _rx) = app();
+    press(&mut app, KeyCode::Char(' '));
+    assert_eq!(app.overlay, Overlay::Inspect);
+    draw(&mut app);
+    let builds = app.inspector_modal.list_builds;
+    draw(&mut app);
+    draw(&mut app);
+    assert_eq!(
+        app.inspector_modal.list_builds, builds,
+        "frames reuse the list"
+    );
+    press(&mut app, KeyCode::Char('s'));
+    draw(&mut app);
+    assert_eq!(
+        app.inspector_modal.list_builds,
+        builds + 1,
+        "the order changed"
+    );
+    draw(&mut app);
+    assert_eq!(app.inspector_modal.list_builds, builds + 1);
+    app.data_table_state
+        .as_mut()
+        .unwrap()
+        .table_state
+        .select(Some(1));
+    draw(&mut app);
+    assert_eq!(app.inspector_modal.list_builds, builds + 2, "another row");
+}

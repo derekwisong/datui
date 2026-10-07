@@ -690,6 +690,77 @@ fn the_live_matches_follow_the_rows_on_hand() {
     assert!(after > before, "{before} -> {after}");
 }
 
+/// The view moving past the rows the matches were worked out over, with the prompt
+/// open, lights the rows it comes to.
+#[test]
+fn the_live_matches_follow_the_view_past_their_window() {
+    let csv: String = std::iter::once("n".to_string())
+        .chain((0..200).map(|i| format!("x{i}")))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut h = Harness::with_csv(&csv);
+    query_screen(&mut h.app);
+    h.press(KeyCode::Char('/'));
+    h.type_str("x");
+    query_screen(&mut h.app);
+    let state = h.app.data_table_state.as_mut().unwrap();
+    let page = state.visible_rows;
+    let start = 4 * page;
+    let collect = state.scroll_to(start);
+    let lit = |h: &Harness| {
+        h.app
+            .prompt
+            .find
+            .live
+            .as_ref()
+            .map_or(0, |l| l.within(start..start + page))
+    };
+    assert_eq!(lit(&h), 0, "past the window the prompt opened over");
+    // The collect the scroll asks for, or any event, looks again.
+    h.run(if collect {
+        AppEvent::Collect
+    } else {
+        AppEvent::FramePainted
+    });
+    query_screen(&mut h.app);
+    assert_eq!(
+        h.app.live_on_screen(),
+        Some(page),
+        "every row on screen lit"
+    );
+    assert_eq!(lit(&h), page);
+}
+
+/// A resize sets the rows on screen as it draws, after the event pass: the frame
+/// that drew it works the matches out again and wakes the loop to draw them.
+#[test]
+fn the_live_matches_follow_a_resize() {
+    let csv: String = std::iter::once("n".to_string())
+        .chain((0..200).map(|i| format!("x{i}")))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut h = Harness::with_csv(&csv);
+    // Rows on hand for the tall view, read before the prompt opens on a short one.
+    let area = Rect::new(0, 0, 100, 120);
+    h.app.render(area, &mut Buffer::empty(area));
+    h.run(AppEvent::Collect);
+    query_screen(&mut h.app);
+    h.press(KeyCode::Char('/'));
+    h.type_str("x");
+    let short = h.app.data_table_state.as_ref().unwrap().visible_rows;
+    h.app.render(area, &mut Buffer::empty(area));
+    let tall = h.app.data_table_state.as_ref().unwrap().visible_rows;
+    assert!(tall > 3 * short, "{short} -> {tall}");
+    assert!(h.app.live_on_screen().unwrap() < tall, "the window lags");
+    while h.rx.try_recv().is_ok() {}
+    h.app.frame_painted();
+    assert!(
+        std::iter::from_fn(|| h.rx.try_recv().ok()).any(|e| matches!(e, AppEvent::Wake)),
+        "the loop is woken to draw them"
+    );
+    assert_eq!(h.app.live_on_screen(), Some(tall));
+}
+
 /// Letters in order: `gce` finds grace.
 #[test]
 fn a_fuzzy_find_matches_letters_in_order() {

@@ -60,9 +60,11 @@ then types). Letters type into the filter, so
 A directory's section starts with `..`: <kbd>Enter</kbd> on it goes up a
 level, as <kbd>Backspace</kbd> does inside a directory. A directory too big for
 the list beside the other sections shows its first rows (about two fifths of the
-list's height) and `… 4,958 more files`: <kbd>Enter</kbd> or <kbd>→</kbd> there
-shows them all, and <kbd>←</kbd> cuts it back. Its heading counts every row, and
-a typed filter searches them all.
+list's height) and `… 4,958 more`: <kbd>Enter</kbd> or <kbd>→</kbd> there
+shows them all. <kbd>←</kbd> on a row past the first ones cuts it back; on a first
+row it folds the section. Its heading counts every row, and a typed filter
+searches them all. Sorted by rows, the rows past the cut are measured too, and the
+more row says `· measuring` until they are.
 
 Folds last between runs. A heading says why its section is listed and how it
 stands: `catalog.toml`, `catalog` or `built in` for a catalog; `nfs4`, `listing`
@@ -76,7 +78,8 @@ four times within the hour, twice within the day, half within the week and a
 quarter after. A place (a directory) ranks with its best dataset, and
 entering it shows all its files, opened or not. The cursor starts on the
 dataset opened last, so <kbd>Enter</kbd> reopens it. Places fill up to a third
-of the list at first; `… more in … places` shows the rest.
+of the list at first; `… more in … places` shows the rest, and <kbd>←</kbd>
+on a place past the first ones cuts it back, as in a directory's section.
 
 ### Add to your catalog
 

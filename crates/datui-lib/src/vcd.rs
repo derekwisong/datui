@@ -41,8 +41,6 @@ pub const MAX_TOKEN: usize = 1 << 20;
 pub const MAX_TEXT: usize = 4096;
 /// The deepest scope nesting.
 pub const MAX_DEPTH: usize = 256;
-/// The most signals declared.
-pub const MAX_VARS: usize = 1 << 20;
 /// The most bytes of signal paths held, all signals together.
 pub const MAX_PATHS: usize = 64 << 20;
 /// The most tokens one `$var` or `$scope` section may hold.
@@ -160,7 +158,10 @@ pub struct Stats {
     pub unreadable: u64,
     /// Value changes for an identifier no `$var` declared.
     pub undeclared: u64,
-    /// Signals past [`MAX_VARS`], or scopes past [`MAX_DEPTH`], left out.
+    /// Signals past `limits.vcd_signals`, left out.
+    pub signals_dropped: u64,
+    /// Signals in scopes past [`MAX_DEPTH`], or with paths past [`MAX_TEXT`] or
+    /// [`MAX_PATHS`], left out.
     pub vars_dropped: u64,
     /// Times that do not fit a Duration in nanoseconds, made null.
     pub overflowed: u64,
@@ -236,6 +237,8 @@ pub struct VcdReader {
     stats: Stats,
     /// Whether anything VCD was read: a section or a time.
     seen: bool,
+    /// `limits.vcd_signals`, read once for the file.
+    max_signals: usize,
 }
 
 impl Default for VcdReader {
@@ -262,6 +265,7 @@ impl VcdReader {
             held: 0,
             stats: Stats::default(),
             seen: false,
+            max_signals: crate::limits::get().vcd_signals,
         }
     }
 
@@ -553,11 +557,11 @@ impl VcdReader {
         let len = self.scope.iter().map(|s| s.len() + 1).sum::<usize>()
             + name.len()
             + range.iter().map(String::len).sum::<usize>();
-        if self.header.vars.len() >= MAX_VARS
-            || self.too_deep > 0
-            || len > MAX_TEXT
-            || self.path_bytes + len > MAX_PATHS
-        {
+        if self.header.vars.len() >= self.max_signals {
+            self.stats.signals_dropped += 1;
+            return;
+        }
+        if self.too_deep > 0 || len > MAX_TEXT || self.path_bytes + len > MAX_PATHS {
             self.stats.vars_dropped += 1;
             return;
         }
@@ -683,12 +687,22 @@ fn notes(reader: &VcdReader) -> Vec<Note> {
             of_rows.clone(),
         ));
     }
+    if stats.signals_dropped > 0 {
+        notes.push(note(
+            crate::limits::left_out(
+                &count(stats.signals_dropped, "signal", "signals"),
+                crate::limits::get().vcd_signals,
+                "vcd_signals",
+            ),
+            "in the header".to_string(),
+        ));
+    }
+    // Bounds on the file's shape, not on how much of it is read: no setting.
     if stats.vars_dropped > 0 {
         notes.push(note(
             format!(
-                "{} left out: past limits ({} signals, {} scopes deep, {} bytes a name)",
+                "{} left out: nested past {} scopes, or a name past {} bytes",
                 count(stats.vars_dropped, "declaration", "declarations"),
-                group_u64(MAX_VARS as u64),
                 MAX_DEPTH,
                 group_u64(MAX_TEXT as u64)
             ),

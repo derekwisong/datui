@@ -176,8 +176,8 @@ per value change of each signal, read once into a temporary Arrow IPC file.
   number of value changes and their time span, and each signal's type, width
   and identifier. The Notes tab counts tokens that are not VCD and changes to
   undeclared identifiers.
-- A token is at most 1 MiB, and a header holds at most 1,048,576 signals, 256
-  scopes deep.
+- A token is at most 1 MiB, and a header holds at most 1,048,576 signals
+  (`vcd_signals` in `[limits]`), 256 scopes deep.
 
 The wide table, one row per time and one column per signal, each carried
 forward from its last change, is this SQL query on `counter.vcd` above; for
@@ -296,7 +296,7 @@ has no dates, and `time` is null throughout.
 | the rest | The point's other fields (`name`, `sym`, `sat`, `hdop`...) and each leaf of its `<extensions>` by its name without the namespace (`hr`, `cad`, `atemp`), as numbers when every value is one |
 
 A file cut off mid-element opens with the points before the cut, and says so in
-Notes.
+Notes. A file's other fields add at most 256 columns (`gpx_fields` in `[limits]`).
 
 ### The gap column
 
@@ -472,8 +472,8 @@ be one per line or back to back.
   the delimiter or a newline.
 - A bad message stays: its checks are false, and the Notes tab counts them, the
   lines with no message, and messages cut short.
-- A message is at most 1 MiB and holds at most 4,096 fields; at most 4,096 tags
-  become columns.
+- A message is at most 1 MiB and holds at most 4,096 fields (`fix_fields` in
+  `[limits]`); at most 4,096 tags become columns (`fix_tags`).
 - Press <kbd>i</kbd> for the FIX tab: messages per BeginString, the dictionaries
   read with the log, and each column's tag number and the names the dictionaries
   give it.
@@ -545,7 +545,8 @@ temporary Arrow IPC file. The atom and bond blocks are passed over, never held.
 
 - A value of several lines keeps them, joined by newlines.
 - A record that names a field twice keeps the first; the Notes tab counts the rest.
-- A line or value is at most 1 MiB, and a file has at most 4,096 fields.
+- A line or value is at most 1 MiB, and a file has at most 4,096 fields
+  (`sdf_fields` in `[limits]`).
 - Press <kbd>i</kbd> for the SDF tab: the record count, and each field's type and
   how many records hold it.
 - **Aqueous solubility (SDF)** in the home screen's

@@ -43,8 +43,6 @@ pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
 pub const MAX_LINE: usize = 1 << 20;
 /// The longest value kept, its lines together; the rest is cut off.
 pub const MAX_VALUE: usize = 1 << 20;
-/// The most data fields; one past this is left out.
-pub const MAX_FIELDS: usize = 4096;
 /// The longest field name.
 pub const MAX_NAME: usize = 256;
 /// Rows held before a batch is handed over.
@@ -109,7 +107,7 @@ pub struct Stats {
     pub long_values: u64,
     /// Data items in a record that already had the field; the first is kept.
     pub repeated: u64,
-    /// Data items of fields past [`MAX_FIELDS`], left out.
+    /// Data items of fields past `limits.sdf_fields`, left out.
     pub fields_dropped: u64,
     /// Records in the V3000 format.
     pub v3000: u64,
@@ -163,6 +161,8 @@ pub struct SdfReader {
     rows: usize,
     held: usize,
     stats: Stats,
+    /// `limits.sdf_fields`, read once for the file.
+    max_fields: usize,
 }
 
 impl Default for SdfReader {
@@ -187,6 +187,7 @@ impl SdfReader {
             rows: 0,
             held: 0,
             stats: Stats::default(),
+            max_fields: crate::limits::get().sdf_fields,
         }
     }
 
@@ -392,7 +393,7 @@ impl SdfReader {
         };
         let index = match self.by_name.get(&name) {
             Some(&i) => i,
-            None if self.fields.len() >= MAX_FIELDS => {
+            None if self.fields.len() >= self.max_fields => {
                 self.stats.fields_dropped += 1;
                 return;
             }
@@ -547,9 +548,10 @@ fn notes(stats: &Stats) -> Vec<Note> {
     }
     if stats.fields_dropped > 0 {
         notes.push(note(
-            format!(
-                "{} left out: past the first {MAX_FIELDS} fields",
-                count(stats.fields_dropped, "data item", "data items")
+            crate::limits::left_out(
+                &count(stats.fields_dropped, "data item", "data items"),
+                crate::limits::get().sdf_fields,
+                "sdf_fields",
             ),
             of_records.clone(),
         ));

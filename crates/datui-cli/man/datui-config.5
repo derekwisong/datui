@@ -139,7 +139,7 @@ Most memory the buffered rows may take, estimated from the schema; 0 for no limi
 Use the Polars streaming engine where it applies. Default: \fBtrue\fR.
 .TP
 \fBperformance.threads\fR (\fIinteger\fR)
-Most threads Polars computes with; 0 for every core. It caps speed, not memory; POLARS_MAX_THREADS, when set, wins, and in Python it has no effect once Polars is imported. Default: \fB0\fR.
+Most threads Polars computes with; 0 for every core. It caps speed, not memory; POLARS_MAX_THREADS, when set, wins. The datui command only: the Python module runs its own Polars, which POLARS_MAX_THREADS sizes when it first computes. Default: \fB0\fR.
 .SS "[analysis]"
 Analysis, Data Quality and charts.
 .TP
@@ -280,6 +280,24 @@ Most journal JSON read into memory, all files of one open together; the records 
 .TP
 \fBlimits.detail_rows\fR (\fIinteger\fR)
 Most rows of a list on an Info panel tab (symbols, sections, metadata); one more row says how many were left out. Default: \fB10000\fR.
+.TP
+\fBlimits.sdf_fields\fR (\fIinteger\fR)
+Most fields (data items by name) read from an SDF file, each a column. Default: \fB4096\fR.
+.TP
+\fBlimits.vcd_signals\fR (\fIinteger\fR)
+Most signals read from a VCD file, each a column. Default: \fB1048576\fR.
+.TP
+\fBlimits.fix_tags\fR (\fIinteger\fR)
+Most tags read from a FIX file, each a column. Default: \fB4096\fR.
+.TP
+\fBlimits.fix_fields\fR (\fIinteger\fR)
+Most fields read from one FIX message. Default: \fB4096\fR.
+.TP
+\fBlimits.gpx_fields\fR (\fIinteger\fR)
+Most extension fields read from a GPX file, each a column. Default: \fB256\fR.
+.TP
+\fBlimits.npy_header_bytes\fR (\fIsize\fR)
+Largest NumPy header read; a file with a larger one is refused. Default: \fB"4MiB"\fR.
 .SS "[log]"
 .TP
 \fBlog.file\fR (\fIpath\fR)

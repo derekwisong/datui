@@ -45,10 +45,6 @@ pub struct Counting {
     /// End was pressed on a remote dataset before its rows were counted: go there when
     /// the count for this generation arrives, rather than to a guess.
     pub(crate) end_after_count: Option<u64>,
-    /// What the pass behind a staged open found, for the frame that applies it: large
-    /// enough to be worth keeping out of the event, and discarded if the dataset it
-    /// belongs to has been replaced.
-    pub(crate) pending_footers_result: std::sync::Arc<std::sync::Mutex<FootersReported>>,
     /// End was pressed while a dataset was still reading its footers, which is where
     /// its end is coming from. Jump when they land — and only for that dataset, which
     /// is what the generation is for: a directory the user pressed End on and then walked
@@ -131,11 +127,6 @@ pub(crate) struct CountMarkers {
 /// Bytes of a text file indexed per step behind its first rows, between which the
 /// indexing looks whether it is still wanted.
 const INDEX_STEP: usize = 16 << 20;
-
-/// What a pass behind a staged open reported, and which dataset it was reading for.
-/// `None` where the footers are: a pass that could not read them says so, so the
-/// dataset stops waiting.
-pub(crate) type FootersReported = Option<(u64, Option<crate::table::FootersFound>)>;
 
 impl App {
     /// Whether the dataset on screen is one that opened before its footers were read
@@ -250,11 +241,9 @@ impl App {
     /// Run the re-read a failed footer pass owes the dataset, once it can be run
     /// without throwing another answer away.
     ///
-    /// The failure branch of `BackgroundFootersJoined` used to re-read on the spot,
-    /// which bumped `task_generation` with no check at all — the one path into the
-    /// collect that never asked `work_the_join_would_cancel`. An export in its collect
-    /// phase then never wrote its file and said nothing about it. So the errand waits
-    /// its turn, the way held columns already do.
+    /// The re-read bumps `task_generation`, so it waits until no export or analysis
+    /// is on the generation it would bump past (`work_the_join_would_cancel`), the way
+    /// held columns do.
     pub(crate) fn reread_when_the_work_allows(&mut self) {
         let Some(generation) = self.counting.reread_owed else {
             return;
@@ -368,20 +357,13 @@ impl App {
         else {
             return;
         };
-        let generation = self.dataset_generation;
-        let slot = self.counting.pending_footers_result.clone();
-        let tx = self.events.clone();
+        let dataset = self.dataset_generation;
         let progress = self.counting.footer_progress.clone();
-        self.runtime.spawn_blocking(move || {
-            // Reported either way. A pass that could not read them has to say so, or
-            // the dataset waits for it for the rest of the session — and a waiting
-            // dataset is one that will not count itself, because the count was what
-            // the pass was bringing back. A pass that panicked could not read them.
-            let found = logging::catch_panic(|| join(&progress)).unwrap_or(None);
-            if !Self::record_footers(&slot, generation, found) {
-                return;
-            }
-            let _ = tx.send(AppEvent::BackgroundFootersJoined { generation });
+        // Answered either way: a pass that could not read them, or panicked, says so
+        // too, or the dataset waits for it for good — and a waiting dataset will not
+        // count itself, because the count was what the pass was bringing back.
+        self.spawn_job(Job::FootersJoin { dataset }, None, move |_| {
+            Ok(Answer::FootersJoined(join(&progress).map(Box::new)))
         });
     }
 
@@ -568,26 +550,40 @@ impl App {
         self.counting.count_progress.cancel();
     }
 
-    /// Put what a pass found in the slot, unless a later dataset's pass has answered
-    /// first. Returns whether it went in, so a pass that lost does not also announce
-    /// itself.
-    ///
-    /// Two passes can be in flight at once — opening a second large prefix does not
-    /// stop the first one reading — and they finish in whatever order the network
-    /// gives. Without this the slower, older one overwrites the newer entry, and the
-    /// generation the event carries then disagrees with the generation in the slot,
-    /// so both are discarded and the dataset on screen never gets its columns.
-    pub(crate) fn record_footers(
-        slot: &std::sync::Mutex<FootersReported>,
-        generation: u64,
+    /// What the footer pass found, for the dataset it was started for: joined when that
+    /// is still the dataset on screen, which going home and back leaves it, rather than
+    /// whether an open is in flight.
+    pub(crate) fn footers_joined(
+        &mut self,
+        dataset: u64,
         found: Option<crate::table::FootersFound>,
-    ) -> bool {
-        let mut slot = slot.lock().unwrap_or_else(|e| e.into_inner());
-        if slot.as_ref().is_some_and(|(held, _)| *held > generation) {
-            return false;
+    ) -> Option<AppEvent> {
+        if dataset == self.dataset_generation {
+            let Some(found) = found else {
+                // The pass could not read them. The dataset stays as it opened
+                // and stops waiting, so it can go and count itself the ordinary
+                // way rather than never at all — which is what the collect
+                // below sets going, since it is the counting the dataset was
+                // declining while it waited.
+                if let Some(state) = self.data_table_state.as_mut() {
+                    state.give_up_on_pending_footers();
+                }
+                // The pass is not bringing a count after all, so the jump goes
+                // back to waiting on the ordinary one the collect starts. Owed
+                // rather than run: the collect bumps `task_generation`, and an
+                // export or an analysis may be waiting on the one it would bump
+                // past. `reread_when_the_work_allows` runs it the moment that
+                // work is done.
+                self.counting.reread_owed = Some(dataset);
+                self.reread_when_the_work_allows();
+                return None;
+            };
+            self.counting.footers_held = Some((dataset, found));
+            if self.join_held_footers() {
+                self.reread_after_the_footers_joined();
+            }
         }
-        *slot = Some((generation, found));
-        true
+        None
     }
 
     /// Count the rows off the UI thread; the answer comes back as `BackgroundLenReady`
@@ -629,6 +625,11 @@ impl App {
     pub fn frame_painted(&mut self) {
         self.pointer.painted();
         self.count_what_was_painted();
+        // A resize sets the rows on screen as it draws, after the event pass looked;
+        // matches worked out again are drawn on the frame the wake brings.
+        if self.refresh_stale_live_matches() {
+            let _ = self.events.send(AppEvent::Wake);
+        }
         if let Some(state) = &mut self.data_table_state
             && state.needs_recollect
         {
@@ -804,53 +805,6 @@ impl App {
             }
             AppEvent::LinesIndexed { generation, rows } => {
                 self.lines_indexed(*generation, *rows);
-                None
-            }
-            AppEvent::BackgroundFootersJoined { .. } => {
-                // Taken whoever the event belongs to, and judged by what is *in* the
-                // slot rather than by the event that woke us. Two passes can be running
-                // at once, and the newer one may have overwritten the slot before the
-                // older one's event is handled: judging by the event would throw the
-                // newer answer away and leave the dataset on screen waiting for one
-                // that has already been and gone. An entry is also worth draining
-                // either way — it is a dataset's worth of schema and every file name.
-                let taken = self
-                    .counting
-                    .pending_footers_result
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .take();
-                // Whether this is still the dataset on screen. Not whether an open is in
-                // flight: going home leaves the dataset up and puts any open down, and
-                // coming straight back to it must not find it stranded on two footers
-                // for the rest of the session.
-                if let Some((slot_generation, found)) = taken
-                    && slot_generation == self.dataset_generation
-                {
-                    let Some(found) = found else {
-                        // The pass could not read them. The dataset stays as it opened
-                        // and stops waiting, so it can go and count itself the ordinary
-                        // way rather than never at all — which is what the collect
-                        // below sets going, since it is the counting the dataset was
-                        // declining while it waited.
-                        if let Some(state) = self.data_table_state.as_mut() {
-                            state.give_up_on_pending_footers();
-                        }
-                        // The pass is not bringing a count after all, so the jump goes
-                        // back to waiting on the ordinary one the collect starts. Owed
-                        // rather than run: the collect bumps `task_generation`, and an
-                        // export or an analysis may be waiting on the one it would bump
-                        // past. `reread_when_the_work_allows` runs it the moment that
-                        // work is done.
-                        self.counting.reread_owed = Some(slot_generation);
-                        self.reread_when_the_work_allows();
-                        return None;
-                    };
-                    self.counting.footers_held = Some((slot_generation, found));
-                    if self.join_held_footers() {
-                        self.reread_after_the_footers_joined();
-                    }
-                }
                 None
             }
             _ => unreachable!("not an event for counting_event"),

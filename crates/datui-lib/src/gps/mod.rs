@@ -210,6 +210,7 @@ impl Stats {
                 stats.routes += more.routes;
                 stats.waypoints += more.waypoints;
                 stats.fields_dropped += more.fields_dropped;
+                stats.long_names += more.long_names;
                 stats.bad_times += more.bad_times;
                 stats.truncated |= more.truncated;
                 *truncated += also;
@@ -612,10 +613,19 @@ fn gpx_notes(stats: &gpx::Stats, of: Option<usize>, truncated: usize) -> Vec<Not
     }
     if stats.fields_dropped > 0 {
         notes.push(note(
+            crate::limits::left_out(
+                &count(stats.fields_dropped, "field value", "field values"),
+                crate::limits::get().gpx_fields,
+                "gpx_fields",
+            ),
+            of_points.clone(),
+        ));
+    }
+    if stats.long_names > 0 {
+        notes.push(note(
             format!(
-                "{} left out: past {} columns, or name too long",
-                count(stats.fields_dropped, "field value", "field values"),
-                gpx::MAX_FIELDS
+                "{} left out: field name too long",
+                count(stats.long_names, "field value", "field values"),
             ),
             of_points,
         ));

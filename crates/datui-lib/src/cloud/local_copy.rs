@@ -8,12 +8,12 @@
 //! that did not finish is removed when the fetch stops.
 
 use crate::analysis::sampling::ReadWatch;
+use crate::cloud::download::{self, StreamError};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use polars::lazy::dsl::{DslPlan, ScanSources};
 use polars::prelude::{LazyFrame, PlRefPath};
 use std::collections::HashMap;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -71,9 +71,9 @@ impl LocalCopy {
     }
 
     /// Copy `objects` under `root`, one at a time. `get` streams one object's bytes
-    /// into the writer it is given, in order; the writer refuses once `stop` is set,
-    /// so a cancel ends the fetch within a chunk. On any failure or cancel the partial
-    /// copy is removed before this returns.
+    /// into the writer it is given, in order, as [`download::stream_into`] does,
+    /// answering with the bytes it wrote; a cancel ends it within a chunk. On any
+    /// failure or cancel the partial copy is removed before this returns.
     ///
     /// An object whose bytes differ in length from its listing changed since the
     /// dataset opened: the copy would not be the dataset on screen, so it fails.
@@ -81,7 +81,10 @@ impl LocalCopy {
         root: &Path,
         objects: &[RemoteObject],
         stop: &ReadWatch,
-        mut get: impl FnMut(&RemoteObject, &mut dyn FnMut(&[u8]) -> Result<()>) -> Result<()>,
+        mut get: impl FnMut(
+            &RemoteObject,
+            &mut dyn FnMut(&[u8]) -> Result<()>,
+        ) -> std::result::Result<u64, StreamError>,
     ) -> Result<LocalCopy> {
         std::fs::create_dir_all(root).map_err(unwritable)?;
         sweep(root);
@@ -105,21 +108,10 @@ impl LocalCopy {
             // Never over an object already copied: on a disk that ignores case, two
             // keys can name one file.
             let mut file = std::fs::File::create_new(&path).map_err(unwritable)?;
-            let mut written = 0u64;
-            get(object, &mut |chunk: &[u8]| {
-                stop.check()?;
-                file.write_all(chunk).map_err(unwritable)?;
-                written += chunk.len() as u64;
-                Ok(())
-            })?;
-            file.flush().map_err(unwritable)?;
+            let written = download::fill_file(&mut file, unwritable, |write| get(object, write))
+                .map_err(|error| not_copied(object, error))?;
             if written != object.size {
-                return Err(eyre!(
-                    "{} is {written} bytes, not the {} listed when it opened: \
-                     it changed. Open the dataset again",
-                    object.url,
-                    object.size
-                ));
+                return Err(changed(object, written));
             }
             copy.bytes += written;
             copy.paths.insert(object.url.clone(), path);
@@ -144,6 +136,27 @@ fn unwritable(error: std::io::Error) -> color_eyre::Report {
     eyre!(
         "Could not write the local copy: {error}. \
          quality_local_copy = 0 reads the source instead"
+    )
+}
+
+/// Why `object` did not arrive whole.
+fn not_copied(object: &RemoteObject, error: StreamError) -> color_eyre::Report {
+    let url = &object.url;
+    match error {
+        StreamError::Write(report) => report,
+        StreamError::Open(e) | StreamError::Read(e) => eyre!("Could not copy {url}: {e}"),
+        StreamError::Short { got, .. } => changed(object, got),
+        StreamError::Cut => eyre!(crate::analysis::sampling::CANCELLED),
+    }
+}
+
+/// `object` arrived as `got` bytes, not the size it was listed with.
+fn changed(object: &RemoteObject, got: u64) -> color_eyre::Report {
+    eyre!(
+        "{} is {got} bytes, not the {} listed when it opened: \
+         it changed. Open the dataset again",
+        object.url,
+        object.size
     )
 }
 

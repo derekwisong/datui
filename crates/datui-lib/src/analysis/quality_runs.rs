@@ -947,8 +947,9 @@ impl App {
 
         crate::cloud::local_copy::LocalCopy::fetch(root, objects, stop, |object, write| {
             let url = object.url.as_str();
-            let (_, _, store) = Self::cloud_store_for(Path::new(url), cloud, runtime)?;
-            let (_, key) = Self::cloud_bucket_and_key(url)?;
+            let (_, _, store) = Self::cloud_store_for(Path::new(url), cloud, runtime)
+                .map_err(StreamError::Write)?;
+            let (_, key) = Self::cloud_bucket_and_key(url).map_err(StreamError::Write)?;
             let path = crate::cloud::cloud_browse::object_path(&key);
             let listed = object.etag.clone();
             let open = async move {
@@ -964,19 +965,6 @@ impl App {
             };
             let watch = stop.clone();
             crate::cloud::download::stream_into(runtime, open, move || watch.stopped(), write)
-                .map(drop)
-                .map_err(|error| match error {
-                    StreamError::Write(report) => report,
-                    StreamError::Open(e) | StreamError::Read(e) => {
-                        color_eyre::eyre::eyre!("Could not copy {url}: {e}")
-                    }
-                    StreamError::Short { expected, got } => color_eyre::eyre::eyre!(
-                        "Could not copy {url}: it ended after {got} of {expected} bytes"
-                    ),
-                    StreamError::Cut => {
-                        color_eyre::eyre::eyre!(crate::analysis::sampling::CANCELLED)
-                    }
-                })
         })
     }
 

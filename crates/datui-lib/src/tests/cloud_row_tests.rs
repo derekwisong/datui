@@ -5,7 +5,7 @@ fn a_source_not_signed_in_says_what_to_run() {
     let source = crate::cloud_sources::Source {
         id: "az".to_string(),
         label: "Azure".to_string(),
-        kind: crate::cloud_browse::ProviderKind::Azure,
+        kind: crate::source::ProviderKind::Azure,
         tier: crate::cloud_sources::Tier::Tools,
         origin: "not signed in".to_string(),
         s3: Default::default(),

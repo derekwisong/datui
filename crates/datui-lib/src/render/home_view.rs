@@ -1273,7 +1273,7 @@ fn source_line<'a>(
     let chrome = RowChrome::new(selected, ctx);
     let base = chrome.base;
 
-    let api = source.map(|s| s.api.as_str()).unwrap_or("");
+    let api = source.map(|s| s.api.name()).unwrap_or("");
     let count = match source {
         Some(s) if s.busy() => {
             let spinner = g.spinner[frame % g.spinner.len()];
@@ -2402,8 +2402,8 @@ fn source_details(
         Some(age) if !age.is_empty() => format!(" {middot} listed {age} ago"),
         _ => String::new(),
     };
-    let noun = match source.api.as_str() {
-        "azure" => "accounts",
+    let noun = match source.api {
+        crate::source::ProviderKind::Azure => "accounts",
         _ => "buckets",
     };
     match &source.status {

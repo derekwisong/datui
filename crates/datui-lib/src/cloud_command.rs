@@ -9,7 +9,7 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 /// Why a command did not produce its output.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,6 +37,54 @@ impl std::fmt::Display for CommandError {
 
 /// Runs one command: the real [`run`] with a deadline, or a stand-in in tests.
 pub type Runner<'a> = dyn Fn(&str, &[&str]) -> Result<String, CommandError> + 'a;
+
+/// Secrets by key, each kept until five minutes before it expires, so a credential
+/// command, slow to start, runs once per expiry rather than once per request. One with
+/// no known expiry is kept for the session.
+pub struct Expiring<T>(
+    std::sync::Mutex<std::collections::HashMap<String, (T, Option<SystemTime>)>>,
+);
+
+impl<T> Default for Expiring<T> {
+    fn default() -> Self {
+        Expiring(Default::default())
+    }
+}
+
+impl<T: Clone> Expiring<T> {
+    pub fn get(&self, key: &str) -> Option<T> {
+        let margin = SystemTime::now() + Duration::from_secs(5 * 60);
+        let kept = self.0.lock().ok()?;
+        let (value, expires) = kept.get(key)?;
+        expires.is_none_or(|at| at > margin).then(|| value.clone())
+    }
+
+    pub fn put(&self, key: &str, value: T, expires: Option<SystemTime>) {
+        if let Ok(mut kept) = self.0.lock() {
+            kept.insert(key.to_string(), (value, expires));
+        }
+    }
+}
+
+/// Every item of a paged API, `fetch` handed each page's token. At most `max_pages`
+/// pages: an API that keeps handing back a token would be a loop on a worker nobody is
+/// watching.
+pub fn paged<T>(
+    max_pages: usize,
+    mut fetch: impl FnMut(Option<&str>) -> Result<(Vec<T>, Option<String>), String>,
+) -> Result<Vec<T>, String> {
+    let mut items = Vec::new();
+    let mut token: Option<String> = None;
+    for _ in 0..max_pages {
+        let (page, next) = fetch(token.as_deref())?;
+        items.extend(page);
+        match next {
+            Some(next) => token = Some(next),
+            None => break,
+        }
+    }
+    Ok(items)
+}
 
 /// How long a credential command may take. An SSO refresh is a network round trip;
 /// anything slower than this is waiting on something that is not coming.

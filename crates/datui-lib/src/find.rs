@@ -787,14 +787,15 @@ impl App {
     }
 
     /// While the find prompt is open, work the matches out again when the rows on
-    /// hand changed under it: a collect after the footer took a row, a follow's new
-    /// rows.
-    pub(crate) fn refresh_stale_live_matches(&mut self) {
-        if self.input_type == Some(InputType::Find)
-            && self.find.live_rows != self.rows_on_hand_key()
-        {
+    /// hand or the view changed under it: a collect after the footer took a row, a
+    /// follow's new rows, a resize. Whether it did.
+    pub(crate) fn refresh_stale_live_matches(&mut self) -> bool {
+        let stale = self.input_type == Some(InputType::Find)
+            && self.find.live_rows != self.rows_on_hand_key();
+        if stale {
             self.refresh_live_matches();
         }
+        stale
     }
 
     /// The matches the prompt's pattern has among the rows on screen, while the

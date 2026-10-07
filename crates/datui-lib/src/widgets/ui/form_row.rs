@@ -33,6 +33,9 @@ pub enum FormValue<'a> {
         selected: usize,
         clicks: Option<FieldId>,
     },
+    /// Styled text, such as column names in their types' colors. `dimmed` reads the
+    /// whole row, label too, as not in use.
+    Spans { spans: Vec<Span<'a>>, dimmed: bool },
 }
 
 pub struct FormRow<'a> {
@@ -69,16 +72,27 @@ impl FormRow<'_> {
         Paragraph::new(rail)
             .style(Style::default().fg(ctx.accent))
             .render(Rect { width: 1, ..area }, buf);
-        let area = Rect {
-            x: area.x + 1,
-            width: area.width - 1,
-            ..area
-        };
-        if area.width == 0 {
+        self.render_body(
+            Rect {
+                x: area.x + 1,
+                width: area.width - 1,
+                ..area
+            },
+            buf,
+            ctx,
+        );
+    }
+
+    /// The label and the value, from `area.x`, for a list that draws its own rail.
+    pub fn render_body(&self, area: Rect, buf: &mut Buffer, ctx: &RenderContext) {
+        if area.width == 0 || area.height == 0 {
             return;
         }
-
-        let label_style = if self.focused {
+        let g = crate::glyphs::get();
+        let dimmed = matches!(self.value, FormValue::Spans { dimmed: true, .. });
+        let label_style = if dimmed {
+            Style::default().fg(ctx.dimmed)
+        } else if self.focused {
             Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(ctx.label)
@@ -119,6 +133,16 @@ impl FormRow<'_> {
                 Paragraph::new(*value)
                     .style(Style::default().fg(ctx.dimmed))
                     .render(value_area, buf);
+            }
+            FormValue::Spans { spans, dimmed } => {
+                let spans: Vec<Span> = spans
+                    .iter()
+                    .map(|s| match dimmed {
+                        true => Span::styled(s.content.clone(), Style::default().fg(ctx.dimmed)),
+                        false => s.clone(),
+                    })
+                    .collect();
+                Paragraph::new(Line::from(spans)).render(value_area, buf);
             }
             FormValue::Options {
                 items,

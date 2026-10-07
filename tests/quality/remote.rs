@@ -166,10 +166,10 @@ fn edit_and_run(
     change: impl FnOnce(&mut datui::data_quality::DataQualityPlan),
 ) -> (Vec<QualityStage>, WireCount) {
     let before = s3.wire.count();
-    if !app.analysis_modal.data_quality_page.is_setup() {
+    if !app.analysis_modal.quality.page.is_setup() {
         press(app, KeyCode::Char('e'));
     }
-    change(&mut app.analysis_modal.data_quality_plan);
+    change(&mut app.analysis_modal.quality.plan);
     screen(app);
     let mut first = press(app, KeyCode::Enter);
     if app.confirmation_modal.asks_full_scan() {
@@ -178,7 +178,7 @@ fn edit_and_run(
     }
     let reads = settle(app, rx, first);
     assert!(
-        app.analysis_modal.data_quality_results.is_some(),
+        app.analysis_modal.quality.results.is_some(),
         "a report is on screen"
     );
     (reads, s3.wire.count().since(&before))
@@ -222,7 +222,7 @@ fn a_remote_prefix_is_sampled_once_and_its_edits_ask_the_bucket_for_nothing() {
     });
     assert_eq!(reads, [QualityStage::ReadingSample], "one pass");
     assert!(wire.gets > 0 && wire.bytes > 0, "{wire:?}");
-    let first = app.analysis_modal.data_quality_results.clone().unwrap();
+    let first = app.analysis_modal.quality.results.clone().unwrap();
     assert_eq!(first.total_rows, Some(FILES * ROWS));
     // Days the sample drew from, and days it missed, hold every row between them.
     let days: usize = first
@@ -243,7 +243,7 @@ fn a_remote_prefix_is_sampled_once_and_its_edits_ask_the_bucket_for_nothing() {
     };
     let (reads, wire) = edit_and_run(&mut app, &rx, &s3, |plan| plan.temporal_roles = roles());
     free(reads, wire, "a role edit");
-    let results = app.analysis_modal.data_quality_results.as_ref().unwrap();
+    let results = app.analysis_modal.quality.results.as_ref().unwrap();
     assert!(!results.temporal.is_empty(), "the interval is measured");
 
     let (reads, wire) = edit_and_run(&mut app, &rx, &s3, |plan| plan.grain = window("1w"));
@@ -253,7 +253,7 @@ fn a_remote_prefix_is_sampled_once_and_its_edits_ask_the_bucket_for_nothing() {
         plan.grain = QualityGrain::File;
     });
     free(reads, wire, "files from their footers");
-    let results = app.analysis_modal.data_quality_results.as_ref().unwrap();
+    let results = app.analysis_modal.quality.results.as_ref().unwrap();
     assert_eq!(results.segments.len(), FILES);
     assert!(
         results
@@ -268,7 +268,7 @@ fn a_remote_prefix_is_sampled_once_and_its_edits_ask_the_bucket_for_nothing() {
         plan.comparison = QualityComparison::Previous;
     });
     free(reads, wire, "a comparison");
-    let results = app.analysis_modal.data_quality_results.as_ref().unwrap();
+    let results = app.analysis_modal.quality.results.as_ref().unwrap();
     assert!(results.segments[1].compared_with.is_some());
 
     let (reads, wire) = edit_and_run(&mut app, &rx, &s3, |plan| {
@@ -305,19 +305,19 @@ fn a_full_scan_is_compared_again_without_a_request() {
     });
     assert!(reads.contains(&QualityStage::ProfilingColumns), "{reads:?}");
     assert!(wire.gets > 0 && wire.bytes > 0, "{wire:?}");
-    let full = app.analysis_modal.data_quality_results.clone().unwrap();
+    let full = app.analysis_modal.quality.results.clone().unwrap();
     assert_eq!(full.evaluated_rows, FILES * ROWS);
     assert!(full.segments.iter().all(|s| s.compared_with.is_none()));
 
     let before = s3.wire.count();
     press(&mut app, KeyCode::Char('e'));
-    app.analysis_modal.data_quality_plan.comparison = QualityComparison::Previous;
+    app.analysis_modal.quality.plan.comparison = QualityComparison::Previous;
     let text = screen(&mut app);
     assert!(text.contains("Changed: Compare"), "{text}");
     assert!(press(&mut app, KeyCode::Enter).is_none(), "nothing to run");
     assert!(!app.confirmation_modal.asks_full_scan(), "nothing to ask");
     assert!(!app.is_busy());
-    let compared = app.analysis_modal.data_quality_results.clone().unwrap();
+    let compared = app.analysis_modal.quality.results.clone().unwrap();
     assert_eq!(compared.evaluated_rows, full.evaluated_rows);
     assert!(compared.segments[0].compared_with.is_none());
     assert_eq!(
@@ -326,7 +326,8 @@ fn a_full_scan_is_compared_again_without_a_request() {
     );
     assert_eq!(
         app.analysis_modal
-            .data_quality_last_plan
+            .quality
+            .last_plan
             .as_ref()
             .unwrap()
             .comparison,
@@ -337,12 +338,12 @@ fn a_full_scan_is_compared_again_without_a_request() {
     let baseline = compared.segments[2].label.clone();
     press(&mut app, KeyCode::Char('e'));
     {
-        let plan = &mut app.analysis_modal.data_quality_plan;
+        let plan = &mut app.analysis_modal.quality.plan;
         plan.comparison = QualityComparison::Baseline;
         plan.baseline_segment = Some(baseline.clone());
     }
     assert!(press(&mut app, KeyCode::Enter).is_none());
-    let against = app.analysis_modal.data_quality_results.clone().unwrap();
+    let against = app.analysis_modal.quality.results.clone().unwrap();
     assert_eq!(
         against.segments[0].compared_with.as_deref(),
         Some(baseline.as_str())
@@ -351,10 +352,10 @@ fn a_full_scan_is_compared_again_without_a_request() {
 
     // Back to the comparison the cache holds a report for: still no read.
     press(&mut app, KeyCode::Char('e'));
-    app.analysis_modal.data_quality_plan.comparison = QualityComparison::None;
-    app.analysis_modal.data_quality_plan.baseline_segment = None;
+    app.analysis_modal.quality.plan.comparison = QualityComparison::None;
+    app.analysis_modal.quality.plan.baseline_segment = None;
     assert!(press(&mut app, KeyCode::Enter).is_none());
-    let none = app.analysis_modal.data_quality_results.clone().unwrap();
+    let none = app.analysis_modal.quality.results.clone().unwrap();
     assert!(none.segments.iter().all(|s| s.compared_with.is_none()));
     assert_eq!(s3.wire.count().since(&before), WireCount::default());
 
@@ -413,7 +414,7 @@ fn bytes_under(dir: &Path) -> u64 {
 /// The report, without what says how it was read: the copy and the source must
 /// measure the same thing.
 fn measured(app: &App) -> String {
-    let mut results = app.analysis_modal.data_quality_results.clone().unwrap();
+    let mut results = app.analysis_modal.quality.results.clone().unwrap();
     results.reads = None;
     results.source = None;
     // Each app draws its own seed; a full scan samples nothing with it.
@@ -442,7 +443,7 @@ fn a_full_scan_fetches_each_object_once_and_reuses_the_copy() {
     let cache = tempfile::tempdir().unwrap();
     let (mut app, rx) = open_remote_with(&s3, AppConfig::default(), Some(cache.path()));
 
-    full_scan(&mut app.analysis_modal.data_quality_plan);
+    full_scan(&mut app.analysis_modal.quality.plan);
     let text = screen(&mut app);
     assert!(
         text.contains("1 fetch of 4 objects") && text.contains("to a local copy"),
@@ -460,7 +461,7 @@ fn a_full_scan_fetches_each_object_once_and_reuses_the_copy() {
         },
         "each object once, whole"
     );
-    let results = app.analysis_modal.data_quality_results.clone().unwrap();
+    let results = app.analysis_modal.quality.results.clone().unwrap();
     assert_eq!(results.evaluated_rows, FILES * ROWS);
     let copy = results
         .reads
@@ -483,7 +484,7 @@ fn a_full_scan_fetches_each_object_once_and_reuses_the_copy() {
 
     // A role is a new measurement: it reads the copy, not the bucket.
     press(&mut app, KeyCode::Char('e'));
-    app.analysis_modal.data_quality_plan.temporal_roles = roles();
+    app.analysis_modal.quality.plan.temporal_roles = roles();
     let text = screen(&mut app);
     assert!(text.contains("passes over the local copy"), "{text}");
     assert!(
@@ -493,7 +494,7 @@ fn a_full_scan_fetches_each_object_once_and_reuses_the_copy() {
     let (reads, wire) = edit_and_run(&mut app, &rx, &s3, |plan| plan.temporal_roles = roles());
     assert!(reads.is_empty(), "{reads:?}");
     assert_eq!(wire, WireCount::default());
-    let results = app.analysis_modal.data_quality_results.as_ref().unwrap();
+    let results = app.analysis_modal.quality.results.as_ref().unwrap();
     assert!(!results.temporal.is_empty(), "the interval is measured");
     assert!(!results.reads.unwrap().copy.unwrap().fetched);
 }
@@ -524,7 +525,7 @@ fn a_copy_is_released_by_d_and_by_opening_again() {
         "{:?}",
         app.flash_message()
     );
-    app.analysis_modal.data_quality_plan.temporal_roles = roles();
+    app.analysis_modal.quality.plan.temporal_roles = roles();
     let text = screen(&mut app);
     assert!(text.contains("Released since last copy"), "{text}");
     let before = s3.wire.count();
@@ -615,7 +616,7 @@ fn above_the_budget_a_full_scan_reads_the_source_in_passes() {
         plan.method = datui::sampling::SampleMethod::EveryRow;
         plan.compute = QualityCompute::Full;
     };
-    full(&mut app.analysis_modal.data_quality_plan);
+    full(&mut app.analysis_modal.quality.plan);
     let text = screen(&mut app);
     assert!(text.contains("passes over the source"), "{text}");
     assert!(text.contains("No local copy:"), "{text}");
@@ -624,7 +625,7 @@ fn above_the_budget_a_full_scan_reads_the_source_in_passes() {
     assert!(reads.contains(&QualityStage::ProfilingColumns), "{reads:?}");
     assert!(wire.gets > 2, "a pass per check: {wire:?}");
     assert!(copies(cache.path()).is_empty());
-    let results = app.analysis_modal.data_quality_results.as_ref().unwrap();
+    let results = app.analysis_modal.quality.results.as_ref().unwrap();
     assert!(results.reads.unwrap().copy.is_none());
 }
 
@@ -653,7 +654,7 @@ fn a_cancel_mid_fetch_leaves_no_copy() {
     let cache = tempfile::tempdir().unwrap();
     let (mut app, rx) = open_remote_with(&s3, AppConfig::default(), Some(cache.path()));
     s3.slow_gets(300);
-    full_scan(&mut app.analysis_modal.data_quality_plan);
+    full_scan(&mut app.analysis_modal.quality.plan);
     let before = s3.wire.count();
     let mut next = press(&mut app, KeyCode::Enter);
     if app.confirmation_modal.asks_full_scan() {
@@ -697,13 +698,13 @@ fn a_failed_fetch_leaves_no_copy() {
     let cache = tempfile::tempdir().unwrap();
     let (mut app, rx) = open_remote_with(&s3, AppConfig::default(), Some(cache.path()));
     s3.remove(&format!("events/part-{}.parquet", FILES - 1));
-    full_scan(&mut app.analysis_modal.data_quality_plan);
+    full_scan(&mut app.analysis_modal.quality.plan);
     let before = s3.wire.count();
     let reads = run_staged(&mut app, &rx);
     assert_eq!(reads, [QualityStage::CopyingSource]);
     until_the_worker_exits(&mut app, &rx);
     assert!(app.modal_showing(), "the failure is shown");
-    assert!(app.analysis_modal.data_quality_results.is_none());
+    assert!(app.analysis_modal.quality.results.is_none());
     assert_eq!(
         s3.wire.count().since(&before).gets,
         FILES as u64 - 1,
@@ -729,14 +730,14 @@ fn an_object_rewritten_since_open_fails_the_fetch() {
     let middle = rewritten.len() / 2;
     rewritten[middle] ^= 0xff;
     s3.put(key, rewritten);
-    full_scan(&mut app.analysis_modal.data_quality_plan);
+    full_scan(&mut app.analysis_modal.quality.plan);
     let reads = run_staged(&mut app, &rx);
     assert_eq!(reads, [QualityStage::CopyingSource]);
     until_the_worker_exits(&mut app, &rx);
     assert!(app.modal_showing(), "the failure is shown");
     let text = screen(&mut app);
     assert!(text.contains("part-1.parquet: it changed"), "{text}");
-    assert!(app.analysis_modal.data_quality_results.is_none());
+    assert!(app.analysis_modal.quality.results.is_none());
     assert!(copies(cache.path()).is_empty());
     assert_eq!(app.quality_copy_bytes(), 0);
 }
@@ -770,7 +771,7 @@ fn a_hive_dataset_is_copied_with_its_partitions() {
     let (reads, wire) = edit_and_run(&mut app, &rx, &s3, full_scan);
     assert_eq!(reads, [QualityStage::CopyingSource], "the copy stands in");
     assert_eq!(wire.gets, FILES as u64);
-    let results = app.analysis_modal.data_quality_results.as_ref().unwrap();
+    let results = app.analysis_modal.quality.results.as_ref().unwrap();
     assert!(results.reads.unwrap().copy.is_some());
     assert!(results.columns.iter().any(|column| column.name == "day"));
 
@@ -834,7 +835,7 @@ fn one_remote_object_is_copied_once() {
             bytes: size,
         }
     );
-    let results = app.analysis_modal.data_quality_results.as_ref().unwrap();
+    let results = app.analysis_modal.quality.results.as_ref().unwrap();
     assert_eq!(results.evaluated_rows, ROWS);
     assert_eq!(copies(cache.path()).len(), 1);
 }

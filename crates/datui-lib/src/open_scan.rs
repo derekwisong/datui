@@ -333,8 +333,8 @@ impl App {
         self.quality_evidence_return = None;
         self.quality_evidence_label = None;
         // The findings narrowed to the last dataset's columns would hide this one's.
-        self.analysis_modal.data_quality_findings = quality_report::FindingsView::default();
-        self.analysis_modal.data_quality_evidence_read = None;
+        self.analysis_modal.quality.findings = quality_report::FindingsView::default();
+        self.analysis_modal.quality.evidence_read = None;
         // A query still running was over the dataset being replaced; its rollback
         // is that dataset's view. So was a view waiting on its pivot.
         self.query_running = None;

@@ -346,6 +346,18 @@ fn run_impl(
         }
     };
 
+    // Polars sizes its thread pool from the environment the first time it computes,
+    // which is after this: the settings were read without it.
+    let asked_threads = std::env::var_os("POLARS_MAX_THREADS");
+    if let Some(threads) =
+        startup::polars_threads(config.performance.threads, asked_threads.as_deref())
+    {
+        // SAFETY: the other threads alive now (the key reader, the runtime's idle
+        // workers, the saved-views reader) read the environment only through std,
+        // which locks it, and none is in foreign code that reads it unlocked.
+        unsafe { std::env::set_var("POLARS_MAX_THREADS", threads) };
+    }
+
     // The first frame is not held for the terminal's answer: one that is already in
     // is used, else this terminal's last one (see `App::settle_first_palette`).
     let background = (asked && config.theme.follow)

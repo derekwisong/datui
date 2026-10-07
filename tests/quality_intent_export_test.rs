@@ -109,7 +109,7 @@ fn open_setup(path: PathBuf, sample_rows: usize) -> (App, mpsc::Receiver<AppEven
     press(&mut app, KeyCode::Char('a'));
     app.analysis_modal.sidebar_state.select(Some(3));
     assert!(press(&mut app, KeyCode::Enter).is_none());
-    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Setup);
+    assert_eq!(app.analysis_modal.quality.page, QualityPage::Setup);
     assert_eq!(app.analysis_modal.focus, AnalysisFocus::Main);
     (app, rx)
 }
@@ -131,18 +131,18 @@ fn column_intent_is_staged_in_setup_and_reads_nothing() {
     write_orders(&path, 3_000);
     let (mut app, rx) = open_setup(path, 1_000);
 
-    app.analysis_modal.data_quality_plan_field = SetupRow::Intent.index();
+    app.analysis_modal.quality.plan_field = SetupRow::Intent.index();
     assert!(press(&mut app, KeyCode::Char(' ')).is_none());
-    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Intent);
+    assert_eq!(app.analysis_modal.quality.page, QualityPage::Intent);
 
     // id: the key, and required.
     assert!(press(&mut app, KeyCode::Char(' ')).is_none());
-    assert!(app.analysis_modal.data_quality_intent_form.is_some());
+    assert!(app.analysis_modal.quality.intent_form.is_some());
     press(&mut app, KeyCode::Char(' '));
     press(&mut app, KeyCode::Tab);
     press(&mut app, KeyCode::Char(' '));
     assert!(press(&mut app, KeyCode::Enter).is_none());
-    assert!(app.analysis_modal.data_quality_intent_form.is_none());
+    assert!(app.analysis_modal.quality.intent_form.is_none());
 
     // status: an allowed set, typed. `?` and `q` are text there.
     press(&mut app, KeyCode::Down);
@@ -161,17 +161,13 @@ fn column_intent_is_staged_in_setup_and_reads_nothing() {
     press(&mut app, KeyCode::Tab);
     type_text(&mut app, "ten");
     press(&mut app, KeyCode::Enter);
-    let form = app
-        .analysis_modal
-        .data_quality_intent_form
-        .as_ref()
-        .unwrap();
+    let form = app.analysis_modal.quality.intent_form.as_ref().unwrap();
     assert!(form.error.as_deref().unwrap().contains("not a number"));
     // Esc drops the form's edits only.
     press(&mut app, KeyCode::Esc);
-    assert!(app.analysis_modal.data_quality_intent_form.is_none());
+    assert!(app.analysis_modal.quality.intent_form.is_none());
 
-    let intent = app.analysis_modal.data_quality_plan.intent.clone();
+    let intent = app.analysis_modal.quality.plan.intent.clone();
     assert_eq!(intent.key, vec!["id"]);
     assert!(intent.column("id").unwrap().required);
     assert_eq!(
@@ -183,8 +179,8 @@ fn column_intent_is_staged_in_setup_and_reads_nothing() {
 
     // Esc in the list puts back what it held when it opened: nothing.
     press(&mut app, KeyCode::Esc);
-    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Setup);
-    assert!(app.analysis_modal.data_quality_plan.intent.is_empty());
+    assert_eq!(app.analysis_modal.quality.page, QualityPage::Setup);
+    assert!(app.analysis_modal.quality.plan.intent.is_empty());
 
     // Enter keeps the list's edits in the draft; Setup's Esc discards them.
     press(&mut app, KeyCode::Char(' '));
@@ -192,11 +188,11 @@ fn column_intent_is_staged_in_setup_and_reads_nothing() {
     press(&mut app, KeyCode::Char(' '));
     press(&mut app, KeyCode::Enter);
     assert!(press(&mut app, KeyCode::Enter).is_none());
-    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Setup);
-    assert_eq!(app.analysis_modal.data_quality_plan.intent.key, vec!["id"]);
+    assert_eq!(app.analysis_modal.quality.page, QualityPage::Setup);
+    assert_eq!(app.analysis_modal.quality.plan.intent.key, vec!["id"]);
     assert!(app.analysis_modal.setup_edited());
     press(&mut app, KeyCode::Esc);
-    assert!(app.analysis_modal.data_quality_plan.intent.is_empty());
+    assert!(app.analysis_modal.quality.plan.intent.is_empty());
     assert_no_read(&app, &rx);
 }
 
@@ -214,7 +210,7 @@ fn intent_after_a_run_reuses_the_rows_it_read() {
         Some(AppEvent::AnalysisCompute(AnalysisTool::DataQuality))
     ));
     assert_eq!(drain(&mut app, &rx, next), 1);
-    let first = app.analysis_modal.data_quality_results.clone().unwrap();
+    let first = app.analysis_modal.quality.results.clone().unwrap();
     assert_eq!(first.precision, QualityPrecision::Sampled);
     assert!(
         first.reads.unwrap().reads > 0,
@@ -235,7 +231,7 @@ fn intent_after_a_run_reuses_the_rows_it_read() {
         .unwrap();
 
     press(&mut app, KeyCode::Char('e'));
-    app.analysis_modal.data_quality_plan_field = SetupRow::Intent.index();
+    app.analysis_modal.quality.plan_field = SetupRow::Intent.index();
     press(&mut app, KeyCode::Char(' '));
     press(&mut app, KeyCode::Char(' '));
     press(&mut app, KeyCode::Char(' '));
@@ -249,7 +245,7 @@ fn intent_after_a_run_reuses_the_rows_it_read() {
         Some(AppEvent::AnalysisCompute(AnalysisTool::DataQuality))
     ));
     assert_eq!(drain(&mut app, &rx, next), 1);
-    let results = app.analysis_modal.data_quality_results.clone().unwrap();
+    let results = app.analysis_modal.quality.results.clone().unwrap();
     assert_eq!(results.reads.unwrap().reads, 0, "no source read");
     assert_eq!(
         results.source.as_deref(),
@@ -282,7 +278,7 @@ fn the_report_exports_without_reading_the_source() {
     let path = dir.path().join("orders.parquet");
     write_orders(&path, 3_000);
     let (mut app, rx) = open_setup(path.clone(), 10_000);
-    app.analysis_modal.data_quality_plan.intent = datui::quality_intent::DeclaredIntent {
+    app.analysis_modal.quality.plan.intent = datui::quality_intent::DeclaredIntent {
         key: vec!["id".to_string()],
         columns: vec![datui::quality_intent::ColumnIntent {
             allowed: vec!["open".to_string(), "closed".to_string()],
@@ -291,13 +287,13 @@ fn the_report_exports_without_reading_the_source() {
     };
     let next = press(&mut app, KeyCode::Enter);
     assert_eq!(drain(&mut app, &rx, next), 1);
-    assert!(app.analysis_modal.data_quality_results.is_some());
+    assert!(app.analysis_modal.quality.results.is_some());
 
     std::fs::remove_file(&path).unwrap();
 
     // Not over Setup: the report on screen, not a draft.
     press(&mut app, KeyCode::Char('x'));
-    let form = app.analysis_modal.data_quality_export.as_mut().unwrap();
+    let form = app.analysis_modal.quality.export.as_mut().unwrap();
     assert_eq!(form.path.value(), "orders-quality.json");
     let json = dir.path().join("report.json");
     form.path.set_value(json.display().to_string());
@@ -307,9 +303,9 @@ fn the_report_exports_without_reading_the_source() {
         Some(AppEvent::QualityReportExport(_, _, Overwrite::Forbid))
     ));
     // Up while the report is written, so a failed write can say why in it.
-    assert!(app.analysis_modal.data_quality_export.is_some());
+    assert!(app.analysis_modal.quality.export.is_some());
     drain(&mut app, &rx, next);
-    assert!(app.analysis_modal.data_quality_export.is_none());
+    assert!(app.analysis_modal.quality.export.is_none());
     assert!(
         app.flash_message()
             .unwrap()
@@ -334,7 +330,7 @@ fn the_report_exports_without_reading_the_source() {
     press(&mut app, KeyCode::Char('x'));
     press(&mut app, KeyCode::Tab);
     press(&mut app, KeyCode::Right);
-    let form = app.analysis_modal.data_quality_export.as_mut().unwrap();
+    let form = app.analysis_modal.quality.export.as_mut().unwrap();
     assert_eq!(form.path.value(), "orders-quality.md");
     form.path
         .set_value(dir.path().join("report").display().to_string());
@@ -347,14 +343,14 @@ fn the_report_exports_without_reading_the_source() {
 
     // Over a file that exists: asked first; No keeps the dialog as typed.
     press(&mut app, KeyCode::Char('x'));
-    let form = app.analysis_modal.data_quality_export.as_mut().unwrap();
+    let form = app.analysis_modal.quality.export.as_mut().unwrap();
     form.path.set_value(json.display().to_string());
     std::fs::write(&json, "earlier").unwrap();
     assert!(press(&mut app, KeyCode::Enter).is_none());
     assert!(app.confirmation_modal.active);
     press(&mut app, KeyCode::Esc);
     assert!(!app.confirmation_modal.active);
-    assert!(app.analysis_modal.data_quality_export.is_some());
+    assert!(app.analysis_modal.quality.export.is_some());
     assert_eq!(std::fs::read_to_string(&json).unwrap(), "earlier");
     press(&mut app, KeyCode::Enter);
     press(&mut app, KeyCode::Left);
@@ -375,13 +371,13 @@ fn the_report_exports_without_reading_the_source() {
     // path, says why on its status line rather than in a modal.
     press(&mut app, KeyCode::Char('x'));
     let clash = dir.path().join("clash.json");
-    let form = app.analysis_modal.data_quality_export.as_mut().unwrap();
+    let form = app.analysis_modal.quality.export.as_mut().unwrap();
     form.path.set_value(clash.display().to_string());
     let next = press(&mut app, KeyCode::Enter);
     std::fs::write(&clash, "theirs").unwrap();
     drain(&mut app, &rx, next);
     assert!(app.error_message().is_none(), "{:?}", app.error_message());
-    let form = app.analysis_modal.data_quality_export.as_ref().unwrap();
+    let form = app.analysis_modal.quality.export.as_ref().unwrap();
     assert_eq!(form.path.value(), clash.display().to_string());
     assert!(
         form.error

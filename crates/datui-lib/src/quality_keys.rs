@@ -13,7 +13,7 @@ impl App {
         use crate::data_quality::QualityPage;
 
         // A finding's popup scrolls when it holds more than the screen does.
-        if self.analysis_modal.data_quality_observation_detail
+        if self.analysis_modal.quality.observation_detail
             && let Some(step) = ListMove::from_key(event)
         {
             let most = 65_535;
@@ -21,21 +21,21 @@ impl App {
             self.analysis_modal.scroll_quality_detail(rows);
             return ControlFlow::Break(None);
         }
-        if (self.analysis_modal.data_quality_show_access
-            || self.analysis_modal.data_quality_observation_detail
-            || self.analysis_modal.data_quality_evidence_read.is_some())
+        if (self.analysis_modal.quality.show_access
+            || self.analysis_modal.quality.observation_detail
+            || self.analysis_modal.quality.evidence_read.is_some())
             && !matches!(event.code, KeyCode::Esc | KeyCode::Enter)
         {
             return ControlFlow::Break(None);
         }
 
         // A Setup row's choices own the keys while they are open.
-        if self.analysis_modal.data_quality_picker.is_some() {
+        if self.analysis_modal.quality.picker.is_some() {
             match event.code {
-                KeyCode::Esc => self.analysis_modal.data_quality_picker = None,
+                KeyCode::Esc => self.analysis_modal.quality.picker = None,
                 KeyCode::Enter => self.choose_setup_picker(),
                 code => {
-                    if let Some(picker) = self.analysis_modal.data_quality_picker.as_mut() {
+                    if let Some(picker) = self.analysis_modal.quality.picker.as_mut() {
                         match code {
                             KeyCode::Up => picker.state.move_up(),
                             KeyCode::Down => picker.state.move_down(),
@@ -50,27 +50,28 @@ impl App {
         }
         // The export dialog owns every key while it is open, `?` included
         // when the path types.
-        if self.analysis_modal.data_quality_export.is_some()
+        if self.analysis_modal.quality.export.is_some()
             && (event.code != KeyCode::Char('?') || self.analysis_modal.export_typing())
         {
             return ControlFlow::Break(self.quality_export_key(event));
         }
         // The intent form owns every key while it is open, `?` included
         // when it types.
-        if self.analysis_modal.data_quality_intent_form.is_some()
+        if self.analysis_modal.quality.intent_form.is_some()
             && (event.code != KeyCode::Char('?') || self.analysis_modal.intent_typing())
         {
             self.intent_form_key(event);
             return ControlFlow::Break(None);
         }
         // The intent list owns the keys: which column, and its form.
-        if self.analysis_modal.data_quality_page == QualityPage::Intent
+        if self.analysis_modal.quality.page == QualityPage::Intent
             && event.code != KeyCode::Char('?')
         {
             let columns = self.quality_intent_columns().len();
             let field = self
                 .analysis_modal
-                .data_quality_plan_field
+                .quality
+                .plan_field
                 .min(columns.saturating_sub(1));
             match event.code {
                 KeyCode::Esc | KeyCode::Enter => {
@@ -78,7 +79,7 @@ impl App {
                     self.leave_setup_editor(analysis_modal::SetupRow::Intent, discard);
                 }
                 KeyCode::Char(' ') | KeyCode::Right | KeyCode::Char('l') => {
-                    self.analysis_modal.data_quality_plan_field = field;
+                    self.analysis_modal.quality.plan_field = field;
                     self.open_intent_form();
                 }
                 _ => self.move_setup_editor(event, field, columns),
@@ -86,10 +87,10 @@ impl App {
             return ControlFlow::Break(None);
         }
         // The role editor owns the keys: the role, and its column.
-        if self.analysis_modal.data_quality_page == QualityPage::TimeRoles
+        if self.analysis_modal.quality.page == QualityPage::TimeRoles
             && event.code != KeyCode::Char('?')
         {
-            let field = self.analysis_modal.data_quality_plan_field;
+            let field = self.analysis_modal.quality.plan_field;
             match event.code {
                 KeyCode::Esc | KeyCode::Enter => {
                     let discard = event.code == KeyCode::Esc;
@@ -111,20 +112,21 @@ impl App {
             return ControlFlow::Break(None);
         }
         // The Expected editor owns the keys; `?` is help unless it types.
-        if self.analysis_modal.data_quality_page == QualityPage::ExpectedWindows
+        if self.analysis_modal.quality.page == QualityPage::ExpectedWindows
             && (event.code != KeyCode::Char('?') || self.analysis_modal.quality_expected_typing())
         {
             self.expected_form_key(event);
             return ControlFlow::Break(None);
         }
         // The pairs editor owns the keys: which pair, and whether it is measured.
-        if self.analysis_modal.data_quality_page == QualityPage::IntervalPairs
+        if self.analysis_modal.quality.page == QualityPage::IntervalPairs
             && event.code != KeyCode::Char('?')
         {
-            let pairs = self.analysis_modal.data_quality_plan.candidate_pairs();
+            let pairs = self.analysis_modal.quality.plan.candidate_pairs();
             let field = self
                 .analysis_modal
-                .data_quality_plan_field
+                .quality
+                .plan_field
                 .min(pairs.len().saturating_sub(1));
             match event.code {
                 KeyCode::Esc | KeyCode::Enter => {
@@ -137,7 +139,7 @@ impl App {
                 | KeyCode::Right
                 | KeyCode::Char('l') => {
                     if let Some(pair) = pairs.get(field) {
-                        self.analysis_modal.data_quality_plan.toggle_interval(*pair);
+                        self.analysis_modal.quality.plan.toggle_interval(*pair);
                     }
                 }
                 _ => self.move_setup_editor(event, field, pairs.len()),
@@ -147,24 +149,24 @@ impl App {
         // Setup is edited where it stands: ↑↓ or Tab the row, ←→ a short
         // list's choice, Space the row's editor, Enter runs from any row, and
         // Esc discards every staged edit.
-        if self.analysis_modal.data_quality_page == QualityPage::Setup
+        if self.analysis_modal.quality.page == QualityPage::Setup
             && self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main
-            && !self.analysis_modal.data_quality_show_access
+            && !self.analysis_modal.quality.show_access
         {
             use analysis_modal::SetupRow;
             // Setup can hold the cursor without having been opened: after Esc
             // handed it to the tools and Tab brought it back, or after a run
             // that failed. Whatever is edited now is still a draft.
-            if self.analysis_modal.data_quality_setup_before.is_none() {
+            if self.analysis_modal.quality.setup_before.is_none() {
                 self.open_quality_setup();
             }
             let rows = SetupRow::ALL.len();
-            let field = self.analysis_modal.data_quality_plan_field.min(rows - 1);
+            let field = self.analysis_modal.quality.plan_field.min(rows - 1);
             match event.code {
                 KeyCode::BackTab | KeyCode::Tab => {
                     let back = event.code == KeyCode::BackTab;
                     let step = if back { ListMove::Up } else { ListMove::Down };
-                    self.analysis_modal.data_quality_plan_field = step.apply(field, rows, 1);
+                    self.analysis_modal.quality.plan_field = step.apply(field, rows, 1);
                     return ControlFlow::Break(None);
                 }
                 _ if ListMove::from_key(event).is_some() => {
@@ -172,7 +174,7 @@ impl App {
                     return ControlFlow::Break(None);
                 }
                 KeyCode::Char(' ') => {
-                    self.analysis_modal.data_quality_plan_field = field;
+                    self.analysis_modal.quality.plan_field = field;
                     return ControlFlow::Break(self.open_setup_row());
                 }
                 KeyCode::Left | KeyCode::Char('h') | KeyCode::Right | KeyCode::Char('l') => {
@@ -185,7 +187,7 @@ impl App {
                         | SetupRow::Latency
                         | SetupRow::WindowBy => {
                             let context = self.quality_plan_context();
-                            self.analysis_modal.data_quality_setup_note = None;
+                            self.analysis_modal.quality.setup_note = None;
                             self.analysis_modal
                                 .cycle_setup_choice(row, &context, forward);
                         }
@@ -209,34 +211,34 @@ impl App {
         }
 
         match event.code {
-            KeyCode::Esc if self.analysis_modal.data_quality_show_access => {
-                self.analysis_modal.data_quality_show_access = false;
+            KeyCode::Esc if self.analysis_modal.quality.show_access => {
+                self.analysis_modal.quality.show_access = false;
                 return ControlFlow::Break(None);
             }
             // A staged read of a finding's rows: Enter reads, Esc goes back to
             // the finding having read nothing.
-            KeyCode::Esc if self.analysis_modal.data_quality_evidence_read.is_some() => {
-                self.analysis_modal.data_quality_evidence_read = None;
+            KeyCode::Esc if self.analysis_modal.quality.evidence_read.is_some() => {
+                self.analysis_modal.quality.evidence_read = None;
                 return ControlFlow::Break(None);
             }
-            KeyCode::Enter if self.analysis_modal.data_quality_evidence_read.is_some() => {
+            KeyCode::Enter if self.analysis_modal.quality.evidence_read.is_some() => {
                 return ControlFlow::Break(self.confirm_evidence_read());
             }
-            KeyCode::Esc if self.analysis_modal.data_quality_observation_detail => {
-                self.analysis_modal.data_quality_observation_detail = false;
+            KeyCode::Esc if self.analysis_modal.quality.observation_detail => {
+                self.analysis_modal.quality.observation_detail = false;
                 return ControlFlow::Break(None);
             }
-            KeyCode::Enter if self.analysis_modal.data_quality_show_access => {
-                self.analysis_modal.data_quality_show_access = false;
+            KeyCode::Enter if self.analysis_modal.quality.show_access => {
+                self.analysis_modal.quality.show_access = false;
                 return ControlFlow::Break(None);
             }
-            KeyCode::Enter if self.analysis_modal.data_quality_observation_detail => {
+            KeyCode::Enter if self.analysis_modal.quality.observation_detail => {
                 // The clean entry has no rows to open; Enter shows every
                 // check it passed, and again the most important few.
                 if self.analysis_modal.quality_selected_is_clean() {
-                    self.analysis_modal.data_quality_checks_expanded =
-                        !self.analysis_modal.data_quality_checks_expanded;
-                    self.analysis_modal.data_quality_detail_scroll.offset = 0;
+                    self.analysis_modal.quality.checks_expanded =
+                        !self.analysis_modal.quality.checks_expanded;
+                    self.analysis_modal.quality.detail_scroll.offset = 0;
                     return ControlFlow::Break(None);
                 }
                 let event = self.open_quality_evidence();
@@ -245,41 +247,38 @@ impl App {
                 // a finding with no rows closes it.
                 if self.analysis_modal.active
                     && !self.error_modal.active
-                    && self.analysis_modal.data_quality_evidence_read.is_none()
+                    && self.analysis_modal.quality.evidence_read.is_none()
                     && self.analysis_modal.computing.is_none()
                 {
-                    self.analysis_modal.data_quality_observation_detail = false;
+                    self.analysis_modal.quality.observation_detail = false;
                 }
                 return ControlFlow::Break(event);
             }
             // A drill-in backs out to the list it came from.
-            KeyCode::Esc if self.analysis_modal.data_quality_page == QualityPage::SegmentDetail => {
+            KeyCode::Esc if self.analysis_modal.quality.page == QualityPage::SegmentDetail => {
                 self.analysis_modal.close_segment_detail();
                 return ControlFlow::Break(None);
             }
-            KeyCode::Esc
-                if self.analysis_modal.data_quality_page == QualityPage::IntervalDetail =>
-            {
+            KeyCode::Esc if self.analysis_modal.quality.page == QualityPage::IntervalDetail => {
                 self.analysis_modal.close_interval_detail();
                 return ControlFlow::Break(None);
             }
             KeyCode::Esc
                 if matches!(
-                    self.analysis_modal.data_quality_page,
+                    self.analysis_modal.quality.page,
                     QualityPage::TrendDetail | QualityPage::Gaps
                 ) =>
             {
                 self.analysis_modal.close_to_trends();
                 return ControlFlow::Break(None);
             }
-            KeyCode::Esc if self.analysis_modal.data_quality_page == QualityPage::Detail => {
+            KeyCode::Esc if self.analysis_modal.quality.page == QualityPage::Detail => {
                 self.analysis_modal
                     .set_quality_column_page(QualityPage::Columns);
                 return ControlFlow::Break(None);
             }
             KeyCode::Char('p') => {
-                self.analysis_modal.data_quality_show_access =
-                    !self.analysis_modal.data_quality_show_access;
+                self.analysis_modal.quality.show_access = !self.analysis_modal.quality.show_access;
                 return ControlFlow::Break(None);
             }
             // Setup, with every setting, from anywhere in the report.
@@ -289,39 +288,36 @@ impl App {
             }
             // The report's tabs; Setup is left with Enter or Esc, so a draft is
             // never left staged behind a report page.
-            KeyCode::Char(digit @ '1'..='5')
-                if !self.analysis_modal.data_quality_page.is_setup() =>
-            {
+            KeyCode::Char(digit @ '1'..='5') if !self.analysis_modal.quality.page.is_setup() => {
                 let tab = digit as usize - '1' as usize;
                 self.analysis_modal.show_quality_tab(QualityPage::TABS[tab]);
                 return ControlFlow::Break(None);
             }
-            KeyCode::Char('m') if self.analysis_modal.data_quality_page == QualityPage::Trends => {
+            KeyCode::Char('m') if self.analysis_modal.quality.page == QualityPage::Trends => {
                 self.analysis_modal.cycle_quality_metric();
                 return ControlFlow::Break(None);
             }
-            KeyCode::Char('m')
-                if self.analysis_modal.data_quality_page == QualityPage::TrendDetail =>
-            {
+            KeyCode::Char('m') if self.analysis_modal.quality.page == QualityPage::TrendDetail => {
                 self.analysis_modal.cycle_trend_detail_metric();
                 return ControlFlow::Break(None);
             }
             KeyCode::Char('w')
                 if matches!(
-                    self.analysis_modal.data_quality_page,
+                    self.analysis_modal.quality.page,
                     QualityPage::Trends | QualityPage::TrendDetail
-                ) && self.analysis_modal.data_quality_results.is_some() =>
+                ) && self.analysis_modal.quality.results.is_some() =>
             {
                 self.stage_coarser_grain();
                 return ControlFlow::Break(None);
             }
             KeyCode::Char('g')
                 if matches!(
-                    self.analysis_modal.data_quality_page,
+                    self.analysis_modal.quality.page,
                     QualityPage::Trends | QualityPage::TrendDetail
                 ) && self
                     .analysis_modal
-                    .data_quality_results
+                    .quality
+                    .results
                     .as_ref()
                     .is_some_and(|results| {
                         crate::quality_trends::expected_gaps(
@@ -335,13 +331,13 @@ impl App {
                 return ControlFlow::Break(None);
             }
             KeyCode::Char('b')
-                if self.analysis_modal.data_quality_page == QualityPage::Segments
+                if self.analysis_modal.quality.page == QualityPage::Segments
                     && self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main =>
             {
                 // The segment under the cursor, looked up while the results
                 // still order the list.
                 let selected = self.analysis_modal.selected_segment();
-                if let Some(mut results) = self.analysis_modal.data_quality_results.take() {
+                if let Some(mut results) = self.analysis_modal.quality.results.take() {
                     if let Some(label) = selected
                         .and_then(|index| results.segments.get(index))
                         .map(|segment| segment.label.clone())
@@ -351,26 +347,24 @@ impl App {
                         plan.baseline_segment = Some(label.clone());
                         results.compare_segments(&plan);
                         self.cache_quality_result(&results, plan.clone());
-                        self.analysis_modal.data_quality_last_plan = Some(plan);
-                        let working = &mut self.analysis_modal.data_quality_plan;
+                        self.analysis_modal.quality.last_plan = Some(plan);
+                        let working = &mut self.analysis_modal.quality.plan;
                         working.comparison = crate::data_quality::QualityComparison::Baseline;
                         working.baseline_segment = Some(label);
                     }
-                    self.analysis_modal.data_quality_results = Some(results);
+                    self.analysis_modal.quality.results = Some(results);
                 }
                 return ControlFlow::Break(None);
             }
-            KeyCode::Char('o')
-                if self.analysis_modal.data_quality_page == QualityPage::Segments =>
-            {
+            KeyCode::Char('o') if self.analysis_modal.quality.page == QualityPage::Segments => {
                 self.analysis_modal.toggle_segment_order();
                 return ControlFlow::Break(None);
             }
             // Overview's findings, narrowed and ordered from the report on
             // screen: nothing is measured again.
             KeyCode::Char(key @ ('c' | 't' | 'o'))
-                if self.analysis_modal.data_quality_page == QualityPage::Overview
-                    && self.analysis_modal.data_quality_results.is_some()
+                if self.analysis_modal.quality.page == QualityPage::Overview
+                    && self.analysis_modal.quality.results.is_some()
                     && self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main =>
             {
                 if key == 'o' {
@@ -382,8 +376,8 @@ impl App {
             }
             // Esc shows every finding again before it leaves the page.
             KeyCode::Esc
-                if self.analysis_modal.data_quality_page == QualityPage::Overview
-                    && self.analysis_modal.data_quality_findings.narrowed()
+                if self.analysis_modal.quality.page == QualityPage::Overview
+                    && self.analysis_modal.quality.findings.narrowed()
                     && self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main =>
             {
                 self.analysis_modal.clear_findings_narrowing();
@@ -392,8 +386,8 @@ impl App {
             // Write the report on screen to a file: what was measured, never a
             // draft, and nothing read to do it.
             KeyCode::Char('x')
-                if !self.analysis_modal.data_quality_page.is_setup()
-                    && self.analysis_modal.data_quality_results.is_some() =>
+                if !self.analysis_modal.quality.page.is_setup()
+                    && self.analysis_modal.quality.results.is_some() =>
             {
                 self.open_quality_export();
                 return ControlFlow::Break(None);
@@ -402,22 +396,22 @@ impl App {
             // report only, as on every tool, never over a draft, and not beside
             // a cancelled read.
             KeyCode::Char('r')
-                if !self.analysis_modal.data_quality_page.is_setup()
-                    && self.analysis_modal.data_quality_results.is_some()
-                    && self.analysis_modal.data_quality_plan.compute
+                if !self.analysis_modal.quality.page.is_setup()
+                    && self.analysis_modal.quality.results.is_some()
+                    && self.analysis_modal.quality.plan.compute
                         == data_quality::QualityCompute::Sample =>
             {
                 if self.cancelled_analysis_running().is_some() {
                     self.flash_note(QUALITY_RUN_WAITS.to_string());
                     return ControlFlow::Break(None);
                 }
-                let before = self.analysis_modal.data_quality_plan.clone();
-                self.analysis_modal.data_quality_plan.sample_seed = sample_modal::new_seed();
+                let before = self.analysis_modal.quality.plan.clone();
+                self.analysis_modal.quality.plan.sample_seed = sample_modal::new_seed();
                 let event = self.run_quality_setup(false);
                 // Refused, with the reason on Setup's line: the plan stays the
                 // one the report was run with, and the reason is said here.
-                if let Some(note) = self.analysis_modal.data_quality_setup_note.take() {
-                    self.analysis_modal.data_quality_plan = before;
+                if let Some(note) = self.analysis_modal.quality.setup_note.take() {
+                    self.analysis_modal.quality.plan = before;
                     self.flash_note(note);
                 }
                 return ControlFlow::Break(event);
@@ -426,7 +420,7 @@ impl App {
                 if let Some(setup) = self.quality_page_setup() {
                     // Straight to the setting that fills the page, in Setup.
                     self.open_quality_setup();
-                    self.analysis_modal.data_quality_plan_field = match setup {
+                    self.analysis_modal.quality.plan_field = match setup {
                         data_quality::QualitySetup::Grain => analysis_modal::SetupRow::Grain,
                         data_quality::QualitySetup::TimeRoles => {
                             analysis_modal::SetupRow::TimeRoles
@@ -437,40 +431,41 @@ impl App {
                     }
                     .index();
                     return ControlFlow::Break(self.open_setup_row());
-                } else if self.analysis_modal.data_quality_page == QualityPage::Overview {
+                } else if self.analysis_modal.quality.page == QualityPage::Overview {
                     let findings = self.analysis_modal.quality_row_count();
-                    self.analysis_modal.data_quality_checks_expanded = false;
-                    self.analysis_modal.data_quality_detail_scroll =
+                    self.analysis_modal.quality.checks_expanded = false;
+                    self.analysis_modal.quality.detail_scroll =
                         analysis_modal::DetailScroll::default();
-                    self.analysis_modal.data_quality_observation_detail = self
+                    self.analysis_modal.quality.observation_detail = self
                         .analysis_modal
-                        .data_quality_table_state
+                        .quality
+                        .table_state
                         .selected()
                         .is_some_and(|index| index < findings);
-                } else if self.analysis_modal.data_quality_page == QualityPage::Columns {
+                } else if self.analysis_modal.quality.page == QualityPage::Columns {
                     self.analysis_modal
                         .set_quality_column_page(QualityPage::Detail);
-                } else if self.analysis_modal.data_quality_page == QualityPage::Detail {
+                } else if self.analysis_modal.quality.page == QualityPage::Detail {
                     self.analysis_modal
                         .set_quality_column_page(QualityPage::Columns);
-                } else if self.analysis_modal.data_quality_page == QualityPage::Segments
-                    && self.analysis_modal.data_quality_results.is_some()
+                } else if self.analysis_modal.quality.page == QualityPage::Segments
+                    && self.analysis_modal.quality.results.is_some()
                 {
                     self.analysis_modal.open_segment_detail();
-                } else if self.analysis_modal.data_quality_page == QualityPage::SegmentDetail {
+                } else if self.analysis_modal.quality.page == QualityPage::SegmentDetail {
                     self.analysis_modal.close_segment_detail();
-                } else if self.analysis_modal.data_quality_page == QualityPage::Trends
-                    && self.analysis_modal.data_quality_results.is_some()
+                } else if self.analysis_modal.quality.page == QualityPage::Trends
+                    && self.analysis_modal.quality.results.is_some()
                 {
                     self.analysis_modal.open_trend_detail();
                 } else if matches!(
-                    self.analysis_modal.data_quality_page,
+                    self.analysis_modal.quality.page,
                     QualityPage::TrendDetail | QualityPage::Gaps
                 ) {
                     self.analysis_modal.close_to_trends();
-                } else if self.analysis_modal.data_quality_page == QualityPage::Intervals {
+                } else if self.analysis_modal.quality.page == QualityPage::Intervals {
                     self.analysis_modal.open_interval_detail();
-                } else if self.analysis_modal.data_quality_page == QualityPage::IntervalDetail {
+                } else if self.analysis_modal.quality.page == QualityPage::IntervalDetail {
                     return ControlFlow::Break(self.open_interval_evidence());
                 }
                 return ControlFlow::Break(None);
@@ -498,7 +493,7 @@ impl App {
     /// A Setup editor's list key: its cursor moves over its `rows`, ten to a page.
     fn move_setup_editor(&mut self, event: &KeyEvent, field: usize, rows: usize) {
         if let Some(step) = ListMove::from_key(event) {
-            self.analysis_modal.data_quality_plan_field = step.apply(field, rows, 10);
+            self.analysis_modal.quality.plan_field = step.apply(field, rows, 10);
         }
     }
 
@@ -506,13 +501,13 @@ impl App {
     /// the editor opened on.
     fn leave_setup_editor(&mut self, row: analysis_modal::SetupRow, discard: bool) {
         let modal = &mut self.analysis_modal;
-        if let Some(plan) = modal.data_quality_plan_before_edit.take()
+        if let Some(plan) = modal.quality.plan_before_edit.take()
             && discard
         {
-            modal.data_quality_plan = plan;
+            modal.quality.plan = plan;
         }
-        modal.data_quality_setup_note = None;
+        modal.quality.setup_note = None;
         modal.set_quality_page(crate::data_quality::QualityPage::Setup);
-        modal.data_quality_plan_field = row.index();
+        modal.quality.plan_field = row.index();
     }
 }

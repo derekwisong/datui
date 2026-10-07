@@ -282,7 +282,7 @@ fn run_study(app: &mut App, rx: &mpsc::Receiver<AppEvent>, study: &Study) {
     modal.focus = AnalysisFocus::Main;
     modal.sample = sample.clone();
     modal.set_quality_page(QualityPage::Setup);
-    let plan = &mut modal.data_quality_plan;
+    let plan = &mut modal.quality.plan;
     plan.scope = sample.scope.clone();
     plan.method = sample.method.clone();
     plan.dataset_rows = sample.rows;
@@ -369,7 +369,7 @@ fn bench(scenario: &str, path: &str, config: AppConfig, wire: Option<&fake_s3::W
             }
             _ => ("unknown".into(), "unknown".into()),
         };
-        let outcome = match app.analysis_modal.data_quality_results.as_ref() {
+        let outcome = match app.analysis_modal.quality.results.as_ref() {
             _ if app.modal_showing() => "error".to_string(),
             Some(results) => format!(
                 "evaluated={} segments={} intervals={} compared={}",

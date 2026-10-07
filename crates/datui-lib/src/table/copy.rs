@@ -9,6 +9,9 @@ use super::*;
 pub(super) struct GroupedView {
     pub(super) lf: LazyFrame,
     pub(super) base_lf: LazyFrame,
+    /// The schemas of `base_lf` and of the view, so coming back resolves neither.
+    base_schema: Arc<Schema>,
+    schema: Arc<Schema>,
     pub(super) filters: Vec<FilterStatement>,
     pub(super) sort_columns: Vec<String>,
     pub(super) sort_descending: Vec<bool>,
@@ -813,6 +816,8 @@ impl DataTableState {
         self.view.grouped = Some(GroupedView {
             lf: self.view.lf.clone(),
             base_lf: self.view.base_lf.clone(),
+            base_schema: self.view.base_schema.clone(),
+            schema: self.view.schema.clone(),
             filters: std::mem::take(&mut self.view.filters),
             sort_columns: std::mem::take(&mut self.view.sort_columns),
             sort_descending: std::mem::take(&mut self.view.sort_descending),
@@ -982,7 +987,6 @@ impl DataTableState {
         let Some(view) = self.view.grouped.take() else {
             return Err(color_eyre::eyre::eyre!("Not in drill-down mode"));
         };
-        let schema = Self::without_drift(view.lf.clone()).collect_schema()?;
         self.invalidate_num_rows();
         // The buffer holds the group's rows; kept, it would stand in for the grouped
         // view wherever the view fits inside it.
@@ -992,6 +996,7 @@ impl DataTableState {
         self.view.lf = view.lf;
         self.view.unsorted_lf = None;
         self.view.base_lf = view.base_lf;
+        self.view.base_schema = view.base_schema;
         self.view.base_steps = view.base_steps;
         self.view.lineage = view.lineage;
         self.view.filters = view.filters;
@@ -1008,7 +1013,7 @@ impl DataTableState {
         // than saved, so they cannot go stale against a frame that changed while it was
         // drilled into.
         self.view.view_notes = self.view_notes_only();
-        self.view.schema = schema;
+        self.view.schema = view.schema;
         self.view.column_order = view.column_order;
         self.view.locked_columns_count = view.locked_columns_count;
         self.view.drilled_down_group_index = None;

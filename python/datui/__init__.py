@@ -76,32 +76,104 @@ def _splice_own_dsl_hash(payload: bytes) -> bytes:
     return payload[:_DSL_HASH_OFFSET] + own[_DSL_HASH_OFFSET:end] + payload[end:]
 
 
+def _reason(error: BaseException) -> str:
+    """The line of a polars error that says what went wrong: its last non-blank one."""
+    lines = [line.strip() for line in str(error).splitlines() if line.strip()]
+    return lines[-1] if lines else type(error).__name__
+
+
+def _polars_version() -> str:
+    return getattr(pl, "__version__", "unknown")
+
+
+def _reads_paired_plans() -> bool:
+    """Whether this polars can read the wheel's plans at all. A major release apart
+    never can (2.0 requires fields 1.x plans lack), so the plan is not even written."""
+    return _polars_version().split(".")[0] == PAIRED_POLARS.split(".")[0]
+
+
+def _is_paired() -> bool:
+    version = _polars_version()
+    return version == PAIRED_POLARS or version.startswith(PAIRED_POLARS + ".")
+
+
 def _captured_frame(captured) -> pl.LazyFrame:
     """Turn the view the TUI captured into a LazyFrame.
 
     `captured` has `plan()`, the view's plan bytes, and `__arrow_c_stream__`, its rows.
-    The plan is read when this polars can; a polars whose plans differ from the
-    paired release's (2.0 does) gets the rows instead, collected now, with a warning.
+    The plan is read when this polars can. The rows are taken instead, collected now,
+    with a warning saying why, when datui cannot write the view as a plan (a source
+    or step polars cannot serialize) or this polars cannot read it (another major
+    release, or a minor one whose plans differ). On the paired release an unreadable
+    plan is a bug, and raises.
     """
-    payload = captured.plan()
-    try:
-        return pl.LazyFrame.deserialize(io.BytesIO(_splice_own_dsl_hash(payload)))
-    except Exception as e:
-        unreadable = e
-    version = getattr(pl, "__version__", "unknown")
+    version = _polars_version()
+    why = None
+    if not _reads_paired_plans():
+        why = f"polars {version} cannot read the plans datui writes (for polars {PAIRED_POLARS})"
+    else:
+        try:
+            payload = captured.plan()
+        except RuntimeError as e:
+            why = (
+                "datui cannot write this view as a polars plan: its source or one of its "
+                f"steps has no plan form ({_reason(e)})"
+            )
+        else:
+            try:
+                return pl.LazyFrame.deserialize(io.BytesIO(_splice_own_dsl_hash(payload)))
+            except Exception as e:
+                if _is_paired():
+                    raise RuntimeError(
+                        f"polars {version} cannot read the plan datui wrote for it: {_reason(e)}"
+                    ) from e
+                why = (
+                    f"polars {version} cannot read datui's plan (written for polars "
+                    f"{PAIRED_POLARS}): {_reason(e)}"
+                )
+            finally:
+                # The plan can carry a whole DataFrame; do not hold it while the rows collect.
+                del payload
     warnings.warn(
-        f"polars {version} cannot read datui's plan (datui writes plans for polars "
-        f"{PAIRED_POLARS}); the captured view is its rows, collected now, not a plan.",
+        f"{why}; the captured view is its rows, collected now, not a plan.",
         UserWarning,
         stacklevel=3,
     )
     try:
         return pl.DataFrame(captured).lazy()
-    except Exception as e:
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except BaseException as e:
+        # BaseException: a Rust panic reaches Python as a PanicException, which is one.
         raise RuntimeError(
-            f"polars {version} cannot read the view datui returned, as a plan or as rows: {e}. "
+            f"datui could not return the captured view as rows either: {_reason(e)}. "
             "Export from inside datui (press e) instead."
-        ) from unreadable
+        ) from e
+
+
+def _refuse_unreadable_columns(df: pl.DataFrame) -> None:
+    """Refuse a column datui cannot take over Arrow, before any TUI starts. Python
+    objects export as raw pointers (or abort the process on older polars), and Float16
+    has no counterpart in the polars datui embeds."""
+
+    def holds(dtype, kind) -> bool:
+        if dtype == kind:
+            return True
+        inner = getattr(dtype, "inner", None)
+        if inner is not None and holds(inner, kind):
+            return True
+        return any(holds(field.dtype, kind) for field in getattr(dtype, "fields", None) or ())
+
+    for name, dtype in df.schema.items():
+        if holds(dtype, pl.Object):
+            raise ValueError(
+                f"datui cannot show column {name!r}: it holds Python objects (pl.Object)"
+            )
+        if hasattr(pl, "Float16") and holds(dtype, pl.Float16):
+            raise ValueError(
+                f"datui cannot read column {name!r}: it holds Float16 values; cast them "
+                f"to Float32 first, such as df.with_columns(pl.col({name!r}).cast(pl.Float32))"
+            )
 
 
 def _view_frame(
@@ -170,8 +242,9 @@ def view(
     sources are reread and must remain available, and a plan over an in-memory
     frame can carry (and copy) the frame's data even when the final result would be
     small. A polars that cannot read the plans this datui writes (PAIRED_POLARS is
-    the release it pairs with; 2.0 differs) gets the view's rows instead, collected
-    at quit, with a UserWarning; that holds every row of the view in memory. Views
+    the release it pairs with; 2.0 differs), or a view with no plan form (a SQLite
+    table, a text or log file), gets the view's rows instead, collected at quit,
+    with a UserWarning saying why; that holds every row of the view in memory. Views
     over files datui downloaded or decompressed into temporary files are refused
     (RuntimeError); export from inside datui (press e) instead — that also remains
     the way to write rows out without capture.
@@ -195,7 +268,8 @@ def view(
 
     Raises:
         TypeError: Unsupported type for data or invalid option keyword.
-        ValueError: Empty path list or invalid LazyFrame serialization.
+        ValueError: Empty path list, invalid LazyFrame serialization, or a DataFrame
+            column datui cannot read (pl.Object, Float16).
         FileNotFoundError: A given path does not exist.
         PermissionError: Read access denied for a path.
         RuntimeError: No interactive terminal (e.g. Jupyter or piped output), error
@@ -217,6 +291,7 @@ def view(
 
     # A DataFrame crosses over the Arrow C stream, which no polars release changes.
     if isinstance(data, pl.DataFrame):
+        _refuse_unreadable_columns(data)
         captured = datui._datui.view_from_arrow(data, options=opts, capture=capture)
         return _captured_frame(captured) if captured is not None else None
 

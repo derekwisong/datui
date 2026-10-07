@@ -16,22 +16,35 @@ def test_import_datui():
     assert hasattr(datui, "CompressionFormat")
 
 
-def test_view_accepts_lazyframe():
-    """view() should accept a polars LazyFrame (type check; we don't run the TUI in tests)."""
+def test_view_refuses_object_columns_before_the_tui():
+    """Python objects cannot cross over Arrow: ValueError naming the column, nested ones
+    included, before any TUI starts."""
     import datui
 
-    lf = polars.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]}).lazy()
-    # We only verify the binding accepts the argument; running view() would block on the TUI
-    assert callable(datui.view)
+    with pytest.raises(ValueError, match="column 'o'.*pl.Object"):
+        datui.view(polars.DataFrame({"a": [1], "o": [object()]}, strict=False))
+    # Polars will not build a frame with a nested Object today; check the dtypes alone.
+    from types import SimpleNamespace
+
+    for dtype in (
+        polars.List(polars.Object),
+        polars.Array(polars.Object, 2),
+        polars.Struct({"x": polars.List(polars.Object)}),
+    ):
+        with pytest.raises(ValueError, match="column 's'.*pl.Object"):
+            datui._refuse_unreadable_columns(SimpleNamespace(schema={"s": dtype}))
 
 
-def test_view_accepts_dataframe():
-    """view() should accept a polars DataFrame (converted to LazyFrame internally)."""
+def test_view_refuses_float16_naming_the_cast():
+    """Float16 has no counterpart in the embedded polars: ValueError naming the column
+    and the cast that gets past it."""
     import datui
 
-    df = polars.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]})
-    # We only verify the binding accepts the argument; running view() would block on the TUI
-    assert callable(datui.view)
+    if not hasattr(polars, "Float16"):
+        pytest.skip("no Float16 in this polars")
+    frame = polars.DataFrame({"h": [1.5]}).cast({"h": polars.Float16})
+    with pytest.raises(ValueError, match=r"column 'h'.*cast\(pl.Float32\)"):
+        datui.view(frame)
 
 
 def test_view_invalid_input_raises():
@@ -204,53 +217,112 @@ def test_splice_own_dsl_hash_is_identity_on_own_plans():
 
 
 class _FakeCaptured:
-    """Stands in for the extension's Captured: a plan, and rows over the Arrow C stream."""
+    """Stands in for the extension's Captured: a plan, and rows over the Arrow C stream.
+    A plan or rows that are an exception raise it."""
 
     def __init__(self, plan, frame):
         self._plan = plan
         self._frame = frame
 
     def plan(self):
+        if isinstance(self._plan, BaseException):
+            raise self._plan
         return self._plan
 
     def __arrow_c_stream__(self, requested_schema=None):
-        if self._frame is None:
-            raise RuntimeError("no rows")
+        if isinstance(self._frame, BaseException):
+            raise self._frame
         return self._frame.__arrow_c_stream__(requested_schema)
 
 
-def test_captured_frame_reads_a_plan():
+def _pair_with(monkeypatch, paired):
+    import datui
+
+    monkeypatch.setattr(datui, "PAIRED_POLARS", paired)
+
+
+def _this_major():
+    return polars.__version__.split(".")[0]
+
+
+def test_captured_frame_reads_a_plan(monkeypatch):
     """A plan this polars reads comes back as that plan, with no warning."""
     import warnings
 
     import datui
 
+    _pair_with(monkeypatch, polars.__version__)
     payload = polars.DataFrame({"a": [1, 2]}).lazy().serialize()
     if not isinstance(payload, bytes):
         pytest.skip("binary serialization unavailable")
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        lf = datui._captured_frame(_FakeCaptured(payload, None))
+        lf = datui._captured_frame(_FakeCaptured(payload, AssertionError("rows taken")))
     assert lf.collect().to_dict(as_series=False) == {"a": [1, 2]}
 
 
-def test_captured_frame_falls_back_to_rows():
-    """A plan this polars cannot read gives the rows instead, with a warning naming the
-    paired polars."""
+def test_captured_frame_takes_rows_when_this_minor_cannot_read_the_plan(monkeypatch):
+    """Another minor release that cannot read the plan gets the rows, with a warning
+    carrying polars' own reason."""
     import datui
 
+    _pair_with(monkeypatch, f"{_this_major()}.999")
     rows = polars.DataFrame({"a": [1, 2], "b": ["x", None]})
-    with pytest.warns(UserWarning, match=f"plans for polars {datui.PAIRED_POLARS}"):
+    reason = rf"written for polars {_this_major()}\.999\): .+; the captured view is its rows"
+    with pytest.warns(UserWarning, match=reason):
         lf = datui._captured_frame(_FakeCaptured(b"not a plan at all", rows))
     assert lf.collect().equals(rows)
 
 
-def test_captured_frame_without_plan_or_rows_is_a_runtime_error():
-    """Neither a plan nor rows: RuntimeError, never ValueError."""
+def test_captured_frame_on_the_paired_release_raises_an_unreadable_plan(monkeypatch):
+    """On the paired release an unreadable plan is a bug, not a version gap: raise."""
     import datui
 
-    with pytest.warns(UserWarning), pytest.raises(RuntimeError, match="as a plan or as rows"):
-        datui._captured_frame(_FakeCaptured(b"not a plan at all", None))
+    _pair_with(monkeypatch, polars.__version__)
+    rows = polars.DataFrame({"a": [1]})
+    with pytest.raises(RuntimeError, match="cannot read the plan datui wrote for it"):
+        datui._captured_frame(_FakeCaptured(b"not a plan at all", rows))
+
+
+def test_captured_frame_skips_the_plan_across_a_major_release(monkeypatch):
+    """A major release apart never reads the plan, so it is not even written."""
+    import datui
+
+    _pair_with(monkeypatch, "0.1")
+    rows = polars.DataFrame({"a": [1, 2]})
+    with pytest.warns(UserWarning, match="cannot read the plans datui writes"):
+        lf = datui._captured_frame(_FakeCaptured(AssertionError("plan written"), rows))
+    assert lf.collect().equals(rows)
+
+
+def test_captured_frame_takes_rows_when_datui_cannot_write_the_plan(monkeypatch):
+    """A view over a source with no plan form (SQLite, text files, follow) still comes
+    back, as rows, with a warning saying why."""
+    import datui
+
+    _pair_with(monkeypatch, polars.__version__)
+    rows = polars.DataFrame({"a": [1, 2]})
+    failure = RuntimeError(
+        "datui could not serialize the captured view: serialization failed\n\n"
+        "error: the enum variant FileScanDsl::Anonymous cannot be serialized"
+    )
+    with pytest.warns(UserWarning, match="has no plan form .*FileScanDsl::Anonymous"):
+        lf = datui._captured_frame(_FakeCaptured(failure, rows))
+    assert lf.collect().equals(rows)
+
+
+def test_captured_frame_without_plan_or_rows_is_a_runtime_error(monkeypatch):
+    """Neither a plan nor rows: RuntimeError, never ValueError, a panic included."""
+    import datui
+
+    _pair_with(monkeypatch, "0.1")
+
+    class Panic(BaseException):
+        pass
+
+    for failure in (RuntimeError("no rows"), Panic("rust panicked")):
+        with pytest.warns(UserWarning), pytest.raises(RuntimeError, match="as rows either"):
+            datui._captured_frame(_FakeCaptured(None, failure))
 
 
 def test_view_from_arrow_refuses_a_stream_that_is_not_a_table():
@@ -266,8 +338,10 @@ def _polars_major():
     return int(polars.__version__.split(".")[0])
 
 
-def _capture_through_the_tui(tmp_path, frame_code, env=None):
-    """Run `datui.view(<frame_code>, capture=True)` in a child on a pty, press q once
+def _capture_through_the_tui(
+    tmp_path, frame_code, env=None, setup="", call="datui.view(frame, capture=True)"
+):
+    """Run `setup`, `frame = <frame_code>` and `call` in a child on a pty, press q once
     the table is drawn, and return what came back: `rows` (None when nothing did),
     `same` (it equals the frame, dtypes included) and `warned` (it came back as rows)."""
     import fcntl
@@ -285,15 +359,16 @@ def _capture_through_the_tui(tmp_path, frame_code, env=None):
         "import datetime, decimal, json, warnings\n"
         "import polars as pl\n"
         "import datui\n"
+        f"{setup}\n"
         f"frame = {frame_code}\n"
         "with warnings.catch_warnings(record=True) as caught:\n"
         "    warnings.simplefilter('always')\n"
-        "    res = datui.view(frame, capture=True)\n"
+        f"    res = {call}\n"
         "got = None if res is None else res.collect()\n"
         "result = {\n"
         "    'rows': None if got is None else got.to_dicts(),\n"
         "    'same': got is not None and got.equals(frame.lazy().collect()),\n"
-        "    'warned': any('cannot read datui' in str(w.message) for w in caught),\n"
+        "    'warned': any('the captured view is its rows' in str(w.message) for w in caught),\n"
         "}\n"
         f"with open({str(out)!r}, 'w') as f:\n"
         "    json.dump(result, f, default=str)\n"
@@ -447,6 +522,32 @@ def test_an_empty_dataframe_round_trips(tmp_path):
     """No rows still crosses over Arrow with its columns."""
     got = _capture_through_the_tui(tmp_path, "pl.DataFrame({'a': [], 'b': []}, schema={'a': pl.Int64, 'b': pl.String})")
     assert got["rows"] == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="pty is not available on Windows")
+def test_a_stream_of_several_batches_reads_as_one_frame(tmp_path):
+    """Python polars sends one batch; other producers send several, each with its own
+    dictionary. They stack into one frame."""
+    pytest.importorskip("pyarrow")
+    setup = (
+        "import pyarrow as pa\n"
+        "batches = [pa.record_batch({'n': pa.array([i, i + 1]),"
+        " 'c': pa.array(['x', 'y']).dictionary_encode() if i == 0 else"
+        " pa.array(['z', 'x']).dictionary_encode()}) for i in (0, 2)]\n"
+        "tbl = pa.Table.from_batches(batches)\n"
+    )
+    got = _capture_through_the_tui(
+        tmp_path,
+        "pl.from_arrow(tbl)",
+        setup=setup,
+        call="datui._captured_frame(datui._datui.view_from_arrow(tbl, capture=True))",
+    )
+    assert got["rows"] == [
+        {"n": 0, "c": "x"},
+        {"n": 1, "c": "y"},
+        {"n": 2, "c": "z"},
+        {"n": 3, "c": "x"},
+    ]
 
 
 def test_python_api_reference_lists_every_option():

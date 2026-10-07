@@ -218,6 +218,13 @@ pub(super) fn sort_options(descending: Vec<bool>) -> SortMultipleOptions {
         .with_maintain_order(true)
 }
 
+/// What a sidebar apply changed besides the columns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ViewChange {
+    pub filters: bool,
+    pub sort: bool,
+}
+
 impl DataTableState {
     /// Plan a pivot of the view (long → wide). Nothing is read until the job runs.
     /// Never uses `original_lf`.
@@ -883,13 +890,14 @@ impl DataTableState {
         filters: Vec<FilterStatement>,
         columns: Vec<String>,
         descending: Vec<bool>,
-    ) {
+    ) -> ViewChange {
         self.set_column_order(order);
         self.set_locked_columns(locked);
-        if filters != self.view.filters
-            || columns != self.view.sort_columns
-            || descending != self.view.sort_descending
-        {
+        let change = ViewChange {
+            filters: filters != self.view.filters,
+            sort: columns != self.view.sort_columns || descending != self.view.sort_descending,
+        };
+        if change.filters || change.sort {
             self.widths.relearn();
         }
         if let Some(first) = descending.first() {
@@ -901,6 +909,7 @@ impl DataTableState {
         self.view.start_row = 0;
         self.drop_buffer();
         self.apply_transformations();
+        change
     }
 
     pub fn filter(&mut self, filters: Vec<FilterStatement>) {

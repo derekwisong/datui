@@ -86,6 +86,19 @@ pub fn looks_like(head: &[u8]) -> bool {
 /// among the columns; and the bytes left out past `most`, which end at a whole record.
 fn read_all(paths: &[PathBuf], most: u64) -> Result<(DataFrame, u64)> {
     use std::io::Read;
+    fn read(reader: impl polars::io::mmap::MmapBytesReader) -> PolarsResult<DataFrame> {
+        JsonReader::new(reader)
+            .with_json_format(JsonFormat::JsonLines)
+            .infer_schema_len(None)
+            .finish()
+    }
+    // One file under the cap goes to the reader as it is, mapped rather than copied.
+    if let [path] = paths {
+        let file = std::fs::File::open(path)?;
+        if file.metadata()?.len() <= most {
+            return Ok((read(file)?, 0));
+        }
+    }
     // One read of them all, so the schema is every file's fields.
     let mut bytes = Vec::new();
     let mut left_out = 0;
@@ -110,11 +123,7 @@ fn read_all(paths: &[PathBuf], most: u64) -> Result<(DataFrame, u64)> {
             bytes.push(b'\n');
         }
     }
-    let df = JsonReader::new(std::io::Cursor::new(bytes))
-        .with_json_format(JsonFormat::JsonLines)
-        .infer_schema_len(None)
-        .finish()?;
-    Ok((df, left_out))
+    Ok((read(std::io::Cursor::new(bytes))?, left_out))
 }
 
 fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {

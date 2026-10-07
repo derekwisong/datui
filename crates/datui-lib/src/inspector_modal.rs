@@ -268,6 +268,30 @@ pub struct InspectorModal {
     /// Compressed bytes decompressed off this thread for the Text view.
     pub unpack: Option<Unpack>,
     pub unpack_token: u64,
+    /// What `visible` was worked out for: the list is worked out again only when
+    /// this changes, not each frame.
+    pub(crate) listed: Option<ListKey>,
+    /// Times the list was worked out, for a test that a frame reuses it.
+    #[cfg(test)]
+    pub(crate) list_builds: usize,
+}
+
+/// Everything the fields listed depend on besides the fields themselves, which only
+/// [`InspectorModal::open`] replaces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ListKey {
+    pub order: Order,
+    pub filled_only: bool,
+    pub filter: String,
+    /// The row shown, by frame and row.
+    pub row: Option<(u64, usize)>,
+    /// The rows on hand, where Compare finds the next and the row before.
+    pub buffered: (usize, usize),
+    pub compare: bool,
+    pub compare_both: bool,
+    pub pinned: Option<(u64, usize)>,
+    /// The fields read for a row, and how far the read got.
+    pub read: Option<((u64, usize), u8)>,
 }
 
 impl InspectorModal {
@@ -285,6 +309,7 @@ impl InspectorModal {
         self.selected = keep.unwrap_or(0);
         self.visible = (0..fields.len()).collect();
         self.fields = fields;
+        self.listed = None;
         self.active = true;
         self.finding = false;
         self.focus = Focus::List;

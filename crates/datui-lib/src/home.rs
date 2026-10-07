@@ -1531,6 +1531,23 @@ impl ViewKey {
                 .collect(),
         }
     }
+
+    /// Whether `home` would make this key: [`Self::of`] compared without cloning,
+    /// as every read of the rows asks.
+    fn matches(&self, home: &HomeState) -> bool {
+        self.filter == home.filter
+            && self.sort == home.sort
+            && self.hide_unreadable == home.hide_unreadable
+            && self.recent_expanded == home.recent_expanded
+            && self.shown_whole == home.shown_whole
+            && self.view_height == home.view_height
+            && self.browsing == home.browsing
+            && self.folds == home.folds
+            && self.shape.iter().copied().eq(home
+                .sections
+                .iter()
+                .map(|s| (s.rows.len(), s.door.is_some())))
+    }
 }
 
 /// A built row, by index into the sections for the rows that are entries.
@@ -4098,6 +4115,24 @@ impl HomeState {
         view.slots.iter().map(|slot| self.row(slot)).collect()
     }
 
+    /// Which rows of [`HomeState::visible`] are section headers, without building
+    /// the rows.
+    pub fn header_rows(&self) -> Vec<bool> {
+        (self.view().slots.iter())
+            .map(|slot| matches!(slot, Slot::Plain(Row::Header { .. })))
+            .collect()
+    }
+
+    /// How many rows the filter matches: the sum of the section headers' counts.
+    pub fn matched(&self) -> usize {
+        (self.view().slots.iter())
+            .map(|slot| match slot {
+                Slot::Plain(Row::Header { matches, .. }) => *matches,
+                _ => 0,
+            })
+            .sum()
+    }
+
     /// How many rows [`HomeState::visible`] lists.
     pub fn row_count(&self) -> usize {
         self.view().slots.len()
@@ -4198,7 +4233,7 @@ impl HomeState {
             .built
             .borrow()
             .as_ref()
-            .is_some_and(|view| view.key == ViewKey::of(self));
+            .is_some_and(|view| view.key.matches(self));
         if !fresh {
             let view = self.build_view();
             self.rows_cache.builds.set(self.rows_cache.builds.get() + 1);

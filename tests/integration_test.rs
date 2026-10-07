@@ -2126,26 +2126,26 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     // each cost the column, the type each holds, and the values the conflict hid.
     {
         let results = app.analysis_modal.quality.results.as_mut().unwrap();
-        results.observations = vec![datui::data_quality::QualityObservation {
-            kind: datui::data_quality::ObservationKind::TypeConflict,
-            column: "fee".to_string(),
-            affected_rows: 2,
-            evaluated_rows: 7,
-            fact: "1 of 3 files holds a type the scan cannot read".to_string(),
-            normalized_category: None,
-            files: vec![datui::data_quality::QualityFileEvidence {
-                number: 2,
-                name: "b.parquet".to_string(),
-                rows: 2,
-                stored_type: Some("str".to_string()),
-                examples: vec!["sixty".to_string()],
-            }],
-            time_format: None,
-            full_scale: None,
-        }];
-        // The report was built for the results as run; changed in place, it is built
-        // again.
-        results.derived = Default::default();
+        // Changed in place, the report is built again.
+        results.edit(|results| {
+            results.observations = vec![datui::data_quality::QualityObservation {
+                kind: datui::data_quality::ObservationKind::TypeConflict,
+                column: "fee".to_string(),
+                affected_rows: 2,
+                evaluated_rows: 7,
+                fact: "1 of 3 files holds a type the scan cannot read".to_string(),
+                normalized_category: None,
+                files: vec![datui::data_quality::QualityFileEvidence {
+                    number: 2,
+                    name: "b.parquet".to_string(),
+                    rows: 2,
+                    stored_type: Some("str".to_string()),
+                    examples: vec!["sixty".to_string()],
+                }],
+                time_format: None,
+                full_scale: None,
+            }];
+        });
         app.analysis_modal.set_quality_page(QualityPage::Overview);
         app.analysis_modal.quality.table_state.select(Some(0));
         app.analysis_modal.quality.observation_detail = true;
@@ -2178,19 +2178,20 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         .to_string();
     let original_view = app.data_table_state.as_ref().unwrap().len_generation();
     let results = app.analysis_modal.quality.results.as_mut().unwrap();
-    results.precision = datui::data_quality::QualityPrecision::Exact;
-    results.observations = vec![datui::data_quality::QualityObservation {
-        kind: datui::data_quality::ObservationKind::Nulls,
-        column,
-        affected_rows: 0,
-        evaluated_rows: results.evaluated_rows,
-        fact: "matching rows".to_string(),
-        normalized_category: None,
-        files: Vec::new(),
-        time_format: None,
-        full_scale: None,
-    }];
-    results.derived = Default::default();
+    results.edit(|results| {
+        results.precision = datui::data_quality::QualityPrecision::Exact;
+        results.observations = vec![datui::data_quality::QualityObservation {
+            kind: datui::data_quality::ObservationKind::Nulls,
+            column,
+            affected_rows: 0,
+            evaluated_rows: results.evaluated_rows,
+            fact: "matching rows".to_string(),
+            normalized_category: None,
+            files: Vec::new(),
+            time_format: None,
+            full_scale: None,
+        }];
+    });
     app.analysis_modal.set_quality_page(QualityPage::Overview);
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,

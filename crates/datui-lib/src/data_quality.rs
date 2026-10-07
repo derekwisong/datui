@@ -2236,8 +2236,9 @@ pub struct DataQualityResults {
     pub intent: Option<Box<crate::quality_intent::IntentResults>>,
     /// What the rows were read from, as the run that measured them labeled it.
     pub source: Option<Box<crate::quality_export::SourceIdentity>>,
-    /// The report and checks read from the rest, once built.
-    pub derived: crate::quality_report::ReportCache,
+    /// The report and checks read from the rest, once built. Edits in place go
+    /// through [`Self::edit`], which drops them.
+    pub(crate) derived: crate::quality_report::ReportCache,
 }
 
 /// A segment the scope has rows in and a sample drew none of.

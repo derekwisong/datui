@@ -492,12 +492,7 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
     // five sections, so at most four lines, and below thirty the list is as dense as
     // it can be. The spacers come off the height the cap on RECENT is a share of.
     let spaced = height >= SPACED_LIST_HEIGHT;
-    let headers = app
-        .home
-        .visible()
-        .iter()
-        .filter(|row| matches!(row, crate::home::Row::Header { .. }))
-        .count();
+    let headers = app.home.header_rows().into_iter().filter(|h| *h).count();
     let spacers = if spaced { headers.saturating_sub(1) } else { 0 };
     // The height first: the cap on RECENT is a share of it, and the cursor has to be
     // put back on its row before the scroll is settled from it.
@@ -507,11 +502,11 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
     let row_lines: Vec<usize> = {
         let mut line = 0;
         app.home
-            .visible()
-            .iter()
+            .header_rows()
+            .into_iter()
             .enumerate()
-            .map(|(i, row)| {
-                if spaced && i > 0 && matches!(row, crate::home::Row::Header { .. }) {
+            .map(|(i, header)| {
+                if spaced && i > 0 && header {
                     line += 1;
                 }
                 let at = line;

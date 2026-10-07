@@ -441,11 +441,8 @@ impl SampleForm {
                 .cloned()
                 .unwrap_or_default(),
             SampleField::Method => match &self.draft.method {
-                SampleMethod::Spread => "Random".to_string(),
-                SampleMethod::PerPartition { .. } => "Equal per value".to_string(),
-                SampleMethod::FirstRows => "First rows".to_string(),
                 SampleMethod::EveryRow if self.view => "No sample".to_string(),
-                SampleMethod::EveryRow => "Every row".to_string(),
+                method => method.name().to_string(),
             },
             SampleField::By => match &self.draft.method {
                 SampleMethod::PerPartition { column } => column.clone(),

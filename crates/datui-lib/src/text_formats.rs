@@ -28,8 +28,6 @@ use crate::{CompressionFormat, OpenOptions};
 
 /// How much of the file is read at a time.
 const CHUNK: usize = 1 << 16;
-/// The most rows of a [`Detail`] list; a file of more says how many are left out.
-pub const MAX_DETAIL_ROWS: usize = 10_000;
 
 /// What a file says besides its rows, for its tab of the Info panel: a VCD header, the
 /// FIX dictionaries used, a model's totals and metadata, an audio file's format and
@@ -198,18 +196,22 @@ pub(crate) fn count(n: u64, one: &str, many: &str) -> String {
     format!("{} {}", group_chrome(n), if n == 1 { one } else { many })
 }
 
-/// A list for a [`Detail`], at most [`MAX_DETAIL_ROWS`] long; one row more says how
+/// A list for a [`Detail`], at most `limits.detail_rows` long; one row more says how
 /// many were left out.
 pub(crate) fn capped_list(
     rows: impl Iterator<Item = (String, MetaValue)>,
     total: usize,
 ) -> Vec<(String, MetaValue)> {
-    let mut list: Vec<_> = rows.take(MAX_DETAIL_ROWS).collect();
+    let mut list: Vec<_> = rows.take(crate::limits::get().detail_rows).collect();
     if total > list.len() {
         let more = total - list.len();
         list.push((
             crate::glyphs::get().ellipsis.to_string(),
-            MetaValue::Text(format!("{} more", group_chrome(more))),
+            MetaValue::Text(format!(
+                "{} more {} limits.detail_rows raises it",
+                group_chrome(more),
+                crate::glyphs::get().middot
+            )),
         ));
     }
     list

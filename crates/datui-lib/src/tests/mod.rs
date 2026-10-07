@@ -2434,6 +2434,7 @@ fn stale_analysis_answers_are_ignored() {
                 unsampled_segments: vec![],
                 intent: None,
                 source: None,
+                derived: Default::default(),
             }),
             kept: None,
             plan: Box::default(),

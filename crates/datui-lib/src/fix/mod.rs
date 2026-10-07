@@ -35,8 +35,9 @@ pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
         let layers = layers(input.formats, &input.options.dicts)?;
         crate::text_formats::convert_with(input, FixReader::new(layers), |reader, lf| {
             if reader.stats().messages == 0 {
-                let e = FileError::new(input.display, "no FIX messages: no line holds 8=FIX.");
-                return Err(e.into());
+                return Err(color_eyre::eyre::eyre!(
+                    "no FIX messages: no line holds 8=FIX."
+                ));
             }
             Ok((reader.finish_frame(lf), notes(reader), detail(reader)))
         })

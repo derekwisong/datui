@@ -44,16 +44,14 @@ pub(crate) fn read_head(file: &Path, options: &OpenOptions, spec: &Delimited) ->
     let mut source = crate::readers::csv::text_source(file, None)?;
     let lines = named_lines(&mut source, &wanted)?;
     let names = rows.map(|rows| {
-        let picked: Vec<Vec<u8>> = rows
-            .iter()
-            .map(|row| {
-                wanted
-                    .iter()
-                    .position(|w| w == row)
-                    .map_or_else(Vec::new, |i| lines[i].clone())
-            })
-            .collect();
-        names_of(&picked, rows, &options.header_join, separator, comment)
+        names_of(
+            &lines,
+            &wanted,
+            rows,
+            &options.header_join,
+            separator,
+            comment,
+        )
     });
     let units = spec
         .facts_of(&wanted, &lines, separator, &options.header_join)

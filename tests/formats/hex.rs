@@ -415,7 +415,7 @@ fn ctrl_x_at_home_shows_a_file_s_bytes_and_esc_goes_back_home() {
     let selected = app
         .home
         .selected_entry()
-        .map(|entry| entry.path)
+        .map(|entry| entry.path.clone())
         .unwrap_or_default();
     assert!(selected.ends_with("hex_home.csv"), "{selected:?}");
     ctrl(&mut app, 'x');

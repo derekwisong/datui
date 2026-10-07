@@ -5,8 +5,8 @@
 //! expressions on top: `time` from `__REALTIME_TIMESTAMP`, `level` from `PRIORITY` in
 //! order of severity, `MESSAGE` as text where it came as bytes, and the columns put in
 //! the order a reader of logs looks for them. Every field stays. A file's records are
-//! read whole into memory, with the schema inferred from all of them, so a field first
-//! seen late is a column too. A pipe or a followed file is scanned as it grows
+//! read whole into memory, up to `limits.journal_bytes`, with the schema inferred from
+//! all of them, so a field first seen late is a column too. A pipe or a followed file is scanned as it grows
 //! ([`crate::follow::lines`]); a pipe's fields first seen after the open join once it
 //! ends.
 
@@ -82,29 +82,39 @@ pub fn looks_like(head: &[u8]) -> bool {
     }
 }
 
-/// The records of `paths`, read whole, every record's fields among the columns.
-fn read_all(paths: &[PathBuf]) -> Result<DataFrame> {
-    fn read<R: polars::io::mmap::MmapBytesReader>(reader: R) -> PolarsResult<DataFrame> {
-        JsonReader::new(reader)
-            .with_json_format(JsonFormat::JsonLines)
-            .infer_schema_len(None)
-            .finish()
-    }
-    let df = match paths {
-        [one] => read(std::fs::File::open(one)?)?,
-        many => {
-            // One read of them all, so the schema is every file's fields.
-            let mut bytes = Vec::new();
-            for path in many {
-                bytes.extend(std::fs::read(path)?);
-                if bytes.last().is_some_and(|&b| b != b'\n') {
-                    bytes.push(b'\n');
-                }
-            }
-            read(std::io::Cursor::new(bytes))?
+/// The records of `paths`, read whole up to `most` bytes in all, every record's fields
+/// among the columns; and the bytes left out past `most`, which end at a whole record.
+fn read_all(paths: &[PathBuf], most: u64) -> Result<(DataFrame, u64)> {
+    use std::io::Read;
+    // One read of them all, so the schema is every file's fields.
+    let mut bytes = Vec::new();
+    let mut left_out = 0;
+    for path in paths {
+        let file = std::fs::File::open(path)?;
+        let len = file.metadata()?.len();
+        // Once one file is cut short, the rest are left out whole.
+        let room = if left_out > 0 {
+            0
+        } else {
+            most.saturating_sub(bytes.len() as u64)
+        };
+        file.take(room).read_to_end(&mut bytes)?;
+        if len > room {
+            left_out += len - room;
+            // The record cut through is left out whole.
+            let whole = memchr::memrchr(b'\n', &bytes).map_or(0, |at| at + 1);
+            left_out += (bytes.len() - whole) as u64;
+            bytes.truncate(whole);
         }
-    };
-    Ok(df)
+        if bytes.last().is_some_and(|&b| b != b'\n') {
+            bytes.push(b'\n');
+        }
+    }
+    let df = JsonReader::new(std::io::Cursor::new(bytes))
+        .with_json_format(JsonFormat::JsonLines)
+        .infer_schema_len(None)
+        .finish()?;
+    Ok((df, left_out))
 }
 
 fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
@@ -112,10 +122,14 @@ fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
     let failed = |e: &dyn std::fmt::Display| -> color_eyre::Report {
         crate::error_display::FileError::new(&path, format!("not journal JSON: {e}")).into()
     };
+    let mut left_out = 0;
     let raw = if input.options.follow {
         crate::follow::scan_lines(&path, input.options, true, &mut input.report.read_python)?
     } else {
-        read_all(input.paths).map_err(|e| failed(&e))?.lazy()
+        let most = crate::limits::get().journal_bytes.bytes();
+        let (df, past) = read_all(input.paths, most).map_err(|e| failed(&e))?;
+        left_out = past;
+        df.lazy()
     };
     let schema = raw.clone().collect_schema().map_err(|e| failed(&e))?;
     let bytes = came_as_bytes(&raw, &schema).map_err(|e| failed(&e))?;
@@ -123,6 +137,18 @@ fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
     input.report.read_python.extend(python);
     let detail = summary(&lf).map_err(|e| failed(&e))?;
     let mut notes = Vec::new();
+    if left_out > 0 {
+        let size = crate::widgets::info::format_bytes;
+        notes.push(crate::text_formats::note(
+            format!(
+                "{} left out: past the first {} {} limits.journal_bytes raises it",
+                size(left_out),
+                size(crate::limits::get().journal_bytes.bytes()),
+                crate::glyphs::get().middot
+            ),
+            "the journal".to_string(),
+        ));
+    }
     if bytes > 0 {
         notes.push(crate::text_formats::note(
             format!(
@@ -420,6 +446,24 @@ fn python_arguments(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Past `most` bytes the records are left out whole, and counted; a later file is
+    /// left out entirely.
+    #[test]
+    fn a_read_stops_at_its_cap_on_a_whole_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let one = dir.path().join("one.json");
+        let two = dir.path().join("two.json");
+        let record = |n: u32| format!("{{\"MESSAGE\":\"m{n}\"}}\n");
+        std::fs::write(&one, (0..3).map(record).collect::<String>()).unwrap();
+        std::fs::write(&two, record(9)).unwrap();
+        let line = record(0).len() as u64;
+        let (df, left_out) = read_all(&[one.clone(), two.clone()], line + 3).unwrap();
+        assert_eq!(df.height(), 1);
+        assert_eq!(left_out, 3 * line);
+        let (df, left_out) = read_all(&[one, two], u64::MAX).unwrap();
+        assert_eq!((df.height(), left_out), (4, 0));
+    }
 
     #[test]
     fn journal_json_by_its_first_record() {

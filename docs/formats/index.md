@@ -53,7 +53,7 @@ datui --format csv export.txt
 | lazy scan | Scanned where it is. Browsing reads a buffer of rows; queries, sorting and analysis may read the whole input |
 | decompressed copy | Decompressed whole into a temporary file of the same format in the temp directory (`--temp-dir`), which is then scanned lazily. The file is removed on quit ([temporary files](../user-guide/open-files.md#temporary-files)) |
 | converted to Arrow | Read through whole into a temporary Arrow IPC file in the temp directory, which is then scanned lazily. Removed on quit, like a decompressed copy; nothing is cached between sessions |
-| in memory | Read whole into memory before the table appears. Past `memory_warning` in `[read]` (`"1GiB"` by default; 0 never asks), datui asks first: `big.json: JSON reads 2.10 GB into memory`. A model file's table is one row per tensor, from the header, so it is small however large the model, and is never asked about; a MIDI file is at most 64 MiB |
+| in memory | Read whole into memory before the table appears. Past `memory_warning` in `[read]` (`"1GiB"` by default; 0 never asks), datui asks first: `big.json: JSON reads 2.10 GB into memory`. A model file's table is one row per tensor, from the header, so it is small however large the model, and is never asked about; a MIDI file is at most 64 MiB (`midi_bytes` in `[limits]`) |
 
 - **Compressed** is a `.gz`, `.zst`, `.bz2` or `.xz` file; `no` means it does not
   open. `-c read.decompress_in_memory=true` reads compressed CSV, TSV, PSV

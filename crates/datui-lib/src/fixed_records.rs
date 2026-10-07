@@ -457,6 +457,38 @@ fn decode_values<'a>(
                 .collect::<Vec<$ty>>()
         }};
     }
+    // A native width with a sentinel: compared at that width, not through `i128`.
+    if column.logical == Logical::Plain
+        && let Some(null) = column.null
+    {
+        let sentinel = null_integer(null, column.physical);
+        macro_rules! or_null {
+            ($ty:ty) => {{
+                let sentinel = sentinel.and_then(|s| <$ty>::try_from(s).ok());
+                let values = native!($ty).into_iter();
+                Some(Series::new(
+                    name.clone(),
+                    values
+                        .map(|v| (Some(v) != sentinel).then_some(v))
+                        .collect::<Vec<Option<$ty>>>(),
+                ))
+            }};
+        }
+        let fast = match column.physical {
+            Physical::Unsigned(1) => or_null!(u8),
+            Physical::Unsigned(2) => or_null!(u16),
+            Physical::Unsigned(4) => or_null!(u32),
+            Physical::Unsigned(8) => or_null!(u64),
+            Physical::Signed(1) => or_null!(i8),
+            Physical::Signed(2) => or_null!(i16),
+            Physical::Signed(4) => or_null!(i32),
+            Physical::Signed(8) => or_null!(i64),
+            _ => None,
+        };
+        if let Some(series) = fast {
+            return Ok(series);
+        }
+    }
     // The common case at memory speed: a native width, as stored, no sentinel.
     if column.logical == Logical::Plain && column.null.is_none() {
         let fast = match column.physical {
@@ -1046,6 +1078,20 @@ mod tests {
             df.column("u").unwrap().u16().unwrap().to_vec(),
             [None, Some(1)]
         );
+        // A native signed width with a sentinel value, and one the type cannot hold.
+        let mut s4 = column("s", 0, 4, Physical::Signed(4));
+        s4.null = Some(Null::Value(-1));
+        let bytes: Vec<u8> = [-1i32, 7].iter().flat_map(|v| v.to_le_bytes()).collect();
+        let df = records(bytes.clone(), vec![s4.clone()], usize::MAX)
+            .collect(9)
+            .unwrap();
+        assert_eq!(
+            df.column("s").unwrap().i32().unwrap().to_vec(),
+            [None, Some(7)]
+        );
+        s4.null = Some(Null::Value(1 << 40));
+        let df = records(bytes, vec![s4], usize::MAX).collect(9).unwrap();
+        assert_eq!(df.column("s").unwrap().null_count(), 0);
     }
 
     #[test]

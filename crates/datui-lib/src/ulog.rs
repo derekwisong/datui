@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use polars::prelude::*;
 
+use crate::columns::{Builder, Cell, Kind};
 use crate::fixed_records::{Bytes, ColumnLayout, Logical, Physical};
 use crate::indexed::{IndexedRecords, Offsets};
 use crate::model_files::MetaValue;
@@ -108,7 +109,7 @@ pub struct Index {
     pub short: usize,
     /// Data messages with an id no subscription gave.
     pub unsubscribed: usize,
-    /// Records past [`crate::indexed::MAX_RECORDS`], left out.
+    /// Records past `limits.indexed_records`, left out.
     pub past_limit: usize,
     /// Why a topic's fields could not be read, by topic.
     pub unread: Vec<(String, String)>,
@@ -340,6 +341,7 @@ pub fn index(data: &[u8]) -> Result<Index, String> {
     let mut subs: HashMap<u16, (String, u8, Offsets)> = HashMap::new();
     let mut multi: Vec<(String, String)> = Vec::new();
     let mut records = 0usize;
+    let limit = crate::limits::get().indexed_records;
     let mut last_time: Option<u64> = None;
     // Appended data, at offsets the flag bits give: the main data ends at the first.
     let mut appended: Vec<usize> = Vec::new();
@@ -419,7 +421,7 @@ pub fn index(data: &[u8]) -> Result<Index, String> {
             b'D' if size >= 2 => {
                 let id = u16_at(payload, 0).unwrap_or_default();
                 match subs.get_mut(&id) {
-                    Some((_, _, offsets)) if records < crate::indexed::MAX_RECORDS => {
+                    Some((_, _, offsets)) if records < limit => {
                         offsets.push(body + 2);
                         records += 1;
                     }
@@ -683,10 +685,10 @@ impl crate::indexed::Log for Index {
             ));
         }
         if self.past_limit > 0 {
-            notes.push(format!(
-                "{} messages left out: past the first {}",
-                group(self.past_limit),
-                group(crate::indexed::MAX_RECORDS)
+            notes.push(crate::limits::left_out(
+                &format!("{} messages", group(self.past_limit)),
+                crate::limits::get().indexed_records,
+                "indexed_records",
             ));
         }
         if self.logged_left_out > 0 {
@@ -708,51 +710,49 @@ impl crate::indexed::Log for Index {
         name: &str,
         opened: &mut crate::members::Opened,
     ) -> Result<LazyFrame, String> {
-        Ok(
-            if let Some((_, id)) = self.names.iter().find(|(n, _)| *n == name) {
-                let topic = &self.topics[id];
-                let records = Arc::new(
-                    IndexedRecords::new(bytes, topic.offsets.clone(), topic.columns.clone())
-                        .map_err(|e| format!("table \"{name}\": {e}"))?,
-                );
-                opened.window = Some((records.clone(), records.rows()));
-                records.lazy()
-            } else if name == LOGGED {
-                let (mut time, mut lvl, mut tag, mut text) =
-                    (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-                for (t, l, g, m) in &self.logged {
-                    time.push(*t as i64);
-                    lvl.push(*l);
-                    tag.push(*g);
-                    text.push(m.as_str());
-                }
-                df!(
-            "timestamp" => Int64Chunked::from_vec("timestamp".into(), time).into_duration(TimeUnit::Microseconds).into_series(),
-            "level" => lvl,
-            "tag" => tag,
-            "message" => text,
-        )
-        .map_err(|e| e.to_string())?
-        .lazy()
-            } else {
-                let (mut name, mut kind, mut value, mut time) =
-                    (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-                for (n, k, v, t) in &self.parameters {
-                    name.push(n.as_str());
-                    kind.push(*k);
-                    value.push(*v);
-                    time.push(t.map(|t| t as i64));
-                }
-                df!(
-            "name" => name,
-            "type" => kind,
-            "value" => value,
-            "timestamp" => time.into_iter().collect::<Int64Chunked>().into_duration(TimeUnit::Microseconds).into_series(),
-        )
-        .map_err(|e| e.to_string())?
-        .lazy()
-            },
-        )
+        if let Some((_, id)) = self.names.iter().find(|(n, _)| *n == name) {
+            let topic = &self.topics[id];
+            let records = Arc::new(
+                IndexedRecords::new(bytes, topic.offsets.clone(), topic.columns.clone())
+                    .map_err(|e| format!("table \"{name}\": {e}"))?,
+            );
+            opened.window = Some((records.clone(), records.rows()));
+            return Ok(records.lazy());
+        }
+        let mut table = if name == LOGGED {
+            let mut table = Builder::new(&[
+                ("timestamp", Kind::DurationUs),
+                ("level", Kind::Label),
+                ("tag", Kind::U16),
+                ("message", Kind::Str),
+            ]);
+            for (t, level, tag, text) in &self.logged {
+                table.push([
+                    Cell::DurationUs(Some(*t as i64)),
+                    Cell::Label(Some(level)),
+                    Cell::U16(*tag),
+                    Cell::Str(Some(text.clone())),
+                ]);
+            }
+            table
+        } else {
+            let mut table = Builder::new(&[
+                ("name", Kind::Str),
+                ("type", Kind::Label),
+                ("value", Kind::F64),
+                ("timestamp", Kind::DurationUs),
+            ]);
+            for (name, kind, value, t) in &self.parameters {
+                table.push([
+                    Cell::Str(Some(name.clone())),
+                    Cell::Label(Some(kind)),
+                    Cell::F64(Some(*value)),
+                    Cell::DurationUs(t.map(|t| t as i64)),
+                ]);
+            }
+            table
+        };
+        Ok(table.take().map_err(|e| e.to_string())?.lazy())
     }
 }
 

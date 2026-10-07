@@ -16,5 +16,5 @@ pub fn run(bytes: &[u8]) {
     };
     assert_eq!(elf.symbols.width(), 7);
     assert_eq!(elf.sections.width(), 6);
-    assert!(elf.detail.list.len() <= datui_lib::text_formats::MAX_DETAIL_ROWS + 1);
+    assert!(elf.detail.list.len() <= datui_lib::limits::get().detail_rows + 1);
 }

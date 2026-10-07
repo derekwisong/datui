@@ -2136,6 +2136,9 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
             time_format: None,
             full_scale: None,
         }];
+        // The report was built for the results as run; changed in place, it is built
+        // again.
+        results.derived = Default::default();
         app.analysis_modal.set_quality_page(QualityPage::Overview);
         app.analysis_modal.data_quality_table_state.select(Some(0));
         app.analysis_modal.data_quality_observation_detail = true;
@@ -2180,6 +2183,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         time_format: None,
         full_scale: None,
     }];
+    results.derived = Default::default();
     app.analysis_modal.set_quality_page(QualityPage::Overview);
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
@@ -11463,7 +11467,7 @@ fn test_remote_listing_shows_progress_until_it_arrives() {
     assert!(waiting.contains("Listing gs://bucket/demo"), "{waiting}");
     assert!(!waiting.contains("No datasets here."), "{waiting}");
 
-    app.home.probe_ready(dir, Vec::new());
+    app.home.probe_ready(dir, Vec::new(), false);
     let done = screen(&mut app);
     assert!(!done.contains("Listing gs://bucket/demo"), "{done}");
     assert_eq!(app.home.waiting_since, None);
@@ -14179,7 +14183,7 @@ fn test_a_tall_list_spaces_its_sections_and_a_short_one_does_not() {
         ],
         ..Default::default()
     };
-    app.home.catalogs = datui::home::catalogs(&config);
+    app.home.set_catalogs(datui::home::catalogs(&config));
     app.home.rebuild(&recents);
 
     let is_header = |line: &str| {
@@ -15579,7 +15583,7 @@ fn test_the_cloud_door_reads_a_prefix_with_the_reader_its_listing_calls_for() {
         let mut app = App::new(tx, common::test_runtime());
         app.enter_home();
         app.home.network_check = |_| true;
-        app.home.probe_ready(place.clone(), rows);
+        app.home.probe_ready(place.clone(), rows, false);
         app.home.browsing = Some(place);
         app.home.rebuild(&[]);
         let row = app

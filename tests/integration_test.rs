@@ -8153,12 +8153,12 @@ fn test_the_bar_says_the_footers_are_still_arriving_while_the_data_is_up() {
     let _ = painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 24));
     // The same rows as a staged open leaves them: counted, with a pass still out.
     let waiting = || {
-        let mut state = datui::widgets::datatable::DataTableState::from_lazyframe(
+        let mut state = datui::table::DataTableState::from_lazyframe(
             df!("id" => &[0i64, 1, 2]).unwrap().lazy(),
             &OpenOptions::default(),
         )
         .unwrap()
-        .with_open(datui::widgets::datatable::OpenFacts {
+        .with_open(datui::table::OpenFacts {
             footers_pending: Some(std::sync::Arc::new(|_| None)),
             ..Default::default()
         });
@@ -8793,9 +8793,7 @@ fn test_a_failed_export_keeps_the_old_file() {
             },
             |_, field| Ok(field.clone()),
         ));
-    let state =
-        datui::widgets::datatable::DataTableState::new(failing, None, None, None, None, true)
-            .unwrap();
+    let state = datui::table::DataTableState::new(failing, None, None, None, None, true).unwrap();
     app.data_table_state = Some(state);
     let dir = tempfile::tempdir().unwrap();
 
@@ -11387,8 +11385,6 @@ fn a_load_chosen_at_home_fails_at_home() {
 /// The one-file schema types partition columns the way a full scan does.
 #[test]
 fn test_hive_partition_types_match_full_scan() {
-    use datui::widgets::datatable::DataTableState;
-
     let dir = tempfile::tempdir().unwrap();
     for sub in [
         "region=eu/year=2020/day=2020-01-01",
@@ -11402,7 +11398,7 @@ fn test_hive_partition_types_match_full_scan() {
             .unwrap();
     }
 
-    let (fast, parts) = DataTableState::schema_from_one_hive_parquet(dir.path()).unwrap();
+    let (fast, parts) = datui::readers::hive::schema_from_one_hive_parquet(dir.path()).unwrap();
     assert_eq!(parts, ["region", "year", "day"]);
     let mut full = LazyFrame::scan_parquet(
         PlRefPath::try_from_path(dir.path()).unwrap(),
@@ -11418,7 +11414,7 @@ fn test_hive_partition_types_match_full_scan() {
     }
     assert_eq!(fast.get("year"), Some(&DataType::Int64));
 
-    let lf = DataTableState::scan_parquet_hive_with_schema(dir.path(), fast).unwrap();
+    let lf = datui::readers::hive::scan_parquet_hive_with_schema(dir.path(), fast).unwrap();
     let df = lf.filter(col("year").gt(lit(2020))).collect().unwrap();
     assert_eq!(df.height(), 2);
 }
@@ -14617,7 +14613,7 @@ fn test_a_sampled_column_count_is_marked_on_screen() {
     app.home.selected = row;
 
     // As a directory past the footer budget comes back from measurement.
-    for section in app.home.sections.iter_mut() {
+    for section in app.home.sections_mut().iter_mut() {
         for entry in section.rows.iter_mut().filter(|e| e.name == "events") {
             entry.kind = datui::discover::EntryKind::MultiFile;
             entry.rows = None;
@@ -14686,7 +14682,7 @@ fn test_an_unexamined_lake_root_is_classified_before_it_is_opened() {
     app.home.selected = row;
 
     // As a row restored from a cache this build will not take its kind from.
-    for section in app.home.sections.iter_mut() {
+    for section in app.home.sections_mut().iter_mut() {
         for entry in section.rows.iter_mut().filter(|e| e.name == "orders") {
             entry.kind = datui::discover::EntryKind::Unknown;
         }
@@ -14974,7 +14970,7 @@ fn test_a_hive_directory_from_home_still_opens_as_one_dataset() {
     app.home.browsing = Some(tmp.path().to_path_buf());
     app.home.rebuild(&[]);
     let gone = PathBuf::from("/mnt/gone/sales");
-    for section in app.home.sections.iter_mut() {
+    for section in app.home.sections_mut().iter_mut() {
         for entry in section.rows.iter_mut().filter(|e| e.name == "sales") {
             entry.path = gone.clone();
         }
@@ -24714,7 +24710,7 @@ fn test_copy_as_python_scripts_compute_the_rows_datui_shows() {
     use datui::filter_modal::{FilterOperator, LogicalOperator};
     use datui::pivot_melt_modal::{PivotAggregation, PivotSpec};
 
-    type Build = Box<dyn Fn(&mut datui::widgets::datatable::DataTableState)>;
+    type Build = Box<dyn Fn(&mut datui::table::DataTableState)>;
     let views: Vec<(&str, Build)> = vec![
         (
             "sidebar filters, an OR, a sort and the columns shown",
@@ -25288,7 +25284,7 @@ pl.DataFrame({
         .status()
         .unwrap();
     assert!(written.success());
-    type Build = Box<dyn Fn(&mut datui::widgets::datatable::DataTableState)>;
+    type Build = Box<dyn Fn(&mut datui::table::DataTableState)>;
     let views: Vec<(&str, Build)> = vec![
         (
             "filters, a sort and the columns shown",

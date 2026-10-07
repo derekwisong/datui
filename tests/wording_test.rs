@@ -401,10 +401,7 @@ fn texts() -> Vec<Text> {
     files_under(&root.join("python/datui"), "py", &mut sources);
     for path in sources {
         let rel = relative(&path);
-        if rel.contains("/src/tests/")
-            || rel.ends_with("/tests.rs")
-            || rel.ends_with("text_input_flows.rs")
-        {
+        if rel.contains("/src/tests/") || rel.ends_with("/tests.rs") {
             continue;
         }
         if rel.ends_with(".py") {

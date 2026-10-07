@@ -7,6 +7,7 @@
 //! through the decode core of the binary format specs ([`crate::fixed_records`]), only
 //! the rows and columns a view reaches. The pass's result is kept ([`cached`]), so the
 //! home screen can list a log's tables and each opens without reading the file again.
+//! A log whose tables are its record types is a [`Log`].
 
 use std::any::{Any, TypeId};
 use std::path::{Path, PathBuf};
@@ -15,6 +16,10 @@ use std::sync::{Arc, Mutex};
 use polars::prelude::*;
 
 use crate::fixed_records::{Bytes, ColumnLayout};
+use crate::members::{Opened, Pick, Table};
+use crate::readers::ScanIn;
+use crate::scan::Scan;
+use crate::text_formats::Detail;
 
 /// Records one pass indexes, all types together. Four bytes a record for a file under
 /// 4 GiB, eight past it: 256 MiB at most for a file under 4 GiB.
@@ -258,6 +263,71 @@ pub fn keep<T: Any + Send + Sync>(path: &Path, index: Arc<T>) {
         }
         kept.drain(..excess);
     }
+}
+
+/// The bytes of the log at `path` and its index, made by `index` in one pass or kept
+/// from one.
+pub(crate) fn indexed<T: Any + Send + Sync>(
+    path: &Path,
+    index: impl FnOnce(&[u8]) -> Result<T, String>,
+) -> color_eyre::Result<(Arc<Bytes>, Arc<T>)> {
+    use crate::error_display::{FileError, in_file};
+    let bytes = Arc::new(Bytes::map(path).map_err(|e| in_file(path, e.into()))?);
+    let index = cached(path, || index(bytes.as_slice())).map_err(|e| FileError::new(path, e))?;
+    Ok((bytes, index))
+}
+
+/// A log of record types one pass indexes, each type a table: a flight log. A new one
+/// is this and a `READER` with [`scan`] and [`listed`].
+pub trait Log: Any + Send + Sync + Sized {
+    /// Said after "the file holds no tables." of a log with none.
+    const EMPTY: &'static str;
+    fn index(data: &[u8]) -> Result<Self, String>;
+    /// Its tables, for the home screen and `--table`.
+    fn tables(&self) -> Vec<Table>;
+    /// What the Info panel's tab of it says.
+    fn detail(&self) -> Detail;
+    /// What the Notes tab says of the pass.
+    fn notes(&self) -> Vec<String>;
+    /// The table `name`, one of [`Self::tables`], read from `bytes`, filling what of
+    /// `opened` it knows (its window, units).
+    fn table(
+        &self,
+        bytes: Arc<Bytes>,
+        name: &str,
+        opened: &mut Opened,
+    ) -> Result<LazyFrame, String>;
+}
+
+/// The log's tables as its indexing pass found them: listed once it has been opened,
+/// and not read here, where the home screen waits.
+pub(crate) fn listed<L: Log>(path: &Path) -> color_eyre::Result<Vec<Table>> {
+    peek::<L>(path)
+        .map(|log| log.tables())
+        .ok_or_else(|| color_eyre::eyre::eyre!("Open the log to list its tables."))
+}
+
+/// The scan of a log: the table `--table` names, or its only one, decoded from the file
+/// where it is shown; or none yet when it has several. The pass that indexes the log is
+/// kept, so a table chosen from the list reads nothing again.
+pub(crate) fn scan<L: Log>(input: ScanIn<'_>) -> color_eyre::Result<Scan> {
+    let path = input.path().to_path_buf();
+    let (bytes, log) = indexed(&path, L::index)?;
+    let tables = log.tables();
+    let picked = match crate::members::pick(
+        tables.clone(),
+        input.options.table.as_deref(),
+        &path,
+        L::EMPTY,
+    )? {
+        Pick::One(table) => table.name,
+        Pick::Several(tables) => return Ok(crate::members::several(&input, tables)),
+    };
+    let mut opened = Opened::for_table(log.detail(), &tables, &picked, log.notes(), "the log");
+    let lf = log
+        .table(bytes, &picked, &mut opened)
+        .map_err(|e| crate::error_display::FileError::new(&path, e))?;
+    Ok(opened.scan(input, lf))
 }
 
 #[cfg(test)]

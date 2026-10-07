@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use crate::OpenOptions;
-use crate::widgets::datatable::DataTableState;
+use crate::table::DataTableState;
 
 /// One table of the source, as the picker lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]

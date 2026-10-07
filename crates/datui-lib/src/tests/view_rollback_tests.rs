@@ -836,7 +836,7 @@ fn a_native_list_column_does_not_drill_and_keeps_the_views_note() {
     assert!(!state.can_drill_down());
     assert!(state.drifts(), "and the files disagree on `n`");
 
-    let left_out = |s: &crate::widgets::datatable::DataTableState| {
+    let left_out = |s: &crate::table::DataTableState| {
         s.notes()
             .iter()
             .filter(|note| note.summary.contains("left out of the"))

@@ -21,7 +21,7 @@ use polars::prelude::*;
 
 use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
 use crate::jobs::{Answer, Job, Progress};
-use crate::widgets::datatable::ViewRows;
+use crate::table::ViewRows;
 use crate::widgets::text_input::{TextInput, TextInputEvent};
 use crate::{App, AppEvent, InputMode, InputType};
 
@@ -1685,7 +1685,7 @@ mod tests {
 
     #[test]
     fn a_view_skips_to_a_window_only_unfiltered_over_parquet_or_ipc() {
-        use crate::widgets::datatable::reads_up_to_a_window;
+        use crate::table::reads_up_to_a_window;
         let dir = tempfile::tempdir().unwrap();
         let mut df = df!("k" => [1i64, 2, 3]).unwrap();
         let csv = dir.path().join("t.csv");
@@ -1737,7 +1737,7 @@ mod tests {
 #[cfg(test)]
 mod app_tests {
     use super::*;
-    use crate::widgets::datatable::DataTableState;
+    use crate::table::DataTableState;
     use std::sync::mpsc::{self, Receiver};
     use std::time::{Duration, Instant};
 

@@ -19,7 +19,7 @@ use std::sync::Arc;
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
 
-use crate::error_display::{FileError, in_file};
+use crate::error_display::FileError;
 use polars::prelude::*;
 
 use crate::dbc::{Dbc, Message, Mux, Signal};
@@ -747,50 +747,22 @@ impl Listing {
     }
 
     pub fn tables(&self) -> Vec<Table> {
-        let mut tables = vec![Table {
-            name: FRAMES.to_string(),
-            kind: "frames".to_string(),
-            internal: false,
-            columns: [
-                "ts", "iface", "id", "ext", "dlc", "data", "fd", "flags", "kind",
-            ]
-            .iter()
-            .map(|c| (c.to_string(), String::new()))
-            .collect(),
-        }];
+        let frames = [
+            "ts", "iface", "id", "ext", "dlc", "data", "fd", "flags", "kind",
+        ];
+        let mut tables = vec![Table::plain(FRAMES, "frames", frames)];
         if self.messages.is_empty() {
             return tables;
         }
-        tables.push(Table {
-            name: SIGNALS.to_string(),
-            kind: "signals".to_string(),
-            internal: false,
-            columns: ["ts", "message", "signal", "value", "unit"]
-                .iter()
-                .map(|c| (c.to_string(), String::new()))
-                .collect(),
-        });
+        let signals = ["ts", "message", "signal", "value", "unit"];
+        tables.push(Table::plain(SIGNALS, "signals", signals));
         for (name, (message, _)) in &self.messages {
-            tables.push(Table {
-                name: name.clone(),
-                kind: "message".to_string(),
-                internal: false,
-                columns: std::iter::once("ts".to_string())
-                    .chain(message.signals.iter().map(|s| s.name.clone()))
-                    .map(|c| (c, String::new()))
-                    .collect(),
-            });
+            let columns =
+                std::iter::once("ts").chain(message.signals.iter().map(|s| s.name.as_str()));
+            tables.push(Table::plain(name, "message", columns));
         }
         tables
     }
-}
-
-/// The index of the candump log at `path`, made by one pass or kept from one.
-pub fn indexed(path: &Path) -> Result<(Arc<Bytes>, Arc<Index>)> {
-    let bytes = Arc::new(Bytes::map(path).map_err(|e| in_file(path, e.into()))?);
-    let index = crate::indexed::cached(path, || index(bytes.as_slice()))
-        .map_err(|e| FileError::new(path, e))?;
-    Ok((bytes, index))
 }
 
 /// The tables the log at `path` was last listed with, for the home screen.
@@ -859,118 +831,6 @@ fn detail(index: &Index, listing: &Listing) -> Detail {
     }
 }
 
-/// What opening a candump log finds.
-pub enum Open {
-    Table {
-        lf: Box<LazyFrame>,
-        opened: Box<crate::members::Opened>,
-    },
-    Several(Vec<String>),
-}
-
-/// Open the candump log at `path` with `layers`: the table `wanted` names, its frames
-/// when no DBC names its messages, or the list.
-pub fn open(path: &Path, wanted: Option<&str>, layers: Layers) -> Result<Open> {
-    let (bytes, index) = indexed(path)?;
-    // A message opened from the home screen's list is read with the DBC files the list
-    // was made with, `--dict` among them.
-    let layers = match crate::indexed::peek::<Listing>(path) {
-        Some(last) if layers.files().is_empty() || last.layers.files() == layers.files() => {
-            last.layers.clone()
-        }
-        _ => layers,
-    };
-    let listing = crate::indexed::cached::<Listing, std::convert::Infallible>(path, || {
-        Ok(Listing::resolve(&index, layers.clone()))
-    })
-    .unwrap_or_else(|never| match never {});
-    let listing = if listing.layers.files() == layers.files() {
-        listing
-    } else {
-        // The DBC files changed: resolve again and keep that.
-        crate::indexed::forget::<Listing>(path);
-        crate::indexed::cached::<Listing, std::convert::Infallible>(path, || {
-            Ok(Listing::resolve(&index, layers))
-        })
-        .unwrap_or_else(|never| match never {})
-    };
-    let tables = listing.tables();
-    // Without a DBC file only the frames are read: a message or the signals asked for
-    // by name wants one.
-    if let Some(wanted) = wanted
-        && listing.layers.dbcs.is_empty()
-        && !tables.iter().any(|t| t.name.eq_ignore_ascii_case(wanted))
-    {
-        return Err(FileError::new(
-            path,
-            format!(
-                "no table \"{wanted}\": with no dictionary only its {FRAMES} are read. --dict names one that decodes its messages."
-            ),
-        )
-        .into());
-    }
-    let picked = match crate::members::pick(tables.clone(), wanted, path, "")? {
-        crate::sqlite::Pick::One(table) => table.name,
-        crate::sqlite::Pick::Several(tables) => {
-            return Ok(Open::Several(tables.into_iter().map(|t| t.name).collect()));
-        }
-    };
-    let mut notes: Vec<String> = Vec::new();
-    if index.skipped > 0 {
-        notes.push(format!(
-            "{} non-frame lines skipped",
-            crate::numfmt::group_chrome(index.skipped)
-        ));
-    }
-    if index.past_limit > 0 {
-        notes.push(format!(
-            "{} frames left out: past the first {}",
-            crate::numfmt::group_chrome(index.past_limit),
-            crate::numfmt::group_chrome(crate::indexed::MAX_RECORDS)
-        ));
-    }
-    for dbc in &listing.layers.dbcs {
-        notes.extend(dbc.notes.iter().cloned());
-    }
-    let mut opened = crate::members::Opened {
-        detail: Some(Arc::new(detail(&index, &listing))),
-        other_tables: crate::members::others(&tables, &picked),
-        notes: notes
-            .into_iter()
-            .map(|n| crate::text_formats::note(n, "the log".to_string()))
-            .collect(),
-        ..Default::default()
-    };
-    let lf = if picked == FRAMES {
-        let raw = Arc::new(RawFrames::new(bytes, &index));
-        opened.window = Some((raw.clone(), raw.rows()));
-        crate::row_index::lazy(&raw)
-    } else if picked == SIGNALS {
-        long_table(&bytes, &index, &listing, &mut opened)?
-    } else {
-        let (message, rows) = listing
-            .messages
-            .get(&picked)
-            .ok_or_else(|| FileError::new(path, format!("no message \"{picked}\"")))?;
-        let decoded = Arc::new(
-            Decoded::new(bytes, &index, rows.clone(), message.clone(), true)
-                .map_err(|e| eyre!("{e}"))?,
-        );
-        opened.units = message
-            .signals
-            .iter()
-            .filter(|s| !s.unit.is_empty())
-            .map(|s| (s.name.clone(), s.unit.clone()))
-            .collect();
-        opened.window = Some((decoded.clone(), decoded.height()));
-        crate::row_index::lazy(&decoded)
-    };
-    Ok(Open::Table {
-        lf: Box::new(lf),
-        opened: Box::new(opened),
-    })
-}
-
 /// Every decoded value, one row each: each message's signals unpivoted, in time order.
 fn long_table(
     bytes: &Arc<Bytes>,
@@ -1034,19 +894,102 @@ fn long_table(
 /// the table `--table` names or the list of them. The pass that indexes the log is
 /// kept, as a flight log's is.
 fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
-    let file = input.path();
+    let path = &input.path().to_path_buf();
+    let wanted = input.options.table.as_deref();
     let layers = Layers::new(input.formats, &input.options.dicts)?;
-    Ok(match open(file, input.options.table.as_deref(), layers)? {
-        Open::Table { lf, opened } => {
-            input.report.opened = Some(Arc::new(*opened));
-            (*lf).into()
+    let (bytes, index) = crate::indexed::indexed(path, index)?;
+    // A message opened from the home screen's list is read with the DBC files the list
+    // was made with, `--dict` among them.
+    let layers = match crate::indexed::peek::<Listing>(path) {
+        Some(last) if layers.files().is_empty() || last.layers.files() == layers.files() => {
+            last.layers.clone()
         }
-        Open::Several(tables) => crate::scan::Scan::Tables {
-            file: file.to_path_buf(),
-            tables,
-            format: input.format,
-        },
+        _ => layers,
+    };
+    let listing = crate::indexed::cached::<Listing, std::convert::Infallible>(path, || {
+        Ok(Listing::resolve(&index, layers.clone()))
     })
+    .unwrap_or_else(|never| match never {});
+    let listing = if listing.layers.files() == layers.files() {
+        listing
+    } else {
+        // The DBC files changed: resolve again and keep that.
+        crate::indexed::forget::<Listing>(path);
+        crate::indexed::cached::<Listing, std::convert::Infallible>(path, || {
+            Ok(Listing::resolve(&index, layers))
+        })
+        .unwrap_or_else(|never| match never {})
+    };
+    let tables = listing.tables();
+    // Without a DBC file only the frames are read: a message or the signals asked for
+    // by name wants one.
+    if let Some(wanted) = wanted
+        && listing.layers.dbcs.is_empty()
+        && !tables.iter().any(|t| t.name.eq_ignore_ascii_case(wanted))
+    {
+        return Err(FileError::new(
+            path,
+            format!(
+                "no table \"{wanted}\": with no dictionary only its {FRAMES} are read. --dict names one that decodes its messages."
+            ),
+        )
+        .into());
+    }
+    let picked = match crate::members::pick(tables.clone(), wanted, path, "")? {
+        crate::sqlite::Pick::One(table) => table.name,
+        crate::sqlite::Pick::Several(tables) => {
+            return Ok(crate::members::several(&input, tables));
+        }
+    };
+    let mut notes: Vec<String> = Vec::new();
+    if index.skipped > 0 {
+        notes.push(format!(
+            "{} non-frame lines skipped",
+            crate::numfmt::group_chrome(index.skipped)
+        ));
+    }
+    if index.past_limit > 0 {
+        notes.push(format!(
+            "{} frames left out: past the first {}",
+            crate::numfmt::group_chrome(index.past_limit),
+            crate::numfmt::group_chrome(crate::indexed::MAX_RECORDS)
+        ));
+    }
+    for dbc in &listing.layers.dbcs {
+        notes.extend(dbc.notes.iter().cloned());
+    }
+    let mut opened = crate::members::Opened::for_table(
+        detail(&index, &listing),
+        &tables,
+        &picked,
+        notes,
+        "the log",
+    );
+    let lf = if picked == FRAMES {
+        let raw = Arc::new(RawFrames::new(bytes, &index));
+        opened.window = Some((raw.clone(), raw.rows()));
+        crate::row_index::lazy(&raw)
+    } else if picked == SIGNALS {
+        long_table(&bytes, &index, &listing, &mut opened)?
+    } else {
+        let (message, rows) = listing
+            .messages
+            .get(&picked)
+            .ok_or_else(|| FileError::new(path, format!("no message \"{picked}\"")))?;
+        let decoded = Arc::new(
+            Decoded::new(bytes, &index, rows.clone(), message.clone(), true)
+                .map_err(|e| eyre!("{e}"))?,
+        );
+        opened.units = message
+            .signals
+            .iter()
+            .filter(|s| !s.unit.is_empty())
+            .map(|s| (s.name.clone(), s.unit.clone()))
+            .collect();
+        opened.window = Some((decoded.clone(), decoded.height()));
+        crate::row_index::lazy(&decoded)
+    };
+    Ok(opened.scan(input, lf))
 }
 
 #[cfg(test)]
@@ -1151,7 +1094,7 @@ pub(crate) mod tests {
             Some("remote")
         );
 
-        let dbc = crate::dbc::parse(crate::dbc::tests::SAMPLE, "car", None).unwrap();
+        let dbc = crate::dbc::parse(crate::tests::fixtures::DBC, "car", None).unwrap();
         let layers = Layers {
             dbcs: vec![Arc::new(dbc)],
         };

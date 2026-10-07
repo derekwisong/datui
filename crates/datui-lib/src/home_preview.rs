@@ -8,7 +8,7 @@
 
 use crate::FileFormat;
 use crate::discover::{Entry, EntryKind};
-use crate::widgets::datatable::DataTableState;
+use crate::table::DataTableState;
 use polars::prelude::{DataFrame, DataType};
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};

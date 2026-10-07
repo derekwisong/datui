@@ -827,7 +827,7 @@ fn source_projection_preserves_rows_without_binary_payloads() {
     );
     assert_eq!(
         collected.column("blob").unwrap().str().unwrap().get(0),
-        Some(crate::widgets::datatable::binary_stub())
+        Some(crate::table::binary_stub())
     );
 }
 

@@ -8,23 +8,24 @@
 //! time; a line, a value and the number of fields are bounded.
 
 use std::collections::HashMap;
-use std::path::Path;
 
 use color_eyre::Result;
 use polars::prelude::*;
 
-use crate::OpenOptions;
 use crate::model_files::MetaValue;
 use crate::notes::Note;
-use crate::segments::{Converted, Segments};
-use crate::text_formats::{Detail, Pieces, capped_list, count, note};
-use crate::unfinished::Writer;
+use crate::text_formats::{Detail, capped_list, count, note};
 
 /// What datui does with an SDF file: see [`crate::readers`].
 pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
     convert: Some(|input| {
-        crate::text_formats::read_one(input, |pieces| {
-            convert(input.display, input.options, input.writer, pieces)
+        crate::text_formats::convert_with(input, SdfReader::new(), |reader, lf| {
+            if reader.stats().records == 0 {
+                let e = crate::error_display::FileError::new(input.display, "no SDF records");
+                return Err(e.into());
+            }
+            let lf = type_fields(lf, reader.fields());
+            Ok((lf, notes(reader.stats()), detail(reader)))
         })
     }),
     scan: crate::readers::read_into,
@@ -606,39 +607,19 @@ pub fn detail(reader: &SdfReader) -> Detail {
     }
 }
 
-/// Read an SDF file, given a piece at a time by `pieces`, into segments written through
-/// `writer`.
-pub(crate) fn convert(
-    display: &Path,
-    options: &OpenOptions,
-    writer: &Writer,
-    pieces: &mut Pieces<'_>,
-) -> Result<(Converted, Detail)> {
-    let mut reader = SdfReader::new();
-    let mut segments = Segments::new(options, writer);
-    pieces(&mut |piece| {
-        reader.push(piece);
-        if let Some(df) = reader.take_batch()? {
-            segments.write(&df)?;
-        }
+impl crate::text_formats::BatchReader for SdfReader {
+    fn push(&mut self, piece: &[u8]) -> Result<()> {
+        self.push(piece);
         Ok(())
-    })?;
-    let last = reader.finish()?;
-    if reader.stats().records == 0 {
-        return Err(crate::error_display::FileError::new(display, "no SDF records").into());
     }
-    segments.write(&last)?;
-    let (lf, files) = segments.finish()?;
-    let lf = type_fields(lf, reader.fields());
-    Ok((
-        Converted {
-            lf,
-            files,
-            notes: notes(reader.stats()),
-            other_tables: Vec::new(),
-        },
-        detail(&reader),
-    ))
+
+    fn take_batch(&mut self) -> PolarsResult<Option<DataFrame>> {
+        self.take_batch()
+    }
+
+    fn finish(&mut self) -> Result<DataFrame> {
+        Ok(self.finish()?)
+    }
 }
 
 #[cfg(test)]

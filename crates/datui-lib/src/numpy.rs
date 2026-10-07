@@ -1180,24 +1180,12 @@ pub fn tables(path: &Path) -> Result<Vec<Table>> {
     Ok(members
         .iter()
         .map(|member| {
-            let columns = member_header(path, member)
+            let columns: Vec<String> = member_header(path, member)
                 .ok()
-                .and_then(|header| {
-                    let plan = plan(&header, &member.name).ok()?;
-                    Some(
-                        plan.columns
-                            .iter()
-                            .map(|c| (c.name.to_string(), String::new()))
-                            .collect(),
-                    )
-                })
+                .and_then(|header| plan(&header, &member.name).ok())
+                .map(|plan| plan.columns.iter().map(|c| c.name.to_string()).collect())
                 .unwrap_or_default();
-            Table {
-                name: member.name.clone(),
-                kind: "array".to_string(),
-                internal: false,
-                columns,
-            }
+            Table::plain(&member.name, "array", columns)
         })
         .collect())
 }
@@ -1236,88 +1224,6 @@ pub fn schema_preview(path: &Path, member: Option<&str>) -> Option<crate::discov
             .map(|c| (c.name.to_string(), c.dtype()))
             .collect(),
     )
-}
-
-/// What opening a NumPy file finds.
-pub enum Open {
-    /// An array read in place.
-    Array {
-        lf: Box<LazyFrame>,
-        opened: Box<crate::members::Opened>,
-    },
-    /// An archive of several arrays, and no `--table` to say which.
-    Several(Vec<String>),
-    /// A compressed member, to be decompressed to a file first.
-    Compressed { member: String },
-}
-
-/// Open `path`: a `.npy` file, or an archive's array `wanted` names, or its one array.
-pub fn open(path: &Path, wanted: Option<&str>) -> Result<Open> {
-    let mut head = [0u8; 8];
-    let is_npy = std::fs::File::open(path)
-        .and_then(|mut f| f.read_exact(&mut head))
-        .is_ok()
-        && looks_like(&head);
-    if is_npy {
-        if let Some(wanted) = wanted {
-            return Err(FileError::new(
-                path,
-                format!(
-                    "the file is one array; --table \"{wanted}\" picks an array of an .npz archive."
-                ),
-            )
-            .into());
-        }
-        let array = open_file(path)?;
-        return Ok(Open::Array {
-            lf: Box::new(array.records.lazy()),
-            opened: Box::new(opened(array, None, false)),
-        });
-    }
-    if !is_archive_name(path) {
-        return Err(FileError::new(
-            path,
-            "not a NumPy file: an .npy file starts with \\x93NUMPY, and an .npz is a zip of them.",
-        )
-        .into());
-    }
-    let members = members(path)?;
-    let tables: Vec<Table> = members
-        .iter()
-        .map(|m| Table {
-            name: m.name.clone(),
-            kind: "array".to_string(),
-            internal: false,
-            columns: Vec::new(),
-        })
-        .collect();
-    let picked = match crate::members::pick(tables.clone(), wanted, path, "")? {
-        crate::sqlite::Pick::One(table) => table,
-        crate::sqlite::Pick::Several(tables) => {
-            return Ok(Open::Several(tables.into_iter().map(|t| t.name).collect()));
-        }
-    };
-    let member = members
-        .iter()
-        .find(|m| m.name == picked.name)
-        .expect("picked from the members");
-    let Some(at) = member.stored_at else {
-        return Ok(Open::Compressed {
-            member: member.name.clone(),
-        });
-    };
-    let bytes = Bytes::map(path).map_err(|e| in_file(path, e.into()))?;
-    let at = usize::try_from(at).map_err(|_| FileError::new(path, "the file is too large"))?;
-    let len = usize::try_from(member.size).unwrap_or(usize::MAX);
-    let array = open_in(Arc::new(bytes), at, len, &member.name)
-        .map_err(|e| FileError::new(path, format!("array \"{}\" is not read: {e}", member.name)))?;
-    let lf = array.records.lazy();
-    let mut opened = opened(array, Some((path, members.len())), false);
-    opened.other_tables = crate::members::others(&tables, &member.name);
-    Ok(Open::Array {
-        lf: Box::new(lf),
-        opened: Box::new(opened),
-    })
 }
 
 /// What the open carries to the dataset for `array`.
@@ -1401,15 +1307,7 @@ pub(crate) fn convert(
     let bytes = Bytes::map(held.path())?;
     let array = open_in(Arc::new(bytes), 0, written as usize, name)
         .map_err(|e| FileError::new(path, format!("array \"{name}\" is not read: {e}")))?;
-    let tables: Vec<Table> = all
-        .iter()
-        .map(|m| Table {
-            name: m.name.clone(),
-            kind: "array".to_string(),
-            internal: false,
-            columns: Vec::new(),
-        })
-        .collect();
+    let tables = arrays(&all);
     let lf = array.records.lazy();
     let mut opened = opened(array, Some((path, all.len())), true);
     opened.other_tables = crate::members::others(&tables, name);
@@ -1420,23 +1318,70 @@ pub(crate) fn convert(
 /// `--table` names, or its only one, read in place; a compressed one decompressed
 /// first; or none yet when the archive has several.
 fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
-    let file = input.path();
-    Ok(match open(file, input.options.table.as_deref())? {
-        Open::Array { lf, opened } => {
-            input.report.opened = Some(Arc::new(*opened));
-            (*lf).into()
+    let path = &input.path().to_path_buf();
+    let wanted = input.options.table.as_deref();
+    let mut head = [0u8; 8];
+    let is_npy = std::fs::File::open(path)
+        .and_then(|mut f| f.read_exact(&mut head))
+        .is_ok()
+        && looks_like(&head);
+    if is_npy {
+        if let Some(wanted) = wanted {
+            return Err(FileError::new(
+                path,
+                format!(
+                    "the file is one array; --table \"{wanted}\" picks an array of an .npz archive."
+                ),
+            )
+            .into());
         }
-        Open::Several(tables) => crate::scan::Scan::Tables {
-            file: file.to_path_buf(),
-            tables,
+        let array = open_file(path)?;
+        let lf = array.records.lazy();
+        return Ok(opened(array, None, false).scan(input, lf));
+    }
+    if !is_archive_name(path) {
+        return Err(FileError::new(
+            path,
+            "not a NumPy file: an .npy file starts with \\x93NUMPY, and an .npz is a zip of them.",
+        )
+        .into());
+    }
+    let members = members(path)?;
+    let tables = arrays(&members);
+    let picked = match crate::members::pick(tables.clone(), wanted, path, "")? {
+        crate::sqlite::Pick::One(table) => table,
+        crate::sqlite::Pick::Several(tables) => {
+            return Ok(crate::members::several(&input, tables));
+        }
+    };
+    let member = members
+        .iter()
+        .find(|m| m.name == picked.name)
+        .expect("picked from the members");
+    let Some(at) = member.stored_at else {
+        return Ok(crate::scan::Scan::Unpack {
+            file: path.clone(),
+            member: member.name.clone(),
             format: input.format,
-        },
-        Open::Compressed { member } => crate::scan::Scan::Unpack {
-            file: file.to_path_buf(),
-            member,
-            format: input.format,
-        },
-    })
+        });
+    };
+    let bytes = Bytes::map(path).map_err(|e| in_file(path, e.into()))?;
+    let at = usize::try_from(at).map_err(|_| FileError::new(path, "the file is too large"))?;
+    let len = usize::try_from(member.size).unwrap_or(usize::MAX);
+    let array = open_in(Arc::new(bytes), at, len, &member.name)
+        .map_err(|e| FileError::new(path, format!("array \"{}\" is not read: {e}", member.name)))?;
+    let lf = array.records.lazy();
+    let mut opened = opened(array, Some((path, members.len())), false);
+    opened.other_tables = crate::members::others(&tables, &member.name);
+    Ok(opened.scan(input, lf))
+}
+
+/// An archive's arrays as tables, without their columns.
+fn arrays(members: &[Member]) -> Vec<Table> {
+    members
+        .iter()
+        .map(|m| Table::plain(&m.name, "array", Vec::<String>::new()))
+        .collect()
 }
 
 #[cfg(test)]

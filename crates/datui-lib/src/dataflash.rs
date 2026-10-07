@@ -11,13 +11,8 @@
 //! that does not start a record is passed over to the next `A3 95` and counted.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
 use std::sync::Arc;
 
-use color_eyre::Result;
-use color_eyre::eyre::eyre;
-
-use crate::error_display::{FileError, in_file};
 use polars::prelude::*;
 
 use crate::fixed_records::{Bytes, ColumnLayout, Logical, Physical};
@@ -28,7 +23,7 @@ use crate::text_formats::Detail;
 
 /// What datui does with a DataFlash log: see [`crate::readers`].
 pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
-    scan,
+    scan: crate::indexed::scan::<Index>,
     signatures: &[crate::readers::Signature {
         says: |head, _| looks_like(head),
         kind: crate::readers::Kind::Magic,
@@ -37,15 +32,15 @@ pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
             ..crate::readers::EVERYWHERE
         },
     }],
-    tables: Some(listed),
+    tables: Some(crate::indexed::listed::<Index>),
     ..crate::readers::BASE
 };
 
 const HEAD: [u8; 2] = [0xA3, 0x95];
 /// The type id of `FMT`, the record that defines the others.
-const FMT: u8 = 0x80;
+pub(crate) const FMT: u8 = 0x80;
 /// An `FMT` record's length: header, type, length, name, format, labels.
-const FMT_LEN: usize = 89;
+pub(crate) const FMT_LEN: usize = 89;
 
 /// Whether `head`, the first bytes of a file, begins a DataFlash log: an `FMT` record
 /// that defines `FMT` itself.
@@ -145,7 +140,7 @@ fn text(bytes: &[u8]) -> String {
 }
 
 /// The size a format's characters add up to, `None` for one datui does not know.
-fn format_size(format: &str) -> Option<usize> {
+pub(crate) fn format_size(format: &str) -> Option<usize> {
     format.bytes().try_fold(0usize, |n, c| {
         let (_, width, count, _) = format_char(c)?;
         n.checked_add(width * count)
@@ -171,7 +166,7 @@ fn fields<'a>(t: &MessageType, record: &'a [u8]) -> Vec<(&'a [u8], u8)> {
 }
 
 /// Index the DataFlash log in `data`: one pass, start to end.
-pub fn index(data: &[u8]) -> std::result::Result<Index, String> {
+pub fn index(data: &[u8]) -> Result<Index, String> {
     if !looks_like(data) {
         return Err("not a DataFlash log: it does not start with an FMT record".into());
     }
@@ -398,197 +393,128 @@ pub fn columns(index: &Index, t: &MessageType) -> (Vec<ColumnLayout>, Vec<(Strin
     (columns, units)
 }
 
-/// The log's tables as its indexing pass found them: listed once it has been opened,
-/// and not read here, where the home screen waits.
-pub fn listed(file: &Path) -> Result<Vec<Table>> {
-    crate::indexed::peek::<Index>(file)
-        .map(|index| tables(&index))
-        .ok_or_else(|| eyre!("Open the log to list its tables."))
-}
+impl crate::indexed::Log for Index {
+    const EMPTY: &'static str = " The log has no records but its formats.";
 
-/// The tables of an indexed log, for the home screen and `--table`.
-pub fn tables(index: &Index) -> Vec<Table> {
-    index
-        .names()
-        .into_iter()
-        .map(|(name, id)| Table {
-            name,
-            kind: "message".to_string(),
-            internal: false,
-            columns: columns(index, &index.types[&id])
-                .0
-                .iter()
-                .map(|c| (c.name.to_string(), String::new()))
-                .collect(),
-        })
-        .collect()
-}
-
-/// What the Info panel's DataFlash tab says.
-pub fn detail(index: &Index) -> Detail {
-    let names = index.names();
-    let records: usize = names
-        .iter()
-        .map(|(_, id)| index.types[id].offsets.len())
-        .sum();
-    let lines = vec![
-        format!(
-            "Message types: {} with records, {} defined",
-            names.len(),
-            index.types.len()
-        ),
-        format!("Records: {}", crate::numfmt::group_chrome(records)),
-        format!(
-            "Units: {}",
-            if index.units.is_empty() {
-                "none in the log".to_string()
-            } else {
-                format!("{} (FMTU, UNIT, MULT)", index.units.len())
-            }
-        ),
-    ];
-    let list = names.iter().map(|(name, id)| {
-        let t = &index.types[id];
-        (
-            name.clone(),
-            MetaValue::Text(format!(
-                "{} records, format {}, {} bytes",
-                crate::numfmt::group_chrome(t.offsets.len()),
-                t.format,
-                t.length
-            )),
-        )
-    });
-    Detail {
-        tab: crate::text_formats::tab(crate::FileFormat::Dataflash),
-        lines,
-        list_title: "Messages",
-        list: crate::text_formats::capped_list(list, names.len()),
-        first: false,
-        ..Default::default()
+    fn index(data: &[u8]) -> Result<Self, String> {
+        index(data)
     }
-}
 
-/// What the Notes tab says of the pass.
-pub fn notes(index: &Index) -> Vec<String> {
-    let group = |n: usize| crate::numfmt::group_chrome(n);
-    let mut notes = Vec::new();
-    if index.damaged > 0 {
-        notes.push(format!(
-            "{} damaged stretches skipped ({} bytes)",
-            group(index.damaged),
-            group(index.skipped)
-        ));
-    }
-    if index.cut_short {
-        notes.push("log cut short mid-record".to_string());
-    }
-    if index.past_limit > 0 {
-        notes.push(format!(
-            "{} records left out: past the first {}",
-            group(index.past_limit),
-            group(crate::indexed::MAX_RECORDS)
-        ));
-    }
-    if !index.bad_formats.is_empty() {
-        notes.push(format!(
-            "{} message types not read, format unreadable: {}",
-            index.bad_formats.len(),
-            index
-                .bad_formats
-                .iter()
-                .take(10)
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
-    notes
-}
-
-/// The index of the DataFlash log at `path`, made by one pass or kept from one.
-pub fn indexed(path: &Path) -> Result<(Arc<Bytes>, Arc<Index>)> {
-    let bytes = Arc::new(Bytes::map(path).map_err(|e| in_file(path, e.into()))?);
-    let index = crate::indexed::cached(path, || index(bytes.as_slice()))
-        .map_err(|e| FileError::new(path, e))?;
-    Ok((bytes, index))
-}
-
-/// What opening a DataFlash log finds.
-pub enum Open {
-    Table {
-        lf: Box<LazyFrame>,
-        opened: Box<crate::members::Opened>,
-    },
-    Several(Vec<String>),
-}
-
-/// Open the DataFlash log at `path`: the table `wanted` names, its one table, or the
-/// list.
-pub fn open(path: &Path, wanted: Option<&str>) -> Result<Open> {
-    let (bytes, index) = indexed(path)?;
-    let tables = tables(&index);
-    let picked = match crate::members::pick(
-        tables.clone(),
-        wanted,
-        path,
-        " The log has no records but its formats.",
-    )? {
-        crate::sqlite::Pick::One(table) => table.name,
-        crate::sqlite::Pick::Several(tables) => {
-            return Ok(Open::Several(tables.into_iter().map(|t| t.name).collect()));
-        }
-    };
-    let id = index
-        .names()
-        .into_iter()
-        .find(|(n, _)| *n == picked)
-        .map(|(_, id)| id)
-        .expect("picked from the names");
-    let t = &index.types[&id];
-    let (columns, units) = columns(&index, t);
-    let records = Arc::new(
-        IndexedRecords::new(bytes, t.offsets.clone(), columns)
-            .map_err(|e| FileError::new(path, format!("table \"{picked}\": {e}")))?,
-    );
-    let opened = crate::members::Opened {
-        window: Some((records.clone(), records.rows())),
-        detail: Some(Arc::new(detail(&index))),
-        other_tables: crate::members::others(&tables, &picked),
-        notes: notes(&index)
+    fn tables(&self) -> Vec<Table> {
+        self.names()
             .into_iter()
-            .map(|n| crate::text_formats::note(n, "the log".to_string()))
-            .collect(),
-        units,
-        indexing: None,
-        numbering: None,
-    };
-    Ok(Open::Table {
-        lf: Box::new(records.lazy()),
-        opened: Box::new(opened),
-    })
-}
+            .map(|(name, id)| {
+                let columns = columns(self, &self.types[&id]).0;
+                Table::plain(name, "message", columns.iter().map(|c| c.name.as_str()))
+            })
+            .collect()
+    }
 
-/// The scan of a DataFlash log: the table `--table` names, or its only one, decoded from
-/// the file where it is shown; or none yet when it has several. The pass that indexes
-/// the log is kept, so a table chosen from the list reads nothing again.
-fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
-    let file = input.path();
-    Ok(match open(file, input.options.table.as_deref())? {
-        Open::Table { lf, opened } => {
-            input.report.opened = Some(Arc::new(*opened));
-            (*lf).into()
+    fn detail(&self) -> Detail {
+        let names = self.names();
+        let records: usize = names
+            .iter()
+            .map(|(_, id)| self.types[id].offsets.len())
+            .sum();
+        let lines = vec![
+            format!(
+                "Message types: {} with records, {} defined",
+                names.len(),
+                self.types.len()
+            ),
+            format!("Records: {}", crate::numfmt::group_chrome(records)),
+            format!(
+                "Units: {}",
+                if self.units.is_empty() {
+                    "none in the log".to_string()
+                } else {
+                    format!("{} (FMTU, UNIT, MULT)", self.units.len())
+                }
+            ),
+        ];
+        let list = names.iter().map(|(name, id)| {
+            let t = &self.types[id];
+            (
+                name.clone(),
+                MetaValue::Text(format!(
+                    "{} records, format {}, {} bytes",
+                    crate::numfmt::group_chrome(t.offsets.len()),
+                    t.format,
+                    t.length
+                )),
+            )
+        });
+        Detail {
+            tab: crate::text_formats::tab(crate::FileFormat::Dataflash),
+            lines,
+            list_title: "Messages",
+            list: crate::text_formats::capped_list(list, names.len()),
+            first: false,
+            ..Default::default()
         }
-        Open::Several(tables) => crate::scan::Scan::Tables {
-            file: file.to_path_buf(),
-            tables,
-            format: input.format,
-        },
-    })
+    }
+
+    fn notes(&self) -> Vec<String> {
+        let group = |n: usize| crate::numfmt::group_chrome(n);
+        let mut notes = Vec::new();
+        if self.damaged > 0 {
+            notes.push(format!(
+                "{} damaged stretches skipped ({} bytes)",
+                group(self.damaged),
+                group(self.skipped)
+            ));
+        }
+        if self.cut_short {
+            notes.push("log cut short mid-record".to_string());
+        }
+        if self.past_limit > 0 {
+            notes.push(format!(
+                "{} records left out: past the first {}",
+                group(self.past_limit),
+                group(crate::indexed::MAX_RECORDS)
+            ));
+        }
+        if !self.bad_formats.is_empty() {
+            notes.push(format!(
+                "{} message types not read, format unreadable: {}",
+                self.bad_formats.len(),
+                self.bad_formats
+                    .iter()
+                    .take(10)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        notes
+    }
+
+    fn table(
+        &self,
+        bytes: Arc<Bytes>,
+        name: &str,
+        opened: &mut crate::members::Opened,
+    ) -> Result<LazyFrame, String> {
+        let id = self
+            .names()
+            .into_iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, id)| id)
+            .expect("picked from the names");
+        let t = &self.types[&id];
+        let (columns, units) = columns(self, t);
+        let records = Arc::new(
+            IndexedRecords::new(bytes, t.offsets.clone(), columns)
+                .map_err(|e| format!("table \"{name}\": {e}"))?,
+        );
+        opened.window = Some((records.clone(), records.rows()));
+        opened.units = units;
+        Ok(records.lazy())
+    }
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
 
     /// A file that is not a DataFlash log names itself, in the one shape.
@@ -604,86 +530,9 @@ pub(crate) mod tests {
         );
     }
 
-    fn fmt(id: u8, name: &str, format: &str, labels: &str) -> Vec<u8> {
-        let length = if id == FMT {
-            FMT_LEN
-        } else {
-            format_size(format).unwrap() + 3
-        };
-        let mut r = vec![0xA3, 0x95, FMT, id, length as u8];
-        let pad = |s: &str, n: usize| {
-            let mut b = s.as_bytes().to_vec();
-            b.resize(n, 0);
-            b
-        };
-        r.extend(pad(name, 4));
-        r.extend(pad(format, 16));
-        r.extend(pad(labels, 64));
-        r
-    }
-
-    /// A small log: FMT, the unit tables, two message types interleaved, a scaled
-    /// field, units, damage, and a record cut off at the end.
-    pub(crate) fn tiny() -> Vec<u8> {
-        let mut log = fmt(FMT, "FMT", "BBnNZ", "Type,Length,Name,Format,Columns");
-        log.extend(fmt(129, "UNIT", "QbZ", "TimeUS,Id,Label"));
-        log.extend(fmt(130, "MULT", "Qbd", "TimeUS,Id,Mult"));
-        log.extend(fmt(131, "FMTU", "QBNN", "TimeUS,FmtType,UnitIds,MultIds"));
-        log.extend(fmt(140, "ATT", "QccH", "TimeUS,Roll,Pitch,Yaw"));
-        log.extend(fmt(141, "BARO", "QfiL", "TimeUS,Alt,Press,Lat"));
-        let unit = |id: u8, label: &str| {
-            let mut r = vec![0xA3, 0x95, 129];
-            r.extend(0u64.to_le_bytes());
-            r.push(id);
-            let mut l = label.as_bytes().to_vec();
-            l.resize(64, 0);
-            r.extend(l);
-            r
-        };
-        log.extend(unit(b'd', "deg"));
-        log.extend(unit(b'm', "m"));
-        log.extend(unit(b'P', "Pa"));
-        let mut mult = vec![0xA3, 0x95, 130];
-        mult.extend(0u64.to_le_bytes());
-        mult.push(b'2');
-        mult.extend(100.0f64.to_le_bytes());
-        log.extend(mult);
-        let fmtu = |ty: u8, units: &str, mults: &str| {
-            let mut r = vec![0xA3, 0x95, 131];
-            r.extend(0u64.to_le_bytes());
-            r.push(ty);
-            for s in [units, mults] {
-                let mut b = s.as_bytes().to_vec();
-                b.resize(16, 0);
-                r.extend(b);
-            }
-            r
-        };
-        log.extend(fmtu(141, "-mPd", "-02?"));
-        for i in 0..3u64 {
-            let mut att = vec![0xA3, 0x95, 140];
-            att.extend((1000 + i * 10).to_le_bytes());
-            att.extend((150i16 + i as i16).to_le_bytes());
-            att.extend((-250i16).to_le_bytes());
-            att.extend(9000u16.to_le_bytes());
-            log.extend(att);
-            let mut baro = vec![0xA3, 0x95, 141];
-            baro.extend((1005 + i * 10).to_le_bytes());
-            baro.extend((12.5f32 + i as f32).to_le_bytes());
-            baro.extend(101_325i32.to_le_bytes());
-            baro.extend(473_977_418i32.to_le_bytes());
-            log.extend(baro);
-            if i == 1 {
-                log.extend([0x00, 0xA3, 0x11]);
-            }
-        }
-        log.extend([0xA3, 0x95, 140, 1, 2]);
-        log
-    }
-
     #[test]
     fn types_records_units_and_damage() {
-        let data = tiny();
+        let data = crate::tests::fixtures::dataflash();
         assert!(looks_like(&data));
         let index = index(&data).unwrap();
         let names: Vec<String> = index.names().into_iter().map(|(n, _)| n).collect();
@@ -724,7 +573,7 @@ pub(crate) mod tests {
 
     #[test]
     fn scaled_characters() {
-        let data = tiny();
+        let data = crate::tests::fixtures::dataflash();
         let index = index(&data).unwrap();
         let (columns, _) = columns(&index, &index.types[&140]);
         let records = Arc::new(
@@ -746,7 +595,12 @@ pub(crate) mod tests {
     #[test]
     fn garbage_is_bounded() {
         assert!(index(b"nope").is_err());
-        let mut data = fmt(FMT, "FMT", "BBnNZ", "Type,Length,Name,Format,Columns");
+        let mut data = crate::tests::fixtures::dataflash_fmt(
+            FMT,
+            "FMT",
+            "BBnNZ",
+            "Type,Length,Name,Format,Columns",
+        );
         data.extend([0xA3, 0x95, 0x80, 7, 200]);
         data.extend([0xA3; 50]);
         let index = index(&data).unwrap();

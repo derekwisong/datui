@@ -7,7 +7,7 @@
 //! must decode, all of its columns.
 
 use datui_lib::fixed_records::Bytes;
-use datui_lib::indexed::IndexedRecords;
+use datui_lib::indexed::{IndexedRecords, Log};
 use std::sync::Arc;
 
 pub fn run(bytes: &[u8]) {
@@ -24,8 +24,8 @@ pub fn run(bytes: &[u8]) {
         let Ok(index) = datui_lib::ulog::index(&data) else {
             return;
         };
-        let _ = datui_lib::ulog::tables(&index);
-        let _ = datui_lib::ulog::detail(&index);
+        let _ = index.tables();
+        let _ = index.detail();
         for topic in index.topics.values() {
             let records =
                 IndexedRecords::new(shared.clone(), topic.offsets.clone(), topic.columns.clone())
@@ -40,7 +40,7 @@ pub fn run(bytes: &[u8]) {
         let Ok(index) = datui_lib::dataflash::index(rest) else {
             return;
         };
-        let _ = datui_lib::dataflash::detail(&index);
+        let _ = index.detail();
         for (_, id) in index.names() {
             let t = &index.types[&id];
             let (columns, _) = datui_lib::dataflash::columns(&index, t);

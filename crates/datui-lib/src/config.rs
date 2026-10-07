@@ -272,7 +272,7 @@ pub struct AppConfig {
     pub glyphs: GlyphsConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CloudConfig {
     /// The S3 endpoint, keys and region the environment gives (`AWS_*`): not keys of
@@ -1921,7 +1921,7 @@ impl Default for PerformanceConfig {
         Self {
             pages_ahead: 3,
             pages_behind: 3,
-            max_buffered_rows: crate::widgets::datatable::DEFAULT_MAX_BUFFERED_ROWS,
+            max_buffered_rows: crate::table::DEFAULT_MAX_BUFFERED_ROWS,
             max_buffered: ByteSize::mib(512),
             streaming: true,
         }

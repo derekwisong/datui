@@ -24,7 +24,7 @@ use crate::schema_union::{
     ESTIMATE_SAMPLE, FOOTERS_AT_ONCE, FileFooter, FooterProgress, Listing, RowEstimate,
     SkippedFiles, ends_of, footers_to_read, random_sample,
 };
-use crate::widgets::datatable::{
+use crate::table::{
     DataTableState, DatasetAtOpen, FileCounter, FileScan, FootersFound, OpenFacts, RemoteRead,
 };
 

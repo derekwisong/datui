@@ -75,6 +75,11 @@ lock_if_heavy() {
         return 0
     fi
     held=true
+    # DATUI_TEST_HEAVY_SLOTS runs at once (default 2), one lock file per slot; 0 is
+    # no lock at all.
+    local slots=${DATUI_TEST_HEAVY_SLOTS:-2} slot lock waited=false
+    [[ $slots == 0 ]] && return 0
+    [[ $slots =~ ^[1-9][0-9]*$ ]] || slots=2
     if ! command -v flock >/dev/null 2>&1; then
         printf 'flock not found; running without the heavy-run lock.\n' >&2
         return 0
@@ -85,11 +90,7 @@ lock_if_heavy() {
     else
         base=/tmp/datui-test-heavy-$(id -u)
     fi
-    # DATUI_TEST_HEAVY_SLOTS runs at once (default 2), one lock file per slot. Slot 1
-    # keeps the old name, so a checkout with the one-slot script still counts.
-    local slots=${DATUI_TEST_HEAVY_SLOTS:-2} slot lock waited=false
-    [[ $slots == 0 ]] && return 0
-    [[ $slots =~ ^[1-9][0-9]*$ ]] || slots=2
+    # Slot 1 keeps the old name, so a checkout with the one-slot script still counts.
     # Held on fd 9 until this script exits, however it exits. Commands run with fd 9
     # closed (run, run_tests): a daemon one starts, such as sccache's server, would
     # otherwise hold the lock after the run.
@@ -321,11 +322,16 @@ case "$command" in
         run mkdir -p python/datui_bin
         run cp "$target/debug/$exe" python/datui_bin/
         run cp LICENSE python/LICENSE
-        # maturin installs into the venv VIRTUAL_ENV names.
+        # maturin installs into the venv VIRTUAL_ENV names, with pip; a venv uv made
+        # has no pip, so uv installs instead.
+        develop=(develop)
+        if ! "$py" -m pip --version >/dev/null 2>&1 && command -v uv >/dev/null 2>&1; then
+            develop+=(--uv)
+        fi
         if $print_only; then
-            printf '(cd python && VIRTUAL_ENV=../.venv ../%s/maturin develop)\n' "$venv_bin"
+            printf '(cd python && VIRTUAL_ENV=../.venv ../%s/maturin %s)\n' "$venv_bin" "${develop[*]}"
         else
-            (cd python && VIRTUAL_ENV="$OLDPWD/.venv" "$OLDPWD/$venv_bin/maturin" develop 9>&-)
+            (cd python && VIRTUAL_ENV="$OLDPWD/.venv" "$OLDPWD/$venv_bin/maturin" "${develop[@]}" 9>&-)
         fi
         run "$py" -m pytest python/tests/ -v
         run "$py" scripts/docs/doc_examples.py --python

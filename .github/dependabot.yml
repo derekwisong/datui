@@ -46,8 +46,9 @@ updates:
 
   # GitHub Actions: SHA pins do not update themselves. This is the job that
   # keeps a pinned action from silently rotting on a version with a known bug.
+  # The workflows, and the composite actions they share.
   - package-ecosystem: github-actions
-    directory: "/"
+    directories: ["/", "/.github/actions/*"]
     schedule:
       interval: weekly
       day: monday

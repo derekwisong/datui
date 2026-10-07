@@ -6,9 +6,9 @@
 # scripts/generate_sample_data.py, which needs Polars and friends. Without them the
 # tests fail with a bare "Sample data generation failed" and no clue what to do.
 #
-# This mirrors what CI does, so a green local run means the same thing as a green CI
-# run. Re-running reuses the venv and rewrites every fixture in place; do not run it
-# while tests are running.
+# Re-running reuses the venv and regenerates the fixtures; each is replaced by a
+# rename, so tests already running keep the files they have open (not with --force,
+# which removes the directory first).
 #
 #   ./scripts/dev/setup-test-data.sh          # set up and generate
 #   ./scripts/dev/setup-test-data.sh --force  # regenerate fixtures from scratch
@@ -63,4 +63,4 @@ echo "==> Generating sample data"
 count=$(find "$SAMPLE_DATA" -type f 2>/dev/null | wc -l)
 echo
 echo "Done. $count fixtures in $SAMPLE_DATA/"
-echo "Run the suite with: cargo test"
+echo "Run the suite with: cargo test --workspace"

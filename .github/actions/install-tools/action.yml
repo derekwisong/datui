@@ -1,0 +1,33 @@
+name: Install tools
+description: >-
+  Cargo tools at the versions .github/tool-versions pins: a checksummed
+  prebuilt binary where install-action has one, `cargo install --locked`
+  otherwise.
+
+inputs:
+  tools:
+    description: Space-separated tool names, each listed in .github/tool-versions.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Look up the pinned versions
+      id: pins
+      shell: bash
+      env:
+        TOOLS: ${{ inputs.tools }}
+      run: |
+        specs=()
+        for tool in $TOOLS; do
+          version=$(awk -v t="$tool" '$1 == t { print $2 }' "$GITHUB_WORKSPACE/.github/tool-versions")
+          [ -n "$version" ] || { echo "::error::$tool has no version in .github/tool-versions"; exit 1; }
+          specs+=("$tool@$version")
+        done
+        echo "tool=$(IFS=,; echo "${specs[*]}")" >> "$GITHUB_OUTPUT"
+
+    - name: Install
+      uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+      with:
+        tool: ${{ steps.pins.outputs.tool }}
+        fallback: cargo-install

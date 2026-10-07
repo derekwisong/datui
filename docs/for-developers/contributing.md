@@ -59,6 +59,19 @@ Run `./scripts/dev/test.sh full` for cross-cutting changes. Otherwise run the
 scoped checks, let CI cover the workspace, and say in the PR what ran. Keep
 commit and PR text terse.
 
+## Rust toolchain
+
+`rust-toolchain.toml` pins the Rust that builds and lints datui, locally and in
+CI; `rustup install` in the checkout fetches it. Bump it on purpose, in its own
+pull request with whatever the new clippy asks for. CI's MSRV job checks
+`rust-version` separately.
+
+## CI setup
+
+Jobs set up through `.github/actions/setup` (Rust, apt packages, the cargo
+cache, Python, the test fixtures) and install cargo tools through
+`.github/actions/install-tools`, at the versions in `.github/tool-versions`.
+
 ## Workflow timeouts
 
 Every job sets `timeout-minutes`, and every apt step its own 5-minute limit, so

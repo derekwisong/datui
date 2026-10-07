@@ -21,14 +21,12 @@ on:
       - 'crates/datui-cli/man/**'
       - 'scripts/docs/**'
       - '.github/workflows/build-and-publish-docs.yml'
+      - '.github/tool-versions'
 
 # One deploy at a time; a newer push waits rather than racing the older one's deploy.
 concurrency:
   group: pages-docs
   cancel-in-progress: false
-
-env:
-  MDBOOK_VERSION: "0.5.2"
 
 jobs:
   build-docs:
@@ -41,12 +39,14 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      # mandoc renders the manpages into each book's reference/man/.
+      - name: Set up the build
+        uses: ./.github/actions/setup
         with:
-          python-version: '3.x'
-          cache: 'pip'
-          cache-dependency-path: |
+          rust: false
+          apt: mandoc
+          python: true
+          pip-cache: |
             scripts/requirements.txt
             scripts/requirements-fixtures.txt
 
@@ -55,29 +55,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r scripts/requirements.txt
 
-      - name: Install mandoc
-        # Renders the manpages into each book's reference/man/.
-        timeout-minutes: 5
-        run: |
-          sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
-          sudo apt-get install -y mandoc
-
-      - name: Install Rust (for mdbook when not cached)
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-        with:
-          toolchain: stable
-      - name: Cache mdbook
-        id: cache-mdbook
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cargo/bin/mdbook
-          key: ${{ runner.os }}-mdbook-${{ env.MDBOOK_VERSION }}
-          restore-keys: |
-            ${{ runner.os }}-mdbook-
-
       - name: Install mdbook
-        if: steps.cache-mdbook.outputs.cache-hit != 'true'
-        run: cargo install mdbook --version ${{ env.MDBOOK_VERSION }} --locked --force
+        uses: ./.github/actions/install-tools
+        with:
+          tools: mdbook
 
       - name: Compute docs cache key
         id: compute-docs-key

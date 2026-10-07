@@ -152,7 +152,8 @@ of `jobs::Jobs` (`App::spawn_job`), which keeps one record per job: what it is
 (its keys and status line), and whether its answer is still wanted. A worker
 returns its `Answer` or `Err` with the message for the user; that, or a panic,
 is its one outcome, announced by `AppEvent::JobEnded`. `App::job_ended` takes
-the outcome and the record together, so a job holds the generation and the
+the outcome and the record together (each `answered` arm names the job and its
+answer; an answer under another job is logged and dropped), so a job holds the generation and the
 keys until its answer is handled. Advancing the generation, or
 `Jobs::supersede`, makes answers stale; App keeps no flags of its own for a
 job. Counts keep their own markers, and
@@ -199,7 +200,10 @@ that opening and goes back. `step_back` leaves it without dropping its state,
 behind a confirmation or while it runs. A new dialog is a state struct in a
 `*_modal.rs` (`app/modals/`, or its feature's directory; it owns its focus), an `Overlay` variant with its arms (keys,
 `keys_context`, `close_overlay`) and its drawing in `widgets/` or `render/`; it
-has no `active` flag. The error and confirmation modals and the help stack
+has no `active` flag. What it asks of the app when answered is a variant of
+`Applied` (`app/applied.rs`), sent as `AppEvent::Applied` so the frame that
+closes it is drawn first and carried out by `App::apply`; not an `AppEvent` of
+its own. The error and confirmation modals and the help stack
 over any overlay and keep their own.
 
 **Config** is TOML, in layers: defaults in `Default` impls, imported files,

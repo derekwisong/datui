@@ -7,6 +7,7 @@
 //! one of these is a migration target.
 
 mod form_row;
+mod form_view;
 mod hintbar;
 mod picker;
 mod section_rule;
@@ -14,6 +15,7 @@ mod surface;
 mod working;
 
 pub use form_row::{FormRow, FormValue};
+pub use form_view::FormView;
 pub use hintbar::HintBar;
 pub use picker::{Clicks, Picker, PickerState};
 pub use section_rule::SectionRule;

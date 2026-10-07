@@ -2,7 +2,7 @@
 
 use crate::render::context::RenderContext;
 use crate::retype_modal::{CombineField, CombineModal, RetypeModal, Stage};
-use crate::widgets::ui::{FormRow, FormValue, HintBar, Picker, Surface};
+use crate::widgets::ui::{FormValue, FormView, HintBar, Picker, Surface};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -104,26 +104,11 @@ pub fn render_combine(area: Rect, buf: &mut Buffer, modal: &CombineModal, ctx: &
         return;
     }
     let popup = crate::render::layout::centered_rect(area, width, height);
-    crate::pointer::record(popup, crate::pointer::Hit::Modal);
-    let footer = match &modal.picker {
-        Some(_) => HintBar::from_ctx(ctx)
-            .hint_weighted("Enter", "Choose", 3)
-            .hint_weighted("type", "Narrow", 1)
-            .hint_weighted("Esc", "Back", 4),
-        None => HintBar::from_ctx(ctx)
-            .hint_weighted("Enter", "Make", 3)
-            .hint_weighted("Space", "Pick", 2)
-            .hint_weighted("Tab", "Next", 1)
-            .hint_weighted("Esc", "Cancel", 4),
-    };
-    let content = Surface::new("Combine into Datetime")
-        .footer(&footer)
-        .render(popup, buf, ctx);
-    if content.height < 3 {
-        return;
-    }
-    let spec_y = content.y + content.height - 1;
-    let mut y = content.y;
+    let footer = HintBar::from_ctx(ctx)
+        .hint_weighted("Enter", "Make", 3)
+        .hint_weighted("Space", "Pick", 2)
+        .hint_weighted("Tab", "Next", 1)
+        .hint_weighted("Esc", "Cancel", 4);
     let kinds: Vec<&str> = crate::column_types::DerivedKind::ALL
         .iter()
         .map(|k| k.name())
@@ -132,67 +117,40 @@ pub fn render_combine(area: Rect, buf: &mut Buffer, modal: &CombineModal, ctx: &
         .iter()
         .position(|k| *k == modal.kind)
         .unwrap_or(0);
-    for &field in &fields {
-        if y >= spec_y {
-            break;
-        }
-        let row = Rect {
-            y,
-            height: 1,
-            ..content
-        };
-        crate::pointer::record_field::<CombineModal>(row, field);
-        let value = match field {
-            CombineField::Date => FormValue::Choice(&modal.date),
-            CombineField::Time => match &modal.time {
-                Some(c) => FormValue::Choice(c),
-                None => FormValue::Placeholder(crate::retype_modal::NONE),
-            },
-            CombineField::Offset => match &modal.offset {
-                Some(c) => FormValue::Choice(c),
-                None => FormValue::Placeholder(crate::retype_modal::NONE),
-            },
-            CombineField::Kind => FormValue::Options {
-                items: &kinds,
-                selected: kind_at,
-                clicks: None,
-            },
-            CombineField::Name => FormValue::Choice(&modal.name),
-        };
-        FormRow {
-            label: label(field),
-            value,
-            focused: modal.focus == field,
-            label_width: LABEL_WIDTH,
-        }
-        .render_picking(row, buf, ctx, modal.picker.is_some());
-        y += 1;
-    }
-    if let Some((_, state)) = &modal.picker {
-        crate::pointer::record(content, crate::pointer::Hit::Picker);
-        let picker_y = y + 1;
-        if picker_y < spec_y {
-            let picker_area = Rect {
-                x: content.x + 2,
-                y: picker_y,
-                width: content.width.saturating_sub(2),
-                height: spec_y - picker_y,
+    let none = || FormValue::Placeholder(crate::retype_modal::NONE);
+    let rows = fields
+        .into_iter()
+        .map(|field| {
+            let value = match field {
+                CombineField::Date => FormValue::Choice(&modal.date),
+                CombineField::Time => modal.time.as_deref().map_or_else(none, FormValue::Choice),
+                CombineField::Offset => {
+                    modal.offset.as_deref().map_or_else(none, FormValue::Choice)
+                }
+                CombineField::Kind => FormValue::Options {
+                    items: &kinds,
+                    selected: kind_at,
+                    clicks: None,
+                },
+                CombineField::Name => FormValue::Choice(&modal.name),
             };
-            Picker::from_state(state, true).render(picker_area, buf, ctx);
-        }
-    }
-    let (text, style) = match &modal.problem {
+            (field, label(field), value)
+        })
+        .collect();
+    let status = match &modal.problem {
         Some(problem) => (problem.clone(), Style::default().fg(ctx.warning)),
         None => (modal.spec_line(), Style::default().fg(ctx.text_primary)),
     };
-    Paragraph::new(text).style(style).render(
-        Rect {
-            y: spec_y,
-            height: 1,
-            ..content
-        },
-        buf,
-    );
+    FormView {
+        title: "Combine into Datetime",
+        footer,
+        label_width: LABEL_WIDTH,
+        rows,
+        focused: modal.focus,
+        picker: modal.picker.as_ref().map(|(_, state)| state),
+        status,
+    }
+    .render::<CombineModal>(popup, buf, ctx);
 }
 
 #[cfg(test)]

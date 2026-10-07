@@ -10,7 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 impl App {
     /// A key for an open Setup row picker, form or editor: `Break` with its answer when
     /// one took it.
-    pub(crate) fn quality_setup_key(&mut self, event: &KeyEvent) -> ControlFlow<Option<AppEvent>> {
+    pub(super) fn quality_setup_key(&mut self, event: &KeyEvent) -> ControlFlow<Option<AppEvent>> {
         use crate::analysis::data_quality::QualityPage;
 
         // A Setup row's choices own the keys while they are open.
@@ -188,7 +188,7 @@ impl App {
     }
 
     /// A Setup editor's list key: its cursor moves over its `rows`, ten to a page.
-    pub(crate) fn move_setup_editor(&mut self, event: &KeyEvent, field: usize, rows: usize) {
+    fn move_setup_editor(&mut self, event: &KeyEvent, field: usize, rows: usize) {
         if let Some(step) = ListMove::from_key(event) {
             self.analysis_modal.quality.plan_field = step.apply(field, rows, 10);
         }
@@ -196,7 +196,7 @@ impl App {
 
     /// Back from a Setup editor to its `row` of Setup; `discard` puts back the plan
     /// the editor opened on.
-    pub(crate) fn leave_setup_editor(&mut self, row: analysis_modal::SetupRow, discard: bool) {
+    fn leave_setup_editor(&mut self, row: analysis_modal::SetupRow, discard: bool) {
         let modal = &mut self.analysis_modal;
         if let Some(plan) = modal.quality.plan_before_edit.take()
             && discard

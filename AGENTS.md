@@ -156,14 +156,13 @@ of `jobs::Jobs` (`App::spawn_job`), which keeps one record per job: what it is
 returns its `Answer` or `Err` with the message for the user; that, or a panic,
 is its one outcome, announced by `AppEvent::JobEnded`. `App::job_ended` takes
 the outcome and the record together (each `answered` arm names the job and its
-answer; an answer under another job is logged and dropped), so a job holds the generation and the
-keys until its answer is handled. Advancing the generation, or
-`Jobs::supersede`, makes answers stale; App keeps no flags of its own for a
-job. Counts keep their own markers, and
-home-screen workers, keyed by place rather than generation, run inside an
-`OwedAnswer` that sends their in-flight marker an answer if they panic. Async
-cloud calls go through `wait_on_runtime` on the shared Tokio runtime. Never
-collect inside a render function.
+answer; an answer under another job is logged and dropped), so a job holds the
+generation and the keys until its answer is handled. Advancing the generation,
+or `Jobs::supersede`, makes answers stale; App keeps no flags of its own for a
+job. Counts keep their own markers, and home-screen workers, keyed by place
+rather than generation, run inside an `OwedAnswer` that sends their in-flight
+marker an answer if they panic. Async cloud calls go through `wait_on_runtime`
+on the shared Tokio runtime. Never collect inside a render function.
 
 **An open has one owner.** `loading::Loader` holds the open in flight, from the
 request to its first rows: its `LoadId`, where it was asked from, its `Phase`,

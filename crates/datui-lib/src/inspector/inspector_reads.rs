@@ -10,7 +10,7 @@ use crate::{
 impl App {
     /// Read the focused row's hidden and binary fields, waited on; rows moved to are
     /// then read too while focus stays on this field.
-    pub(crate) fn read_focused_field(&mut self) {
+    pub(super) fn read_focused_field(&mut self) {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
         };
@@ -121,7 +121,7 @@ impl App {
     /// with the shown columns beside them so a sort ordering ties differently cannot
     /// swap in another row's fields. `wait`: the user waits, as on Enter; a read
     /// following the rows holds no keys.
-    pub(crate) fn read_inspected_fields(&mut self, row: &crate::table::InspectRow, wait: bool) {
+    fn read_inspected_fields(&mut self, row: &crate::table::InspectRow, wait: bool) {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
         };

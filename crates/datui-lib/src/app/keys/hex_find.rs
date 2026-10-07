@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 impl App {
     /// `n` and `N`: the next or previous match of the last pattern, from the cursor.
-    pub(crate) fn hex_find_again(&mut self, forward: bool) -> Option<AppEvent> {
+    pub(super) fn hex_find_again(&mut self, forward: bool) -> Option<AppEvent> {
         let view = self.hex.view.as_ref()?;
         let pattern = view.found.as_ref()?.pattern.clone();
         let len = view.len();
@@ -31,7 +31,7 @@ impl App {
     }
 
     /// Find `pattern` from `from` on a worker. The keys wait, and Esc stops it.
-    pub(crate) fn start_hex_find(
+    pub(super) fn start_hex_find(
         &mut self,
         pattern: crate::app::hex_view::Pattern,
         from: u64,

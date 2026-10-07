@@ -88,7 +88,7 @@ impl App {
         }
     }
 
-    pub(crate) fn open_sample_form_as(&mut self, inline: bool) {
+    fn open_sample_form_as(&mut self, inline: bool) {
         let sample = self.analysis_modal.sample.clone();
         self.open_sample_form_on(&sample, inline);
     }
@@ -101,7 +101,7 @@ impl App {
         self.open_sample_form_on(&sample, false);
     }
 
-    pub(crate) fn open_sample_form_on(&mut self, sample: &sampling::Sample, inline: bool) {
+    fn open_sample_form_on(&mut self, sample: &sampling::Sample, inline: bool) {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
         };

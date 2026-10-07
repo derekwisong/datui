@@ -222,7 +222,7 @@ fn vim_keys_move_only_where_nothing_types() {
 }
 
 #[test]
-fn the_picker_narrows_moves_and_never_types_a_space() {
+fn the_picker_narrows_moves_and_chooses() {
     let mut p = PickerState::new(vec!["alpha".into(), "beta".into(), "gamma".into()]);
     assert_eq!(
         picker_key(&mut p, false, &press(KeyCode::Down)),
@@ -235,14 +235,10 @@ fn the_picker_narrows_moves_and_never_types_a_space() {
     );
     assert_eq!(p.filter, "g");
     assert_eq!(
-        picker_key(&mut p, false, &press(KeyCode::Char(' '))),
-        PickerKey::Choose
-    );
-    assert_eq!(
         picker_key(&mut p, true, &press(KeyCode::Char(' '))),
         PickerKey::Toggle
     );
-    assert_eq!(p.filter, "g", "a space never narrows");
+    assert_eq!(p.filter, "g", "a list of several toggles");
     assert_eq!(
         picker_key(&mut p, false, &press(KeyCode::Enter)),
         PickerKey::Choose
@@ -258,6 +254,35 @@ fn the_picker_narrows_moves_and_never_types_a_space() {
     assert_eq!(
         picker_key(&mut p, false, &press(KeyCode::BackTab)),
         PickerKey::ChooseAndMove(false)
+    );
+}
+
+/// Space chooses with nothing typed; once the filter narrows it types, so a name of
+/// several words narrows rather than choosing at its first space.
+#[test]
+fn space_chooses_with_an_empty_filter_and_types_in_one_that_narrows() {
+    let names = vec!["pickup date".into(), "pickup time".into()];
+    let mut p = PickerState::new(names);
+    assert_eq!(
+        picker_key(&mut p, false, &press(KeyCode::Char(' '))),
+        PickerKey::Choose
+    );
+    assert_eq!(p.filter, "");
+    for c in "pickup".chars() {
+        picker_key(&mut p, false, &press(KeyCode::Char(c)));
+    }
+    assert_eq!(
+        picker_key(&mut p, false, &press(KeyCode::Char(' '))),
+        PickerKey::Handled
+    );
+    for c in "time".chars() {
+        picker_key(&mut p, false, &press(KeyCode::Char(c)));
+    }
+    assert_eq!(p.filter, "pickup time");
+    assert_eq!(p.selected_original(), Some(1));
+    assert_eq!(
+        picker_key(&mut p, false, &press(KeyCode::Enter)),
+        PickerKey::Choose
     );
 }
 

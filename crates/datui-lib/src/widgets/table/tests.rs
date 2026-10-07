@@ -90,28 +90,41 @@ fn strings_are_untouched_and_integers_group_uniformly() {
     assert!(row.contains("2,024"), "got: {row:?}");
 }
 
+/// Excluding a column, by name or by pattern, is how identifier columns stay
+/// plain: the replacement for a digit threshold.
 #[test]
-fn excluding_a_column_is_how_identifier_columns_stay_plain() {
-    // The replacement for a digit threshold: name the columns that hold
-    // identifiers rather than quantities.
-    let table = DataTable::default().with_number_format(NumberFormatSettings {
-        format: crate::numfmt::NumberFormat::preset("thousands").unwrap(),
-        enabled: true,
-        exclude: vec![crate::numfmt::Glob::new("year")],
-        align_numeric_right: false,
-    });
-    let df = df!(
-        "year" => &[2024i32],
-        "count" => &[2024i32],
-    )
-    .unwrap();
-    let area = Rect::new(0, 0, 40, 3);
-    let mut buf = Buffer::empty(area);
-    let mut ts = TableState::default();
-    table.render_dataframe(&df, area, &mut buf, &mut ts, false);
-    let row = row_string(&buf, area, 1);
-    assert!(row.contains("2024"), "excluded column stays plain: {row:?}");
-    assert!(row.contains("2,024"), "other column groups: {row:?}");
+fn excluded_columns_are_not_grouped() {
+    let row = |glob: &str, df: DataFrame| {
+        let table = DataTable::default().with_number_format(NumberFormatSettings {
+            format: crate::numfmt::NumberFormat::preset("thousands").unwrap(),
+            enabled: true,
+            exclude: vec![crate::numfmt::Glob::new(glob)],
+            align_numeric_right: false,
+        });
+        let area = Rect::new(0, 0, 40, 3);
+        let mut buf = Buffer::empty(area);
+        let mut ts = TableState::default();
+        table.render_dataframe(&df, area, &mut buf, &mut ts, false);
+        row_string(&buf, area, 1)
+    };
+    let shown = row(
+        "year",
+        df!("year" => &[2024i32], "count" => &[2024i32]).unwrap(),
+    );
+    assert!(
+        shown.contains("2024"),
+        "excluded column stays plain: {shown:?}"
+    );
+    assert!(shown.contains("2,024"), "other column groups: {shown:?}");
+    let shown = row(
+        "*_id",
+        df!("sample_id" => &[1234567i64], "count" => &[1234567i64]).unwrap(),
+    );
+    assert!(shown.contains("1234567"), "excluded column raw: {shown:?}");
+    assert!(
+        shown.contains("1,234,567"),
+        "other column grouped: {shown:?}"
+    );
 }
 
 #[test]
@@ -164,28 +177,6 @@ fn alignment_can_be_turned_off() {
     let mut ts = TableState::default();
     table.render_dataframe(&df, area, &mut buf, &mut ts, false);
     assert_eq!(row_string(&buf, area, 1), "7    ");
-}
-
-#[test]
-fn excluded_columns_are_not_grouped() {
-    let table = DataTable::default().with_number_format(NumberFormatSettings {
-        format: crate::numfmt::NumberFormat::preset("thousands").unwrap(),
-        enabled: true,
-        exclude: vec![crate::numfmt::Glob::new("*_id")],
-        align_numeric_right: false,
-    });
-    let df = df!(
-        "sample_id" => &[1234567i64],
-        "count" => &[1234567i64],
-    )
-    .unwrap();
-    let area = Rect::new(0, 0, 40, 3);
-    let mut buf = Buffer::empty(area);
-    let mut ts = TableState::default();
-    table.render_dataframe(&df, area, &mut buf, &mut ts, false);
-    let row = row_string(&buf, area, 1);
-    assert!(row.contains("1234567"), "excluded column raw: {row:?}");
-    assert!(row.contains("1,234,567"), "other column grouped: {row:?}");
 }
 
 #[test]

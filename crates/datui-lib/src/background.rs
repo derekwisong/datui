@@ -362,6 +362,7 @@ mod cache_writes_tests {
             let writes = writes.clone();
             std::thread::spawn(move || writes.settle())
         };
+        // Proving a wait does not end takes a while to give it the chance.
         std::thread::sleep(std::time::Duration::from_millis(50));
         assert!(!settled.is_finished(), "settled while the write was held");
         go.send(()).unwrap();

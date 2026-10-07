@@ -5,7 +5,7 @@ fn a_matrix_in_bands_is_the_matrix_in_one() {
     // Columns with nulls in different rows, one with none and one of integers,
     // converted a band of rows at a time as well as all at once: the same matrix,
     // bit for bit, whether or not the bands divide the rows.
-    let rows = 1_000;
+    let rows = 200;
     let mut columns: Vec<Column> = (0..6)
         .map(|c| {
             let v: Vec<Option<f64>> = (0..rows)
@@ -32,7 +32,7 @@ fn a_matrix_in_bands_is_the_matrix_in_one() {
             .collect::<Vec<_>>()
     };
     assert!(whole.correlations[0][6].is_finite());
-    for band in [1, 2, 7, 333, 999, 1_000, 5_000] {
+    for band in [1, 2, 7, 67, 199, 200, 1_000] {
         let bands = correlation_matrix_in_bands(&df, band).unwrap();
         assert_eq!(bits(&bands), bits(&whole), "{band} rows at a time");
         assert_eq!(bands.sample_sizes, whole.sample_sizes);

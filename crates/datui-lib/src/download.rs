@@ -685,9 +685,12 @@ mod tests {
     fn a_refused_write_stops_the_stream() {
         let rt = runtime();
         let pulled = Arc::new(AtomicUsize::new(0));
+        let ended = Arc::new(AtomicBool::new(false));
         let stream = {
             let pulled = pulled.clone();
+            let guard = DropFlag(ended.clone());
             futures::stream::iter(0..1000).map(move |i| {
+                let _ = &guard;
                 pulled.fetch_add(1, Ordering::SeqCst);
                 Ok::<_, String>(chunk(i, 1024))
             })
@@ -702,8 +705,15 @@ mod tests {
         })
         .unwrap_err();
         assert!(matches!(&error, StreamError::Write(e) if e.to_string().contains("No space")));
-        // The task sees the closed queue on its next send.
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        // The task sees the closed queue on its next send, and lets the stream go.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !ended.load(Ordering::SeqCst) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the stream is still read"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         let pulled = pulled.load(Ordering::SeqCst);
         assert!(pulled <= 3 + QUEUED_CHUNKS + 2, "{pulled} chunks read");
 
@@ -782,10 +792,17 @@ mod tests {
         stop.store(false, Ordering::SeqCst);
         let stream = futures::stream::iter(vec![Ok::<_, String>(chunk(0, CHUNK))])
             .chain(futures::stream::pending());
+        // Stopped once the first chunk is on disk and the store has gone quiet.
         let stopper = {
-            let stop = stop.clone();
+            let (stop, dir) = (stop.clone(), dir.path().to_path_buf());
             std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(100));
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                while !std::fs::read_dir(&dir).unwrap().any(|f| {
+                    std::fs::metadata(f.unwrap().path()).map_or(0, |m| m.len()) == CHUNK as u64
+                }) && std::time::Instant::now() < deadline
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
                 stop.store(true, Ordering::SeqCst);
             })
         };

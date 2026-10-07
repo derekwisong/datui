@@ -12,6 +12,9 @@
 
 use color_eyre::Result;
 
+use std::sync::Arc;
+
+use crate::columns::{Builder, Cell, Kind};
 use crate::error_display::{FileError, in_file};
 use object::{Object, ObjectSection, ObjectSymbol, SectionFlags, SymbolFlags, SymbolSection};
 use polars::prelude::*;
@@ -154,24 +157,25 @@ pub fn read(data: &[u8]) -> std::result::Result<Elf, String> {
     }
     let file = object::File::parse(data).map_err(|e| format!("not a readable ELF file: {e}"))?;
 
-    let mut section_names: Vec<String> = Vec::new();
+    // Each section's name, shared by its symbols rather than copied to each.
+    let mut section_names: Vec<Option<Arc<str>>> = Vec::new();
     let mut section_flags: Vec<u64> = Vec::new();
-    let (mut s_name, mut s_addr, mut s_size, mut s_flags, mut s_kind, mut s_region) = (
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-    );
+    let mut sections = Builder::new(&[
+        ("name", Kind::Str),
+        ("addr", Kind::U64),
+        ("size", Kind::U64),
+        ("flags", Kind::Str),
+        ("kind", Kind::Str),
+        ("region", Kind::Label),
+    ]);
     let (mut flash, mut ram) = (0u64, 0u64);
     for section in file.sections() {
         let index = section.index().0;
         if section_names.len() <= index {
-            section_names.resize(index + 1, String::new());
+            section_names.resize(index + 1, Some(Arc::from("")));
             section_flags.resize(index + 1, 0);
         }
-        let name = section.name().unwrap_or_default().to_string();
+        let name = section.name().unwrap_or_default();
         let flags = sh_flags(section.flags());
         let place = region(flags);
         match place {
@@ -179,14 +183,16 @@ pub fn read(data: &[u8]) -> std::result::Result<Elf, String> {
             Some(_) => flash = flash.saturating_add(section.size()),
             None => {}
         }
-        section_names[index] = name.clone();
+        section_names[index] = Some(name.into());
         section_flags[index] = flags;
-        s_name.push(name);
-        s_addr.push(section.address());
-        s_size.push(section.size());
-        s_flags.push(flags_text(flags));
-        s_kind.push(format!("{:?}", section.kind()).to_ascii_lowercase());
-        s_region.push(place);
+        sections.push([
+            Cell::Str(Some(name.to_string())),
+            Cell::U64(Some(section.address())),
+            Cell::U64(Some(section.size())),
+            Cell::Str(Some(flags_text(flags))),
+            Cell::Str(Some(format!("{:?}", section.kind()).to_ascii_lowercase())),
+            Cell::Label(place),
+        ]);
     }
 
     // The static symbol table, or the dynamic one of a stripped library.
@@ -197,57 +203,43 @@ pub fn read(data: &[u8]) -> std::result::Result<Elf, String> {
     let total = symbols.len();
     symbols.truncate(crate::limits::get().elf_symbols);
     let rows = symbols.len();
-    let (mut name, mut addr, mut size, mut kind, mut bind, mut section, mut place) = (
-        Vec::with_capacity(rows),
-        Vec::with_capacity(rows),
-        Vec::with_capacity(rows),
-        Vec::with_capacity(rows),
-        Vec::with_capacity(rows),
-        Vec::with_capacity(rows),
-        Vec::with_capacity(rows),
-    );
+    let mut table = Builder::new(&[
+        ("name", Kind::Str),
+        ("addr", Kind::U64),
+        ("size", Kind::U64),
+        ("kind", Kind::Label),
+        ("bind", Kind::Label),
+        ("section", Kind::Shared),
+        ("region", Kind::Label),
+    ]);
+    let pseudo = |name: &str| Some(Arc::<str>::from(name));
     for symbol in &symbols {
         let st_info = match symbol.flags() {
             SymbolFlags::Elf { st_info, .. } => st_info,
             _ => 0,
         };
-        name.push(demangle(symbol.name().unwrap_or_default()));
-        addr.push(symbol.address());
-        size.push(symbol.size());
-        kind.push(symbol_kind(st_info));
-        bind.push(symbol_bind(st_info));
         let (in_section, in_region) = match symbol.section() {
             SymbolSection::Section(index) => (
-                section_names.get(index.0).cloned(),
+                section_names.get(index.0).cloned().flatten(),
                 section_flags.get(index.0).copied().and_then(region),
             ),
-            SymbolSection::Undefined => (Some("UND".to_string()), None),
-            SymbolSection::Absolute => (Some("ABS".to_string()), None),
-            SymbolSection::Common => (Some("COMMON".to_string()), None),
+            SymbolSection::Undefined => (pseudo("UND"), None),
+            SymbolSection::Absolute => (pseudo("ABS"), None),
+            SymbolSection::Common => (pseudo("COMMON"), None),
             _ => (None, None),
         };
-        section.push(in_section);
-        place.push(in_region);
+        table.push([
+            Cell::Str(Some(demangle(symbol.name().unwrap_or_default()))),
+            Cell::U64(Some(symbol.address())),
+            Cell::U64(Some(symbol.size())),
+            Cell::Label(Some(symbol_kind(st_info))),
+            Cell::Label(Some(symbol_bind(st_info))),
+            Cell::Shared(in_section),
+            Cell::Label(in_region),
+        ]);
     }
-    let symbols = df!(
-        "name" => name,
-        "addr" => addr,
-        "size" => size,
-        "kind" => kind,
-        "bind" => bind,
-        "section" => section,
-        "region" => place,
-    )
-    .map_err(|e| e.to_string())?;
-    let sections = df!(
-        "name" => s_name,
-        "addr" => s_addr,
-        "size" => s_size,
-        "flags" => s_flags,
-        "kind" => s_kind,
-        "region" => s_region,
-    )
-    .map_err(|e| e.to_string())?;
+    let symbols = table.take().map_err(|e| e.to_string())?;
+    let sections = sections.take().map_err(|e| e.to_string())?;
 
     let group = crate::numfmt::group_chrome;
     let mut lines = vec![

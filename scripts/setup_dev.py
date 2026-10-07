@@ -31,7 +31,17 @@ VENV_DIR = REPO_ROOT / ".venv"
 REQUIREMENTS_FILE = Path(__file__).parent / "requirements.txt"
 REQUIREMENTS_WHEEL_FILE = Path(__file__).parent / "requirements-wheel.txt"
 REQUIREMENTS_WHEEL_WINDOWS_FILE = Path(__file__).parent / "requirements-wheel-windows.txt"
-MDBOOK_VERSION = "0.5.2"  # Must match .github/workflows/ci.yml and release.yml
+
+def _pinned_version(tool):
+    """A tool's version from .github/tool-versions, which CI installs from too."""
+    for line in (REPO_ROOT / ".github" / "tool-versions").read_text().splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[0] == tool:
+            return fields[1]
+    raise SystemExit(f"{tool} has no version in .github/tool-versions")
+
+
+MDBOOK_VERSION = _pinned_version("mdbook")
 
 
 def get_venv_python():

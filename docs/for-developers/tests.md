@@ -104,10 +104,15 @@ and openpyxl in `scripts/requirements-fixtures.txt`) and generates them, using [
 it is installed and `python -m venv` otherwise. It is safe to re-run;
 `--force` regenerates from scratch.
 
-The test harness looks for `.venv/bin/python` (`.venv\Scripts\python.exe` on
-Windows) and falls back to the system Python, so the environment does not need
-to be activated. If the fixtures are missing when the tests start, they run the
-generator themselves.
+The generator writes `tests/sample-data/.generated`, a SHA-256 of
+`scripts/generate_sample_data.py` and `scripts/requirements-fixtures.txt`. When
+a test starts and that stamp is missing or holds another digest, the test
+harness regenerates the fixtures, so pulling a generator change needs no manual
+step. It runs `.venv/bin/python` (`.venv\Scripts\python.exe` on Windows),
+falling back to the system Python, so the environment does not need to be
+activated. Test processes take the lock file `tests/.sample-data.lock` first,
+so only one generates and the rest wait for it. If generation fails, the test
+panics with the generator's error and the setup command.
 
 To regenerate by hand:
 
@@ -115,14 +120,17 @@ To regenerate by hand:
 .venv/bin/python scripts/generate_sample_data.py
 ```
 
-The fixtures are not regenerated automatically once they exist.
+The generator writes into a scratch directory beside the output and then
+renames each file into place, so a test process that has the old file mapped
+keeps reading it. `--out DIR` writes somewhere else. It exits with an error if
+any of its packages is missing.
 
 CI's `linux` job caches `tests/sample-data` under a key built from every input
 to the generator:
 
 | Key part | Input |
 |---|---|
-| `scripts/generate_sample_data.py` | The generator; it reads no other file |
+| `scripts/generate_sample_data.py` | The generator; it reads no other file but the next one, for the stamp |
 | `scripts/requirements-fixtures.txt` | Every package it imports, and their dependencies, at exact versions |
 | Python version | As `setup-python` resolved it |
 | Runner OS and arch | |

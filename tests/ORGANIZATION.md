@@ -77,9 +77,8 @@ The existing `datui-cli` crate is already a cheap independent check target.
 
 Use in-memory frames and temporary files for focused tests. Keep real-format
 and end-to-end cases where they protect loading/schema or event behavior.
-Generate large Python fixtures explicitly before the full suite; eventually
-make a missing-fixture error name the setup command, or protect fallback
-generation with an interprocess lock and atomic installation. Do not silently
+Fixture generation is stamped, locked across processes and installed by
+rename (`crates/datui-lib/src/tests/shared.rs`); a failure names the setup command. Do not silently
 download/install tooling in a targeted test invocation.
 
 ## Measure each delivery

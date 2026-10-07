@@ -136,12 +136,7 @@ pub fn render(form: &SampleForm, focused: bool, area: Rect, buf: &mut Buffer, ct
     let error_height = u16::from(form.error.is_some()) * 3;
     let height = items.len() as u16 + error_height + 2;
     let width = area.width.saturating_sub(4).clamp(40, 72).min(area.width);
-    let frame = Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height: height.min(area.height),
-    };
+    let frame = crate::render::layout::centered_rect(area, width, height);
     let inner = Surface::new("Sample").render(frame, buf, ctx);
     let bottom = inner.y + inner.height;
     let mut y = inner.y;

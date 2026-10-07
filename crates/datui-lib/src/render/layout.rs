@@ -41,9 +41,8 @@ pub fn app_layout(area: Rect, debug_enabled: bool, footer_lines: u16, rule: bool
     }
 }
 
-/// Centered rect with fixed width and height, clamped to fit inside `r`.
-/// Use for modals that must not shrink (e.g. delete confirm) so content stays visible.
-pub fn centered_rect_fixed(r: Rect, width: u16, height: u16) -> Rect {
+/// A `width` by `height` rect centered in `r`, clamped to fit inside it.
+pub fn centered_rect(r: Rect, width: u16, height: u16) -> Rect {
     let w = width.min(r.width);
     let h = height.min(r.height);
     let x = r.x + r.width.saturating_sub(w) / 2;

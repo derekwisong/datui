@@ -3,7 +3,7 @@
 //! breakdown. Built on the `widgets::ui` kit; the rail marks focus.
 
 use crate::render::context::RenderContext;
-use crate::render::layout::centered_rect_fixed;
+use crate::render::layout::centered_rect;
 use crate::widgets::ui::{FormRow, FormValue, HintBar, SectionRule, Surface};
 use crate::widgets::view_modal::{FormFocus, ViewModal, ViewModalMode};
 use ratatui::buffer::Buffer;
@@ -438,7 +438,7 @@ fn render_score_details(area: Rect, buf: &mut Buffer, modal: &mut ViewModal, ctx
     // Sized to the breakdown, not the terminal: a compact centered dialog.
     // The body, the blank above the footer, the footer and the frame.
     let height = (body.lines().count() as u16 + 4).min(area.height);
-    let details_area = centered_rect_fixed(area, 56, height);
+    let details_area = centered_rect(area, 56, height);
     let footer = HintBar::from_ctx(ctx).hint("Esc", "Close");
     let content = Surface::new(title.as_str())
         .footer(&footer)

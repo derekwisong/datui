@@ -103,12 +103,7 @@ pub fn render_combine(area: Rect, buf: &mut Buffer, modal: &CombineModal, ctx: &
     if height < 6 {
         return;
     }
-    let popup = Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    };
+    let popup = crate::render::layout::centered_rect(area, width, height);
     crate::pointer::record(popup, crate::pointer::Hit::Modal);
     let footer = match &modal.picker {
         Some(_) => HintBar::from_ctx(ctx)

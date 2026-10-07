@@ -201,14 +201,8 @@ pub fn render(
         let modal_width = (chart_area.width * 3 / 4).min(66);
         let modal_height =
             widgets::chart_export_modal::height(&app.chart_export_modal).min(chart_area.height);
-        let modal_x = chart_area.x + chart_area.width.saturating_sub(modal_width) / 2;
-        let modal_y = chart_area.y + chart_area.height.saturating_sub(modal_height) / 2;
-        let modal_area = Rect {
-            x: modal_x,
-            y: modal_y,
-            width: modal_width,
-            height: modal_height,
-        };
+        let modal_area =
+            crate::render::layout::centered_rect(chart_area, modal_width, modal_height);
         widgets::chart_export_modal::render_chart_export_modal(
             modal_area,
             buf,

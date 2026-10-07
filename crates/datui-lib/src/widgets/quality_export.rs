@@ -2,7 +2,8 @@
 //! a form, and a line saying what the form holds or why Enter did not write.
 
 use crate::quality_export::ExportForm;
-use crate::widgets::data_quality::{DataQualityWidgetConfig, centered_rect, dotted, fit};
+use crate::render::layout::centered_rect;
+use crate::widgets::data_quality::{DataQualityWidgetConfig, dotted, fit};
 use crate::widgets::ui::{FormRow, FormValue, Surface};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -21,7 +22,7 @@ pub fn render(
     let ctx = config.ctx;
     let width = 64.min(area.width.saturating_sub(2));
     // Path, format, a blank and the status line, inside the frame.
-    let popup = centered_rect(width, 6, area);
+    let popup = centered_rect(area.inner(ratatui::layout::Margin::new(1, 1)), width, 6);
     let content = Surface::new("Export Report").render(popup, buf, ctx);
     if content.height < 2 || content.width < 8 {
         return;

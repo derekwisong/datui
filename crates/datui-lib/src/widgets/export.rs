@@ -65,12 +65,7 @@ const COMPRESSION_NAMES: [&str; COMPRESSION_OPTIONS.len()] = {
 pub fn dialog_area(area: Rect) -> Rect {
     let width = area.width.saturating_sub(4).min(MAX_WIDTH);
     let height = HEIGHT.min(area.height);
-    Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    }
+    crate::render::layout::centered_rect(area, width, height)
 }
 
 pub fn render_export_modal(

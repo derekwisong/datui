@@ -4,9 +4,8 @@
 use crate::glyphs;
 use crate::intent_modal::{IntentField, IntentForm};
 use crate::numfmt;
-use crate::widgets::data_quality::{
-    DataQualityWidgetConfig, centered_rect, dotted, fit, rule_line,
-};
+use crate::render::layout::centered_rect;
+use crate::widgets::data_quality::{DataQualityWidgetConfig, dotted, fit, rule_line};
 use crate::widgets::ui::{FormRow, FormValue, Surface};
 use polars::prelude::DataType;
 use ratatui::buffer::Buffer;
@@ -151,7 +150,11 @@ pub fn render_form(
     let width = 64.min(area.width.saturating_sub(2));
     // The type, the rows, a blank and the status line, inside the frame.
     let height = fields.len() as u16 + 3 + 2;
-    let popup = centered_rect(width, height, area);
+    let popup = centered_rect(
+        area.inner(ratatui::layout::Margin::new(1, 1)),
+        width,
+        height,
+    );
     let title = format!("Intent: {}", form.column);
     let content = Surface::new(&title).render(popup, buf, ctx);
     if content.height < 2 || content.width < 8 {

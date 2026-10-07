@@ -276,12 +276,7 @@ pub fn render(
             crate::copy_modal::CopyModal::MOST_ROWS + 6
         };
         let modal_height = wanted.min(area.height);
-        let modal_area = Rect {
-            x: (area.width.saturating_sub(modal_width)) / 2,
-            y: (area.height.saturating_sub(modal_height)) / 2,
-            width: modal_width,
-            height: modal_height,
-        };
+        let modal_area = crate::render::layout::centered_rect(area, modal_width, modal_height);
         copy::render_copy_modal(modal_area, buf, &mut app.copy_modal, ctx);
     }
 }

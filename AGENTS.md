@@ -167,9 +167,17 @@ plain table view when nothing is held. Held keys are dropped when the screen
 they were typed at goes away. Change this through `classify` and its tests, not
 by gating keys in `App::key`.
 
-**Modals** each have a state struct with `active: bool`, own their focus, and
-emit an `AppEvent` when applied. Add a new one by copying an existing pair
-(`*_modal.rs` state, `widgets/*.rs` or `render/*.rs` drawing).
+**Overlays.** What is open over the table (a dialog, sidebar or screen such as
+Export, Info or Analysis) is one value, `App::overlay` (`overlay.rs`); keys go
+to it and it is drawn over the table. Open one with `open_overlay`, or
+`open_over` for one that goes back to what it was opened over (Export over
+Value Counts); leave through `close_overlay`, which drops the state it held for
+that opening and goes back. `step_back` leaves it without dropping its state,
+behind a confirmation or while it runs. A new dialog is a state struct in
+`*_modal.rs` (it owns its focus), an `Overlay` variant with its arms (keys,
+`keys_context`, `close_overlay`) and its drawing in `widgets/` or `render/`; it
+has no `active` flag. The error and confirmation modals and the help stack
+over any overlay and keep their own.
 
 **Config** is TOML, in layers: defaults in `Default` impls, imported files,
 `~/.config/datui/config.toml`, `-c KEY=VALUE`, then flags. Each file is a partial

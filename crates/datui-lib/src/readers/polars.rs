@@ -136,6 +136,7 @@ fn said(e: &polars::prelude::PolarsError) -> String {
 /// The frame of a state a Polars reader built, with what the read did to its rows for
 /// Copy as Python.
 fn frame(read: Read, input: ScanIn<'_>) -> Result<Scan> {
+    let lf = resolved(read.lf)?;
     input.report.read_python = read.python;
     input.report.read_notes = read.notes;
     input.report.typing = read.typing;
@@ -144,13 +145,20 @@ fn frame(read: Read, input: ScanIn<'_>) -> Result<Scan> {
         merged.units = units;
         *delimited = std::sync::Arc::new(merged);
     }
-    Ok(read.lf.into())
+    Ok(lf.into())
+}
+
+/// `lf` with its schema resolved, as an open needs it: a file Polars cannot read
+/// fails here, at the scan.
+pub(crate) fn resolved(mut lf: LazyFrame) -> Result<LazyFrame> {
+    lf.collect_schema()?;
+    Ok(lf)
 }
 
 /// A JSON reader's frame. JSON is read into memory whole, so its sample costs no read
 /// of the file.
 fn json_frame(lf: LazyFrame, input: ScanIn<'_>) -> Result<Scan> {
-    apply_parse_dates_to_json_lazyframe(lf, input.options, &mut input.report.read_python)
+    apply_parse_dates_to_json_lazyframe(resolved(lf)?, input.options, &mut input.report.read_python)
         .map(Scan::from)
 }
 
@@ -207,7 +215,7 @@ fn scan_arrow(input: ScanIn<'_>) -> Result<Scan> {
         [one] => ipc(one)?,
         // Polars reads every IPC file's footer for the schema, and fails on a stream
         // among them: only then is each file looked at.
-        many => match each(many, ipc) {
+        many => match each(many, ipc).and_then(resolved) {
             Ok(lf) => lf,
             Err(_) if crate::ipc_stream::any_stream(many) => {
                 return Ok(Scan::Streams(many.to_vec()));

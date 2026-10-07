@@ -461,8 +461,8 @@ pub fn check(
     let separator = options.separator_or(b',');
     let read = crate::readers::csv::read_delimited(file, separator, &options, &Default::default())
         .map_err(|e| fail(&out, &crate::error_display::in_file(file, e)))?;
-    let df = read
-        .lf
+    let df = crate::readers::polars::resolved(read.lf)
+        .map_err(|e| fail(&out, &crate::error_display::in_file(file, e)))?
         .limit(rows as IdxSize)
         .collect()
         .map_err(|e| fail(&out, &crate::error_display::in_file(file, e.into())))?;

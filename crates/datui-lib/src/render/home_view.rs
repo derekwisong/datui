@@ -49,7 +49,7 @@ const META_MIN_WIDTH: u16 = 56;
 /// nothing has read yet, and a blank there beside rows that have a shape reads as
 /// broken. The same admission the label makes for a directory nothing has looked into.
 ///
-/// `hint` is what a catalog says the file weighs, shown as `~33 MB` until something
+/// `hint` is what a catalog says the file weighs, shown as `~33.0 MiB` until something
 /// has measured it. `gone` takes the size's place for a web file that cannot be had
 /// (`HTTP 404`, `no answer`): beside the name, where the choice to open it is made.
 fn meta_columns(entry: &Entry, unmeasured: bool, hint: Option<u64>, gone: Option<&str>) -> String {

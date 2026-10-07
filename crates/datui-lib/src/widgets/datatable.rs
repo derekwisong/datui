@@ -17178,7 +17178,7 @@ mod tests {
         // The drill-in is the files themselves: an absent cell has no value to filter.
         let scope = absent.evidence_scope().expect("a scope, not a predicate");
         assert_eq!(scope, QualityScope::SourceFiles(vec![3]));
-        assert!(absent.evidence_predicate().is_none());
+        assert!(absent.evidence_predicate(&results).is_none());
         let evidence = state
             .quality_evidence_view(&scope, lit(true))
             .expect("the rows the third file contributed");

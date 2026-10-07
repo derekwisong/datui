@@ -1,13 +1,15 @@
 //! Data Quality results read as a report: what is likely wrong, what depends on
 //! intent, and which columns have nothing to report.
 //!
-//! Derived from [`DataQualityResults`] whenever it is drawn, so the engine, the
-//! session cache and the evidence drill-in keep working on observations; a finding
-//! only groups and ranks them.
+//! Each kind of check is one row of [`ObservationKind::spec`]: its names, severity,
+//! rank, advice, how its observations group, and the words its numbers are given in.
+//! The report is built once when results arrive, so the engine, the session cache and
+//! the evidence drill-in keep working on observations; a finding only groups and
+//! ranks them.
 
 use crate::data_quality::{
-    ColumnQualityProfile, DataQualityPlan, DataQualityResults, ObservationKind, QualityPrecision,
-    QualityScope, TextReading, text_reading,
+    ColumnQualityProfile, DataQualityPlan, DataQualityResults, ObservationKind, QualityObservation,
+    QualityPrecision, QualityScope, TextReading, text_reading,
 };
 use crate::numfmt;
 use polars::prelude::Expr;
@@ -33,11 +35,72 @@ impl Severity {
     }
 }
 
+/// A kind read more than one way: how much of a column is missing, and what the
+/// text that parses holds. Each has its own title, and some their own severity, rank
+/// and advice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Variant {
+    /// Null in every row checked.
+    AlwaysMissing,
+    /// Null in more than half the rows.
+    MostlyMissing,
+    /// Several columns null on exactly the same rows.
+    MissingTogether,
+    /// Whole numbers with leading zeros or one fixed length: codes, not quantities.
+    CodesAsText,
+    DatesAsText,
+}
+
+impl Variant {
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::AlwaysMissing => "Always missing",
+            Self::MostlyMissing => "Mostly missing",
+            // No row lacks one of these columns without lacking them all.
+            Self::MissingTogether => "Missing together",
+            Self::CodesAsText => "Codes as text",
+            Self::DatesAsText => "Dates as text",
+        }
+    }
+
+    fn severity(self) -> Option<Severity> {
+        match self {
+            Self::AlwaysMissing => Some(Severity::Problem),
+            Self::MostlyMissing | Self::MissingTogether | Self::CodesAsText | Self::DatesAsText => {
+                None
+            }
+        }
+    }
+
+    fn rank(self) -> Option<u8> {
+        match self {
+            Self::AlwaysMissing => Some(3),
+            Self::MostlyMissing => Some(9),
+            Self::MissingTogether | Self::CodesAsText | Self::DatesAsText => None,
+        }
+    }
+
+    fn advice(self) -> Option<&'static [&'static str]> {
+        match self {
+            Self::AlwaysMissing => Some(&["Carries nothing; check the load or a rename upstream"]),
+            // Says how much is left, so it is written from the finding; see `advice`.
+            Self::MostlyMissing => None,
+            Self::MissingTogether => {
+                Some(&["Likely one cause: a join with no match, or a source with gaps"])
+            }
+            Self::CodesAsText => Some(&["Fine as text; cast only for arithmetic"]),
+            Self::DatesAsText => Some(&["Sorts as text; parse as a date to filter by range"]),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Finding {
     pub severity: Severity,
     /// `None` for the clean-columns entry.
     pub kind: Option<ObservationKind>,
+    pub variant: Option<Variant>,
+    /// From the kind and its variant: what the list calls it.
     pub title: &'static str,
     pub columns: Vec<String>,
     /// Indices into [`DataQualityResults::observations`].
@@ -51,7 +114,15 @@ pub struct Finding {
     pub same_rows: bool,
 }
 
+/// The clean-columns entry's title.
+pub const NO_FINDINGS: &str = "No findings";
+
 impl Finding {
+    /// The same finding: its kind, how it reads, and its columns.
+    pub fn same_as(&self, other: &Finding) -> bool {
+        self.kind == other.kind && self.variant == other.variant && self.columns == other.columns
+    }
+
     /// "open, high, low +7", fitted to `width` display columns.
     pub fn columns_label(&self, width: usize) -> String {
         columns_label(&self.columns, width)
@@ -64,23 +135,10 @@ impl Finding {
         self.observations
             .iter()
             .map(|index| {
-                let observation = results.observations.get(*index)?;
-                match observation.kind {
-                    // The values that stop a cast: text the reading does not parse.
-                    ObservationKind::ParseableText => {
-                        let profile = results
-                            .columns
-                            .iter()
-                            .find(|profile| profile.name == observation.column)?;
-                        crate::data_quality::unparsed_text(profile)
-                    }
-                    _ => observation.evidence_predicate().or_else(|| {
-                        results
-                            .intent
-                            .as_ref()?
-                            .evidence(observation.kind, &observation.column)
-                    }),
-                }
+                results
+                    .observations
+                    .get(*index)?
+                    .evidence_predicate(results)
             })
             .collect::<Option<Vec<_>>>()?
             .into_iter()
@@ -100,48 +158,48 @@ impl Finding {
         if let Some(scope) = self.evidence_scope(results) {
             return Ok(EvidenceRows::Files(scope));
         }
-        match self.kind {
-            None => Err("No rows: every column here passed".to_string()),
-            _ if results.precision == QualityPrecision::Metadata => {
-                Err("No rows: values were not read".to_string())
-            }
-            Some(ObservationKind::DuplicateRows) => Ok(EvidenceRows::Duplicates),
-            Some(ObservationKind::ParseableText) if self.failures(results) == Some(0) => {
-                Err("No rows: every value parses".to_string())
-            }
-            _ => self
-                .evidence_predicate(results)
-                .map(EvidenceRows::Matching)
-                .ok_or_else(|| "No rows: nothing to filter on".to_string()),
+        let Some(kind) = self.kind else {
+            return Err("No rows: every column here passed".to_string());
+        };
+        if results.precision == QualityPrecision::Metadata {
+            return Err("No rows: values were not read".to_string());
         }
+        match kind.spec().evidence {
+            Evidence::Duplicates => return Ok(EvidenceRows::Duplicates),
+            Evidence::Failures if self.failures(results) == Some(0) => {
+                return Err("No rows: every value parses".to_string());
+            }
+            Evidence::Rows
+            | Evidence::Always
+            | Evidence::Failures
+            | Evidence::SharingValue
+            | Evidence::Uncounted => {}
+        }
+        self.evidence_predicate(results)
+            .map(EvidenceRows::Matching)
+            .ok_or_else(|| "No rows: nothing to filter on".to_string())
     }
 
     /// How many rows Enter shows, where one count is all of them: one observation,
     /// the same rows in every column, or spellings of one column, which never
     /// overlap. `None` for a union nobody counted, and for the files' rows.
     pub fn evidence_count(&self, results: &DataQualityResults) -> Option<usize> {
-        match self.kind? {
-            ObservationKind::DuplicateRows => {
+        match self.kind?.spec().evidence {
+            Evidence::Duplicates => {
                 Some(results.identity.as_ref()?.rows_involved).filter(|rows| *rows > 0)
             }
-            ObservationKind::ParseableText => self.failures(results),
-            // Rows beyond one per value are the count; the rows sharing a value are
-            // what opens, and always more.
-            ObservationKind::KeyLike
-            | ObservationKind::Absent
-            | ObservationKind::TypeConflict
-            | ObservationKind::DcOffset => None,
-            ObservationKind::CategoryVariants => Some(self.affected_rows),
-            // One fact about rows, named once per key column: the same rows each time.
-            ObservationKind::KeyRepeated | ObservationKind::KeyMissing => Some(self.affected_rows),
-            _ if self.observations.len() == 1 || self.same_rows => Some(self.affected_rows),
-            _ => None,
+            Evidence::Failures => self.failures(results),
+            Evidence::SharingValue | Evidence::Uncounted => None,
+            Evidence::Always => Some(self.affected_rows),
+            Evidence::Rows => {
+                (self.observations.len() == 1 || self.same_rows).then_some(self.affected_rows)
+            }
         }
     }
 
     /// Non-null text in a parseable-text column that its reading does not parse.
     pub fn failures(&self, results: &DataQualityResults) -> Option<usize> {
-        if self.kind != Some(ObservationKind::ParseableText) {
+        if self.kind?.spec().evidence != Evidence::Failures {
             return None;
         }
         let profile = results
@@ -155,45 +213,22 @@ impl Finding {
     /// The check that makes this finding, by the name the Checks list gives it.
     /// `None` for the clean entry.
     pub fn check(&self) -> Option<&'static str> {
-        Some(match self.kind? {
-            ObservationKind::Nulls => "Missing values",
-            ObservationKind::NonFinite => "NaN or infinite",
-            ObservationKind::DuplicateRows => "Duplicate rows",
-            ObservationKind::Empty | ObservationKind::Whitespace => "Blank text",
-            ObservationKind::CategoryVariants => "Mixed spellings",
-            ObservationKind::TypeConflict => "Type mismatch",
-            ObservationKind::Absent => "Missing in files",
-            ObservationKind::ParseableText => "Numbers as text",
-            ObservationKind::KeyLike => "Nearly unique",
-            ObservationKind::Constant => "Single value",
-            ObservationKind::UnparsedTime => "Unparsed times",
-            ObservationKind::Clipping => "Clipping",
-            ObservationKind::ZeroRuns => "Runs of zeros",
-            ObservationKind::DcOffset => "DC offset",
-            ObservationKind::KeyRepeated
-            | ObservationKind::KeyMissing
-            | ObservationKind::RequiredMissing
-            | ObservationKind::NotAllowed
-            | ObservationKind::OutOfRange
-            | ObservationKind::UnparsedNumber => INTENT_CHECK,
-        })
+        Some(self.kind?.spec().check)
     }
 
     /// Missing values grouped across columns that go missing at different rates.
     pub fn varied(&self) -> bool {
-        self.kind == Some(ObservationKind::Nulls)
-            && self.columns.len() > 1
-            && !self.same_rows
+        self.lists_columns()
+            && self.kind.map(|kind| kind.spec().grouping) == Some(Grouping::Missing)
             && self.severity == Severity::Note
     }
 
     /// A count per column that the detail lists one column a line: several columns
     /// grouped by what they miss, not on the same rows.
     pub fn lists_columns(&self) -> bool {
-        matches!(
-            self.kind,
-            Some(ObservationKind::Nulls | ObservationKind::Empty | ObservationKind::Whitespace)
-        ) && self.columns.len() > 1
+        self.kind.is_some_and(|kind| {
+            matches!(kind.spec().grouping, Grouping::Missing | Grouping::ByRows)
+        }) && self.columns.len() > 1
             && !self.same_rows
     }
 
@@ -260,6 +295,380 @@ pub enum EvidenceRows {
     /// Rows equal to another in every column, copies together; see
     /// [`crate::data_quality::duplicate_rows`].
     Duplicates,
+}
+
+/// Which of a kind's observations one finding says together.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Grouping {
+    /// Each observation is its own finding.
+    Alone,
+    /// Every column at once: one fact named once per column.
+    All,
+    /// Columns with the same count together.
+    ByRows,
+    /// One finding per column, of all its observations.
+    ByColumn,
+    /// Missing values: every column always missing together, every column mostly
+    /// missing together, columns missing on the very same rows together, and the
+    /// rest as one finding with each column's rate inside it.
+    Missing,
+}
+
+/// What Enter opens of a finding, and how many rows that is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Evidence {
+    /// The rows counted, when one count is all of them: one observation, or the
+    /// same rows in every column.
+    Rows,
+    /// The rows counted, always: values of one column that never overlap, or one
+    /// fact about rows named once per column.
+    Always,
+    /// Rows equal to another in every column.
+    Duplicates,
+    /// The values its reading does not parse.
+    Failures,
+    /// Every row that shares a repeated value: more than the rows beyond one per
+    /// value the check counts.
+    SharingValue,
+    /// Files, or every sample: nothing counted to show.
+    Uncounted,
+}
+
+/// One kind of check. Everything about a kind but its emitter and the predicate
+/// beside it (`QualityObservation::evidence_predicate`) is here.
+pub struct CheckSpec {
+    /// The check that makes it, by the name the Checks list gives it.
+    pub check: &'static str,
+    /// The finding's title, unless a [`Variant`] reads it another way.
+    pub title: &'static str,
+    pub severity: Severity,
+    /// Order within a severity: what costs the most rows of trust first.
+    pub rank: u8,
+    /// What it means for the data and what to do about it, a fragment a line. The
+    /// reader knows what a null is; this says only what is particular.
+    pub advice: &'static [&'static str],
+    pub grouping: Grouping,
+    pub evidence: Evidence,
+    /// What the rows Enter opens are, after their count: " that have a copy".
+    pub rows_are: &'static str,
+    /// What its rows hold, after "N of M rows (P%)": "null".
+    pub noun: &'static str,
+    /// The finding's reading, when one kind reads several ways.
+    variant: fn(&Group<'_>) -> Option<Variant>,
+    /// The list's line: counts and the telling detail.
+    summary: fn(&Group<'_>) -> String,
+    /// The detail's sentence, with the evidence that makes it concrete.
+    headline: fn(&Detail<'_>, &mut Vec<String>) -> String,
+}
+
+impl ObservationKind {
+    /// The kind's row of the table.
+    pub fn spec(self) -> &'static CheckSpec {
+        match self {
+            Self::Nulls => &CheckSpec {
+                check: "Missing values",
+                title: "Missing values",
+                severity: Severity::Note,
+                rank: 10,
+                advice: &["Check: clustered in some files or dates (Segments, by file or window)"],
+                grouping: Grouping::Missing,
+                evidence: Evidence::Rows,
+                rows_are: "",
+                noun: "null",
+                variant: missing_variant,
+                summary: nulls_summary,
+                headline: nulls_headline,
+            },
+            Self::Empty => &CheckSpec {
+                check: "Blank text",
+                title: "Empty text",
+                severity: Severity::Problem,
+                rank: 7,
+                advice: &["Counted as filled; treat as null if it means missing"],
+                grouping: Grouping::ByRows,
+                evidence: Evidence::Rows,
+                rows_are: "",
+                noun: "empty strings",
+                variant: no_variant,
+                summary: rows_each_summary,
+                headline: per_column_headline,
+            },
+            Self::Whitespace => &CheckSpec {
+                check: "Blank text",
+                title: "Blank text",
+                severity: Severity::Problem,
+                rank: 6,
+                advice: &["Counted as filled; trim to null if it means missing"],
+                grouping: Grouping::ByRows,
+                evidence: Evidence::Rows,
+                rows_are: "",
+                noun: "only spaces or tabs",
+                variant: no_variant,
+                summary: rows_each_summary,
+                headline: per_column_headline,
+            },
+            Self::NonFinite => &CheckSpec {
+                check: "NaN or infinite",
+                title: "NaN or infinite",
+                severity: Severity::Problem,
+                rank: 4,
+                advice: &["Sums and means become NaN; check for division by zero upstream"],
+                grouping: Grouping::Alone,
+                evidence: Evidence::Rows,
+                rows_are: "",
+                noun: "NaN or infinite",
+                variant: no_variant,
+                summary: rows_summary,
+                headline: non_finite_headline,
+            },
+            Self::Constant => &CheckSpec {
+                check: "Single value",
+                title: "Single value",
+                severity: Severity::Note,
+                rank: 13,
+                advice: &["Tells no rows apart; a stuck feed if it should vary"],
+                grouping: Grouping::All,
+                evidence: Evidence::Rows,
+                rows_are: "",
+                noun: "",
+                variant: no_variant,
+                summary: constant_summary,
+                headline: constant_headline,
+            },
+            Self::ParseableText => &CheckSpec {
+                check: "Numbers as text",
+                title: "Numbers as text",
+                severity: Severity::Note,
+                rank: 12,
+                advice: &["Sorts as text (\"10\" before \"9\"); cast to a number to sum"],
+                grouping: Grouping::Alone,
+                evidence: Evidence::Failures,
+                rows_are: " that do not parse",
+                noun: "",
+                variant: reading_variant,
+                summary: parseable_summary,
+                headline: parseable_headline,
+            },
+            Self::DuplicateRows => &CheckSpec {
+                check: "Duplicate rows",
+                title: "Duplicate rows",
+                severity: Severity::Problem,
+                rank: 2,
+                advice: &["Counted more than once; check for a double load or a join fan-out"],
+                grouping: Grouping::Alone,
+                evidence: Evidence::Duplicates,
+                rows_are: " that have a copy",
+                noun: "",
+                variant: no_variant,
+                summary: duplicates_summary,
+                headline: duplicates_headline,
+            },
+            Self::CategoryVariants => &CheckSpec {
+                check: "Mixed spellings",
+                title: "Mixed spellings",
+                severity: Severity::Problem,
+                rank: 5,
+                advice: &["Group-bys and joins split them; trim and normalize case"],
+                grouping: Grouping::ByColumn,
+                evidence: Evidence::Always,
+                rows_are: "",
+                noun: "",
+                variant: no_variant,
+                summary: variants_summary,
+                headline: variants_headline,
+            },
+            Self::Absent => &CheckSpec {
+                check: "Missing in files",
+                title: "Missing in files",
+                severity: Severity::Problem,
+                rank: 1,
+                advice: &["Check: files written before the column existed"],
+                grouping: Grouping::Alone,
+                evidence: Evidence::Uncounted,
+                rows_are: "",
+                noun: "",
+                variant: no_variant,
+                summary: fact_summary,
+                headline: files_headline,
+            },
+            Self::TypeConflict => &CheckSpec {
+                check: "Type mismatch",
+                title: "Type mismatch",
+                severity: Severity::Problem,
+                rank: 0,
+                advice: &["Values dropped, not converted; read as text in Info, or fix the writer"],
+                grouping: Grouping::Alone,
+                evidence: Evidence::Uncounted,
+                rows_are: "",
+                noun: "",
+                variant: no_variant,
+                summary: fact_summary,
+                headline: files_headline,
+            },
+            Self::KeyLike => &CheckSpec {
+                check: "Nearly unique",
+                title: "Nearly unique",
+                severity: Severity::Note,
+                rank: 11,
+                advice: &["Duplicates if it is a key; expected if it is a measurement"],
+                grouping: Grouping::Alone,
+                evidence: Evidence::SharingValue,
+                rows_are: "",
+                noun: "",
+                variant: no_variant,
+                summary: key_like_summary,
+                headline: key_like_headline,
+            },
+            Self::UnparsedTime => &CheckSpec {
+                check: "Unparsed times",
+                title: "Unparsed times",
+                severity: Severity::Problem,
+                rank: 3,
+                advice: &[
+                    "Left out of time windows and intervals, not counted as missing",
+                    "Check: another format, or values that are not times (Setup, e)",
+                ],
+                grouping: Grouping::Alone,
+                evidence: Evidence::Rows,
+                rows_are: "",
+                noun: "",
+                variant: no_variant,
+                summary: values_summary,
+                headline: unparsed_time_headline,
+            },
+            Self::KeyRepeated => &CheckSpec {
+                check: INTENT_CHECK,
+                title: "Repeated key",
+                severity: Severity::Problem,
+                rank: 2,
+                advice: &[
+                    "A key names one row; joins on it fan out and counts double",
+                    "Check: a double load, or a key that needs another column",
+                ],
+                grouping: Grouping::All,
+                evidence: Evidence::Always,
+                rows_are: "",
+                noun: "",
+                variant: no_variant,
+                summary: key_repeated_summary,
+                headline: key_repeated_headline,
+            },
+            Self::KeyMissing => &CheckSpec {
+                check: INTENT_CHECK,
+                title: "Incomplete key",
+                severity: Severity::Problem,
+                rank: 2,
+                advice: &["Rows with no key cannot be joined or told apart by it"],
+                grouping: Grouping::All,
+                evidence: Evidence::Always,
+                rows_are: "",
+                noun: "",
+                variant: no_variant,
+                summary: rows_summary,
+                headline: key_missing_headline,
+            },
+            Self::RequiredMissing => &CheckSpec {
+                check: INTENT_CHECK,
+                title: "Required, missing",
+                severity: Severity::Problem,
+                rank: 2,
+                advice: &["Check: the load, or rows the source writes without it"],
+                grouping: Grouping::Alone,
+                evidence: Evidence::Rows,
+                rows_are: "",
+                noun: "",
+                variant: no_variant,
+                summary: rows_summary,
+                headline: required_headline,
+            },
+            Self::NotAllowed => &CheckSpec {
+                check: INTENT_CHECK,
+                title: "Not allowed",
+                severity: Severity::Problem,
+                rank: 2,
+                advice: &["Check: a new value upstream, or the allowed list (Setup, e)"],
+                grouping: Grouping::Alone,
+                evidence: Evidence::Rows,
+                rows_are: "",
+                noun: "",
+                variant: no_variant,
+                summary: values_summary,
+                headline: not_allowed_headline,
+            },
+            Self::OutOfRange => &CheckSpec {
+                check: INTENT_CHECK,
+                title: "Out of range",
+                severity: Severity::Problem,
+                rank: 2,
+                advice: &["Check: units, placeholders such as -1 or 9999, or the range (Setup, e)"],
+                grouping: Grouping::Alone,
+                evidence: Evidence::Rows,
+                rows_are: "",
+                noun: "",
+                variant: no_variant,
+                summary: values_summary,
+                headline: out_of_range_headline,
+            },
+            Self::UnparsedNumber => &CheckSpec {
+                check: INTENT_CHECK,
+                title: "Unparsed numbers",
+                severity: Severity::Problem,
+                rank: 2,
+                advice: &["A cast makes them null; check the values or the reading (Setup, e)"],
+                grouping: Grouping::Alone,
+                evidence: Evidence::Rows,
+                rows_are: "",
+                noun: "",
+                variant: no_variant,
+                summary: values_summary,
+                headline: unparsed_number_headline,
+            },
+            Self::Clipping => &CheckSpec {
+                check: "Clipping",
+                title: "Clipping",
+                severity: Severity::Problem,
+                rank: 4,
+                advice: &[
+                    "Cut flat at the limit; lower the gain at the source, nothing restores it",
+                ],
+                grouping: Grouping::Alone,
+                evidence: Evidence::Rows,
+                rows_are: "",
+                noun: "in runs at full scale",
+                variant: no_variant,
+                summary: fact_summary,
+                headline: signal_headline,
+            },
+            Self::ZeroRuns => &CheckSpec {
+                check: "Runs of zeros",
+                title: "Runs of zeros",
+                severity: Severity::Note,
+                rank: 8,
+                advice: &["Dropouts mid-recording; digital silence if at the start or end"],
+                grouping: Grouping::Alone,
+                evidence: Evidence::Rows,
+                rows_are: "",
+                noun: "in runs of exact zeros",
+                variant: no_variant,
+                summary: fact_summary,
+                headline: signal_headline,
+            },
+            Self::DcOffset => &CheckSpec {
+                check: "DC offset",
+                title: "DC offset",
+                severity: Severity::Note,
+                rank: 12,
+                advice: &["A constant bias that eats headroom; a high-pass filter removes it"],
+                grouping: Grouping::Alone,
+                evidence: Evidence::Uncounted,
+                rows_are: "",
+                noun: "",
+                variant: no_variant,
+                summary: fact_summary,
+                headline: dc_offset_headline,
+            },
+        }
+    }
 }
 
 /// How the findings list is narrowed and ordered. Presentation only: it reads the
@@ -424,33 +833,36 @@ pub fn build_report(results: &DataQualityResults) -> QualityReport {
     // Group observations that say the same thing so the list says it once.
     let mut groups = BTreeMap::<(u8, usize, String), Vec<usize>>::new();
     for (index, observation) in results.observations.iter().enumerate() {
-        let always_missing = observation.kind == ObservationKind::Nulls
-            && observation.evaluated_rows > 0
-            && observation.affected_rows == observation.evaluated_rows;
-        let mostly_missing = observation.affected_rows * 2 > observation.evaluated_rows;
-        // Columns missing on the very same rows are one fact about those rows; any
-        // other missing values are one finding, with each column's rate inside it.
-        let same_rows = results.shared_nulls.iter().any(|shared| {
-            shared.same_rows()
-                && shared.columns.len() > 1
-                && shared.null_rows == observation.affected_rows
-                && shared.columns.contains(&observation.column)
-        });
         let kind = observation.kind as u8 + 1;
-        let key = match observation.kind {
-            ObservationKind::Nulls if always_missing => (0, 0, String::new()),
-            ObservationKind::Nulls if mostly_missing => (kind, usize::MAX, "mostly".to_string()),
-            ObservationKind::Nulls if same_rows => (kind, observation.affected_rows, String::new()),
-            ObservationKind::Nulls => (kind, usize::MAX, String::new()),
-            ObservationKind::Empty | ObservationKind::Whitespace => {
-                (kind, observation.affected_rows, String::new())
+        let key = match observation.kind.spec().grouping {
+            Grouping::Missing => {
+                let always_missing = observation.evaluated_rows > 0
+                    && observation.affected_rows == observation.evaluated_rows;
+                let mostly_missing = observation.affected_rows * 2 > observation.evaluated_rows;
+                // Columns missing on the very same rows are one fact about those rows;
+                // any other missing values are one finding, with each column's rate
+                // inside it.
+                let same_rows = results.shared_nulls.iter().any(|shared| {
+                    shared.same_rows()
+                        && shared.columns.len() > 1
+                        && shared.null_rows == observation.affected_rows
+                        && shared.columns.contains(&observation.column)
+                });
+                if always_missing {
+                    (0, 0, String::new())
+                } else if mostly_missing {
+                    (kind, usize::MAX, "mostly".to_string())
+                } else if same_rows {
+                    (kind, observation.affected_rows, String::new())
+                } else {
+                    (kind, usize::MAX, String::new())
+                }
             }
-            ObservationKind::Constant => (kind, 0, String::new()),
-            ObservationKind::CategoryVariants => (kind, 0, observation.column.clone()),
-            // The key is one fact about rows, named once per key column.
-            ObservationKind::KeyRepeated | ObservationKind::KeyMissing => (kind, 0, String::new()),
-            // Everything else stands alone; the index keeps it from merging.
-            _ => (u8::MAX, index, String::new()),
+            Grouping::ByRows => (kind, observation.affected_rows, String::new()),
+            Grouping::All => (kind, 0, String::new()),
+            Grouping::ByColumn => (kind, 0, observation.column.clone()),
+            // The index keeps it from merging.
+            Grouping::Alone => (u8::MAX, index, String::new()),
         };
         groups.entry(key).or_default().push(index);
     }
@@ -503,7 +915,8 @@ pub fn build_report(results: &DataQualityResults) -> QualityReport {
         findings.push(Finding {
             severity: Severity::Clean,
             kind: None,
-            title: "No findings",
+            variant: None,
+            title: NO_FINDINGS,
             summary: format!(
                 "{} {}",
                 numfmt::group_chrome(clean.len()),
@@ -535,46 +948,52 @@ pub fn build_report(results: &DataQualityResults) -> QualityReport {
 
 /// Order within a severity: what costs the most rows of trust first.
 fn rank(finding: &Finding) -> u8 {
-    match finding.kind {
-        Some(ObservationKind::TypeConflict) => 0,
-        Some(ObservationKind::Absent) => 1,
-        // What the study declared comes first: a violation is a fact, not a guess.
-        Some(ObservationKind::KeyRepeated) => 2,
-        Some(ObservationKind::KeyMissing | ObservationKind::RequiredMissing) => 2,
-        Some(ObservationKind::NotAllowed | ObservationKind::OutOfRange) => 2,
-        Some(ObservationKind::UnparsedNumber) => 2,
-        Some(ObservationKind::DuplicateRows) => 2,
-        Some(ObservationKind::UnparsedTime) => 3,
-        Some(ObservationKind::Nulls) if finding.severity == Severity::Problem => 3,
-        Some(ObservationKind::Nulls) if finding.title == "Mostly missing" => 9,
-        Some(ObservationKind::NonFinite) => 4,
-        Some(ObservationKind::Clipping) => 4,
-        Some(ObservationKind::ZeroRuns) => 8,
-        Some(ObservationKind::DcOffset) => 12,
-        Some(ObservationKind::CategoryVariants) => 5,
-        Some(ObservationKind::Whitespace) => 6,
-        Some(ObservationKind::Empty) => 7,
-        Some(ObservationKind::Nulls) => 10,
-        Some(ObservationKind::KeyLike) => 11,
-        Some(ObservationKind::ParseableText) => 12,
-        Some(ObservationKind::Constant) => 13,
-        None => 20,
+    match (finding.variant.and_then(Variant::rank), finding.kind) {
+        (Some(rank), _) => rank,
+        (None, Some(kind)) => kind.spec().rank,
+        (None, None) => 20,
+    }
+}
+
+/// One finding's observations, as [`finding`] reads them.
+struct Group<'a> {
+    results: &'a DataQualityResults,
+    indices: &'a [usize],
+    first: &'a QualityObservation,
+    profile: Option<&'a ColumnQualityProfile>,
+    reading: Option<TextReading>,
+    /// Several columns.
+    grouped: bool,
+    same_rows: bool,
+    variant: Option<Variant>,
+}
+
+impl Group<'_> {
+    /// "1,234 rows (2.0%)", with `each` after the noun.
+    fn rows_each(&self, count: usize, each: &str) -> String {
+        format!(
+            "{} {}{each} ({})",
+            numfmt::group_chrome(count),
+            if count == 1 { "row" } else { "rows" },
+            percent(count, self.first.evaluated_rows)
+        )
+    }
+
+    fn rows(&self) -> String {
+        self.rows_each(self.first.affected_rows, "")
     }
 }
 
 fn finding(results: &DataQualityResults, indices: &[usize]) -> Finding {
     let mut indices = indices.to_vec();
+    let spec = results.observations[indices[0]].kind.spec();
     // Missing values list their columns, and mixed spellings their values, worst
     // first.
-    if matches!(
-        results.observations[indices[0]].kind,
-        ObservationKind::Nulls | ObservationKind::CategoryVariants
-    ) {
+    if matches!(spec.grouping, Grouping::Missing | Grouping::ByColumn) {
         indices.sort_by_key(|index| std::cmp::Reverse(results.observations[*index].affected_rows));
     }
     let indices = indices.as_slice();
     let first = &results.observations[indices[0]];
-    let kind = first.kind;
     let mut columns = Vec::new();
     for index in indices {
         let column = &results.observations[*index].column;
@@ -583,231 +1002,219 @@ fn finding(results: &DataQualityResults, indices: &[usize]) -> Finding {
         }
     }
     let grouped = columns.len() > 1;
-    let always_missing = kind == ObservationKind::Nulls
-        && first.evaluated_rows > 0
-        && first.affected_rows == first.evaluated_rows;
-    let mostly_missing = kind == ObservationKind::Nulls
-        && !always_missing
-        && first.affected_rows * 2 > first.evaluated_rows;
-    let severity = match kind {
-        ObservationKind::Nulls if always_missing => Severity::Problem,
-        ObservationKind::Nulls
-        | ObservationKind::Constant
-        | ObservationKind::ParseableText
-        | ObservationKind::KeyLike
-        | ObservationKind::ZeroRuns
-        | ObservationKind::DcOffset => Severity::Note,
-        ObservationKind::Empty
-        | ObservationKind::Whitespace
-        | ObservationKind::NonFinite
-        | ObservationKind::DuplicateRows
-        | ObservationKind::CategoryVariants
-        | ObservationKind::Absent
-        | ObservationKind::TypeConflict
-        | ObservationKind::UnparsedTime
-        | ObservationKind::KeyRepeated
-        | ObservationKind::KeyMissing
-        | ObservationKind::RequiredMissing
-        | ObservationKind::NotAllowed
-        | ObservationKind::OutOfRange
-        | ObservationKind::UnparsedNumber
-        | ObservationKind::Clipping => Severity::Problem,
-    };
     let profile = results
         .columns
         .iter()
         .find(|profile| profile.name == first.column);
-    let reading = profile.and_then(text_reading).map(|(_, reading)| reading);
     let shared = results.shared_nulls.iter().find(|shared| {
         shared.null_rows == first.affected_rows
             && columns.iter().all(|column| shared.columns.contains(column))
     });
     let same_rows =
-        kind == ObservationKind::Nulls && grouped && shared.is_some_and(|s| s.same_rows());
-    let title = match kind {
-        ObservationKind::Nulls if always_missing => "Always missing",
-        ObservationKind::Nulls if mostly_missing => "Mostly missing",
-        // No row lacks one of these columns without lacking them all.
-        ObservationKind::Nulls if same_rows => "Missing together",
-        ObservationKind::Nulls => "Missing values",
-        ObservationKind::Empty => "Empty text",
-        ObservationKind::Whitespace => "Blank text",
-        ObservationKind::NonFinite => "NaN or infinite",
-        ObservationKind::Constant => "Single value",
-        ObservationKind::ParseableText => match (reading, profile) {
-            (Some(reading), Some(profile)) if reading.is_number() && is_code(profile) => {
-                "Codes as text"
-            }
-            (Some(TextReading::Datetime | TextReading::Date), _) => "Dates as text",
-            _ => "Numbers as text",
-        },
-        ObservationKind::DuplicateRows => "Duplicate rows",
-        ObservationKind::CategoryVariants => "Mixed spellings",
-        ObservationKind::Absent => "Missing in files",
-        ObservationKind::TypeConflict => "Type mismatch",
-        ObservationKind::KeyLike => "Nearly unique",
-        ObservationKind::UnparsedTime => "Unparsed times",
-        ObservationKind::KeyRepeated => "Repeated key",
-        ObservationKind::KeyMissing => "Incomplete key",
-        ObservationKind::RequiredMissing => "Required, missing",
-        ObservationKind::NotAllowed => "Not allowed",
-        ObservationKind::OutOfRange => "Out of range",
-        ObservationKind::UnparsedNumber => "Unparsed numbers",
-        ObservationKind::Clipping => "Clipping",
-        ObservationKind::ZeroRuns => "Runs of zeros",
-        ObservationKind::DcOffset => "DC offset",
+        spec.grouping == Grouping::Missing && grouped && shared.is_some_and(|s| s.same_rows());
+    let mut group = Group {
+        results,
+        indices,
+        first,
+        profile,
+        reading: profile.and_then(text_reading).map(|(_, reading)| reading),
+        grouped,
+        same_rows,
+        variant: None,
     };
-    let affected_rows = match kind {
+    group.variant = (spec.variant)(&group);
+    let affected_rows = match spec.grouping {
         // One group per normalized value; the column's cost is all of them.
-        ObservationKind::CategoryVariants => indices
+        Grouping::ByColumn => indices
             .iter()
             .map(|index| results.observations[*index].affected_rows)
             .sum(),
-        _ => first.affected_rows,
-    };
-    let rows_each = |count: usize, each: &str| {
-        format!(
-            "{} {}{each} ({})",
-            numfmt::group_chrome(count),
-            if count == 1 { "row" } else { "rows" },
-            percent(count, first.evaluated_rows)
-        )
-    };
-    let rows = |count: usize| rows_each(count, "");
-    let summary = match kind {
-        ObservationKind::Nulls if always_missing => "no value in any row".to_string(),
-        ObservationKind::Nulls if same_rows => rows(first.affected_rows),
-        ObservationKind::Nulls if grouped => {
-            let fewest = results.observations[indices[indices.len() - 1]].affected_rows;
-            let (low, high) = (
-                percent(fewest, first.evaluated_rows),
-                percent(first.affected_rows, first.evaluated_rows),
-            );
-            if low == high {
-                rows_each(first.affected_rows, " each")
-            } else {
-                format!("{low} to {high} per column")
-            }
+        Grouping::Alone | Grouping::All | Grouping::ByRows | Grouping::Missing => {
+            first.affected_rows
         }
-        ObservationKind::Nulls | ObservationKind::Empty | ObservationKind::Whitespace
-            if grouped =>
-        {
-            rows_each(first.affected_rows, " each")
-        }
-        ObservationKind::Nulls
-        | ObservationKind::Empty
-        | ObservationKind::Whitespace
-        | ObservationKind::NonFinite => rows(first.affected_rows),
-        ObservationKind::UnparsedTime => format!(
-            "{} {} ({})",
-            numfmt::group_chrome(first.affected_rows),
-            if first.affected_rows == 1 {
-                "value"
-            } else {
-                "values"
-            },
-            percent(first.affected_rows, first.evaluated_rows)
-        ),
-        ObservationKind::Constant if grouped => "one value each".to_string(),
-        ObservationKind::Constant => profile
-            .and_then(|profile| profile.dominant_value.as_ref())
-            .map(|value| format!("always {}", quoted(value, 24)))
-            .unwrap_or_else(|| "one value".to_string()),
-        ObservationKind::ParseableText => match (reading, profile) {
-            (Some(_), Some(profile)) if is_code(profile) => code_shape(profile),
-            (Some(reading), Some(profile)) => format!(
-                "{} parse as {}",
-                percent(first.affected_rows, profile.non_null_rows()),
-                reading.label()
-            ),
-            _ => first.fact.clone(),
-        },
-        ObservationKind::DuplicateRows => match results.identity.as_ref() {
-            Some(identity) => format!(
-                "{} extra {}",
-                numfmt::group_chrome(identity.extra_rows),
-                if identity.extra_rows == 1 {
-                    "copy"
-                } else {
-                    "copies"
-                }
-            ),
-            None => first.fact.clone(),
-        },
-        ObservationKind::CategoryVariants => {
-            let example = results
-                .category_variants
-                .iter()
-                .find(|group| Some(&group.normalized) == first.normalized_category.as_ref())
-                .map(|group| {
-                    group
-                        .variants
-                        .iter()
-                        .take(2)
-                        .map(|(value, _)| quoted(value, 24))
-                        .collect::<Vec<_>>()
-                        .join(" vs ")
-                })
-                .unwrap_or_default();
-            // Several values: the count is the finding, and the detail lists them.
-            if indices.len() == 1 {
-                example
-            } else {
-                format!("{} values spelled more than one way", indices.len())
-            }
-        }
-        ObservationKind::KeyLike => {
-            let unique = profile
-                .and_then(ColumnQualityProfile::uniqueness_rate)
-                .map(|rate| format!(" ({:.1}% unique)", rate * 100.0))
-                .unwrap_or_default();
-            format!(
-                "{} repeated{unique}",
-                numfmt::group_chrome(first.affected_rows)
-            )
-        }
-        ObservationKind::Absent | ObservationKind::TypeConflict => first.fact.clone(),
-        // An audio measurement says its runs or its mean itself; across channels, the
-        // worst channel's.
-        ObservationKind::Clipping | ObservationKind::ZeroRuns | ObservationKind::DcOffset => {
-            first.fact.clone()
-        }
-        ObservationKind::KeyRepeated => {
-            match results.intent.as_ref().and_then(|i| i.key.as_ref()) {
-                Some(key) => format!(
-                    "{} {} repeat; {} extra {}",
-                    numfmt::group_chrome(key.groups),
-                    if key.groups == 1 { "value" } else { "values" },
-                    numfmt::group_chrome(key.extra_rows),
-                    if key.extra_rows == 1 { "row" } else { "rows" }
-                ),
-                None => first.fact.clone(),
-            }
-        }
-        ObservationKind::KeyMissing | ObservationKind::RequiredMissing => rows(first.affected_rows),
-        ObservationKind::NotAllowed
-        | ObservationKind::OutOfRange
-        | ObservationKind::UnparsedNumber => format!(
-            "{} {} ({})",
-            numfmt::group_chrome(first.affected_rows),
-            if first.affected_rows == 1 {
-                "value"
-            } else {
-                "values"
-            },
-            percent(first.affected_rows, first.evaluated_rows)
-        ),
     };
     Finding {
-        severity,
-        kind: Some(kind),
-        title,
+        severity: group
+            .variant
+            .and_then(Variant::severity)
+            .unwrap_or(spec.severity),
+        kind: Some(first.kind),
+        variant: group.variant,
+        title: group.variant.map_or(spec.title, Variant::title),
         columns,
         observations: indices.to_vec(),
         affected_rows,
         evaluated_rows: first.evaluated_rows,
-        summary,
+        summary: (spec.summary)(&group),
         same_rows,
+    }
+}
+
+fn no_variant(_: &Group<'_>) -> Option<Variant> {
+    None
+}
+
+fn missing_variant(group: &Group<'_>) -> Option<Variant> {
+    let first = group.first;
+    if first.evaluated_rows > 0 && first.affected_rows == first.evaluated_rows {
+        Some(Variant::AlwaysMissing)
+    } else if first.affected_rows * 2 > first.evaluated_rows {
+        Some(Variant::MostlyMissing)
+    } else if group.same_rows {
+        Some(Variant::MissingTogether)
+    } else {
+        None
+    }
+}
+
+fn reading_variant(group: &Group<'_>) -> Option<Variant> {
+    match (group.reading, group.profile) {
+        (Some(reading), Some(profile)) if reading.is_number() && is_code(profile) => {
+            Some(Variant::CodesAsText)
+        }
+        (Some(TextReading::Datetime | TextReading::Date), _) => Some(Variant::DatesAsText),
+        (Some(TextReading::WholeNumber | TextReading::Decimal) | None, _) => None,
+    }
+}
+
+fn nulls_summary(group: &Group<'_>) -> String {
+    let first = group.first;
+    if group.variant == Some(Variant::AlwaysMissing) {
+        "no value in any row".to_string()
+    } else if group.same_rows {
+        group.rows()
+    } else if group.grouped {
+        let fewest =
+            group.results.observations[group.indices[group.indices.len() - 1]].affected_rows;
+        let (low, high) = (
+            percent(fewest, first.evaluated_rows),
+            percent(first.affected_rows, first.evaluated_rows),
+        );
+        if low == high {
+            group.rows_each(first.affected_rows, " each")
+        } else {
+            format!("{low} to {high} per column")
+        }
+    } else {
+        group.rows()
+    }
+}
+
+fn rows_each_summary(group: &Group<'_>) -> String {
+    if group.grouped {
+        group.rows_each(group.first.affected_rows, " each")
+    } else {
+        group.rows()
+    }
+}
+
+fn rows_summary(group: &Group<'_>) -> String {
+    group.rows()
+}
+
+/// "12 values (0.4%)".
+fn values_summary(group: &Group<'_>) -> String {
+    let first = group.first;
+    format!(
+        "{} {} ({})",
+        numfmt::group_chrome(first.affected_rows),
+        if first.affected_rows == 1 {
+            "value"
+        } else {
+            "values"
+        },
+        percent(first.affected_rows, first.evaluated_rows)
+    )
+}
+
+/// What only the engine can say: the files, or a channel's runs or mean. Across
+/// channels, the worst channel's.
+fn fact_summary(group: &Group<'_>) -> String {
+    group.first.fact.clone()
+}
+
+fn constant_summary(group: &Group<'_>) -> String {
+    if group.grouped {
+        return "one value each".to_string();
+    }
+    group
+        .profile
+        .and_then(|profile| profile.dominant_value.as_ref())
+        .map(|value| format!("always {}", quoted(value, 24)))
+        .unwrap_or_else(|| "one value".to_string())
+}
+
+fn parseable_summary(group: &Group<'_>) -> String {
+    match (group.reading, group.profile) {
+        (Some(_), Some(profile)) if is_code(profile) => code_shape(profile),
+        (Some(reading), Some(profile)) => format!(
+            "{} parse as {}",
+            percent(group.first.affected_rows, profile.non_null_rows()),
+            reading.label()
+        ),
+        (None, _) | (_, None) => group.rows(),
+    }
+}
+
+fn duplicates_summary(group: &Group<'_>) -> String {
+    match group.results.identity.as_ref() {
+        Some(identity) => format!(
+            "{} extra {}",
+            numfmt::group_chrome(identity.extra_rows),
+            if identity.extra_rows == 1 {
+                "copy"
+            } else {
+                "copies"
+            }
+        ),
+        None => group.rows(),
+    }
+}
+
+fn variants_summary(group: &Group<'_>) -> String {
+    // Several values: the count is the finding, and the detail lists them.
+    if group.indices.len() > 1 {
+        return format!("{} values spelled more than one way", group.indices.len());
+    }
+    group
+        .results
+        .category_variants
+        .iter()
+        .find(|variants| Some(&variants.normalized) == group.first.normalized_category.as_ref())
+        .map(|variants| {
+            variants
+                .variants
+                .iter()
+                .take(2)
+                .map(|(value, _)| quoted(value, 24))
+                .collect::<Vec<_>>()
+                .join(" vs ")
+        })
+        .unwrap_or_default()
+}
+
+fn key_like_summary(group: &Group<'_>) -> String {
+    let unique = group
+        .profile
+        .and_then(ColumnQualityProfile::uniqueness_rate)
+        .map(|rate| format!(" ({:.1}% unique)", rate * 100.0))
+        .unwrap_or_default();
+    format!(
+        "{} repeated{unique}",
+        numfmt::group_chrome(group.first.affected_rows)
+    )
+}
+
+fn key_repeated_summary(group: &Group<'_>) -> String {
+    match group.results.intent.as_ref().and_then(|i| i.key.as_ref()) {
+        Some(key) => format!(
+            "{} {} repeat; {} extra {}",
+            numfmt::group_chrome(key.groups),
+            if key.groups == 1 { "value" } else { "values" },
+            numfmt::group_chrome(key.extra_rows),
+            if key.extra_rows == 1 { "row" } else { "rows" }
+        ),
+        None => group.rows(),
     }
 }
 
@@ -948,9 +1355,9 @@ pub fn checks(results: &DataQualityResults, report: &QualityReport) -> Vec<Check
         }
     };
     let values_read = !report.metadata_only;
-    // Columns behind the findings a check produces, by the findings' titles.
-    // Nothing to look at is known from the schema, whatever the run read.
-    let outcome = |titles: &[&str], applies: usize, none: &'static str| {
+    // Columns behind the findings a check makes. Nothing to look at is known from
+    // the schema, whatever the run read.
+    let outcome = |check: &str, applies: usize, none: &'static str| {
         if applies == 0 {
             return Outcome::Skipped(none);
         }
@@ -960,11 +1367,11 @@ pub fn checks(results: &DataQualityResults, report: &QualityReport) -> Vec<Check
         if report.no_rows {
             return Outcome::Unavailable(NO_ROWS);
         }
-        found(report, titles)
+        found(report, check)
     };
     let files = results.source_files.filter(|files| *files > 1);
-    let by_files = |titles: &[&str]| match files {
-        Some(_) => found(report, titles),
+    let by_files = |check: &str| match files {
+        Some(_) => found(report, check),
         None => Outcome::Skipped("needs several files"),
     };
     // A dataset too large to read every footer is checked over the footers read.
@@ -990,7 +1397,7 @@ pub fn checks(results: &DataQualityResults, report: &QualityReport) -> Vec<Check
             } else if report.no_rows {
                 Outcome::Unavailable(NO_ROWS)
             } else {
-                found(report, &INTENT_TITLES)
+                found(report, INTENT_CHECK)
             },
             basis: intent.precision,
         });
@@ -1000,23 +1407,14 @@ pub fn checks(results: &DataQualityResults, report: &QualityReport) -> Vec<Check
             name: "Missing values",
             looks_for: "nulls in any column",
             applies_to: reach(all, ""),
-            outcome: outcome(
-                &[
-                    "Missing values",
-                    "Missing together",
-                    "Mostly missing",
-                    "Always missing",
-                ],
-                all,
-                "no columns",
-            ),
+            outcome: outcome("Missing values", all, "no columns"),
             basis: values,
         },
         Check {
             name: "NaN or infinite",
             looks_for: "NaN or +/-infinity in float columns",
             applies_to: reach(floats, "float"),
-            outcome: outcome(&["NaN or infinite"], floats, "no float columns"),
+            outcome: outcome("NaN or infinite", floats, "no float columns"),
             basis: values,
         },
         Check {
@@ -1039,39 +1437,35 @@ pub fn checks(results: &DataQualityResults, report: &QualityReport) -> Vec<Check
             name: "Blank text",
             looks_for: "text that is empty or only whitespace",
             applies_to: reach(texts, "text"),
-            outcome: outcome(&["Blank text", "Empty text"], texts, "no text columns"),
+            outcome: outcome("Blank text", texts, "no text columns"),
             basis: values,
         },
         Check {
             name: "Mixed spellings",
             looks_for: "one value in several cases or spacings",
             applies_to: reach(texts, "text"),
-            outcome: outcome(&["Mixed spellings"], texts, "no text columns"),
+            outcome: outcome("Mixed spellings", texts, "no text columns"),
             basis: values,
         },
         Check {
             name: "Type mismatch",
             looks_for: "a column typed differently by some files",
             applies_to: files_reach.clone(),
-            outcome: by_files(&["Type mismatch"]),
+            outcome: by_files("Type mismatch"),
             basis: QualityPrecision::Metadata,
         },
         Check {
             name: "Missing in files",
             looks_for: "a column some files do not have",
             applies_to: files_reach,
-            outcome: by_files(&["Missing in files"]),
+            outcome: by_files("Missing in files"),
             basis: QualityPrecision::Metadata,
         },
         Check {
             name: "Numbers as text",
             looks_for: "text that reads as numbers or dates",
             applies_to: reach(texts, "text"),
-            outcome: outcome(
-                &["Numbers as text", "Dates as text", "Codes as text"],
-                texts,
-                "no text columns",
-            ),
+            outcome: outcome("Numbers as text", texts, "no text columns"),
             basis: values,
         },
         Check {
@@ -1081,7 +1475,7 @@ pub fn checks(results: &DataQualityResults, report: &QualityReport) -> Vec<Check
             outcome: if keys > 0 && values_read && results.precision != QualityPrecision::Exact {
                 Outcome::Unavailable("needs every row checked")
             } else {
-                match outcome(&["Nearly unique"], keys, "no integer or text columns") {
+                match outcome("Nearly unique", keys, "no integer or text columns") {
                     // A declared key's repeats replace the note on that column; the
                     // check found them all the same.
                     Outcome::Passed if declared_key_repeats(results) => Outcome::Found {
@@ -1097,7 +1491,7 @@ pub fn checks(results: &DataQualityResults, report: &QualityReport) -> Vec<Check
             name: "Single value",
             looks_for: "a column with one value throughout",
             applies_to: reach(all, ""),
-            outcome: outcome(&["Single value"], all, "no columns"),
+            outcome: outcome("Single value", all, "no columns"),
             basis: values,
         },
     ]);
@@ -1117,23 +1511,14 @@ fn declared_key_repeats(results: &DataQualityResults) -> bool {
 /// The check the declared intent makes, by the name the Checks list gives it.
 pub const INTENT_CHECK: &str = "Column intent";
 
-/// The findings the declared intent makes.
-pub const INTENT_TITLES: [&str; 6] = [
-    "Repeated key",
-    "Incomplete key",
-    "Required, missing",
-    "Not allowed",
-    "Out of range",
-    "Unparsed numbers",
-];
-
-fn found(report: &QualityReport, titles: &[&str]) -> Outcome {
+/// What the findings `check` makes found: how many columns, at their worst severity.
+fn found(report: &QualityReport, check: &str) -> Outcome {
     let mut columns = Vec::new();
     let mut tier = Severity::Note;
     for finding in report
         .findings
         .iter()
-        .filter(|finding| finding.kind.is_some() && titles.contains(&finding.title))
+        .filter(|finding| finding.check() == Some(check))
     {
         tier = tier.min(finding.severity);
         for column in &finding.columns {
@@ -1352,119 +1737,72 @@ pub fn coverage(
 }
 
 /// What a finding means for the data and what to do about it, a fragment a line.
-/// The reader knows what a null is; this says only what is particular.
 pub fn advice(finding: &Finding) -> Vec<String> {
-    let lines: &[&str] = match (finding.kind, finding.title) {
-        (Some(ObservationKind::Nulls), "Always missing") => {
-            &["Carries nothing; check the load or a rename upstream"]
-        }
-        (Some(ObservationKind::Nulls), "Mostly missing") => {
-            let rest = finding.evaluated_rows.saturating_sub(finding.affected_rows);
-            return vec![
-                if finding.columns.len() == 1 {
-                    format!(
-                        "Aggregates and joins see only {}",
-                        percent(rest, finding.evaluated_rows)
-                    )
-                } else {
-                    "Aggregates and joins see only the filled rows".to_string()
-                },
-                "Check: filled only for some rows, or stopped at some point".to_string(),
-            ];
-        }
-        (Some(ObservationKind::Nulls), "Missing together") => {
-            &["Likely one cause: a join with no match, or a source with gaps"]
-        }
-        (Some(ObservationKind::Nulls), _) => {
-            &["Check: clustered in some files or dates (Segments, by file or window)"]
-        }
-        (Some(ObservationKind::Empty), _) => {
-            &["Counted as filled; treat as null if it means missing"]
-        }
-        (Some(ObservationKind::Whitespace), _) => {
-            &["Counted as filled; trim to null if it means missing"]
-        }
-        (Some(ObservationKind::NonFinite), _) => {
-            &["Sums and means become NaN; check for division by zero upstream"]
-        }
-        (Some(ObservationKind::Constant), _) => {
-            &["Tells no rows apart; a stuck feed if it should vary"]
-        }
-        (Some(ObservationKind::ParseableText), "Codes as text") => {
-            &["Fine as text; cast only for arithmetic"]
-        }
-        (Some(ObservationKind::ParseableText), "Dates as text") => {
-            &["Sorts as text; parse as a date to filter by range"]
-        }
-        (Some(ObservationKind::ParseableText), _) => {
-            &["Sorts as text (\"10\" before \"9\"); cast to a number to sum"]
-        }
-        (Some(ObservationKind::DuplicateRows), _) => {
-            &["Counted more than once; check for a double load or a join fan-out"]
-        }
-        (Some(ObservationKind::CategoryVariants), _) => {
-            &["Group-bys and joins split them; trim and normalize case"]
-        }
-        (Some(ObservationKind::Absent), _) => &["Check: files written before the column existed"],
-        (Some(ObservationKind::TypeConflict), _) => {
-            &["Values dropped, not converted; read as text in Info, or fix the writer"]
-        }
-        (Some(ObservationKind::KeyLike), _) => {
-            &["Duplicates if it is a key; expected if it is a measurement"]
-        }
-        (Some(ObservationKind::UnparsedTime), _) => &[
-            "Left out of time windows and intervals, not counted as missing",
-            "Check: another format, or values that are not times (Setup, e)",
-        ],
-        (Some(ObservationKind::KeyRepeated), _) => &[
-            "A key names one row; joins on it fan out and counts double",
-            "Check: a double load, or a key that needs another column",
-        ],
-        (Some(ObservationKind::KeyMissing), _) => {
-            &["Rows with no key cannot be joined or told apart by it"]
-        }
-        (Some(ObservationKind::RequiredMissing), _) => {
-            &["Check: the load, or rows the source writes without it"]
-        }
-        (Some(ObservationKind::NotAllowed), _) => {
-            &["Check: a new value upstream, or the allowed list (Setup, e)"]
-        }
-        (Some(ObservationKind::OutOfRange), _) => {
-            &["Check: units, placeholders such as -1 or 9999, or the range (Setup, e)"]
-        }
-        (Some(ObservationKind::UnparsedNumber), _) => {
-            &["A cast makes them null; check the values or the reading (Setup, e)"]
-        }
-        (Some(ObservationKind::Clipping), _) => {
-            &["Cut flat at the limit; lower the gain at the source, nothing restores it"]
-        }
-        (Some(ObservationKind::ZeroRuns), _) => {
-            &["Dropouts mid-recording; digital silence if at the start or end"]
-        }
-        (Some(ObservationKind::DcOffset), _) => {
-            &["A constant bias that eats headroom; a high-pass filter removes it"]
-        }
-        (None, _) => &[],
+    let Some(kind) = finding.kind else {
+        return Vec::new();
     };
-    lines.iter().map(|line| line.to_string()).collect()
+    if finding.variant == Some(Variant::MostlyMissing) {
+        let rest = finding.evaluated_rows.saturating_sub(finding.affected_rows);
+        return vec![
+            if finding.columns.len() == 1 {
+                format!(
+                    "Aggregates and joins see only {}",
+                    percent(rest, finding.evaluated_rows)
+                )
+            } else {
+                "Aggregates and joins see only the filled rows".to_string()
+            },
+            "Check: filled only for some rows, or stopped at some point".to_string(),
+        ];
+    }
+    finding
+        .variant
+        .and_then(Variant::advice)
+        .unwrap_or(kind.spec().advice)
+        .iter()
+        .map(|line| line.to_string())
+        .collect()
+}
+
+/// A finding as its detail reads it.
+struct Detail<'a> {
+    finding: &'a Finding,
+    results: &'a DataQualityResults,
+    /// "1,234 of 61,700 rows (2.0%)".
+    of: String,
+}
+
+impl Detail<'_> {
+    fn profile(&self, name: &str) -> Option<&ColumnQualityProfile> {
+        self.results
+            .columns
+            .iter()
+            .find(|profile| profile.name == name)
+    }
+
+    fn observation(&self, index: usize) -> &QualityObservation {
+        &self.results.observations[index]
+    }
+
+    /// "1,234 of 61,700 values (2.0%) {what}".
+    fn values(&self, what: &str) -> String {
+        let finding = self.finding;
+        format!(
+            "{} of {} values ({}) {what}",
+            numfmt::group_chrome(finding.affected_rows),
+            numfmt::group_chrome(finding.evaluated_rows),
+            percent(finding.affected_rows, finding.evaluated_rows)
+        )
+    }
 }
 
 /// The finding's numbers in a fragment, then the evidence that makes it concrete:
 /// the values, the spellings, the files.
 pub fn describe(finding: &Finding, results: &DataQualityResults) -> (String, Vec<String>) {
-    let count = |value: usize| numfmt::group_chrome(value);
-    let of = format!(
-        "{} of {} rows ({})",
-        count(finding.affected_rows),
-        count(finding.evaluated_rows),
-        percent(finding.affected_rows, finding.evaluated_rows)
-    );
-    let profile = |name: &str| results.columns.iter().find(|profile| profile.name == name);
-    let observation = |index: &usize| &results.observations[*index];
-    let grouped = finding.columns.len() > 1;
+    let count = numfmt::group_chrome;
     let mut evidence = Vec::new();
-    let headline = match finding.kind {
-        None => format!(
+    let Some(kind) = finding.kind else {
+        let headline = format!(
             "{} {} passed every check",
             count(finding.columns.len()),
             if finding.columns.len() == 1 {
@@ -1472,288 +1810,313 @@ pub fn describe(finding: &Finding, results: &DataQualityResults) -> (String, Vec
             } else {
                 "columns"
             }
-        ),
-        Some(ObservationKind::Nulls) if finding.severity == Severity::Problem => {
-            format!("Null in all {} rows checked", count(finding.evaluated_rows))
-        }
-        Some(ObservationKind::Nulls) if finding.same_rows => {
-            if finding.columns.len() == 2 {
-                evidence.push("No row misses one without the other".to_string());
-                format!("{of} null in both columns")
-            } else {
-                evidence.push("No row misses one of them without the others".to_string());
-                format!("{of} null in all {} columns", finding.columns.len())
-            }
-        }
-        Some(ObservationKind::Nulls) if finding.varied() => {
-            // Each column's own rate, worst first: the list row gave only the range.
-            evidence.extend(finding.breakdown(results));
-            format!("Null rate in {} columns:", finding.columns.len())
-        }
-        Some(ObservationKind::Nulls | ObservationKind::Empty | ObservationKind::Whitespace)
-            if finding.lists_columns() =>
-        {
-            evidence.extend(finding.breakdown(results));
-            let what = match finding.kind {
-                Some(ObservationKind::Nulls) => "null",
-                Some(ObservationKind::Empty) => "empty strings",
-                _ => "only spaces or tabs",
-            };
-            format!("{of} {what} in each column:")
-        }
-        Some(ObservationKind::Nulls) => format!("{of} null"),
-        Some(ObservationKind::Empty) => format!("{of} empty strings"),
-        Some(ObservationKind::Whitespace) => format!("{of} only spaces or tabs"),
-        Some(ObservationKind::NonFinite) => {
-            if let Some(profile) = profile(&finding.columns[0]) {
-                evidence.push(format!(
-                    "NaN {}, +inf {}, -inf {}",
-                    count(profile.nan_count.unwrap_or(0)),
-                    count(profile.positive_infinity_count.unwrap_or(0)),
-                    count(profile.negative_infinity_count.unwrap_or(0))
-                ));
-            }
-            format!("{of} NaN or infinite")
-        }
-        Some(ObservationKind::Constant) if grouped => {
-            for column in &finding.columns {
-                if let Some(value) = profile(column).and_then(|p| p.dominant_value.as_ref()) {
-                    evidence.push(format!("{column}: always {}", quoted(value, 40)));
-                }
-            }
-            format!(
-                "One value per column in {} rows",
-                count(finding.evaluated_rows)
-            )
-        }
-        Some(ObservationKind::Constant) => {
-            match profile(&finding.columns[0]).and_then(|p| p.dominant_value.as_ref()) {
-                Some(value) => format!(
-                    "Always {} in {} rows",
-                    quoted(value, 40),
-                    count(finding.evaluated_rows)
-                ),
-                None => format!("One value in {} rows", count(finding.evaluated_rows)),
-            }
-        }
-        Some(ObservationKind::ParseableText) => {
-            let column = &finding.columns[0];
-            let profile = profile(column);
-            let reading = profile.and_then(text_reading);
-            if let (Some(profile), Some((parsed, reading))) = (profile, reading) {
-                if let (Some(min), Some(max)) = (profile.min_length, profile.max_length) {
-                    evidence.push(if min == max {
-                        format!("{min} characters each")
-                    } else {
-                        format!("{min} to {max} characters")
-                    });
-                }
-                if let Some(zeros) = profile.leading_zero_count.filter(|zeros| *zeros > 0) {
-                    evidence.push(format!("{} with a leading zero", count(zeros)));
-                }
-                if let (Some(min), Some(max)) = (&profile.min, &profile.max) {
-                    evidence.push(format!("From {} to {}", quoted(min, 24), quoted(max, 24)));
-                }
-                let failed = profile.non_null_rows().saturating_sub(parsed);
-                if failed > 0 {
-                    let examples = results.examples_of(ObservationKind::ParseableText, column);
-                    evidence.push(if examples.is_empty() {
-                        format!("{} do not parse", count(failed))
-                    } else {
-                        cut(
-                            &format!(
-                                "{} do not parse, such as {}",
-                                count(failed),
-                                examples.join(", ")
-                            ),
-                            EXAMPLE_WIDTH,
-                        )
-                    });
-                }
-                format!(
-                    "{} of {} values ({}) parse as {}",
-                    count(parsed),
-                    count(profile.non_null_rows()),
-                    percent(parsed, profile.non_null_rows()),
-                    reading.label()
-                )
-            } else {
-                observation(&finding.observations[0]).fact.clone()
-            }
-        }
-        Some(ObservationKind::DuplicateRows) => match results.identity.as_ref() {
-            Some(identity) => {
-                evidence.push(format!(
-                    "{} of {} rows ({}) have a copy",
-                    count(identity.rows_involved),
-                    count(identity.evaluated_rows),
-                    percent(identity.rows_involved, identity.evaluated_rows)
-                ));
-                if !identity.examples.is_empty() {
-                    evidence.push("Most copied:".to_string());
-                }
-                for example in &identity.examples {
-                    evidence.push(cut(
-                        &format!(
-                            "{}{}  {}",
-                            crate::glyphs::get().times,
-                            example.copies,
-                            example.values.join(", ")
-                        ),
-                        EXAMPLE_WIDTH,
-                    ));
-                }
-                format!(
-                    "{} rows repeated; {} extra {}",
-                    count(identity.duplicate_groups),
-                    count(identity.extra_rows),
-                    if identity.extra_rows == 1 {
-                        "copy"
-                    } else {
-                        "copies"
-                    }
-                )
-            }
-            None => observation(&finding.observations[0]).fact.clone(),
-        },
-        Some(ObservationKind::CategoryVariants) => {
-            for index in &finding.observations {
-                let normalized = observation(index).normalized_category.as_ref();
-                let Some(group) = results
-                    .category_variants
-                    .iter()
-                    .find(|group| Some(&group.normalized) == normalized)
-                else {
-                    continue;
-                };
-                let mut variants = group.variants.iter().collect::<Vec<_>>();
-                variants.sort_by_key(|(_, rows)| std::cmp::Reverse(*rows));
-                evidence.push(
-                    variants
-                        .into_iter()
-                        .take(4)
-                        .map(|(value, rows)| format!("{} ({})", quoted(value, 28), count(*rows)))
-                        .collect::<Vec<_>>()
-                        .join("  "),
-                );
-            }
-            let values = finding.observations.len();
-            format!(
-                "{} {} spelled more than one way, {of}",
-                count(values),
-                if values == 1 { "value" } else { "values" }
-            )
-        }
-        Some(ObservationKind::KeyLike) => {
-            let column = &finding.columns[0];
-            if let Some(profile) = profile(column) {
-                if let (Some(value), Some(times)) =
-                    (&profile.dominant_value, profile.dominant_count)
-                {
-                    evidence.push(format!(
-                        "Most repeated: {} ({} times)",
-                        quoted(value, 32),
-                        count(times)
-                    ));
-                }
-                format!(
-                    "{} distinct in {} rows; {} repeats",
-                    count(profile.distinct_count.unwrap_or(0)),
-                    count(profile.non_null_rows()),
-                    count(finding.affected_rows)
-                )
-            } else {
-                observation(&finding.observations[0]).fact.clone()
-            }
-        }
-        Some(ObservationKind::UnparsedTime) => {
-            let observation = observation(&finding.observations[0]);
-            if let Some(format) = &observation.time_format {
-                evidence.push(format!("Read as {} for this study only", format.label()));
-            }
-            let examples = results.examples_of(ObservationKind::UnparsedTime, &observation.column);
-            if !examples.is_empty() {
-                evidence.push(cut(
-                    &format!("Such as {}", examples.join(", ")),
-                    EXAMPLE_WIDTH,
-                ));
-            }
-            format!(
-                "{} of {} values ({}) do not parse",
-                count(finding.affected_rows),
-                count(finding.evaluated_rows),
-                percent(finding.affected_rows, finding.evaluated_rows)
-            )
-        }
-        Some(
-            kind @ (ObservationKind::KeyRepeated
-            | ObservationKind::KeyMissing
-            | ObservationKind::RequiredMissing
-            | ObservationKind::NotAllowed
-            | ObservationKind::OutOfRange
-            | ObservationKind::UnparsedNumber),
-        ) => describe_intent(kind, finding, results, &mut evidence),
-        Some(
-            kind @ (ObservationKind::Clipping
-            | ObservationKind::ZeroRuns
-            | ObservationKind::DcOffset),
-        ) => {
-            for index in &finding.observations {
-                let observation = observation(index);
-                evidence.push(format!("{}: {}", observation.column, observation.fact));
-            }
-            match kind {
-                ObservationKind::Clipping => format!("{of} in runs at full scale"),
-                ObservationKind::ZeroRuns => format!("{of} in runs of exact zeros"),
-                _ => "Mean away from zero".to_string(),
-            }
-        }
-        Some(ObservationKind::Absent | ObservationKind::TypeConflict) => {
-            let observation = observation(&finding.observations[0]);
-            // Read from the footers, so the denominator is the whole loaded source
-            // whatever the plan's scope was.
-            evidence.push(format!(
-                "{} of {} rows of the loaded source ({})",
-                count(finding.affected_rows),
-                count(finding.evaluated_rows),
-                percent(finding.affected_rows, finding.evaluated_rows)
-            ));
-            for file in observation.files.iter().take(4) {
-                let stored = file
-                    .stored_type
-                    .as_ref()
-                    .map(|dtype| format!(" as {dtype}"))
-                    .unwrap_or_default();
-                let examples = if file.examples.is_empty() {
-                    String::new()
-                } else {
-                    format!(
-                        ": {}",
-                        file.examples
-                            .iter()
-                            .map(|value| quoted(value, 20))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )
-                };
-                evidence.push(format!(
-                    "#{} {} ({} rows){stored}{examples}",
-                    file.number,
-                    file.name,
-                    count(file.rows)
-                ));
-            }
-            if observation.files.len() > 4 {
-                evidence.push(format!(
-                    "{} more {}",
-                    observation.files.len() - 4,
-                    crate::glyphs::get().ellipsis
-                ));
-            }
-            upper_first(&observation.fact)
-        }
+        );
+        return (headline, evidence);
     };
+    let detail = Detail {
+        finding,
+        results,
+        of: format!(
+            "{} of {} rows ({})",
+            count(finding.affected_rows),
+            count(finding.evaluated_rows),
+            percent(finding.affected_rows, finding.evaluated_rows)
+        ),
+    };
+    let headline = (kind.spec().headline)(&detail, &mut evidence);
     (headline, evidence)
+}
+
+fn nulls_headline(detail: &Detail<'_>, evidence: &mut Vec<String>) -> String {
+    let (finding, of) = (detail.finding, &detail.of);
+    if finding.severity == Severity::Problem {
+        format!(
+            "Null in all {} rows checked",
+            numfmt::group_chrome(finding.evaluated_rows)
+        )
+    } else if finding.same_rows {
+        if finding.columns.len() == 2 {
+            evidence.push("No row misses one without the other".to_string());
+            format!("{of} null in both columns")
+        } else {
+            evidence.push("No row misses one of them without the others".to_string());
+            format!("{of} null in all {} columns", finding.columns.len())
+        }
+    } else if finding.varied() {
+        // Each column's own rate, worst first: the list row gave only the range.
+        evidence.extend(finding.breakdown(detail.results));
+        format!("Null rate in {} columns:", finding.columns.len())
+    } else {
+        per_column_headline(detail, evidence)
+    }
+}
+
+/// "{of} {noun}", or the same of each column, one a line, when several columns are
+/// grouped by what they miss.
+fn per_column_headline(detail: &Detail<'_>, evidence: &mut Vec<String>) -> String {
+    let (finding, of) = (detail.finding, &detail.of);
+    let noun = finding.kind.map_or("", |kind| kind.spec().noun);
+    if finding.lists_columns() {
+        evidence.extend(finding.breakdown(detail.results));
+        format!("{of} {noun} in each column:")
+    } else {
+        format!("{of} {noun}")
+    }
+}
+
+fn non_finite_headline(detail: &Detail<'_>, evidence: &mut Vec<String>) -> String {
+    let count = numfmt::group_chrome;
+    if let Some(profile) = detail.profile(&detail.finding.columns[0]) {
+        evidence.push(format!(
+            "NaN {}, +inf {}, -inf {}",
+            count(profile.nan_count.unwrap_or(0)),
+            count(profile.positive_infinity_count.unwrap_or(0)),
+            count(profile.negative_infinity_count.unwrap_or(0))
+        ));
+    }
+    format!("{} NaN or infinite", detail.of)
+}
+
+fn constant_headline(detail: &Detail<'_>, evidence: &mut Vec<String>) -> String {
+    let finding = detail.finding;
+    let rows = numfmt::group_chrome(finding.evaluated_rows);
+    if finding.columns.len() > 1 {
+        for column in &finding.columns {
+            if let Some(value) = detail
+                .profile(column)
+                .and_then(|p| p.dominant_value.as_ref())
+            {
+                evidence.push(format!("{column}: always {}", quoted(value, 40)));
+            }
+        }
+        return format!("One value per column in {rows} rows");
+    }
+    match detail
+        .profile(&finding.columns[0])
+        .and_then(|p| p.dominant_value.as_ref())
+    {
+        Some(value) => format!("Always {} in {rows} rows", quoted(value, 40)),
+        None => format!("One value in {rows} rows"),
+    }
+}
+
+fn parseable_headline(detail: &Detail<'_>, evidence: &mut Vec<String>) -> String {
+    let count = numfmt::group_chrome;
+    let column = &detail.finding.columns[0];
+    let profile = detail.profile(column);
+    let (Some(profile), Some((parsed, reading))) = (profile, profile.and_then(text_reading)) else {
+        return detail.finding.summary.clone();
+    };
+    if let (Some(min), Some(max)) = (profile.min_length, profile.max_length) {
+        evidence.push(if min == max {
+            format!("{min} characters each")
+        } else {
+            format!("{min} to {max} characters")
+        });
+    }
+    if let Some(zeros) = profile.leading_zero_count.filter(|zeros| *zeros > 0) {
+        evidence.push(format!("{} with a leading zero", count(zeros)));
+    }
+    if let (Some(min), Some(max)) = (&profile.min, &profile.max) {
+        evidence.push(format!("From {} to {}", quoted(min, 24), quoted(max, 24)));
+    }
+    let failed = profile.non_null_rows().saturating_sub(parsed);
+    if failed > 0 {
+        let examples = detail
+            .results
+            .examples_of(ObservationKind::ParseableText, column);
+        evidence.push(if examples.is_empty() {
+            format!("{} do not parse", count(failed))
+        } else {
+            cut(
+                &format!(
+                    "{} do not parse, such as {}",
+                    count(failed),
+                    examples.join(", ")
+                ),
+                EXAMPLE_WIDTH,
+            )
+        });
+    }
+    format!(
+        "{} of {} values ({}) parse as {}",
+        count(parsed),
+        count(profile.non_null_rows()),
+        percent(parsed, profile.non_null_rows()),
+        reading.label()
+    )
+}
+
+fn duplicates_headline(detail: &Detail<'_>, evidence: &mut Vec<String>) -> String {
+    let count = numfmt::group_chrome;
+    let Some(identity) = detail.results.identity.as_ref() else {
+        return detail.finding.summary.clone();
+    };
+    evidence.push(format!(
+        "{} of {} rows ({}) have a copy",
+        count(identity.rows_involved),
+        count(identity.evaluated_rows),
+        percent(identity.rows_involved, identity.evaluated_rows)
+    ));
+    if !identity.examples.is_empty() {
+        evidence.push("Most copied:".to_string());
+    }
+    for example in &identity.examples {
+        evidence.push(cut(
+            &format!(
+                "{}{}  {}",
+                crate::glyphs::get().times,
+                example.copies,
+                example.values.join(", ")
+            ),
+            EXAMPLE_WIDTH,
+        ));
+    }
+    format!(
+        "{} rows repeated; {} extra {}",
+        count(identity.duplicate_groups),
+        count(identity.extra_rows),
+        if identity.extra_rows == 1 {
+            "copy"
+        } else {
+            "copies"
+        }
+    )
+}
+
+fn variants_headline(detail: &Detail<'_>, evidence: &mut Vec<String>) -> String {
+    let count = numfmt::group_chrome;
+    for index in &detail.finding.observations {
+        let normalized = detail.observation(*index).normalized_category.as_ref();
+        let Some(group) = detail
+            .results
+            .category_variants
+            .iter()
+            .find(|group| Some(&group.normalized) == normalized)
+        else {
+            continue;
+        };
+        let mut variants = group.variants.iter().collect::<Vec<_>>();
+        variants.sort_by_key(|(_, rows)| std::cmp::Reverse(*rows));
+        evidence.push(
+            variants
+                .into_iter()
+                .take(4)
+                .map(|(value, rows)| format!("{} ({})", quoted(value, 28), count(*rows)))
+                .collect::<Vec<_>>()
+                .join("  "),
+        );
+    }
+    let values = detail.finding.observations.len();
+    format!(
+        "{} {} spelled more than one way, {}",
+        count(values),
+        if values == 1 { "value" } else { "values" },
+        detail.of
+    )
+}
+
+fn key_like_headline(detail: &Detail<'_>, evidence: &mut Vec<String>) -> String {
+    let count = numfmt::group_chrome;
+    let Some(profile) = detail.profile(&detail.finding.columns[0]) else {
+        return detail.finding.summary.clone();
+    };
+    if let (Some(value), Some(times)) = (&profile.dominant_value, profile.dominant_count) {
+        evidence.push(format!(
+            "Most repeated: {} ({} times)",
+            quoted(value, 32),
+            count(times)
+        ));
+    }
+    format!(
+        "{} distinct in {} rows; {} repeats",
+        count(profile.distinct_count.unwrap_or(0)),
+        count(profile.non_null_rows()),
+        count(detail.finding.affected_rows)
+    )
+}
+
+fn unparsed_time_headline(detail: &Detail<'_>, evidence: &mut Vec<String>) -> String {
+    let observation = detail.observation(detail.finding.observations[0]);
+    if let Some(format) = &observation.time_format {
+        evidence.push(format!("Read as {} for this study only", format.label()));
+    }
+    let examples = detail
+        .results
+        .examples_of(ObservationKind::UnparsedTime, &observation.column);
+    if !examples.is_empty() {
+        evidence.push(cut(
+            &format!("Such as {}", examples.join(", ")),
+            EXAMPLE_WIDTH,
+        ));
+    }
+    detail.values("do not parse")
+}
+
+/// Each channel's runs or mean, then `{of} {noun}`.
+fn signal_headline(detail: &Detail<'_>, evidence: &mut Vec<String>) -> String {
+    signal_evidence(detail, evidence);
+    let noun = detail.finding.kind.map_or("", |kind| kind.spec().noun);
+    format!("{} {noun}", detail.of)
+}
+
+fn dc_offset_headline(detail: &Detail<'_>, evidence: &mut Vec<String>) -> String {
+    signal_evidence(detail, evidence);
+    "Mean away from zero".to_string()
+}
+
+fn signal_evidence(detail: &Detail<'_>, evidence: &mut Vec<String>) {
+    for index in &detail.finding.observations {
+        let observation = detail.observation(*index);
+        evidence.push(format!("{}: {}", observation.column, observation.fact));
+    }
+}
+
+fn files_headline(detail: &Detail<'_>, evidence: &mut Vec<String>) -> String {
+    let count = numfmt::group_chrome;
+    let finding = detail.finding;
+    let observation = detail.observation(finding.observations[0]);
+    // Read from the footers, so the denominator is the whole loaded source whatever
+    // the plan's scope was.
+    evidence.push(format!(
+        "{} of {} rows of the loaded source ({})",
+        count(finding.affected_rows),
+        count(finding.evaluated_rows),
+        percent(finding.affected_rows, finding.evaluated_rows)
+    ));
+    for file in observation.files.iter().take(4) {
+        let stored = file
+            .stored_type
+            .as_ref()
+            .map(|dtype| format!(" as {dtype}"))
+            .unwrap_or_default();
+        let examples = if file.examples.is_empty() {
+            String::new()
+        } else {
+            format!(
+                ": {}",
+                file.examples
+                    .iter()
+                    .map(|value| quoted(value, 20))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        evidence.push(format!(
+            "#{} {} ({} rows){stored}{examples}",
+            file.number,
+            file.name,
+            count(file.rows)
+        ));
+    }
+    if observation.files.len() > 4 {
+        evidence.push(format!(
+            "{} more {}",
+            observation.files.len() - 4,
+            crate::glyphs::get().ellipsis
+        ));
+    }
+    upper_first(&observation.fact)
 }
 
 /// How wide a line of examples runs before it is cut: a row of many columns would
@@ -1775,126 +2138,174 @@ fn cut(text: &str, width: usize) -> String {
     )
 }
 
-/// A declared rule's violation: the count against what it is out of, the rule as
-/// declared, and what the rows in memory showed of it. A sample's numbers say so.
-fn describe_intent(
-    kind: ObservationKind,
-    finding: &Finding,
-    results: &DataQualityResults,
-    evidence: &mut Vec<String>,
-) -> String {
+/// A declared rule's violation, as the intent measured it: the count against what it
+/// is out of, the rule as declared, and what the rows in memory showed of it. A
+/// sample's numbers say so.
+struct Declared<'a> {
+    intent: &'a crate::quality_intent::IntentResults,
+    sampled: bool,
+    /// "rows", or "sampled rows".
+    rows_word: &'static str,
+    /// The finding's share of what it is out of.
+    share: String,
+    check: Option<&'a crate::quality_intent::ColumnCheck>,
+    column: &'a str,
+}
+
+impl<'a> Declared<'a> {
+    fn of(detail: &Detail<'a>) -> Option<Self> {
+        let intent = detail.results.intent.as_ref()?;
+        let finding = detail.finding;
+        let column = finding.columns.first().map(String::as_str).unwrap_or("");
+        let sampled = intent.precision != QualityPrecision::Exact;
+        Some(Self {
+            intent,
+            sampled,
+            rows_word: if sampled { "sampled rows" } else { "rows" },
+            share: percent(finding.affected_rows, finding.evaluated_rows),
+            check: intent.column(column),
+            column,
+        })
+    }
+}
+
+/// Values and their rows: `"void" (3)  "x" (1)`.
+fn value_examples(values: &[(String, usize)]) -> String {
+    values
+        .iter()
+        .map(|(value, rows)| format!("{} ({})", quoted(value, 24), numfmt::group_chrome(*rows)))
+        .collect::<Vec<_>>()
+        .join("  ")
+}
+
+fn key_repeated_headline(detail: &Detail<'_>, evidence: &mut Vec<String>) -> String {
     let count = numfmt::group_chrome;
-    let Some(intent) = results.intent.as_ref() else {
-        return finding.summary.clone();
+    let Some(declared) = Declared::of(detail) else {
+        return detail.finding.summary.clone();
     };
-    let sampled = intent.precision != QualityPrecision::Exact;
-    let rows_word = if sampled { "sampled rows" } else { "rows" };
-    let share = percent(finding.affected_rows, finding.evaluated_rows);
-    let examples = |values: &[(String, usize)]| {
-        values
-            .iter()
-            .map(|(value, rows)| format!("{} ({})", quoted(value, 24), count(*rows)))
-            .collect::<Vec<_>>()
-            .join("  ")
+    let Some(key) = declared.intent.key.as_ref() else {
+        return detail.finding.summary.clone();
     };
-    let column = finding.columns.first().map(String::as_str).unwrap_or("");
-    let check = intent.column(column);
-    match kind {
-        ObservationKind::KeyRepeated | ObservationKind::KeyMissing => {
-            let Some(key) = intent.key.as_ref() else {
-                return finding.summary.clone();
-            };
-            evidence.push(format!("Declared key: {}", key.columns.join(", ")));
-            if kind == ObservationKind::KeyMissing {
-                return format!(
-                    "{} of {} {rows_word} ({share}) have no value in part of the key",
-                    count(key.missing),
-                    count(intent.evaluated_rows)
-                );
-            }
+    evidence.push(format!("Declared key: {}", key.columns.join(", ")));
+    evidence.push(format!(
+        "{} {} held by more than one row; {} rows beyond one per value",
+        count(key.groups),
+        if key.groups == 1 { "value" } else { "values" },
+        count(key.extra_rows)
+    ));
+    if declared.sampled {
+        evidence.push(
+            "Each repeat here is one in the data; unsampled rows are not checked".to_string(),
+        );
+    }
+    format!(
+        "{} of {} {} ({}) share their key with another row",
+        count(key.rows_involved),
+        count(declared.intent.evaluated_rows),
+        declared.rows_word,
+        declared.share
+    )
+}
+
+fn key_missing_headline(detail: &Detail<'_>, evidence: &mut Vec<String>) -> String {
+    let count = numfmt::group_chrome;
+    let Some(declared) = Declared::of(detail) else {
+        return detail.finding.summary.clone();
+    };
+    let Some(key) = declared.intent.key.as_ref() else {
+        return detail.finding.summary.clone();
+    };
+    evidence.push(format!("Declared key: {}", key.columns.join(", ")));
+    format!(
+        "{} of {} {} ({}) have no value in part of the key",
+        count(key.missing),
+        count(declared.intent.evaluated_rows),
+        declared.rows_word,
+        declared.share
+    )
+}
+
+fn required_headline(detail: &Detail<'_>, evidence: &mut Vec<String>) -> String {
+    let count = numfmt::group_chrome;
+    let Some(declared) = Declared::of(detail) else {
+        return detail.finding.summary.clone();
+    };
+    let column = declared.column;
+    evidence.push(format!("Declared required: {column}"));
+    format!(
+        "{} of {} {} ({}) have no {column}",
+        count(detail.finding.affected_rows),
+        count(detail.finding.evaluated_rows),
+        declared.rows_word,
+        declared.share
+    )
+}
+
+fn not_allowed_headline(detail: &Detail<'_>, evidence: &mut Vec<String>) -> String {
+    let Some(declared) = Declared::of(detail) else {
+        return detail.finding.summary.clone();
+    };
+    if let Some(check) = declared.check {
+        evidence.push(format!("Allowed: {}", check.intent.allowed_label(8)));
+        if !check.outside_examples.is_empty() {
             evidence.push(format!(
-                "{} {} held by more than one row; {} rows beyond one per value",
-                count(key.groups),
-                if key.groups == 1 { "value" } else { "values" },
-                count(key.extra_rows)
+                "Found: {}",
+                value_examples(&check.outside_examples)
             ));
-            if sampled {
-                evidence.push(
-                    "Each repeat here is one in the data; unsampled rows are not checked"
-                        .to_string(),
-                );
-            }
-            format!(
-                "{} of {} {rows_word} ({share}) share their key with another row",
-                count(key.rows_involved),
-                count(intent.evaluated_rows)
-            )
-        }
-        ObservationKind::RequiredMissing => {
-            evidence.push(format!("Declared required: {column}"));
-            format!(
-                "{} of {} {rows_word} ({share}) have no {column}",
-                count(finding.affected_rows),
-                count(finding.evaluated_rows)
-            )
-        }
-        ObservationKind::NotAllowed => {
-            if let Some(check) = check {
-                evidence.push(format!("Allowed: {}", check.intent.allowed_label(8)));
-                if !check.outside_examples.is_empty() {
-                    evidence.push(format!("Found: {}", examples(&check.outside_examples)));
-                }
-            }
-            format!(
-                "{} of {} values ({share}) are not allowed",
-                count(finding.affected_rows),
-                count(finding.evaluated_rows)
-            )
-        }
-        ObservationKind::OutOfRange => {
-            if let Some(check) = check {
-                evidence.push(format!(
-                    "Range: {}",
-                    check.intent.range_label().unwrap_or_default()
-                ));
-                if let Some(below) = check.below.filter(|below| *below > 0) {
-                    let lowest = check
-                        .lowest
-                        .as_ref()
-                        .map(|value| format!(", lowest {value}"))
-                        .unwrap_or_default();
-                    evidence.push(format!("Below: {}{lowest}", count(below)));
-                }
-                if let Some(above) = check.above.filter(|above| *above > 0) {
-                    let highest = check
-                        .highest
-                        .as_ref()
-                        .map(|value| format!(", highest {value}"))
-                        .unwrap_or_default();
-                    evidence.push(format!("Above: {}{highest}", count(above)));
-                }
-            }
-            format!(
-                "{} of {} values ({share}) outside the range",
-                count(finding.affected_rows),
-                count(finding.evaluated_rows)
-            )
-        }
-        _ => {
-            let reading = check
-                .and_then(|check| check.intent.number)
-                .map_or("number", crate::quality_intent::NumberReading::label);
-            if let Some(check) = check.filter(|check| !check.unparsed_examples.is_empty()) {
-                evidence.push(format!("Such as: {}", examples(&check.unparsed_examples)));
-            }
-            evidence.push(format!("Read as a {reading} for this study only"));
-            format!(
-                "{} of {} values ({share}) do not read as a {reading}",
-                count(finding.affected_rows),
-                count(finding.evaluated_rows)
-            )
         }
     }
+    detail.values("are not allowed")
+}
+
+fn out_of_range_headline(detail: &Detail<'_>, evidence: &mut Vec<String>) -> String {
+    let count = numfmt::group_chrome;
+    let Some(declared) = Declared::of(detail) else {
+        return detail.finding.summary.clone();
+    };
+    if let Some(check) = declared.check {
+        evidence.push(format!(
+            "Range: {}",
+            check.intent.range_label().unwrap_or_default()
+        ));
+        if let Some(below) = check.below.filter(|below| *below > 0) {
+            let lowest = check
+                .lowest
+                .as_ref()
+                .map(|value| format!(", lowest {value}"))
+                .unwrap_or_default();
+            evidence.push(format!("Below: {}{lowest}", count(below)));
+        }
+        if let Some(above) = check.above.filter(|above| *above > 0) {
+            let highest = check
+                .highest
+                .as_ref()
+                .map(|value| format!(", highest {value}"))
+                .unwrap_or_default();
+            evidence.push(format!("Above: {}{highest}", count(above)));
+        }
+    }
+    detail.values("outside the range")
+}
+
+fn unparsed_number_headline(detail: &Detail<'_>, evidence: &mut Vec<String>) -> String {
+    let Some(declared) = Declared::of(detail) else {
+        return detail.finding.summary.clone();
+    };
+    let reading = declared
+        .check
+        .and_then(|check| check.intent.number)
+        .map_or("number", crate::quality_intent::NumberReading::label);
+    if let Some(check) = declared
+        .check
+        .filter(|check| !check.unparsed_examples.is_empty())
+    {
+        evidence.push(format!(
+            "Such as: {}",
+            value_examples(&check.unparsed_examples)
+        ));
+    }
+    evidence.push(format!("Read as a {reading} for this study only"));
+    detail.values(&format!("do not read as a {reading}"))
 }
 
 fn upper_first(text: &str) -> String {
@@ -1950,6 +2361,11 @@ pub fn verdict(report: &QualityReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a finding is, for comparing: its kind and how it reads.
+    fn reads(finding: &Finding) -> (Option<ObservationKind>, Option<Variant>) {
+        (finding.kind, finding.variant)
+    }
     use crate::data_quality::SharedNulls;
     use crate::data_quality::fixtures::{observation, profile, results_with};
     use polars::prelude::DataType;
@@ -1978,7 +2394,10 @@ mod tests {
         let report = build_report(&results);
         assert_eq!(report.findings.len(), 2, "one note and the clean entry");
         let missing = &report.findings[0];
-        assert_eq!(missing.title, "Missing together");
+        assert_eq!(
+            reads(missing),
+            (Some(ObservationKind::Nulls), Some(Variant::MissingTogether))
+        );
         assert_eq!(missing.severity, Severity::Note);
         assert_eq!(missing.columns.len(), 4);
         assert!(missing.same_rows);
@@ -2009,10 +2428,13 @@ mod tests {
         let report = build_report(&results);
         assert_eq!(report.findings.len(), 2);
         let mostly = &report.findings[0];
-        assert_eq!(mostly.title, "Mostly missing");
+        assert_eq!(
+            reads(mostly),
+            (Some(ObservationKind::Nulls), Some(Variant::MostlyMissing))
+        );
         assert_eq!(mostly.columns, vec!["d".to_string()]);
         let missing = &report.findings[1];
-        assert_eq!(missing.title, "Missing values");
+        assert_eq!(reads(missing), (Some(ObservationKind::Nulls), None));
         assert_eq!(missing.columns, vec!["b", "c", "a"]);
         assert_eq!(missing.summary, "3.0% to 40.0% per column");
         let (headline, evidence) = describe(missing, &results);
@@ -2034,9 +2456,15 @@ mod tests {
             ],
         );
         let report = build_report(&results);
-        assert_eq!(report.findings[0].title, "NaN or infinite");
+        assert_eq!(
+            reads(&report.findings[0]),
+            (Some(ObservationKind::NonFinite), None)
+        );
         assert_eq!(report.findings[0].severity, Severity::Problem);
-        assert_eq!(report.findings[1].title, "Missing values");
+        assert_eq!(
+            reads(&report.findings[1]),
+            (Some(ObservationKind::Nulls), None)
+        );
         assert_eq!(
             report.column_status,
             vec![Severity::Problem, Severity::Note]
@@ -2052,7 +2480,10 @@ mod tests {
             vec![observation(ObservationKind::Nulls, "legacy", 100)],
         );
         let report = build_report(&results);
-        assert_eq!(report.findings[0].title, "Always missing");
+        assert_eq!(
+            reads(&report.findings[0]),
+            (Some(ObservationKind::Nulls), Some(Variant::AlwaysMissing))
+        );
         assert_eq!(report.findings[0].severity, Severity::Problem);
     }
 
@@ -2071,7 +2502,13 @@ mod tests {
             vec![observation(ObservationKind::ParseableText, "industry", 100)],
         );
         let finding = &build_report(&results).findings[0];
-        assert_eq!(finding.title, "Codes as text");
+        assert_eq!(
+            reads(finding),
+            (
+                Some(ObservationKind::ParseableText),
+                Some(Variant::CodesAsText)
+            )
+        );
         assert_eq!(finding.summary, "4 digits, leading zeros");
     }
 
@@ -2089,7 +2526,10 @@ mod tests {
         results.precision = QualityPrecision::Metadata;
         let report = build_report(&results);
         assert_eq!(report.findings.len(), 1, "no clean entry");
-        assert_eq!(report.findings[0].title, "Missing in files");
+        assert_eq!(
+            reads(&report.findings[0]),
+            (Some(ObservationKind::Absent), None)
+        );
         assert_eq!(
             verdict(&report),
             "1 problem in file metadata; values not read"
@@ -2318,17 +2758,17 @@ mod tests {
         let titles = |view: &FindingsView| {
             view.shown(&report)
                 .into_iter()
-                .map(|index| report.findings[index].title)
+                .map(|index| reads(&report.findings[index]))
                 .collect::<Vec<_>>()
         };
         let ranked = FindingsView::default();
         assert_eq!(
             titles(&ranked),
             [
-                "NaN or infinite",
-                "Blank text",
-                "Missing values",
-                "No findings"
+                (Some(ObservationKind::NonFinite), None),
+                (Some(ObservationKind::Whitespace), None),
+                (Some(ObservationKind::Nulls), None),
+                (None, None)
             ]
         );
         let rows = FindingsView {
@@ -2338,10 +2778,10 @@ mod tests {
         assert_eq!(
             titles(&rows),
             [
-                "Blank text",
-                "NaN or infinite",
-                "Missing values",
-                "No findings"
+                (Some(ObservationKind::Whitespace), None),
+                (Some(ObservationKind::NonFinite), None),
+                (Some(ObservationKind::Nulls), None),
+                (None, None)
             ],
             "most rows first, Problems still above Notes"
         );
@@ -2349,27 +2789,37 @@ mod tests {
             order: FindingOrder::Rate,
             ..FindingsView::default()
         };
-        assert_eq!(titles(&rate)[0], "NaN or infinite", "2 of 4 beats 9 of 100");
+        assert_eq!(
+            titles(&rate)[0],
+            (Some(ObservationKind::NonFinite), None),
+            "2 of 4 beats 9 of 100"
+        );
 
         let region = FindingsView {
             column: Some("region".to_string()),
             ..FindingsView::default()
         };
-        assert_eq!(titles(&region), ["Blank text", "Missing values"]);
+        assert_eq!(
+            titles(&region),
+            [
+                (Some(ObservationKind::Whitespace), None),
+                (Some(ObservationKind::Nulls), None)
+            ]
+        );
         assert!(region.narrowed());
         let clean = FindingsView {
             column: Some("id".to_string()),
             ..FindingsView::default()
         };
-        assert_eq!(titles(&clean), ["No findings"], "a clean column is clean");
+        assert_eq!(titles(&clean), [(None, None)], "a clean column is clean");
         let missing = FindingsView {
             check: Some("Missing values"),
             ..FindingsView::default()
         };
-        assert_eq!(titles(&missing), ["Missing values"]);
+        assert_eq!(titles(&missing), [(Some(ObservationKind::Nulls), None)]);
         assert_eq!(
-            missing.selected(&report, 0).map(|finding| finding.title),
-            Some("Missing values")
+            missing.selected(&report, 0).map(reads),
+            Some((Some(ObservationKind::Nulls), None))
         );
         assert_eq!(
             check_choices(&report),

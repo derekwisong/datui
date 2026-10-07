@@ -998,7 +998,7 @@ impl AnalysisModal {
             let shown = self.data_quality_findings.shown(&report);
             shown.iter().position(|index| {
                 let listed = &report.findings[*index];
-                listed.title == finding.title && listed.columns == finding.columns
+                listed.same_as(&finding)
             })
         });
         self.data_quality_table_state

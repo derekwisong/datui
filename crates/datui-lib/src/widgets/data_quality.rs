@@ -9,7 +9,7 @@ use crate::data_quality::{
 use crate::glyphs;
 use crate::numfmt;
 use crate::quality_report::{
-    CHECKS_SHOWN, Check, Coverage, EvidenceRows, FindingOrder, FindingsView, Outcome,
+    CHECKS_SHOWN, Check, Coverage, Evidence, EvidenceRows, FindingOrder, FindingsView, Outcome,
     QualityReport, Severity, advice, build_report, checks, coverage, describe, verdict,
 };
 use crate::quality_trends::{
@@ -1824,20 +1824,19 @@ fn evidence_line(
             if count == 1 { "row" } else { "rows" }
         )
     };
-    let what = match (finding.kind, finding.evidence_count(results)) {
+    let spec = finding.kind.map(ObservationKind::spec);
+    let what = match (spec, finding.evidence_count(results)) {
         // The measurement counts rows beyond one per value; the rows that share a
         // value are always more.
-        (Some(ObservationKind::KeyLike), _) => format!(
+        (Some(spec), _) if spec.evidence == Evidence::SharingValue => format!(
             "every {}row that shares a repeated value",
             if sampled { "sampled " } else { "" }
         ),
-        (Some(ObservationKind::DuplicateRows), Some(count)) => {
-            format!("the {} that have a copy", noun(count))
-        }
-        (Some(ObservationKind::ParseableText), Some(count)) => {
-            format!("the {} that do not parse", noun(count))
-        }
-        (_, Some(count)) => format!("the {}", noun(count)),
+        (spec, Some(count)) => format!(
+            "the {}{}",
+            noun(count),
+            spec.map_or("", |spec| spec.rows_are)
+        ),
         // Grouped columns: a row missing in any of them; the table counts them.
         (_, None) => format!(
             "the {}rows with any of them",

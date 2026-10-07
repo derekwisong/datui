@@ -1654,71 +1654,6 @@ pub enum ObservationKind {
     DcOffset,
 }
 
-impl ObservationKind {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Nulls => "Null",
-            Self::Empty => "Empty",
-            Self::Whitespace => "Whitespace",
-            Self::NonFinite => "Non-finite",
-            Self::Constant => "Constant",
-            Self::ParseableText => "Stored as text",
-            Self::DuplicateRows => "Duplicate rows",
-            Self::CategoryVariants => "Category variants",
-            Self::Absent => "Absent",
-            Self::TypeConflict => "Type conflict",
-            Self::KeyLike => "Key-like",
-            Self::UnparsedTime => "Unparsed time",
-            Self::KeyRepeated => "Repeated key",
-            Self::KeyMissing => "Incomplete key",
-            Self::RequiredMissing => "Required, missing",
-            Self::NotAllowed => "Not allowed",
-            Self::OutOfRange => "Out of range",
-            Self::UnparsedNumber => "Unparsed number",
-            Self::Clipping => "Clipping",
-            Self::ZeroRuns => "Zero runs",
-            Self::DcOffset => "DC offset",
-        }
-    }
-
-    /// What the check divides, as the detail pane and the user guide state it.
-    pub fn definition(self) -> &'static str {
-        match self {
-            Self::Nulls => "Null values / evaluated rows",
-            Self::Empty => "Exact empty strings / evaluated rows",
-            Self::Whitespace => "Nonempty strings that trim to empty / evaluated rows",
-            Self::NonFinite => "NaN or positive/negative infinity / evaluated rows",
-            Self::Constant => "One distinct non-null value in evaluated rows",
-            Self::ParseableText => "Values parseable as a typed value, stored as text",
-            Self::DuplicateRows => "Equal complete rows; extras = sum(group size - 1)",
-            Self::CategoryVariants => "Distinct originals equal after trim and lowercase",
-            Self::Absent => "Rows in files whose footer has no such column / source rows",
-            Self::TypeConflict => {
-                "Rows in files holding the column in an unreadable type / source rows"
-            }
-            Self::KeyLike => {
-                "Non-null rows - distinct values, where distinct >= 95% of non-null rows"
-            }
-            Self::UnparsedTime => {
-                "Non-null text the chosen time format does not read / non-null values"
-            }
-            Self::KeyRepeated => "Rows sharing a declared key value / rows checked",
-            Self::KeyMissing => "Rows with no value in part of the declared key / rows checked",
-            Self::RequiredMissing => "Null values in a required column / rows checked",
-            Self::NotAllowed => "Values not in the declared set / non-null values",
-            Self::OutOfRange => "Values below the minimum or above the maximum / values read",
-            Self::UnparsedNumber => {
-                "Non-null text that does not read as the number / non-null values"
-            }
-            Self::Clipping => "Samples in runs of 3 or more at full scale / samples",
-            Self::ZeroRuns => {
-                "Samples in runs of exact zeros 10 ms or longer (16 samples at least) / samples"
-            }
-            Self::DcOffset => "The channel's mean / full scale; noted from 1%",
-        }
-    }
-}
-
 /// One file behind a drift observation: what it holds, and what that costs the column.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QualityFileEvidence {
@@ -1741,6 +1676,8 @@ pub struct QualityObservation {
     pub column: String,
     pub affected_rows: usize,
     pub evaluated_rows: usize,
+    /// What only the engine can say of a drift or audio measurement: the files, the
+    /// runs. Empty for every kind the report phrases from the numbers itself.
     pub fact: String,
     pub normalized_category: Option<String>,
     /// The files behind an [`ObservationKind::Absent`] or
@@ -1771,7 +1708,10 @@ impl QualityObservation {
         ))
     }
 
-    pub fn evidence_predicate(&self) -> Option<Expr> {
+    /// The rows behind this observation, as a predicate over the rows the run read.
+    /// The engine counts with the same expression where it can, so the count and the
+    /// rows Enter opens agree.
+    pub fn evidence_predicate(&self, results: &DataQualityResults) -> Option<Expr> {
         let value = col(&self.column);
         match self.kind {
             ObservationKind::Nulls => Some(value.is_null()),
@@ -1817,20 +1757,30 @@ impl QualityObservation {
                 .full_scale
                 .map(|(low, high)| value.clone().lt_eq(lit(low)).or(value.gt_eq(lit(high)))),
             ObservationKind::ZeroRuns => Some(value.eq(lit(0))),
-            // Absent and conflicting rows are named by their files, not by a predicate
-            // over values: the column is not in those rows to be tested.
-            // Declared rules find their rows through what the run measured them with:
-            // see `IntentResults::evidence`.
-            ObservationKind::ParseableText
-            | ObservationKind::DuplicateRows
+            // The values that stop a cast: text the reading does not parse.
+            ObservationKind::ParseableText => unparsed_text(
+                results
+                    .columns
+                    .iter()
+                    .find(|profile| profile.name == self.column)?,
+            ),
+            // Declared rules find their rows through what the run measured them with.
+            ObservationKind::KeyRepeated => results.intent.as_ref()?.repeated_key(),
+            ObservationKind::KeyMissing => results.intent.as_ref()?.missing_key(),
+            ObservationKind::RequiredMissing => {
+                results.intent.as_ref()?.required_missing(&self.column)
+            }
+            ObservationKind::NotAllowed => results.intent.as_ref()?.not_allowed(&self.column),
+            ObservationKind::OutOfRange => results.intent.as_ref()?.out_of_range(&self.column),
+            ObservationKind::UnparsedNumber => {
+                results.intent.as_ref()?.unparsed_number(&self.column)
+            }
+            // Duplicates are rows equal to another, not rows a value picks out;
+            // absent and conflicting rows are named by their files, the column not
+            // being in those rows to be tested; an offset is in every sample.
+            ObservationKind::DuplicateRows
             | ObservationKind::Absent
             | ObservationKind::TypeConflict
-            | ObservationKind::KeyRepeated
-            | ObservationKind::KeyMissing
-            | ObservationKind::RequiredMissing
-            | ObservationKind::NotAllowed
-            | ObservationKind::OutOfRange
-            | ObservationKind::UnparsedNumber
             | ObservationKind::DcOffset => None,
         }
     }
@@ -3765,12 +3715,7 @@ fn identity_observations(
             column: "all columns".to_string(),
             affected_rows: identity.rows_involved,
             evaluated_rows: identity.evaluated_rows,
-            fact: format!(
-                "{} groups; {} extra rows ({})",
-                identity.duplicate_groups,
-                identity.extra_rows,
-                identity.precision.label()
-            ),
+            fact: String::new(),
             normalized_category: None,
             files: Vec::new(),
             time_format: None,
@@ -3782,12 +3727,7 @@ fn identity_observations(
         column: group.column.clone(),
         affected_rows: group.rows_involved,
         evaluated_rows: identity.evaluated_rows,
-        fact: format!(
-            "{}{} variants normalize to {:?}",
-            if group.complete { "" } else { "at least " },
-            group.variants.len(),
-            group.normalized
-        ),
+        fact: String::new(),
         normalized_category: Some(group.normalized.clone()),
         files: Vec::new(),
         time_format: None,
@@ -5022,12 +4962,7 @@ fn interpretation_observations(
                 column: format.column.clone(),
                 affected_rows: unparsed,
                 evaluated_rows: values,
-                fact: format!(
-                    "{} of {} values do not read as {}",
-                    crate::numfmt::group_chrome(unparsed),
-                    crate::numfmt::group_chrome(values),
-                    format.label()
-                ),
+                fact: String::new(),
                 normalized_category: None,
                 files: Vec::new(),
                 time_format: Some(format.clone()),
@@ -5370,58 +5305,29 @@ fn observations_from_profiles(
                 ObservationKind::Nulls,
                 profile,
                 profile.null_count,
-                format!("{:.2}% null", profile.null_rate() * 100.0),
             ));
         }
         if let Some(count) = profile.empty_count.filter(|count| *count > 0) {
-            observations.push(observation(
-                ObservationKind::Empty,
-                profile,
-                count,
-                format!("{:.2}% empty", rate(count, profile.evaluated_rows) * 100.0),
-            ));
+            observations.push(observation(ObservationKind::Empty, profile, count));
         }
         if let Some(count) = profile.whitespace_count.filter(|count| *count > 0) {
-            observations.push(observation(
-                ObservationKind::Whitespace,
-                profile,
-                count,
-                format!(
-                    "{:.2}% whitespace only",
-                    rate(count, profile.evaluated_rows) * 100.0
-                ),
-            ));
+            observations.push(observation(ObservationKind::Whitespace, profile, count));
         }
         let non_finite = profile.nan_count.unwrap_or(0)
             + profile.positive_infinity_count.unwrap_or(0)
             + profile.negative_infinity_count.unwrap_or(0);
         if non_finite > 0 {
-            observations.push(observation(
-                ObservationKind::NonFinite,
-                profile,
-                non_finite,
-                format!("{non_finite} NaN or infinite"),
-            ));
+            observations.push(observation(ObservationKind::NonFinite, profile, non_finite));
         }
         if profile.distinct_count == Some(1) && profile.non_null_rows() > 0 {
             observations.push(observation(
                 ObservationKind::Constant,
                 profile,
                 profile.non_null_rows(),
-                "one non-null value".to_string(),
             ));
         }
-        if let Some((parsed, reading)) = text_reading(profile) {
-            observations.push(observation(
-                ObservationKind::ParseableText,
-                profile,
-                parsed,
-                format!(
-                    "{:.2}% parse as {}",
-                    rate(parsed, profile.non_null_rows()) * 100.0,
-                    reading.label()
-                ),
-            ));
+        if let Some((parsed, _)) = text_reading(profile) {
+            observations.push(observation(ObservationKind::ParseableText, profile, parsed));
         }
         // Near-unique and still repeating. Both numbers are already measured, so this
         // check costs the comparison and nothing else.
@@ -5445,22 +5351,7 @@ fn observations_from_profiles(
             // more; the detail pane says which is which.
             let extras = profile.non_null_rows().saturating_sub(distinct);
             if extras > 0 {
-                let example = match (&profile.dominant_value, profile.dominant_count) {
-                    (Some(value), Some(count)) if count > 1 => {
-                        format!("; {value:?} appears {count} times")
-                    }
-                    _ => String::new(),
-                };
-                observations.push(observation(
-                    ObservationKind::KeyLike,
-                    profile,
-                    extras,
-                    format!(
-                        "{distinct} distinct over {} non-null rows ({:.4}%); {extras} rows beyond one per value{example}",
-                        profile.non_null_rows(),
-                        uniqueness * 100.0,
-                    ),
-                ));
+                observations.push(observation(ObservationKind::KeyLike, profile, extras));
             }
         }
     }
@@ -5793,14 +5684,13 @@ fn observation(
     kind: ObservationKind,
     profile: &ColumnQualityProfile,
     affected_rows: usize,
-    fact: String,
 ) -> QualityObservation {
     QualityObservation {
         kind,
         column: profile.name.clone(),
         affected_rows,
         evaluated_rows: profile.evaluated_rows,
-        fact,
+        fact: String::new(),
         normalized_category: None,
         files: Vec::new(),
         time_format: None,

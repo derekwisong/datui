@@ -363,7 +363,9 @@ fn evidence_says_where_its_rows_come_from() {
     let position = FindingsView::default()
         .shown(&report)
         .iter()
-        .position(|index| report.findings[*index].title == "Missing values")
+        .position(|index| {
+            report.findings[*index].kind == Some(crate::data_quality::ObservationKind::Nulls)
+        })
         .unwrap();
     let detail = |results: &DataQualityResults, kept: bool, width, height| {
         let mut config = screen.config(QualityPage::Overview);

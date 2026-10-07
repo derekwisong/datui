@@ -915,19 +915,17 @@ impl IntentResults {
     /// column, so its finding names each.
     pub(crate) fn observations(&self) -> Vec<QualityObservation> {
         let mut observations = Vec::new();
-        let count = crate::numfmt::group_chrome;
         let push = |observations: &mut Vec<QualityObservation>,
                     kind: ObservationKind,
                     column: &str,
                     affected_rows: usize,
-                    evaluated_rows: usize,
-                    fact: String| {
+                    evaluated_rows: usize| {
             observations.push(QualityObservation {
                 kind,
                 column: column.to_string(),
                 affected_rows,
                 evaluated_rows,
-                fact,
+                fact: String::new(),
                 normalized_category: None,
                 files: Vec::new(),
                 time_format: None,
@@ -946,11 +944,6 @@ impl IntentResults {
                         column,
                         key.rows_involved,
                         self.evaluated_rows,
-                        format!(
-                            "{} key values repeat; {} extra rows",
-                            count(key.groups),
-                            count(key.extra_rows)
-                        ),
                     );
                 }
                 if key.missing > 0 {
@@ -960,7 +953,6 @@ impl IntentResults {
                         column,
                         key.missing,
                         self.evaluated_rows,
-                        format!("{} rows have no complete key", count(key.missing)),
                     );
                 }
             }
@@ -974,7 +966,6 @@ impl IntentResults {
                     column,
                     missing,
                     self.evaluated_rows,
-                    format!("{} rows with no value", count(missing)),
                 );
             }
             if let Some(unparsed) = check.unparsed.filter(|unparsed| *unparsed > 0) {
@@ -984,12 +975,6 @@ impl IntentResults {
                     column,
                     unparsed,
                     check.values,
-                    format!(
-                        "{} of {} values do not read as a {}",
-                        count(unparsed),
-                        count(check.values),
-                        check.intent.number.map_or("number", NumberReading::label)
-                    ),
                 );
             }
             if let Some(outside) = check.outside.filter(|outside| *outside > 0) {
@@ -999,12 +984,6 @@ impl IntentResults {
                     column,
                     outside,
                     check.values,
-                    format!(
-                        "{} of {} values are not one of {}",
-                        count(outside),
-                        count(check.values),
-                        check.intent.allowed_label(5)
-                    ),
                 );
             }
             if let Some(out) = check.out_of_range().filter(|out| *out > 0) {
@@ -1014,47 +993,47 @@ impl IntentResults {
                     column,
                     out,
                     check.compared.unwrap_or(0),
-                    format!(
-                        "{} of {} values outside {}",
-                        count(out),
-                        count(check.compared.unwrap_or(0)),
-                        check.intent.range_label().unwrap_or_default()
-                    ),
                 );
             }
         }
         observations
     }
 
-    /// The rows behind a violation, as a predicate over the rows the run read.
-    pub fn evidence(&self, kind: ObservationKind, column: &str) -> Option<Expr> {
-        match kind {
-            ObservationKind::KeyRepeated => {
-                let key = self.key.as_ref()?;
-                let columns = key
-                    .columns
-                    .iter()
-                    .map(|name| col(name.as_str()))
-                    .collect::<Vec<_>>();
-                let shared = len().over(columns).ok()?.gt(lit(1u32));
-                Some(any_null(&key.columns).not().and(shared))
-            }
-            ObservationKind::KeyMissing => Some(any_null(&self.key.as_ref()?.columns)),
-            _ => {
-                let check = self
-                    .columns
-                    .iter()
-                    .find(|check| check.intent.column == column)?;
-                let rules = check.rules();
-                match kind {
-                    ObservationKind::RequiredMissing => Some(rules.stored().is_null()),
-                    ObservationKind::UnparsedNumber => rules.unparsed(),
-                    ObservationKind::NotAllowed => rules.outside(),
-                    ObservationKind::OutOfRange => rules.out_of_range(),
-                    _ => None,
-                }
-            }
-        }
+    /// Rows sharing a value of the declared key, the key whole.
+    pub fn repeated_key(&self) -> Option<Expr> {
+        let key = self.key.as_ref()?;
+        let columns = key
+            .columns
+            .iter()
+            .map(|name| col(name.as_str()))
+            .collect::<Vec<_>>();
+        let shared = len().over(columns).ok()?.gt(lit(1u32));
+        Some(any_null(&key.columns).not().and(shared))
+    }
+
+    /// Rows with no value in some part of the declared key.
+    pub fn missing_key(&self) -> Option<Expr> {
+        Some(any_null(&self.key.as_ref()?.columns))
+    }
+
+    /// Rows with no value in a column declared required.
+    pub fn required_missing(&self, column: &str) -> Option<Expr> {
+        Some(self.column(column)?.rules().stored().is_null())
+    }
+
+    /// Text in `column` that does not read as its declared number.
+    pub fn unparsed_number(&self, column: &str) -> Option<Expr> {
+        self.column(column)?.rules().unparsed()
+    }
+
+    /// Values of `column` outside its declared set.
+    pub fn not_allowed(&self, column: &str) -> Option<Expr> {
+        self.column(column)?.rules().outside()
+    }
+
+    /// Values of `column` outside its declared range.
+    pub fn out_of_range(&self, column: &str) -> Option<Expr> {
+        self.column(column)?.rules().out_of_range()
     }
 
     /// What the column's declaration was measured with, for a finding's detail.
@@ -1160,9 +1139,10 @@ mod tests {
         column: &str,
     ) -> usize {
         let predicate = results
-            .intent
-            .as_ref()
-            .and_then(|intent| intent.evidence(kind, column))
+            .observations
+            .iter()
+            .find(|observation| observation.kind == kind && observation.column == column)
+            .and_then(|observation| observation.evidence_predicate(results))
             .expect("a predicate");
         df.clone()
             .lazy()
@@ -1219,19 +1199,19 @@ mod tests {
 
         // Problems, stated as facts, and the check names its reach.
         let report = build_report(&results);
-        for title in [
-            "Repeated key",
-            "Incomplete key",
-            "Required, missing",
-            "Not allowed",
-            "Out of range",
-            "Unparsed numbers",
+        for kind in [
+            ObservationKind::KeyRepeated,
+            ObservationKind::KeyMissing,
+            ObservationKind::RequiredMissing,
+            ObservationKind::NotAllowed,
+            ObservationKind::OutOfRange,
+            ObservationKind::UnparsedNumber,
         ] {
             let finding = report
                 .findings
                 .iter()
-                .find(|finding| finding.title == title)
-                .unwrap_or_else(|| panic!("{title}"));
+                .find(|finding| finding.kind == Some(kind))
+                .unwrap_or_else(|| panic!("{kind:?}"));
             assert_eq!(finding.severity, crate::quality_report::Severity::Problem);
         }
         let all = checks(&results, &report);
@@ -1241,7 +1221,7 @@ mod tests {
         let repeated = report
             .findings
             .iter()
-            .find(|finding| finding.title == "Repeated key")
+            .find(|finding| finding.kind == Some(ObservationKind::KeyRepeated))
             .unwrap();
         let (headline, _) = describe(repeated, &results);
         assert_eq!(
@@ -1303,7 +1283,7 @@ mod tests {
         let not_allowed = report
             .findings
             .iter()
-            .find(|finding| finding.title == "Not allowed")
+            .find(|finding| finding.kind == Some(ObservationKind::NotAllowed))
             .unwrap();
         let (_, evidence) = describe(not_allowed, &results);
         assert!(
@@ -1316,7 +1296,7 @@ mod tests {
             let repeated = report
                 .findings
                 .iter()
-                .find(|finding| finding.title == "Repeated key")
+                .find(|finding| finding.kind == Some(ObservationKind::KeyRepeated))
                 .unwrap();
             let (headline, evidence) = describe(repeated, &results);
             assert!(headline.contains("of 400 sampled rows"), "{headline}");
@@ -1343,7 +1323,7 @@ mod tests {
             !report
                 .findings
                 .iter()
-                .any(|finding| finding.title == "Repeated key")
+                .any(|finding| finding.kind == Some(ObservationKind::KeyRepeated))
         );
         let all = checks(&results, &report);
         assert_eq!(all[0].outcome, Outcome::Passed);
@@ -1430,7 +1410,7 @@ mod tests {
         let repeated = report
             .findings
             .iter()
-            .find(|f| f.title == "Repeated key")
+            .find(|f| f.kind == Some(ObservationKind::KeyRepeated))
             .unwrap();
         assert_eq!(repeated.columns, vec!["region", "id"]);
     }

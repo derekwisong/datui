@@ -215,6 +215,7 @@ fn exact_observation_predicates_select_matching_rows() {
         (ObservationKind::NonFinite, "amount", 2),
         (ObservationKind::Constant, "constant", 4),
     ];
+    let none = crate::data_quality::fixtures::results_with(Vec::new(), Vec::new());
     for (kind, column, expected) in examples {
         let observation = QualityObservation {
             kind,
@@ -228,10 +229,10 @@ fn exact_observation_predicates_select_matching_rows() {
             full_scale: None,
         };
         let rows = fixture()
-            .filter(observation.evidence_predicate().unwrap())
+            .filter(observation.evidence_predicate(&none).unwrap())
             .collect()
             .unwrap();
-        assert_eq!(rows.height(), expected, "{}", kind.label());
+        assert_eq!(rows.height(), expected, "{kind:?}");
     }
     let category = QualityObservation {
         kind: ObservationKind::CategoryVariants,
@@ -247,7 +248,7 @@ fn exact_observation_predicates_select_matching_rows() {
     let rows = df!("category" => &["North", " north ", "NORTH"])
         .unwrap()
         .lazy()
-        .filter(category.evidence_predicate().unwrap())
+        .filter(category.evidence_predicate(&none).unwrap())
         .collect()
         .unwrap();
     assert_eq!(rows.height(), 3);
@@ -1290,16 +1291,12 @@ fn a_nearly_unique_column_that_repeats_is_reported_with_its_repeats() {
         (2, 100),
         "rows beyond one per value: non-null rows minus distinct values"
     );
-    assert_eq!(
-        key_like[0].fact,
-        "98 distinct over 100 non-null rows (98.0000%); 2 rows beyond one per value; \"7\" appears 2 times"
-    );
     // The drill-in is every row whose value is not the only one of its kind, which
     // is four rows for two values that each appear twice — more than the count
     // above it, which the detail pane says in so many words.
     let rows = frame
         .clone()
-        .filter(key_like[0].evidence_predicate().unwrap())
+        .filter(key_like[0].evidence_predicate(&results).unwrap())
         .collect()
         .unwrap();
     assert_eq!(rows.height(), 4);
@@ -1480,13 +1477,21 @@ fn text_is_read_as_numbers_only_when_nearly_all_of_it_parses() {
         .observations
         .iter()
         .filter(|observation| observation.kind == ObservationKind::ParseableText)
-        .map(|observation| (observation.column.as_str(), observation.fact.as_str()))
+        .map(|observation| {
+            let profile = results
+                .columns
+                .iter()
+                .find(|profile| profile.name == observation.column)
+                .unwrap();
+            let (parsed, reading) = text_reading(profile).unwrap();
+            (observation.column.as_str(), parsed, reading.label())
+        })
         .collect::<Vec<_>>();
     assert_eq!(
         readings,
         vec![
-            ("code", "100.00% parse as whole numbers"),
-            ("amount", "100.00% parse as decimal numbers"),
+            ("code", 100, "whole numbers"),
+            ("amount", 100, "decimal numbers"),
         ]
     );
     let code = results
@@ -2252,7 +2257,7 @@ fn text_read_as_time_windows_and_measures_intervals() {
         assert_eq!(unparsed.column, "created");
         assert_eq!((unparsed.affected_rows, unparsed.evaluated_rows), (1, 5));
         let rows = text_times()
-            .filter(unparsed.evidence_predicate().unwrap())
+            .filter(unparsed.evidence_predicate(&results).unwrap())
             .collect()
             .unwrap();
         assert_eq!(rows.height(), 1, "the evidence is the unread value");

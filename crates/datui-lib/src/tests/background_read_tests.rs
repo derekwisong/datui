@@ -143,7 +143,7 @@ fn a_sidebar_apply_says_what_it_does() {
         (vec![filter], vec!["b".to_string()], "Sorting..."),
     ] {
         let descending = vec![false; sort.len()];
-        app.event(&AppEvent::ApplyView(
+        app.event(AppEvent::ApplyView(
             order.clone(),
             0,
             filters,

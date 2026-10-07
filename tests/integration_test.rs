@@ -14323,7 +14323,7 @@ fn test_left_cuts_recent_back_from_a_place_past_the_cap() {
         .iter()
         .position(|r| matches!(r, datui::home::Row::More { places: 1.., .. }))
         .unwrap();
-    app.event(&key(KeyCode::Right));
+    app.event(key(KeyCode::Right));
     assert_eq!(places(&app), 12, "→ on the more row shows every place");
 
     app.home.selected = app
@@ -14332,21 +14332,21 @@ fn test_left_cuts_recent_back_from_a_place_past_the_cap() {
         .iter()
         .rposition(|r| matches!(r, datui::home::Row::Place { .. }))
         .unwrap();
-    app.event(&key(KeyCode::Left));
+    app.event(key(KeyCode::Left));
     assert_eq!(places(&app), shown, "cut back");
     assert!(matches!(
         app.home.selected_row(),
         Some(datui::home::Row::More { places: 1.., .. })
     ));
 
-    app.event(&key(KeyCode::Right));
+    app.event(key(KeyCode::Right));
     app.home.selected = app
         .home
         .visible()
         .iter()
         .position(|r| matches!(r, datui::home::Row::Place { .. }))
         .unwrap();
-    app.event(&key(KeyCode::Left));
+    app.event(key(KeyCode::Left));
     assert!(app.home.is_collapsed(0), "← on a first place folds RECENT");
 }
 

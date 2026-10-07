@@ -9366,7 +9366,7 @@ fn test_dot_dot_at_the_root_listing_goes_above_the_root() {
         .expect("a way up above the root");
     app.home.selected = up;
     assert_eq!(app.what_enter_does(), datui::WhatEnter::GoesUp);
-    let _ = app.event(&datui::AppEvent::Key(crossterm::event::KeyEvent::new(
+    let _ = app.event(datui::AppEvent::Key(crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Enter,
         crossterm::event::KeyModifiers::NONE,
     )));
@@ -9399,7 +9399,7 @@ fn test_left_and_right_show_and_cut_a_big_directory() {
         .position(|s| s.rows.len() == 60)
         .expect("the working directory's section");
     let press = |app: &mut datui::App, code| {
-        let _ = app.event(&datui::AppEvent::Key(crossterm::event::KeyEvent::new(
+        let _ = app.event(datui::AppEvent::Key(crossterm::event::KeyEvent::new(
             code,
             crossterm::event::KeyModifiers::NONE,
         )));

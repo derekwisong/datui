@@ -325,9 +325,9 @@ fn test_chart_export_path_expands_tilde() {
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
-    let Some(AppEvent::ChartExport(datui::chart::chart_export::ChartExportRequest {
-        path, ..
-    })) = out
+    let Some(AppEvent::Applied(datui::Applied::ChartExport(
+        datui::chart::chart_export::ChartExportRequest { path, .. },
+    ))) = out
     else {
         panic!("Enter starts the export");
     };
@@ -489,9 +489,8 @@ fn test_chart_export_waits_for_the_current_selection_not_a_failed_one() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("chart.svg");
     let next = app
-        .event(AppEvent::ChartExport(chart_export_request(
-            &path,
-            ChartExportFormat::Svg,
+        .event(AppEvent::Applied(datui::Applied::ChartExport(
+            chart_export_request(&path, ChartExportFormat::Svg),
         )))
         .expect("ChartExport defers to DoChartExport");
     app.event(next);
@@ -574,9 +573,8 @@ fn test_chart_export_waits_for_prepared_data_and_writes_in_background() {
     let path = dir.path().join("chart.pdf");
     // Asked for while the data is still being prepared.
     let next = app
-        .event(AppEvent::ChartExport(chart_export_request(
-            &path,
-            ChartExportFormat::Pdf,
+        .event(AppEvent::Applied(datui::Applied::ChartExport(
+            chart_export_request(&path, ChartExportFormat::Pdf),
         )))
         .expect("ChartExport defers to DoChartExport");
     app.event(next);
@@ -620,7 +618,12 @@ fn test_chart_export_replaces_only_what_was_agreed() {
         let path = dir.path().join(name);
         std::fs::write(&path, "theirs").unwrap();
         let request = chart_export_request(&path, format);
-        run_to_idle(&mut app, &rx, &tx, AppEvent::ChartExport(request.clone()));
+        run_to_idle(
+            &mut app,
+            &rx,
+            &tx,
+            AppEvent::Applied(datui::Applied::ChartExport(request.clone())),
+        );
         // The form comes back with the reason on its status line, not a modal.
         assert_eq!(app.error_message(), None, "{name}");
         assert_eq!(app.overlay, Overlay::ChartExport, "{name}");
@@ -640,7 +643,12 @@ fn test_chart_export_replaces_only_what_was_agreed() {
             overwrite: Overwrite::Replace,
             ..request
         };
-        run_to_idle(&mut app, &rx, &tx, AppEvent::ChartExport(replace));
+        run_to_idle(
+            &mut app,
+            &rx,
+            &tx,
+            AppEvent::Applied(datui::Applied::ChartExport(replace)),
+        );
         assert_eq!(app.error_message(), None, "{name}");
         let bytes = std::fs::read(&path).unwrap();
         match format {

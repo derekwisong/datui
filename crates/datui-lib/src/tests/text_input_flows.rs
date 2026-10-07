@@ -590,7 +590,10 @@ fn a_prompt_on_a_tiny_terminal_draws_what_fits() {
 #[test]
 fn a_kept_find_searches_the_shown_columns() {
     let mut h = Harness::with_data();
-    h.run(AppEvent::ColumnOrder(vec!["age".to_string()], 0));
+    h.run(AppEvent::Applied(crate::Applied::ColumnOrder(
+        vec!["age".to_string()],
+        0,
+    )));
     h.press(KeyCode::Char('/'));
     h.type_str("al");
     h.press_with(KeyCode::Char('g'), KeyModifiers::CONTROL);
@@ -608,8 +611,14 @@ fn a_kept_find_keeps_its_columns_when_the_layout_changes() {
     h.press_with(KeyCode::Char('g'), KeyModifiers::CONTROL);
     let rows = |h: &Harness| h.app.data_table_state.as_ref().unwrap().num_rows();
     assert_eq!(rows(&h), 1);
-    h.run(AppEvent::ColumnOrder(vec!["age".to_string()], 0));
-    h.run(AppEvent::Sort(vec!["age".to_string()], vec![true]));
+    h.run(AppEvent::Applied(crate::Applied::ColumnOrder(
+        vec!["age".to_string()],
+        0,
+    )));
+    h.run(AppEvent::Applied(crate::Applied::Sort(
+        vec!["age".to_string()],
+        vec![true],
+    )));
     assert_eq!(rows(&h), 1, "alan is still kept on name");
     let state = h.app.data_table_state.as_ref().unwrap();
     let searched: Vec<String> = state

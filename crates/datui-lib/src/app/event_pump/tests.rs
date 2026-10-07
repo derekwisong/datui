@@ -573,7 +573,8 @@ fn a_continuation_holds_the_generation_until_it_is_dispatched() {
     let (waits, release) = crate::tests::worker_waits_once(|job| matches!(job, crate::Job::Export));
     p.app.jobs.worker_waits = waits;
 
-    p.send(AppEvent::Export(csv_export(&out))).unwrap();
+    p.send(AppEvent::Applied(crate::Applied::Export(csv_export(&out))))
+        .unwrap();
     assert!(matches!(p.drain().unwrap(), Drained::Continue { .. }));
 
     // `Export` has returned `DoExport` and nothing has been spawned: this is the
@@ -620,7 +621,8 @@ fn a_key_in_the_handoff_window_does_not_find_the_generation_free() {
     p.app.owe_rows_for_tests("Loading buffer...");
 
     // And the user exports, which after one drain is mid-handoff.
-    p.send(AppEvent::Export(csv_export(&out))).unwrap();
+    p.send(AppEvent::Applied(crate::Applied::Export(csv_export(&out))))
+        .unwrap();
     assert!(matches!(p.drain().unwrap(), Drained::Continue { .. }));
     assert!(!p.next_up.is_empty(), "mid-handoff");
     let held_at = p.app.task_generation();
@@ -655,7 +657,8 @@ fn an_export_holds_the_generation_at_every_phase_change() {
     let (mut p, dir) = loaded_pump();
     let out = dir.path().join("out.csv");
 
-    p.send(AppEvent::Export(csv_export(&out))).unwrap();
+    p.send(AppEvent::Applied(crate::Applied::Export(csv_export(&out))))
+        .unwrap();
 
     let mut breaks = 0;
     for _ in 0..10_000 {
@@ -725,7 +728,8 @@ fn an_export_whose_worker_dies_ends_and_the_next_one_writes() {
         exports += usize::from(matches!(job, crate::Job::Export));
         exports == 1
     }));
-    p.send(AppEvent::Export(csv_export(&out))).unwrap();
+    p.send(AppEvent::Applied(crate::Applied::Export(csv_export(&out))))
+        .unwrap();
 
     let deadline = std::time::Instant::now() + Duration::from_secs(300);
     while p.app.export_modal.path_error.is_none() {
@@ -750,7 +754,8 @@ fn an_export_whose_worker_dies_ends_and_the_next_one_writes() {
 
     p.terminal_key(plain(KeyCode::Esc)).unwrap();
     assert!(!matches!(p.app.overlay, Overlay::Export { .. }));
-    p.send(AppEvent::Export(csv_export(&out))).unwrap();
+    p.send(AppEvent::Applied(crate::Applied::Export(csv_export(&out))))
+        .unwrap();
     settle(&mut p);
     assert!(!p.app.error_modal.active, "{}", p.app.error_modal.message);
     assert_eq!(p.app.export_modal.path_error, None);
@@ -764,8 +769,10 @@ fn an_export_whose_worker_dies_ends_and_the_next_one_writes() {
 #[test]
 fn a_drill_whose_read_dies_flashes_one_line_and_the_next_one_drills() {
     let (mut p, _dir) = loaded_pump();
-    p.send(AppEvent::QQuery("select n: count age by name".to_string()))
-        .unwrap();
+    p.send(AppEvent::Applied(crate::Applied::QQuery(
+        "select n: count age by name".to_string(),
+    )))
+    .unwrap();
     settle(&mut p);
     // With the key hidden the buffer cannot say which group a row is, so Enter
     // reads it on a worker.
@@ -821,7 +828,8 @@ fn a_pivot_whose_worker_dies_is_shown_and_the_next_one_installs() {
 
     p.app.overlay = Overlay::PivotMelt;
     p.app.jobs.worker_dies = crate::tests::worker_dies_once(|job| matches!(job, crate::Job::Pivot));
-    p.send(AppEvent::Pivot(spec.clone())).unwrap();
+    p.send(AppEvent::Applied(crate::Applied::Pivot(spec.clone())))
+        .unwrap();
     settle(&mut p);
     assert!(p.app.error_modal.active, "the user is told");
     assert!(!p.app.is_busy());
@@ -831,7 +839,8 @@ fn a_pivot_whose_worker_dies_is_shown_and_the_next_one_installs() {
     assert!(state.last_pivot_spec().is_none(), "the table is as it was");
 
     p.app.error_modal.hide();
-    p.send(AppEvent::Pivot(spec)).unwrap();
+    p.send(AppEvent::Applied(crate::Applied::Pivot(spec)))
+        .unwrap();
     settle(&mut p);
     assert!(!p.app.error_modal.active, "{}", p.app.error_modal.message);
     let state = p.app.data_table_state.as_ref().unwrap();
@@ -1522,8 +1531,10 @@ fn enter_with_nothing_to_drill_into_waits_as_space() {
     p.terminal_key(plain(KeyCode::Esc)).unwrap();
     assert!(p.app.at_table());
 
-    p.send(AppEvent::QQuery("select n: count age by name".to_string()))
-        .unwrap();
+    p.send(AppEvent::Applied(crate::Applied::QQuery(
+        "select n: count age by name".to_string(),
+    )))
+    .unwrap();
     settle(&mut p);
     rendered(&mut p.app);
     assert!(p.app.data_table_state.as_ref().unwrap().can_drill_down());

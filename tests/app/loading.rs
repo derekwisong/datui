@@ -890,7 +890,7 @@ fn test_async_collect_handles_invalidated_num_rows() {
         value: "200".to_string(),
         logical_op: LogicalOperator::And,
     };
-    app.event(AppEvent::Filter(vec![filter]));
+    app.event(AppEvent::Applied(datui::Applied::Filter(vec![filter])));
 
     // Drain the count and the page.
     for _ in ticks() {
@@ -6139,7 +6139,12 @@ fn column_cursor_follows_reorder_freeze_and_hide() {
     // Moved to the front and frozen: still on it, at the left.
     order.retain(|c| c != "label_062");
     order.insert(0, "label_062".to_string());
-    run_and_settle(&mut app, AppEvent::ColumnOrder(order.clone(), 1), &rx, &tx);
+    run_and_settle(
+        &mut app,
+        AppEvent::Applied(datui::Applied::ColumnOrder(order.clone(), 1)),
+        &rx,
+        &tx,
+    );
     draw_sized(&mut app, size);
     assert_eq!(current(&app), "label_062");
     assert_eq!(cursor_at(&app), 1);
@@ -6147,7 +6152,12 @@ fn column_cursor_follows_reorder_freeze_and_hide() {
     // Moved to the end, unfrozen: the view goes there with it.
     order.remove(0);
     order.push("label_062".to_string());
-    run_and_settle(&mut app, AppEvent::ColumnOrder(order.clone(), 0), &rx, &tx);
+    run_and_settle(
+        &mut app,
+        AppEvent::Applied(datui::Applied::ColumnOrder(order.clone(), 0)),
+        &rx,
+        &tx,
+    );
     let screen = draw_sized(&mut app, size);
     assert_eq!(current(&app), "label_062");
     assert_eq!(cursor_at(&app), 120);
@@ -6157,7 +6167,12 @@ fn column_cursor_follows_reorder_freeze_and_hide() {
     // Hidden: the column now in its place takes the cursor, here the last one.
     order.pop();
     let last = order.last().unwrap().clone();
-    run_and_settle(&mut app, AppEvent::ColumnOrder(order.clone(), 0), &rx, &tx);
+    run_and_settle(
+        &mut app,
+        AppEvent::Applied(datui::Applied::ColumnOrder(order.clone(), 0)),
+        &rx,
+        &tx,
+    );
     draw_sized(&mut app, size);
     assert_eq!(current(&app), last);
     assert_eq!(cursor_at(&app), 119);
@@ -7122,13 +7137,17 @@ fn the_footer_says_what_is_in_effect_and_the_mode_s_keys() {
     // A query, then a filter on it: dataset › query › filter.
     run_and_settle(
         &mut app,
-        AppEvent::QQuery("select where a < 50".to_string()),
+        AppEvent::Applied(datui::Applied::QQuery("select where a < 50".to_string())),
         &rx,
         &tx,
     );
     run_and_settle(
         &mut app,
-        AppEvent::Filter(vec![filter_stmt("a", FilterOperator::Gt, "10")]),
+        AppEvent::Applied(datui::Applied::Filter(vec![filter_stmt(
+            "a",
+            FilterOperator::Gt,
+            "10",
+        )])),
         &rx,
         &tx,
     );

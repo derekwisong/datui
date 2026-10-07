@@ -42,13 +42,15 @@ fn a_collect_in_flight_serves_the_frame_but_not_a_changed_frame() {
     assert_eq!(app.task_generation(), generation);
 
     // A filter changes the data underneath; those rows no longer answer.
-    app.event(AppEvent::Filter(vec![FilterStatement {
-        columns: Vec::new(),
-        column: "a".to_string(),
-        operator: FilterOperator::Lt,
-        value: "50".to_string(),
-        logical_op: LogicalOperator::And,
-    }]));
+    app.event(AppEvent::Applied(crate::Applied::Filter(vec![
+        FilterStatement {
+            columns: Vec::new(),
+            column: "a".to_string(),
+            operator: FilterOperator::Lt,
+            value: "50".to_string(),
+            logical_op: LogicalOperator::And,
+        },
+    ])));
     assert_ne!(
         app.task_generation(),
         generation,
@@ -498,13 +500,15 @@ fn a_count_for_a_replaced_frame_never_starts() {
     let (mut app, rx, first) = filtered_local(100_000, 50_000);
     app.spawn_async_collect("Filtering...");
     assert_eq!(app.counting.count_after_paint, Some(first));
-    app.event(AppEvent::Filter(vec![FilterStatement {
-        columns: Vec::new(),
-        column: "a".to_string(),
-        operator: FilterOperator::Lt,
-        value: "40000".to_string(),
-        logical_op: LogicalOperator::And,
-    }]));
+    app.event(AppEvent::Applied(crate::Applied::Filter(vec![
+        FilterStatement {
+            columns: Vec::new(),
+            column: "a".to_string(),
+            operator: FilterOperator::Lt,
+            value: "40000".to_string(),
+            logical_op: LogicalOperator::And,
+        },
+    ])));
     let second = app.data_table_state.as_ref().unwrap().len_generation();
     assert_ne!(second, first);
     assert_eq!(app.counting.count_after_paint, Some(second));
@@ -591,13 +595,15 @@ fn a_filter_applied_from_the_end_shows_its_rows() {
     assert!(state.deferred(DataTableState::scroll_to_end));
     app.data_table_state = Some(state);
 
-    app.event(AppEvent::Filter(vec![FilterStatement {
-        columns: Vec::new(),
-        column: "a".to_string(),
-        operator: FilterOperator::Lt,
-        value: "100".to_string(),
-        logical_op: LogicalOperator::And,
-    }]));
+    app.event(AppEvent::Applied(crate::Applied::Filter(vec![
+        FilterStatement {
+            columns: Vec::new(),
+            column: "a".to_string(),
+            operator: FilterOperator::Lt,
+            value: "100".to_string(),
+            logical_op: LogicalOperator::And,
+        },
+    ])));
     let wait = std::time::Duration::from_secs(20);
     for _ in 0..2 {
         let event = rx.recv_timeout(wait).expect("the collect, then the count");

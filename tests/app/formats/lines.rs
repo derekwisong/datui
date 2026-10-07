@@ -199,7 +199,9 @@ fn a_query_filters_lines() {
     let dir = tempfile::tempdir().unwrap();
     let path = write(dir.path(), "app.log", LOG);
     let (mut app, rx) = open(vec![path], OpenOptions::default());
-    let mut next = Some(AppEvent::QQuery("select where line <> \"\"".to_string()));
+    let mut next = Some(AppEvent::Applied(datui::Applied::QQuery(
+        "select where line <> \"\"".to_string(),
+    )));
     while let Some(event) = next {
         next = app.event(event);
     }
@@ -224,17 +226,20 @@ fn row_numbers_are_the_source_row_through_sort_and_filter() {
     };
     run(
         &mut app,
-        AppEvent::Filter(vec![FilterStatement {
+        AppEvent::Applied(datui::Applied::Filter(vec![FilterStatement {
             columns: Vec::new(),
             column: "line".into(),
             operator: FilterOperator::NotEq,
             value: "".into(),
             logical_op: LogicalOperator::And,
-        }]),
+        }])),
     );
     assert_eq!(lines(&app), ["started", "warn: disk, 91% full", "stopped"]);
     assert_eq!(numbers(&app, 3), [1, 3, 6]);
-    run(&mut app, AppEvent::Sort(vec!["line".into()], vec![true]));
+    run(
+        &mut app,
+        AppEvent::Applied(datui::Applied::Sort(vec!["line".into()], vec![true])),
+    );
     assert_eq!(lines(&app), ["warn: disk, 91% full", "stopped", "started"]);
     assert_eq!(numbers(&app, 3), [3, 6, 1]);
 
@@ -249,7 +254,10 @@ fn row_numbers_are_the_source_row_through_sort_and_filter() {
         }
         drain_events(app, &rx);
     };
-    run(&mut app, AppEvent::Sort(vec!["host".into()], vec![false]));
+    run(
+        &mut app,
+        AppEvent::Applied(datui::Applied::Sort(vec!["host".into()], vec![false])),
+    );
     assert_eq!(
         numbers(&app, 3),
         [1, 2, 3],
@@ -470,7 +478,7 @@ fn go_to_a_row_waits_for_the_lines_to_be_indexed() {
     let dir = tempfile::tempdir().unwrap();
     let (mut app, rx) = open_first_rows(large_log(dir.path(), 1_500_000));
     let _ = screen(&mut app);
-    let mut next = app.event(AppEvent::GoToLine(1_400_000));
+    let mut next = app.event(AppEvent::Applied(datui::Applied::GoToLine(1_400_000)));
     while let Some(event) = next {
         next = app.event(event);
     }

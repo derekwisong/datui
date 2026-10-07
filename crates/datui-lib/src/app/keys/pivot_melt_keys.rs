@@ -219,7 +219,9 @@ impl App {
                     modal.attention = true;
                     None
                 } else {
-                    modal.build_pivot_spec().map(AppEvent::Pivot)
+                    modal
+                        .build_pivot_spec()
+                        .map(|spec| crate::Applied::Pivot(spec).into())
                 }
             }
             PivotMeltTab::Melt => {
@@ -227,7 +229,9 @@ impl App {
                     modal.attention = true;
                     None
                 } else {
-                    modal.build_melt_spec().map(AppEvent::Melt)
+                    modal
+                        .build_melt_spec()
+                        .map(|spec| crate::Applied::Melt(spec).into())
                 }
             }
         }

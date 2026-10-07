@@ -1902,15 +1902,15 @@ fn data_quality_setup_names_every_count_pass_on_one_parquet_file() {
         app.render(area, &mut buffer);
         common::buffer_text(&buffer)
     };
-    let sorted = || AppEvent::Sort(vec!["id".into()], vec![true]);
+    let sorted = || AppEvent::Applied(datui::Applied::Sort(vec!["id".into()], vec![true]));
     let filtered = || {
-        AppEvent::Filter(vec![FilterStatement {
+        AppEvent::Applied(datui::Applied::Filter(vec![FilterStatement {
             columns: Vec::new(),
             column: "id".into(),
             operator: FilterOperator::Gt,
             value: "10".into(),
             logical_op: LogicalOperator::And,
-        }])
+        }]))
     };
     for (name, view, scope, blocks) in [
         ("as loaded", None, QualityScope::CurrentView, true),

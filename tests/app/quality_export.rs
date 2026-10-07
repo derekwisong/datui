@@ -300,7 +300,11 @@ fn the_report_exports_without_reading_the_source() {
     let next = press(&mut app, KeyCode::Enter);
     assert!(matches!(
         next,
-        Some(AppEvent::QualityReportExport(_, _, Overwrite::Forbid))
+        Some(AppEvent::Applied(datui::Applied::QualityReportExport(
+            _,
+            _,
+            Overwrite::Forbid
+        )))
     ));
     // Up while the report is written, so a failed write can say why in it.
     assert!(app.analysis_modal.quality.export.is_some());
@@ -357,7 +361,11 @@ fn the_report_exports_without_reading_the_source() {
     let next = press(&mut app, KeyCode::Enter);
     assert!(matches!(
         next,
-        Some(AppEvent::QualityReportExport(_, _, Overwrite::Replace))
+        Some(AppEvent::Applied(datui::Applied::QualityReportExport(
+            _,
+            _,
+            Overwrite::Replace
+        )))
     ));
     drain(&mut app, &rx, next);
     assert!(

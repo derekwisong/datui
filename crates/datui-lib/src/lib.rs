@@ -36,6 +36,7 @@ pub mod loading;
 pub mod logging;
 pub mod notes;
 pub mod numfmt;
+pub use app::applied::Applied;
 pub use app::overlay::Overlay;
 pub mod past_calendar;
 pub use app::run::{ended_by_signal, run, run_captured};
@@ -68,7 +69,7 @@ pub use app::feedback::{ConfirmationModal, ErrorModal, Flash};
 use app::jobs::{Answer, Job, Jobs, Outcome};
 pub use app::jobs::{JobKind, Progress, Ticket};
 use app::modals::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
-use app::modals::pivot_melt_modal::{MeltSpec, PivotMeltModal, PivotSpec};
+use app::modals::pivot_melt_modal::PivotMeltModal;
 use app::modals::sort_filter_modal::SortFilterModal;
 use app::modals::sort_modal::{SortColumn, order_with_hidden};
 pub use error_display::{ErrorKindForPython, error_for_python};
@@ -314,46 +315,18 @@ pub enum AppEvent {
         root: PathBuf,
         message: String,
     },
-    /// Run the export once the UI has drawn its progress.
-    DoExport(ExportRequest),
     /// A followed file's watcher found more rows, or that the file went.
     Followed(crate::loading::follow::News),
     Exit,
     Crash(String),
-    QQuery(String),
-    SqlQuery(String),
-    Filter(Vec<FilterStatement>),
-    Sort(Vec<String>, Vec<bool>), // Columns, and per column whether it runs descending
-    ColumnOrder(Vec<String>, usize), // Column order, locked columns count
-    /// The sidebar's Apply as one change: column order, locked count, filters, and the
-    /// sort's columns with whether each runs descending.
-    ApplyView(
-        Vec<String>,
-        usize,
-        Vec<FilterStatement>,
-        Vec<String>,
-        Vec<bool>,
-    ),
-    Pivot(PivotSpec),
-    Melt(MeltSpec),
-    Export(ExportRequest),
-    /// Collect and format the whole view off-thread for a table-scope copy.
-    CopyTable {
-        format: crate::clipboard::CopyFormat,
-        header: bool,
-    },
-    ChartExport(ChartExportRequest),
-    /// A confirmed documentation link, checked by `app::link_open::checked_url`.
-    OpenLink(String),
-    /// Deferred: run the chart export once its phase is drawn.
-    DoChartExport(ChartExportRequest),
+    /// A dialog or prompt answered: what it asks of the app. See [`Applied`].
+    Applied(Applied),
     Collect,
     Update,
     Reset,
     Resize(u16, u16), // resized (width, height)
     /// A scroll deferred one frame, so the spinner shows while its rows are read.
     Scroll(Scroll),
-    GoToLine(usize), // Deferred: jump to line number (when collect needed)
     /// Run an analysis tool off the UI thread; deferred so its progress shows first.
     AnalysisCompute(analysis::analysis_modal::AnalysisTool),
     /// The sample a stopped Data Quality run had read, kept for the next run.
@@ -383,12 +356,6 @@ pub enum AppEvent {
     /// A frame was painted. The run loop calls [`App::frame_painted`]; a harness
     /// sends this when [`App::count_waits_for_a_frame`].
     FramePainted,
-    /// Write the on-screen Data Quality report from memory; nothing is read.
-    QualityReportExport(
-        PathBuf,
-        crate::analysis::quality_export::ReportFormat,
-        Overwrite,
-    ),
     /// A directory named on the command line: look at it on a worker, then do what
     /// `Enter` on its row would. An event so the first frame, with a spinner and a
     /// way out, is drawn before a look that can take seconds.
@@ -1972,7 +1939,7 @@ impl App {
             let moving = applied.remove(i);
             applied.insert(j, moving);
         }
-        Some(AppEvent::ColumnOrder(order, locked))
+        Some(AppEvent::Applied(Applied::ColumnOrder(order, locked)))
     }
 
     /// Whether a text field owns typed characters, so the wheel and `?` leave it alone.
@@ -2886,7 +2853,7 @@ impl App {
                 };
                 self.apply_sample(sample)
             }
-            Confirm::OpenLink(url) => Some(AppEvent::OpenLink(url)),
+            Confirm::OpenLink(url) => Some(AppEvent::Applied(Applied::OpenLink(url))),
             Confirm::ClearRecents => {
                 self.cache.clear_recents();
                 self.home_refresh();
@@ -2914,20 +2881,22 @@ impl App {
                 None
             }
             // The overwrite was agreed to, for this export only.
-            Confirm::QualityExport(path, format) => Some(AppEvent::QualityReportExport(
-                path,
-                format,
-                Overwrite::Replace,
+            Confirm::QualityExport(path, format) => Some(AppEvent::Applied(
+                Applied::QualityReportExport(path, format, Overwrite::Replace),
             )),
-            Confirm::ChartExport(request) => Some(AppEvent::ChartExport(ChartExportRequest {
+            Confirm::ChartExport(request) => Some(AppEvent::Applied(Applied::ChartExport(
+                ChartExportRequest {
+                    overwrite: Overwrite::Replace,
+                    ..*request
+                },
+            ))),
+            Confirm::Export(request) => Some(AppEvent::Applied(Applied::Export(ExportRequest {
                 overwrite: Overwrite::Replace,
                 ..*request
-            })),
-            Confirm::Export(request) => Some(AppEvent::Export(ExportRequest {
-                overwrite: Overwrite::Replace,
-                ..*request
-            })),
-            Confirm::Copy(format, header) => Some(AppEvent::CopyTable { format, header }),
+            }))),
+            Confirm::Copy(format, header) => {
+                Some(AppEvent::Applied(Applied::CopyTable { format, header }))
+            }
             Confirm::Download => {
                 // The loader releases the generation as the download or read starts, and its job
                 // takes it at once.
@@ -3818,22 +3787,6 @@ impl App {
                 None
             }
             AppEvent::Scroll(scroll) => self.handle_scroll(|s| scroll.run(s)),
-            AppEvent::GoToLine(n) => {
-                // Past the lines indexed so far: gone to once they all are.
-                if let Some(state) = self.data_table_state.as_ref()
-                    && state.indexing().is_some()
-                    && (n >= state.num_rows()
-                        || state.changes_rows()
-                        || !state.view_sort_columns().is_empty()
-                        || !state.view_sort_ascending())
-                {
-                    self.counting.goto_when_indexed = Some((self.dataset_generation, n));
-                    self.status_message = Some(Self::INDEXING_FOR_ROW.to_string());
-                    self.busy = false;
-                    return None;
-                }
-                self.handle_scroll(|s| s.scroll_to_row_centered(n))
-            }
             AppEvent::AnalysisCompute(tool) => self.spawn_analysis(tool),
             AppEvent::BackgroundLenReady { .. }
             | AppEvent::FramePainted
@@ -3966,30 +3919,9 @@ impl App {
                 None
             }
             AppEvent::JobEnded(ticket) => self.job_ended(ticket),
+            AppEvent::Applied(applied) => self.apply(applied),
             AppEvent::JobProgress { ticket, progress } => {
                 self.job_progress(ticket, &progress);
-                None
-            }
-            AppEvent::QQuery(query) => {
-                self.run_query(QueryMode::Q, &query, "Applying query...");
-                None
-            }
-            AppEvent::SqlQuery(sql) => {
-                self.run_query(QueryMode::Sql, &sql, "Applying SQL query...");
-                None
-            }
-            AppEvent::Filter(statements) => {
-                if let Some(state) = &mut self.data_table_state {
-                    state.deferred(|s| s.filter(statements.clone()));
-                }
-                self.spawn_async_collect("Filtering...");
-                None
-            }
-            AppEvent::Sort(columns, descending) => {
-                if let Some(state) = &mut self.data_table_state {
-                    state.deferred(|s| s.sort_by(columns.clone(), descending.clone()));
-                }
-                self.spawn_async_collect("Sorting...");
                 None
             }
             AppEvent::Reset => {
@@ -4012,189 +3944,8 @@ impl App {
                 self.views.active_id = None;
                 None
             }
-            AppEvent::ApplyView(order, locked, filters, columns, descending) => {
-                if let Some(state) = &mut self.data_table_state {
-                    let change = state
-                        .deferred(|s| s.apply_view(order, locked, filters, columns, descending));
-                    self.spawn_async_collect(match change {
-                        crate::table::ViewChange { sort: true, .. } => "Sorting...",
-                        crate::table::ViewChange { filters: true, .. } => "Filtering...",
-                        _ => Self::LOADING_BUFFER,
-                    });
-                }
-                None
-            }
-            AppEvent::ColumnOrder(order, locked_count) => {
-                if let Some(state) = &mut self.data_table_state {
-                    state.deferred(|s| {
-                        s.set_column_order(order);
-                        s.set_locked_columns(locked_count);
-                    });
-                    self.spawn_async_collect(Self::LOADING_BUFFER);
-                }
-                None
-            }
-            AppEvent::Pivot(spec) => {
-                // The modal stays up until the result is in, so a failed pivot leaves the spec to
-                // fix.
-                let job = self.data_table_state.as_ref()?.plan_pivot(&spec);
-                self.spawn_job(Job::Pivot, Some(Self::COMPUTING_PIVOT), move |_| {
-                    let pivoted = job
-                        .run()
-                        .map_err(|e| crate::error_display::user_message_from_report(&e, None))?;
-                    Ok(Answer::Pivoted { spec, pivoted })
-                });
-                None
-            }
-            AppEvent::Melt(spec) => {
-                self.busy = true;
-                if let Some(state) = &mut self.data_table_state {
-                    let result = state.deferred(|s| s.melt(&spec));
-                    match result {
-                        Ok(()) => {
-                            self.close_overlay();
-                            self.spawn_async_collect("Computing melt...");
-                            None
-                        }
-                        Err(e) => {
-                            self.busy = false;
-                            self.error_modal
-                                .show(crate::error_display::user_message_from_report(&e, None));
-                            None
-                        }
-                    }
-                } else {
-                    self.busy = false;
-                    None
-                }
-            }
-            AppEvent::QualityReportExport(path, format, overwrite) => {
-                // The report and the plan it was measured with, cloned to the writer: built from
-                // memory, nothing read.
-                let results = self.analysis_modal.quality.results.clone()?;
-                let plan = self.analysis_modal.quality_result_plan().clone();
-                self.spawn_job(
-                    Job::QualityReport,
-                    Some("Writing the report..."),
-                    move |_| {
-                        crate::analysis::quality_export::write(
-                            &path, &results, &plan, format, overwrite,
-                        )
-                        .map_err(|error| Self::format_export_error(&error))?;
-                        Ok(Answer::QualityReportWritten(path))
-                    },
-                );
-                None
-            }
-            AppEvent::ChartExport(..) | AppEvent::DoChartExport(..) => self.chart_event(event),
-            AppEvent::Export(request) => {
-                if self.data_table_state.is_some() {
-                    self.busy = true;
-                    self.export_progress =
-                        Some(ExportProgress::new(&request.path, "Preparing export"));
-                    // Drawn before the export starts.
-                    Some(AppEvent::DoExport(request))
-                } else {
-                    None
-                }
-            }
             AppEvent::Followed(news) => {
                 self.followed(&news);
-                None
-            }
-            AppEvent::DoExport(request) => {
-                let Some(state) = &self.data_table_state else {
-                    self.export_progress = None;
-                    self.busy = false;
-                    return None;
-                };
-                // Cloned, not taken: a failed write reopens the dialog on the same counts.
-                let frame = match self.export_counts.clone() {
-                    Some(counts) => {
-                        crate::table::ExportFrame::of(polars::prelude::IntoLazy::lazy(counts))
-                    }
-                    None => state.export_frame(request.options.source_file),
-                };
-                let streaming = state.polars_streaming();
-                // One job from plan to commit: it holds the generation throughout, and any rows
-                // it collects die with it.
-                let phase = match request.route(streaming) {
-                    crate::export::Route::Streamed => Self::export_write_phase(&request),
-                    crate::export::Route::Collected => "Collecting data",
-                };
-                self.export_progress = Some(ExportProgress::new(&request.path, phase));
-                let writing = Self::export_write_phase(&request);
-                self.spawn_job(Job::Export, Some("Exporting..."), move |worker| {
-                    let report = worker.reporter();
-                    let written = move |bytes| {
-                        report(Progress::ExportWriting {
-                            phase: writing,
-                            bytes,
-                        })
-                    };
-                    frame
-                        .into_lazy()
-                        .map_err(color_eyre::eyre::Report::from)
-                        .and_then(|lf| crate::export::run(lf, &request, streaming, written))
-                        .map_err(|e| Self::format_export_error(&e))?;
-                    // Success is reported only once the file is committed.
-                    Ok(Answer::Exported(request.path))
-                });
-                None
-            }
-            AppEvent::OpenLink(url) => {
-                // Not waited on; a browser that will not start gets a flash, not an error.
-                if app::link_open::open(&url).is_err() {
-                    self.flash_note("Couldn't open the link; y copies it".to_string());
-                }
-                None
-            }
-            AppEvent::CopyTable { format, header } => {
-                let accepts = match self.copy_destination() {
-                    Ok(destination) => destination.accepts(),
-                    Err(e) => {
-                        self.busy = false;
-                        self.error_modal.show(e);
-                        return None;
-                    }
-                };
-                if let Some(state) = &self.data_table_state {
-                    let lf = state.visible_lf();
-                    let streaming = state.polars_streaming();
-                    self.spawn_job(Job::Copy, Some("Collecting data for copy..."), move |_| {
-                        // A capped destination's copy is read in batches and abandoned at the cap; others
-                        // are collected whole.
-                        let (payload, rows) = match accepts.base64_limit {
-                            Some(limit) => crate::clipboard::bounded_table_text(
-                                lf, format, header, limit,
-                            )
-                            .map(|(text, rows)| (crate::clipboard::Payload::text(text), rows)),
-                            None => crate::analysis::statistics::collect_lazy(lf, streaming)
-                                .map_err(|e| crate::error_display::user_message_from_polars(&e))
-                                .and_then(|df| {
-                                    crate::clipboard::tabular_payload(
-                                        &df,
-                                        format,
-                                        header,
-                                        accepts.html,
-                                    )
-                                    .map(|payload| (payload, df.height()))
-                                }),
-                        }
-                        .map_err(|message| format!("Copy failed: {message}"))?;
-                        // Handed on whole, never copied.
-                        Ok(Answer::Copied {
-                            payload,
-                            message: format!(
-                                "Copied {} rows as {}",
-                                app::modals::copy_modal::thousands(rows),
-                                format.as_str()
-                            ),
-                        })
-                    });
-                } else {
-                    self.busy = false;
-                }
                 None
             }
             AppEvent::TerminalBackground(mode) => {
@@ -4283,7 +4034,7 @@ impl App {
         ) {
             applied.swap(i, j);
         }
-        Some(AppEvent::ColumnOrder(order, locked))
+        Some(AppEvent::Applied(Applied::ColumnOrder(order, locked)))
     }
 
     /// `[` / `]` at the table: sort by the cursor's column, replacing the sort in
@@ -4302,7 +4053,10 @@ impl App {
             self.spawn_async_collect("Sorting...");
             return None;
         }
-        Some(AppEvent::Sort(vec![column], vec![descending]))
+        Some(AppEvent::Applied(Applied::Sort(
+            vec![column],
+            vec![descending],
+        )))
     }
 }
 
@@ -4359,7 +4113,7 @@ impl App {
             return None;
         }
         statements.push(statement);
-        Some(AppEvent::Filter(statements))
+        Some(AppEvent::Applied(Applied::Filter(statements)))
     }
 
     /// Bring the sidebar in line with what is applied to the frame on screen (column
@@ -4487,13 +4241,13 @@ impl App {
         if view_unchanged {
             return None;
         }
-        Some(AppEvent::ApplyView(
+        Some(AppEvent::Applied(Applied::ApplyView(
             column_order,
             locked_count,
             statements,
             columns,
             descending,
-        ))
+        )))
     }
 
     /// Facts read for the dataset's single file stored as its format says (a stream or

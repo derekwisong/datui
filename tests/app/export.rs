@@ -146,7 +146,7 @@ fn test_a_file_that_appears_during_an_export_is_left_alone() {
     let export = press(&mut app, KeyCode::Enter).expect("no file there: the export starts");
     assert!(matches!(
         &export,
-        AppEvent::Export(request) if request.overwrite == datui::export::output_file::Overwrite::Forbid
+        AppEvent::Applied(datui::Applied::Export(request)) if request.overwrite == datui::export::output_file::Overwrite::Forbid
     ));
     std::fs::write(&target, "theirs").unwrap();
     run_to_idle(&mut app, &rx, &tx, export);
@@ -265,7 +265,12 @@ fn test_a_failed_export_keeps_the_old_file() {
         }
         let mut request = csv_request(&target, datui::export::output_file::Overwrite::Replace);
         request.options.csv_compression = compression;
-        run_to_idle(&mut app, &rx, &tx, AppEvent::Export(request));
+        run_to_idle(
+            &mut app,
+            &rx,
+            &tx,
+            AppEvent::Applied(datui::Applied::Export(request)),
+        );
 
         assert!(
             app.export_modal
@@ -1183,7 +1188,11 @@ fn test_export_format_follows_typed_extension() {
 
     // And the export the Enter key builds carries that format.
     match press(&mut app, KeyCode::Enter) {
-        Some(AppEvent::Export(datui::ExportRequest { path, format, .. })) => {
+        Some(AppEvent::Applied(datui::Applied::Export(datui::ExportRequest {
+            path,
+            format,
+            ..
+        }))) => {
             assert_eq!(format, ExportFormat::Csv);
             assert_eq!(path, out);
         }
@@ -1226,12 +1235,12 @@ fn test_export_enter_applies_from_any_row() {
     assert!(!app.export_modal.csv_include_header, "Space toggles");
 
     match press(&mut app, KeyCode::Enter) {
-        Some(AppEvent::Export(datui::ExportRequest {
+        Some(AppEvent::Applied(datui::Applied::Export(datui::ExportRequest {
             path,
             format,
             options,
             ..
-        })) => {
+        }))) => {
             assert_eq!(format, ExportFormat::Csv);
             assert_eq!(path, out);
             assert!(
@@ -1345,7 +1354,7 @@ fn ctrl_p_recalls_the_last_export_path_and_up_moves_on() {
     }
     assert!(matches!(
         press(&mut app, KeyCode::Enter),
-        Some(AppEvent::Export(_))
+        Some(AppEvent::Applied(datui::Applied::Export(_)))
     ));
 
     press(&mut app, KeyCode::Char('e'));

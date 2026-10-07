@@ -11,17 +11,15 @@ fn test_sql_runs_against_the_loaded_data_not_the_filtered_view() {
     use datui::app::modals::filter_modal::FilterOperator;
     let (mut app, rx, tx) = open_query_filter_fixture("filter_then_sql.csv");
 
-    app.event(AppEvent::Filter(vec![filter_stmt(
-        "c",
-        FilterOperator::Eq,
-        "0",
-    )]));
+    app.event(AppEvent::Applied(datui::Applied::Filter(vec![
+        filter_stmt("c", FilterOperator::Eq, "0"),
+    ])));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 34);
 
-    app.event(AppEvent::SqlQuery(
+    app.event(AppEvent::Applied(datui::Applied::SqlQuery(
         "SELECT * FROM df WHERE a < 30".to_string(),
-    ));
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 30, "the SQL replaces the filter");
     assert!(
@@ -32,7 +30,7 @@ fn test_sql_runs_against_the_loaded_data_not_the_filtered_view() {
             .is_empty()
     );
 
-    app.event(AppEvent::Filter(vec![]));
+    app.event(AppEvent::Applied(datui::Applied::Filter(vec![])));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 30);
 }
@@ -82,7 +80,9 @@ fn test_enter_inspects_a_loaded_list_column_and_drills_a_by_view() {
     assert_eq!(state.lf().clone().collect_schema().unwrap(), schema);
     assert_eq!(current_rows(&app), 3);
 
-    app.event(AppEvent::QQuery("select k by x".to_string()));
+    app.event(AppEvent::Applied(datui::Applied::QQuery(
+        "select k by x".to_string(),
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     painted(&mut app, &rx, &tx, area);
     assert!(app.data_table_state.as_ref().unwrap().is_grouped());
@@ -103,7 +103,9 @@ fn test_a_failed_group_by_leaves_the_grouped_view_drilling_by_its_keys() {
     let (mut app, rx, tx) = open_salary_fixture("sql_drill_rollback");
     let failing = "SELECT CAST(dept AS INT) AS dept, COUNT(*) AS n FROM df GROUP BY 1";
     // Over the rows as loaded, the failed statement leaves nothing to drill into.
-    app.event(AppEvent::SqlQuery(failing.to_string()));
+    app.event(AppEvent::Applied(datui::Applied::SqlQuery(
+        failing.to_string(),
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     assert!(app.modal_showing(), "the failure is said");
     assert!(!app.data_table_state.as_ref().unwrap().can_drill_down());
@@ -113,7 +115,9 @@ fn test_a_failed_group_by_leaves_the_grouped_view_drilling_by_its_keys() {
 
     let grouped = "SELECT dept, COUNT(*) AS n FROM df GROUP BY dept";
     run_sql(&mut app, &rx, &tx, grouped);
-    app.event(AppEvent::SqlQuery(failing.to_string()));
+    app.event(AppEvent::Applied(datui::Applied::SqlQuery(
+        failing.to_string(),
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     assert!(app.modal_showing(), "the failure is said");
     let state = app.data_table_state.as_mut().unwrap();
@@ -232,9 +236,9 @@ fn a_change_of_view_relearns_widths() {
 
     // Same name, same type, other values. The frame drawn while the query reads
     // still holds the old values; they teach the new view nothing.
-    app.event(AppEvent::QQuery(
+    app.event(AppEvent::Applied(datui::Applied::QQuery(
         "select id, status: description".to_string(),
-    ));
+    )));
     draw(&mut app);
     pump_until_idle(&mut app, &rx, &tx);
     let queried = draw(&mut app);
@@ -260,7 +264,10 @@ fn a_change_of_view_relearns_widths() {
 
     // The sidebar sends the sort again on every apply; unchanged, it is not a
     // change of view.
-    app.event(AppEvent::Sort(Vec::new(), Vec::new()));
+    app.event(AppEvent::Applied(datui::Applied::Sort(
+        Vec::new(),
+        Vec::new(),
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     let resent = draw(&mut app);
     assert_eq!(app.data_table_state.as_ref().unwrap().start_row(), start);
@@ -268,17 +275,18 @@ fn a_change_of_view_relearns_widths() {
 
     // A new sort keeps the row number; descending, the long values are there now,
     // and the width is learned from them.
-    app.event(AppEvent::Sort(vec!["status".to_string()], vec![true]));
+    app.event(AppEvent::Applied(datui::Applied::Sort(
+        vec!["status".to_string()],
+        vec![true],
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     let sorted = draw(&mut app);
     assert_eq!(shown(&app, "status"), long_width, "{sorted}");
 
     // A new filter, viewed from the top, holds only the short ones.
-    app.event(AppEvent::Filter(vec![filter_stmt(
-        "status",
-        FilterOperator::Contains,
-        "short",
-    )]));
+    app.event(AppEvent::Applied(datui::Applied::Filter(vec![
+        filter_stmt("status", FilterOperator::Contains, "short"),
+    ])));
     pump_until_idle(&mut app, &rx, &tx);
     let filtered = draw(&mut app);
     assert_eq!(shown(&app, "status"), short_width, "{filtered}");
@@ -293,7 +301,9 @@ fn a_query_sent_without_the_prompt_that_fails_leaves_the_view() {
     let (mut app, rx, tx) = open_query_filter_fixture("query_fails_no_prompt.csv");
     run_and_settle(
         &mut app,
-        AppEvent::SqlQuery("SELECT CAST(name AS INT) AS n FROM df".to_string()),
+        AppEvent::Applied(datui::Applied::SqlQuery(
+            "SELECT CAST(name AS INT) AS n FROM df".to_string(),
+        )),
         &rx,
         &tx,
     );
@@ -313,18 +323,20 @@ fn test_a_view_replays_the_query_before_the_pivot() {
     use datui::app::modals::pivot_melt_modal::{PivotAggregation, PivotSpec};
     let steps = || {
         vec![
-            AppEvent::SqlQuery("SELECT id, key, val FROM df WHERE id >= 4".to_string()),
-            AppEvent::Filter(vec![filter_stmt(
+            AppEvent::Applied(datui::Applied::SqlQuery(
+                "SELECT id, key, val FROM df WHERE id >= 4".to_string(),
+            )),
+            AppEvent::Applied(datui::Applied::Filter(vec![filter_stmt(
                 "id",
                 datui::app::modals::filter_modal::FilterOperator::Lt,
                 "8",
-            )]),
-            AppEvent::Pivot(PivotSpec {
+            )])),
+            AppEvent::Applied(datui::Applied::Pivot(PivotSpec {
                 index: vec!["id".to_string()],
                 pivot_column: "key".to_string(),
                 value_column: "val".to_string(),
                 aggregation: PivotAggregation::First,
-            }),
+            })),
         ]
     };
     let (view, applied, expected) = view_and_steps_on_the_next_file("view_query_pivot", &steps);
@@ -348,13 +360,15 @@ fn test_a_view_replays_sql_on_the_pivot_after_it() {
     use datui::app::modals::pivot_melt_modal::{PivotAggregation, PivotSpec};
     let steps = || {
         vec![
-            AppEvent::Pivot(PivotSpec {
+            AppEvent::Applied(datui::Applied::Pivot(PivotSpec {
                 index: vec!["id".to_string()],
                 pivot_column: "key".to_string(),
                 value_column: "val".to_string(),
                 aggregation: PivotAggregation::First,
-            }),
-            AppEvent::SqlQuery("SELECT id, k2 FROM df WHERE k1 > 12".to_string()),
+            })),
+            AppEvent::Applied(datui::Applied::SqlQuery(
+                "SELECT id, k2 FROM df WHERE k1 > 12".to_string(),
+            )),
         ]
     };
     let (view, applied, expected) = view_and_steps_on_the_next_file("view_pivot_sql", &steps);
@@ -374,15 +388,15 @@ fn test_a_view_replays_the_query_before_the_melt() {
     use datui::app::modals::pivot_melt_modal::MeltSpec;
     let steps = || {
         vec![
-            AppEvent::SqlQuery(
+            AppEvent::Applied(datui::Applied::SqlQuery(
                 "SELECT id, val, val * 2 AS doubled FROM df WHERE id < 3".to_string(),
-            ),
-            AppEvent::Melt(MeltSpec {
+            )),
+            AppEvent::Applied(datui::Applied::Melt(MeltSpec {
                 index: vec!["id".to_string()],
                 value_columns: vec!["val".to_string(), "doubled".to_string()],
                 variable_name: "variable".to_string(),
                 value_name: "value".to_string(),
-            }),
+            })),
         ]
     };
     let (view, applied, expected) = view_and_steps_on_the_next_file("view_query_melt", &steps);
@@ -403,19 +417,21 @@ fn test_a_view_replays_the_query_before_the_melt() {
 fn test_a_view_of_a_melted_pivot_fails_to_apply_and_changes_nothing() {
     use datui::app::modals::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec};
     let steps = [
-        AppEvent::SqlQuery("SELECT * FROM df WHERE id >= 4".to_string()),
-        AppEvent::Pivot(PivotSpec {
+        AppEvent::Applied(datui::Applied::SqlQuery(
+            "SELECT * FROM df WHERE id >= 4".to_string(),
+        )),
+        AppEvent::Applied(datui::Applied::Pivot(PivotSpec {
             index: vec!["id".to_string()],
             pivot_column: "key".to_string(),
             value_column: "val".to_string(),
             aggregation: PivotAggregation::First,
-        }),
-        AppEvent::Melt(MeltSpec {
+        })),
+        AppEvent::Applied(datui::Applied::Melt(MeltSpec {
             index: vec!["id".to_string()],
             value_columns: vec!["k1".to_string(), "k2".to_string()],
             variable_name: "variable".to_string(),
             value_name: "value".to_string(),
-        }),
+        })),
     ];
     let next_path = common::fixture_dir().join("view_pivot_melt_next.csv");
     std::fs::write(&next_path, long_csv(3)).unwrap();

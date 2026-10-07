@@ -213,7 +213,9 @@ fn sql_keeps_units_only_on_columns_it_passes_through() {
     let (mut app, rx, tx) = app_with_spec();
     open(&mut app, &rx, path, OpenOptions::default());
     let sql = |app: &mut App, statement: &str| {
-        app.event(AppEvent::SqlQuery(statement.to_string()));
+        app.event(AppEvent::Applied(datui::Applied::SqlQuery(
+            statement.to_string(),
+        )));
         pump_until_idle(app, &rx, &tx);
         let state = app.data_table_state.as_ref().unwrap();
         assert!(state.error().is_none(), "{statement}: {:?}", state.error());

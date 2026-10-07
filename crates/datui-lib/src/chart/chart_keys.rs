@@ -306,7 +306,7 @@ impl App {
             return None;
         }
         self.step_back();
-        Some(AppEvent::ChartExport(request))
+        Some(AppEvent::Applied(crate::Applied::ChartExport(request)))
     }
 
     /// Every X of the line or scatter series on screen, in order, each once.

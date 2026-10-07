@@ -75,8 +75,8 @@ impl App {
                 }
                 let _ = input.save_to_history(&self.cache);
                 return Some(match mode {
-                    QueryMode::Sql => AppEvent::SqlQuery(text),
-                    QueryMode::Q => AppEvent::QQuery(text),
+                    QueryMode::Sql => AppEvent::Applied(crate::Applied::SqlQuery(text)),
+                    QueryMode::Q => AppEvent::Applied(crate::Applied::QQuery(text)),
                 });
             }
             TextInputEvent::Cancel => self.close_query_prompt(),
@@ -103,7 +103,7 @@ impl App {
             state.scroll_would_trigger_collect(row_index as i64 - state.start_row() as i64);
         if would_collect {
             self.busy = true;
-            return Some(AppEvent::GoToLine(row_index));
+            return Some(AppEvent::Applied(crate::Applied::GoToLine(row_index)));
         }
         state.scroll_to_row_centered(row_index);
         None

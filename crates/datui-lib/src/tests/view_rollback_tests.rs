@@ -1,4 +1,5 @@
 use super::chart_prepare_tests::open;
+use crate::app::modals::pivot_melt_modal::{MeltSpec, PivotSpec};
 use crate::*;
 use polars::datatypes::AnyValue;
 use std::sync::mpsc;
@@ -344,12 +345,14 @@ fn the_bar_offers_esc_while_a_pivot_is_computed() {
         KeyModifiers::NONE,
     )));
     assert_eq!(app.overlay, Overlay::PivotMelt);
-    app.event(AppEvent::Pivot(app::modals::pivot_melt_modal::PivotSpec {
-        index: vec!["id".to_string()],
-        pivot_column: "key".to_string(),
-        value_column: "val".to_string(),
-        aggregation: app::modals::pivot_melt_modal::PivotAggregation::First,
-    }));
+    app.event(AppEvent::Applied(crate::Applied::Pivot(
+        app::modals::pivot_melt_modal::PivotSpec {
+            index: vec!["id".to_string()],
+            pivot_column: "key".to_string(),
+            value_column: "val".to_string(),
+            aggregation: app::modals::pivot_melt_modal::PivotAggregation::First,
+        },
+    )));
     let bar = footer_text(&mut app);
     assert!(
         bar.contains("Computing pivot") && bar.contains("Esc Stop"),
@@ -508,15 +511,20 @@ fn sorted_and_filtered(
     tx: &mpsc::Sender<AppEvent>,
 ) -> Option<DataFrame> {
     use crate::app::modals::filter_modal::{FilterOperator, LogicalOperator};
-    app.event(AppEvent::Sort(vec!["val".to_string()], vec![true]));
+    app.event(AppEvent::Applied(crate::Applied::Sort(
+        vec!["val".to_string()],
+        vec![true],
+    )));
     super::chart_prepare_tests::pump(app, rx, tx, |a| !crate::tests::work_pending(a));
-    app.event(AppEvent::Filter(vec![FilterStatement {
-        columns: Vec::new(),
-        column: "val".to_string(),
-        operator: FilterOperator::Gt,
-        value: "0".to_string(),
-        logical_op: LogicalOperator::And,
-    }]));
+    app.event(AppEvent::Applied(crate::Applied::Filter(vec![
+        FilterStatement {
+            columns: Vec::new(),
+            column: "val".to_string(),
+            operator: FilterOperator::Gt,
+            value: "0".to_string(),
+            logical_op: LogicalOperator::And,
+        },
+    ])));
     super::chart_prepare_tests::pump(app, rx, tx, |a| !crate::tests::work_pending(a));
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.num_rows(), 8);
@@ -591,7 +599,9 @@ fn a_query_whose_rows_worker_dies_rolls_back() {
     let (mut app, rx, tx, _dir) = long_csv_app();
     let shown = sorted_and_filtered(&mut app, &rx, &tx);
     app.jobs.worker_dies = crate::tests::worker_dies_once(|job| matches!(job, Job::Rows(_)));
-    app.event(AppEvent::QQuery("select id where val > 5".to_string()));
+    app.event(AppEvent::Applied(crate::Applied::QQuery(
+        "select id where val > 5".to_string(),
+    )));
     assert!(app.prompt.query_running.is_some(), "the query planned");
     pump_with_dying_rows(&mut app, &rx, &tx);
 
@@ -1105,9 +1115,9 @@ fn a_count_that_lands_while_a_query_runs_comes_back_with_the_view() {
     let counting = state.len_generation();
     app.counting.len_count_inflight = Some(counting);
 
-    app.event(AppEvent::SqlQuery(
+    app.event(AppEvent::Applied(crate::Applied::SqlQuery(
         "SELECT CAST(name AS INT) AS n FROM df".to_string(),
-    ));
+    )));
     assert!(app.prompt.query_running.is_some());
     app.event(AppEvent::BackgroundLenReady {
         len_generation: counting,
@@ -1312,9 +1322,9 @@ fn a_view_failing_after_any_step_puts_the_view_back() {
     for (step, fails, steps) in cases {
         let (mut app, rx, tx, _dir) = long_csv_app();
         // The view it is applied over: a query, a sort and a filter, a selection.
-        app.event(AppEvent::QQuery(
+        app.event(AppEvent::Applied(crate::Applied::QQuery(
             "select id, key, val where val >= 0".to_string(),
-        ));
+        )));
         super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !crate::tests::work_pending(a));
         sorted_and_filtered(&mut app, &rx, &tx);
         let state = app.data_table_state.as_mut().unwrap();

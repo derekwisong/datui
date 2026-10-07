@@ -1105,7 +1105,7 @@ homepage = "https://user:pw@example.com/"
     // Enter hands the checked URL on; the run loop starts the browser.
     let next = app.event(key(KeyCode::Enter));
     match next {
-        Some(AppEvent::OpenLink(sent)) => assert_eq!(sent, url),
+        Some(AppEvent::Applied(datui::Applied::OpenLink(sent))) => assert_eq!(sent, url),
         _ => panic!("Enter on Open hands the link on"),
     }
     assert!(!app.confirmation_modal.active);

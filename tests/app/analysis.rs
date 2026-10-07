@@ -565,15 +565,18 @@ fn test_view_getters_describe_the_grouped_view_while_drilled() {
     use datui::app::modals::filter_modal::FilterOperator;
     let (mut app, rx, tx) = open_query_filter_fixture("drill_view_getters.csv");
 
-    app.event(AppEvent::QQuery("select by c".to_string()));
+    app.event(AppEvent::Applied(datui::Applied::QQuery(
+        "select by c".to_string(),
+    )));
     pump_until_idle(&mut app, &rx, &tx);
-    app.event(AppEvent::Filter(vec![filter_stmt(
-        "c",
-        FilterOperator::Gt,
-        "0",
-    )]));
+    app.event(AppEvent::Applied(datui::Applied::Filter(vec![
+        filter_stmt("c", FilterOperator::Gt, "0"),
+    ])));
     pump_until_idle(&mut app, &rx, &tx);
-    app.event(AppEvent::Sort(vec!["c".to_string()], vec![true]));
+    app.event(AppEvent::Applied(datui::Applied::Sort(
+        vec!["c".to_string()],
+        vec![true],
+    )));
     pump_until_idle(&mut app, &rx, &tx);
 
     let state = app.data_table_state.as_mut().unwrap();
@@ -845,7 +848,9 @@ fn test_value_counts_drill_breadcrumb_marks_a_tab() {
 #[test]
 fn test_value_counts_count_the_queried_view() {
     let (mut app, rx, tx) = open_query_filter_fixture("value_counts_query.csv");
-    app.event(AppEvent::QQuery("select where a < 10".to_string()));
+    app.event(AppEvent::Applied(datui::Applied::QQuery(
+        "select where a < 10".to_string(),
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     press_and_send(&mut app, &tx, KeyCode::Right);
     counts_key(&mut app, &rx, &tx, KeyCode::Char('F'));

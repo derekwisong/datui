@@ -380,7 +380,9 @@ impl App {
             && goto == generation
         {
             self.take_down_the_counting_status();
-            let _ = self.events.send(AppEvent::GoToLine(row));
+            let _ = self
+                .events
+                .send(AppEvent::Applied(crate::Applied::GoToLine(row)));
         }
         if self.counting.end_when_indexed.take() == Some(generation) {
             self.take_down_the_counting_status();

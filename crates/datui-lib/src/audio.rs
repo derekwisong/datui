@@ -949,7 +949,7 @@ impl AudioSource {
         self.header.seconds(self.frames)
     }
 
-    /// Frames the file holds past the most datui shows, [`MAX_FRAMES`].
+    /// Frames the file holds past the most datui shows, `MAX_FRAMES`.
     pub fn frames_past_limit(&self) -> u64 {
         self.header
             .frames(self.map.len() as u64)

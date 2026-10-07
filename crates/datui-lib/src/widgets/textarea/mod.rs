@@ -1,7 +1,7 @@
 //! A text editing widget built directly on ratatui.
 //!
 //! [`TextArea`] owns a buffer of lines, a cursor, a selection, an undo history
-//! and a yank buffer, and knows how to draw itself into a [`Rect`]. It has no
+//! and a yank buffer, and knows how to draw itself into a `Rect`. It has no
 //! opinion about history of previously submitted values, theming or focus:
 //! that belongs to [`crate::widgets::text_input::TextInput`], which wraps this
 //! type and is what the rest of datui uses.
@@ -9,7 +9,7 @@
 //! Coordinates are `(row, column)` pairs where the column is a *character*
 //! index, not a terminal column. Character indices are what the editing and
 //! cursor logic works in; display width is resolved only while rendering, in
-//! [`render`].
+//! `render`.
 
 mod cursor;
 mod edit;

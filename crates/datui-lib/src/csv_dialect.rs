@@ -166,7 +166,7 @@ const MAX_WINDOW_BYTES: u64 = 1 << 20;
 /// The first `rows` data lines of `source`, read on from where its header lines ended,
 /// each split on `separator` and trimmed: the lines a scan infers its types from. A
 /// line that starts with `comment`, or is blank, is not one. Stops at
-/// [`MAX_WINDOW_BYTES`].
+/// `MAX_WINDOW_BYTES`.
 pub fn window(
     source: impl BufRead,
     rows: usize,

@@ -495,7 +495,7 @@ fn rows_note(counted: usize, whole: bool, grouped: bool) -> String {
 impl App {
     /// True while chart data for the current view is being prepared off-thread: its
     /// job is running, or it waits its turn behind a superseded one still reading,
-    /// which cannot be stopped mid-read (see [`ChartPrep`]). Either way the user is
+    /// which cannot be stopped mid-read (see `ChartPrep`). Either way the user is
     /// waiting on a computation and the throbber should say so.
     pub fn chart_preparing(&self) -> bool {
         if self.chart_prep().is_some() {

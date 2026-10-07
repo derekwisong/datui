@@ -197,7 +197,7 @@ pub struct ReadWatch {
     memory: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
-/// What [`ReadWatch::hold`] asks of the bytes a sampler holds and the rows they are.
+/// What `ReadWatch::hold` asks of the bytes a sampler holds and the rows they are.
 pub type HeldJudge = dyn Fn(u64, usize) -> Option<String> + Send + Sync;
 
 #[derive(Clone)]
@@ -626,7 +626,7 @@ pub(crate) fn acquire(
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PerValue {
     /// Rows kept of each value: the size asked for, or fewer when that many of every
-    /// value would pass [`MAX_GROUP_ROWS`].
+    /// value would pass `MAX_GROUP_ROWS`.
     pub kept: usize,
     /// Every scope row counted by value as it streamed, keyed as segments name values
     /// (`AnyValue::str_value`, `None` for null), so a same-column segment finds its count.
@@ -862,7 +862,7 @@ pub fn count_rows(lf: &LazyFrame, polars_streaming: bool) -> Result<usize> {
 /// The rows an analysis works on: all when the table has at most `sample_rows` (or it
 /// is `None`), else a seeded sample spread across the table:
 ///
-/// - A plan whose slices reach into one Parquet or IPC scan reads [`SAMPLE_BLOCKS`]
+/// - A plan whose slices reach into one Parquet or IPC scan reads `SAMPLE_BLOCKS`
 ///   short runs at seeded places (a few dozen row groups of a huge table);
 ///   `known_total` saves the count, else footers give it.
 /// - Anything else (filter, query, file union, CSV) streams once, keeping the

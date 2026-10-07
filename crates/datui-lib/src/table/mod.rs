@@ -43,7 +43,7 @@ pub(crate) struct View {
     pub(crate) locked_df: Option<DataFrame>, // Locked columns dataframe
     pub(crate) start_row: usize,
     /// The column cursor's column, by name, so it follows hide, reorder and freeze.
-    /// `None` is the first column. See [`Self::current_column`].
+    /// `None` is the first column. See [`DataTableState::current_column`].
     cursor_column: Option<String>,
     /// The cursor's position in `column_order` when placed: if its column is hidden, the
     /// cursor goes to the one now there.
@@ -110,7 +110,7 @@ pub(crate) struct View {
     /// The full buffered frame (all columns in `column_order`) for the buffer range, so
     /// column scrolling re-slices without collecting.
     buffered_df: Option<DataFrame>,
-    /// The first row of the last page drawn whole. See [`Self::start_to_draw`].
+    /// The first row of the last page drawn whole. See [`DataTableState::start_to_draw`].
     drawn_start: usize,
     /// Last applied pivot spec, if current lf is result of a pivot. Used for views.
     last_pivot_spec: Option<PivotSpec>,
@@ -305,7 +305,7 @@ pub struct DataTableState {
     pub(crate) view: View,
 }
 
-/// A view's sample, between source and query. The frames scan [`Self::frame`], the
+/// A view's sample, between source and query. The frames scan `Self::frame`, the
 /// chunks so far, growing as the draw continues.
 pub struct Sampled {
     /// The view the sample was drawn from, restored when the sample is cleared.
@@ -423,7 +423,7 @@ pub struct OpenFacts {
     pub parquet_count_dir: Option<PathBuf>,
     /// What finding and reading the dataset cost.
     pub measurements: Arc<crate::measurements::Meter>,
-    /// What the open itself has to say. See [`DataTableState::open_notes`].
+    /// What the open itself has to say. See `DataTableState::open_notes`.
     pub open_notes: Vec<crate::notes::Note>,
     /// The lake format whose plain files this dataset is. See
     /// [`DataTableState::not_the_table`].

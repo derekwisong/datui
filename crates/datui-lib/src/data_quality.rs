@@ -2494,7 +2494,7 @@ pub fn window_cadence(every: &str) -> &str {
 
 /// Whether windows of width `fine` nest exactly in `coarse`: hours in a day, days in a
 /// week (Monday start) and in a month; weeks not in months. Windows are cut on the
-/// zoneless stored clock (UTC for zoned; see [`time_window_start`]), so no day has
+/// zoneless stored clock (UTC for zoned; see `time_window_start`), so no day has
 /// 23 or 25 hours and finer counts sum to the coarser.
 pub fn window_nests(fine: &str, coarse: &str) -> bool {
     matches!(

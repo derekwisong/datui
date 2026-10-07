@@ -42,7 +42,7 @@ pub struct DataTable {
     /// independent of `column_colors`, so stubs always read as "placeholder, not data".
     pub binary_col: Option<Color>,
     /// Names of columns that are binary in the source schema. Their cells hold the `‹binary›`
-    /// stub (see [`binary_stub`]) and are styled with `binary_col` + italic.
+    /// stub (see `binary_stub`) and are styled with `binary_col` + italic.
     pub binary_cols: std::collections::HashSet<String>,
     /// Display-time number formatting (digit grouping, separators, alignment).
     pub number_format: NumberFormatSettings,

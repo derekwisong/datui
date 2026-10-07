@@ -1303,7 +1303,7 @@ pub enum ThemeMode {
 impl ThemeMode {
     /// Resolve `Auto` from the environment (`Dark` and `Light` pass through): `COLORFGBG`
     /// with background 7 or 15 means light; otherwise dark. The terminal's own answer,
-    /// when it comes, replaces this ([`crate::terminal_color`]).
+    /// when it comes, replaces this (`crate::terminal_color`).
     pub fn resolve(self) -> Self {
         match self {
             Self::Auto => detect_terminal_mode(),
@@ -2337,7 +2337,7 @@ impl ConfigLayer {
         Some(value)
     }
 
-    /// Lay `upper` over this layer: its keys win (except [`COMBINED_KEYS`]); keys it
+    /// Lay `upper` over this layer: its keys win (except `COMBINED_KEYS`); keys it
     /// omits keep this layer's values. `upper`'s imports are not carried over.
     pub fn merge(&mut self, upper: ConfigLayer) {
         merge_tables(&mut self.table, upper.table, "");

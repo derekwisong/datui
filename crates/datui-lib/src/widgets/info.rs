@@ -556,7 +556,7 @@ impl InfoModal {
 }
 
 /// What the open file says beyond its rows: its size and, where its reader has a facts
-/// read ([`crate::readers::Reader::facts`]), its tab and the footer behind it. Read on a
+/// read (`crate::readers::Reader::facts`), its tab and the footer behind it. Read on a
 /// worker once per dataset: a stat or footer read on a dead mount hangs its thread.
 #[derive(Debug, Clone)]
 pub enum FileFacts {

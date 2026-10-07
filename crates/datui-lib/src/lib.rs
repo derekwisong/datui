@@ -557,7 +557,7 @@ pub enum AppEvent {
         /// A path typed at `~` rather than a listed row: Esc returns to the listing.
         jump: bool,
     },
-    /// A background job's outcome is in its record: [`jobs::Jobs::end`] takes it.
+    /// A background job's outcome is in its record: `jobs::Jobs::end` takes it.
     JobEnded(Ticket),
     /// A report from a background job still running.
     JobProgress {
@@ -602,7 +602,7 @@ type FileFactsReader = Arc<
 pub type EventOutcome = Result<Option<AppEvent>, KeyEvent>;
 
 /// What <kbd>Enter</kbd> will do on the highlighted row, for the footer and the
-/// details pane. A prediction of [`App::home_open_selected`];
+/// details pane. A prediction of `App::home_open_selected`;
 /// `test_the_bar_says_what_enter_will_really_do` keeps the two in agreement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WhatEnter {

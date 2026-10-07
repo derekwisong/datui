@@ -241,7 +241,7 @@ impl App {
     }
 
     /// Work the re-read after a join would cancel: anything a bump would strand
-    /// ([`Jobs::would_strand`]), plus a chart being prepared, since the join changes the
+    /// ([`crate::jobs::Jobs::would_strand`]), plus a chart being prepared, since the join changes the
     /// frame (a fresh `len_generation`) under it.
     pub(crate) fn work_the_join_would_cancel(&self) -> bool {
         self.work_a_bump_would_strand() || self.chart_preparing()

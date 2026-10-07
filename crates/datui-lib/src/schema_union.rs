@@ -1599,7 +1599,7 @@ fn choose_dtype(seen: &[(DataType, usize)]) -> DataType {
 }
 
 /// Whether a file storing `from` reads into a `to` column losslessly, matching
-/// [`crate::cloud_hive::lenient_scan`]'s cast policy; otherwise the column is left
+/// [`lenient_scan`]'s cast policy; otherwise the column is left
 /// unread in that file.
 pub fn fits(from: &DataType, to: &DataType) -> bool {
     widen(from, to).as_ref() == Some(to)

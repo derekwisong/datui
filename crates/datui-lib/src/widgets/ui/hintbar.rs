@@ -93,7 +93,7 @@ impl HintBar {
         self
     }
 
-    /// The weight of the last chip; see [`Chip::weight`].
+    /// The weight of the last chip; see `Chip::weight`.
     pub fn weight(mut self, weight: i32) -> Self {
         if let Some(chip) = self.hints.last_mut() {
             chip.weight = Some(weight);

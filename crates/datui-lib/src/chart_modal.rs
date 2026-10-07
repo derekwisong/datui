@@ -4,7 +4,7 @@
 //! can save it: `mark` (the Type shelf), `encoding.x.field` with its `timeUnit`,
 //! `encoding.y.field` with its `aggregate`, and `encoding.color.field`. Every chart
 //! type shows the same shelves; a shelf a type does not use is dimmed, never
-//! hidden ([`ChartModal::shelf`]). Options that are not part of what is charted
+//! hidden (`ChartModal::shelf`). Options that are not part of what is charted
 //! (bins, ranges, the grid, the sample size) sit beside the spec.
 //!
 //! The panel is one form of the shared focus model (`crate::form`); column and

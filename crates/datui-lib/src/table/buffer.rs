@@ -24,7 +24,7 @@ pub struct CollectRequest {
 
 /// What the fill-reading worker needs to make it the buffer: the adjoining rows on
 /// hand, the view and the caps, as planned. A trim that would copy (see
-/// [`trim_rows`]) runs here, off the UI thread; `apply_async_collect` installs the
+/// `trim_rows`) runs here, off the UI thread; `apply_async_collect` installs the
 /// result as is.
 pub struct FillPlan {
     buffer_start: usize,
@@ -676,7 +676,7 @@ impl DataTableState {
 
     /// Plan an async collect without blocking: clamp the start row, then a `CollectRequest`
     /// if the rows on screen need a new buffer, or `None` (display slices updated). Without
-    /// `num_rows_override`, [`Self::num_rows_bound`] lets the first rows skip the count.
+    /// `num_rows_override`, `Self::num_rows_bound` lets the first rows skip the count.
     pub fn prepare_async_collect(
         &mut self,
         num_rows_override: Option<usize>,

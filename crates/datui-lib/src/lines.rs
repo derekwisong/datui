@@ -10,10 +10,10 @@
 //!
 //! A large file shows its first rows once its first [`FIRST_BYTES`] are indexed; the
 //! rest is indexed behind them ([`Lines::index_more`]), and the frame's height moves
-//! as it goes ([`bound`]).
+//! as it goes (`bound`).
 //!
 //! A followed file's lines are counted by the watcher ([`crate::follow`]), which moves
-//! the frame's height ([`bound`]); the index reads on from its last whole line when a
+//! the frame's height (`bound`); the index reads on from its last whole line when a
 //! row past it is asked for.
 //!
 //! [`guess`] says what text no format's signature claims is: JSON, CSV or TSV only on
@@ -523,7 +523,7 @@ impl Lines {
     }
 
     /// The frame: a row index decoded a column at a time. A followed file's frame has
-    /// the rows of its complete lines, moved as it grows ([`bound`]).
+    /// the rows of its complete lines, moved as it grows (`bound`).
     pub fn lazy(self: &Arc<Self>) -> LazyFrame {
         if self.indexing() {
             // Every line, once they are all indexed: the frame's height is taken when

@@ -273,7 +273,7 @@ pub(crate) fn indexed<T: Any + Send + Sync>(
 }
 
 /// A log of record types one pass indexes, each type a table: a flight log. A new one
-/// is this and a `READER` with [`scan`] and [`listed`].
+/// is this and a `READER` with `scan` and `listed`.
 pub trait Log: Any + Send + Sync + Sized {
     /// Said after "the file holds no tables." of a log with none.
     const EMPTY: &'static str;

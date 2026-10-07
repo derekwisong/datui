@@ -77,7 +77,7 @@ impl Drop for QuietTerminal {
     }
 }
 
-/// The terminal while the TUI owns it. Dropped without [`conclude`](crate::conclude) — an error
+/// The terminal while the TUI owns it. Dropped without `run::conclude` — an error
 /// returned with `?` — it hands the screen back; a panic is the session's to handle,
 /// and restoring twice would pop the shell's keyboard flags.
 pub(crate) struct TakenTerminal {

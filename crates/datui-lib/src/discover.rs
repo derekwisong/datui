@@ -149,7 +149,7 @@ impl Holds {
     }
 
     /// The weights' format and file count when this directory is a model (one weight
-    /// format plus only JSON). See [`is_model_directory`].
+    /// format plus only JSON). See `is_model_directory`.
     pub fn model_weights(&self) -> Option<(&str, usize)> {
         if !is_model_directory(counts_names(self)) {
             return None;
@@ -511,7 +511,7 @@ mod parquet_key_tests {
 /// What a file with no usable extension is, from its first bytes (Parquet, Arrow,
 /// Avro and ORC carry signatures; CSV and JSON have none and are not guessed). Asked
 /// only of a directory being opened, never one being looked at; which signatures a
-/// listing trusts is each format's call ([`crate::readers::Trusted::listing`]).
+/// listing trusts is each format's call (`crate::readers::Trusted::listing`).
 pub fn sniff_format(path: &Path) -> Option<crate::FileFormat> {
     crate::readers::sniff_file(path, crate::readers::Asked::Listing)
 }
@@ -1275,7 +1275,7 @@ pub fn scan_dir_specs(dir: &Path, formats: &crate::formats::Registry) -> Scan {
 const LISTING_PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// [`scan_dir_bounded`], passing `progress` the rows read since the last call, every
-/// [`LISTING_PROGRESS_EVERY`], so a slow share shows rows as they arrive.
+/// `LISTING_PROGRESS_EVERY`, so a slow share shows rows as they arrive.
 pub fn scan_dir_progressive(dir: &Path, progress: impl FnMut(&[Entry])) -> Scan {
     scan_dir_with(dir, &crate::formats::Registry::default(), progress)
 }

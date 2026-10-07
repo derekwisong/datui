@@ -980,7 +980,7 @@ pub struct Layout {
 
 /// Lay out `content` for `fields` and a value needing `value_need` rows. Below
 /// [`WIDE`] the list sits above, taking what it needs; from [`WIDE`] side by side at
-/// full height, the value [`value_pane_width`] wide, fields in columns of
+/// full height, the value `value_pane_width` wide, fields in columns of
 /// `list.min_col`. By content, never focus, so Tab moves nothing.
 pub fn layout(content: Rect, fields: usize, value_need: usize, list: ListShape) -> Layout {
     let line = |y: u16, x: u16, width: u16| Rect {

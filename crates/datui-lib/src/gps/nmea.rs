@@ -563,7 +563,7 @@ pub struct Stats {
     pub bad_checksums: u64,
     /// Sentences of each type, in the order first seen.
     pub types: Vec<(String, u64)>,
-    /// Sentences past the [`MAX_TYPES`] types counted by name.
+    /// Sentences past the `MAX_TYPES` types counted by name.
     pub other_types: u64,
     /// Rows the table holds.
     pub rows: u64,

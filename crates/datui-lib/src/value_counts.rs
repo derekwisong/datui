@@ -2,7 +2,7 @@
 //! summary of the column, from one read of that column.
 //!
 //! The count is exact: one streamed pass over the column that keeps a count per
-//! value and no rows ([`crate::chart_data::Tally`]). A view too large to count at
+//! value and no rows (`crate::chart_data::Tally`). A view too large to count at
 //! once, where the sampler can read part of it (one Parquet or IPC file, read a few
 //! row groups at a time), is sampled first instead and says so; counting every row
 //! is then the user's call. Where the sampler would stream every row anyway, the

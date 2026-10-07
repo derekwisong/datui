@@ -2,7 +2,7 @@
 //! compression and statistics, and who wrote it.
 //!
 //! Polars reads the footer to open the file and keeps it to itself, so the Info panel's
-//! worker reads it again when the panel first opens ([`facts`]): a few KB at the end of
+//! worker reads it again when the panel first opens (`facts`): a few KB at the end of
 //! the file, the same bytes the open read, and none of its data.
 
 use std::collections::HashMap;

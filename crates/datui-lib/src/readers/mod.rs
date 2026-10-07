@@ -1,23 +1,23 @@
 //! The readers: what datui does with a file of each format.
 //!
 //! A format's descriptor ([`crate::FileFormat::descriptor`], in datui-cli) says what is
-//! true of it without a file to read. Its [`Reader`] holds the code: the bytes that say
+//! true of it without a file to read. Its `Reader` holds the code: the bytes that say
 //! it, the scan that opens it, the conversion of a format read into files of its own,
 //! the tables a file of it lists, the home preview, Copy as Python's Polars call and
 //! the format a view of it exports to by default. What a file says besides its rows is
 //! the scan's to report, as the Info panel tab of [`crate::members::Opened::detail`].
 //!
 //! Each format's reader lives beside its parser (`crate::sqlite::READER`), and those of
-//! the formats Polars reads in [`polars`]. [`of`] maps every format to its reader,
+//! the formats Polars reads in `polars`. `of` maps every format to its reader,
 //! exhaustively, so a format without one does not compile.
 //!
 //! The descriptor says whether a format has a tab of its own on the Info panel and
 //! whether a file of it holds tables; the reader fills the tab, from what its scan
-//! read or, for a format Polars opens, from what [`Reader::facts`] reads of the file's
+//! read or, for a format Polars opens, from what `Reader::facts` reads of the file's
 //! footer when the panel first opens, and lists the tables.
 //!
 //! Adding a format is its variant and descriptor in datui-cli, its parser and reader
-//! in a module of its own, and a line in [`of`].
+//! in a module of its own, and a line in `of`.
 //!
 //! Outside a format's own module, the descriptors and this registry, a format is named
 //! only where it changes what the app does, beyond what a descriptor or reader says:
@@ -31,13 +31,13 @@
 //! - JSON: Hugging Face metadata, and a model's config beside its weights, are not data
 //!   left out.
 //! - SafeTensors and GGUF: a directory of weights is the model, and a remote model is
-//!   read by its headers ([`crate::remote_model`]).
+//!   read by its headers (`crate::remote_model`).
 //! - CSV: the reader a delimited spec reads through.
 //! - Text, and CSV, TSV, JSON and NDJSON without a name that says them: told apart by
-//!   [`crate::lines::guess`] from text no signature claims, not by [`sniff`]; a name
+//!   [`crate::lines::guess`] from text no signature claims, not by `sniff`; a name
 //!   that says text is still asked its bytes ([`FileFormat::TEXT`]), and a followed
 //!   file's lines are counted by the watcher.
-//! - Audio: a full quality run checks a recording's signal ([`crate::audio::recording`]).
+//! - Audio: a full quality run checks a recording's signal (`crate::audio::recording`).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -134,7 +134,7 @@ pub(crate) struct Facts {
     pub footer: bool,
 }
 
-/// What a [`FactsFn`] read: the format's tab of the Info panel, and the footer the
+/// What a `FactsFn` read: the format's tab of the Info panel, and the footer the
 /// Schema tab's Compression column is drawn from.
 #[derive(Debug, Clone, Default)]
 pub struct FormatFacts {

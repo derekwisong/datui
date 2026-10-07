@@ -402,7 +402,7 @@ pub fn bar_change(line: &TrendRow, bar: usize, other: usize, exact: bool) -> Opt
 }
 
 /// Where window `label` starts, read back from the label a run gave it: the inverse
-/// of [`time_window_label`]. `None` for the rows with no time, and for a label that
+/// of `time_window_label`. `None` for the rows with no time, and for a label that
 /// is not a window's.
 pub fn window_start(label: &str, every: &str) -> Option<NaiveDateTime> {
     let date = |text: &str| NaiveDate::parse_from_str(text, "%Y-%m-%d").ok();

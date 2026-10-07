@@ -57,7 +57,7 @@ pub(crate) fn ordered_by(plan: &polars::lazy::dsl::DslPlan) -> Vec<(String, bool
 /// the view, so a node free to return rows in any order lets pages repeat some rows
 /// and skip others, a `LIMIT` keep different groups on each read, and a sort's ties
 /// arrive in a different order each time. Every sort keeps tied rows in the order
-/// they come, as [`sort_options`] does (Polars SQL sorts unstably and offers no
+/// they come, as `sort_options` does (Polars SQL sorts unstably and offers no
 /// option), and every grouping, distinct, union and join keeps its input's order,
 /// except a grouping sorted by all its keys (see [`sorts_by_group_keys`]). Only the
 /// parts of the plan holding such a node are rewritten.

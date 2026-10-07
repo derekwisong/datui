@@ -1,5 +1,5 @@
 //! Prepare chart data from a LazyFrame: read the chart's columns, then make points,
-//! bins or statistics. Every chart reads through [`read_columns`]: up to a row limit,
+//! bins or statistics. Every chart reads through `read_columns`: up to a row limit,
 //! spread across the table by the analysis sampler (not its first rows), returning
 //! [`RowsRead`] so the chart can say when it shows a sample.
 

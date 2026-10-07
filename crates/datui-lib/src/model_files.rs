@@ -904,7 +904,7 @@ impl From<color_eyre::Report> for RangeError {
 }
 
 /// The first range a GGUF header is read in. Each read after it is twice the one
-/// before, up to [`MAX_RANGE`], so a header of a few KB costs one request and one with
+/// before, up to `MAX_RANGE`, so a header of a few KB costs one request and one with
 /// a vocabulary (5 to 10 MB) four or five. Larger, fewer requests fetch up to twice
 /// the header; see `a_vocabulary_sized_gguf_header_takes_a_few_ranges`.
 pub const FIRST_GGUF_RANGE: u64 = 256 * 1024;

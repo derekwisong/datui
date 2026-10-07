@@ -1423,11 +1423,14 @@ pub enum Row<'a> {
     /// slot.
     Door { section: usize, entry: &'a Entry },
     /// What a cap is hiding: `RECENT`'s, `… 13 more in 5 places`, or a directory's
-    /// at the root listing, `… 4,958 more files` (`places` is 0).
+    /// at the root listing, `… 4,958 more` (`places` is 0).
     More {
         section: usize,
         hidden: usize,
         places: usize,
+        /// Sorted by rows, some of the rows hidden are still being measured, so the
+        /// first rows may yet change.
+        measuring: bool,
     },
     /// The last row inside a browsed directory whose files datui cannot read are
     /// hidden: `… 10 files with no reader`. Without it a directory of notes looks
@@ -1505,7 +1508,7 @@ struct ViewKey {
     sort: SortMode,
     hide_unreadable: bool,
     recent_expanded: bool,
-    shown_whole: std::collections::HashSet<String>,
+    shown_whole: std::collections::HashSet<PathBuf>,
     view_height: usize,
     browsing: Option<PathBuf>,
     folds: std::collections::HashMap<String, bool>,
@@ -1711,9 +1714,9 @@ pub struct HomeState {
     /// `RECENT` shows every place, however many rows that takes. Set by `Enter` on the
     /// `… N more` row, for the session.
     pub recent_expanded: bool,
-    /// Directory sections shown whole rather than cut to their first rows, by title,
-    /// for the session. See [`HomeState::show_all`].
-    pub shown_whole: std::collections::HashSet<String>,
+    /// Directory sections shown whole rather than cut to their first rows, by the
+    /// directory they list, for the session. See [`HomeState::show_all`].
+    pub shown_whole: std::collections::HashSet<PathBuf>,
     /// The listings the user went inside from, outermost first: where to put the
     /// cursor back on the way out. See [`HomeState::leave_mark`].
     pub trail: Vec<Mark>,
@@ -3258,7 +3261,7 @@ impl HomeState {
         let Some(key) = self.returning.clone() else {
             return;
         };
-        if let Some(idx) = self.row_of(&key) {
+        if let Some(idx) = self.place_key(&key) {
             self.selected = idx;
             self.returning = None;
             self.landing = false;
@@ -3302,7 +3305,7 @@ impl HomeState {
             self.clamp_selection();
             return false;
         };
-        match self.row_of(&key) {
+        match self.place_key(&key) {
             Some(idx) => {
                 self.selected = idx;
                 true
@@ -3314,14 +3317,36 @@ impl HomeState {
         }
     }
 
-    /// Where the row `key` names is on screen, or the `more` row hiding it.
-    ///
-    /// A row the cap has just hidden is still there, behind the `more` row that now
-    /// stands for it, so that row is the answer rather than whatever fell into its
-    /// index in the section below.
-    fn row_of(&self, key: &RowKey) -> Option<usize> {
-        let rows = self.visible();
-        let found = rows.iter().position(|row| match (row, key) {
+    /// Where the row `key` names is on screen. A row a directory's cut hides is shown
+    /// by showing that directory whole: the cursor stays on the row it was on. A row
+    /// `RECENT`'s cap hides is still there, behind the `more` row that stands for it,
+    /// so that row is the answer rather than whatever fell into its index in the
+    /// section below.
+    fn place_key(&mut self, key: &RowKey) -> Option<usize> {
+        if let Some(found) = self.listed(key) {
+            return Some(found);
+        }
+        if let RowKey::Entry(path) = key
+            && let Some(root) = self
+                .sections
+                .iter()
+                .find(|s| !s.grouped_by_place && s.rows.iter().any(|r| r.path == *path))
+                .and_then(|s| s.root.clone())
+            && self.shown_whole.insert(root.clone())
+        {
+            match self.listed(key) {
+                Some(found) => return Some(found),
+                None => {
+                    self.shown_whole.remove(&root);
+                }
+            }
+        }
+        self.behind_recent_cap(key)
+    }
+
+    /// Where the row `key` names is on screen, as it is listed now.
+    fn listed(&self, key: &RowKey) -> Option<usize> {
+        self.visible().iter().position(|row| match (row, key) {
             (Row::Entry { entry, .. }, RowKey::Entry(path)) => entry.path == *path,
             (Row::Door { entry, .. }, RowKey::Door(path)) => entry.path == *path,
             (Row::Place { path, .. }, RowKey::Place(wanted)) => path == wanted,
@@ -3333,21 +3358,23 @@ impl HomeState {
                 .get(*section)
                 .is_some_and(|s| s.title == *title),
             _ => false,
-        });
-        if found.is_some() {
-            return found;
-        }
-        match key {
-            RowKey::Entry(path) | RowKey::Place(path) => rows.iter().position(|row| {
-                matches!(row, Row::More { section, .. }
-                if self.sections.get(*section).is_some_and(|s| {
-                    s.rows.iter().any(|r| {
-                        r.path == *path || (s.grouped_by_place && place_of(&r.path) == *path)
-                    })
-                }))
-            }),
-            _ => None,
-        }
+        })
+    }
+
+    /// The `more` row of `RECENT` when its cap hides the row `key` names.
+    fn behind_recent_cap(&self, key: &RowKey) -> Option<usize> {
+        let (RowKey::Entry(path) | RowKey::Place(path)) = key else {
+            return None;
+        };
+        self.visible().iter().position(|row| {
+            matches!(row, Row::More { section, .. }
+            if self.sections.get(*section).is_some_and(|s| {
+                s.grouped_by_place
+                    && s.rows
+                        .iter()
+                        .any(|r| r.path == *path || place_of(&r.path) == *path)
+            }))
+        })
     }
 
     /// Tell the listing how tall the list is, keeping the cursor on the row it was on.
@@ -4109,20 +4136,49 @@ impl HomeState {
     pub fn show_all(&mut self, section: usize) {
         match self.sections.get(section) {
             Some(s) if s.grouped_by_place => self.recent_expanded = true,
-            Some(s) => {
-                self.shown_whole.insert(s.title.clone());
+            Some(Section {
+                root: Some(root), ..
+            }) => {
+                self.shown_whole.insert(root.clone());
             }
-            None => {}
+            _ => {}
         }
     }
 
-    /// Cut the section the cursor is in back to its first rows, the cursor on the row
-    /// standing for the rest. Says whether it was shown whole.
+    /// With the cursor on a row the section's cut would hide, the section shown whole
+    /// (a directory, or `RECENT`), cut it back to its first rows, the cursor on the
+    /// row standing for the rest. Says whether it did: on any other row the section
+    /// stays as it is.
     pub fn cut_again(&mut self, section: usize) -> bool {
-        let Some(title) = self.sections.get(section).map(|s| s.title.clone()) else {
+        let Some(key) = self.selected_key() else {
             return false;
         };
-        if !self.shown_whole.remove(&title) {
+        let Some(s) = self.sections.get(section) else {
+            return false;
+        };
+        let title = s.title.clone();
+        let whole = if s.grouped_by_place {
+            None
+        } else {
+            match s.root.clone() {
+                Some(root) => Some(root),
+                None => return false,
+            }
+        };
+        let was_whole = match &whole {
+            None => std::mem::replace(&mut self.recent_expanded, false),
+            Some(root) => self.shown_whole.remove(root),
+        };
+        if !was_whole {
+            return false;
+        }
+        if self.listed(&key).is_some() {
+            match whole {
+                None => self.recent_expanded = true,
+                Some(root) => {
+                    self.shown_whole.insert(root);
+                }
+            }
             return false;
         }
         self.reselect(Some(RowKey::More(title)));
@@ -4329,17 +4385,21 @@ impl HomeState {
                     if self.browsing.is_none()
                         && self.filter.is_empty()
                         && self.view_height > 0
-                        && !self.shown_whole.contains(&section.title) =>
+                        && !root.is_some_and(|root| self.shown_whole.contains(root)) =>
                 {
                     (self.view_height * 2 / 5).max(8)
                 }
                 _ => usize::MAX,
             };
-            let cut = if matched.len() > shown.saturating_add(1) {
-                matched.split_off(shown).len()
+            let rest = if matched.len() > shown.saturating_add(1) {
+                matched.split_off(shown)
             } else {
-                0
+                Vec::new()
             };
+            // Sorted by rows, a row past the cut is measured too, or the biggest of
+            // the first rows would pass for the biggest of all.
+            let measuring = self.sort == SortMode::Rows
+                && rest.iter().any(|(i, _)| self.wants_measuring(entry(*i)));
             if section.grouped_by_place {
                 self.slots_by_place(si, section, &matched, &mut out);
             } else {
@@ -4356,11 +4416,12 @@ impl HomeState {
                     hit,
                 }));
             }
-            if cut > 0 {
+            if !rest.is_empty() {
                 out.push(Slot::Plain(Row::More {
                     section: si,
-                    hidden: cut,
+                    hidden: rest.len(),
                     places: 0,
+                    measuring,
                 }));
             }
             if hidden > 0 {
@@ -4445,6 +4506,7 @@ impl HomeState {
                 section: si,
                 hidden: groups[shown..].iter().map(|(_, rows)| rows.len()).sum(),
                 places: groups.len() - shown,
+                measuring: false,
             }));
         }
     }
@@ -4804,41 +4866,66 @@ impl HomeState {
         more
     }
 
-    /// Rows on screen that have not been measured yet, up to `limit`.
+    /// Rows listed that have not been measured yet, up to `limit`, and sorted by rows,
+    /// the rows a directory's cut hides after them.
     ///
     /// The interface thread decides *what* is worth measuring — it knows what is
-    /// visible — and a worker does the reading.
+    /// listed — and a worker does the reading.
     pub fn unmeasured_visible(&self, limit: usize) -> Vec<Entry> {
         let view = self.view();
-        let mut out = Vec::new();
+        let mut out: Vec<Entry> = Vec::new();
         for entry in view.slots.iter().filter_map(|slot| self.entry_of(slot)) {
-            if entry.rows.is_some() || self.enriched.contains_key(&entry.path) {
-                continue;
+            if self.wants_measuring(entry) {
+                out.push(entry.clone());
+                if out.len() >= limit {
+                    return out;
+                }
             }
-            // What a row *is* settles it before where it lives does, because the kind
-            // is already in hand and the mount table is a lookup. This runs once per
-            // row on every frame that draws the home screen, and a directory of six
-            // thousand partitions is every one of those rows: asking the cheap
-            // question first is the difference between a free frame and a scan.
-            if matches!(
-                entry.kind,
-                EntryKind::Directory | EntryKind::Unknown | EntryKind::Other
-            ) || entry.kind.is_lake_table()
-            {
+        }
+        // Sorted by rows, the rows past a directory's cut are measured after those on
+        // screen: the sort needs every count to put the biggest first.
+        for slot in &view.slots {
+            let Slot::Plain(Row::More {
+                section,
+                measuring: true,
+                ..
+            }) = slot
+            else {
                 continue;
-            }
-            // Remote rows are measured by their root's probe, which already reads that
-            // filesystem. Measuring them here too would put a second thread on a share
-            // that may never answer, and a wedged thread is never reclaimed.
-            if (self.network_check)(&entry.path) {
-                continue;
-            }
-            out.push(entry.clone());
-            if out.len() >= limit {
-                break;
+            };
+            for entry in &self.sections[*section].rows {
+                if self.wants_measuring(entry) && !out.iter().any(|e| e.path == entry.path) {
+                    out.push(entry.clone());
+                    if out.len() >= limit {
+                        return out;
+                    }
+                }
             }
         }
         out
+    }
+
+    /// Whether `entry` is a local dataset with no count yet that measuring would give.
+    fn wants_measuring(&self, entry: &Entry) -> bool {
+        if entry.rows.is_some() || self.enriched.contains_key(&entry.path) {
+            return false;
+        }
+        // What a row *is* settles it before where it lives does, because the kind
+        // is already in hand and the mount table is a lookup. This runs once per
+        // row on every frame that draws the home screen, and a directory of six
+        // thousand partitions is every one of those rows: asking the cheap
+        // question first is the difference between a free frame and a scan.
+        if matches!(
+            entry.kind,
+            EntryKind::Directory | EntryKind::Unknown | EntryKind::Other
+        ) || entry.kind.is_lake_table()
+        {
+            return false;
+        }
+        // Remote rows are measured by their root's probe, which already reads that
+        // filesystem. Measuring them here too would put a second thread on a share
+        // that may never answer, and a wedged thread is never reclaimed.
+        !(self.network_check)(&entry.path)
     }
 
     /// Look into a batch of rows on the calling thread.

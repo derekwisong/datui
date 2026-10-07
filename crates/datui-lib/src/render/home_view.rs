@@ -749,9 +749,14 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                     ctx,
                 ));
             }
-            crate::home::Row::More { hidden, places, .. } => {
+            crate::home::Row::More {
+                hidden,
+                places,
+                measuring,
+                ..
+            } => {
                 lines.push(more_line(
-                    *hidden, *places, selected, name_width, show_meta, ctx,
+                    *hidden, *places, *measuring, selected, name_width, show_meta, ctx,
                 ));
             }
             crate::home::Row::Hidden { section, count } => {
@@ -967,19 +972,24 @@ fn place_line(
     ])
 }
 
-/// What the cap on `RECENT` is hiding, as one row: `… 13 more in 5 places`.
+/// What a cap is hiding, as one row: `RECENT`'s `… 13 more in 5 places`, or a
+/// directory's `… 4,958 more` (files and directories both), `· measuring` while a
+/// sort by rows still measures them.
 fn more_line(
     hidden: usize,
     places: usize,
+    measuring: bool,
     selected: bool,
     name_width: usize,
     show_meta: bool,
     ctx: &RenderContext,
 ) -> Line<'static> {
-    let ellipsis = glyphs::get().ellipsis;
+    let g = glyphs::get();
+    let ellipsis = g.ellipsis;
     let more = crate::numfmt::group_chrome(hidden);
     let text = match places {
-        0 => format!("{ellipsis} {more} more files"),
+        0 if measuring => format!("{ellipsis} {more} more {} measuring", g.middot),
+        0 => format!("{ellipsis} {more} more"),
         1 => format!("{ellipsis} {more} more in 1 place"),
         _ => format!("{ellipsis} {more} more in {places} places"),
     };

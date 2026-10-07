@@ -14281,6 +14281,70 @@ fn test_enter_on_the_more_row_expands_recent() {
     );
 }
 
+/// ← on a place past RECENT's cap, RECENT shown whole, cuts it back with the cursor on
+/// the more row, as in a directory's section; ← on one of its first places folds it.
+#[test]
+fn test_left_cuts_recent_back_from_a_place_past_the_cap() {
+    common::isolate_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let recents: Vec<PathBuf> = (0..12)
+        .map(|i| {
+            let dir = tmp.path().join(format!("place{i:02}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("data.parquet");
+            std::fs::write(&path, b"x").unwrap();
+            path
+        })
+        .collect();
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.rebuild(&recents);
+    let area = Rect::new(0, 0, 120, 14);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let places = |app: &App| {
+        app.home
+            .visible()
+            .iter()
+            .filter(|r| matches!(r, datui::home::Row::Place { .. }))
+            .count()
+    };
+    let shown = places(&app);
+    assert!(shown < 12);
+    app.home.selected = app
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::More { places: 1.., .. }))
+        .unwrap();
+    app.event(&key(KeyCode::Right));
+    assert_eq!(places(&app), 12, "→ on the more row shows every place");
+
+    app.home.selected = app
+        .home
+        .visible()
+        .iter()
+        .rposition(|r| matches!(r, datui::home::Row::Place { .. }))
+        .unwrap();
+    app.event(&key(KeyCode::Left));
+    assert_eq!(places(&app), shown, "cut back");
+    assert!(matches!(
+        app.home.selected_row(),
+        Some(datui::home::Row::More { places: 1.., .. })
+    ));
+
+    app.event(&key(KeyCode::Right));
+    app.home.selected = app
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::Place { .. }))
+        .unwrap();
+    app.event(&key(KeyCode::Left));
+    assert!(app.home.is_collapsed(0), "← on a first place folds RECENT");
+}
+
 /// The hint, and the descent, are only offered on a row that is a dataset directory.
 /// `→` elsewhere goes on expanding the section, which on a visible row is already
 /// expanded and so does nothing.

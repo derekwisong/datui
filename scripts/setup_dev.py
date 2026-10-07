@@ -65,9 +65,26 @@ def install(uv, requirements):
             run([venv_bin("python"), "-m", "pip", "install", "-r", path])
 
 
+def linked_worktree():
+    """Whether this checkout is a `git worktree add` one, which shares its hooks."""
+    out = subprocess.run(
+        ["git", "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    dirs = out.stdout.split()
+    return out.returncode == 0 and len(dirs) == 2 and Path(dirs[0]) != Path(dirs[1])
+
+
 def install_hooks():
     if not (REPO_ROOT / ".git").exists():
         print("Not a git checkout; skipping the pre-commit hooks.")
+        return
+    # Every worktree runs the same hooks, and pre-commit points them at this .venv:
+    # removing the worktree would break commits in all the others.
+    if linked_worktree():
+        print("A linked worktree shares the main checkout's hooks; skipping them.")
         return
     step("Installing the pre-commit hooks")
     run([venv_bin("pre-commit"), "install"])

@@ -1619,8 +1619,8 @@ fn test_startup_buffer_race_does_not_lose_rows() {
                 break;
             }
 
-            // Brief sleep to let background tasks run (simulates poll timeout).
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            // Until the next event, as the run loop sleeps on its channel.
+            common::wait_for_event(&tx, &rx);
         }
 
         assert!(
@@ -5918,7 +5918,7 @@ fn test_scroll_past_end_does_not_hang_busy() {
             if !app.is_busy() && !needs {
                 return;
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            common::wait_for_event(&tx, &rx);
         }
     };
     settle(&mut app, &rx, &tx);
@@ -6015,7 +6015,7 @@ fn test_async_collect_handles_invalidated_num_rows() {
         if !needs && !work_pending(&app) {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        common::wait_for_event(&tx, &rx);
     }
 
     assert!(
@@ -6088,7 +6088,7 @@ fn test_hive_dir_loads_and_counts_via_footers() {
         if !app.is_busy() && !needs && counted {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        common::wait_for_event(&tx, &rx);
     }
 
     assert!(counted, "exact total should resolve to the footer sum (50)");
@@ -6592,7 +6592,7 @@ fn painted(
         if needs {
             app.spawn_async_collect("Loading buffer...");
         }
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        common::wait_for_event(&tx, &rx);
     }
     app.render(area, &mut buf);
     buf.content().iter().map(|cell| cell.symbol()).collect()
@@ -10469,7 +10469,7 @@ fn test_abandoned_load_never_installs_itself_afterwards() {
                     break;
                 }
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            common::wait_for_event(&tx, &rx);
         }
 
         let (path_at_abandon, had_state) = abandoned_at.expect("never reached the abandon point");
@@ -10556,7 +10556,7 @@ fn test_abandoned_load_does_not_corrupt_the_next_open() {
         if tick >= 40 && settled {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        common::wait_for_event(&tx, &rx);
     }
 
     assert_eq!(
@@ -10613,7 +10613,7 @@ fn test_escape_from_home_returns_to_the_dataset_that_was_open() {
         if app.data_table_state.is_some() && !app.is_busy() && !needs {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        common::wait_for_event(&tx, &rx);
     }
     assert_eq!(app.open_path(), Some(open_first.as_path()));
     assert!(
@@ -10643,7 +10643,7 @@ fn test_escape_from_home_returns_to_the_dataset_that_was_open() {
         if stepped == 0 && !app.background_work_in_flight() {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        common::wait_for_event(&tx, &rx);
     }
 
     app.event(AppEvent::Key(KeyEvent::new(
@@ -10814,7 +10814,11 @@ fn app_awaiting_open_confirmation() -> (App, mpsc::Receiver<AppEvent>) {
                 app.event(follow_up);
             }
         }
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        if let Ok(ev) = rx.recv_timeout(common::FRAME_WAIT) {
+            if let Some(follow_up) = app.event(ev) {
+                app.event(follow_up);
+            }
+        }
     }
     (app, rx)
 }
@@ -11203,7 +11207,7 @@ fn test_opening_from_home_does_not_show_the_previous_dataset() {
         if app.data_table_state.is_some() && !app.is_busy() && !needs {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        common::wait_for_event(&tx, &rx);
     }
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
@@ -11264,7 +11268,7 @@ fn test_opening_from_home_does_not_show_the_previous_dataset() {
             break;
         }
         drain_like_main_loop(&mut app, &tx, &rx);
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        common::wait_for_event(&tx, &rx);
     }
     assert_eq!(
         app.open_path(),
@@ -11302,7 +11306,7 @@ fn a_file_datui_cannot_read_is_hidden_until_shown() {
         if row_of(&app, "model.onnx").is_some() {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        common::wait_for_event(&tx, &rx);
     }
     let model = row_of(&app, "model.onnx").expect("listed");
     app.home.selected = model;
@@ -11339,7 +11343,7 @@ fn a_load_chosen_at_home_fails_at_home() {
         if app.data_table_state.is_some() && !app.is_busy() {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        common::wait_for_event(&tx, &rx);
     }
     assert!(app.data_table_state.is_some());
 
@@ -11359,7 +11363,7 @@ fn a_load_chosen_at_home_fails_at_home() {
         if !app.is_busy() && app.input_mode == InputMode::Home {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        common::wait_for_event(&tx, &rx);
     }
     assert_eq!(app.input_mode, InputMode::Home);
     let mut buf = Buffer::empty(area);
@@ -11377,16 +11381,10 @@ fn a_load_chosen_at_home_fails_at_home() {
         let path = datui::canonical::canonicalize(path).unwrap();
         cache.load_recents().contains(&path)
     };
-    for _ in ticks() {
-        if recorded(std::path::Path::new("tests/sample-data/people.parquet")) {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    app.settle_cache_writes();
     assert!(recorded(std::path::Path::new(
         "tests/sample-data/people.parquet"
     )));
-    std::thread::sleep(std::time::Duration::from_millis(100));
     assert!(!recorded(&broken), "a file that failed is not a recent");
 
     // Dismissed, it is not said a second time beside the prompt: the dialog said it
@@ -17659,6 +17657,7 @@ fn quitting_mid_decompression_removes_the_partial_copy() {
     for i in 0..10_000 {
         writeln!(sent, "{i},row").unwrap();
     }
+    let whole = sent.len() as u64;
     let feeder = {
         let pipe = pipe.clone();
         std::thread::spawn(move || {
@@ -17689,16 +17688,18 @@ fn quitting_mid_decompression_removes_the_partial_copy() {
     while let Some(event) = next {
         next = app.event(event);
     }
-    // The copy has stopped growing: the worker waits in a read for the rest.
+    // The copy has stopped growing: the worker waits in a read for the rest. The
+    // decoder keeps the last bytes until more input comes, so nothing but time says
+    // the copy is done: it is sampled until it holds still, most of it there.
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut seen = Vec::new();
     loop {
-        std::thread::sleep(Duration::from_millis(200));
+        std::thread::sleep(Duration::from_millis(50));
         let now = copy();
-        if now == seen && now.first().is_some_and(|len| *len > 0) {
+        if now == seen && now.first().is_some_and(|len| *len > whole / 2) {
             break;
         }
-        assert!(Instant::now() < deadline, "decompressed {now:?}");
+        assert!(Instant::now() < deadline, "decompressed {now:?} of {whole}");
         seen = now;
     }
 

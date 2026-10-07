@@ -27,6 +27,22 @@ pub fn work_pending(app: &App) -> bool {
         || app.reshape_preview_pending()
 }
 
+/// The most a loop that draws a frame each pass waits for news before drawing again.
+/// Only a bound: an event ends the wait at once.
+#[allow(dead_code)]
+pub const FRAME_WAIT: Duration = Duration::from_millis(5);
+
+/// Wait until an event arrives or [`FRAME_WAIT`] passes, and leave the event queued:
+/// what a loop that drains the channel and draws a frame each pass does between
+/// passes, as the run loop sleeps on its channel. Call it with the channel drained
+/// this pass, so the event it puts back is still the first.
+#[allow(dead_code)]
+pub fn wait_for_event(tx: &std::sync::mpsc::Sender<AppEvent>, rx: &Receiver<AppEvent>) {
+    if let Ok(event) = rx.recv_timeout(FRAME_WAIT) {
+        let _ = tx.send(event);
+    }
+}
+
 /// What the home screen still owes, for a wait that timed out: every worker flag a
 /// settle could be waiting on, so the failure names the answer that never came.
 #[allow(dead_code)]

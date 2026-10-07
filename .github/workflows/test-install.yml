@@ -2,9 +2,10 @@
 # across supported platforms. Uses the install script and package managers as documented
 # in README.md, against the latest published release.
 #
-# The Linux list is the glibc floor and up: Ubuntu 20.04 (glibc 2.31), 22.04 and
-# the runner's 24.04, Debian 11 and 12, Rocky 8 (2.28, the floor itself) and 9,
-# Amazon Linux 2023, Fedora, Arch, on x86_64, and Ubuntu and Debian on arm64.
+# The Linux list is the glibc floor and up: Ubuntu 20.04 (glibc 2.31, as Debian 11,
+# whose archive went away at its end of life), 22.04 and the runner's 24.04,
+# Debian 12, Rocky 8 (2.28, the floor itself) and 9, Amazon Linux 2023, Fedora,
+# Arch, on x86_64, and Ubuntu and Debian on arm64.
 name: Test Install
 
 on:
@@ -135,7 +136,6 @@ jobs:
         image:
           - ubuntu:20.04
           - ubuntu:22.04
-          - debian:11
           - debian:12
           - rockylinux:8
           - rockylinux:9
@@ -160,9 +160,13 @@ jobs:
       image: ${{ matrix.image }}  # zizmor: ignore[unpinned-images]
       options: --privileged --user 0
     steps:
+      # Rocky 9 and Amazon Linux ship curl-minimal, which conflicts with the
+      # curl package; any curl will do.
       - name: Install curl
         run: |
-          if command -v apt-get > /dev/null; then
+          if command -v curl > /dev/null; then
+            :
+          elif command -v apt-get > /dev/null; then
             apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl ca-certificates > /dev/null
           else
             dnf install -y -q curl

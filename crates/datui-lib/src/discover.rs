@@ -1,23 +1,15 @@
-//! Dataset discovery for the home screen.
-//!
-//! This is deliberately *not* a catalogue. Listings are not persisted: every listing
-//! is computed from the filesystem when asked for, and forgotten when the session
-//! ends. What datui keeps between runs is the recently opened paths, and the shape an
-//! open measured of a dataset (`remembered`), used while its files are as they were.
-//!
-//! Discovery is also deliberately shallow. Interesting datasets tend to live on
-//! mounts — network filesystems, spinning disks, hive trees with a hundred thousand
-//! partition files — so a recursive walk would make the home screen slowest exactly
-//! where the data is most interesting. Every function here scans one directory level
-//! and stops.
+//! Dataset discovery for the home screen. Not a catalog: listings are computed from
+//! the filesystem when asked and forgotten at session end; between runs datui keeps
+//! only recent paths and measured shapes (`remembered`, valid while the files are
+//! unchanged). Every function scans one directory level, since data lives on slow
+//! mounts and huge partition trees.
 
 use std::path::{Path, PathBuf};
 
 /// Compression suffixes that may follow a data extension (`sales.csv.gz`).
 const COMPRESSION_EXTENSIONS: &[&str] = &["gz", "bz2", "xz", "zst", "zstd"];
 
-/// Upper bound on entries read from a single directory, so a pathological directory
-/// cannot hang the UI.
+/// Upper bound on entries read from one directory, so a huge one cannot hang the UI.
 pub const MAX_ENTRIES_PER_DIR: usize = 5_000;
 
 /// What a home-screen row represents.
@@ -26,8 +18,7 @@ pub const MAX_ENTRIES_PER_DIR: usize = 5_000;
 pub enum EntryKind {
     /// A single data file.
     File,
-    /// A file datui has no reader for. Hidden on the home screen until `Ctrl+A` shows
-    /// it, dimmed, so a directory can be seen as it is.
+    /// A file datui has no reader for: hidden on home until `Ctrl+A` shows it dimmed.
     Other,
     /// A directory of `key=value` partitions — one dataset, not a tree to walk.
     Hive,
@@ -41,58 +32,25 @@ pub enum EntryKind {
     Hudi,
     /// An ordinary directory, to descend into.
     Directory,
-    /// Somewhere remote that has not been looked at yet. Classifying it would mean
-    /// reading it, which is the call that blocks when the network is gone — so it is
-    /// offered as openable and left unlabelled rather than guessed at.
-    ///
-    /// Also what a kind this build does not recognize reads back as. The dataset index
-    /// is one JSON map, and a value an older datui cannot parse would otherwise fail the
-    /// whole map and discard every dataset fact it had — see `CLASSIFIER_VERSION`, which
-    /// is why a new kind can appear in a file an older build reads.
+    /// Somewhere remote not looked at yet: classifying would read it, which blocks when
+    /// the network is gone, so it is offered as openable, unlabeled. Also what an
+    /// unrecognized kind deserializes as, so an older build can still read a dataset
+    /// index written by a newer one (see `CLASSIFIER_VERSION`).
     #[serde(other)]
     Unknown,
 }
 
-/// Bumped whenever a build starts classifying something differently.
-///
-/// A cached kind is the only thing a remote row has to go on — it was never stat'ed, and
-/// classifying it means reading it — so it is restored rather than re-derived. That makes
-/// it a way for an answer this build would not give to come back: a Delta root measured
-/// before lake tables were recognized was recorded as `multifile`, and restoring that
-/// opens it as one table, which is the whole of #237 read back off disk.
-///
-/// So the kind is restored only when the build that wrote it classified the way this one
-/// does. Everything else in the record — rows, columns, cost — is a measurement rather
-/// than a judgement, and survives.
-///
-/// 7: a file with no extension is a SQLite database when its first bytes say so.
-///
-/// 6: on a local disk, a file with no extension is data when its first bytes carry a
-/// Parquet, Arrow, Avro or ORC signature, so a directory of Spark part files a 5 called
-/// `dir` is one dataset. Unidentified ones are `unnamed` rather than `not_read`.
-///
-/// 5: a directory of CSV or NDJSON is judged by the names at the front of its files, the
-/// way a directory of Parquet is judged by its footers — so one a 4 called `multi` on its
-/// filenames alone may be a place to look inside. A cached kind is restored without
-/// looking again, so a record written by 4 would keep the answer this build exists to
-/// correct (#275 follow-up).
-///
-/// 4: a directory's row carries what one listing of it found, beside its kind, and the
-/// two are restored together — a record written by 3 carries the kind and not the count,
-/// and a row given a kind from the cache is never looked into again (#275, phase 2).
-///
-/// 3: one listing instead of a probe of the first eight entries, formats instead of
-/// extension strings, and one bookkeeping predicate. A directory of `.arrow` beside
-/// `.ipc` was `dir` and is now one dataset; a directory whose ninth entry decided it was
-/// answered by whatever the filesystem returned first (#275, phase 1).
+/// Bump whenever classification changes. A cached kind is restored without
+/// re-deriving it (a remote row cannot be read cheaply), so it is restored only when
+/// written by a build with the same version; measurements in the record (rows,
+/// columns, cost) survive regardless.
 pub const CLASSIFIER_VERSION: u32 = 7;
 
 impl EntryKind {
     /// Short label shown next to the entry name.
     pub fn label(self) -> &'static str {
         match self {
-            // A file with no reader says nothing: it is dimmed, and Enter shows its
-            // bytes. `binary` would be wrong for the README or log it often is.
+            // A file with no reader says nothing: it is dimmed, and Enter shows its bytes.
             EntryKind::File | EntryKind::Other => "",
             EntryKind::Hive => "hive",
             EntryKind::MultiFile => "multi",
@@ -104,22 +62,15 @@ impl EntryKind {
         }
     }
 
-    /// Whether selecting this entry opens a dataset rather than navigating.
-    ///
-    /// An unexamined remote path counts: datui can open an object-store prefix or a
-    /// hive directory directly, and descending into one is not possible anyway
-    /// without the listing this deliberately has not fetched.
+    /// Whether selecting this entry opens a dataset rather than navigating. An unexamined
+    /// remote path counts: datui can open a prefix or hive directory directly.
     pub fn is_dataset(self) -> bool {
         !matches!(self, EntryKind::Directory | EntryKind::Other) && !self.is_lake_table()
     }
 
-    /// Whether this row is *known* to be a dataset.
-    ///
-    /// [`EntryKind::is_dataset`] answers "may this be opened", and a row nothing has
-    /// looked into answers yes: it is offered, and looked into before it is acted on.
-    /// This one answers "is this a dataset", which such a row cannot answer at all —
-    /// and that is the question counting asks. A directory of two hundred subdirectories
-    /// nobody has looked into is not two hundred datasets.
+    /// Whether this row is known to be a dataset, for counting: unlike
+    /// [`EntryKind::is_dataset`] ("may this be opened"), a row nothing has looked into
+    /// does not count.
     pub fn is_known_dataset(self) -> bool {
         self != EntryKind::Unknown && self.is_dataset()
     }
@@ -133,8 +84,7 @@ impl EntryKind {
         )
     }
 
-    /// The format's name for prose. `label` is the row's chip, and is lowercase like
-    /// `hive` and `multi` beside it.
+    /// The format's name for prose; `label` is the row's lowercase chip.
     pub fn lake_name(self) -> Option<&'static str> {
         match self {
             EntryKind::Delta => Some("Delta"),
@@ -145,32 +95,26 @@ impl EntryKind {
     }
 }
 
-/// What one listing of a directory found in it, counted rather than judged.
-///
-/// The label a directory's row carries comes from here, so it says what is inside rather
-/// than what `Enter` will do with it. A count that is wrong then costs a reader nothing:
-/// `12 parquet` is true of a directory whether or not its files are one table.
+/// What one listing of a directory found, counted rather than judged. The row's label
+/// comes from here (`12 parquet`), true whether or not the files are one table.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Holds {
-    /// Data files by format, commonest first. The name is [`crate::FileFormat::name`],
-    /// kept as a string so a record written by one build reads in the next.
+    /// Data files by format, commonest first, as [`crate::FileFormat::name`] strings so
+    /// records survive across builds.
     #[serde(default)]
     pub formats: Vec<(String, usize)>,
-    /// Subdirectories, partitions among them. Development builds of 0.4.0 wrote it as
-    /// `folders`; the alias keeps a cache from one of those readable.
+    /// Subdirectories, partitions among them (`folders` in 0.4.0 development builds).
     #[serde(default, alias = "folders")]
     pub directories: usize,
     /// `key=value` subdirectories, which are also counted in `directories`.
     #[serde(default)]
     pub partitions: usize,
-    /// Files datui has no reader for: a README, a script, a notebook. Neither data nor a
-    /// writer's own, and without a count of their own they were in nothing — a directory
-    /// of twenty of them read `dir` with no line at all, the same as an empty one.
+    /// Files datui has no reader for (a README, a script, a notebook): neither data nor a
+    /// writer's own.
     #[serde(default)]
     pub not_read: usize,
-    /// Files with no extension. No name says what they are, so they are neither data
-    /// nor `not_read`: Spark and GBIF write their part files this way, and the open
-    /// reads them by their bytes.
+    /// Files with no extension, neither data nor `not_read` by name: Spark and GBIF part
+    /// files, which the open reads by their bytes.
     #[serde(default)]
     pub unnamed: usize,
     /// Entries skipped as a writer's own, and the first few by name for the pane.
@@ -178,12 +122,11 @@ pub struct Holds {
     pub skipped: usize,
     #[serde(default)]
     pub skipped_names: Vec<String>,
-    /// Whether the listing stopped at [`MAX_ENTRIES_PER_DIR`], so every count is a
-    /// floor. Shown as `5000+`.
+    /// The listing stopped at [`MAX_ENTRIES_PER_DIR`], so every count is a floor (`5000+`).
     #[serde(default)]
     pub truncated: bool,
-    /// A Hugging Face DatasetDict saved with `save_to_disk`: `dataset_dict.json`
-    /// beside directories, its splits. Read as Arrow, one split at a time.
+    /// A Hugging Face DatasetDict saved with `save_to_disk` (`dataset_dict.json` beside
+    /// split directories), read as Arrow, one split at a time.
     #[serde(default)]
     pub dataset_dict: bool,
 }
@@ -205,8 +148,8 @@ impl Holds {
         }
     }
 
-    /// The weights' format and file count, when this directory is a model: weights of
-    /// one format with nothing beside them but JSON. See [`is_model_directory`].
+    /// The weights' format and file count when this directory is a model (one weight
+    /// format plus only JSON). See [`is_model_directory`].
     pub fn model_weights(&self) -> Option<(&str, usize)> {
         if !is_model_directory(counts_names(self)) {
             return None;
@@ -217,64 +160,48 @@ impl Holds {
             .map(|(name, count)| (name.as_str(), *count))
     }
 
-    /// The label a directory's row carries when its kind does not name itself: `12
-    /// parquet`, `mixed`, or `dir` for a directory with no data directly inside.
+    /// The directory row's label when its kind does not name itself: `12 parquet`,
+    /// `mixed`, or `dir` when no data is directly inside.
     pub fn label(&self) -> String {
         let more = if self.truncated { "+" } else { "" };
-        // A model's weights beside its config and tokenizer JSON: the directory is the
-        // model, and its label says so rather than `mixed`.
+        // A model's weights beside config and tokenizer JSON: labeled as the model, not
+        // `mixed`.
         if let Some((name, count)) = self.model_weights() {
             return format!("{count}{more} {name}");
         }
         match self.formats.as_slice() {
-            // `dir` says there is no data file inside. A listing cut short cannot say
-            // that — it found none among the entries it read, and more files can
-            // unmake it, which is what separates this from `mixed`.
-            // A directory of directories counts them: `3 dirs` says where to go next.
+            // `dir` says there is no data file inside; a cut listing cannot claim that. A
+            // directory of directories counts them.
             [] if self.directories == 1 => format!("1 dir{more}"),
             [] if self.directories > 1 => format!("{}{more} dirs", self.directories),
             [] => format!("dir{more}"),
-            // The `+` hedges the whole claim, not only the number: past the cap a
-            // second format may be among the entries that were not read, so `5000+
-            // parquet` and `mixed` are both answers this directory can give depending on
-            // the order it came back in. What is certain is that five thousand Parquet
-            // files are in there.
+            // The `+` hedges the whole claim: past the cap another format may lurk.
             [(name, count)] => format!("{count}{more} {name}"),
-            // No `+`: `mixed` is not a count, and more files cannot unmake it. The
-            // pane's line carries the qualifier on each number it does report.
+            // No `+`: `mixed` is not a count, and more files cannot unmake it.
             _ => "mixed".to_string(),
         }
     }
 
-    /// Whether nothing has been counted here: a file, or a directory nothing has looked
-    /// into. A directory that was looked into and found empty is not this — it has no
-    /// formats either, and `dir` is the right word for both.
+    /// Whether nothing has been counted: a file, or a directory not looked into. (An
+    /// empty directory that was looked into reads `dir` too.)
     pub fn is_empty(&self) -> bool {
         self.formats.is_empty()
             && self.directories == 0
             && self.skipped == 0
             && self.not_read == 0
             && self.unnamed == 0
-            // Every field, including the two that are counted elsewhere as well: a
-            // partition is a directory and a skipped name is one of `skipped`, so on both
-            // routes today these are implied. This is a `skip_serializing_if` and the
-            // guard that stops a placeholder erasing a row's count, and neither should
-            // turn on an invariant two other functions have to keep.
+            // Every field, even those implied by others today: this guards a placeholder from
+            // erasing a row's count and should not depend on that invariant.
             && self.partitions == 0
             && self.skipped_names.is_empty()
             && !self.dataset_dict
-            // A listing cut short before it found anything still says something: that
-            // what it found is not all there is. Without this the row falls back to its
-            // kind and reads `dir`, where `label` would have said `dir+`.
+            // A cut listing that found nothing still says more exists (`dir+`).
             && !self.truncated
     }
 
-    /// The `contains` line in the details pane: the data files by format, the
-    /// directories, and the partitions — what there is to open, and nothing else.
-    ///
-    /// Files datui cannot read and a writer's markers are left out. Counted here they
-    /// read as a warning ("10 not read") about a directory with nothing wrong in it;
-    /// inside the directory, a row of its own says what is not shown.
+    /// The details pane's `contains` line: data files by format, directories and
+    /// partitions. Unreadable files and writer markers are left out (they would read as a
+    /// warning); a row inside the directory says what is hidden.
     pub fn line(&self, with_partitions: bool) -> Option<String> {
         let more = if self.truncated { "+" } else { "" };
         let mut parts: Vec<String> = self
@@ -282,8 +209,7 @@ impl Holds {
             .iter()
             .map(|(name, count)| format!("{count}{more} {name}"))
             .collect();
-        // Partitions are directories too, and counted in `directories`; naming both would
-        // count them twice. What is left is the directories that are not partitions.
+        // Partitions are counted in `directories` too; name only the rest.
         let plain = self.directories.saturating_sub(self.partitions);
         if plain > 0 {
             let word = if plain == 1 {
@@ -306,10 +232,9 @@ impl Holds {
 }
 
 impl Entry {
-    /// Whether Enter on this row lists the tables inside it: a file of several that is
-    /// no table itself. A file that opens one of its tables (a workbook's first sheet)
-    /// opens it, and a file a spec reads as several variants is one table too (each row
-    /// a variant, with a `type` column), which Enter opens; → lists them.
+    /// Whether Enter lists the tables inside: a file of several that is not itself a
+    /// table. A file opening one of its tables, or a spec's variants file, opens on
+    /// Enter; → lists them.
     pub fn enter_lists_tables(&self) -> bool {
         self.kind == EntryKind::File
             && self.cost.tables.is_some_and(|n| n > 1)
@@ -317,22 +242,18 @@ impl Entry {
             && self.format_spec.is_none()
     }
 
-    /// Whether the home screen leaves this row out until Ctrl+A: a file datui cannot
-    /// open, or a database's own table.
+    /// Whether home hides this row until Ctrl+A: an unreadable file or a database's
+    /// internal table.
     pub fn hidden_by_default(&self) -> bool {
         self.kind == EntryKind::Other || self.table.as_ref().is_some_and(|t| t.internal)
     }
 
-    /// The short label beside a row's name: what it holds, rather than what `Enter`
-    /// will do with it.
-    ///
-    /// A directory that has been looked into is described by the count — `12 parquet`,
-    /// `mixed`, `dir` — and a lake table or a hive root by the format's own name, which
-    /// is the thing it is. A row nothing has looked into has only its kind to go on.
+    /// The short label beside a row's name, saying what it holds: a looked-into
+    /// directory's count (`12 parquet`, `mixed`, `dir`), a lake table's or hive root's
+    /// format, else the kind.
     pub fn label(&self) -> std::borrow::Cow<'static, str> {
         match self.kind {
-            // See `opens_whole_directory`: the one row whose label would be about a
-            // different set of files than the row itself.
+            // See `opens_whole_directory`.
             _ if self.opens_whole_directory => "".into(),
             EntryKind::Directory | EntryKind::MultiFile if !self.holds.is_empty() => {
                 self.holds.label().into()
@@ -344,8 +265,8 @@ impl Entry {
                 let n = self.cost.tables.unwrap_or_default();
                 format!("{n} {}", if n == 1 { "table" } else { "tables" }).into()
             }
-            // A file named for what it holds rather than by its file name, as a
-            // collection names one: its format, which the name no longer says.
+            // A file named for its contents (as a collection names one): its format, which the
+            // name no longer says.
             EntryKind::File
                 if crate::FileFormat::from_path(Path::new(&self.name)).is_none()
                     && crate::FileFormat::from_path(&self.path).is_some() =>
@@ -367,85 +288,64 @@ pub struct Entry {
     pub kind: EntryKind,
     /// Display name — the file or directory name, not the full path.
     pub name: String,
-    /// Size in bytes. For a multi-file or hive dataset this is the sum of the files
-    /// actually inspected, so it is a floor rather than an exact total.
+    /// Size in bytes; for multi-file datasets the sum of files inspected, a floor.
     pub size: Option<u64>,
     pub modified: Option<std::time::SystemTime>,
     /// Row count, when it can be had without reading data (Parquet footers only).
     pub rows: Option<usize>,
     /// Column count, same caveat.
     pub cols: Option<usize>,
-    /// Whether `cols` came from a spread of the directory rather than all of it. A
-    /// directory past the footer budget is read at its ends and its middle, so the count
-    /// is a floor: shown as `6+` rather than `6`, the way the row count is already shown
-    /// as `?` when it is out of reach.
+    /// Whether `cols` came from a spread of the directory (ends and middle, past the
+    /// footer budget), so it is a floor, shown as `6+`.
     pub cols_sampled: bool,
-    /// Column names, when they were free to obtain. A Parquet footer carries them
-    /// alongside the row count, so knowing what is *in* a dataset costs nothing
-    /// beyond knowing how big it is.
+    /// Column names when free to get (a Parquet footer carries them with the row count).
     pub columns: Vec<String>,
-    /// What opening this will cost: where it lives, how it is stored, how it is laid
-    /// out. All of it derived from bytes datui already reads.
+    /// What opening this costs: where it lives, how it is stored and laid out, from bytes
+    /// already read.
     pub cost: Cost,
-    /// What one listing of it found, for a directory. Empty for a file, and for a
-    /// directory nothing has looked into.
+    /// What one listing found, for a directory; empty for a file or an unexamined
+    /// directory.
     pub holds: Holds,
-    /// Whether this row is the door that opens the directory being browsed, rather than
-    /// something in it.
-    ///
-    /// It carries no label. Every other label counts what is directly inside a directory,
-    /// and this row is the one that reads the whole of it — so `dir` beside `(all
-    /// files)` would say there is no data here while offering to open it, and `2
-    /// parquet` beside it would name two of the twenty it is about to read. The name
-    /// says what it does; the numbers beside it, once measured, say how much.
+    /// Whether this row is the door opening the browsed directory. It carries no label:
+    /// labels count what is directly inside, and this row reads all of it.
     pub opens_whole_directory: bool,
-    /// The format spec that reads this file: its glob names it, or its magic is at
-    /// the front of it.
+    /// The format spec that reads this file, by glob or by magic.
     pub format_spec: Option<String>,
-    /// A table inside a file of tables (a SQLite database, a NumPy archive), for the
-    /// rows listed inside one: its path is the file's with the table's name after it,
-    /// which nothing on disk has.
+    /// A table inside a file of tables (SQLite, a NumPy archive): its path is the file's
+    /// with the table's name appended.
     pub table: Option<TableOf>,
 }
 
 /// What a row inside a file of tables says about its table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableOf {
-    /// The format of the file it is in; `None` for a format spec's variant, whose spec
-    /// [`Entry::format_spec`] names.
+    /// The containing file's format; `None` for a spec's variant (see
+    /// [`Entry::format_spec`]).
     pub format: Option<crate::FileFormat>,
-    /// What the file calls it: SQLite's `table`, `view`, `virtual` or `shadow`, or a
-    /// NumPy archive's `array`.
+    /// What the file calls it: SQLite's `table`, `view`, `virtual` or `shadow`, or a NumPy
+    /// archive's `array`.
     pub kind: String,
-    /// SQLite's own (its schema, its statistics, a virtual table's shadows): hidden
-    /// like a file datui cannot open until Ctrl+A shows it, and opened like any other.
+    /// SQLite's own (schema, statistics, shadow tables): hidden until Ctrl+A, opened like
+    /// any other.
     pub internal: bool,
 }
 
-/// What pressing Enter on a dataset will actually cost.
-///
-/// `rows`, `cols` and `size` say what a dataset *is*. None of them say what reading
-/// it will do, and the difference is large: 200 MB of zstd-compressed Parquet is two
-/// gigabytes in memory, and two gigabytes on a hotel-wifi NFS mount is a different
-/// afternoon than two gigabytes on tmpfs.
-///
-/// Every field here comes from something datui already reads — the mount table, and
-/// the same Parquet footer that yields the row count. Nothing here costs an extra
-/// byte of the dataset itself.
+/// What pressing Enter on a dataset will cost (200 MB of zstd Parquet is gigabytes in
+/// memory, and NFS is not tmpfs), all from what datui already reads: the mount table
+/// and the footer.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Cost {
     /// Filesystem or URL scheme: `nfs4`, `ext4`, `tmpfs`, `fuse.sshfs`, `s3`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
-    /// Bytes once decompressed — what this will occupy, as against what it occupies
-    /// on disk.
+    /// Bytes once decompressed, as against on disk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uncompressed: Option<u64>,
     /// Compression codec, as the file itself names it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codec: Option<String>,
-    /// Row groups. One enormous row group cannot be read in parallel or skipped
-    /// through; a thousand tiny ones cost more in overhead than they save.
+    /// Row groups: one huge group cannot be read in parallel or skipped; thousands of
+    /// tiny ones cost overhead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub row_groups: Option<usize>,
     /// Partition layout, for a hive dataset.
@@ -454,12 +354,12 @@ pub struct Cost {
     /// Tables of its own, for a file of tables: one opens, several are listed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tables: Option<usize>,
-    /// Whether a file of several tables opens one of them (a workbook's first sheet),
-    /// so Enter opens it and → lists them, rather than Enter listing them.
+    /// Whether a file of several tables opens one (a workbook's first sheet): Enter opens
+    /// it and → lists them.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub opens_one: bool,
-    /// An Arrow file that is an IPC stream, which is converted before it is scanned,
-    /// rather than an IPC file, which is scanned where it is. From its first bytes.
+    /// An Arrow IPC stream (converted before scanning) rather than an IPC file (scanned in
+    /// place), from its first bytes.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ipc_stream: bool,
 }
@@ -472,9 +372,9 @@ pub struct HowRead {
     pub download: bool,
 }
 
-/// How opening `entry` will read it, as [`crate::FileFormat::read_mode`] says for its
-/// format and how it is stored, and whether a remote one is downloaded first. `None`
-/// for anything but a file whose name says its format.
+/// How opening `entry` reads it ([`crate::FileFormat::read_mode`] for its format and
+/// storage), and whether a remote one is downloaded first. `None` unless a file's name
+/// says its format.
 pub fn how_read(entry: &Entry) -> Option<HowRead> {
     use crate::Stored;
     if entry.kind != EntryKind::File {
@@ -505,16 +405,13 @@ pub fn how_read(entry: &Entry) -> Option<HowRead> {
     Some(HowRead { mode, download })
 }
 
-/// How a hive dataset is laid out on disk.
-///
-/// The shape of a partitioned dataset is the first thing anyone asks about it, and
-/// the answer is in the directory names — no file needs opening to know it.
+/// How a hive dataset is laid out, from directory names alone.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Partitions {
     /// Partition keys, outermost first: `["year", "month"]`.
     pub keys: Vec<String>,
-    /// Distinct values seen for the outermost key, in sorted order. Bounded, so this
-    /// is what was seen rather than necessarily all there is.
+    /// Distinct values seen for the outermost key, sorted; bounded, so not necessarily
+    /// all.
     pub first_key_values: Vec<String>,
     /// Directories counted at the outermost level.
     pub count: usize,
@@ -528,8 +425,7 @@ impl Entry {
         Self::new(path.to_path_buf(), EntryKind::Directory)
     }
 
-    /// A file entry with a chosen display name, for tests that need a search result
-    /// without running a walk to produce one.
+    /// A file entry with a chosen display name, for tests.
     pub fn for_test(path: &Path, name: &str) -> Self {
         Self::new(path.to_path_buf(), EntryKind::File).with_name(name)
     }
@@ -573,9 +469,9 @@ impl Entry {
     }
 }
 
-/// Whether an object key or path is Parquet: named `.parquet`, or a part file with no
-/// extension inside a directory named `.parquet`, as Spark and GBIF write them
-/// (`occurrence.parquet/000001`). Hidden and job files (`_SUCCESS`, `.crc`) are not.
+/// Whether a key or path is Parquet: named `.parquet`, or an extensionless part file
+/// in a `.parquet` directory (Spark, GBIF: `occurrence.parquet/000001`). Hidden and
+/// job files (`_SUCCESS`, `.crc`) are not.
 pub fn is_parquet_key(key: &str) -> bool {
     let key = key.trim_end_matches('/');
     let (directory, name) = match key.rsplit_once('/') {
@@ -612,20 +508,10 @@ mod parquet_key_tests {
     }
 }
 
-/// What a file with no usable extension turns out to be, from the bytes at its start.
-///
-/// Every format datui reads as a directory puts a fixed signature at the front — Parquet
-/// at both ends, and the other three at the front alone. A name is the cheap answer and
-/// the one every listing uses; this is the expensive one, and it is asked only of a
-/// directory somebody is opening, never of a directory somebody is looking at.
-///
-/// Spark and GBIF both write part files with no extension — `occurrence.parquet/000001`
-/// is read by its directory's name, and the same files under a directory named anything
-/// else were not data at all as far as datui was concerned.
-///
-/// CSV and JSON are deliberately absent: they have no signature, and guessing from the
-/// first line is a parse rather than a look. Which signatures a listing believes is each
-/// format's to say ([`crate::readers::Trusted::listing`]).
+/// What a file with no usable extension is, from its first bytes (Parquet, Arrow,
+/// Avro and ORC carry signatures; CSV and JSON have none and are not guessed). Asked
+/// only of a directory being opened, never one being looked at; which signatures a
+/// listing trusts is each format's call ([`crate::readers::Trusted::listing`]).
 pub fn sniff_format(path: &Path) -> Option<crate::FileFormat> {
     crate::readers::sniff_file(path, crate::readers::Asked::Listing)
 }
@@ -639,9 +525,8 @@ pub enum Sniffed {
     Spec(std::sync::Arc<crate::formats::Spec>),
 }
 
-/// [`sniff_format`], and when no format datui reads says it, the format spec that
-/// reads it as an open would pick one: by glob, else by magic and `match.where`. One
-/// read of the file's head answers both, so a listing reads nothing more for specs.
+/// [`sniff_format`], else the format spec an open would pick (by glob, else by magic
+/// and `match.where`), from one read of the file's head.
 pub fn sniff_listed(path: &Path, formats: &crate::formats::Registry) -> Option<Sniffed> {
     use crate::readers::{Asked, HEAD, head_of, sniff};
     let head = head_of(path)?;
@@ -653,8 +538,8 @@ pub fn sniff_listed(path: &Path, formats: &crate::formats::Registry) -> Option<S
         .map(Sniffed::Spec)
 }
 
-/// Name `entry` a file of `spec`, which reads it; a spec that reads its records as
-/// several variants makes it a place too, whose tables → lists.
+/// Name `entry` a file of `spec`; a spec reading several record variants also makes
+/// it a place whose tables → lists.
 pub fn name_spec_file(entry: &mut Entry, spec: &crate::formats::Spec) {
     entry.kind = EntryKind::File;
     entry.format_spec = Some(spec.name.clone());
@@ -663,9 +548,8 @@ pub fn name_spec_file(entry: &mut Entry, spec: &crate::formats::Spec) {
     }
 }
 
-/// Name a local file row no listing classified (a recent) by the spec that reads it,
-/// as a listing names one: a spec's glob, else, when its name says nothing, the magic
-/// in its first bytes.
+/// Name an unlisted local file row (a recent) by the spec that reads it, as a listing
+/// would: by glob, else by magic when its name says nothing.
 pub fn name_unlisted_file(entry: &mut Entry, formats: &crate::formats::Registry) {
     if formats.is_empty()
         || entry.kind != EntryKind::File
@@ -689,8 +573,8 @@ pub fn name_unlisted_file(entry: &mut Entry, formats: &crate::formats::Registry)
     }
 }
 
-/// How many extension-less files one listing looks inside. A directory of Spark output
-/// is a few hundred part files; past this the rest are listed by name alone.
+/// How many extensionless files one listing sniffs; past this the rest are listed by
+/// name.
 pub(crate) const MAX_SNIFFS_PER_DIR: usize = 256;
 
 /// Whether a file's name has no extension at all: `part-00000`, `LICENSE`.
@@ -698,10 +582,8 @@ pub fn has_no_extension(path: &Path) -> bool {
     path.extension().is_none()
 }
 
-/// Whether a listing looks inside a file to say what it is: one with no extension, or
-/// one whose extension says nothing (`.bin`, which ArduPilot's logs and model
-/// checkpoints share with everything else) or only text (`.log`, which candump
-/// writes; `.txt`).
+/// Whether a listing sniffs a file: no extension, an uninformative one (`.bin`), or
+/// only text (`.log`, which candump writes; `.txt`).
 pub fn worth_sniffing(path: &Path) -> bool {
     path.extension().is_none_or(|e| {
         e.eq_ignore_ascii_case("bin") || data_format(path).is_some_and(crate::FileFormat::is_lines)
@@ -723,13 +605,10 @@ pub fn has_parquet_magic(path: &Path) -> bool {
         && &tail == b"PAR1"
 }
 
-/// Whether a path names a Parquet file: by its extension, or by sitting as a part file
-/// with no extension inside a `.parquet` directory.
-///
-/// Not [`is_parquet_key`], which also answers "does this count toward what a directory
-/// holds" and so says no to a writer's own name. `_manifest.parquet` is a file somebody
-/// may open and the listing shows it; reading its footer is a different question from
-/// whether it makes the directory around it a dataset.
+/// Whether a path names a Parquet file, by extension or as an extensionless part file
+/// in a `.parquet` directory. Unlike [`is_parquet_key`], a writer's own file
+/// (`_manifest.parquet`) counts: it can be opened, even if it does not make its
+/// directory a dataset.
 pub fn is_parquet_path(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
@@ -737,24 +616,14 @@ pub fn is_parquet_path(path: &Path) -> bool {
         || is_parquet_key(&directory_and_name(path))
 }
 
-/// Whether a path looks like something datui can open.
-///
-/// Its name, or its place: a part file with no extension inside a `.parquet` directory is
-/// Parquet, as Spark and GBIF write them. Every route that asks what a name means asks
-/// here — the listing, the search, `~` input, the counts and the schema pane — because
-/// the one that did not was always the one that disagreed.
+/// Whether a path looks openable by name or place (a part file in a `.parquet`
+/// directory). Every route asks here so they agree.
 pub fn is_data_file(path: &Path) -> bool {
     data_extension(path).is_some() || is_parquet_key(&directory_and_name(path))
 }
 
-/// The extension that says what a file *is*, with any compression suffix walked past.
-///
-/// `sales.csv.gz` is a CSV: `Path::extension` answers `gz`, which is how it is stored
-/// rather than what it holds. Anything deciding a *format* wants this one — two files
-/// named `.csv.gz` and `.json.gz` agree on their extension and on nothing that
-/// matters.
-///
-/// `None` when the name does not end in something datui reads.
+/// The extension saying what a file is, past any compression suffix (`sales.csv.gz`
+/// is CSV); `None` when not something datui reads.
 pub fn data_extension(path: &Path) -> Option<String> {
     let name = path.file_name().and_then(|n| n.to_str())?;
     let lower = name.to_ascii_lowercase();
@@ -774,9 +643,8 @@ pub fn data_extension(path: &Path) -> Option<String> {
 /// What the home screen says of a file [`unreadable_by_name`] turns away.
 pub const NO_READER: &str = "datui has no reader for this file";
 
-/// Whether a file's name already says datui will not open it: an extension no reader
-/// takes, under any compression suffix. A bare `data.gz` is left to the open, which
-/// looks inside, and so is a name with no extension.
+/// Whether a name already rules the file out: an extension no reader takes, past any
+/// compression suffix. A bare `data.gz` or extensionless name is left to the open.
 pub fn unreadable_by_name(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
         return false;
@@ -793,24 +661,17 @@ pub fn unreadable_by_name(path: &Path) -> bool {
     crate::FileFormat::from_extension(ext).is_none()
 }
 
-/// The format a file's name says it holds, compression suffix walked past.
-///
-/// The question every listing actually asks. Named extensions are not formats: `.ipc`,
-/// `.arrow`, `.arrows` and `.feather` are one format under four names, and a directory holding two
-/// of them is one kind of thing. Asking [`crate::FileFormat`] rather than a list of its
-/// own is what keeps the home screen from offering a file the reader has no route for,
-/// which is how `.txt` came to be listed and refused and `.psv` readable and invisible.
+/// The format a file's name says it holds, past any compression suffix. Extensions
+/// are not formats (`.ipc`, `.arrow`, `.arrows`, `.feather` are one); asking
+/// [`crate::FileFormat`] keeps home from listing what the reader cannot open.
 pub fn data_format(path: &Path) -> Option<crate::FileFormat> {
     // A sharded checkpoint's index is the model, not a JSON table.
     crate::FileFormat::from_name_ending(path)
         .or_else(|| crate::FileFormat::from_extension(&data_extension(path)?))
 }
 
-/// The two path segments `is_parquet_key` needs, as it splits them.
-///
-/// A whole path would reach it with backslashes on Windows, which it does not split on,
-/// so `occurrence.parquet\000001` would arrive as one name that contains a dot and be
-/// read as an ordinary file. The same reason `DataTableState::directory_and_name` exists.
+/// The `dir/name` string `is_parquet_key` splits on `/`, so Windows backslashes do
+/// not make `occurrence.parquet\000001` one dotted name.
 pub(crate) fn directory_and_name(path: &Path) -> String {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     match path.parent().and_then(|p| p.file_name()) {
@@ -819,22 +680,11 @@ pub(crate) fn directory_and_name(path: &Path) -> String {
     }
 }
 
-/// Commonest first, Parquet ahead of anything it ties with, then by name, so the line
-/// reads the same way twice running.
-///
-/// One order, by name of format, for everything that ranks a directory's formats: the
-/// local label, the local read that picks a reader, and the cloud label. They agreed on
-/// the common case and not on a tie — a directory of two CSV and two Parquet was
-/// *labelled* `2 csv · 2 parquet` and *read* as Parquet, so the row said one thing and
-/// `Enter` did another. Parquet wins the tie because it is the format a directory of data
-/// files is most likely to be about and the one every other route reads in place.
-///
-/// Named rather than written inline because `read_dir` order is exactly what it exists
-/// to remove, and a fixture on disk cannot pin an order that depends on it: the tie is
-/// the whole point and only a caller choosing the input order can put one there.
+/// Format rank: commonest first, Parquet winning ties, then by name, so the order
+/// never depends on `read_dir`. One order for the local label, the local reader
+/// choice and the cloud label, so a row's label and `Enter` agree.
 pub(crate) fn rank_formats(a: (&str, usize), b: (&str, usize)) -> std::cmp::Ordering {
-    // Text is what is read when nothing else is: a README among data files is not
-    // the table, however many there are.
+    // Text loses: a README among data files is not the table.
     let text = crate::FileFormat::Text.name();
     (a.0 == text)
         .cmp(&(b.0 == text))
@@ -843,11 +693,8 @@ pub(crate) fn rank_formats(a: (&str, usize), b: (&str, usize)) -> std::cmp::Orde
         .then_with(|| a.0.cmp(b.0))
 }
 
-/// Whether a file is one Hugging Face `datasets` writes beside a dataset's Arrow
-/// shards to describe them: `save_to_disk` writes both, and its cache the first. They
-/// are the dataset's metadata, not its data, where `.arrow` files sit beside them; two
-/// JSON files would otherwise outnumber a dataset of one shard and be read instead of
-/// it.
+/// Whether a file is Hugging Face `datasets` metadata beside Arrow shards, so its
+/// JSON does not outnumber a one-shard dataset and get read instead.
 pub(crate) fn is_hugging_face_metadata(name: &str) -> bool {
     matches!(name, "dataset_info.json" | "state.json")
 }
@@ -856,28 +703,17 @@ fn order_formats(counts: &mut [(crate::FileFormat, usize)]) {
     counts.sort_by(|a, b| rank_formats((a.0.name(), a.1), (b.0.name(), b.1)));
 }
 
-/// Whether a listing entry is bookkeeping rather than data.
-///
-/// The one convention datui knows, and the only one: a leading `_` or `.`, which every
-/// engine in the table uses for the files it leaves beside its output — `_SUCCESS`,
-/// `_committed_*`, `_started_*`, `_metadata.json`, `.crc` — and the `_$folder$` marker
-/// some tools write to stand in for a folder in a flat store.
-///
-/// One predicate rather than the five that had drifted apart: a local listing skipped
-/// dotfiles and the literal `_SUCCESS`, a local open skipped both prefixes, and the
-/// cloud listing knew three more names. A directory whose ninth entry is `_metadata.json`
-/// answered `multi` locally and `dir` in a bucket for no better reason than that.
+/// Whether a listing entry is bookkeeping: a leading `_` or `.` (`_SUCCESS`,
+/// `_committed_*`, `_metadata.json`, `.crc`) or the `_$folder$` marker. One predicate
+/// for every listing and open, so they agree.
 pub fn is_bookkeeping(name: &str) -> bool {
-    // The `_$folder$` marker is asked about first, because it is a suffix and the
-    // folder it stands in for can itself be a partition: legacy s3n and EMR write
-    // `year=2024_$folder$` beside `year=2024/`, and a partition test looking only for
-    // an `=` calls that marker data.
+    // `_$folder$` first: the folder it stands for may be a partition (`year=2024_$folder$`
+    // beside `year=2024/`), which the partition test would call data.
     if name.ends_with("_$folder$") {
         return true;
     }
-    // A `key=value` name is a partition wherever it appears, whatever it starts with.
-    // Spark and Hive partition on internal columns — `_date=2024-01-01`, `_c0=…` — and
-    // reading those as a writer's own files loses the whole dataset.
+    // A `key=value` name is a partition, even with a leading `_` (Spark and Hive
+    // partition on internal columns like `_date=…`).
     if is_partition_name(name) {
         return false;
     }
@@ -889,9 +725,8 @@ fn is_weights(name: &str) -> bool {
     name == crate::FileFormat::Safetensors.name() || name == crate::FileFormat::Gguf.name()
 }
 
-/// Whether formats found side by side in one directory are a model: weights of one
-/// format, with nothing else beside them but JSON (a config, a tokenizer). Such a
-/// directory is the model, however many JSON files outnumber the shards.
+/// Whether formats side by side are a model: one weight format with only JSON beside
+/// (config, tokenizer), however many JSON files.
 pub(crate) fn is_model_directory<'a>(names: impl IntoIterator<Item = &'a str>) -> bool {
     let mut weights = None;
     for name in names {
@@ -1012,21 +847,10 @@ pub fn directory_format(dir: &Path) -> DirectoryFormat {
         }
     }
 
-    // Files with no extension, in a directory whose names settled nothing. Spark and GBIF
-    // both write part files this way; `occurrence.parquet/000001` is read by its
-    // directory's name, and the same files under a directory named anything else were not
-    // data at all as far as datui was concerned — the directory was `dir` and its files
-    // were not listed.
-    //
-    // Only when the names have nothing to say. A directory of Parquet with a `LICENSE` in
-    // it is a directory of Parquet, and opening the `LICENSE` to find out is a read per
-    // file for an answer already given.
-    //
-    // A spread rather than every one, for the reason [`spread`] gives:
-    // the cost is one open per file, and a directory written by one job holds one kind of
-    // thing. They have to agree — a directory where the ends disagree is not one table by
-    // any reading — and then all of them are taken as that format, because a scan that
-    // reads what it can and says what it could not is what happens to the odd one out.
+    // Extensionless files (Spark and GBIF part files) in a directory whose names settled
+    // nothing; skipped when names already answer (a `LICENSE` beside Parquet). A
+    // [`spread`] is sniffed, not every file: the ends must agree, and then all are taken
+    // as that format (the scan reports any odd one out).
     if by_format.is_empty() && !nameless.is_empty() {
         nameless.sort();
         let picks = spread(nameless.len());
@@ -1043,7 +867,7 @@ pub fn directory_format(dir: &Path) -> DirectoryFormat {
     }
 
     // Text is data only where nothing else is: a README beside Parquet is not a
-    // candidate, as the listing does not count it.
+    // candidate.
     if by_format.iter().any(|(f, _)| !f.is_lines()) {
         by_format.retain(|(f, _)| !f.is_lines());
     }
@@ -1065,20 +889,16 @@ pub fn directory_format(dir: &Path) -> DirectoryFormat {
         by_format.retain(|(_, files)| !files.is_empty());
     }
 
-    // Decided after the whole listing rather than at the first entry that could settle
-    // it, so the answer does not depend on the order a directory read happens to
-    // return. One `key=value` below and the directory stops being the whole story: a hive
-    // dataset's data is down there, whatever strays are lying at the top.
+    // Decided after the whole listing, not at the first deciding entry, so read order
+    // does not matter. One `key=value` below and the data is down there.
     if partitioned {
         return DirectoryFormat::Deeper;
     }
 
-    // The one order every route ranks a directory's formats by, so the reader this picks
-    // is the format the label names.
+    // The shared format rank, so the reader picked is the format the label names.
     by_format.sort_by(|a, b| rank_formats((a.0.name(), a.1.len()), (b.0.name(), b.1.len())));
-    // A directory holding model weights is the model. Its config and tokenizer JSON
-    // sit beside the shards and often outnumber them, which does not make it a table
-    // of JSON; the JSON is what the read passes over.
+    // A directory of model weights is the model, however much config and tokenizer
+    // JSON sits beside it; the JSON is passed over.
     if is_model_directory(by_format.iter().map(|(f, _)| f.name()))
         && let Some(at) = by_format.iter().position(|(f, _)| is_weights(f.name()))
     {
@@ -1103,23 +923,14 @@ pub fn directory_format(dir: &Path) -> DirectoryFormat {
     }
 }
 
-/// How far down a hive root is followed looking for the files it partitions.
-///
-/// A dataset partitioned by year, month, day and hour is four; past this the directory
-/// is something other than a hive dataset, and guessing further costs a directory
-/// read per level on a share.
+/// How far down a hive root is followed for its files (year/month/day/hour is four);
+/// deeper is not a hive dataset, and each level costs a read on a share.
 const MAX_HIVE_DEPTH: usize = 16;
 
-/// What the files under a hive root's `key=value` partitions actually are.
-///
-/// A hive root holds no data itself, so [`directory_format`] can only say `Deeper` about
-/// one. This follows a single spine down — the same one path through the tree a hive
-/// scan reads its schema from — and reports what it finds at the bottom.
-///
-/// One spine, and the first partition at each level, so a dataset of ten thousand
-/// partitions costs what one of two costs. That makes it a sample: a tree whose
-/// partitions disagree is reported as whatever the first one holds. The alternative
-/// is walking the dataset to answer a question asked before it is opened.
+/// What the files under a hive root's partitions are. [`directory_format`] can only
+/// say `Deeper` of a root, so this follows one spine (the first partition at each
+/// level, as a hive scan reads its schema) to the bottom. A sample: disagreeing
+/// partitions report as the first one.
 pub fn hive_leaf_format(dir: &Path) -> DirectoryFormat {
     let mut at = dir.to_path_buf();
     for _ in 0..MAX_HIVE_DEPTH {
@@ -1135,10 +946,7 @@ pub fn hive_leaf_format(dir: &Path) -> DirectoryFormat {
     DirectoryFormat::Deeper
 }
 
-/// The first `key=value` subdirectory of `dir`, by name.
-///
-/// By name rather than in directory order: two runs asking what a dataset holds must
-/// not look at different partitions and give different answers.
+/// The first `key=value` subdirectory of `dir` by name, so runs agree.
 fn first_partition(dir: &Path) -> Option<PathBuf> {
     let iter = std::fs::read_dir(dir).ok()?;
     iter.flatten()
@@ -1155,49 +963,26 @@ fn is_partition_dir(path: &Path) -> bool {
         .is_some_and(is_partition_name)
 }
 
-/// An empty object with no extension: a marker some tool left for a folder, whether or
-/// not the directory still has anything in it (`yellow/year=2032` beside no
-/// `year=2032/`). Nothing datui opens is both empty and nameless.
+/// An empty extensionless object: a tool's folder marker (`yellow/year=2032`), whether
+/// or not the folder still exists. Nothing datui opens is both empty and nameless.
 pub fn is_empty_marker(name: &str, size: u64) -> bool {
     size == 0 && !name.contains('.')
 }
 
-/// Classify a directory without walking it.
-///
-/// Reads one listing, bounded by [`MAX_ENTRIES_PER_DIR`] rather than by a probe of the
-/// first few entries. A probe makes the answer depend on the order the filesystem hands
-/// entries back: a directory of eight Parquet files followed by `_metadata.json` answered
-/// `multi` locally, where a bucket listing the same directory sorts the JSON first and
-/// answered `dir`.
-///
-/// It costs more than the probe did: a plain directory row is enriched with nothing, so
-/// its listing is read for this alone, and a directory of five thousand entries is read
-/// whole where eight used to settle it — six hundred times the entries, for the worst
-/// row, and `look_into_batch` walks a batch of sixteen of them one at a time.
-///
-/// That includes rows on a network mount: `network_check` gates listing a directory you
-/// have browsed into, not classifying the rows of one. It is one `getdents` walk, with
-/// a `stat` only for a symlink, since `d_type` cannot say what is on the far end of one
-/// — so a directory of symlinks is the expensive case. `home_open_selected` makes the
-/// call on the thread reading keys; every other caller is on a worker.
-///
-/// Capping it lower again would put the order-dependence back exactly where the
-/// directories are biggest.
+/// Classify a directory without walking it: one listing bounded by
+/// [`MAX_ENTRIES_PER_DIR`] (not a probe of the first few entries, whose answer would
+/// depend on read order). Includes rows on network mounts: one `getdents` walk,
+/// stat'ing only symlinks. `home_open_selected` calls it on the key thread; others
+/// on workers.
 pub fn classify_directory(path: &Path) -> EntryKind {
     look_at_directory(path).0
 }
 
-/// The kind *and* what the listing found, from one read of it.
-///
-/// Two answers to two questions. The kind decides what `Enter` does with the directory;
-/// the count says what is in it, and the row's label is written from that — so a label
-/// that is wrong about the first is still true about the second.
+/// The kind (what `Enter` does) and what the listing found (what the label says),
+/// from one read.
 pub fn look_at_directory(path: &Path) -> (EntryKind, Holds) {
-    // Before the listing, which it does not need: three `join` tests answer it, where
-    // counting would walk up to `MAX_ENTRIES_PER_DIR` entries of every table in a
-    // warehouse, on every pass, for a `holds` line beside a table whose files `enrich`
-    // then refuses to read. A bucket prefix finds its markers in the listing it has
-    // already paid for instead.
+    // Before the listing: three `join` tests answer it, where counting would walk every
+    // table of a warehouse each pass. A bucket prefix finds markers in its listing.
     if let Some(lake) = lake_table(path) {
         return (lake, Holds::default());
     }
@@ -1211,10 +996,9 @@ pub fn look_at_directory(path: &Path) -> (EntryKind, Holds) {
         sniff: (!crate::home::is_remote_path(path)).then_some(path),
         in_bucket: false,
     };
-    // One past the cap, so "there is more" is known without paying to process it, and
-    // bounded where the entries come from: a Hadoop-style output directory is a `.crc`
-    // per data file, and skipping those before the count would let the walk run to
-    // twice the cap. A directory past it is decided by whichever entries came first.
+    // One past the cap, so "there is more" is known; bounded where entries come from,
+    // since `.crc` files beside each data file would double the walk. Past the cap the
+    // first entries decide.
     let mut truncated = false;
     let seen = iter
         .flatten()
@@ -1229,13 +1013,9 @@ pub fn look_at_directory(path: &Path) -> (EntryKind, Holds) {
     (kind, holds)
 }
 
-/// A local entry as [`classify`] asks about it.
-///
-/// The type the directory read already returned rather than a `stat` per entry, which
-/// on a share is a round trip apiece; a symlink still gets one, since `d_type` cannot
-/// say what is on the far end. A regular file rather than "not a directory": a FIFO
-/// named `a.csv` blocks whoever opens it, and a broken symlink named `b.csv` opens as
-/// nothing.
+/// A local entry as [`classify`] sees it, from the read's file type (no stat per
+/// entry; symlinks still need one). Regular files only: a FIFO named `a.csv` blocks
+/// its opener, a broken symlink opens as nothing.
 fn seen_on_disk(entry: &std::fs::DirEntry) -> Seen {
     let (is_dir, is_file) = match entry.file_type() {
         Ok(kind) if !kind.is_symlink() => (kind.is_dir(), kind.is_file()),
@@ -1254,34 +1034,29 @@ fn seen_on_disk(entry: &std::fs::DirEntry) -> Seen {
 pub struct Seen {
     pub name: String,
     pub is_dir: bool,
-    /// A regular file, which an open can read. A FIFO, a socket or a broken symlink is
-    /// neither this nor a directory.
+    /// A regular file an open can read (not a FIFO, socket or broken symlink).
     pub is_file: bool,
-    /// Bytes, where the listing gives them. An empty file with no extension is a tool's
-    /// marker for a folder, not data.
+    /// Bytes, where listed; an empty extensionless file is a folder marker, not data.
     pub size: Option<u64>,
 }
 
 /// Where the local and the bucket listings deliberately differ.
 pub struct Rules<'a> {
-    /// The listed directory's own name: a part file with no extension inside
-    /// `occurrence.parquet/` is Parquet by where it sits.
+    /// The listed directory's name: an extensionless part file in `occurrence.parquet/` is
+    /// Parquet by where it sits.
     pub directory: &'a str,
-    /// Where to look inside a file its name says nothing about, a few per listing.
-    /// `None` where each open is a round trip, and one that may not come back.
+    /// Where to look inside nameless files, a few per listing; `None` where each open is
+    /// a round trip that may not return.
     pub sniff: Option<&'a Path>,
-    /// A bucket prefix. Lake tables are found by the names in the listing, Iceberg by
-    /// its layout alone (asking whether `metadata/` holds a `*.metadata.json` is a
-    /// second listing); a saved DatasetDict by its `dataset_dict.json`; and only Parquet,
-    /// the one format read in place there, is offered as many files that are one table.
+    /// A bucket prefix: lake tables are found by names in the listing (Iceberg by layout
+    /// alone), a DatasetDict by `dataset_dict.json`, and only Parquet (read in place) is
+    /// offered as many files that are one table.
     pub in_bucket: bool,
 }
 
-/// The kind of a directory and what it holds, from one level of its listing.
-///
-/// The one rule both [`look_at_directory`] and a bucket prefix ask, so a directory and
-/// the prefix that mirrors it get one answer; [`Rules`] is everything they may differ
-/// in. Whether the listing was cut short is the caller's to set.
+/// A directory's kind and holdings from one listing level: the one rule for
+/// [`look_at_directory`] and bucket prefixes, so a directory and its mirror agree;
+/// [`Rules`] holds their differences. The caller sets truncation.
 pub fn classify(seen: impl Iterator<Item = Seen>, rules: &Rules) -> (EntryKind, Holds) {
     use crate::FileFormat;
     let mut holds = Holds::default();
@@ -1295,8 +1070,8 @@ pub fn classify(seen: impl Iterator<Item = Seen>, rules: &Rules) -> (EntryKind, 
     let (mut present, mut data_files, mut parquet) = (0usize, 0usize, 0usize);
     let mut sniffs_left = rules.sniff.map_or(0, |_| MAX_SNIFFS_PER_DIR);
     for s in seen {
-        // Lake markers are a specification rather than a stray, so they are looked for
-        // before the bookkeeping test that would skip `_delta_log`.
+        // Lake markers are spec, not strays: looked for before bookkeeping skips
+        // `_delta_log`.
         if s.is_dir
             && rules.in_bucket
             && let Some(marker) = ["_delta_log", ".hoodie", "metadata", "data"]
@@ -1325,8 +1100,8 @@ pub fn classify(seen: impl Iterator<Item = Seen>, rules: &Rules) -> (EntryKind, 
         let found = named
             // Text by its name, unless its bytes say more: below.
             .filter(|f| !f.is_lines())
-            // A sharded checkpoint's index is counted as the JSON it is, so the label
-            // counts the shards; the read still takes it, for the metadata it carries.
+            // A sharded checkpoint's index counts as JSON, so the label counts shards; the read
+            // still uses it.
             .map(|f| match crate::model_files::is_safetensors_index(name) {
                 true => FileFormat::Json,
                 false => f,
@@ -1341,8 +1116,7 @@ pub fn classify(seen: impl Iterator<Item = Seen>, rules: &Rules) -> (EntryKind, 
             .or(named)
             .filter(|_| s.is_file);
         let Some(found) = found else {
-            // A file with no reader, and a name with nothing behind it. A file with no
-            // extension is apart: Spark writes its part files that way.
+            // No reader and no name; extensionless files are counted apart (Spark part files).
             match s.is_file && has_no_extension(name) {
                 true => holds.unnamed += 1,
                 false => holds.not_read += 1,
@@ -1361,8 +1135,8 @@ pub fn classify(seen: impl Iterator<Item = Seen>, rules: &Rules) -> (EntryKind, 
         }
     }
 
-    // A Hugging Face dataset's own JSON files are its writer's, like `_SUCCESS`. So is
-    // a saved DatasetDict's `dataset_dict.json` beside the prefixes of its splits.
+    // Hugging Face's JSON is its writer's own, like `_SUCCESS`, as is a DatasetDict's
+    // `dataset_dict.json`.
     if !counts.iter().any(|(f, _)| *f == FileFormat::Arrow) {
         hugging_face.clear();
     }
@@ -1376,8 +1150,7 @@ pub fn classify(seen: impl Iterator<Item = Seen>, rules: &Rules) -> (EntryKind, 
         present -= hugging_face.len();
         skipped.append(&mut hugging_face);
     }
-    // Text is data only where nothing else is: a README beside Parquet is a file
-    // nothing reads as the directory's table.
+    // Text is data only where nothing else is.
     if counts.iter().any(|(f, _)| !f.is_lines()) {
         for (_, n) in counts.iter_mut().filter(|(f, _)| f.is_lines()) {
             data_files -= *n;
@@ -1391,18 +1164,16 @@ pub fn classify(seen: impl Iterator<Item = Seen>, rules: &Rules) -> (EntryKind, 
         .into_iter()
         .map(|(f, n)| (f.name().to_string(), n))
         .collect();
-    // The first few by name, not the first few the listing returned: a line in the pane
-    // that reads differently on two runs of the same directory is order-dependence. An
-    // object and a prefix of the same name are one thing named twice.
+    // The first few by name, so runs agree; an object and prefix of one name are one
+    // thing.
     skipped.sort();
     skipped.dedup();
     holds.skipped = skipped.len();
     skipped.truncate(SKIPPED_NAMES_SHOWN);
     holds.skipped_names = skipped;
 
-    // A lake table's data files genuinely agree on a schema, so every rule below says
-    // "one table" and is right about the schema and wrong about the rows. Iceberg takes
-    // the whole shape rather than its plain names: its data under `data/`, not beside it.
+    // Lake tables' data files agree on a schema, so the rules below would wrongly say
+    // "one table". Iceberg needs its whole shape (data under `data/`).
     let marked = |m| lake.contains(&m);
     if marked("_delta_log") {
         return (EntryKind::Delta, holds);
@@ -1413,17 +1184,13 @@ pub fn classify(seen: impl Iterator<Item = Seen>, rules: &Rules) -> (EntryKind, 
     if marked("metadata") && marked("data") && parquet == 0 {
         return (EntryKind::Iceberg, holds);
     }
-    // Deliberately no majority: one `notes=old/` among twenty ordinary subdirectories
-    // reads `hive`, and the two majorities tried to rule that out each refused a real
-    // hive root instead — one with a README beside it, one with a `scripts/` and a
-    // `docs/`. Refusing a dataset is the worse direction.
+    // No majority rule: one stray `notes=old/` reads `hive`, but majorities refused real
+    // hive roots with a README or `scripts/` beside them, the worse mistake.
     if holds.partitions > 0 && holds.partitions >= data_files {
         return (EntryKind::Hive, holds);
     }
-    // One format that can be read as many files, and data is what the directory is
-    // mostly for: a directory with a couple of stray CSVs in it is a place, and offering
-    // it as a dataset hides it. A model opens as the model however much JSON is beside
-    // its weights.
+    // One multi-file-readable format that dominates: a couple of stray CSVs make a
+    // place, not a dataset. A model opens as the model despite its JSON.
     let one_table = if rules.in_bucket {
         parquet > 1 && parquet == data_files && parquet * 2 >= present
     } else {
@@ -1437,30 +1204,21 @@ pub fn classify(seen: impl Iterator<Item = Seen>, rules: &Rules) -> (EntryKind, 
     (kind, holds)
 }
 
-/// Spends one of a listing's looks inside a file on `name`, when it is a regular file
-/// whose name says nothing (see [`worth_sniffing`]) and the budget is not used up.
+/// Spend one of a listing's sniffs on `name`: a regular file whose name says nothing
+/// ([`worth_sniffing`]), budget permitting.
 fn spend_sniff(left: &mut usize, is_file: bool, name: &Path) -> bool {
     let spend = is_file && *left > 0 && worth_sniffing(name);
     *left -= usize::from(spend);
     spend
 }
 
-/// Entries under `metadata/` to look at before giving up on Iceberg. A table with a
-/// long history has thousands, and the newest are not first in any order a directory
-/// read promises — but `vN.metadata.json` is written on the first commit and never
-/// removed, so one is always there to find.
+/// Entries under `metadata/` checked for Iceberg: `v1.metadata.json` is written on
+/// the first commit and never removed, but read order is arbitrary.
 const ICEBERG_METADATA_PROBE: usize = 64;
 
-/// Whether `path` is the root of a lake table, and which.
-///
-/// Marker directory names are convention knowledge, which the one-table rule
-/// deliberately keeps out: inferring a dataset from filenames is a list that is never
-/// finished. These three are a different thing — a declared format with a specified
-/// layout, where the marker is part of the spec.
-///
-/// Named directly rather than found by walking the listing: three `join` tests answer it
-/// whatever the directory holds, where a walk pays for every entry of a table with a
-/// hundred thousand data files to find one name it already knows.
+/// Whether `path` is a lake table root, and which. Marker names are part of these
+/// formats' specs (unlike filename conventions); three `join` tests answer it
+/// without walking a table's files.
 fn lake_table(path: &Path) -> Option<EntryKind> {
     if path.join("_delta_log").is_dir() {
         return Some(EntryKind::Delta);
@@ -1468,9 +1226,8 @@ fn lake_table(path: &Path) -> Option<EntryKind> {
     if path.join(".hoodie").is_dir() {
         return Some(EntryKind::Hudi);
     }
-    // Iceberg's marker is a plain name, so it takes the whole shape: metadata beside
-    // data, and a metadata file actually in it. `metadata/` alone is a directory anybody
-    // may have.
+    // Iceberg's marker is a plain name, so it needs the whole shape: `metadata/` with a
+    // metadata file, beside `data/`.
     let metadata = path.join("metadata");
     if path.join("data").is_dir()
         && metadata.is_dir()
@@ -1486,11 +1243,8 @@ fn lake_table(path: &Path) -> Option<EntryKind> {
     None
 }
 
-/// List one directory level, classified. Never recurses.
-///
-/// Errors are swallowed deliberately: an unreadable or unmounted directory yields an
-/// empty listing rather than failing the home screen, and the caller reports
-/// availability separately.
+/// List one directory level, classified; never recurses. Errors give an empty
+/// listing; the caller reports availability.
 pub fn scan_dir(dir: &Path) -> Vec<Entry> {
     scan_dir_bounded(dir).entries
 }
@@ -1499,34 +1253,20 @@ pub fn scan_dir(dir: &Path) -> Vec<Entry> {
 #[derive(Debug, Clone, Default)]
 pub struct Scan {
     pub entries: Vec<Entry>,
-    /// The directory held more than `MAX_ENTRIES_PER_DIR`; `entries` is a prefix of
-    /// it. Worth saying out loud: a listing that silently stops at five thousand
-    /// looks identical to a directory that simply has five thousand things in it.
+    /// The directory held more than `MAX_ENTRIES_PER_DIR`; `entries` is a prefix, which
+    /// the UI must say.
     pub truncated: bool,
 }
 
-/// List one directory, doing a bounded amount of work regardless of what is in it.
-///
-/// The cost is one `read_dir` and a `stat` per entry, bounded by
-/// [`MAX_ENTRIES_PER_DIR`], and nothing per subdirectory at all.
-///
-/// **Nothing here is classified.** Telling a hive dataset from a plain directory means
-/// reading the directory, which is a round trip apiece on a share — so no listing pays
-/// for it, however small. Every subdirectory comes back [`EntryKind::Unknown`], which
-/// claims nothing, and is looked into later from the viewport, a batch at a time, by
-/// whoever is actually reading the rows.
-///
-/// That is what makes a row's label a fact about the row. Classifying the first
-/// sixty-four subdirectories and calling every identical one after them a plain directory
-/// made it a fact about position instead; classifying them only when a listing is small
-/// enough moved the arbitrariness rather than removing it, since two directories holding
-/// the same subdirectories would still disagree about what to call them.
+/// List one directory with bounded work: one `read_dir` and a stat per entry, up to
+/// [`MAX_ENTRIES_PER_DIR`]. Nothing is classified: subdirectories return
+/// [`EntryKind::Unknown`] and are looked into later from the viewport, so a label is
+/// a fact about the row, not its position.
 pub fn scan_dir_bounded(dir: &Path) -> Scan {
     scan_dir_progressive(dir, |_| {})
 }
 
-/// [`scan_dir_bounded`], naming the files it looks inside by `formats` too: a file
-/// whose first bytes carry a spec's magic is listed as that spec's.
+/// [`scan_dir_bounded`], also naming sniffed files by `formats`' magic.
 pub fn scan_dir_specs(dir: &Path, formats: &crate::formats::Registry) -> Scan {
     scan_dir_with(dir, formats, |_| {})
 }
@@ -1534,9 +1274,8 @@ pub fn scan_dir_specs(dir: &Path, formats: &crate::formats::Registry) -> Scan {
 /// How often a listing still being read shows what it has so far.
 const LISTING_PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
 
-/// [`scan_dir_bounded`], handing `progress` the rows read since it was last called,
-/// in the order read, every [`LISTING_PROGRESS_EVERY`] while the read goes on. A directory a share takes seconds
-/// to list shows its first rows as they arrive rather than a spinner until the last.
+/// [`scan_dir_bounded`], passing `progress` the rows read since the last call, every
+/// [`LISTING_PROGRESS_EVERY`], so a slow share shows rows as they arrive.
 pub fn scan_dir_progressive(dir: &Path, progress: impl FnMut(&[Entry])) -> Scan {
     scan_dir_with(dir, &crate::formats::Registry::default(), progress)
 }
@@ -1556,9 +1295,8 @@ fn scan_dir_with(
     let mut sent = 0usize;
     let mut seen = 0usize;
     let mut truncated = false;
-    // Files with no extension are looked at, a few bytes each, so a Spark part file
-    // is listed as the data it is while a LICENSE stays out of the way. Never on a
-    // share, where each open is a round trip and one that may not come back.
+    // Extensionless files are sniffed (a few bytes) so part files list as data; never on
+    // a share, where each open is a round trip.
     let mut sniffs_left = if crate::home::is_remote_path(dir) {
         0
     } else {
@@ -1600,8 +1338,7 @@ fn scan_dir_with(
         } else if meta.is_file() {
             EntryKind::Other
         } else {
-            // Not a directory or a regular file. A FIFO named `x.parquet` is a
-            // listing entry datui must never offer to open.
+            // Not a directory or regular file: a FIFO named `x.parquet` must never be offered.
             continue;
         };
 
@@ -1621,20 +1358,9 @@ fn scan_dir_with(
     Scan { entries, truncated }
 }
 
-/// Datasets first, then directories; each group alphabetical.
-///
-/// Recency is a better sort for recents, but a directory listing is a place you
-/// scan by name, so name order wins here.
-///
-/// A row nothing has looked into yet sorts with the directories, although
-/// [`EntryKind::is_dataset`] offers it as openable. In a fresh listing that is every
-/// subdirectory, so what this amounts to there is files first and directories after —
-/// and it is the one ordering a directory can be given before anything is known about
-/// it, since it is where the row lands if the directory turns out to be a plain one.
-///
-/// Which is the point: a kind arriving later never moves the row, because a row that
-/// moves out from under the cursor while you are scrolling is worse than a label that
-/// is late.
+/// Datasets first, then directories, each alphabetical (a listing is scanned by
+/// name). Unexamined rows sort with directories, where they land if plain, so a kind
+/// arriving later never moves a row under the cursor.
 pub(crate) fn sort_entries(entries: &mut [Entry]) {
     entries.sort_by(|a, b| {
         // Data, then directories, then what datui cannot read.
@@ -1651,40 +1377,28 @@ pub(crate) fn sort_entries(entries: &mut [Entry]) {
     });
 }
 
-/// How far below a directory the footer walk goes. A hive dataset partitioned by year,
-/// month, day and hour is four; past this the files belong to something else.
+/// How far below a directory the footer walk goes (year/month/day/hour is four).
 const MAX_WALK_DEPTH: u8 = 4;
 
-/// Upper bound on Parquet footers read to size a multi-file or hive dataset.
-///
-/// Two partitions is cheap; five thousand is not, and a home screen that stalls on
-/// the biggest dataset is worse than one that admits it does not know. Past this
-/// bound the count is left blank rather than reported as a partial total.
+/// Upper bound on footers read to size a multi-file or hive dataset; past it the count
+/// is left blank rather than partial.
 const MAX_FOOTERS_PER_DATASET: usize = 64;
 
-/// Fill in row and column counts for a dataset, from Parquet footers only.
-///
-/// Handles a single file, and sums a bounded number of files for hive and multi-file
-/// datasets. Anything not backed by Parquet keeps `None`, which the UI shows as an
-/// honest blank.
+/// Fill in row and column counts from Parquet footers: one file, or a bounded sum for
+/// hive and multi-file datasets. Non-Parquet keeps `None`, a blank in the UI.
 pub fn enrich(entry: &mut Entry) {
     enrich_as(entry, &crate::schema_union::ReadAs::default())
 }
 
-/// As [`enrich`], reading each file the way the open that follows will read it.
-///
-/// The rule that decides whether a directory's files are one table reads the names at the
-/// front of them, and where those names are is a reader setting. A pass that used its own
-/// answers would judge a directory by a reading nobody is going to make — which is how
-/// `datui --no-header directory/` came to open the home screen for a directory the flag
-/// reads perfectly as one table.
+/// As [`enrich`], reading files as the following open will: where the header is
+/// decides what the names are, so judging with other settings would misjudge (e.g.
+/// `--no-header`).
 pub fn enrich_as(entry: &mut Entry, as_read: &crate::schema_union::ReadAs) {
     enrich_with(entry, as_read, None)
 }
 
-/// As [`enrich_as`], taking a dataset's measure from the shape an open kept of it in
-/// `remembered`, where its files are as they were then, rather than from a sample of
-/// its footers.
+/// As [`enrich_as`], using the shape an open kept in `remembered` while the files are
+/// unchanged, instead of sampling footers.
 pub fn enrich_with(
     entry: &mut Entry,
     as_read: &crate::schema_union::ReadAs,
@@ -1697,10 +1411,8 @@ pub fn enrich_with(
             enrich_arrow(entry);
         }
         EntryKind::Hive | EntryKind::MultiFile => enrich_dataset(entry, as_read, remembered),
-        // Nothing to read for a plain directory, and nothing that *may* be read for
-        // one that has not been looked at. Nor for a lake table: summing the footers
-        // under one counts tombstoned rows, every rewritten version and both sides of
-        // a compaction, which is the whole reason it is not offered as a dataset.
+        // Nothing to read for plain or unexamined directories, nor lake tables (summing their
+        // footers counts tombstoned and rewritten rows).
         EntryKind::Directory | EntryKind::Unknown | EntryKind::Other => {}
         EntryKind::Delta | EntryKind::Iceberg | EntryKind::Hudi => {}
     }
@@ -1712,47 +1424,27 @@ fn enrich_dataset(
     as_read: &crate::schema_union::ReadAs,
     remembered: Option<&crate::cache::CacheManager>,
 ) {
-    // A directory of JSON is not described by the Parquet under it. The walk below
-    // recurses — it has to, because that is what opening the directory reads — so for a
-    // directory whose own files are a format this cannot count, every number it produced
-    // belonged to something the row does not name: `6 json` reported the sixty-one
-    // columns of the Parquet in its subdirectories.
-    //
-    // A directory of Parquet with more Parquet beneath it is the opposite case and keeps
-    // the walk. The counts are a promise about what `Enter` gives, and `Enter` reads
-    // the subtree; measuring only the top would promise three files and open
-    // twenty-three, and would ask `is_one_table` about three files while unioning all
-    // twenty-three. The `holds` line names the directory that explains the difference.
+    // A directory whose own files are a format this cannot count is not described by
+    // Parquet beneath it (`6 json` reporting the subdirectories' columns). Parquet with
+    // Parquet beneath keeps the walk: `Enter` reads the subtree, so counts must too; the
+    // `holds` line explains the difference.
 
-    // The partition layout comes from directory names, so it is knowable even for a
-    // dataset far too large to count the rows of — which is exactly the dataset whose
-    // shape you most want described before opening it.
+    // The partition layout comes from directory names, so it is known even when the rows
+    // are too many to count.
     if entry.kind == EntryKind::Hive {
         entry.cost.partitions = partition_layout(&entry.path);
     }
 
-    // Whether the footers below are this directory's own shape, or something else's. A
-    // directory's own format is counted exactly, so this is exact for one.
-    //
-    // Not asked of a hive root at all. Its own files are strays beside the partitions —
-    // a `schema.json` or a `manifest.csv` left at the top — so its counted format is
-    // not its data's, and one such file would blank the whole dataset. Its data is down
-    // in the partitions, where the format can only be sampled, and one spine tells the
-    // two cases apart in neither direction: a CSV tree with a stray `snapshot.parquet`
-    // in the sampled partition and a Parquet tree with a stray `notes.csv` in it both
-    // come back `NotOneTable`. A stray Parquet in a CSV tree is still counted as the
-    // dataset's, which #275 phase 4 settles by making the tree readable in its own
-    // format.
+    // Whether the footers below describe this directory (exact for its own format). Not
+    // asked of a hive root: its own files are strays (a `schema.json`), and its data's
+    // format can only be sampled.
     let reads_as_parquet = entry.kind == EntryKind::Hive
         || match entry.holds.one_format() {
-            // No single format to object with, so nothing to object. No row reaches
-            // this today — a directory of more than one format is a `Directory` and
-            // `enrich` leaves those alone — so it is a default, and the safe one:
-            // leaving the counts off a directory is a mistake opening it undoes.
+            // No single format: unreachable today (mixed formats are `Directory`), so default to
+            // the safe side.
             None => true,
-            // A name this build cannot read back is not Parquet as far as anything here
-            // knows. Leaving the counts off a directory is the mistake that can be undone
-            // by opening it; giving it another format's numbers is not.
+            // An unreadable name is not Parquet: missing counts are undone by opening; another
+            // format's counts are not.
             Some(name) => crate::FileFormat::from_name(name) == Some(crate::FileFormat::Parquet),
         };
     if !reads_as_parquet {
@@ -1761,15 +1453,12 @@ fn enrich_dataset(
         return;
     }
 
-    // The stat'ed size of a dataset directory is its own inode: a couple of hundred
-    // bytes that have nothing to do with the terabyte inside it. Dropped up front and
-    // restored only if the files are actually totalled, so no path out of here can
-    // leave it behind to be read as an answer.
+    // A directory's stat size is its inode, not its contents: dropped here, restored only
+    // if the files are totalled.
     entry.size = None;
 
     let files = parquet_files_under(&entry.path);
-    // Past the budget the footers are not read here, but an open that read them all
-    // kept them: listing the dataset again says whether they still describe it.
+    // Past the budget, footers an open kept are used if the listing still matches.
     if files.len() > MAX_FOOTERS_PER_DATASET
         && let Some((listed, footers)) = remembered
             .and_then(|cache| crate::dataset_files::remembered_footers(&entry.path, cache))
@@ -1778,11 +1467,8 @@ fn enrich_dataset(
         return;
     }
     if files.is_empty() || files.len() > MAX_FOOTERS_PER_DATASET {
-        // Whether these are one table is still worth asking, and it does not need
-        // every footer: three files spread across the directory answer it. Without this a
-        // directory large enough to be past the counting limit would skip the check
-        // entirely, which is backwards — the more tables it holds, the more a union of
-        // them costs.
+        // Whether these are one table needs only three spread footers, and matters most for
+        // directories past the counting limit.
         let sampled = sample_footers(&files);
         let names: Vec<Vec<String>> = sampled.iter().map(column_names).collect();
         let tops: Vec<Vec<String>> = names
@@ -1790,44 +1476,30 @@ fn enrich_dataset(
             .map(|n| crate::schema_union::top_level_columns(n))
             .collect();
         if entry.kind == EntryKind::MultiFile && one_table_from(&tops) == Some(false) {
-            // Whether the directory is one table is asked of everything under it, because
-            // that is what opening it would union. What it *holds* is the files the
-            // label counts — the ones directly inside — and a downgraded row is never
-            // opened as one table, so a *count* spanning the subtree would be a width
-            // nothing produces. Three more footers, on a directory being downgraded, to
-            // say `2 parquet` and mean those two.
+            // One-table is asked of the subtree (what opening unions), but holdings count only
+            // the direct files (the label's), since a downgraded row never opens as one table.
             let own_files = direct_children(&files, &entry.path);
             let own = sample_footers(&own_files);
-            // The names, though, are every one sampled under it, the same as the arm
-            // below: they are the home screen's search index, and a directory is found by
-            // a column that looking inside it will reach. Narrowing these to the direct
-            // children made a big directory unfindable by a column a small one is found
-            // by.
+            // The names are every sampled one under it: home's search index should find a
+            // directory by any column looking inside reaches.
             entry.columns = union_of(&names);
-            // A floor only when a footer was left unread. The directory is past the
-            // counting budget, but its *own* files may be three of the seventy — and
-            // then `5+ cols` claims a sample that did not happen.
+            // A floor only if one of its own footers went unread.
             entry.cols_sampled = own.len() < own_files.len();
-            // The columns a reader sees, from the schema rather than by splitting leaf
-            // paths on a dot: a column named `user.id` and a struct `user` with a field
-            // `id` are not the same thing, and a string cannot tell them apart.
+            // The columns a reader sees, from the schema rather than splitting leaf paths on dots
+            // (`user.id` vs struct `user` with `id`).
             let top = union_of(&own.iter().map(top_level_names).collect::<Vec<_>>());
             downgrade_to_directory(entry, (!top.is_empty()).then_some(top.len()));
             return;
         }
         // Still worth knowing the shape, even when the row count is out of reach.
         if let Some(meta) = sampled.first() {
-            // Three files rather than the first, because a directory written over time
-            // keeps its newest columns in its last file — and the first is where a
-            // dataset that grew is narrowest. Still a sample and not a total: the
-            // count beside it is already `?`.
+            // Three files, not the first: a growing dataset's newest columns are in its last
+            // file. Still a sample; the count is already `?`.
             entry.columns = union_of(&names);
             let top = union_of(&sampled.iter().map(top_level_names).collect::<Vec<_>>());
             entry.cols = Some(top.len() + partition_columns_beyond(entry, &top));
             entry.cols_sampled = true;
-            // From one file, so it describes how the dataset is written rather
-            // than its total: codec and row-group sizing are a property of the
-            // writer and are uniform in practice.
+            // From one file: codec and row-group sizing are the writer's, uniform in practice.
             physical_facts(meta, &mut entry.cost);
             entry.cost.uncompressed = None;
         }
@@ -1836,23 +1508,17 @@ fn enrich_dataset(
 
     let mut rows = 0usize;
     let mut bytes = 0u64;
-    // Every column any file has, in the order they first appear — not the first
-    // file's. A dataset whose columns grew over time reported the shape it was born
-    // with: Bitcoin transactions, whose `inputs` gained `address` and then
-    // `txinwitness`, answered no to "which of these has `txinwitness`?".
+    // Every column any file has, in first-seen order, so columns added over time are
+    // found.
     let mut columns: Vec<String> = Vec::new();
     let mut seen_columns = std::collections::HashSet::new();
-    // The columns a reader sees, unioned the same way. Kept beside the leaves rather
-    // than derived from them, because a leaf path cannot say whether its dots are
-    // nesting or part of a name. See [`top_level_names`].
+    // Top-level columns unioned the same way, kept beside the leaves (see
+    // [`top_level_names`]).
     let mut top_level: Vec<String> = Vec::new();
     let mut seen_top_level = std::collections::HashSet::new();
     let mut per_file: Vec<Vec<String>> = Vec::with_capacity(files.len());
-    // The width and the size, restricted to the directory's own files. A directory the
-    // footers downgrade is never opened as one table, so a *count* spanning the subtree
-    // would be a width nothing produces — and the label beside it counts only what is
-    // inside. The column names stay the subtree's: they are the search index, not the
-    // label.
+    // Width and size from the directory's own files only (a downgraded row is never one
+    // table); column names stay the subtree's, for search.
     let mut own_bytes = 0u64;
     let mut own_top_level: Vec<String> = Vec::new();
     let mut own_seen_top = std::collections::HashSet::new();
@@ -1875,13 +1541,11 @@ fn enrich_dataset(
                 top_level.push(name);
             }
         }
-        // The columns a reader sees, not the leaves the footer names: see
+        // Top-level columns, not footer leaves: see
         // [`crate::schema_union::top_level_columns`].
         per_file.push(crate::schema_union::top_level_columns(&names));
-        // And the same again for this directory's own files, which is what a downgraded
-        // row is labelled from: `2 parquet` must mean those two.
-        // One stat, feeding both totals: on a share each is a round trip, and a directory
-        // of sixty-four files directly inside would have paid twice for every one.
+        // Again for its own files (`2 parquet` must mean those two), from one stat feeding
+        // both totals.
         let file_bytes = std::fs::metadata(file).map(|m| m.len()).unwrap_or(0);
         bytes += file_bytes;
         if file.parent() == Some(entry.path.as_path()) {
@@ -1900,24 +1564,14 @@ fn enrich_dataset(
             cost.codec = per_file.codec;
         }
     }
-    // The footers are read by now, so whether these files are one table is known
-    // rather than guessed. A directory of separate tables is a place to look inside: its
-    // row count is the sum of unrelated things, its column count belongs to whichever
-    // file happened to be read first, and opening it unions tables that share nothing.
-    //
-    // Only `multi` is reconsidered. A `key=value` layout says what the writer meant,
-    // and a hive directory's files hold the same table by construction.
+    // With the footers read, one-table is known. Separate tables make a place to look
+    // inside (summed rows mean nothing). Only `multi` is reconsidered: hive files hold
+    // one table by construction.
     if entry.kind == EntryKind::MultiFile && !crate::schema_union::is_nested(&per_file) {
-        // Its own files' bytes, not the subtree's. The label counts what is directly
-        // inside and so do the columns beside it; a size summed over a different set of
-        // files is a third number on one row measured against neither of the other two.
+        // Its own files' bytes, matching what the label and columns count.
         entry.size = Some(own_bytes);
-        // Nothing here is one table's shape, but the names are what the directory holds,
-        // and searching the home screen by column should still find the directory that
-        // has one. The count is the directory's own files, which is what the label names.
-        // The column *names* are every one under it: they are the home screen's search
-        // index, and "which of these has a `txinwitness`?" is answered by the directory
-        // that has one anywhere, which is where looking inside will find it.
+        // Not one table, but column search should still find it: the count is its own
+        // files', the names every one under it.
         entry.columns = columns;
         entry.cols_sampled = false;
         downgrade_to_directory(
@@ -1937,9 +1591,8 @@ fn enrich_dataset(
     entry.cost = cost;
 }
 
-/// Partition keys the files do not carry themselves. The open hoists them in as
-/// columns, so a hive table's width counts them: `12 × 4`, not the `12 × 2` its footers
-/// say.
+/// Partition keys the files lack, hoisted in as columns by the open, so the width
+/// counts them (`12 × 4`, not `12 × 2`).
 fn partition_columns_beyond(entry: &Entry, top_level: &[String]) -> usize {
     entry.cost.partitions.as_ref().map_or(0, |layout| {
         layout
@@ -1959,12 +1612,8 @@ fn direct_children(files: &[PathBuf], dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Which of `files` to read for a few of them: the ends and the middle.
-///
-/// Keys and filenames sort, so a directory written table by table can easily start with
-/// several files of the same table and its head answers nothing. The last file earns its
-/// place twice over: in a directory written over time it is the newest, which is where a
-/// column added last year is. Three reads, whatever the directory's size.
+/// Which of `files` to read for a sample: the ends and the middle. Sorted names
+/// cluster one table's files at the start, and the last is the newest. Three reads.
 pub(crate) fn spread(files: usize) -> Vec<usize> {
     let mut picks = match files {
         0 => Vec::new(),
@@ -1974,10 +1623,8 @@ pub(crate) fn spread(files: usize) -> Vec<usize> {
     picks
 }
 
-/// Whether a few files' top-level columns are one table, on disk or in a bucket.
-///
-/// `None` from fewer than two: one footer says nothing about agreement, and the
-/// directory keeps the kind its names suggested.
+/// Whether a few files' top-level columns are one table. `None` from fewer than two:
+/// the directory keeps its name-based kind.
 pub(crate) fn one_table_from(footers: &[Vec<String>]) -> Option<bool> {
     (footers.len() >= 2).then(|| crate::schema_union::is_nested(footers))
 }
@@ -1990,20 +1637,11 @@ fn sample_footers(files: &[PathBuf]) -> Vec<crate::parquet_footer::Footer> {
         .collect()
 }
 
-/// Ask a directory with no footers whether its files are one table, by the names at the
-/// front of them.
-///
-/// The same rule as [`one_table_from`] on the same evidence — the column names — from the
-/// only place a CSV or an NDJSON file keeps them. Without this a directory of forty
-/// unrelated CSVs was labelled `40 csv`, `Enter` promised one table because nothing had
-/// looked, and the read then refused it: the permissive rule with the strict reader,
-/// which is the pairing #275 exists to stop. Parquet has had the test since phase 3;
-/// this is the rest of the formats catching up.
-///
-/// Silence is optimism, as it is for an unreadable footer: too few files, a format whose
-/// schema costs a whole read, or a file that would not parse all leave the directory as
-/// its names suggested. That is only safe because the read behind it unions by name and
-/// widens types rather than failing — see `crate::readers::polars::union_of_files`.
+/// Ask a footerless directory whether its files are one table by their header names:
+/// [`one_table_from`]'s rule for CSV and NDJSON, so `Enter` does not promise a table
+/// the read then refuses. Silence (too few files, costly schema, a parse failure)
+/// keeps the name-based kind, safe because the read unions by name and widens types
+/// (`crate::readers::polars::union_of_files`).
 fn judge_by_names(entry: &mut Entry, as_read: &crate::schema_union::ReadAs) {
     if entry.kind != EntryKind::MultiFile {
         return;
@@ -2015,48 +1653,28 @@ fn judge_by_names(entry: &mut Entry, as_read: &crate::schema_union::ReadAs) {
     else {
         return;
     };
-    // The directory's own files, which is what the label counts and what the open reads.
-    // A `MultiFile` directory is flat by construction — a `key=value` below it would have
-    // made it `Hive` — so there is no subtree to walk for these.
-    //
-    // `One` and nothing else. `one_format` above already returned for a directory of more
-    // than one format, and `look_at_directory` only calls a directory `MultiFile` when
-    // its formats agree, so `Mixed` cannot arrive here — matching it as well read as
-    // coverage this does not have. A directory of forty disjoint CSVs beside one stray
-    // `.json` is a `Directory` before it reaches this, and goes inside for that reason
-    // rather than for this one.
+    // The directory's own files, which the label counts and the open reads; `MultiFile`
+    // is flat by construction and has one format, so only `One` arrives.
     let DirectoryFormat::One(_, files) = directory_format(&entry.path) else {
         return;
     };
-    // Read the way the open that follows will read it: where the header is decides
-    // what these names are, and a verdict reached by another reading is about a directory
-    // nobody is going to open.
+    // Read as the following open will: header placement decides the names.
     let sampled = crate::schema_union::sample_files(&files, format, as_read);
     if sampled.nests == Some(false) {
-        // The columns the sample found, so searching the home screen by column still
-        // finds the directory that has one — the same thing the Parquet path keeps when
-        // it downgrades. From the spread that was read rather than from every file: a
-        // directory of forty thousand CSVs must cost what a directory of four costs, and
-        // this runs on the thread that opens a path named on the command line.
-        // `cols_sampled` is what says the count is a floor.
+        // The sample's columns, for column search, as the Parquet path keeps when
+        // downgrading; from the spread, so cost does not grow with the directory.
         let cols = (!sampled.columns.is_empty()).then_some(sampled.columns.len());
-        // A floor only when there were files the sample did not open. A directory of two
-        // or three had every one read, and `N+ cols` on that row claims a hedge the
-        // count does not need — the Parquet path next door works this out the same way.
+        // A floor only when files went unopened.
         entry.cols_sampled = sampled.read < files.len();
         entry.columns = sampled.columns;
         downgrade_to_directory(entry, cols);
     }
 }
 
-/// A directory whose files turned out to be separate tables is a place to look inside.
-///
-/// Its row count would be the sum of unrelated things, so it is not reported. The column
-/// count is: the union of what the directory's files hold is a true answer to "what is in
-/// here" even when "how many rows" has none, so a directory of fifteen tables reads
-/// `15 parquet · 72 columns` and no row count. Passed in rather than derived from
-/// `columns`, which names leaves: see [`top_level_names`] for why a leaf path cannot be
-/// split back into the columns a reader sees.
+/// A directory of separate tables becomes a place to look inside: no row count (a sum
+/// of unrelated tables), but the union's column count (`15 parquet · 72 columns`).
+/// `cols` is passed in because leaf paths cannot be split back into top-level
+/// columns (see [`top_level_names`]).
 fn downgrade_to_directory(entry: &mut Entry, cols: Option<usize>) {
     entry.kind = EntryKind::Directory;
     entry.rows = None;
@@ -2098,9 +1716,8 @@ fn union_of(per_file: &[Vec<String>]) -> Vec<String> {
         .collect()
 }
 
-/// The Parquet files under `dir`, sorted, as far down as a dataset goes: one past the
-/// budget when there are more, which is what says there are too many to count. The
-/// open's own walk, stopped once it has seen enough.
+/// The Parquet files under `dir`, sorted, as deep as a dataset goes, stopping one past
+/// the budget (which says there are too many to count). The open's own walk.
 fn parquet_files_under(dir: &Path) -> Vec<PathBuf> {
     let mut files = crate::dataset_files::LocalFiles::new(dir)
         .first_files(MAX_WALK_DEPTH as usize + 1, MAX_FOOTERS_PER_DATASET);
@@ -2109,8 +1726,8 @@ fn parquet_files_under(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// Measure a dataset from every file's footer as an open kept them: its rows, width,
-/// size and row groups, and whether its files are one table, with none read here.
+/// Measure a dataset from footers an open kept: rows, width, size, row groups, and
+/// whether its files are one table; nothing is read.
 fn measure_from_footers(
     entry: &mut Entry,
     files: &[crate::dataset_files::DatasetFile],
@@ -2123,8 +1740,8 @@ fn measure_from_footers(
         .collect();
     let columns = union_of(&per_file);
     if entry.kind == EntryKind::MultiFile && !crate::schema_union::is_nested(&per_file) {
-        // As a read of every footer judges it: the label counts the directory's own
-        // files, and so do the width and the size beside it.
+        // As a full footer read judges it: label, width and size count the directory's own
+        // files.
         let own: Vec<usize> = files
             .iter()
             .enumerate()
@@ -2166,11 +1783,8 @@ fn measure_from_footers(
     };
 }
 
-/// Fill in row and column counts for a Parquet file from its footer.
-///
-/// Free in the sense that matters: no column data is read. Non-Parquet formats have
-/// no equivalent — a CSV's row count cannot be known without scanning it — so those
-/// entries keep `None`, and the UI shows the absence honestly rather than guessing.
+/// Fill in a Parquet file's counts from its footer, reading no column data. Other
+/// formats keep `None` (a CSV's rows need a scan).
 pub fn enrich_parquet(entry: &mut Entry) {
     if entry.kind != EntryKind::File {
         return;
@@ -2184,18 +1798,16 @@ pub fn enrich_parquet(entry: &mut Entry) {
     if let Some(meta) = crate::parquet_footer::read_parquet_metadata(&entry.path) {
         entry.rows = Some(meta.num_rows);
         entry.columns = column_names(&meta);
-        // The columns a reader sees, as a directory's row reports them: `schema_descr`
-        // names the leaves, so a file with one struct of three fields counted four and
-        // then listed two in the pane beside it. See [`top_level_names`].
+        // Top-level columns, as a directory's row reports them: `schema_descr` names leaves
+        // (one struct of three fields would count four). See [`top_level_names`].
         entry.cols = Some(top_level_names(&meta).len());
         physical_facts(&meta, &mut entry.cost);
     }
 }
 
-/// A file of tables' tables (a SQLite database's schema, a NumPy archive's directory):
-/// how many of its own, whether Enter opens one of them, and the columns of the one when
-/// there is one. A file whose name says a format its bytes must say (a `.db` file that
-/// is not SQLite) is one datui cannot open.
+/// A file of tables' tables (SQLite schema, NumPy archive directory): how many, whether
+/// Enter opens one, and that one's columns. A file whose bytes contradict its name (a
+/// `.db` that is not SQLite) is unopenable.
 pub fn enrich_tables(entry: &mut Entry) {
     if entry.kind != EntryKind::File || entry.table.is_some() {
         return;
@@ -2224,9 +1836,8 @@ pub fn enrich_tables(entry: &mut Entry) {
     }
 }
 
-/// The rows of a file of tables' listing on the home screen: a database's tables and
-/// views, or an archive's arrays, by name, as a directory lists its files, SQLite's own
-/// marked to be hidden, each at its path inside the file.
+/// A file of tables listed as rows (a database's tables and views, an archive's arrays),
+/// each at its path inside the file; SQLite's own marked hidden.
 pub fn database_rows(file: &Path) -> Vec<Entry> {
     let Some(format) = crate::members::holder(file) else {
         return Vec::new();
@@ -2250,9 +1861,9 @@ pub fn database_rows(file: &Path) -> Vec<Entry> {
         .collect()
 }
 
-/// The rows of a Hugging Face cache directory's splits, each at its path inside the
-/// directory (`cache/test`): opened, it is the directory read with `--table`. Empty
-/// for any other directory, and for a cache of one split, which its door opens.
+/// A Hugging Face cache directory's splits as rows at their paths inside it
+/// (`cache/test`), opened with `--table`. Empty otherwise, or for one split (its door
+/// opens it).
 pub fn split_rows(dir: &Path) -> Vec<Entry> {
     let splits = crate::hf_splits::cache_splits(dir);
     if splits.len() < 2 {
@@ -2264,8 +1875,8 @@ pub fn split_rows(dir: &Path) -> Vec<Entry> {
         .collect()
 }
 
-/// The row of a split named by its path inside its cache directory, as a recent is
-/// listed: `None` when the path names no split of one.
+/// The row of a split named by its path inside its cache directory (a recent); `None`
+/// if none.
 pub fn split_row(path: &Path) -> Option<Entry> {
     let (dir, split) = crate::hf_splits::split_place(path)?;
     Some(split_entry(&dir, split))
@@ -2281,9 +1892,8 @@ fn split_entry(dir: &Path, split: String) -> Entry {
     entry
 }
 
-/// The rows of a file a format spec reads as several variants, one a variant, each at
-/// its path inside the file (`day.itch/add`): opened, it is the file read with
-/// `--table`. Empty for any other file.
+/// A spec-read file's variants as rows at their paths inside it (`day.itch/add`),
+/// opened with `--table`. Empty for other files.
 pub fn variant_rows(file: &Path, formats: &crate::formats::Registry) -> Vec<Entry> {
     let Some((spec, tables)) = crate::members::variants(file, formats) else {
         return Vec::new();
@@ -2295,8 +1905,7 @@ pub fn variant_rows(file: &Path, formats: &crate::formats::Registry) -> Vec<Entr
         .collect()
 }
 
-/// The row of a variant named by its path inside its file (`day.itch/add`), as a
-/// recent is listed: `None` when the path names no variant of such a file.
+/// The row of a variant named by its path inside its file (a recent); `None` if none.
 pub fn variant_row(path: &Path, formats: &crate::formats::Registry) -> Option<Entry> {
     let (file, name) = crate::members::split_variant(path, formats)?;
     let (spec, tables) = crate::members::variants(&file, formats)?;
@@ -2327,8 +1936,8 @@ fn variant_entry(
     entry
 }
 
-/// The row of a table inside a file of tables named by its path (`app.db/users`), as a
-/// recent is listed: `None` when the path names no table of such a file.
+/// The row of a table named by its path inside its file (`app.db/users`, a recent);
+/// `None` if none.
 pub fn table_row(path: &Path) -> Option<Entry> {
     let (file, name) = crate::members::split(path)?;
     let format = crate::members::holder(&file)?;
@@ -2379,8 +1988,8 @@ fn read_head<'a>(path: &Path, buf: &'a mut [u8]) -> Option<&'a [u8]> {
     Some(&buf[..filled])
 }
 
-/// Whether an Arrow file is an IPC stream: an IPC file starts `ARROW1`, a stream with
-/// its schema message. Eight bytes, so a listing can say which will be converted.
+/// Whether an Arrow file is an IPC stream (an IPC file starts `ARROW1`): eight bytes,
+/// so the listing can say which will be converted.
 fn enrich_arrow(entry: &mut Entry) {
     if entry.kind != EntryKind::File
         || data_format(&entry.path) != Some(crate::FileFormat::Arrow)
@@ -2395,10 +2004,8 @@ fn enrich_arrow(entry: &mut Entry) {
     }
 }
 
-/// Pull layout and compression out of a footer that has already been read.
-///
-/// Every one of these was being parsed and thrown away. They are the difference
-/// between knowing how big a file is and knowing what reading it will do.
+/// Pull layout and compression from an already-read footer: what reading the file
+/// will do, beyond its size.
 pub fn physical_facts(meta: &crate::parquet_footer::Footer, cost: &mut Cost) {
     if meta.row_groups.is_empty() {
         return;
@@ -2419,8 +2026,7 @@ pub fn physical_facts(meta: &crate::parquet_footer::Footer, cost: &mut Cost) {
     if uncompressed > 0 {
         cost.uncompressed = Some(uncompressed);
     }
-    // A file usually uses one codec throughout. When it does not, say so rather than
-    // picking one and implying uniformity that is not there.
+    // Usually one codec; when not, say so rather than imply uniformity.
     cost.codec = match codecs.len() {
         0 => None,
         1 => Some(codecs.remove(0)),
@@ -2428,11 +2034,9 @@ pub fn physical_facts(meta: &crate::parquet_footer::Footer, cost: &mut Cost) {
     };
 }
 
-/// Outermost directories to look at when describing a hive dataset's partitioning.
-///
-/// Enough to name the keys and show the shape of the first one; bounded because a
-/// dataset partitioned by day over a decade has thousands, and counting all of them
-/// to print "3,653" is not worth a second of anyone's time on a network share.
+/// Outermost directories examined to describe a hive partitioning: enough to name the
+/// keys and show the shape; a decade of daily partitions is not worth counting on a
+/// share.
 const MAX_PARTITION_DIRS: usize = 512;
 
 /// Describe how a hive dataset is partitioned, from directory names alone.
@@ -2457,9 +2061,7 @@ pub fn partition_layout(dir: &Path) -> Option<Partitions> {
         }
         if keys.is_empty() {
             keys.push(key.to_string());
-            // Only the first partition directory is descended into, for the nested
-            // key names. One is representative, and a hive dataset that disagrees
-            // with itself about its own schema is not a dataset datui can help with.
+            // Only the first partition is descended for nested keys: one is representative.
             keys.extend(nested_keys(&entry.path()));
         }
         values.push(value.to_string());
@@ -2483,8 +2085,7 @@ pub fn partition_layout(dir: &Path) -> Option<Partitions> {
 fn nested_keys(dir: &Path) -> Vec<String> {
     let mut keys = Vec::new();
     let mut current = dir.to_path_buf();
-    // Bounded: a hive path deeper than this is pathological, and each level costs a
-    // directory read.
+    // Bounded: each level is a directory read.
     for _ in 0..6 {
         let Ok(iter) = std::fs::read_dir(&current) else {
             break;
@@ -2515,8 +2116,7 @@ pub fn format_rows(rows: usize) -> String {
     } else if rows >= 10_000 {
         format!("{:.0}k", r / 1e3)
     } else if rows >= 1_000 {
-        // Below ten thousand the exact count fits and rounding actively misleads:
-        // 3,653 daily observations is ten years of data, and "4k" is not.
+        // Below ten thousand show the exact count: 3,653 days is ten years; "4k" is not.
         let mut out = String::new();
         let digits = rows.to_string();
         for (i, c) in digits.chars().enumerate() {
@@ -2553,9 +2153,9 @@ pub fn format_age(t: std::time::SystemTime) -> String {
 /// Column name and type, for the home screen's preview pane.
 pub type SchemaPreview = Vec<(String, polars::prelude::DataType)>;
 
-/// The preview of a table of a file of tables: a row inside a database or an archive, or
-/// a file of tables (or a NumPy array file) as it opens. `None` when the entry is none of
-/// these, `Some(None)` when it is and has nothing to show.
+/// The preview of a table inside a file of tables, or of such a file (or NumPy array
+/// file) as it opens. `None` for other entries, `Some(None)` when there is nothing to
+/// show.
 fn table_preview(entry: &Entry) -> Option<Option<SchemaPreview>> {
     let (file, format, name) = match &entry.table {
         Some(table) => match (crate::members::split(&entry.path), table.format) {
@@ -2578,10 +2178,8 @@ fn table_preview(entry: &Entry) -> Option<Option<SchemaPreview>> {
     )
 }
 
-/// Find the first Parquet file at or under `dir`, without walking the whole tree.
-///
-/// Bounded on both breadth and depth so a hive dataset with thousands of partitions
-/// costs the same as one with three.
+/// The first Parquet file at or under `dir`, bounded in breadth and depth so thousands
+/// of partitions cost what three do.
 fn first_parquet_under(dir: &Path, depth: u8) -> Option<PathBuf> {
     if depth > MAX_WALK_DEPTH {
         return None;
@@ -2611,24 +2209,17 @@ pub fn column_names(meta: &crate::parquet_footer::Footer) -> Vec<String> {
         .collect()
 }
 
-/// Whether `path` is a regular file that is safe to open.
-///
-/// Opening a FIFO blocks until a writer appears — indefinitely, for a named pipe
-/// nobody is writing to — and opening a device or a socket does something stranger
-/// still. A directory listing happily reports any of these with a `.parquet` name,
-/// so every read here is gated on the kind first. `symlink_metadata` follows nothing
-/// and `metadata` only stats, so neither can block the way an open can.
+/// Whether `path` is a regular file safe to open: a FIFO, device or socket named
+/// `.parquet` would block or worse, so reads are gated on kind (stat never blocks
+/// like an open can).
 fn is_regular_file(path: &Path) -> bool {
     std::fs::metadata(path)
         .map(|m| m.file_type().is_file())
         .unwrap_or(false)
 }
 
-/// Read a dataset's column names and types without reading any data.
-///
-/// Parquet only — a CSV's schema cannot be known without scanning it, and doing that
-/// for every row the cursor passes over would defeat the point of a preview. Returns
-/// `None` for anything else, and the UI says so rather than guessing.
+/// A dataset's column names and types without reading data; Parquet only, `None`
+/// otherwise (the UI says so).
 pub fn schema_preview(entry: &Entry) -> Option<SchemaPreview> {
     // `SerReader` is what brings `ParquetReader::new` into scope.
     use polars::prelude::{ParquetReader, Schema, SchemaExt, SerReader};
@@ -2645,8 +2236,8 @@ pub fn schema_preview(entry: &Entry) -> Option<SchemaPreview> {
         }
         EntryKind::Hive | EntryKind::MultiFile => first_parquet_under(&entry.path, 0)?,
         EntryKind::Directory | EntryKind::Unknown | EntryKind::Other => return None,
-        // One data file's schema is not the table's: Iceberg field IDs and Delta
-        // column mapping both mean a renamed column reads as two.
+        // One data file's schema is not a lake table's (Iceberg field IDs and Delta column
+        // mapping rename columns).
         EntryKind::Delta | EntryKind::Iceberg | EntryKind::Hudi => return None,
     };
 
@@ -2658,9 +2249,8 @@ pub fn schema_preview(entry: &Entry) -> Option<SchemaPreview> {
     let arrow_schema = reader.schema().ok()?;
     let schema = Schema::from_arrow_schema(arrow_schema.as_ref());
     let mut preview: SchemaPreview = Vec::new();
-    // A hive table opens with its partition keys hoisted to the front, so the pane lists
-    // them there too, typed from the one path already in hand the way the scan infers
-    // them.
+    // A hive table opens with partition keys hoisted first, so the pane lists them there,
+    // typed from the path as the scan infers them.
     if entry.kind == EntryKind::Hive
         && let Ok(below) = file_path.strip_prefix(&entry.path)
     {

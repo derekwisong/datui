@@ -1449,7 +1449,7 @@ pub const SCREENS: &[Screen] = &[
             keys: &[
                 k("(type)", "Narrow", "Narrow to the names that contain it").no_run(),
                 k("↑ / ↓", "Move", "Move"),
-                k("Enter", "Read", "Read the file again with the spec")
+                k("Enter / Space", "Read", "Read the file again with the spec")
                     .more("Read the file again with the spec chosen. The query, filters and sort are cleared"),
                 k("Backspace", "Delete", "Delete a character (Ctrl+W a word, Ctrl+U all)"),
                 k("Esc", "Cancel", "Close and keep the format"),

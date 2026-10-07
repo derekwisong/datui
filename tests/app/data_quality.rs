@@ -793,14 +793,14 @@ fn data_quality_reads_as_a_report() {
     let screen = common::buffer_text(&buffer);
     assert!(screen.contains("whole dataset") && screen.contains("in chunks of"));
     assert!(bar_now(&mut app).contains("Choose"));
-    // Choosing stages the edit; the report keeps the plan it was measured with, and
-    // nothing runs.
+    // Choosing (Space, as in every picker) stages the edit; the report keeps the plan
+    // it was measured with, and nothing runs.
     app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Down,
         KeyModifiers::NONE,
     )));
     app.event(AppEvent::Key(KeyEvent::new(
-        KeyCode::Enter,
+        KeyCode::Char(' '),
         KeyModifiers::NONE,
     )));
     assert!(app.analysis_modal.quality.picker.is_none());

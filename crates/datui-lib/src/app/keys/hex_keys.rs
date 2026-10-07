@@ -163,20 +163,21 @@ impl App {
 
         // The spec picker owns the keys while it is open.
         if let Some(picker) = view.picker.as_mut() {
-            match event.code {
-                KeyCode::Esc => view.picker = None,
-                KeyCode::Enter => {
+            use crate::app::form::{PickerKey, picker_key};
+            match picker_key(picker, false, event) {
+                PickerKey::Close => view.picker = None,
+                PickerKey::Choose => {
                     let name = picker
                         .selected_original()
                         .map(|i| picker.items()[i].clone());
                     view.picker = None;
                     return name.and_then(|name| self.read_hex_with_spec(name));
                 }
-                KeyCode::Up => picker.move_up(),
-                KeyCode::Down => picker.move_down(),
-                KeyCode::Backspace => picker.backspace(),
-                KeyCode::Char(c) => picker.filter_key(c, event.modifiers),
-                _ => {}
+                // No field to move on to.
+                PickerKey::ChooseAndMove(_)
+                | PickerKey::Toggle
+                | PickerKey::Handled
+                | PickerKey::Other => {}
             }
             return None;
         }

@@ -14,21 +14,16 @@ impl App {
         use crate::analysis::data_quality::QualityPage;
 
         // A Setup row's choices own the keys while they are open.
-        if self.analysis_modal.quality.picker.is_some() {
-            match event.code {
-                KeyCode::Esc => self.analysis_modal.quality.picker = None,
-                KeyCode::Enter => self.choose_setup_picker(),
-                code => {
-                    if let Some(picker) = self.analysis_modal.quality.picker.as_mut() {
-                        match code {
-                            KeyCode::Up => picker.state.move_up(),
-                            KeyCode::Down => picker.state.move_down(),
-                            KeyCode::Backspace => picker.state.backspace(),
-                            KeyCode::Char(c) => picker.state.filter_key(c, event.modifiers),
-                            _ => {}
-                        }
-                    }
-                }
+        if let Some(picker) = self.analysis_modal.quality.picker.as_mut() {
+            use crate::app::form::{PickerKey, picker_key};
+            match picker_key(&mut picker.state, false, event) {
+                PickerKey::Close => self.analysis_modal.quality.picker = None,
+                PickerKey::Choose => self.choose_setup_picker(),
+                // Setup moves between its rows once the list is closed.
+                PickerKey::ChooseAndMove(_)
+                | PickerKey::Toggle
+                | PickerKey::Handled
+                | PickerKey::Other => {}
             }
             return ControlFlow::Break(None);
         }

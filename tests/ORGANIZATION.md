@@ -151,3 +151,59 @@ Nextest can schedule execution across binaries and improve reports, but
 It complements target reorganization; it does not replace it. Format/clippy
 remain required before Rust submission. Broaden tests based on change scope,
 with full workspace and platform coverage retained in CI.
+
+## Baseline, October 7, 2026
+
+Before folding any target (code-review Phase E, milestone 1), on `code-review-plan`
+at 6596f3be: 16 cores, sccache, mold, incremental, `CARGO_BUILD_JOBS=6`,
+`RUST_TEST_THREADS=6`, a fresh target directory, other agents building on the
+machine. sccache was warm, so "cold" is a fresh target directory, not a fresh
+compiler cache.
+
+| Measure | Before |
+|---|---|
+| `cargo test --workspace --no-run --timings`, fresh target dir | 58.5 s wall, 693 units; `datui-lib` lib tests 45.9 s, `datui-lib` 21.5 s, `integration_test` 11.8 s, `home_test` 4.9 s |
+| The same after a one-line `datui-lib` edit | 12.0 s, 38 units: lib tests 9.7 s, `datui-lib` 3.9 s, `integration_test` 3.0 s, every other test binary about 1.5 s |
+| Test executables | 36; 22 over 200 MiB; 8.2 GiB together (14 GiB target dir) |
+| `scripts/dev/test.sh full` | 38.8 s wall, built; 26.2 s summed over 38 test binaries |
+| Tests | 4,002 passed, 0 failed, 32 ignored |
+
+`full`, per binary (the slowest test in a binary sets its time):
+
+| Binary | Tests | Time | Its slowest test |
+|---|---|---|---|
+| `integration_test` | 668 | 6.0 s | `test_abandoned_load_never_installs_itself_afterwards` 2.3 s |
+| `statistics_test` | 11 | 5.3 s | `distribution_of_a_wide_integer_range_finishes` 4.2 s alone |
+| `datui-lib` lib | 2,699 | 4.9 s | `data_quality::tests::a_count_past_a_million_keys_gives_up_and_keeps_the_rows` 3.3 s |
+| `distribution_detection_test` | 14 | 3.1 s | each family about 1 s alone: three seeds of one fit |
+| `cloud_list_on_enter_test` | 1 | 2.0 s | two one-second quiet waits |
+| `config_test` | 131 | 2.0 s | `test_history_update_is_dropped_rather_than_blocking`: a 2 s lock deadline |
+| every other binary | | under 1 s | |
+
+### First pass: slow tests, sleeps, duplicates
+
+Without folding targets. Times are nextest's, `-j 6`, over the lib,
+`integration_test`, `statistics_test` and `distribution_detection_test`: 21.2 s
+before, 16.9 s after.
+
+| Test | Before | After | Change |
+|---|---|---|---|
+| `statistics_test::correlation_allocates_per_column_not_per_pair` | 5.05 s | 1.28 s | 50,003 rows, not 200,003: a column-sized block is still far above anything else |
+| `statistics::tests::a_matrix_in_bands_is_the_matrix_in_one` | 1.53 s | 0.05 s | 200 rows; bands of 1, 2, 7, 67, 199, 200 and 1,000, dividing and not |
+| `cloud_list_on_enter_test` (binary) | 2.02 s | 0.01 s | waits for no source being listed, not one second each time |
+| `download::tests::a_refused_write_stops_the_stream` | 0.32 s | 0.11 s | waits for the stream to be let go |
+
+`full` after: 29.9 s wall, 28.5 s summed (`integration_test` measured 10.4 s
+under other agents' load; its tests' nextest times are unchanged), 3,981
+passed, 32 ignored: 21 tests folded, listed in the Phase E report.
+
+Left as they are, each for a reason:
+
+| Test | Time | Why |
+|---|---|---|
+| `distribution_of_a_wide_integer_range_finishes` | 4–6 s | `incomplete_gamma` on values in the millions, in a debug build; 500 values instead of 2,000 saved 0.5 s |
+| `distribution_detection_test::*` | 1–2 s each | one fit per seed; the three seeds are the assertion |
+| `a_count_past_a_million_keys_gives_up_and_keeps_the_rows` | 2–3 s | the limit is the constant `MAX_COUNTED_KEYS` |
+| `sqlite::tests::a_preview_of_a_view_that_never_ends_gives_up`, `a_read_stops_when_the_dataset_lets_go` | 2 s | the product's 2 s budgets are the subject |
+| `event_pump::tests::a_background_count_redraws_at_the_idle_cadence` | 2 s | frames counted over a real second |
+| `config_test::test_history_update_is_dropped_rather_than_blocking` | 2 s | the lock deadline is the subject |

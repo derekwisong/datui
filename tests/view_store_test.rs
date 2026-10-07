@@ -518,7 +518,8 @@ fn a_save_waits_for_another_instance_to_let_go() {
         a.update_view(&t)
     });
     began.recv().unwrap();
-    // The other instance keeps the views a moment, as a slow save would.
+    // The other instance keeps the views a moment, as a slow save would: a wait that
+    // does not end can only be shown by giving it the time.
     std::thread::sleep(std::time::Duration::from_millis(200));
     assert!(
         !saver.is_finished(),

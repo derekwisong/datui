@@ -201,21 +201,6 @@ fn prepare_skips_nan() {
     assert_eq!(result.series[0], vec![(1.0, 10.0), (3.0, 30.0)]);
 }
 
-#[test]
-fn prepare_missing_x_column_errors() {
-    let lf = df!("x" => &[1.0_f64], "y" => &[2.0_f64]).unwrap().lazy();
-    let schema = lf.clone().collect_schema().unwrap();
-    let result = prepare_chart_data(
-        &lf,
-        schema.as_ref(),
-        "missing",
-        &["y".into()],
-        &all_rows(),
-        false,
-    );
-    assert!(result.is_err());
-}
-
 /// Over the limit, a chart reads a sample spread across the table, not its head,
 /// and says how many rows it read of how many.
 #[test]
@@ -393,20 +378,15 @@ fn x_as_a_y_series_charts_rather_than_failing() {
     assert_eq!(result.series[1], vec![(1.0, 3.0), (2.0, 4.0)]);
 }
 
-/// A Y column the frame does not have is an error to show, not an empty chart.
+/// An X or Y column the frame does not have is an error to show, not an empty chart.
 #[test]
-fn a_missing_y_column_is_an_error() {
+fn a_missing_x_or_y_column_is_an_error() {
     let lf = df!("x" => &[1.0_f64], "y" => &[2.0_f64]).unwrap().lazy();
     let schema = lf.clone().collect_schema().unwrap();
-    let result = prepare_chart_data(
-        &lf,
-        schema.as_ref(),
-        "x",
-        &["gone".into()],
-        &all_rows(),
-        false,
-    );
-    assert!(result.is_err());
+    for (x, y) in [("missing", "y"), ("x", "gone")] {
+        let result = prepare_chart_data(&lf, schema.as_ref(), x, &[y.into()], &all_rows(), false);
+        assert!(result.is_err(), "{x} {y}");
+    }
 }
 
 /// One series' nulls drop that series' points only; a null X drops the row; a

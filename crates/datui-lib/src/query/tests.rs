@@ -316,33 +316,10 @@ fn test_select_all_implicit() {
 }
 
 #[test]
-
-fn test_invalid_query_no_select() {
-    let query = "a > 10";
-
-    let result = parse_query(query);
-
-    assert!(result.is_err());
-}
-
-#[test]
-
-fn test_invalid_query_unmatched_paren() {
-    let query = "select (a + 1";
-
-    let result = parse_query(query);
-
-    assert!(result.is_err());
-}
-
-#[test]
-
-fn test_invalid_query_bad_token() {
-    let query = "select a where a ? 10";
-
-    let result = parse_query(query);
-
-    assert!(result.is_err());
+fn test_invalid_queries() {
+    for query in ["a > 10", "select (a + 1", "select a where a ? 10"] {
+        assert!(parse_query(query).is_err(), "{query}");
+    }
 }
 
 #[test]
@@ -371,12 +348,6 @@ fn test_tokenize_dot_accessor() {
             Token::Identifier("date".to_string()),
         ]
     );
-}
-
-#[test]
-fn test_tokenize_decimal_number() {
-    let tokens = tokenize(".5").unwrap();
-    assert_eq!(tokens, vec![Token::Number(0.5)]);
 }
 
 #[test]
@@ -519,10 +490,16 @@ fn test_parse_query_where_date_literal() {
     // Verify the filter parses without error (date literal 2021.01.01 -> ISO 2021-01-01)
 }
 
+/// A decimal is a number, not a date literal, with or without a leading digit.
 #[test]
-fn test_number_not_parsed_as_date() {
-    let tokens = tokenize("2.5").unwrap();
-    assert_eq!(tokens, vec![Token::Number(2.5)]);
+fn test_tokenize_decimal_numbers() {
+    for (text, number) in [(".5", 0.5), ("2.5", 2.5)] {
+        assert_eq!(
+            tokenize(text).unwrap(),
+            vec![Token::Number(number)],
+            "{text}"
+        );
+    }
 }
 
 #[test]

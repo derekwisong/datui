@@ -357,6 +357,8 @@ fn prepared_xy() -> ChartPrepared {
         series: vec![vec![(0.0, 1.0)]],
         breaks: vec![Vec::new()],
         series_log: None,
+        xs: vec![0.0],
+        bounds: Some([0.0, 0.0, 1.0, 1.0]),
         x_axis_kind: chart_data::XAxisTemporalKind::Numeric,
         rows: chart_data::RowsRead::default(),
         rows_note: None,

@@ -1076,13 +1076,11 @@ fn render_xy_chart(
         return None;
     }
 
-    let fold = |values: &mut dyn Iterator<Item = f64>| {
-        values.fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), v| {
-            (a.min(v), b.max(v))
-        })
-    };
-    let (all_x_min, all_x_max) = fold(&mut drawn.iter().flat_map(|s| s.points.iter().map(|p| p.0)));
-    let (all_y_min, all_y_max) = fold(&mut drawn.iter().flat_map(|s| s.points.iter().map(|p| p.1)));
+    // Kept with the prepared series; worked out here only for series made here.
+    let [all_x_min, all_x_max, all_y_min, all_y_max] = lines
+        .bounds
+        .or_else(|| crate::chart_jobs::extent(&lines.series))
+        .unwrap_or([0.0; 4]);
 
     // A scatter of few points marks each with a dot a cell wide; past one point per
     // four cells, the line's finer marks keep them apart.
@@ -1166,7 +1164,13 @@ fn render_xy_chart(
     let cursor = modal
         .cursor_x
         .filter(|_| modal.plot_focus)
-        .and_then(|cursor| crosshair::nearest(&crosshair::xs(values), cursor));
+        .and_then(|cursor| {
+            if lines.xs.is_empty() {
+                crosshair::nearest(&crosshair::xs(values), cursor)
+            } else {
+                crosshair::nearest(&lines.xs, cursor)
+            }
+        });
     let readout = cursor
         .map(|at| {
             let written = crosshair::format_x(at, x.kind, &x.numbers);
@@ -1390,8 +1394,8 @@ fn render_histogram_chart(
         return;
     }
 
-    let columns = axes.frame(area).graph.width;
-    let points = bin_columns(data, [x_min_bounds, x_max_bounds], columns);
+    let frame = axes.frame(area);
+    let points = bin_columns(data, [x_min_bounds, x_max_bounds], frame.graph.width);
     let style = Style::default().fg(theme.get("chart_1"));
     let dataset = Dataset::default()
         .name("")
@@ -1400,7 +1404,7 @@ fn render_histogram_chart(
         .style(style)
         .data(&points);
 
-    axes.render(Chart::new(vec![dataset]), area, buf, g);
+    axes.render_in(frame, Chart::new(vec![dataset]), buf, g);
 }
 
 /// A histogram's bars as a column of the plot each, `columns` wide over `bounds`: a
@@ -1602,28 +1606,28 @@ fn render_heatmap_chart(
         );
     }
 
-    let intensity_chars: Vec<char> = " .:-=+*#%@".chars().collect();
+    // Ten steps of density, the same in either glyph set.
+    const RAMP: [&str; 10] = [" ", ".", ":", "-", "=", "+", "*", "#", "%", "@"];
+    let style = Style::default().fg(theme.get("chart_1"));
+    let max_x_bin = data.x_bins.saturating_sub(1) as f64;
+    let max_y_bin = data.y_bins.saturating_sub(1) as f64;
     for row in 0..plot_area.height {
+        let y_bin_raw = ((row as f64 / plot_area.height as f64) * data.y_bins as f64).floor();
+        let y_bin = data
+            .y_bins
+            .saturating_sub(1)
+            .saturating_sub(y_bin_raw.clamp(0.0, max_y_bin) as usize);
         for col in 0..plot_area.width {
-            let max_x_bin = data.x_bins.saturating_sub(1) as f64;
-            let max_y_bin = data.y_bins.saturating_sub(1) as f64;
             let x_bin = ((col as f64 / plot_area.width as f64) * data.x_bins as f64)
                 .floor()
                 .clamp(0.0, max_x_bin) as usize;
-            let y_bin_raw = ((row as f64 / plot_area.height as f64) * data.y_bins as f64).floor();
-            let y_bin = data
-                .y_bins
-                .saturating_sub(1)
-                .saturating_sub(y_bin_raw.clamp(0.0, max_y_bin) as usize);
             let count = data.counts[y_bin][x_bin];
-            let level = ((count / data.max_count) * (intensity_chars.len() as f64 - 1.0))
+            let level = ((count / data.max_count) * (RAMP.len() as f64 - 1.0))
                 .round()
-                .clamp(0.0, intensity_chars.len() as f64 - 1.0) as usize;
-            let ch = intensity_chars[level];
-            let cell = &mut buf[(plot_area.x + col, plot_area.y + row)];
-            let symbol = ch.to_string();
-            cell.set_symbol(&symbol);
-            cell.set_style(Style::default().fg(theme.get("chart_1")));
+                .clamp(0.0, RAMP.len() as f64 - 1.0) as usize;
+            buf[(plot_area.x + col, plot_area.y + row)]
+                .set_symbol(RAMP[level])
+                .set_style(style);
         }
     }
 

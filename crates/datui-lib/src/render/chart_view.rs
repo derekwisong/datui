@@ -47,13 +47,21 @@ pub fn render(
         .data_table_state
         .as_ref()
         .map(|state| state.schema().as_ref());
-    // With the picker's choice previewed.
-    let spec = app.chart_modal.effective_spec();
+    // The spec charted, the picker's choice previewed; the panel's own until it
+    // asks for a chart.
+    let unrequested;
+    let spec = match &request {
+        Some(request) => &request.spec,
+        None => {
+            unrequested = app.chart_modal.effective_spec();
+            &unrequested
+        }
+    };
     let plot = crate::chart_jobs::plot(
         prepared,
         &PlotContext {
             modal: &app.chart_modal,
-            spec: &spec,
+            spec,
             numbers: &ctx.number_format,
             schema,
         },

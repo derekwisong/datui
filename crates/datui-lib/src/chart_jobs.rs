@@ -153,10 +153,30 @@ impl ChartCache {
     }
 }
 
+/// The least and greatest X and Y over every point; `None` with no points.
+pub(crate) fn extent(series: &[Vec<(f64, f64)>]) -> Option<[f64; 4]> {
+    let mut points = series.iter().flatten().peekable();
+    points.peek()?;
+    Some(points.fold(
+        [
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ],
+        |[x0, x1, y0, y1], &(x, y)| [x0.min(x), x1.max(x), y0.min(y), y1.max(y)],
+    ))
+}
+
+/// A Y as the log scale draws it: `ln(1 + y)`, negatives at zero.
+fn log_y(y: f64) -> f64 {
+    y.max(0.0).ln_1p()
+}
+
 pub(crate) fn log_series(series: &[Vec<(f64, f64)>]) -> Vec<Vec<(f64, f64)>> {
     series
         .iter()
-        .map(|pts| pts.iter().map(|&(x, y)| (x, y.max(0.0).ln_1p())).collect())
+        .map(|pts| pts.iter().map(|&(x, y)| (x, log_y(y))).collect())
         .collect()
 }
 
@@ -377,8 +397,10 @@ impl ChartRequest {
                 ChartPrepared::XY(ChartCacheXY {
                     other: grouped.other,
                     names: grouped.names,
-                    series: grouped.series,
+                    xs: crate::widgets::crosshair::xs(&grouped.series),
+                    bounds: extent(&grouped.series),
                     breaks: grouped.breaks,
+                    series: grouped.series,
                     series_log: None,
                     x_axis_kind: grouped.x_axis_kind,
                     rows: grouped.rows,
@@ -585,6 +607,10 @@ pub(crate) struct ChartCacheXY {
     /// Where each series' line starts again after a null (see `chart_data::segments`).
     pub(crate) breaks: Vec<Vec<usize>>,
     pub(crate) series_log: Option<Vec<Vec<(f64, f64)>>>,
+    /// Every X of every series, in order, each once: where the crosshair stops.
+    pub(crate) xs: Vec<f64>,
+    /// The least and greatest X and Y over every point, before any log.
+    pub(crate) bounds: Option<[f64; 4]>,
     pub(crate) x_axis_kind: chart_data::XAxisTemporalKind,
     pub(crate) rows: chart_data::RowsRead,
     /// What an aggregate over every row read, said in the title row.
@@ -1162,6 +1188,8 @@ fn lines<'a>(
         values: Cow::Borrowed(&[][..]),
         breaks: Cow::Borrowed(&[][..]),
         names: Cow::Borrowed(&[][..]),
+        xs: Cow::Borrowed(&[][..]),
+        bounds: None,
         other: false,
         scatter: spec.mark == Mark::Scatter,
         x_bounds,
@@ -1179,6 +1207,13 @@ fn lines<'a>(
             values: Cow::Borrowed(&cache.series[..]),
             breaks: Cow::Borrowed(&cache.breaks[..]),
             names: Cow::Borrowed(&cache.names[..]),
+            xs: Cow::Borrowed(&cache.xs[..]),
+            // The log is monotone: the bounds of the logged points are the logged
+            // bounds.
+            bounds: cache.bounds.map(|[x0, x1, y0, y1]| match modal.log_scale {
+                true => [x0, x1, log_y(y0), log_y(y1)],
+                false => [x0, x1, y0, y1],
+            }),
             other: cache.other,
             x_bounds: None,
             x: x(cache.x_axis_kind),

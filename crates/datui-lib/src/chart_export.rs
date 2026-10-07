@@ -609,6 +609,10 @@ pub struct Lines<'a> {
     pub breaks: Cow<'a, [Vec<usize>]>,
     /// Each series' name: its Y column or its color group.
     pub names: Cow<'a, [String]>,
+    /// Every X of every series, in order, each once: where the crosshair stops.
+    pub xs: Cow<'a, [f64]>,
+    /// The least and greatest X and Y of the points as drawn.
+    pub bounds: Option<[f64; 4]>,
     /// The last series is Other: every value of a color without a series of its own.
     pub other: bool,
     pub scatter: bool,
@@ -664,12 +668,13 @@ impl Plot<'_> {
     }
 
     /// The plot with its data its own, for an export that outlives the chart cache.
-    /// The crosshair's unlogged values stay behind.
+    /// What the crosshair reads stays behind.
     pub fn into_owned(self) -> Plot<'static> {
         match self {
             Self::Lines(lines) => Plot::Lines(Lines {
                 series: Cow::Owned(lines.series.into_owned()),
                 values: Cow::Owned(Vec::new()),
+                xs: Cow::Owned(Vec::new()),
                 breaks: Cow::Owned(lines.breaks.into_owned()),
                 names: Cow::Owned(lines.names.into_owned()),
                 ..lines
@@ -2013,6 +2018,8 @@ mod tests {
                 values: Cow::Owned(Vec::new()),
                 breaks: Cow::Owned(Vec::new()),
                 names: Cow::Owned(names.iter().map(|n| n.to_string()).collect()),
+                xs: Cow::Owned(Vec::new()),
+                bounds: None,
                 other: names.last() == Some(&OTHER),
                 scatter: false,
                 x_bounds: None,

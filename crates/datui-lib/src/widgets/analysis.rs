@@ -2397,7 +2397,7 @@ mod tests {
                     },
                     &mut buf,
                 );
-                let text = rendered_text(&buf);
+                let text = crate::tests::buffer_text(&buf);
                 let what = format!("{scale:?} at {width}:\n{text}");
                 let axis_row = (0..20)
                     .rfind(|y| (0..width).any(|x| buf[(x, *y)].symbol() == g.plot.axis.bottom_left))
@@ -2468,7 +2468,7 @@ mod tests {
             },
             &mut buf,
         );
-        let text = rendered_text(&buf);
+        let text = crate::tests::buffer_text(&buf);
         let rows: Vec<&str> = text.lines().collect();
         let axis = rows
             .iter()
@@ -2510,14 +2510,14 @@ mod tests {
             ),
             ("Q-Q plot", render_qq_plot),
         ] {
-            let text = rendered_text(&render_distribution_plot(&dist, g, render));
+            let text = crate::tests::buffer_text(&render_distribution_plot(&dist, g, render));
             assert!(text.is_ascii(), "{name}:\n{text}");
             assert!(
                 text.contains('|') && text.contains("+-"),
                 "{name} axes:\n{text}"
             );
         }
-        let qq = rendered_text(&render_distribution_plot(&dist, g, render_qq_plot));
+        let qq = crate::tests::buffer_text(&render_distribution_plot(&dist, g, render_qq_plot));
         assert!(qq.contains('*'), "the Q-Q points:\n{qq}");
     }
 
@@ -2547,7 +2547,9 @@ mod tests {
                         Some("Theoretical Values"),
                     ),
                 ] {
-                    let text = rendered_text(&render_distribution_plot_in(&dist, g, render, width));
+                    let text = crate::tests::buffer_text(&render_distribution_plot_in(
+                        &dist, g, render, width,
+                    ));
                     let rows: Vec<&str> = text.lines().collect();
                     let what = format!("{name} at {width}:\n{text}");
                     let axis = rows
@@ -2606,17 +2608,6 @@ mod tests {
             rank_correlations: Some(vec![vec![1.0, 0.5], vec![0.5, 1.0]]),
             rank_p_values: Some(vec![vec![0.0, 0.03], vec![0.03, 0.0]]),
         }
-    }
-
-    fn rendered_text(buf: &Buffer) -> String {
-        let mut text = String::new();
-        for y in 0..buf.area.height {
-            for x in 0..buf.area.width {
-                text.push_str(buf[(x, y)].symbol());
-            }
-            text.push('\n');
-        }
-        text
     }
 
     /// The furthest scroll is the first that shows the last statistic: one short
@@ -2711,7 +2702,11 @@ mod tests {
                 &mut buf,
                 &theme,
             );
-            rendered_text(&buf).lines().next().unwrap().to_string()
+            crate::tests::buffer_text(&buf)
+                .lines()
+                .next()
+                .unwrap()
+                .to_string()
         };
         let first = header((0, 0), &mut columns);
         assert!(
@@ -2821,7 +2816,7 @@ mod tests {
             &mut TableState::default(),
             &mut crate::analysis_modal::ColumnScroll::default(),
         );
-        let text = rendered_text(&buf);
+        let text = crate::tests::buffer_text(&buf);
         let mut lines = text.lines();
         let header = lines.next().unwrap();
         let pickup = lines
@@ -2860,7 +2855,7 @@ mod tests {
             &theme,
             &settings("thousands", false),
         );
-        let text = rendered_text(&buf);
+        let text = crate::tests::buffer_text(&buf);
         assert!(text.contains("Pearson r: 0.8740"), "{text}");
         assert!(text.contains("strong positive"), "{text}");
         let r_squared = crate::glyphs::get().r_squared;
@@ -2888,7 +2883,7 @@ mod tests {
             &theme,
             &settings("thousands", false),
         );
-        let text = rendered_text(&buf);
+        let text = crate::tests::buffer_text(&buf);
         assert!(text.contains("Fewer than 3 overlapping pairs"), "{text}");
         assert!(!text.contains("Pearson r:"), "{text}");
     }
@@ -2915,7 +2910,7 @@ mod tests {
             &theme,
             &settings("thousands", false),
         );
-        assert!(rendered_text(&buf).contains(SPEARMAN_TOO_MANY));
+        assert!(crate::tests::buffer_text(&buf).contains(SPEARMAN_TOO_MANY));
         let mut buf = Buffer::empty(area);
         render_correlation_pair_summary(
             Shown {
@@ -2929,7 +2924,7 @@ mod tests {
             &theme,
             &settings("thousands", false),
         );
-        assert!(rendered_text(&buf).contains("Pearson r: 0.8740"));
+        assert!(crate::tests::buffer_text(&buf).contains("Pearson r: 0.8740"));
     }
 
     #[test]
@@ -2950,7 +2945,7 @@ mod tests {
             &theme,
             &settings("thousands", false),
         );
-        let text = rendered_text(&buf);
+        let text = crate::tests::buffer_text(&buf);
         let rho = crate::glyphs::get().rho;
         assert!(text.contains(&format!("Spearman {rho}: 0.5000")), "{text}");
         assert!(text.contains("P-value: 0.03"), "{text}");

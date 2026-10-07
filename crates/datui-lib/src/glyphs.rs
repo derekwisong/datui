@@ -1404,18 +1404,6 @@ mod tests {
         buf
     }
 
-    fn buffer_text(buf: &Buffer) -> String {
-        let a = buf.area;
-        (a.top()..a.bottom())
-            .map(|y| {
-                (a.left()..a.right())
-                    .map(|x| buf[(x, y)].symbol())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
     /// The swap finds the axes and the legend frame by shape: a title or a legend
     /// name holding the same characters keeps them, and Unicode changes nothing.
     #[test]
@@ -1426,7 +1414,7 @@ mod tests {
         assert_eq!(buf, before);
 
         ascii().plot.redraw_axes(buf.area, &mut buf);
-        let text = buffer_text(&buf);
+        let text = crate::tests::buffer_text(&buf);
         let rows: Vec<&str> = text.lines().collect();
         assert!(rows[0].ends_with("+----+"), "the legend frame:\n{text}");
         assert!(rows[1].ends_with("|x─│y|"), "the legend name:\n{text}");
@@ -1442,9 +1430,9 @@ mod tests {
     #[test]
     fn redraw_axes_in_a_chart_too_small_for_both_axes() {
         let mut buf = chart_buffer(20, 2, "", "");
-        assert!(!buffer_text(&buf).is_ascii());
+        assert!(!crate::tests::buffer_text(&buf).is_ascii());
         ascii().plot.redraw_axes(buf.area, &mut buf);
-        let text = buffer_text(&buf);
+        let text = crate::tests::buffer_text(&buf);
         assert!(text.is_ascii() && text.contains('|'), "{text}");
     }
 

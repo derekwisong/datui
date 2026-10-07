@@ -722,7 +722,7 @@ fn a_chart_being_computed_says_so() {
     let screen = |app: &mut App| {
         let mut buf = Buffer::empty(area);
         Widget::render(app, area, &mut buf);
-        rendered_text(&buf)
+        common::buffer_text(&buf)
     };
     pump_until_chart_ready(&mut app, &rx, &tx);
     for (i, mark) in [Mark::Histogram, Mark::Box, Mark::Kde]
@@ -1080,7 +1080,7 @@ fn quick_chart_picks_the_type_from_the_cursor_column() {
         let area = Rect::new(0, 0, 100, 30);
         let mut buf = Buffer::empty(area);
         Widget::render(&mut app, area, &mut buf);
-        let text = rendered_text(&buf);
+        let text = common::buffer_text(&buf);
         assert!(text.contains(&format!("suggested for {suggested}")), "{x}");
         // The first frame's plot is the chart the panel names, before its data lands:
         // a histogram only where the panel says Histogram.
@@ -1108,7 +1108,7 @@ fn shelves_dim_by_type() {
     let screen = |app: &mut App| {
         let mut buf = Buffer::empty(area);
         Widget::render(&mut *app, area, &mut buf);
-        rendered_text(&buf)
+        common::buffer_text(&buf)
     };
     for (key, mark, dimmed) in [
         ('6', Mark::Kde, Some("density")),
@@ -1240,7 +1240,7 @@ fn aggregates_run_over_every_row() {
     let area = Rect::new(0, 0, 100, 30);
     let mut buf = Buffer::empty(area);
     Widget::render(&mut app, area, &mut buf);
-    let text = rendered_text(&buf);
+    let text = common::buffer_text(&buf);
     assert!(text.contains("all 900 rows"), "{text}");
     assert!(!text.contains("sample of"), "{text}");
     // F9 is carrier 8 of 9: its delays are 8 and 9, half each, a mean of 8.5.
@@ -1264,7 +1264,7 @@ fn chart_rows_are_read_on_enter() {
     let screen = |app: &mut App| {
         let mut buf = Buffer::empty(area);
         Widget::render(app, area, &mut buf);
-        rendered_text(&buf)
+        common::buffer_text(&buf)
     };
     assert!(screen(&mut app).contains("sample of 100 of 900 rows"));
 
@@ -1674,7 +1674,7 @@ fn test_esc_cancels_a_distribution_analysis_in_flight() {
     let area = Rect::new(0, 0, 120, 24);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
-    let screen = rendered_text(&buf);
+    let screen = common::buffer_text(&buf);
     assert!(screen.contains("Cancel"), "{screen:?}");
     assert!(!screen.contains("0 / 1"), "no gauge that cannot move");
 
@@ -2632,7 +2632,7 @@ fn data_quality_on_a_local_file_leads_with_the_result() {
     let area = Rect::new(0, 0, 110, 30);
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
-    let screen = rendered_text(&buffer);
+    let screen = common::buffer_text(&buffer);
     assert!(
         !screen.contains("The plan is inert"),
         "the dimmed prose line is gone"
@@ -2680,7 +2680,7 @@ fn data_quality_reads_as_a_report() {
     let first = Rect::new(0, 0, 110, 30);
     let mut buffer = Buffer::empty(first);
     app.render(first, &mut buffer);
-    let screen = rendered_text(&buffer);
+    let screen = common::buffer_text(&buffer);
     for section in [
         "Rows & sample",
         "Columns",
@@ -2702,7 +2702,7 @@ fn data_quality_reads_as_a_report() {
     // it reads, in place of the view. No plan page, no popup over it.
     let mut buffer = Buffer::empty(first);
     app.render(first, &mut buffer);
-    let screen = rendered_text(&buffer);
+    let screen = common::buffer_text(&buffer);
     assert!(
         screen.contains("Preparing the plan") && screen.contains("random rows"),
         "the shared progress view"
@@ -2724,7 +2724,7 @@ fn data_quality_reads_as_a_report() {
     let area = Rect::new(0, 0, 110, 30);
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
-    let screen = rendered_text(&buffer);
+    let screen = common::buffer_text(&buffer);
     for expected in [
         "1 problem  2 notes  1 of 5 columns clean",
         "Data Quality",
@@ -2791,7 +2791,7 @@ fn data_quality_reads_as_a_report() {
     // An empty Trends page names the setting that fills it, and Enter opens it.
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
-    let screen = rendered_text(&buffer);
+    let screen = common::buffer_text(&buffer);
     assert!(screen.contains("Set Grain") && !screen.contains("Metric"));
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
@@ -2815,7 +2815,7 @@ fn data_quality_reads_as_a_report() {
     };
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
-    let screen = rendered_text(&buffer);
+    let screen = common::buffer_text(&buffer);
     assert!(screen.contains("whole dataset") && screen.contains("in chunks of"));
     assert!(bar_now(&mut app).contains("Choose"));
     // Choosing stages the edit; the report keeps the plan it was measured with, and
@@ -2839,7 +2839,7 @@ fn data_quality_reads_as_a_report() {
     assert!(bar.contains("Discard") && bar.contains("Run"), "{bar}");
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
-    assert!(rendered_text(&buffer).contains("Enter runs, Esc discards"));
+    assert!(common::buffer_text(&buffer).contains("Enter runs, Esc discards"));
     // Esc discards the staged edit and goes back to the report.
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
@@ -2865,7 +2865,7 @@ fn data_quality_reads_as_a_report() {
     );
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
-    let screen = rendered_text(&buffer);
+    let screen = common::buffer_text(&buffer);
     assert!(
         screen.contains("needs an interval to measure"),
         "no threshold without an interval:\n{screen}"
@@ -2901,7 +2901,7 @@ fn data_quality_reads_as_a_report() {
     assert!(app.analysis_modal.data_quality_observation_detail);
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
-    let screen = rendered_text(&buffer);
+    let screen = common::buffer_text(&buffer);
     assert!(
         screen.contains("Checks"),
         "the clean entry names its checks"
@@ -2922,7 +2922,7 @@ fn data_quality_reads_as_a_report() {
     );
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
-    let screen = rendered_text(&buffer);
+    let screen = common::buffer_text(&buffer);
     assert!(screen.contains("Nearly unique") && screen.contains("Fewer Checks"));
     for code in [KeyCode::Esc, KeyCode::Home] {
         app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
@@ -2940,7 +2940,7 @@ fn data_quality_reads_as_a_report() {
     assert!(app.analysis_modal.data_quality_observation_detail);
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
-    let screen = rendered_text(&buffer);
+    let screen = common::buffer_text(&buffer);
     assert!(
         screen.contains("null in both columns")
             && screen.contains("No row misses one without the other"),
@@ -3015,7 +3015,7 @@ fn a_long_finding_scrolls() {
     let render = |app: &mut App| {
         let mut buffer = Buffer::empty(area);
         app.render(area, &mut buffer);
-        rendered_text(&buffer)
+        common::buffer_text(&buffer)
     };
     let screen = render(&mut app);
     assert!(screen.contains("Mixed spellings"));
@@ -3096,7 +3096,7 @@ fn a_sampled_finding_opens_its_sampled_rows() {
     let area = Rect::new(0, 0, 110, 30);
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
-    let screen = rendered_text(&buffer);
+    let screen = common::buffer_text(&buffer);
     assert!(
         screen.contains(&format!("Enter: the {expected} sampled rows")),
         "the popup says which rows open"
@@ -3436,7 +3436,7 @@ fn full_scan_evidence_is_read_only_on_confirm() {
         let area = Rect::new(0, 0, 80, 24);
         let mut buffer = Buffer::empty(area);
         app.render(area, &mut buffer);
-        rendered_text(&buffer)
+        common::buffer_text(&buffer)
     };
     assert!(asked.contains("Run a full scan?"), "{asked}");
     assert!(
@@ -3473,7 +3473,7 @@ fn full_scan_evidence_is_read_only_on_confirm() {
         let area = Rect::new(0, 0, width, height);
         let mut buffer = Buffer::empty(area);
         app.render(area, &mut buffer);
-        rendered_text(&buffer)
+        common::buffer_text(&buffer)
     };
     let screen = render(&mut app, 80, 24);
     assert!(
@@ -3688,7 +3688,7 @@ fn one_sample_serves_every_analysis_tool() {
     let area = Rect::new(0, 0, 100, 24);
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
-    let screen = rendered_text(&buffer);
+    let screen = common::buffer_text(&buffer);
     assert!(
         screen.contains("all 100 rows") && screen.contains("part=b,c"),
         "the header names the rows read"
@@ -3703,7 +3703,7 @@ fn one_sample_serves_every_analysis_tool() {
     assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 100);
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
-    let screen = rendered_text(&buffer);
+    let screen = common::buffer_text(&buffer);
     assert!(
         screen.contains("Sample") && screen.contains("Esc") && screen.contains("Back"),
         "the view says what it is and the way out"
@@ -3782,7 +3782,7 @@ fn one_sample_serves_every_analysis_tool() {
 
     // The tool list is the same beside every tool: the active one carries the
     // accent, not a dot only Data Quality drew.
-    let screen = rendered_text(&buffer);
+    let screen = common::buffer_text(&buffer);
     assert!(!screen.contains(&format!("{} Data Quality", datui::glyphs::get().middot)));
 }
 
@@ -4137,7 +4137,7 @@ fn data_quality_reads_nothing_until_setup_runs() {
     let area = Rect::new(0, 0, 100, 30);
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
-    assert!(rendered_text(&buffer).contains("Report on screen: this setup"));
+    assert!(common::buffer_text(&buffer).contains("Report on screen: this setup"));
     assert!(press(&mut app, KeyCode::Enter).is_none());
     assert!(!app.is_busy());
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
@@ -4239,7 +4239,7 @@ fn data_quality_edits_read_only_what_they_must() {
         let area = Rect::new(0, 0, 120, 40);
         let mut buffer = Buffer::empty(area);
         app.render(area, &mut buffer);
-        rendered_text(&buffer)
+        common::buffer_text(&buffer)
     };
     let window = |every: &str| QualityGrain::TimeWindows {
         column: "at".into(),
@@ -4373,7 +4373,7 @@ fn data_quality_setup_names_every_count_pass_on_one_parquet_file() {
         let area = Rect::new(0, 0, 120, 40);
         let mut buffer = Buffer::empty(area);
         app.render(area, &mut buffer);
-        rendered_text(&buffer)
+        common::buffer_text(&buffer)
     };
     let sorted = || AppEvent::Sort(vec!["id".into()], vec![true]);
     let filtered = || {
@@ -4463,7 +4463,7 @@ fn data_quality_coverage_sits_under_every_verdict() {
         let area = Rect::new(0, 0, 80, 24);
         let mut buffer = Buffer::empty(area);
         app.render(area, &mut buffer);
-        rendered_text(&buffer)
+        common::buffer_text(&buffer)
     };
 
     app.analysis_modal.data_quality_plan.dataset_rows = 100;
@@ -4623,7 +4623,7 @@ fn text_read_as_time_in_setup_gives_windows_and_intervals() {
     let render = |app: &mut App| {
         let mut buffer = Buffer::empty(area);
         app.render(area, &mut buffer);
-        rendered_text(&buffer)
+        common::buffer_text(&buffer)
     };
     let screen = render(&mut app);
     assert!(screen.contains("created: text, no format"), "{screen}");
@@ -4720,7 +4720,7 @@ fn intervals_are_chosen_in_setup_and_inspected_without_a_read() {
         let area = Rect::new(0, 0, width, height);
         let mut buffer = Buffer::empty(area);
         app.render(area, &mut buffer);
-        rendered_text(&buffer)
+        common::buffer_text(&buffer)
     };
 
     for column in ["created", "sent"] {
@@ -4955,7 +4955,7 @@ fn trends_and_gaps_are_inspected_without_a_read() {
         let area = Rect::new(0, 0, width, height);
         let mut buffer = Buffer::empty(area);
         app.render(area, &mut buffer);
-        rendered_text(&buffer)
+        common::buffer_text(&buffer)
     };
     let daily = QualityGrain::TimeWindows {
         column: "day".into(),
@@ -5270,7 +5270,7 @@ fn a_failed_rerun_keeps_the_last_report() {
     let area = Rect::new(0, 0, 100, 30);
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
-    let text = rendered_text(&buffer);
+    let text = common::buffer_text(&buffer);
     assert!(text.contains("sample of 500"), "{text}");
 
     // The setup the report was measured with is still served from its rows.
@@ -5301,7 +5301,7 @@ fn kept_rows_are_released_from_setup() {
         let area = Rect::new(0, 0, 160, 40);
         let mut buffer = Buffer::empty(area);
         app.render(area, &mut buffer);
-        rendered_text(&buffer)
+        common::buffer_text(&buffer)
     };
 
     press(&mut app, KeyCode::Char('e'));
@@ -5379,7 +5379,7 @@ fn metadata_only_reads_no_values() {
     let area = Rect::new(0, 0, 100, 30);
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
-    assert!(rendered_text(&buffer).contains("File metadata only: no values read"));
+    assert!(common::buffer_text(&buffer).contains("File metadata only: no values read"));
     assert!(run_quality_reads(&mut app, &rx).is_empty());
     assert!(!app.modal_showing(), "nothing was read, so nothing failed");
     let results = app.analysis_modal.data_quality_results.as_ref().unwrap();
@@ -5503,7 +5503,7 @@ fn an_empty_scope_is_never_a_clean_report() {
         let area = Rect::new(0, 0, 100, 30);
         let mut buffer = Buffer::empty(area);
         app.render(area, &mut buffer);
-        let text = rendered_text(&buffer);
+        let text = common::buffer_text(&buffer);
         assert!(
             text.contains("No rows match view rows 5,000-6,000"),
             "{text}"
@@ -5545,7 +5545,7 @@ fn an_empty_scope_is_never_a_clean_report() {
         let area = Rect::new(0, 0, 100, 30);
         let mut buffer = Buffer::empty(area);
         app.render(area, &mut buffer);
-        let text = rendered_text(&buffer);
+        let text = common::buffer_text(&buffer);
         assert!(!text.contains("No problems found"), "full {full}: {text}");
         assert!(!text.contains("clean"), "full {full}: {text}");
         assert!(text.contains("No rows to check"), "full {full}: {text}");
@@ -8916,9 +8916,9 @@ fn test_csv_export_writes_a_by_result_lists_as_json() {
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
     assert!(
-        rendered_text(&buffer).contains("Lists and structs written as JSON"),
+        common::buffer_text(&buffer).contains("Lists and structs written as JSON"),
         "{}",
-        rendered_text(&buffer)
+        common::buffer_text(&buffer)
     );
     press(&mut app, KeyCode::Esc);
     let dir = tempfile::tempdir().unwrap();
@@ -10304,12 +10304,6 @@ fn key(code: KeyCode) -> AppEvent {
     AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
 }
 
-/// Every glyph in the buffer, in row order — enough to ask whether some text is on
-/// screen, which is all these tests need.
-fn rendered_text(buf: &Buffer) -> String {
-    buf.content().iter().map(|cell| cell.symbol()).collect()
-}
-
 /// The same, without the control bar on the last row. The bar reports a load on its
 /// own; assertions about what the *view* shows have to exclude it.
 fn main_area_text(buf: &Buffer, area: Rect) -> String {
@@ -11008,7 +11002,7 @@ fn test_a_big_listing_is_labelled_from_the_viewport_not_from_directory_order() {
     pump_home(&mut app, &rx, area, &mut buf, |app| {
         !app.home.visible().is_empty()
     });
-    let unlooked_at = text_of(&buf);
+    let unlooked_at = common::buffer_text(&buf);
     assert!(
         !unlooked_at.contains(" dir"),
         "no row should be called a plain directory before anything looked into one:\n\
@@ -11029,7 +11023,7 @@ fn test_a_big_listing_is_labelled_from_the_viewport_not_from_directory_order() {
             _ => false,
         })
     });
-    let looked_at = text_of(&buf);
+    let looked_at = common::buffer_text(&buf);
     assert!(
         looked_at.contains("hive"),
         "the rows on screen should have been looked into:\n{looked_at}"
@@ -11079,18 +11073,6 @@ fn pump_home(
             }
         }
     }
-}
-
-/// Everything a buffer has drawn, as lines.
-fn text_of(buf: &Buffer) -> String {
-    (0..buf.area.height)
-        .map(|y| {
-            (0..buf.area.width)
-                .filter_map(|x| buf.cell((x, y)).map(|c| c.symbol().to_string()))
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 /// Modals render over the home screen, but home used to consume every key, so one
@@ -11182,7 +11164,7 @@ fn test_opening_from_home_does_not_show_the_previous_dataset() {
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
     assert!(
-        rendered_text(&buf).contains("first_name"),
+        common::buffer_text(&buf).contains("first_name"),
         "the first dataset should be on screen before we go home"
     );
 
@@ -11343,7 +11325,7 @@ fn a_load_chosen_at_home_fails_at_home() {
     // wraps inside the name.
     let message = app.error_message().expect("the failure is said");
     assert!(message.contains("broken.parquet\": "), "{message}");
-    let text = rendered_text(&buf);
+    let text = common::buffer_text(&buf);
     assert!(text.contains("Error") && text.contains("broken"), "{text}");
 
     // Nor is it a recent: recorded when a dataset installs, not when it is asked for.
@@ -13459,7 +13441,7 @@ fn test_opening_a_directory_measures_it_and_the_info_panel_says_so() {
 
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
-    let text = rendered_text(&buf);
+    let text = common::buffer_text(&buf);
 
     assert!(
         text.contains("Measurements"),
@@ -13536,7 +13518,7 @@ fn test_a_route_that_gave_up_leaves_no_figures_on_the_dataset_that_opened() {
     pump_until_idle(&mut app, &rx, &tx);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
-    let text = rendered_text(&buf);
+    let text = common::buffer_text(&buf);
     assert!(
         !text.contains("0 files"),
         "and the Resources tab shows no listing of no files; got:\n{text}"
@@ -13597,7 +13579,7 @@ fn test_a_dataset_polars_opened_reports_nothing_about_opening_it() {
     pump_until_idle(&mut app, &rx, &tx);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
-    let text = rendered_text(&buf);
+    let text = common::buffer_text(&buf);
     assert!(
         !text.contains("Listing:") && !text.contains("Footers:") && !text.contains("Total:"),
         "so the Resources tab says nothing about what the open cost; got:\n{text}"
@@ -13868,7 +13850,7 @@ fn test_delete_on_a_place_row_forgets_exactly_its_recents_after_confirming() {
     let area = Rect::new(0, 0, 120, 30);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
-    let screen = rendered_text(&buf);
+    let screen = common::buffer_text(&buf);
     assert!(
         screen.contains("Forget 2 recently opened datasets under"),
         "asked first, and told how many: {screen:?}"
@@ -14027,7 +14009,7 @@ fn test_enter_on_the_hidden_row_shows_the_files() {
     let area = Rect::new(0, 0, 120, 24);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
-    let screen = rendered_text(&buf);
+    let screen = common::buffer_text(&buf);
     assert!(screen.contains("3 files with no reader"), "{screen:?}");
     let bar: String = (0..area.width)
         .map(|x| buf[(x, area.height - 1)].symbol().to_string())
@@ -14119,7 +14101,7 @@ fn test_the_rule_counts_datasets_past_the_cap() {
     let area = Rect::new(0, 0, 200, 14);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
-    let screen = rendered_text(&buf);
+    let screen = common::buffer_text(&buf);
     assert!(screen.contains("more in"), "the cap is drawn: {screen:?}");
     let bar: String = (0..area.width)
         .map(|x| buf[(x, area.height - 1)].symbol().to_string())
@@ -14230,7 +14212,7 @@ fn test_a_tall_list_spaces_its_sections_and_a_short_one_does_not() {
     app.home.selected = last;
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
-    let screen = rendered_text(&buf);
+    let screen = common::buffer_text(&buf);
     let name = match app.home.selected_row() {
         Some(datui::home::Row::Entry { entry, .. }) => entry.name.clone(),
         other => panic!("{other:?}"),
@@ -14285,7 +14267,7 @@ fn test_enter_on_the_more_row_expands_recent() {
     let area = Rect::new(0, 0, 120, 14);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
-    let screen = rendered_text(&buf);
+    let screen = common::buffer_text(&buf);
     assert!(screen.contains("more in"), "the cap is drawn: {screen:?}");
 
     let row = app
@@ -15701,7 +15683,7 @@ fn test_the_count_does_not_include_the_door() {
     let area = Rect::new(0, 0, 200, 24);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
-    let screen = rendered_text(&buf);
+    let screen = common::buffer_text(&buf);
     assert!(
         screen.contains("parts  3 "),
         "three files, and the door is not a fourth: {screen:?}"
@@ -18248,7 +18230,7 @@ fn a_freeze_survives_a_narrow_window() {
         let area = Rect::new(0, 0, width, height);
         let mut buf = Buffer::empty(area);
         app.render(area, &mut buf);
-        rendered_text(&buf)
+        common::buffer_text(&buf)
     };
     let freeze_through = |app: &mut App, name: &str| {
         open_columns_list(app);
@@ -18359,7 +18341,7 @@ fn column_widths_from_the_sidebar() {
             pump_until_idle(app, &rx, &tx);
             app.render(area, &mut buf);
         }
-        rendered_text(&buf)
+        common::buffer_text(&buf)
     };
     let on_column = |app: &mut App, name: &str| {
         open_columns_list(app);
@@ -18517,7 +18499,7 @@ fn a_change_of_view_relearns_widths() {
             pump_until_idle(app, &rx, &tx);
             app.render(area, &mut buf);
         }
-        rendered_text(&buf)
+        common::buffer_text(&buf)
     };
     let shown = |app: &App, name: &str| {
         app.data_table_state
@@ -19466,7 +19448,7 @@ fn test_info_panel_reads_the_file_facts_off_the_ui_thread() {
     });
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
-    let text = rendered_text(&buf);
+    let text = common::buffer_text(&buf);
     assert!(
         text.contains("50 rows in 1 row group") && text.contains("Format version:"),
         "the Parquet tab says what its footer says; got:\n{text}"
@@ -19476,7 +19458,7 @@ fn test_info_panel_reads_the_file_facts_off_the_ui_thread() {
     }
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
-    let text = rendered_text(&buf);
+    let text = common::buffer_text(&buf);
     assert!(
         text.contains(&datui::numfmt::bytes(size)),
         "the Resources tab shows the file's size; got:\n{text}"
@@ -19504,7 +19486,7 @@ fn test_info_panel_reads_the_file_facts_off_the_ui_thread() {
     assert!(!app.is_busy() && !app.modal_showing());
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
-    let text = rendered_text(&buf);
+    let text = common::buffer_text(&buf);
     assert!(
         text.contains("File size:") && !text.contains("reading..."),
         "the panel stops waiting; got:\n{text}"
@@ -20306,7 +20288,7 @@ fn screen_text(app: &mut App) -> String {
     let area = Rect::new(0, 0, 120, 30);
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
-    rendered_text(&buffer)
+    common::buffer_text(&buffer)
 }
 
 /// Ctrl+U kills from the cursor back to the start of the line, keeping what
@@ -24006,7 +23988,7 @@ fn a_hugging_face_cache_lists_its_splits_on_home() {
     let area = Rect::new(0, 0, 100, 30);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
-    let text = rendered_text(&buf);
+    let text = common::buffer_text(&buf);
     assert!(
         text.contains("Resources") && !text.contains("Arrow"),
         "{text}"
@@ -25968,7 +25950,7 @@ fn a_column_retyped_in_the_table() {
     let mut buf = Buffer::empty(area);
     app.event(&key(KeyCode::Esc));
     app.render(area, &mut buf);
-    let shown = rendered_text(&buf);
+    let shown = common::buffer_text(&buf);
     assert!(shown.contains("typed code"), "the footer says so: {shown}");
 
     // A date with the format that reads the column's first value.

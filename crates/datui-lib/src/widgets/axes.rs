@@ -1452,17 +1452,6 @@ mod tests {
         }
     }
 
-    fn text(buf: &Buffer) -> Vec<String> {
-        let area = buf.area;
-        (area.top()..area.bottom())
-            .map(|y| {
-                (area.left()..area.right())
-                    .map(|x| buf[(x, y)].symbol())
-                    .collect()
-            })
-            .collect()
-    }
-
     /// The grid draws at the major ticks when on and not at all when off, in either
     /// glyph set, and never takes a cell the series drew in.
     #[test]
@@ -1472,11 +1461,11 @@ mod tests {
             let (off, frame) = render_with(&axes(false), area, g);
             let (on, _) = render_with(&axes(true), area, g);
             let grid = |buf: &Buffer| {
-                let all = text(buf).concat();
+                let all = crate::tests::buffer_lines(buf).concat();
                 all.matches(g.plot.grid_across).count() + all.matches(g.plot.grid_down).count()
             };
-            assert_eq!(grid(&off), 0, "{:#?}", text(&off));
-            assert!(grid(&on) > 50, "{:#?}", text(&on));
+            assert_eq!(grid(&off), 0, "{:#?}", crate::tests::buffer_lines(&off));
+            assert!(grid(&on) > 50, "{:#?}", crate::tests::buffer_lines(&on));
             let graph = frame.graph;
             for y in graph.top()..graph.bottom() {
                 for x in graph.left()..graph.right() {
@@ -1540,10 +1529,10 @@ mod tests {
             row(y),
             format!(" {} first  ", g.bar_eighths[7]),
             "{:#?}",
-            text(&buf)
+            crate::tests::buffer_lines(&buf)
         );
         assert_eq!(row(y + 1), format!(" {} second ", g.bar_eighths[7]));
-        let all = text(&buf).join("\n");
+        let all = crate::tests::buffer_lines(&buf).join("\n");
         for frame_mark in ["┌", "┐", "┘"] {
             assert!(!all.contains(frame_mark), "{all}");
         }
@@ -1580,7 +1569,12 @@ mod tests {
         let mut buf = Buffer::empty(area);
         let frame = axes.render(chart, area, &mut buf, g);
         let swatch = (frame.graph.left() + 1, frame.graph.bottom() - 2);
-        assert_eq!(buf[swatch].symbol(), g.bar_eighths[7], "{:#?}", text(&buf));
+        assert_eq!(
+            buf[swatch].symbol(),
+            g.bar_eighths[7],
+            "{:#?}",
+            crate::tests::buffer_lines(&buf)
+        );
     }
 
     /// On a narrow plot of 0 to 7 the x row reads `0 2 4 6`: more labels when they
@@ -1600,11 +1594,16 @@ mod tests {
         );
         let (buf, frame) = render_with(&axes, Rect::new(0, 0, 34, 12), g);
         let row = frame.labels.expect("a label row").y;
-        let labels: Vec<String> = text(&buf)[row as usize]
+        let labels: Vec<String> = crate::tests::buffer_lines(&buf)[row as usize]
             .split_whitespace()
             .map(str::to_string)
             .collect();
-        assert_eq!(labels, ["0", "2", "4", "6"], "{:#?}", text(&buf));
+        assert_eq!(
+            labels,
+            ["0", "2", "4", "6"],
+            "{:#?}",
+            crate::tests::buffer_lines(&buf)
+        );
     }
 
     /// A title longer than its row is cut with the set's ellipsis.

@@ -110,10 +110,6 @@ mod tests {
     use super::*;
     use crate::tests::test_runtime;
 
-    fn cells(buf: &Buffer) -> String {
-        buf.content().iter().map(|c| c.symbol()).collect()
-    }
-
     #[test]
     fn a_load_with_no_room_to_draw_is_skipped_rather_than_panicking() {
         // Terminals get resized to absurd sizes mid-load, and a load is exactly when
@@ -148,7 +144,7 @@ mod tests {
         let painted = |app: &crate::App| {
             let mut buf = Buffer::empty(area);
             render(area, &mut buf, app, &RenderContext::for_test());
-            cells(&buf)
+            crate::tests::buffer_text(&buf)
         };
 
         assert!(
@@ -204,7 +200,7 @@ mod tests {
         let painted = |app: &crate::App| {
             let mut buf = Buffer::empty(area);
             render(area, &mut buf, app, &RenderContext::for_test());
-            cells(&buf)
+            crate::tests::buffer_text(&buf)
         };
 
         let progress = app.footer_progress().clone();
@@ -312,7 +308,7 @@ mod tests {
         let mut buf = Buffer::empty(area);
         render(area, &mut buf, &app, &RenderContext::for_test());
 
-        let text = cells(&buf);
+        let text = crate::tests::buffer_text(&buf);
         assert!(text.contains("Reading schema"), "phase missing: {text:?}");
         assert!(text.contains("quarterly.parquet"), "file missing: {text:?}");
         assert!(text.contains("2.0 KiB"), "size missing: {text:?}");

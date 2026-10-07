@@ -426,17 +426,6 @@ mod tests {
     use super::*;
     use ratatui::buffer::Buffer;
 
-    fn rows(buf: &Buffer) -> Vec<String> {
-        let area = buf.area;
-        (0..area.height)
-            .map(|y| {
-                (0..area.width)
-                    .map(|x| buf[(x, y)].symbol().to_string())
-                    .collect::<String>()
-            })
-            .collect()
-    }
-
     /// One line, no box: the text on the left, the way back on the right, and
     /// nothing drawn on the row below it.
     #[test]
@@ -450,7 +439,7 @@ mod tests {
             "<- Group: department=Engineering",
             &ctx,
         );
-        let rows = rows(&buf);
+        let rows = crate::tests::buffer_lines(&buf);
         assert!(
             rows[0].starts_with("<- Group: department=Engineering"),
             "{rows:?}"
@@ -481,7 +470,7 @@ mod tests {
         let mut buf = Buffer::empty(area);
         let long = format!("<- Group: {}", "x".repeat(80));
         render_breadcrumb(area, &mut buf, &long, &ctx);
-        let row = &rows(&buf)[0];
+        let row = &crate::tests::buffer_lines(&buf)[0];
         assert!(row.contains(crate::glyphs::get().ellipsis), "{row:?}");
         assert!(row.contains("Esc") && row.contains("Back"), "{row:?}");
     }

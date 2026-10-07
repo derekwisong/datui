@@ -163,8 +163,8 @@ impl App {
                 }
             }
             KeyCode::Char('m') => self.toggle_inspector_pin(),
-            KeyCode::Right | KeyCode::Char('l') => return self.step_row(1),
-            KeyCode::Left | KeyCode::Char('h') => return self.step_row(-1),
+            KeyCode::Right | KeyCode::Char('l') => return self.scroll_key(crate::Scroll::Next),
+            KeyCode::Left | KeyCode::Char('h') => return self.scroll_key(crate::Scroll::Prev),
             KeyCode::Char('y') => self.copy_inspected_field(),
             KeyCode::Char('Y') => self.copy_inspected_row(),
             KeyCode::Char('o') => self.open_inspected_value(),
@@ -226,10 +226,10 @@ impl App {
             }
             KeyCode::Char('o') if modal.drill.is_none() => self.open_inspected_value(),
             KeyCode::Right | KeyCode::Char('l') if modal.drill.is_none() => {
-                return self.step_row(1);
+                return self.scroll_key(crate::Scroll::Next);
             }
             KeyCode::Left | KeyCode::Char('h') if modal.drill.is_none() => {
-                return self.step_row(-1);
+                return self.scroll_key(crate::Scroll::Prev);
             }
             _ => {}
         }
@@ -735,28 +735,6 @@ impl App {
         });
     }
 
-    /// Move the table's cursor `delta` rows, reading the next page in the
-    /// background when the buffer does not hold the row: the table's own ↑↓.
-    fn step_row(&mut self, delta: i64) -> Option<AppEvent> {
-        let state = self.data_table_state.as_mut()?;
-        if state.scroll_would_trigger_collect(delta) {
-            self.busy = true;
-            return Some(AppEvent::Scroll(if delta > 0 {
-                crate::Scroll::Next
-            } else {
-                crate::Scroll::Prev
-            }));
-        }
-        if delta > 0 {
-            state.select_next();
-        } else {
-            state.select_previous();
-        }
-        None
-    }
-
-    /// The inspector's keys. Moving between rows moves the table's cursor, so the
-    /// table is where the inspector left it on close.
     /// Open `node` as a level under the one shown: a list or struct at once, text as
     /// the JSON it holds, parsed here when short and on a worker when long. `path`
     /// is the text's place, remembered when it does not parse.

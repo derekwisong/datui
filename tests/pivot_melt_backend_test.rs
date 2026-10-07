@@ -13,11 +13,7 @@ use std::sync::mpsc;
 
 mod common;
 
-use common::{drain_events, pump_open_until_loaded};
-
-fn ensure_sample_data() {
-    common::ensure_sample_data();
-}
+use common::{drain_events, ensure_sample_data, pump_open_until_loaded};
 
 fn load_file_with(
     app: &mut App,
@@ -74,7 +70,6 @@ fn test_pivot_via_events() {
         pivot_column: "key".to_string(),
         value_column: "value".to_string(),
         aggregation: PivotAggregation::Last,
-        sort_columns: None,
     };
     let event = AppEvent::Pivot(spec);
     let mut next = app.event(&event);
@@ -106,7 +101,6 @@ fn test_pivot_date_index_render_simulation() {
         pivot_column: "key".to_string(),
         value_column: "value".to_string(),
         aggregation: PivotAggregation::Last,
-        sort_columns: None,
     };
     let mut next = app.event(&AppEvent::Pivot(spec));
     while let Some(ev) = next.take() {
@@ -148,7 +142,6 @@ fn test_pivot_long_string_via_events() {
         pivot_column: "key".to_string(),
         value_column: "value".to_string(),
         aggregation: PivotAggregation::Last,
-        sort_columns: None,
     };
     let event = AppEvent::Pivot(spec);
     let mut next = app.event(&event);
@@ -288,7 +281,6 @@ fn test_pivot_on_current_view_after_filter() {
         pivot_column: "key".to_string(),
         value_column: "value".to_string(),
         aggregation: PivotAggregation::Last,
-        sort_columns: None,
     };
     let event = AppEvent::Pivot(spec);
     let mut next = app.event(&event);
@@ -555,7 +547,6 @@ fn test_view_save_and_apply_pivot() {
         pivot_column: "key".to_string(),
         value_column: "value".to_string(),
         aggregation: PivotAggregation::Last,
-        sort_columns: None,
     };
     let mut next = app.event(&AppEvent::Pivot(spec));
     while let Some(ev) = next.take() {
@@ -632,7 +623,6 @@ fn test_pivot_reads_in_the_background() {
         pivot_column: "key".to_string(),
         value_column: "value".to_string(),
         aggregation: PivotAggregation::Last,
-        sort_columns: None,
     };
     let next = app.event(&AppEvent::Pivot(spec));
     assert!(next.is_none(), "nothing more runs on this thread");
@@ -677,7 +667,6 @@ fn test_a_stale_pivot_result_is_dropped() {
         pivot_column: "key".to_string(),
         value_column: "value".to_string(),
         aggregation: PivotAggregation::Last,
-        sort_columns: None,
     };
     // The pivot is read on a worker; before it lands, the file is opened again.
     app.event(&AppEvent::Pivot(spec));
@@ -724,7 +713,6 @@ fn test_esc_stops_a_pivot_being_read() {
         pivot_column: "key".to_string(),
         value_column: "value".to_string(),
         aggregation: PivotAggregation::Last,
-        sort_columns: None,
     };
     app.event(&AppEvent::Pivot(spec));
     assert!(app.is_busy());

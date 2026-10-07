@@ -55,6 +55,21 @@ pub fn centered_rect(r: Rect, width: u16, height: u16) -> Rect {
     }
 }
 
+/// A dialog of `width` by `height` centered a cell inside `area`'s edges, at least
+/// one cell however small the area.
+pub fn dialog_in(area: Rect, width: u16, height: u16) -> Rect {
+    let popup = centered_rect(
+        area.inner(ratatui::layout::Margin::new(1, 1)),
+        width,
+        height,
+    );
+    Rect {
+        width: popup.width.max(1),
+        height: popup.height.max(1),
+        ..popup
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

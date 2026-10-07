@@ -7,11 +7,12 @@ use std::borrow::Cow;
 use polars::prelude::Schema;
 
 use crate::chart_data::{
-    self, AxisNumbers, BarData, BoxPlotData, ChartXRangeResult, HeatmapData, HistogramData,
-    KdeData, RowsRead, XAxisTemporalKind,
+    self, BarData, BoxPlotData, ChartXRangeResult, HeatmapData, HistogramData, KdeData, RowsRead,
+    XAxisTemporalKind,
 };
 use crate::chart_modal::{Aggregate, ChartModal, ChartSpec, Mark};
 use crate::numfmt;
+use crate::widgets::axis_numbers::AxisNumbers;
 
 /// A chart's data, as prepared off the UI thread. Each payload names the columns it
 /// was drawn from, since the axes are titled from it.

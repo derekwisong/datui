@@ -48,7 +48,6 @@ fn pivot_view(app: &mut App, name: &str) -> SavedView {
         pivot_column: "key".to_string(),
         value_column: "val".to_string(),
         aggregation: pivot_melt_modal::PivotAggregation::First,
-        sort_columns: None,
     });
     view.settings.column_order.clear();
     view
@@ -350,7 +349,6 @@ fn the_bar_offers_esc_while_a_pivot_is_computed() {
         pivot_column: "key".to_string(),
         value_column: "val".to_string(),
         aggregation: pivot_melt_modal::PivotAggregation::First,
-        sort_columns: None,
     }));
     let bar = footer_text(&mut app);
     assert!(
@@ -1223,7 +1221,6 @@ fn a_view_failing_after_any_step_puts_the_view_back() {
         pivot_column: "key".to_string(),
         value_column: "val".to_string(),
         aggregation: pivot_melt_modal::PivotAggregation::First,
-        sort_columns: None,
     };
     enum Fails {
         /// While planning: `apply_view` says so and nothing is read.

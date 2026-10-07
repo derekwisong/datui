@@ -3120,7 +3120,7 @@ impl AppConfig {
 
 impl ColorConfig {
     /// Every slot by name, as the config writes it.
-    fn slots(&self) -> Vec<(String, String)> {
+    pub(crate) fn slots(&self) -> Vec<(String, String)> {
         match toml::Value::try_from(self) {
             Ok(toml::Value::Table(table)) => table
                 .into_iter()

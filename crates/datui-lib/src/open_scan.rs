@@ -1910,7 +1910,7 @@ impl App {
     }
 
     /// What the user is asked before files past `[read] memory_warning` are
-    /// read whole into memory: `big.json: JSON reads 2.1 GB into memory`.
+    /// read whole into memory: `big.json: JSON reads 2.0 GiB into memory`.
     fn in_memory_confirmation_message(read: &loading::InMemory) -> String {
         let what = match read.files {
             1 => format!(

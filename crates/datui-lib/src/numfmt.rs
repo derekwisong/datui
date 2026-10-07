@@ -361,17 +361,28 @@ pub fn bytes(n: u64) -> String {
     }
 }
 
-/// A length of time to the second while seconds matter: `12s`, `3m 05s`, `1h 02m`,
-/// `2d 03h`; negative with a sign.
+/// A wait's clock, to the second while seconds matter: `12s`, `3m 05s`, `1h 02m`.
+pub fn clock(elapsed: std::time::Duration) -> String {
+    let s = elapsed.as_secs();
+    match s {
+        0..60 => format!("{s}s"),
+        60..3_600 => format!("{}m {:02}s", s / 60, s % 60),
+        _ => format!("{}h {:02}m", s / 3_600, s % 3_600 / 60),
+    }
+}
+
+/// A length of time in its largest unit, to a tenth past seconds so it fits a
+/// narrow column: `12s`, `2.5m`, `1.5h`, `-2.1d`.
 pub fn duration(seconds: i64) -> String {
     let sign = if seconds < 0 { "-" } else { "" };
     let s = seconds.unsigned_abs();
-    match s {
-        0..60 => format!("{sign}{s}s"),
-        60..3_600 => format!("{sign}{}m {:02}s", s / 60, s % 60),
-        3_600..86_400 => format!("{sign}{}h {:02}m", s / 3_600, s % 3_600 / 60),
-        _ => format!("{sign}{}d {:02}h", s / 86_400, s % 86_400 / 3_600),
-    }
+    let (unit, name) = match s {
+        0..60 => return format!("{sign}{s}s"),
+        60..3_600 => (60.0, "m"),
+        3_600..86_400 => (3_600.0, "h"),
+        _ => (86_400.0, "d"),
+    };
+    format!("{sign}{:.1}{name}", s as f64 / unit)
 }
 
 /// [`duration`], or `-` for none.
@@ -688,10 +699,13 @@ mod tests {
 
     #[test]
     fn durations_keep_seconds_while_they_matter() {
+        let secs = std::time::Duration::from_secs;
+        assert_eq!(clock(secs(12)), "12s");
+        assert_eq!(clock(secs(185)), "3m 05s");
+        assert_eq!(clock(secs(90_000)), "25h 00m");
         assert_eq!(duration(12), "12s");
-        assert_eq!(duration(185), "3m 05s");
-        assert_eq!(duration(3_720), "1h 02m");
-        assert_eq!(duration(-(2 * 86_400 + 3 * 3_600)), "-2d 03h");
+        assert_eq!(duration(5_400), "1.5h");
+        assert_eq!(duration(-(10 * 86_400 + 3 * 3_600)), "-10.1d");
         assert_eq!(duration_or_dash(None), "-");
     }
 

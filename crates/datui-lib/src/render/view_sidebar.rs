@@ -312,7 +312,7 @@ fn render_form(area: Rect, buf: &mut Buffer, modal: &mut ViewModal, ctx: &Render
     .render(row(0, 1), buf, ctx);
     crate::pointer::record_field::<ViewModal>(row(0, 1), FormFocus::Name);
     if let Some(error) = &modal.name_error {
-        let width = error.chars().count() as u16;
+        let width = crate::glyphs::display_width(error) as u16;
         if width < content.width {
             Paragraph::new(error.as_str())
                 .style(Style::default().fg(ctx.error))

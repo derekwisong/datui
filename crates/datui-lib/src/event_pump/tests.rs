@@ -818,7 +818,6 @@ fn a_pivot_whose_worker_dies_is_shown_and_the_next_one_installs() {
         pivot_column: "key".to_string(),
         value_column: "val".to_string(),
         aggregation: PivotAggregation::Last,
-        sort_columns: None,
     };
 
     p.app.input_mode = InputMode::PivotMelt;

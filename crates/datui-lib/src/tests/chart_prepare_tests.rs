@@ -370,19 +370,30 @@ fn prepared_xy() -> PlotData {
 }
 
 /// XY series are the payload that grows with the data, so fewer of them are kept
-/// than small kinds, and the one on screen is kept over one merely inserted later.
-/// Each comes with its log copy, made off the UI thread with it.
+/// than small kinds, the one on screen is kept over one merely inserted later, and
+/// only the one on screen carries a log-scale copy.
 #[test]
 fn xy_entries_are_few_and_the_one_on_screen_stays() {
+    let has_log = |cache: &ChartCache, request: &ChartRequest| {
+        matches!(
+            cache.prepared(request),
+            Some(PlotData::Lines(xy)) if xy.series_log.is_some()
+        )
+    };
     let mut cache = ChartCache::default();
     let (a, b, c) = (xy_request("a"), xy_request("b"), xy_request("c"));
     cache.insert(a.clone(), Ok(prepared_xy()));
     cache.insert(b.clone(), Ok(prepared_xy()));
-    cache.touch(&a);
+    assert!(
+        !has_log(&cache, &a) && !has_log(&cache, &b),
+        "made when wanted"
+    );
+    cache.touch(&a, true);
     assert!(matches!(
         cache.prepared(&a),
         Some(PlotData::Lines(xy)) if xy.series_log.as_deref() == Some(&[vec![(0.0, 2f64.ln())]][..])
     ));
+    assert!(!has_log(&cache, &b));
 
     cache.insert(c.clone(), Ok(prepared_xy()));
     assert!(cache.satisfies(&a), "on screen, so kept");
@@ -393,6 +404,15 @@ fn xy_entries_are_few_and_the_one_on_screen_stays() {
     // Small kinds are not counted against the XY cap, and vice versa.
     cache.insert(histogram_request("h"), Ok(prepared_histogram("h")));
     assert_eq!(cache.entries.len(), 3);
+
+    cache.touch(&c, true);
+    assert!(has_log(&cache, &c));
+    assert!(
+        !has_log(&cache, &a),
+        "only the one on screen keeps its log copy"
+    );
+    cache.touch(&c, false);
+    assert!(!has_log(&cache, &c), "a linear scale keeps none");
 }
 
 /// Writes a CSV with columns x and y where y = x * factor, so two datasets share a

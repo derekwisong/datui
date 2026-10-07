@@ -1191,6 +1191,8 @@ struct StreamRead {
 /// Stream `lf` through `on_batch` a batch at a time, until it ends, `on_batch` says
 /// true, or `watch` stops it; `watch` sees each batch before `on_batch` has it.
 /// Streaming whatever the setting: holding the table is what this is here to avoid.
+/// A build without the `streaming` feature has only the in-memory engine, which reads
+/// the whole result and hands it over as one batch: nothing stops that read partway.
 pub(crate) fn stream_batches(
     lf: LazyFrame,
     watch: Option<&ReadWatch>,

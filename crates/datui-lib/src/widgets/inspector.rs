@@ -761,12 +761,48 @@ fn differs_from(
     known
 }
 
+/// Keep the fields listed for `row`, the row shown, as [`visible_fields`] has them:
+/// worked out again only when something they depend on changed.
+pub fn refresh_list(modal: &mut InspectorModal, state: &DataTableState, row: Option<&InspectRow>) {
+    let key = crate::inspector_modal::ListKey {
+        order: modal.order,
+        filled_only: modal.filled_only,
+        filter: modal.filter.clone(),
+        row: row.map(|r| (r.frame, r.row)),
+        buffered: state.buffered_span(),
+        compare: modal.compare,
+        compare_both: modal.compare_both,
+        pinned: modal.pinned.as_ref().map(|p| (p.frame, p.row)),
+        read: modal.read.as_ref().map(|r| {
+            let stage = match r {
+                FieldRead::Reading { .. } => 0,
+                FieldRead::Read { .. } => 1,
+                FieldRead::Failed { .. } => 2,
+            };
+            (r.key(), stage)
+        }),
+    };
+    if modal.listed.as_ref() == Some(&key) {
+        return;
+    }
+    let visible = visible_fields(modal, state, row);
+    modal.set_visible(visible);
+    modal.listed = Some(key);
+    #[cfg(test)]
+    {
+        modal.list_builds += 1;
+    }
+}
+
 /// The fields listed, in the order listed: the order chosen, then the nulls toggle (or,
 /// comparing, only the fields that differ), then the find text — names first,
 /// then values.
-pub fn visible_fields(modal: &InspectorModal, state: &DataTableState) -> Vec<usize> {
+pub fn visible_fields(
+    modal: &InspectorModal,
+    state: &DataTableState,
+    row: Option<&InspectRow>,
+) -> Vec<usize> {
     let fields = &modal.fields;
-    let row = state.inspect_row();
     let mut order: Vec<usize> = (0..fields.len()).collect();
     if modal.order == Order::Name {
         order.sort_by_cached_key(|&i| fields[i].name.to_lowercase());
@@ -775,12 +811,12 @@ pub fn visible_fields(modal: &InspectorModal, state: &DataTableState) -> Vec<usi
         return order;
     };
     let read = modal.read.as_ref();
-    let shown_at = |i: usize| shown(&fields[i], &row, read, state);
+    let shown_at = |i: usize| shown(&fields[i], row, read, state);
     if modal.order == Order::Filled {
         order.sort_by_key(|&i| fill_of(&shown_at(i)) != Fill::Value);
     }
     if modal.filled_only {
-        match compared(modal, state, &row) {
+        match compared(modal, state, row) {
             Some(other) => order
                 .retain(|&i| differs_from(&shown_at(i), &fields[i], &other, state) == Some(true)),
             None => order.retain(|&i| matches!(fill_of(&shown_at(i)), Fill::Value | Fill::Unknown)),
@@ -1158,8 +1194,7 @@ pub fn render(
     }
     let content = Surface::content_area(area);
     modal.compare_both = content.width as usize >= WIDER;
-    let visible = visible_fields(modal, state);
-    modal.set_visible(visible);
+    refresh_list(modal, state, row.as_ref());
     let other = row.as_ref().and_then(|r| compared(modal, state, r));
 
     let focused = modal.focused().cloned();

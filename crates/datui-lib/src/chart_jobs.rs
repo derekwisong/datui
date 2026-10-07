@@ -141,11 +141,20 @@ impl ChartCache {
     }
 
     /// Note that `request` is the selection on screen: its entry moves to the back,
-    /// where eviction reaches it last.
-    pub(crate) fn touch(&mut self, request: &ChartRequest) {
-        if let Some(i) = self.entries.iter().position(|(r, _)| r == request) {
-            let current = self.entries.remove(i);
-            self.entries.push(current);
+    /// where eviction reaches it last, and it alone keeps a log copy of its series,
+    /// made here when `log_scale` wants it. Only an in-memory map over points already
+    /// held, cheap enough for the event thread; never in render.
+    pub(crate) fn touch(&mut self, request: &ChartRequest, log_scale: bool) {
+        let Some(i) = self.entries.iter().position(|(r, _)| r == request) else {
+            return;
+        };
+        let current = self.entries.remove(i);
+        self.entries.push(current);
+        let last = self.entries.len() - 1;
+        for (i, (_, outcome)) in self.entries.iter_mut().enumerate() {
+            if let Ok(PlotData::Lines(lines)) = outcome {
+                lines.keep_log(i == last && log_scale);
+            }
         }
     }
 }
@@ -635,7 +644,7 @@ impl App {
         };
         self.chart.asked = Some((request.clone(), settle));
         if self.chart.cache.get(&request).is_some() {
-            self.chart.cache.touch(&request);
+            self.chart.cache.touch(&request, self.chart.modal.log_scale);
             // A cached chart's colors were counted with it.
             if let Some(colors) = request
                 .spec

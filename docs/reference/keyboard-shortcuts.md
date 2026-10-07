@@ -142,7 +142,7 @@ Where a dataset opens.
 | `Ctrl+↑ / Ctrl+↓` | Previous or next section |
 | `PgUp / PgDn` | A screenful, stopping at the first and last |
 | `Home / End` | The first or last row. The filter has no cursor to move: it is edited at its end |
-| `← / →` | Fold or unfold a section; → on a directory or a file of tables goes inside it, and on a file a format spec reads as record types lists them, one row each. On a directory cut to its first rows, → on its more row shows them all and ← cuts it back |
+| `← / →` | Fold or unfold a section; → on a directory or a file of tables goes inside it, and on a file a format spec reads as record types lists them, one row each. On a directory cut to its first rows, or RECENT, → on its more row shows them all; ← on a row past the first ones cuts it back, and on any other row folds |
 | `Space` | While the filter is empty: fold or unfold the section header under the cursor. With a filter typed, it types |
 | `Tab` | Cycle the sort; the footer names the order in effect when it has room |
 

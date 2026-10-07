@@ -42,12 +42,12 @@ impl App {
             InfoTab::Metadata | InfoTab::Format
         );
         // Excel's and SQLite's tabs list the file's tables, with a cursor: Enter opens
-        // the one under it.
-        let tables: Option<Vec<String>> = detail_tab
+        // the one under it. How many are listed.
+        let tables: Option<usize> = detail_tab
             .then(|| self.data_table_state.as_ref()?.format_detail())
             .flatten()
             .filter(|d| self.info_modal.active_tab == InfoTab::Format && !d.tables.is_empty())
-            .map(|d| d.list.iter().map(|(key, _)| key.clone()).collect());
+            .map(|d| d.list.len());
         let notes = self
             .data_table_state
             .as_ref()
@@ -80,9 +80,9 @@ impl App {
             } else if notes_tab && one {
                 modal.notes_move(step.delta(1), notes);
                 return None;
-            } else if let Some(tables) = &tables {
+            } else if let Some(tables) = tables {
                 let page = modal.detail_visible;
-                modal.detail_selected = step.apply(modal.detail_selected, tables.len(), page);
+                modal.detail_selected = step.apply(modal.detail_selected, tables, page);
                 return None;
             } else if detail_tab {
                 modal.detail_scroll_by(step.delta(modal.detail_visible));
@@ -152,7 +152,7 @@ impl App {
                 }
             }
             KeyCode::Enter if event.is_press() && tables.is_some() => {
-                return self.open_table_from_info(tables.as_deref().unwrap_or_default());
+                return self.open_table_from_info();
             }
             _ => {}
         }
@@ -160,10 +160,11 @@ impl App {
     }
 
     /// Enter on the Excel or SQLite tab: the worksheet or table under the cursor
-    /// (`keys` are the list's, in order) opened in place of this one, as `T` opens it.
-    fn open_table_from_info(&mut self, keys: &[String]) -> Option<AppEvent> {
-        let name = keys.get(self.info_modal.detail_selected)?.clone();
+    /// opened in place of this one, as `T` opens it.
+    fn open_table_from_info(&mut self) -> Option<AppEvent> {
         let detail = self.data_table_state.as_ref()?.format_detail()?;
+        let (name, _) = detail.list.get(self.info_modal.detail_selected)?;
+        let name = name.clone();
         if !detail.tables.contains(&name) {
             self.flash_note("Not a table".to_string());
             return None;

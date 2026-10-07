@@ -625,6 +625,11 @@ impl App {
     pub fn frame_painted(&mut self) {
         self.pointer.painted();
         self.count_what_was_painted();
+        // A resize sets the rows on screen as it draws, after the event pass looked;
+        // matches worked out again are drawn on the frame the wake brings.
+        if self.refresh_stale_live_matches() {
+            let _ = self.events.send(AppEvent::Wake);
+        }
         if let Some(state) = &mut self.data_table_state
             && state.needs_recollect
         {

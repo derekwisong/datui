@@ -59,7 +59,7 @@ pub fn run(bytes: &[u8]) {
     }
     if let Ok(df) = reader.finish() {
         assert_eq!(df.width(), gpx::CORE.len() + reader.fields().len());
-        assert!(reader.fields().len() <= gpx::MAX_FIELDS);
+        assert!(reader.fields().len() <= datui_lib::limits::get().gpx_fields);
         on_the_globe!(df);
     }
 }

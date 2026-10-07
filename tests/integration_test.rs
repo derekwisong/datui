@@ -2126,26 +2126,26 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     // each cost the column, the type each holds, and the values the conflict hid.
     {
         let results = app.analysis_modal.quality.results.as_mut().unwrap();
-        results.observations = vec![datui::data_quality::QualityObservation {
-            kind: datui::data_quality::ObservationKind::TypeConflict,
-            column: "fee".to_string(),
-            affected_rows: 2,
-            evaluated_rows: 7,
-            fact: "1 of 3 files holds a type the scan cannot read".to_string(),
-            normalized_category: None,
-            files: vec![datui::data_quality::QualityFileEvidence {
-                number: 2,
-                name: "b.parquet".to_string(),
-                rows: 2,
-                stored_type: Some("str".to_string()),
-                examples: vec!["sixty".to_string()],
-            }],
-            time_format: None,
-            full_scale: None,
-        }];
-        // The report was built for the results as run; changed in place, it is built
-        // again.
-        results.derived = Default::default();
+        // Changed in place, the report is built again.
+        results.edit(|results| {
+            results.observations = vec![datui::data_quality::QualityObservation {
+                kind: datui::data_quality::ObservationKind::TypeConflict,
+                column: "fee".to_string(),
+                affected_rows: 2,
+                evaluated_rows: 7,
+                fact: "1 of 3 files holds a type the scan cannot read".to_string(),
+                normalized_category: None,
+                files: vec![datui::data_quality::QualityFileEvidence {
+                    number: 2,
+                    name: "b.parquet".to_string(),
+                    rows: 2,
+                    stored_type: Some("str".to_string()),
+                    examples: vec!["sixty".to_string()],
+                }],
+                time_format: None,
+                full_scale: None,
+            }];
+        });
         app.analysis_modal.set_quality_page(QualityPage::Overview);
         app.analysis_modal.quality.table_state.select(Some(0));
         app.analysis_modal.quality.observation_detail = true;
@@ -2178,19 +2178,20 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         .to_string();
     let original_view = app.data_table_state.as_ref().unwrap().len_generation();
     let results = app.analysis_modal.quality.results.as_mut().unwrap();
-    results.precision = datui::data_quality::QualityPrecision::Exact;
-    results.observations = vec![datui::data_quality::QualityObservation {
-        kind: datui::data_quality::ObservationKind::Nulls,
-        column,
-        affected_rows: 0,
-        evaluated_rows: results.evaluated_rows,
-        fact: "matching rows".to_string(),
-        normalized_category: None,
-        files: Vec::new(),
-        time_format: None,
-        full_scale: None,
-    }];
-    results.derived = Default::default();
+    results.edit(|results| {
+        results.precision = datui::data_quality::QualityPrecision::Exact;
+        results.observations = vec![datui::data_quality::QualityObservation {
+            kind: datui::data_quality::ObservationKind::Nulls,
+            column,
+            affected_rows: 0,
+            evaluated_rows: results.evaluated_rows,
+            fact: "matching rows".to_string(),
+            normalized_category: None,
+            files: Vec::new(),
+            time_format: None,
+            full_scale: None,
+        }];
+    });
     app.analysis_modal.set_quality_page(QualityPage::Overview);
     app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
@@ -14283,6 +14284,70 @@ fn test_enter_on_the_more_row_expands_recent() {
             .any(|r| matches!(r, datui::home::Row::More { places: 1.., .. })),
         "RECENT is whole"
     );
+}
+
+/// ← on a place past RECENT's cap, RECENT shown whole, cuts it back with the cursor on
+/// the more row, as in a directory's section; ← on one of its first places folds it.
+#[test]
+fn test_left_cuts_recent_back_from_a_place_past_the_cap() {
+    common::isolate_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let recents: Vec<PathBuf> = (0..12)
+        .map(|i| {
+            let dir = tmp.path().join(format!("place{i:02}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("data.parquet");
+            std::fs::write(&path, b"x").unwrap();
+            path
+        })
+        .collect();
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.rebuild(&recents);
+    let area = Rect::new(0, 0, 120, 14);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let places = |app: &App| {
+        app.home
+            .visible()
+            .iter()
+            .filter(|r| matches!(r, datui::home::Row::Place { .. }))
+            .count()
+    };
+    let shown = places(&app);
+    assert!(shown < 12);
+    app.home.selected = app
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::More { places: 1.., .. }))
+        .unwrap();
+    app.event(&key(KeyCode::Right));
+    assert_eq!(places(&app), 12, "→ on the more row shows every place");
+
+    app.home.selected = app
+        .home
+        .visible()
+        .iter()
+        .rposition(|r| matches!(r, datui::home::Row::Place { .. }))
+        .unwrap();
+    app.event(&key(KeyCode::Left));
+    assert_eq!(places(&app), shown, "cut back");
+    assert!(matches!(
+        app.home.selected_row(),
+        Some(datui::home::Row::More { places: 1.., .. })
+    ));
+
+    app.event(&key(KeyCode::Right));
+    app.home.selected = app
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::Place { .. }))
+        .unwrap();
+    app.event(&key(KeyCode::Left));
+    assert!(app.home.is_collapsed(0), "← on a first place folds RECENT");
 }
 
 /// The hint, and the descent, are only offered on a row that is a dataset directory.

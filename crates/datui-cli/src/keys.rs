@@ -557,8 +557,8 @@ pub const SCREENS: &[Screen] = &[
                     k("PgUp / PgDn", "Page", "A screenful, stopping at the first and last"),
                     k("Home / End", "First, last", "The first or last row")
                         .more("The first or last row. The filter has no cursor to move: it is edited at its end"),
-                    k("← / →", "Fold", "Fold or unfold; → goes inside")
-                        .more("Fold or unfold a section; → on a directory or a file of tables goes inside it, and on a file a format spec reads as record types lists them, one row each. On a directory cut to its first rows, → on its more row shows them all and ← cuts it back"),
+                    k("← / →", "Fold", "Fold or unfold; → goes inside or shows more")
+                        .more("Fold or unfold a section; → on a directory or a file of tables goes inside it, and on a file a format spec reads as record types lists them, one row each. On a directory cut to its first rows, or RECENT, → on its more row shows them all; ← on a row past the first ones cuts it back, and on any other row folds"),
                     k("Space", "Fold", "Fold the section (types once filtering)")
                         .more("While the filter is empty: fold or unfold the section header under the cursor. With a filter typed, it types"),
                     k("Tab", "Sort", "Cycle the sort")

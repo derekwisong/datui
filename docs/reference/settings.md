@@ -85,7 +85,7 @@ lives, imports, the theme and troubleshooting.
 | `performance.max_buffered_rows` | integer | `100000` |  | Most rows the table buffers between reads; 0 for no limit. |
 | `performance.max_buffered` | size | `"512MiB"` |  | Most memory the buffered rows may take, estimated from the schema; 0 for no limit. Rounded up to whole MiB. |
 | `performance.streaming` | bool | `true` |  | Use the Polars streaming engine where it applies. |
-| `performance.threads` | integer | `0` |  | Most threads Polars computes with; 0 for every core. It caps speed, not memory; POLARS_MAX_THREADS, when set, wins, and in Python it has no effect once Polars is imported. |
+| `performance.threads` | integer | `0` |  | Most threads Polars computes with; 0 for every core. It caps speed, not memory; POLARS_MAX_THREADS, when set, wins. The datui command only: the Python module runs its own Polars, which POLARS_MAX_THREADS sizes when it first computes. |
 
 ## Analysis
 
@@ -203,6 +203,12 @@ lives, imports, the theme and troubleshooting.
 | `limits.midi_events` | integer | `10000000` |  | Most events read from MIDI files, all files of one open together. |
 | `limits.journal_bytes` | size | `"1GiB"` |  | Most journal JSON read into memory, all files of one open together; the records past it are left out, and the Notes tab says how much. |
 | `limits.detail_rows` | integer | `10000` |  | Most rows of a list on an Info panel tab (symbols, sections, metadata); one more row says how many were left out. |
+| `limits.sdf_fields` | integer | `4096` |  | Most fields (data items by name) read from an SDF file, each a column. |
+| `limits.vcd_signals` | integer | `1048576` |  | Most signals read from a VCD file, each a column. |
+| `limits.fix_tags` | integer | `4096` |  | Most tags read from a FIX file, each a column. |
+| `limits.fix_fields` | integer | `4096` |  | Most fields read from one FIX message. |
+| `limits.gpx_fields` | integer | `256` |  | Most extension fields read from a GPX file, each a column. |
+| `limits.npy_header_bytes` | size | `"4MiB"` |  | Largest NumPy header read; a file with a larger one is refused. |
 
 ## Log
 

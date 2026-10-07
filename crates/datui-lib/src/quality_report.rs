@@ -868,6 +868,14 @@ impl ReportCache {
 }
 
 impl DataQualityResults {
+    /// Change these results in place: the report and checks are built again from
+    /// what `edit` leaves.
+    pub fn edit<R>(&mut self, edit: impl FnOnce(&mut Self) -> R) -> R {
+        let out = edit(self);
+        self.derived = ReportCache::default();
+        out
+    }
+
     /// The findings these results read as; see [`ReportCache`].
     pub fn report(&self) -> &QualityReport {
         &self.derived.get(self).report

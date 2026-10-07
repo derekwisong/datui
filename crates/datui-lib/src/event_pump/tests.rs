@@ -3342,6 +3342,40 @@ fn mouse_actions_while_busy_obey_the_key_rules() {
     assert!(state.view_filters().is_empty(), "and its key was dropped");
 }
 
+/// The loop draws a background count's spinner about ten times a second with the
+/// user idle, and thirty while the user waits: frames the loop drew in one second.
+#[test]
+fn a_background_count_redraws_at_the_idle_cadence() {
+    let frames = |waited_on: bool| {
+        let mut p = pump();
+        // A count in flight that never reports: the spinner turns until the exit.
+        p.app.counting.len_count_inflight = Some(p.app.task_generation());
+        p.app.busy = waited_on;
+        assert!(p.app.something_is_spinning());
+        assert_eq!(p.app.is_busy(), waited_on);
+        let tx = p.tx.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(1));
+            let _ = tx.send(AppEvent::Exit);
+        });
+        let mut drawn = 0;
+        assert_eq!(
+            p.run(|_| {
+                drawn += 1;
+                Ok(())
+            })
+            .unwrap(),
+            Ended::Quit
+        );
+        drawn
+    };
+    let idle = frames(false);
+    // The first frame, ten turns, and one for the exit; never the waited-on rate.
+    assert!((5..=13).contains(&idle), "{idle} frames idle");
+    let waiting = frames(true);
+    assert!(waiting > 13, "{waiting} frames while the user waits");
+}
+
 /// A spinner for work nobody waits on, a count say, turns about ten times a second:
 /// a third of the frames of one the user waits on, and still moving.
 #[test]

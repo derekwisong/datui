@@ -2300,11 +2300,7 @@ impl App {
             }
             InputMode::Chart => {
                 if self.chart.export_modal.active {
-                    // Every row is a choice or a text field.
-                    self.chart
-                        .export_modal
-                        .choice(self.chart.export_modal.focus)
-                        .is_none()
+                    self.chart.export_modal.focus.is_text()
                 } else {
                     // The open column Picker narrows by typing, so it types.
                     self.chart.modal.picker.is_some()
@@ -4591,7 +4587,7 @@ impl App {
             }
             AppEvent::ApplyView(order, locked, filters, columns, descending) => {
                 if let Some(state) = &mut self.data_table_state {
-                    state.deferred(|s| {
+                    let change = state.deferred(|s| {
                         s.apply_view(
                             order.clone(),
                             locked,
@@ -4600,7 +4596,11 @@ impl App {
                             descending.clone(),
                         )
                     });
-                    self.spawn_async_collect("Sorting...");
+                    self.spawn_async_collect(match change {
+                        crate::table::ViewChange { sort: true, .. } => "Sorting...",
+                        crate::table::ViewChange { filters: true, .. } => "Filtering...",
+                        _ => Self::LOADING_BUFFER,
+                    });
                 }
                 None
             }

@@ -492,12 +492,7 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
     // five sections, so at most four lines, and below thirty the list is as dense as
     // it can be. The spacers come off the height the cap on RECENT is a share of.
     let spaced = height >= SPACED_LIST_HEIGHT;
-    let headers = app
-        .home
-        .visible()
-        .iter()
-        .filter(|row| matches!(row, crate::home::Row::Header { .. }))
-        .count();
+    let headers = app.home.header_rows().into_iter().filter(|h| *h).count();
     let spacers = if spaced { headers.saturating_sub(1) } else { 0 };
     // The height first: the cap on RECENT is a share of it, and the cursor has to be
     // put back on its row before the scroll is settled from it.
@@ -507,11 +502,11 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
     let row_lines: Vec<usize> = {
         let mut line = 0;
         app.home
-            .visible()
-            .iter()
+            .header_rows()
+            .into_iter()
             .enumerate()
-            .map(|(i, row)| {
-                if spaced && i > 0 && matches!(row, crate::home::Row::Header { .. }) {
+            .map(|(i, header)| {
+                if spaced && i > 0 && header {
                     line += 1;
                 }
                 let at = line;
@@ -756,9 +751,14 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                     ctx,
                 ));
             }
-            crate::home::Row::More { hidden, places, .. } => {
+            crate::home::Row::More {
+                hidden,
+                places,
+                measuring,
+                ..
+            } => {
                 lines.push(more_line(
-                    *hidden, *places, selected, name_width, show_meta, ctx,
+                    *hidden, *places, *measuring, selected, name_width, show_meta, ctx,
                 ));
             }
             crate::home::Row::Hidden { section, count } => {
@@ -979,19 +979,24 @@ fn place_line(
     ])
 }
 
-/// What the cap on `RECENT` is hiding, as one row: `… 13 more in 5 places`.
+/// What a cap is hiding, as one row: `RECENT`'s `… 13 more in 5 places`, or a
+/// directory's `… 4,958 more` (files and directories both), `· measuring` while a
+/// sort by rows still measures them.
 fn more_line(
     hidden: usize,
     places: usize,
+    measuring: bool,
     selected: bool,
     name_width: usize,
     show_meta: bool,
     ctx: &RenderContext,
 ) -> Line<'static> {
-    let ellipsis = glyphs::get().ellipsis;
+    let g = glyphs::get();
+    let ellipsis = g.ellipsis;
     let more = crate::numfmt::group_chrome(hidden);
     let text = match places {
-        0 => format!("{ellipsis} {more} more files"),
+        0 if measuring => format!("{ellipsis} {more} more {} measuring", g.middot),
+        0 => format!("{ellipsis} {more} more"),
         1 => format!("{ellipsis} {more} more in 1 place"),
         _ => format!("{ellipsis} {more} more in {places} places"),
     };

@@ -501,7 +501,7 @@ fn grid_columns(
                 .chain([
                     crate::glyphs::cell_width(&name),
                     if ctx.dtype_row {
-                        type_label.chars().count()
+                        crate::glyphs::display_width(&type_label)
                     } else {
                         0
                     },
@@ -695,7 +695,6 @@ mod tests {
             pivot_column: "job".to_string(),
             value_column: "salary".to_string(),
             aggregation: PivotAggregation::Avg,
-            sort_columns: None,
         }
     }
 

@@ -10,8 +10,8 @@ use ratatui::{
 };
 
 use crate::chart_data::{
-    AxisNumbers, BarData, BoxPlotData, HeatmapData, HistogramData, KdeData, XAxisTemporalKind,
-    other_at, segments,
+    BarData, BoxPlotData, HeatmapData, HistogramData, KdeData, XAxisTemporalKind, other_at,
+    segments,
 };
 use crate::chart_modal::{
     Aggregate, ChartFocus, ChartModal, Cumulative, Mark, PickerFor, ShelfUse, TimeUnit,
@@ -24,6 +24,7 @@ use crate::render::context::RenderContext;
 use crate::widgets::axes::{
     AxisSpec, Legend, PlotAxes, Track, cut, fit_x_labels, fit_y_labels, resolution,
 };
+use crate::widgets::axis_numbers::AxisNumbers;
 use crate::widgets::crosshair::{self, PlotPlace};
 use crate::widgets::ui::{FormRow, FormValue, Picker, SectionRule, Surface, Working};
 use polars::prelude::Schema;
@@ -1206,7 +1207,7 @@ fn readout_entries(
         .enumerate()
     {
         let (value, value_style) = match value {
-            Some(v) => (crosshair::format_number(v, y), value_style),
+            Some(v) => (y.write(v), value_style),
             None => (g.null.to_string(), Style::default().fg(theme.dimmed())),
         };
         entries.push(crosshair::Entry {

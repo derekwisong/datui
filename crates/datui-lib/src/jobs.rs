@@ -400,9 +400,10 @@ pub(crate) enum Answer {
         message: String,
         conversion: Option<Box<crate::error_display::ConversionFailure>>,
     },
-    /// [`Job::Analysis`]: a Describe, Distributions or Correlations result.
+    /// [`Job::Analysis`]: a Describe, Distributions or Correlations result, and
+    /// where on the modal it goes.
     Analysis(
-        crate::analysis_modal::AnalysisTool,
+        fn(&mut crate::analysis_modal::AnalysisModal, crate::statistics::AnalysisResults),
         crate::statistics::AnalysisResults,
     ),
     /// [`Job::Analysis`]: a Data Quality report, the rows a sampled run read, and the

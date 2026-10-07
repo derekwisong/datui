@@ -21,8 +21,9 @@ use ratatui::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::chart_data::{AxisFormat, AxisNumbers, XAxisTemporalKind, x_axis_label_at};
+use crate::chart_data::{XAxisTemporalKind, x_axis_label_at};
 use crate::glyphs::Glyphs;
+use crate::widgets::axis_numbers::{AxisFormat, AxisNumbers};
 use crate::widgets::ticks;
 
 /// Rows the plot keeps before an axis title gives up its row.

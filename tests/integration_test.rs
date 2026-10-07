@@ -5883,7 +5883,7 @@ fn test_scroll_past_end_does_not_hang_busy() {
 
     // Jump to end via End key, then hammer PageDown a bunch — same sequence that
     // used to wedge the app. Each PageDown sets `busy=true` in the key handler;
-    // DoScrollDown must clear it once the spawn no-ops past the bottom.
+    // the deferred scroll must clear it once the spawn no-ops past the bottom.
     if let Some(next) = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::End,
         KeyModifiers::NONE,
@@ -6651,12 +6651,12 @@ fn test_absent_cells_still_read_as_absent_after_a_sort() {
 
 /// The accent reaches the bar from the dataset, and the config can turn it off.
 ///
-/// `controls.rs` proves the accent is only a colour on the Info chip, but it is handed
+/// `render/footer.rs` proves the accent is only a colour on the Info chip, but it is handed
 /// a flag by hand; the app-side tests read `notes_unseen()`, an accessor. Nothing
 /// joined the two, so an accent that never reached the bar — or one that ignored the
 /// config — passed both.
 #[test]
-fn test_the_notes_accent_reaches_the_control_bar_and_the_config_can_stop_it() {
+fn test_the_notes_accent_reaches_the_footer_and_the_config_can_stop_it() {
     let dir = tempfile::tempdir().unwrap();
     write_parquet(dir.path(), "date=2024-01-01", df!("id" => &[1i64]).unwrap());
     write_parquet(
@@ -8076,13 +8076,13 @@ fn test_each_open_counts_its_own_footers() {
 /// The footer shows the same count the loading body does.
 ///
 /// Both derive it from `App::loading_phase`, and the point of that is that one wait
-/// cannot be described two ways. The truncation test in `controls.rs` builds the bar
+/// cannot be described two ways. The truncation test in `render/footer.rs` builds the bar
 /// with a hand-written string, so it says the bar cuts a long message properly and
 /// nothing about whether the bar is ever given the count at all: deleting the line
 /// that hands it over leaves the body counting and the bar still saying "Caching
 /// schema", with the suite green.
 #[test]
-fn test_the_control_bar_counts_the_footers_the_loading_screen_does() {
+fn test_the_footer_counts_the_footers_the_loading_screen_does() {
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
     app.set_loading_phase("Reading schema", 40);
@@ -8114,7 +8114,7 @@ fn test_the_control_bar_counts_the_footers_the_loading_screen_does() {
 
 /// The bar counts a listing as the loading screen does, with no percentage beside it.
 #[test]
-fn test_the_control_bar_counts_a_listing_without_a_percentage() {
+fn test_the_footer_counts_a_listing_without_a_percentage() {
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
     app.set_loading_phase("Reading schema", 40);
@@ -11929,7 +11929,6 @@ fn test_sql_after_pivot_sees_the_pivoted_columns() {
         pivot_column: "key".to_string(),
         value_column: "val".to_string(),
         aggregation: PivotAggregation::First,
-        sort_columns: None,
     }));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 10);
@@ -12023,7 +12022,6 @@ fn test_query_after_pivot_drops_the_reshape_for_sql() {
         pivot_column: "key".to_string(),
         value_column: "val".to_string(),
         aggregation: PivotAggregation::First,
-        sort_columns: None,
     }));
     pump_until_idle(&mut app, &rx, &tx);
     assert!(
@@ -20473,7 +20471,6 @@ fn test_a_view_replays_the_query_before_the_pivot() {
             pivot_column: "key".to_string(),
             value_column: "val".to_string(),
             aggregation: PivotAggregation::First,
-            sort_columns: None,
         }),
     ];
     let (view, applied, expected) = view_and_steps_on_the_next_file("view_query_pivot", &steps);
@@ -20501,7 +20498,6 @@ fn test_a_view_replays_sql_on_the_pivot_after_it() {
             pivot_column: "key".to_string(),
             value_column: "val".to_string(),
             aggregation: PivotAggregation::First,
-            sort_columns: None,
         }),
         AppEvent::SqlQuery("SELECT id, k2 FROM df WHERE k1 > 12".to_string()),
     ];
@@ -20553,7 +20549,6 @@ fn test_a_view_of_a_melted_pivot_fails_to_apply_and_changes_nothing() {
             pivot_column: "key".to_string(),
             value_column: "val".to_string(),
             aggregation: PivotAggregation::First,
-            sort_columns: None,
         }),
         AppEvent::Melt(MeltSpec {
             index: vec!["id".to_string()],
@@ -24702,7 +24697,6 @@ fn test_copy_as_python_scripts_compute_the_rows_datui_shows() {
                     pivot_column: "customer".into(),
                     value_column: "amount".into(),
                     aggregation: PivotAggregation::Avg,
-                    sort_columns: None,
                 })
                 .unwrap();
                 s.sort_by(vec!["region".into()], vec![true]);
@@ -24718,7 +24712,6 @@ fn test_copy_as_python_scripts_compute_the_rows_datui_shows() {
                     pivot_column: "customer".into(),
                     value_column: "qty".into(),
                     aggregation: PivotAggregation::Count,
-                    sort_columns: None,
                 })
                 .unwrap();
             }),

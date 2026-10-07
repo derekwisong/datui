@@ -215,3 +215,63 @@ fn leaving_while_recording_leaves_on_either_choice_and_stays_on_esc() {
     assert!(key(&mut app, KeyCode::Esc).is_none());
     assert!(!app.confirmation_modal.active);
 }
+
+/// Yes on Read all reads every row; on a full scan, runs it.
+#[test]
+fn yes_reads_all_and_runs_the_full_scan() {
+    let mut app = new_app();
+    app.confirmation_modal.show("?".into(), Confirm::ReadAll);
+    yes(&mut app);
+    assert_eq!(
+        app.analysis_modal.sample.method,
+        crate::sampling::SampleMethod::EveryRow
+    );
+
+    let mut app = new_app();
+    app.confirmation_modal
+        .show("?".into(), Confirm::QualityFullScan);
+    assert!(matches!(
+        yes(&mut app),
+        Some(AppEvent::AnalysisCompute(
+            analysis_modal::AnalysisTool::DataQuality
+        ))
+    ));
+    assert!(app.analysis_modal.computing.is_some());
+}
+
+/// Yes on an open's question reads what was asked about.
+#[test]
+fn yes_on_an_open_reads_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("small.json");
+    std::fs::write(&path, r#"[{"id":1},{"id":2}]"#).unwrap();
+    let mut config = AppConfig::default();
+    // Every in-memory read asks.
+    config.read.memory_warning = crate::config::ByteSize(1);
+    let theme = Theme::from_config(&config.theme).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new_with_config(tx, crate::tests::test_runtime(), theme, config);
+    let mut next = Some(AppEvent::Open(vec![path], OpenOptions::default()));
+    let pump = |app: &mut App, mut next: Option<AppEvent>, done: &dyn Fn(&App) -> bool| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !done(app) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the open never got there"
+            );
+            if let Some(event) = next
+                .take()
+                .or_else(|| rx.recv_timeout(std::time::Duration::from_millis(50)).ok())
+            {
+                next = app.event(&event);
+            }
+        }
+    };
+    pump(&mut app, next.take(), &|app| {
+        app.awaiting_open_confirmation()
+    });
+    assert!(app.data_table_state.is_none(), "nothing read before Yes");
+    let next = yes(&mut app);
+    pump(&mut app, next, &|app| app.data_table_state.is_some());
+    assert!(!app.confirmation_modal.active);
+}

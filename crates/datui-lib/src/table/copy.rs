@@ -372,7 +372,7 @@ impl DataTableState {
         self.view.df.as_ref()
     }
 
-    /// Visible-window slice of the display buffer (same as passed to render_dataframe).
+    /// The display buffer's rows on screen, as the table draws them.
     pub fn display_slice_df(&self) -> Option<DataFrame> {
         let df = self.view.df.as_ref()?;
         let offset = self

@@ -1541,11 +1541,16 @@ impl App {
             Option<usize>,
             bool,
         ) -> Result<crate::statistics::AnalysisResults>;
-        let (status, compute): (&str, Compute) = match tool {
+        type Install = fn(&mut analysis_modal::AnalysisModal, crate::statistics::AnalysisResults);
+        let (status, compute, install): (&str, Compute, Install) = match tool {
             AnalysisTool::DataQuality => return self.run_quality_compute(),
-            AnalysisTool::Describe => ("Running analysis...", |lf, sample, known, streaming| {
-                crate::statistics::compute_describe_from_lazy(lf, known, sample, streaming)
-            }),
+            AnalysisTool::Describe => (
+                "Running analysis...",
+                |lf, sample, known, streaming| {
+                    crate::statistics::compute_describe_from_lazy(lf, known, sample, streaming)
+                },
+                |modal, results| modal.describe_results = Some(results),
+            ),
             AnalysisTool::DistributionAnalysis => (
                 "Analyzing distributions...",
                 |lf, sample, known, streaming| {
@@ -1558,10 +1563,13 @@ impl App {
                     };
                     crate::statistics::compute_statistics_for_sample(lf, sample, known, options)
                 },
+                |modal, results| modal.distribution_results = Some(results),
             ),
-            AnalysisTool::CorrelationMatrix => {
-                ("Computing correlation matrix...", correlations_of_sample)
-            }
+            AnalysisTool::CorrelationMatrix => (
+                "Computing correlation matrix...",
+                correlations_of_sample,
+                analysis_modal::AnalysisModal::install_correlations,
+            ),
         };
         let Some(state) = &self.data_table_state else {
             self.analysis_modal.computing = None;
@@ -1584,7 +1592,7 @@ impl App {
                     .cut(&sample.scope)
                     .and_then(|lf| compute(&lf, &sample, known_total, streaming))
                     .map_err(|e| format!("{e}"))?;
-                Ok(Answer::Analysis(tool, results))
+                Ok(Answer::Analysis(install, results))
             },
         );
         None
@@ -3095,10 +3103,6 @@ impl App {
         None
     }
 
-    /// Run a scroll on `data_table_state` and resolve the busy/spawn cycle.
-    /// `scroll` returns true when its movement leaves the buffered window (caller must collect).
-    /// We clear `busy` ourselves when no collect is needed or the spawn no-ops, otherwise
-    /// the busy flag set by the key handler would gate further input forever.
     /// Home, End and G. A jump may need a fill, so it is deferred behind a frame that
     /// shows the throbber — setting `start_row` alone used to leave the old buffer on
     /// screen, drawn from its first row — unless the view is already there, in which
@@ -3169,6 +3173,10 @@ impl App {
         Some(AppEvent::Scroll(jump))
     }
 
+    /// Run a scroll on `data_table_state` and resolve the busy/spawn cycle.
+    /// `scroll` returns true when its movement leaves the buffered window (caller must collect).
+    /// We clear `busy` ourselves when no collect is needed or the spawn no-ops, otherwise
+    /// the busy flag set by the key handler would gate further input forever.
     fn handle_scroll<F>(&mut self, scroll: F) -> Option<AppEvent>
     where
         F: FnOnce(&mut crate::table::DataTableState) -> bool,
@@ -3560,7 +3568,8 @@ impl App {
     /// size probe behind a download can take fifteen seconds, and the answer to
     /// "actually, never mind" is the home screen, not the exit.
     pub fn awaiting_open_confirmation(&self) -> bool {
-        self.confirmation_modal.active && self.loading.asking()
+        self.confirmation_modal.active
+            && matches!(self.confirmation_modal.asking, Some(Confirm::Download))
     }
 
     /// Enter on the confirmation's Yes, or on either choice of one whose No acts too.
@@ -5591,22 +5600,10 @@ impl App {
                 self.rows_failed(current, waited, &message, conversion.as_deref());
                 None
             }
-            Answer::Analysis(tool, results) => {
+            Answer::Analysis(install, results) => {
                 if current {
-                    let modal = &mut self.analysis_modal;
-                    match tool {
-                        analysis_modal::AnalysisTool::Describe => {
-                            modal.describe_results = Some(results)
-                        }
-                        analysis_modal::AnalysisTool::DistributionAnalysis => {
-                            modal.distribution_results = Some(results)
-                        }
-                        analysis_modal::AnalysisTool::CorrelationMatrix => {
-                            modal.install_correlations(results)
-                        }
-                        analysis_modal::AnalysisTool::DataQuality => {}
-                    }
-                    modal.computing = None;
+                    install(&mut self.analysis_modal, results);
+                    self.analysis_modal.computing = None;
                 }
                 None
             }

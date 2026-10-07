@@ -12,7 +12,6 @@ use ratatui::{
 use crate::analysis_modal::{
     AnalysisFocus, AnalysisTool, AnalysisView, ColumnScroll, HistogramScale,
 };
-use crate::chart_data::{AxisFormat, AxisNumbers};
 use crate::config::Theme;
 use crate::distribution_fit::{FitOutcome, FitTest};
 use crate::glyphs::PlotMarks;
@@ -24,6 +23,7 @@ use crate::statistics::{
 };
 use crate::table::DataTableState;
 use crate::widgets::axes::{AxisSpec, PlotAxes};
+use crate::widgets::axis_numbers::{AxisFormat, AxisNumbers};
 use crate::widgets::ui::Surface;
 use polars::prelude::{AnyValue, DataType};
 
@@ -368,13 +368,13 @@ impl<'a> AnalysisWidget<'a> {
             let qq_width = [lo, (lo + hi) / 2.0, hi]
                 .iter()
                 .filter_map(|&v| qq_format.label(v, 0))
-                .map(|l| l.chars().count())
+                .map(|l| crate::glyphs::display_width(&l))
                 .max()
                 .unwrap_or(1);
             let n = sorted_data.len() as f64;
             let count_width = AxisFormat::new(&[0.0, n], &counts)
                 .label(n, 0)
-                .map_or(1, |l| l.chars().count());
+                .map_or(1, |l| crate::glyphs::display_width(&l));
             let shared_y_axis_label_width = (qq_width.max(count_width) as u16).max(1) + 1;
 
             // Both plots of the selected theoretical distribution, on one x range.
@@ -660,17 +660,17 @@ impl StatisticsTable<'_> {
         // Note: ratatui Table adds 1 space between columns by default, so we don't add extra padding
         let mut min_col_widths: Vec<u16> = stat_display_names
             .iter()
-            .map(|name| name.chars().count() as u16) // header length (no extra padding - table handles spacing)
+            .map(|name| crate::glyphs::display_width(name) as u16) // header length (no extra padding - table handles spacing)
             .collect();
 
         // Scan all data to find maximum width needed for each column
         for col_stat in &results.column_statistics {
             for (stat_idx, stat_name) in stat_names.iter().enumerate() {
                 let value_str = describe_value(col_stat, stat_name, number_format);
-                let value_len = value_str.chars().count() as u16;
+                let value_len = crate::glyphs::display_width(&value_str) as u16;
                 // Ensure width is at least the header length (already initialized) AND value length
                 // This preserves header widths even if all data values are shorter
-                let header_len = stat_display_names[stat_idx].chars().count() as u16;
+                let header_len = crate::glyphs::display_width(stat_display_names[stat_idx]) as u16;
                 min_col_widths[stat_idx] = min_col_widths[stat_idx].max(value_len).max(header_len);
                 // must fit both header and content (no padding - table handles spacing)
             }
@@ -678,11 +678,11 @@ impl StatisticsTable<'_> {
 
         // Locked column width (column name) - calculate from header text AND actual column names
         let header_text = "Column";
-        let header_len = header_text.chars().count() as u16;
+        let header_len = crate::glyphs::display_width(header_text) as u16;
         let max_col_name_len = results
             .column_statistics
             .iter()
-            .map(|cs| cs.name.chars().count() as u16)
+            .map(|cs| crate::glyphs::display_width(&cs.name) as u16)
             .max()
             .unwrap_or(header_len);
         let locked_col_width = max_col_name_len.max(header_len).max(10); // min 10, must fit both header and data (no padding - table handles spacing)
@@ -895,16 +895,16 @@ fn render_distribution_table(
     // Note: ratatui Table adds 1 space between columns by default, so we don't add extra padding
     let mut min_col_widths: Vec<u16> = column_names
         .iter()
-        .map(|name| name.chars().count() as u16) // header length (no extra padding - table handles spacing)
+        .map(|name| crate::glyphs::display_width(name) as u16) // header length (no extra padding - table handles spacing)
         .collect();
 
     // Calculate column name width (for locked column)
     let header_text = "Column";
-    let header_len = header_text.chars().count() as u16;
+    let header_len = crate::glyphs::display_width(header_text) as u16;
     let max_col_name_len = results
         .distribution_analyses
         .iter()
-        .map(|da| da.column_name.chars().count() as u16)
+        .map(|da| crate::glyphs::display_width(&da.column_name) as u16)
         .max()
         .unwrap_or(header_len);
     let locked_col_width = max_col_name_len.max(header_len).max(10);
@@ -917,7 +917,8 @@ fn render_distribution_table(
         .collect();
     for row in &texts {
         for (idx, value) in row.iter().enumerate() {
-            min_col_widths[idx] = min_col_widths[idx].max(value.chars().count() as u16);
+            min_col_widths[idx] =
+                min_col_widths[idx].max(crate::glyphs::display_width(value) as u16);
         }
     }
 

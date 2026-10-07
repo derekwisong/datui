@@ -1966,7 +1966,7 @@ fn parseable_headline(detail: &Detail<'_>, evidence: &mut Vec<String>) -> String
         evidence.push(if examples.is_empty() {
             format!("{} do not parse", count(failed))
         } else {
-            cut(
+            crate::glyphs::fit(
                 &format!(
                     "{} do not parse, such as {}",
                     count(failed),
@@ -2000,7 +2000,7 @@ fn duplicates_headline(detail: &Detail<'_>, evidence: &mut Vec<String>) -> Strin
         evidence.push("Most copied:".to_string());
     }
     for example in &identity.examples {
-        evidence.push(cut(
+        evidence.push(crate::glyphs::fit(
             &format!(
                 "{}{}  {}",
                 crate::glyphs::get().times,
@@ -2083,7 +2083,7 @@ fn unparsed_time_headline(detail: &Detail<'_>, evidence: &mut Vec<String>) -> St
         .results
         .examples_of(ObservationKind::UnparsedTime, &observation.column);
     if !examples.is_empty() {
-        evidence.push(cut(
+        evidence.push(crate::glyphs::fit(
             &format!("Such as {}", examples.join(", ")),
             EXAMPLE_WIDTH,
         ));
@@ -2160,21 +2160,6 @@ fn files_headline(detail: &Detail<'_>, evidence: &mut Vec<String>) -> String {
 /// How wide a line of examples runs before it is cut: a row of many columns would
 /// otherwise wrap over the whole detail.
 const EXAMPLE_WIDTH: usize = 72;
-
-/// `text` cut to `width` display columns, the ellipsis glyph marking the cut.
-fn cut(text: &str, width: usize) -> String {
-    if crate::glyphs::display_width(text) <= width {
-        return text.to_string();
-    }
-    let ellipsis = crate::glyphs::get().ellipsis;
-    format!(
-        "{}{ellipsis}",
-        crate::glyphs::take_columns(
-            text,
-            width.saturating_sub(crate::glyphs::display_width(ellipsis))
-        )
-    )
-}
 
 /// A declared rule's violation, as the intent measured it: the count against what it
 /// is out of, the rule as declared, and what the rows in memory showed of it. A

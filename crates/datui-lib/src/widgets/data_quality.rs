@@ -16,7 +16,7 @@ use crate::quality_trends::{
     GapCheck, GapKind, Gaps, TrendBar, TrendMeasure, TrendRow, TrendView, trend_view,
 };
 use crate::render::context::RenderContext;
-use crate::render::layout::centered_rect;
+use crate::render::layout::dialog_in;
 use crate::table::DataTableState;
 use crate::widgets::ui::{FormValue, Picker, Surface};
 use polars::prelude::{DataType, Schema};
@@ -302,7 +302,7 @@ fn render_header(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buf
                 "  Cancelling: {} {} {}",
                 cancelling.what(),
                 glyphs::get().middot,
-                crate::numfmt::duration(cancelling.since.elapsed().as_secs() as i64)
+                crate::numfmt::clock(cancelling.since.elapsed())
             ),
             Style::default().fg(config.theme.warning()),
         ));
@@ -429,7 +429,7 @@ fn render_setup(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buff
     lines.push(SetupLine::Row(SetupRow::Intervals));
     lines.push(SetupLine::Row(SetupRow::Intent));
     for (note, warn) in column_notes(plan, schema) {
-        for line in crate::widgets::info::wrap_to(&glyphs::dotted(&note), width.saturating_sub(2)) {
+        for line in crate::widgets::info::wrap_to(&note, width.saturating_sub(2)) {
             lines.push(SetupLine::Note(line, warn));
         }
     }
@@ -447,14 +447,14 @@ fn render_setup(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buff
     lines.push(SetupLine::Rule("Read", view.kept.map(|kept| kept.label())));
     let read_start = lines.len();
     for note in read_lines(config) {
-        for line in crate::widgets::info::wrap_to(&glyphs::dotted(&note), width.saturating_sub(2)) {
+        for line in crate::widgets::info::wrap_to(&note, width.saturating_sub(2)) {
             lines.push(SetupLine::Note(line, false));
         }
     }
 
     // The status line keeps the bottom row: why Run waits, or that it would
     // replace the report on screen.
-    let status = setup_status(config).map(|(text, warn)| (glyphs::dotted(&text), warn));
+    let status = setup_status(config);
     let body_height = area.height.saturating_sub(1) as usize;
     // Scrolled only as far as the focused row needs; the read summary, last, is
     // what gives way, and says how much of it is off screen.
@@ -632,7 +632,7 @@ fn setup_value(config: &DataQualityWidgetConfig<'_>, row: SetupRow) -> (String, 
             ("needs an interval to measure".to_string(), true)
         }
         SetupRow::Latency => (
-            crate::analysis_modal::threshold_label(plan.latency_threshold_seconds).to_string(),
+            crate::analysis_modal::threshold_label(plan.latency_threshold_seconds),
             plan.latency_threshold_seconds.is_none(),
         ),
         SetupRow::WindowBy => match (&plan.grain, plan.interval_clock) {
@@ -678,7 +678,10 @@ fn column_notes(plan: &DataQualityPlan, schema: &Schema) -> Vec<(String, bool)> 
     }
     for column in unread {
         notes.push((
-            crate::glyphs::dotted(&format!("{column}: text, no format · set Text as time")),
+            format!(
+                "{column}: text, no format {} set Text as time",
+                glyphs::get().middot
+            ),
             true,
         ));
     }
@@ -691,14 +694,15 @@ fn column_notes(plan: &DataQualityPlan, schema: &Schema) -> Vec<(String, bool)> 
         ));
     } else if !unpaired.is_empty() {
         notes.push((
-            crate::glyphs::dotted(&format!(
-                "In no interval: {} · set Intervals",
+            format!(
+                "In no interval: {} {} set Intervals",
                 unpaired
                     .iter()
                     .map(|role| role.label())
                     .collect::<Vec<_>>()
-                    .join(", ")
-            )),
+                    .join(", "),
+                glyphs::get().middot
+            ),
             true,
         ));
     }
@@ -754,14 +758,11 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
     if view.relabel_only {
         let compare = config.measured.compares_differently(plan);
         let expected = config.measured.expected != plan.expected;
-        lines.push(
-            match (compare, expected) {
-                (true, true) => "Changed: Compare, Expected · no read",
-                (true, false) => "Changed: Compare · no read",
-                _ => "Changed: Expected · no read",
-            }
-            .to_string(),
-        );
+        lines.push(glyphs::dotted(match (compare, expected) {
+            (true, true) => "Changed: Compare, Expected · no read",
+            (true, false) => "Changed: Compare · no read",
+            _ => "Changed: Expected · no read",
+        }));
         return lines;
     }
     if view.cached {
@@ -796,8 +797,9 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
             crate::sampling::SampleMethod::FirstRows => {
                 format!("First {n} rows of the scope")
             }
-            crate::sampling::SampleMethod::PerPartition { column } => crate::glyphs::dotted(
-                &format!("1 pass over every eligible row · {n} kept per {column}"),
+            crate::sampling::SampleMethod::PerPartition { column } => format!(
+                "1 pass over every eligible row {} {n} kept per {column}",
+                glyphs::get().middot
             ),
             _ if scope_rows.is_some_and(|rows| rows <= plan.dataset_rows) => {
                 crate::glyphs::dotted("Every row · scope no larger than the sample")
@@ -824,9 +826,10 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
             _ => "",
         };
         match &view.segment_count {
-            SegmentCount::CountPass => lines.push(crate::glyphs::dotted(&format!(
-                "+1 count of {column} · exact segment totals, kept"
-            ))),
+            SegmentCount::CountPass => lines.push(format!(
+                "+1 count of {column} {} exact segment totals, kept",
+                glyphs::get().middot
+            )),
             SegmentCount::InSamplePass => lines.push(format!(
                 "Segment totals: exact, counted by {column} in that pass"
             )),
@@ -837,10 +840,11 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
                 "Segment totals: summed from earlier {} counts",
                 window_cadence(finer)
             )),
-            SegmentCount::TooMany => lines.push(crate::glyphs::dotted(&format!(
-                "Too many segments {} to count · choose a coarser grain",
-                plan.grain.label()
-            ))),
+            SegmentCount::TooMany => lines.push(format!(
+                "Too many segments {} to count {} choose a coarser grain",
+                plan.grain.label(),
+                glyphs::get().middot
+            )),
             SegmentCount::NotNeeded | SegmentCount::PerValue => {}
         }
     }
@@ -1059,7 +1063,7 @@ fn setup_status(config: &DataQualityWidgetConfig<'_>) -> Option<(String, bool)> 
                 },
                 cancelling.what(),
                 glyphs::get().middot,
-                crate::numfmt::duration(cancelling.since.elapsed().as_secs() as i64)
+                crate::numfmt::clock(cancelling.since.elapsed())
             ),
             true,
         ));
@@ -1772,11 +1776,7 @@ fn render_finding_detail(
         room
     };
     let below = rows.saturating_sub(scroll.offset + shown);
-    let popup = centered_rect(
-        area.inner(ratatui::layout::Margin::new(1, 1)),
-        width,
-        height,
-    );
+    let popup = dialog_in(area, width, height);
     let content = Surface::new(&title)
         .border_style(Style::default().fg(config.ctx.modal_border_active))
         .render(popup, buf, config.ctx);
@@ -1893,11 +1893,7 @@ fn render_evidence_read(
         .unwrap_or(0)
         + 2;
     let lines = field_lines(&rows, label_width, width.saturating_sub(4) as usize, false);
-    let popup = centered_rect(
-        area.inner(ratatui::layout::Margin::new(1, 1)),
-        width,
-        lines.len() as u16 + 2,
-    );
+    let popup = dialog_in(area, width, lines.len() as u16 + 2);
     let content = Surface::new("Read Rows")
         .border_style(Style::default().fg(config.ctx.modal_border_active))
         .render(popup, buf, config.ctx);
@@ -4137,11 +4133,7 @@ fn render_narrow_tool_picker(
         "Correlation Matrix",
         "Data Quality",
     ];
-    let popup = centered_rect(
-        area.inner(ratatui::layout::Margin::new(1, 1)),
-        28,
-        tools.len() as u16 + 2,
-    );
+    let popup = dialog_in(area, 28, tools.len() as u16 + 2);
     let content = Surface::new("Analysis Tools").render(popup, buf, config.ctx);
     Picker::new(tools, sidebar_state.selected(), true)
         .on_click(crate::widgets::ui::Clicks::Tool)
@@ -4154,7 +4146,6 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
     let plan = config.plan;
     let remote = state.is_remote_source();
     let copy = config.setup.copy;
-    let format_bytes = crate::numfmt::bytes;
     let row = |label: &str, value: String| FieldRow {
         mark: None,
         label: label.to_string(),
@@ -4186,12 +4177,12 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
             match copy {
                 CopyPlan::Fetch { bytes, .. } => crate::glyphs::dotted(&format!(
                     "{}, fetched once · passes read the copy",
-                    format_bytes(bytes)
+                    crate::numfmt::bytes(bytes)
                 )),
                 CopyPlan::Kept { bytes, .. } => {
                     format!(
                         "none: every pass reads the local copy ({})",
-                        format_bytes(bytes)
+                        crate::numfmt::bytes(bytes)
                     )
                 }
                 _ if remote => "unknown".to_string(),
@@ -4231,7 +4222,7 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
             match copy {
                 CopyPlan::Fetch { bytes, .. } => crate::glyphs::dotted(&format!(
                     "{} copy in the cache directory · kept until d, reopen or exit",
-                    format_bytes(bytes)
+                    crate::numfmt::bytes(bytes)
                 )),
                 _ => "none".to_string(),
             },
@@ -4249,7 +4240,7 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
                     .iter()
                     .map(|line| line.strip_prefix("Column intent: ").unwrap_or(line))
                     .collect::<Vec<_>>()
-                    .join(" · ")
+                    .join(&format!(" {} ", glyphs::get().middot))
             }
         }),
         row(
@@ -4270,10 +4261,6 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
             },
         ),
     ];
-    let rows = rows.map(|row| FieldRow {
-        value: glyphs::dotted(&row.value),
-        ..row
-    });
     let width = 72.min(area.width.saturating_sub(2));
     let label_width = rows
         .iter()
@@ -4283,11 +4270,7 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
         + 2;
     // The frame and its gutters take four columns of the width.
     let lines = field_lines(&rows, label_width, width.saturating_sub(4) as usize, false);
-    let popup = centered_rect(
-        area.inner(ratatui::layout::Margin::new(1, 1)),
-        width,
-        lines.len() as u16 + 2,
-    );
+    let popup = dialog_in(area, width, lines.len() as u16 + 2);
     let content = Surface::new("Access Plan").render(popup, buf, config.ctx);
     render_counted(lines, content, config.theme, buf);
 }

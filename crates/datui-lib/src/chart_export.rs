@@ -436,34 +436,16 @@ impl Palette {
             hex.or_else(|| parser.parse(value).ok().and_then(Rgb::of))
                 .unwrap_or(fallback)
         };
-        let defaults = [
-            Rgb(0x7d, 0xcf, 0xff),
-            Rgb(0xbb, 0x9a, 0xf7),
-            Rgb(0x9e, 0xce, 0x6a),
-            Rgb(0xe0, 0xaf, 0x68),
-            Rgb(0x7a, 0xa2, 0xf7),
-            Rgb(0xf7, 0x76, 0x8e),
-            Rgb(0xff, 0x9e, 0x64),
-            Rgb(0x1a, 0xbc, 0x9c),
-            Rgb(0xff, 0x5f, 0xd2),
-            Rgb(0xf4, 0xef, 0x8a),
-        ];
-        let configured = [
-            &colors.chart_1,
-            &colors.chart_2,
-            &colors.chart_3,
-            &colors.chart_4,
-            &colors.chart_5,
-            &colors.chart_6,
-            &colors.chart_7,
-            &colors.chart_8,
-            &colors.chart_9,
-            &colors.chart_10,
-        ];
+        fn slot<'a>(slots: &'a [(String, String)], name: &str) -> &'a str {
+            slots.iter().find(|(n, _)| n == name).map_or("", |(_, v)| v)
+        }
+        let ours = colors.slots();
+        let builtin = crate::config::ColorConfig::dark().slots();
         // A color the theme gives two slots draws one series, as on screen.
         let mut series: Vec<Rgb> = Vec::with_capacity(SERIES);
-        for (fallback, value) in defaults.into_iter().zip(configured) {
-            let color = get(value, fallback);
+        for i in 1..=SERIES {
+            let name = format!("chart_{i}");
+            let color = get(slot(&ours, &name), get(slot(&builtin, &name), Rgb(0, 0, 0)));
             if !series.contains(&color) {
                 series.push(color);
             }

@@ -405,7 +405,6 @@ fn a_pivot_is_refused_never_dropped() {
             pivot_column: "group".to_string(),
             value_column: "value".to_string(),
             aggregation: PivotAggregation::First,
-            sort_columns: None,
         })
     };
     let (mut app, rx, tx) = open(parquet("table_sample_pivot.parquet", 400));

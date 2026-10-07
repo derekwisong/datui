@@ -13,13 +13,8 @@
 //! A corrupt stretch is passed over to the next sync marker and counted.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
 use std::sync::Arc;
 
-use color_eyre::Result;
-use color_eyre::eyre::eyre;
-
-use crate::error_display::{FileError, in_file};
 use polars::prelude::*;
 
 use crate::fixed_records::{Bytes, ColumnLayout, Logical, Physical};
@@ -30,7 +25,7 @@ use crate::text_formats::Detail;
 
 /// What datui does with a ULog flight log: see [`crate::readers`].
 pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
-    scan,
+    scan: crate::indexed::scan::<Index>,
     signatures: &[crate::readers::Signature {
         says: |head, _| looks_like(head),
         kind: crate::readers::Kind::Magic,
@@ -39,7 +34,7 @@ pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
             ..crate::readers::EVERYWHERE
         },
     }],
-    tables: Some(listed),
+    tables: Some(crate::indexed::listed::<Index>),
     ..crate::readers::BASE
 };
 
@@ -167,7 +162,7 @@ fn size_of(
     name: &str,
     formats: &HashMap<String, Vec<FieldDef>>,
     depth: usize,
-) -> std::result::Result<usize, String> {
+) -> Result<usize, String> {
     if depth > MAX_DEPTH {
         return Err("types nest too deep".into());
     }
@@ -197,7 +192,7 @@ fn columns_of(
     offset: usize,
     out: &mut Vec<ColumnLayout>,
     depth: usize,
-) -> std::result::Result<usize, String> {
+) -> Result<usize, String> {
     if depth > MAX_DEPTH {
         return Err("types nest too deep".into());
     }
@@ -328,7 +323,7 @@ fn level(byte: u8) -> &'static str {
 }
 
 /// Index the ULog file in `data`: one pass, start to end.
-pub fn index(data: &[u8]) -> std::result::Result<Index, String> {
+pub fn index(data: &[u8]) -> Result<Index, String> {
     if !looks_like(data) {
         return Err("not a ULog file: no ULog magic at the start".into());
     }
@@ -593,248 +588,172 @@ fn find_sync(data: &[u8], from: usize, end: usize) -> Option<usize> {
     memchr::memmem::find(hay, &SYNC).map(|i| from + i + SYNC.len())
 }
 
-/// The log's tables as its indexing pass found them: listed once it has been opened,
-/// and not read here, where the home screen waits.
-pub fn listed(file: &Path) -> Result<Vec<Table>> {
-    crate::indexed::peek::<Index>(file)
-        .map(|index| tables(&index))
-        .ok_or_else(|| eyre!("Open the log to list its tables."))
-}
+impl crate::indexed::Log for Index {
+    const EMPTY: &'static str = " The log has no data messages.";
 
-/// The tables of an indexed log, for the home screen and `--table`.
-pub fn tables(index: &Index) -> Vec<Table> {
-    let mut tables: Vec<Table> = index
-        .names
-        .iter()
-        .map(|(name, id)| Table {
-            name: name.clone(),
-            kind: "topic".to_string(),
-            internal: false,
-            columns: index.topics[id]
-                .columns
-                .iter()
-                .map(|c| (c.name.to_string(), String::new()))
-                .collect(),
-        })
-        .collect();
-    let taken = |name: &str| index.names.iter().any(|(n, _)| n == name);
-    if !index.logged.is_empty() && !taken(LOGGED) {
-        tables.push(Table {
-            name: LOGGED.to_string(),
-            kind: "messages".to_string(),
-            internal: false,
-            columns: ["timestamp", "level", "tag", "message"]
-                .iter()
-                .map(|c| (c.to_string(), String::new()))
-                .collect(),
-        });
+    fn index(data: &[u8]) -> Result<Self, String> {
+        index(data)
     }
-    if !index.parameters.is_empty() && !taken(PARAMETERS) {
-        tables.push(Table {
-            name: PARAMETERS.to_string(),
-            kind: "parameters".to_string(),
-            internal: false,
-            columns: ["name", "type", "value", "timestamp"]
-                .iter()
-                .map(|c| (c.to_string(), String::new()))
-                .collect(),
-        });
-    }
-    tables
-}
 
-/// What the Info panel's ULog tab says.
-pub fn detail(index: &Index) -> Detail {
-    let count = crate::text_formats::count;
-    let mut lines = vec![
-        format!("Version: {}", index.version),
-        format!(
-            "Topics: {}",
-            count(index.names.len() as u64, "table", "tables")
-        ),
-    ];
-    if index.dropouts > 0 {
-        lines.push(format!(
-            "Dropouts: {}, {} ms in all",
-            index.dropouts, index.dropout_ms
-        ));
+    fn tables(&self) -> Vec<Table> {
+        let mut tables: Vec<Table> = self
+            .names
+            .iter()
+            .map(|(name, id)| {
+                let columns = self.topics[id].columns.iter().map(|c| c.name.as_str());
+                Table::plain(name, "topic", columns)
+            })
+            .collect();
+        let taken = |name: &str| self.names.iter().any(|(n, _)| n == name);
+        if !self.logged.is_empty() && !taken(LOGGED) {
+            let columns = ["timestamp", "level", "tag", "message"];
+            tables.push(Table::plain(LOGGED, "messages", columns));
+        }
+        if !self.parameters.is_empty() && !taken(PARAMETERS) {
+            let columns = ["name", "type", "value", "timestamp"];
+            tables.push(Table::plain(PARAMETERS, "parameters", columns));
+        }
+        tables
     }
-    let mut list: Vec<(String, MetaValue)> = index
-        .info
-        .iter()
-        .map(|(k, v)| (k.clone(), MetaValue::Text(v.clone())))
-        .collect();
-    let mut seen = std::collections::HashSet::new();
-    for (name, _, value, at) in &index.parameters {
-        // The value the log started with; later changes are in the parameters table.
-        if at.is_none() && seen.insert(name.clone()) {
-            list.push((
-                format!("param {name}"),
-                MetaValue::Text(format_number(*value)),
+
+    fn detail(&self) -> Detail {
+        let count = crate::text_formats::count;
+        let mut lines = vec![
+            format!("Version: {}", self.version),
+            format!(
+                "Topics: {}",
+                count(self.names.len() as u64, "table", "tables")
+            ),
+        ];
+        if self.dropouts > 0 {
+            lines.push(format!(
+                "Dropouts: {}, {} ms in all",
+                self.dropouts, self.dropout_ms
             ));
         }
-    }
-    let total = list.len();
-    Detail {
-        tab: crate::text_formats::tab(crate::FileFormat::Ulog),
-        lines,
-        list_title: "Info and parameters",
-        list: crate::text_formats::capped_list(list.into_iter(), total),
-        first: false,
-        ..Default::default()
-    }
-}
-
-/// What the Notes tab says of the pass.
-pub fn notes(index: &Index) -> Vec<String> {
-    let group = |n: usize| crate::numfmt::group_chrome(n);
-    let mut notes = Vec::new();
-    if index.damaged > 0 {
-        notes.push(format!(
-            "{} damaged stretches skipped ({} bytes)",
-            group(index.damaged),
-            group(index.skipped)
-        ));
-    }
-    if index.cut_short {
-        notes.push("log cut short mid-message".to_string());
-    }
-    if index.short > 0 {
-        notes.push(format!(
-            "{} data messages left out: too short for their topic",
-            group(index.short)
-        ));
-    }
-    if index.unsubscribed > 0 {
-        notes.push(format!(
-            "{} data messages left out: no subscription",
-            group(index.unsubscribed)
-        ));
-    }
-    if index.past_limit > 0 {
-        notes.push(format!(
-            "{} messages left out: past the first {}",
-            group(index.past_limit),
-            group(crate::indexed::MAX_RECORDS)
-        ));
-    }
-    if index.logged_left_out > 0 {
-        notes.push(format!(
-            "{} logged messages left out: past the first {}",
-            group(index.logged_left_out),
-            group(MAX_LOGGED)
-        ));
-    }
-    for (topic, why) in &index.unread {
-        notes.push(format!("topic {topic} not read: {why}"));
-    }
-    notes
-}
-
-/// The index of the ULog file at `path`, made by one pass or kept from one.
-pub fn indexed(path: &Path) -> Result<(Arc<Bytes>, Arc<Index>)> {
-    let bytes = Arc::new(Bytes::map(path).map_err(|e| in_file(path, e.into()))?);
-    let index = crate::indexed::cached(path, || index(bytes.as_slice()))
-        .map_err(|e| FileError::new(path, e))?;
-    Ok((bytes, index))
-}
-
-/// What opening a ULog file finds.
-pub enum Open {
-    Table {
-        lf: Box<LazyFrame>,
-        opened: Box<crate::members::Opened>,
-    },
-    Several(Vec<String>),
-}
-
-/// Open the ULog file at `path`: the table `wanted` names, its one table, or the list.
-pub fn open(path: &Path, wanted: Option<&str>) -> Result<Open> {
-    let (bytes, index) = indexed(path)?;
-    let tables = tables(&index);
-    let picked = match crate::members::pick(
-        tables.clone(),
-        wanted,
-        path,
-        " The log has no data messages.",
-    )? {
-        crate::sqlite::Pick::One(table) => table.name,
-        crate::sqlite::Pick::Several(tables) => {
-            return Ok(Open::Several(tables.into_iter().map(|t| t.name).collect()));
+        let mut list: Vec<(String, MetaValue)> = self
+            .info
+            .iter()
+            .map(|(k, v)| (k.clone(), MetaValue::Text(v.clone())))
+            .collect();
+        let mut seen = std::collections::HashSet::new();
+        for (name, _, value, at) in &self.parameters {
+            // The value the log started with; later changes are in the parameters table.
+            if at.is_none() && seen.insert(name.clone()) {
+                list.push((
+                    format!("param {name}"),
+                    MetaValue::Text(format_number(*value)),
+                ));
+            }
         }
-    };
-    let mut opened = crate::members::Opened {
-        detail: Some(Arc::new(detail(&index))),
-        other_tables: crate::members::others(&tables, &picked),
-        notes: notes(&index)
-            .into_iter()
-            .map(|n| crate::text_formats::note(n, "the log".to_string()))
-            .collect(),
-        ..Default::default()
-    };
-    let lf = if let Some((_, id)) = index.names.iter().find(|(n, _)| *n == picked) {
-        let topic = &index.topics[id];
-        let records = Arc::new(
-            IndexedRecords::new(bytes, topic.offsets.clone(), topic.columns.clone())
-                .map_err(|e| FileError::new(path, format!("table \"{picked}\": {e}")))?,
-        );
-        opened.window = Some((records.clone(), records.rows()));
-        records.lazy()
-    } else if picked == LOGGED {
-        let (mut time, mut lvl, mut tag, mut text) =
-            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        for (t, l, g, m) in &index.logged {
-            time.push(*t as i64);
-            lvl.push(*l);
-            tag.push(*g);
-            text.push(m.as_str());
+        let total = list.len();
+        Detail {
+            tab: crate::text_formats::tab(crate::FileFormat::Ulog),
+            lines,
+            list_title: "Info and parameters",
+            list: crate::text_formats::capped_list(list.into_iter(), total),
+            first: false,
+            ..Default::default()
         }
-        df!(
+    }
+
+    fn notes(&self) -> Vec<String> {
+        let group = |n: usize| crate::numfmt::group_chrome(n);
+        let mut notes = Vec::new();
+        if self.damaged > 0 {
+            notes.push(format!(
+                "{} damaged stretches skipped ({} bytes)",
+                group(self.damaged),
+                group(self.skipped)
+            ));
+        }
+        if self.cut_short {
+            notes.push("log cut short mid-message".to_string());
+        }
+        if self.short > 0 {
+            notes.push(format!(
+                "{} data messages left out: too short for their topic",
+                group(self.short)
+            ));
+        }
+        if self.unsubscribed > 0 {
+            notes.push(format!(
+                "{} data messages left out: no subscription",
+                group(self.unsubscribed)
+            ));
+        }
+        if self.past_limit > 0 {
+            notes.push(format!(
+                "{} messages left out: past the first {}",
+                group(self.past_limit),
+                group(crate::indexed::MAX_RECORDS)
+            ));
+        }
+        if self.logged_left_out > 0 {
+            notes.push(format!(
+                "{} logged messages left out: past the first {}",
+                group(self.logged_left_out),
+                group(MAX_LOGGED)
+            ));
+        }
+        for (topic, why) in &self.unread {
+            notes.push(format!("topic {topic} not read: {why}"));
+        }
+        notes
+    }
+
+    fn table(
+        &self,
+        bytes: Arc<Bytes>,
+        name: &str,
+        opened: &mut crate::members::Opened,
+    ) -> Result<LazyFrame, String> {
+        Ok(
+            if let Some((_, id)) = self.names.iter().find(|(n, _)| *n == name) {
+                let topic = &self.topics[id];
+                let records = Arc::new(
+                    IndexedRecords::new(bytes, topic.offsets.clone(), topic.columns.clone())
+                        .map_err(|e| format!("table \"{name}\": {e}"))?,
+                );
+                opened.window = Some((records.clone(), records.rows()));
+                records.lazy()
+            } else if name == LOGGED {
+                let (mut time, mut lvl, mut tag, mut text) =
+                    (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+                for (t, l, g, m) in &self.logged {
+                    time.push(*t as i64);
+                    lvl.push(*l);
+                    tag.push(*g);
+                    text.push(m.as_str());
+                }
+                df!(
             "timestamp" => Int64Chunked::from_vec("timestamp".into(), time).into_duration(TimeUnit::Microseconds).into_series(),
             "level" => lvl,
             "tag" => tag,
             "message" => text,
-        )?
+        )
+        .map_err(|e| e.to_string())?
         .lazy()
-    } else {
-        let (mut name, mut kind, mut value, mut time) =
-            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        for (n, k, v, t) in &index.parameters {
-            name.push(n.as_str());
-            kind.push(*k);
-            value.push(*v);
-            time.push(t.map(|t| t as i64));
-        }
-        df!(
+            } else {
+                let (mut name, mut kind, mut value, mut time) =
+                    (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+                for (n, k, v, t) in &self.parameters {
+                    name.push(n.as_str());
+                    kind.push(*k);
+                    value.push(*v);
+                    time.push(t.map(|t| t as i64));
+                }
+                df!(
             "name" => name,
             "type" => kind,
             "value" => value,
             "timestamp" => time.into_iter().collect::<Int64Chunked>().into_duration(TimeUnit::Microseconds).into_series(),
-        )?
+        )
+        .map_err(|e| e.to_string())?
         .lazy()
-    };
-    Ok(Open::Table {
-        lf: Box::new(lf),
-        opened: Box::new(opened),
-    })
-}
-
-/// The scan of a ULog log: the table `--table` names, or its only one, decoded from
-/// the file where it is shown; or none yet when it has several. The pass that indexes
-/// the log is kept, so a table chosen from the list reads nothing again.
-fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
-    let file = input.path();
-    Ok(match open(file, input.options.table.as_deref())? {
-        Open::Table { lf, opened } => {
-            input.report.opened = Some(Arc::new(*opened));
-            (*lf).into()
-        }
-        Open::Several(tables) => crate::scan::Scan::Tables {
-            file: file.to_path_buf(),
-            tables,
-            format: input.format,
-        },
-    })
+            },
+        )
+    }
 }
 
 #[cfg(test)]

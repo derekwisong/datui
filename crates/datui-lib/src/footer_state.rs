@@ -240,7 +240,7 @@ impl App {
             .and_then(|i| self.home.sections.get(i))
             .is_some_and(|s| s.grouped_by_place);
         let waiting = self.home.listing_in_flight || self.home.awaiting_listing().is_some();
-        if waiting && self.home.visible().is_empty() {
+        if waiting && self.home.row_count() == 0 {
             footer.work = Some("Looking...".to_string());
         } else {
             footer

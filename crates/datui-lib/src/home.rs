@@ -222,8 +222,71 @@ fn within(url: &str, root: &str) -> bool {
 /// Whether two locations are one place, however a trailing slash or an Azure URL is
 /// spelled.
 fn same_place(a: &Path, b: &Path) -> bool {
-    let (a, b) = (a.to_string_lossy(), b.to_string_lossy());
-    within(&a, &b) && within(&b, &a)
+    place_key(a) == place_key(b)
+}
+
+/// A location as [`same_place`] compares it: two places are one when their keys are
+/// equal.
+fn place_key(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    #[cfg(feature = "cloud")]
+    {
+        crate::source::canonical_cloud_place(&text)
+    }
+    #[cfg(not(feature = "cloud"))]
+    {
+        text.trim_end_matches('/').to_string()
+    }
+}
+
+/// The catalogs' datasets and bookmarks by place, for the lookups every drawn row
+/// makes. Built with each listing, from the catalogs it was built for.
+#[derive(Debug, Default)]
+pub struct CatalogPlaces {
+    /// Catalog and dataset, by [`place_key`]: the first listed of two at one place.
+    datasets: std::collections::HashMap<String, (usize, usize)>,
+    /// Catalog, dataset and bookmark, by [`place_key`].
+    bookmarks: std::collections::HashMap<String, (usize, usize, usize)>,
+    /// How many datasets and bookmarks the catalogs held. Catalogs replaced since
+    /// with a different count are scanned instead until the next listing.
+    counted: (usize, usize),
+}
+
+impl CatalogPlaces {
+    fn of(catalogs: &[ShownCatalog]) -> Self {
+        let mut places = CatalogPlaces {
+            counted: Self::count(catalogs),
+            ..Default::default()
+        };
+        for (c, catalog) in catalogs.iter().enumerate() {
+            for (d, dataset) in catalog.datasets.iter().enumerate() {
+                places
+                    .datasets
+                    .entry(place_key(&dataset.location))
+                    .or_insert((c, d));
+                for (b, (_, place)) in dataset.bookmarks.iter().enumerate() {
+                    places
+                        .bookmarks
+                        .entry(place_key(place))
+                        .or_insert((c, d, b));
+                }
+            }
+        }
+        places
+    }
+
+    fn count(catalogs: &[ShownCatalog]) -> (usize, usize) {
+        let datasets = catalogs.iter().flat_map(|c| c.datasets.iter());
+        (
+            datasets.clone().count(),
+            datasets.map(|d| d.bookmarks.len()).sum(),
+        )
+    }
+
+    /// Whether the index answers for `catalogs`: a lookup it misses is a miss.
+    fn indexes(&self, catalogs: &[ShownCatalog]) -> bool {
+        self.counted == Self::count(catalogs)
+    }
 }
 
 /// What is left of `url` below `root`, which it is [`within`].
@@ -1217,6 +1280,8 @@ pub enum Row<'a> {
         entry: &'a Entry,
         /// Drawn two cells in, under the place row above it.
         nested: bool,
+        /// How it answers the filter, for the marks the row is drawn with.
+        hit: Hit,
     },
     /// The directory or prefix the entries below it live in, under `RECENT`.
     Place {
@@ -1260,6 +1325,98 @@ impl Row<'_> {
             | Row::Hidden { section, .. } => *section,
         }
     }
+}
+
+/// How a row answers the filter: its score, and the characters that matched, in its
+/// name or, for a row the filter found by a column, in that column's name.
+///
+/// Worked out once, when the rows are listed, so drawing them scores nothing.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Hit {
+    pub score: i32,
+    /// Character positions to mark: in the name, or in the matched column's name.
+    pub positions: std::sync::Arc<[usize]>,
+    /// Index into the entry's `columns` of the column that matched, when the name did
+    /// not.
+    pub column: Option<usize>,
+}
+
+impl Hit {
+    /// The column that matched, when the name did not.
+    pub fn column_of<'a>(&self, entry: &'a Entry) -> Option<&'a str> {
+        self.column
+            .and_then(|i| entry.columns.get(i))
+            .map(String::as_str)
+    }
+}
+
+/// [`HomeState::visible`]'s rows, kept until something they are built from changes.
+///
+/// Every pass over the list reads them: the frame, the passes that pick what on screen
+/// to look into, the cursor and the preview. Building them scores every row against
+/// the filter and sorts each section. [`HomeState`]'s own methods that change rows
+/// drop the rows built; the fields that code elsewhere sets directly (the filter, the
+/// sort, the folds) are compared on every read.
+#[derive(Debug, Default)]
+pub struct RowsCache {
+    built: std::cell::RefCell<Option<View>>,
+    builds: std::cell::Cell<usize>,
+}
+
+/// The rows as last built, and what they were built from.
+#[derive(Debug)]
+struct View {
+    key: ViewKey,
+    slots: Vec<Slot>,
+    /// See [`HomeState::has_any_dataset`].
+    has_dataset: bool,
+}
+
+/// The fields of [`HomeState`] the rows depend on that are not changed through its
+/// methods alone, and the shape of the sections, so a stale index can never be read.
+#[derive(Debug, PartialEq)]
+struct ViewKey {
+    filter: String,
+    sort: SortMode,
+    hide_unreadable: bool,
+    recent_expanded: bool,
+    view_height: usize,
+    browsing: Option<PathBuf>,
+    folds: std::collections::HashMap<String, bool>,
+    shape: Vec<(usize, bool)>,
+}
+
+impl ViewKey {
+    fn of(home: &HomeState) -> Self {
+        ViewKey {
+            filter: home.filter.clone(),
+            sort: home.sort,
+            hide_unreadable: home.hide_unreadable,
+            recent_expanded: home.recent_expanded,
+            view_height: home.view_height,
+            browsing: home.browsing.clone(),
+            folds: home.folds.clone(),
+            shape: (home.sections.iter())
+                .map(|s| (s.rows.len(), s.door.is_some()))
+                .collect(),
+        }
+    }
+}
+
+/// A built row, by index into the sections for the rows that are entries.
+#[derive(Debug)]
+enum Slot {
+    /// A row that holds no entry, as it is drawn.
+    Plain(Row<'static>),
+    Entry {
+        section: usize,
+        index: usize,
+        nested: bool,
+        hit: Hit,
+    },
+    Door {
+        section: usize,
+    },
 }
 
 /// The place a recent lives in: its directory, or its prefix in an object store.
@@ -1316,10 +1473,6 @@ pub struct HomeState {
     pub filter_selected: bool,
     /// The most search matches listed under `Found`: `[home.search] max_results`.
     pub search_limit: usize,
-    /// The filter `Found`'s rows were scored for, and the score of each of its first
-    /// rows, in order. Listing a thousand matches scored each of them again on every
-    /// pass over the rows, several per frame.
-    pub found_scores: Option<(String, Vec<i32>)>,
     /// Leave out files datui has no reader for. `Ctrl+A` flips it; they are hidden by
     /// default.
     pub hide_unreadable: bool,
@@ -1365,7 +1518,7 @@ pub struct HomeState {
     /// so the last file is still one Enter away.
     pub newest_recent: Option<PathBuf>,
     /// Network roots whose listing has come back, keyed by path.
-    pub probed: std::collections::HashMap<PathBuf, Vec<Entry>>,
+    pub probed: std::collections::HashMap<PathBuf, std::sync::Arc<[Entry]>>,
     /// Network roots that did not answer.
     pub unreachable: std::collections::HashSet<PathBuf>,
     /// The rows of network directories still being listed, read so far.
@@ -1456,6 +1609,10 @@ pub struct HomeState {
     /// The cursor is where [`HomeState::select_first_entry`] put it, and the user has not
     /// moved it since: a door the footers turn down afterwards takes it to the first row.
     pub landing: bool,
+    /// The rows as last listed. See [`RowsCache`].
+    pub rows_cache: RowsCache,
+    /// The catalogs' places, as of the last listing.
+    pub catalog_places: CatalogPlaces,
 }
 
 /// Where the cursor was in a listing the user went inside from.
@@ -1575,7 +1732,8 @@ impl Default for HomeState {
             missing: Default::default(),
             filter: String::new(),
             search_limit: crate::config::SearchConfig::default().max_results,
-            found_scores: None,
+            rows_cache: RowsCache::default(),
+            catalog_places: CatalogPlaces::default(),
             hide_unreadable: true,
             formats: Default::default(),
             lake_here: None,
@@ -1631,7 +1789,7 @@ pub struct ListingRequest {
     pub recents: Vec<PathBuf>,
     pub desktop_dirs: Vec<PathBuf>,
     pub browsing: Option<PathBuf>,
-    pub probed: std::collections::HashMap<PathBuf, Vec<Entry>>,
+    pub probed: std::collections::HashMap<PathBuf, std::sync::Arc<[Entry]>>,
     pub unreachable: std::collections::HashSet<PathBuf>,
     /// Rows of network directories still being listed. See [`HomeState::listing_so_far`].
     pub listing_so_far: std::collections::HashMap<PathBuf, Vec<Entry>>,
@@ -1806,10 +1964,14 @@ pub fn measured_from(probe: &Entry, original: &Entry) -> Measured {
 
 /// A row a completed probe already produced for this exact path, if any.
 fn probed_entry(
-    probed: &std::collections::HashMap<PathBuf, Vec<Entry>>,
+    probed: &std::collections::HashMap<PathBuf, std::sync::Arc<[Entry]>>,
     path: &Path,
 ) -> Option<Entry> {
-    probed.values().flatten().find(|e| e.path == path).cloned()
+    probed
+        .values()
+        .flat_map(|rows| rows.iter())
+        .find(|e| e.path == path)
+        .cloned()
 }
 
 /// Build the home listing.
@@ -1906,8 +2068,8 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         let (mut rows, truncated) = if remote {
             let rows = probed
                 .get(&dir)
-                .or_else(|| listing_so_far.get(&dir))
-                .cloned()
+                .map(|rows| rows.to_vec())
+                .or_else(|| listing_so_far.get(&dir).cloned())
                 .unwrap_or_default();
             (rows, cut_short.contains(&dir))
         } else if database {
@@ -2115,8 +2277,8 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             truncated = cut_short.contains(&root.path);
             probed
                 .get(&root.path)
-                .or_else(|| listing_so_far.get(&root.path))
-                .cloned()
+                .map(|rows| rows.to_vec())
+                .or_else(|| listing_so_far.get(&root.path).cloned())
                 .unwrap_or_default()
         } else if root.available {
             let scan = discover::scan_dir_specs(&root.path, formats);
@@ -2620,16 +2782,30 @@ pub fn facts_for(entry: &Entry) -> Option<(PathBuf, crate::cache::DatasetFacts)>
 /// Higher is better, as in fzf — see [`crate::fuzzy`] for why datui scores the way
 /// that program does.
 pub fn match_score(filter: &str, entry: &Entry) -> Option<i32> {
+    match crate::fuzzy::best_match(filter, &entry.name) {
+        Some(m) => Some(m.score),
+        // Ranked below every name match, so column hits are an addition to what the
+        // filter did rather than a dilution of it. Column matching is a substring test,
+        // which has no score of its own worth comparing.
+        None => matching_column(filter, entry).map(|_| -COLUMN_MATCH_PENALTY),
+    }
+}
+
+/// [`match_score`], with what the row is marked by when drawn.
+pub fn match_hit(filter: &str, entry: &Entry) -> Option<Hit> {
     if let Some(m) = crate::fuzzy::best_match(filter, &entry.name) {
-        return Some(m.score);
+        return Some(Hit {
+            score: m.score,
+            positions: m.positions.into(),
+            column: None,
+        });
     }
-    if filter.is_empty() {
-        return Some(0);
-    }
-    // Ranked below every name match, so column hits are an addition to what the
-    // filter did rather than a dilution of it. Column matching is a substring test,
-    // which has no score of its own worth comparing.
-    matching_column(filter, entry).map(|_| -COLUMN_MATCH_PENALTY)
+    let index = matching_column_index(filter, entry)?;
+    Some(Hit {
+        score: -COLUMN_MATCH_PENALTY,
+        positions: substring_positions(filter, &entry.columns[index]).into(),
+        column: Some(index),
+    })
 }
 
 /// Distance by which a column match sits below any name match.
@@ -2642,6 +2818,10 @@ const COLUMN_MATCH_PENALTY: i32 = 1_000_000;
 /// Substring rather than subsequence: a column name is short and specific, and a
 /// fuzzy match over dozens of them matches nearly everything.
 pub fn matching_column<'a>(filter: &str, entry: &'a Entry) -> Option<&'a str> {
+    matching_column_index(filter, entry).map(|i| entry.columns[i].as_str())
+}
+
+fn matching_column_index(filter: &str, entry: &Entry) -> Option<usize> {
     if filter.is_empty() {
         return None;
     }
@@ -2649,8 +2829,7 @@ pub fn matching_column<'a>(filter: &str, entry: &'a Entry) -> Option<&'a str> {
     entry
         .columns
         .iter()
-        .find(|c| c.to_lowercase().contains(&needle))
-        .map(|c| c.as_str())
+        .position(|c| c.to_lowercase().contains(&needle))
 }
 
 /// Character positions in `haystack` that `needle` matched, for highlighting.
@@ -2802,6 +2981,8 @@ impl HomeState {
             name_by_spec(&self.formats, &mut section.rows);
         }
         self.sections = listing.sections;
+        self.catalog_places = CatalogPlaces::of(&self.catalogs);
+        self.changed();
         self.missing = listing.missing;
         // Browsing, the first section is the directory browsed.
         if let (Some(browsing), Some((dir, format))) = (&self.browsing, &self.lake_here)
@@ -3022,7 +3203,7 @@ impl HomeState {
     /// `scroll` still says four hundred, and the first batch is spent on rows nobody
     /// is looking at.
     fn follow_selection(&mut self) {
-        let rows = self.visible().len();
+        let rows = self.row_count();
         self.scroll = settle_top(self.scroll, self.selected, self.view_height, rows);
     }
 
@@ -3116,18 +3297,9 @@ impl HomeState {
     /// anywhere to go, not how many datasets there are, which is what the control bar's
     /// count asks and answers differently.
     pub fn has_any_dataset(&self) -> bool {
-        self.sections
-            .iter()
-            .flat_map(|s| s.rows.iter())
-            .any(|e| e.kind.is_dataset() || e.kind.is_lake_table())
+        self.view().has_dataset
     }
 
-    /// Lines currently on screen: a header per non-empty section, followed by its
-    /// matching rows unless it is collapsed.
-    ///
-    /// Results stay grouped even while filtering. Ranking them across sections would
-    /// read better as a hit list, but it costs the one thing the grouping is for —
-    /// seeing *where* a dataset lives — and a name on its own rarely says that.
     /// Title of the section holding recursive search results.
     ///
     /// A constant because collapse state is keyed by title, and because the renderer
@@ -3258,21 +3430,43 @@ impl HomeState {
 
     /// The catalog dataset listed at `path` itself.
     pub fn catalog_dataset(&self, path: &Path) -> Option<(&ShownCatalog, &ShownDataset)> {
+        let places = &self.catalog_places;
+        if places.indexes(&self.catalogs) {
+            let key = place_key(path);
+            let &(c, d) = places.datasets.get(&key)?;
+            let catalog = self.catalogs.get(c)?;
+            if let Some(dataset) = catalog.datasets.get(d)
+                && place_key(&dataset.location) == key
+            {
+                return Some((catalog, dataset));
+            }
+        }
         self.catalogs
             .iter()
             .flat_map(|c| c.datasets.iter().map(move |d| (c, d)))
-            .find(|(_, d)| d.location == path || same_place(&d.location, path))
+            .find(|(_, d)| same_place(&d.location, path))
     }
 
     /// The dataset a bookmark is listed under, and the bookmark's name.
     pub fn bookmark(&self, path: &Path) -> Option<(&ShownDataset, &str)> {
+        let places = &self.catalog_places;
+        if places.indexes(&self.catalogs) {
+            let key = place_key(path);
+            let &(c, d, b) = places.bookmarks.get(&key)?;
+            if let Some(dataset) = self.catalogs.get(c).and_then(|c| c.datasets.get(d))
+                && let Some((name, place)) = dataset.bookmarks.get(b)
+                && place_key(place) == key
+            {
+                return Some((dataset, name.as_str()));
+            }
+        }
         self.catalogs
             .iter()
             .flat_map(|c| c.datasets.iter())
             .find_map(|d| {
                 d.bookmarks
                     .iter()
-                    .find(|(_, place)| place == path || same_place(place, path))
+                    .find(|(_, place)| same_place(place, path))
                     .map(|(name, _)| (d, name.as_str()))
             })
     }
@@ -3434,7 +3628,7 @@ impl HomeState {
     /// matches is not a home screen.
     pub fn sync_search_section(&mut self) {
         self.sections.retain(|s| s.title != Self::SEARCH_SECTION);
-        self.found_scores = None;
+        self.changed();
 
         if self.filter.is_empty() {
             return;
@@ -3517,10 +3711,6 @@ impl HomeState {
                     .collect()
             })
             .unwrap_or_default();
-        let found_scores = Some((
-            self.filter.clone(),
-            kept.iter().map(|&(_, s)| s).collect::<Vec<i32>>(),
-        ));
         let mut rows: Vec<Entry> = kept.into_iter().map(|(e, _)| e.clone()).collect();
         rows.extend(cloud_rows);
 
@@ -3534,7 +3724,6 @@ impl HomeState {
 
         let subtitle = self.found_subtitle(rows.is_empty());
 
-        self.found_scores = found_scores;
         self.sections.push(Section {
             title: Self::SEARCH_SECTION.to_string(),
             subtitle: Some(subtitle),
@@ -3722,36 +3911,107 @@ impl HomeState {
         self.settle_return();
     }
 
-    pub fn visible(&self) -> Vec<Row<'_>> {
-        self.rows(true)
-    }
-
-    /// Every row a section would show, with the cap on `RECENT` lifted.
+    /// Lines currently on screen: a header per non-empty section, followed by its
+    /// matching rows unless it is collapsed.
     ///
-    /// For counting what is listed. The header says thirty and the `more` row says
-    /// twenty-seven more, so the control bar must not say three.
-    pub fn listed(&self) -> Vec<Row<'_>> {
-        self.rows(false)
+    /// Results stay grouped even while filtering. Ranking them across sections would
+    /// read better as a hit list, but it costs the one thing the grouping is for —
+    /// seeing *where* a dataset lives — and a name on its own rarely says that.
+    pub fn visible(&self) -> Vec<Row<'_>> {
+        let view = self.view();
+        view.slots.iter().map(|slot| self.row(slot)).collect()
     }
 
-    fn rows(&self, capped: bool) -> Vec<Row<'_>> {
-        let mut out: Vec<Row<'_>> = Vec::new();
+    /// How many rows [`HomeState::visible`] lists.
+    pub fn row_count(&self) -> usize {
+        self.view().slots.len()
+    }
+
+    /// Row `index` of [`HomeState::visible`].
+    pub fn row_at(&self, index: usize) -> Option<Row<'_>> {
+        self.view().slots.get(index).map(|slot| self.row(slot))
+    }
+
+    /// How many times the rows have been built, for the test that each frame builds
+    /// them at most once.
+    pub fn rows_built(&self) -> usize {
+        self.rows_cache.builds.get()
+    }
+
+    /// The rows have changed under the cache: built again on the next read.
+    fn changed(&mut self) {
+        *self.rows_cache.built.get_mut() = None;
+    }
+
+    /// The sections, to change in place. The rows are listed again from them on the
+    /// next read.
+    pub fn sections_mut(&mut self) -> &mut Vec<Section> {
+        self.changed();
+        &mut self.sections
+    }
+
+    fn view(&self) -> std::cell::Ref<'_, View> {
+        let fresh = self
+            .rows_cache
+            .built
+            .borrow()
+            .as_ref()
+            .is_some_and(|view| view.key == ViewKey::of(self));
+        if !fresh {
+            let view = self.build_view();
+            self.rows_cache.builds.set(self.rows_cache.builds.get() + 1);
+            *self.rows_cache.built.borrow_mut() = Some(view);
+        }
+        std::cell::Ref::map(self.rows_cache.built.borrow(), |view| {
+            view.as_ref().expect("built above")
+        })
+    }
+
+    fn row<'a>(&'a self, slot: &Slot) -> Row<'a> {
+        match slot {
+            Slot::Plain(row) => row.clone(),
+            Slot::Entry {
+                section,
+                index,
+                nested,
+                hit,
+            } => Row::Entry {
+                section: *section,
+                entry: &self.sections[*section].rows[*index],
+                nested: *nested,
+                hit: hit.clone(),
+            },
+            Slot::Door { section } => Row::Door {
+                section: *section,
+                entry: self.sections[*section]
+                    .door
+                    .as_ref()
+                    .expect("the shape says it has a door"),
+            },
+        }
+    }
+
+    fn build_view(&self) -> View {
+        View {
+            key: ViewKey::of(self),
+            slots: self.slots(),
+            has_dataset: self
+                .sections
+                .iter()
+                .flat_map(|s| s.rows.iter())
+                .any(|e| e.kind.is_dataset() || e.kind.is_lake_table()),
+        }
+    }
+
+    fn slots(&self) -> Vec<Slot> {
+        let mut out: Vec<Slot> = Vec::new();
         for (si, section) in self.sections.iter().enumerate() {
-            let scored = self
-                .found_scores
-                .as_ref()
-                .filter(|(query, _)| section.title == Self::SEARCH_SECTION && *query == self.filter)
-                .map(|(_, scores)| scores.as_slice())
-                .unwrap_or_default();
-            let mut matched: Vec<(&Entry, i32)> = section
+            let mut matched: Vec<(usize, Hit)> = section
                 .rows
                 .iter()
                 .enumerate()
                 .filter(|(_, row)| !(self.hide_unreadable && row.hidden_by_default()))
-                .filter_map(|(i, row)| match scored.get(i) {
-                    Some(&score) => Some((row, score)),
-                    None => match_score(&self.filter, row).map(|s| (row, s)),
-                })
+                .filter_map(|(i, row)| match_hit(&self.filter, row).map(|hit| (i, hit)))
                 .collect();
 
             // A section with nothing to show is dropped, unless it is standing in for
@@ -3797,22 +4057,24 @@ impl HomeState {
             // An often-opened row is lifted by its frecency, up to a few characters'
             // worth of match: of two files `sales` finds, the one opened most comes
             // first (#547 M9).
+            let entry = |i: usize| &section.rows[i];
             if !self.filter.is_empty() {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_secs())
                     .unwrap_or_default();
-                let lifted = |entry: &Entry, score: i32| {
+                let lifted = |i: usize, score: i32| {
                     let frecency = self
                         .visits
-                        .get(&entry.path)
+                        .get(&entry(i).path)
                         .map_or(0.0, |v| v.frecency(now));
                     score.saturating_add((frecency.min(10.0) * FRECENCY_LIFT) as i32)
                 };
-                matched.sort_by(|(a, sa), (b, sb)| {
-                    lifted(b, *sb)
-                        .cmp(&lifted(a, *sa))
-                        .then_with(|| a.name.len().cmp(&b.name.len()))
+                matched.sort_by_cached_key(|(i, hit)| {
+                    (
+                        std::cmp::Reverse(lifted(*i, hit.score)),
+                        entry(*i).name.len(),
+                    )
                 });
             }
 
@@ -3822,15 +4084,16 @@ impl HomeState {
             match self.sort {
                 SortMode::Natural => {}
                 SortMode::Size => {
-                    matched.sort_by_key(|(e, _)| std::cmp::Reverse(e.size.unwrap_or(0)));
+                    matched.sort_by_key(|(i, _)| std::cmp::Reverse(entry(*i).size.unwrap_or(0)));
                 }
                 SortMode::Rows => {
-                    matched.sort_by_key(|(e, _)| std::cmp::Reverse(e.rows.unwrap_or(0)));
+                    matched.sort_by_key(|(i, _)| std::cmp::Reverse(entry(*i).rows.unwrap_or(0)));
                 }
                 SortMode::Modified => {
-                    matched.sort_by_key(|(e, _)| {
+                    matched.sort_by_key(|(i, _)| {
                         std::cmp::Reverse(
-                            e.modified
+                            entry(*i)
+                                .modified
                                 .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
                                 .map(|d| d.as_secs())
                                 .unwrap_or(0),
@@ -3840,7 +4103,7 @@ impl HomeState {
             }
 
             let collapsed = self.section_folded(section);
-            out.push(Row::Header {
+            out.push(Slot::Plain(Row::Header {
                 section: si,
                 // What the section holds, which the door is not: it is a way to open the
                 // directory those rows are in, so counting it would make a directory of
@@ -3848,7 +4111,7 @@ impl HomeState {
                 // take it back out.
                 matches: matched.len(),
                 collapsed,
-            });
+            }));
             if collapsed {
                 continue;
             }
@@ -3859,34 +4122,30 @@ impl HomeState {
             // fuzzy filter matches for most of the alphabet — `sal` found it beside
             // `sales.parquet` — so it steps out of the way and comes back when the
             // filter is cleared.
-            if let Some(door) = section.door.as_ref()
-                && self.filter.is_empty()
-            {
-                out.push(Row::Door {
-                    section: si,
-                    entry: door,
-                });
+            if has_door {
+                out.push(Slot::Door { section: si });
             }
             if section.grouped_by_place {
-                out.extend(self.rows_by_place(si, section, &matched, capped));
+                self.slots_by_place(si, section, &matched, &mut out);
             } else {
                 // A bookmark sits under its dataset while the rows keep the
                 // catalog's order.
-                let in_order = self.sort == SortMode::Natural && self.filter.is_empty();
-                out.extend(matched.into_iter().map(|(entry, _)| Row::Entry {
+                let in_order = self.sort == SortMode::Natural
+                    && self.filter.is_empty()
+                    && section.origin.is_some_and(is_catalog_origin)
+                    && section.root.is_none();
+                out.extend(matched.into_iter().map(|(index, hit)| Slot::Entry {
                     section: si,
-                    entry,
-                    nested: in_order
-                        && section.origin.is_some_and(is_catalog_origin)
-                        && section.root.is_none()
-                        && self.bookmark(&entry.path).is_some(),
+                    index,
+                    nested: in_order && self.bookmark(&entry(index).path).is_some(),
+                    hit,
                 }));
             }
             if hidden > 0 {
-                out.push(Row::Hidden {
+                out.push(Slot::Plain(Row::Hidden {
                     section: si,
                     count: hidden,
-                });
+                }));
             }
         }
         out
@@ -3905,27 +4164,26 @@ impl HomeState {
     /// is a `[home] recent_rows` setting, not a different fraction. A filter shows
     /// every match, and the `more` row goes with the cap: a match that is hidden is
     /// not a match.
-    fn rows_by_place<'a>(
+    fn slots_by_place(
         &self,
         si: usize,
-        section: &'a Section,
-        matched: &[(&'a Entry, i32)],
-        capped: bool,
-    ) -> Vec<Row<'a>> {
-        let mut order: Vec<PathBuf> = Vec::new();
-        for row in &section.rows {
-            let place = place_of(&row.path);
+        section: &Section,
+        matched: &[(usize, Hit)],
+        out: &mut Vec<Slot>,
+    ) {
+        let places: Vec<PathBuf> = section.rows.iter().map(|row| place_of(&row.path)).collect();
+        let mut order: Vec<&PathBuf> = Vec::new();
+        for place in &places {
             if !order.contains(&place) {
                 order.push(place);
             }
         }
-        let groups: Vec<(PathBuf, Vec<&'a Entry>)> = order
+        let groups: Vec<(&PathBuf, Vec<&(usize, Hit)>)> = order
             .into_iter()
             .filter_map(|place| {
-                let rows: Vec<&'a Entry> = matched
+                let rows: Vec<&(usize, Hit)> = matched
                     .iter()
-                    .filter(|(entry, _)| place_of(&entry.path) == place)
-                    .map(|(entry, _)| *entry)
+                    .filter(|(i, _)| places[*i] == *place)
                     .collect();
                 (!rows.is_empty()).then_some((place, rows))
             })
@@ -3933,10 +4191,8 @@ impl HomeState {
 
         // Before the first frame there is no height to budget against, and a listing
         // built for a caller with no screen is asked for whole.
-        let capped =
-            capped && !self.recent_expanded && self.filter.is_empty() && self.view_height > 0;
+        let capped = !self.recent_expanded && self.filter.is_empty() && self.view_height > 0;
         let budget = self.view_height / 3;
-        let mut out: Vec<Row<'a>> = Vec::new();
         let mut used = 0usize;
         let mut shown = 0usize;
         for (place, rows) in &groups {
@@ -3944,35 +4200,31 @@ impl HomeState {
             if capped && shown > 0 && used + cost > budget {
                 break;
             }
-            out.push(Row::Place {
+            out.push(Slot::Plain(Row::Place {
                 section: si,
-                path: place.clone(),
-                label: section.place_labels.get(place).cloned(),
+                path: (*place).clone(),
+                label: section.place_labels.get(*place).cloned(),
                 // Every row in a place is on the filesystem the place is, so the first
                 // speaks for it. Filled in by `annotate` from the mount table.
-                source: rows[0].cost.source.clone(),
-                held: section
-                    .rows
-                    .iter()
-                    .filter(|row| place_of(&row.path) == *place)
-                    .count(),
-            });
-            out.extend(rows.iter().map(|entry| Row::Entry {
+                source: section.rows[rows[0].0].cost.source.clone(),
+                held: places.iter().filter(|p| p == place).count(),
+            }));
+            out.extend(rows.iter().map(|(index, hit)| Slot::Entry {
                 section: si,
-                entry,
+                index: *index,
                 nested: true,
+                hit: hit.clone(),
             }));
             used += cost;
             shown += 1;
         }
         if shown < groups.len() {
-            out.push(Row::More {
+            out.push(Slot::Plain(Row::More {
                 section: si,
                 hidden: groups[shown..].iter().map(|(_, rows)| rows.len()).sum(),
                 places: groups.len() - shown,
-            });
+            }));
         }
-        out
     }
 
     /// The names the `~` prompt offers: those in the directory being typed that its
@@ -4076,7 +4328,7 @@ impl HomeState {
         }
         for (root, rows) in &self.probed {
             add(root);
-            for row in rows {
+            for row in rows.iter() {
                 add(&row.path);
             }
         }
@@ -4093,7 +4345,7 @@ impl HomeState {
 
     /// The highlighted row, whatever it is.
     pub fn selected_row(&self) -> Option<Row<'_>> {
-        self.visible().into_iter().nth(self.selected)
+        self.row_at(self.selected)
     }
 
     /// The highlighted row, when it is a dataset rather than a section header.
@@ -4102,17 +4354,15 @@ impl HomeState {
     /// cursor is on. What it must not be is a row in a path-keyed map, which is why it
     /// is [`Row::Door`] and not an entry among the section's rows.
     pub fn selected_entry(&self) -> Option<Entry> {
-        match self.visible().get(self.selected) {
-            Some(Row::Entry { entry, .. }) | Some(Row::Door { entry, .. }) => {
-                Some((*entry).clone())
-            }
+        match self.selected_row()? {
+            Row::Entry { entry, .. } | Row::Door { entry, .. } => Some(entry.clone()),
             _ => None,
         }
     }
 
     /// Whether the cursor is on the door rather than on something in the directory.
     pub fn selection_is_the_door(&self) -> bool {
-        matches!(self.visible().get(self.selected), Some(Row::Door { .. }))
+        matches!(self.selected_row(), Some(Row::Door { .. }))
     }
 
     /// The recents that live in `place`: what `Delete` on its row forgets.
@@ -4128,7 +4378,7 @@ impl HomeState {
 
     /// The section the highlighted row belongs to.
     pub fn selected_section(&self) -> Option<usize> {
-        self.visible().get(self.selected).map(|r| r.section())
+        self.selected_row().map(|r| r.section())
     }
 
     /// Whether the highlighted row is a section header.
@@ -4145,7 +4395,7 @@ impl HomeState {
     }
 
     pub fn selection_is_header(&self) -> bool {
-        matches!(self.visible().get(self.selected), Some(Row::Header { .. }))
+        matches!(self.selected_row(), Some(Row::Header { .. }))
     }
 
     /// Remote roots that have neither answered nor been written off.
@@ -4232,7 +4482,7 @@ impl HomeState {
         self.probe_errors.remove(&root);
         self.listing_so_far.remove(&root);
         self.cut_short.remove(&root);
-        self.probed.insert(root.clone(), rows);
+        self.probed.insert(root.clone(), rows.into());
         self.apply_cloud_kinds(&root);
     }
 
@@ -4241,7 +4491,8 @@ impl HomeState {
         let Some(rows) = self.probed.get_mut(root) else {
             return;
         };
-        for row in rows.iter_mut() {
+        // Copied only when a listing being built still holds these rows.
+        for row in std::sync::Arc::make_mut(rows).iter_mut() {
             if row.kind == EntryKind::Directory
                 && let Some((kind, holds)) = self.cloud_kinds.get(&row.path)
             {
@@ -4273,24 +4524,9 @@ impl HomeState {
         if limit == 0 {
             return Vec::new();
         }
-        let rows = self.visible();
-        let height = if self.view_height == 0 {
-            limit
-        } else {
-            self.view_height
-        };
-        let top = self.scroll.min(rows.len());
-        let ahead = top.saturating_add(2 * height).min(rows.len());
-        let behind = top.saturating_sub(height);
-
+        let view = self.view();
         let mut out: Vec<PathBuf> = Vec::new();
-        let order = std::iter::once(self.selected)
-            .chain(top..ahead)
-            .chain(behind..top);
-        for row in order.filter_map(|i| rows.get(i)) {
-            let Row::Entry { entry, .. } = row else {
-                continue;
-            };
+        for entry in self.entries_near_cursor(&view, limit) {
             // A directory in an object store, by its URL: `read_dir` on an `s3://` path
             // asks the working directory about a file called `s3:` and truthfully finds
             // nothing, which is why these have a pass of their own.
@@ -4358,11 +4594,9 @@ impl HomeState {
     /// The interface thread decides *what* is worth measuring — it knows what is
     /// visible — and a worker does the reading.
     pub fn unmeasured_visible(&self, limit: usize) -> Vec<Entry> {
+        let view = self.view();
         let mut out = Vec::new();
-        for row in self.visible() {
-            let Row::Entry { entry, .. } = row else {
-                continue;
-            };
+        for entry in view.slots.iter().filter_map(|slot| self.entry_of(slot)) {
             if entry.rows.is_some() || self.enriched.contains_key(&entry.path) {
                 continue;
             }
@@ -4432,27 +4666,9 @@ impl HomeState {
         if limit == 0 {
             return Vec::new();
         }
-        let rows = self.visible();
-        // Before the first frame there is no height to go on. The top of the list is
-        // where the viewport is about to be, and a batch's worth of it is the most
-        // that pass could use anyway.
-        let height = if self.view_height == 0 {
-            limit
-        } else {
-            self.view_height
-        };
-        let top = self.scroll.min(rows.len());
-        let ahead = top.saturating_add(2 * height).min(rows.len());
-        let behind = top.saturating_sub(height);
-
+        let view = self.view();
         let mut out: Vec<Entry> = Vec::new();
-        let order = std::iter::once(self.selected)
-            .chain(top..ahead)
-            .chain(behind..top);
-        for row in order.filter_map(|i| rows.get(i)) {
-            let Row::Entry { entry, .. } = row else {
-                continue;
-            };
+        for entry in self.entries_near_cursor(&view, limit) {
             if entry.kind != EntryKind::Unknown || self.missing.contains(&entry.path) {
                 continue;
             }
@@ -4475,12 +4691,45 @@ impl HomeState {
             if out.iter().any(|e| e.path == entry.path) {
                 continue;
             }
-            out.push((*entry).clone());
+            out.push(entry.clone());
             if out.len() >= limit {
                 break;
             }
         }
         out
+    }
+
+    /// The entry rows on or near the screen: the highlighted row first, then the rest
+    /// of the screen, the screen below and the screen above.
+    fn entries_near_cursor<'a>(
+        &'a self,
+        view: &'a View,
+        limit: usize,
+    ) -> impl Iterator<Item = &'a Entry> + 'a {
+        // Before the first frame there is no height to go on. The top of the list is
+        // where the viewport is about to be, and a batch's worth of it is the most
+        // that pass could use anyway.
+        let height = if self.view_height == 0 {
+            limit
+        } else {
+            self.view_height
+        };
+        let rows = view.slots.len();
+        let top = self.scroll.min(rows);
+        let ahead = top.saturating_add(2 * height).min(rows);
+        let behind = top.saturating_sub(height);
+        std::iter::once(self.selected)
+            .chain(top..ahead)
+            .chain(behind..top)
+            .filter_map(|i| self.entry_of(view.slots.get(i)?))
+    }
+
+    /// The entry a row shows, when it is an entry row.
+    fn entry_of(&self, slot: &Slot) -> Option<&Entry> {
+        match slot {
+            Slot::Entry { section, index, .. } => Some(&self.sections[*section].rows[*index]),
+            _ => None,
+        }
     }
 
     /// Fold known measurements into the rows currently listed.
@@ -4518,10 +4767,11 @@ impl HomeState {
                 door.name = door_name(door, &section.rows);
             }
         }
+        self.changed();
         // Landed on a door the footers have since turned down, and not moved: the cursor
         // goes where it would have landed had they been read first.
         if self.landing
-            && let Some(Row::Door { entry, .. }) = self.visible().get(self.selected)
+            && let Some(Row::Door { entry, .. }) = self.row_at(self.selected)
             && !door_lands(entry)
         {
             self.selected = self.landing_row();
@@ -4571,7 +4821,7 @@ impl HomeState {
     }
 
     pub fn clamp_selection(&mut self) {
-        let n = self.visible().len();
+        let n = self.row_count();
         if n == 0 {
             self.selected = 0;
         } else if self.selected >= n {
@@ -4581,7 +4831,7 @@ impl HomeState {
 
     /// Put the selection on row `index` of what is listed, as a click does.
     pub fn select(&mut self, index: usize) {
-        if index < self.visible().len() {
+        if index < self.row_count() {
             self.returning = None;
             self.landing = false;
             self.selected = index;
@@ -4591,7 +4841,7 @@ impl HomeState {
     pub fn move_selection(&mut self, delta: isize) {
         self.returning = None;
         self.landing = false;
-        let n = self.visible().len();
+        let n = self.row_count();
         if n == 0 {
             return;
         }
@@ -4606,7 +4856,7 @@ impl HomeState {
     pub fn page_selection(&mut self, delta: isize) {
         self.returning = None;
         self.landing = false;
-        let n = self.visible().len();
+        let n = self.row_count();
         if n == 0 {
             return;
         }
@@ -5004,7 +5254,7 @@ mod holds_flow_tests {
         row.holds = counted(15);
 
         let mut home = HomeState::default();
-        home.probed.insert(root.clone(), vec![row]);
+        home.probed.insert(root.clone(), vec![row].into());
         home.cloud_kinds.insert(path, in_flight());
         home.apply_cloud_kinds(&root);
 
@@ -5089,7 +5339,7 @@ mod holds_flow_tests {
         row.holds = counted(15);
 
         let mut home = HomeState::default();
-        home.probed.insert(root.clone(), vec![row]);
+        home.probed.insert(root.clone(), vec![row].into());
         home.cloud_kinds
             .insert(path, (EntryKind::MultiFile, counted(40)));
         home.apply_cloud_kinds(&root);
@@ -5110,7 +5360,7 @@ mod holds_flow_tests {
         row.holds = counted(40);
 
         let mut home = HomeState::default();
-        home.probed.insert(root.clone(), vec![row]);
+        home.probed.insert(root.clone(), vec![row].into());
         home.cloud_kinds
             .insert(settled, (EntryKind::Directory, counted(1)));
         home.apply_cloud_kinds(&root);

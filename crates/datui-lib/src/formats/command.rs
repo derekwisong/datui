@@ -531,7 +531,7 @@ fn check_dbc(dbc: &Arc<crate::dbc::Dbc>, file: Option<&Path>) -> Result<String, 
         |out: &str, e: &dyn std::fmt::Display| format!("{out}error: {}: {e}\n", file.display());
     let read = std::sync::atomic::AtomicU64::new(0);
     let mut bytes = Vec::new();
-    crate::gps::open_reader(file, &crate::OpenOptions::default(), &read)
+    crate::text_formats::open_reader(file, &crate::OpenOptions::default(), &read)
         .and_then(|mut reader| reader.read_to_end(&mut bytes).map_err(Into::into))
         .map_err(|e| failed(&out, &e))?;
     let index = crate::candump::index(&bytes).map_err(|e| failed(&out, &e))?;
@@ -578,7 +578,7 @@ fn check_fix(
         return Ok(out);
     };
     let read = std::sync::atomic::AtomicU64::new(0);
-    let mut reader = crate::gps::open_reader(file, &crate::OpenOptions::default(), &read)
+    let mut reader = crate::text_formats::open_reader(file, &crate::OpenOptions::default(), &read)
         .map_err(|e| format!("{out}error: {}: {e}\n", file.display()))?;
     let mut log = crate::fix::FixReader::new(crate::fix::dict::Layers::new(vec![dict.clone()]));
     let mut chunk = vec![0u8; 1 << 16];

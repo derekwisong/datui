@@ -68,18 +68,15 @@ pub fn variant_tables(spec: &crate::formats::Spec) -> Vec<Table> {
         fields
             .iter()
             .filter_map(|f| f.name.clone())
-            .map(|name| (name, String::new()))
             .collect::<Vec<_>>()
     };
     let common = named(&spec.records.fields);
     spec.records
         .variants
         .iter()
-        .map(|v| Table {
-            name: v.name.clone(),
-            kind: "record type".to_string(),
-            internal: false,
-            columns: common.iter().cloned().chain(named(&v.fields)).collect(),
+        .map(|v| {
+            let columns = common.iter().cloned().chain(named(&v.fields));
+            Table::plain(&v.name, "record type", columns)
         })
         .collect()
 }
@@ -199,6 +196,52 @@ pub struct Opened {
     pub numbering: Option<std::sync::Arc<crate::lines::Lines>>,
 }
 
+impl Opened {
+    /// The open of `picked`, one of a file's `tables`: its Info panel tab, the file's
+    /// other tables, and `notes`, each said of `scope` ("the log").
+    pub fn for_table(
+        detail: crate::text_formats::Detail,
+        tables: &[Table],
+        picked: &str,
+        notes: Vec<String>,
+        scope: &str,
+    ) -> Self {
+        Self {
+            detail: Some(std::sync::Arc::new(detail)),
+            other_tables: others(tables, picked),
+            notes: notes
+                .into_iter()
+                .map(|n| crate::text_formats::note(n, scope.to_string()))
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    /// The scan of `lf`, the table opened, with this reported beside it.
+    pub(crate) fn scan(
+        self,
+        input: crate::readers::ScanIn<'_>,
+        lf: polars::prelude::LazyFrame,
+    ) -> crate::scan::Scan {
+        input.report.opened = Some(std::sync::Arc::new(self));
+        lf.into()
+    }
+}
+
+/// The scan of a file of several `tables` when `--table` named none: the list to pick
+/// from.
+pub(crate) fn several(input: &crate::readers::ScanIn<'_>, tables: Vec<Table>) -> crate::scan::Scan {
+    crate::scan::Scan::Tables {
+        file: input.path().to_path_buf(),
+        tables: tables
+            .into_iter()
+            .filter(|t| !t.internal)
+            .map(|t| t.name)
+            .collect(),
+        format: input.format,
+    }
+}
+
 impl std::fmt::Debug for Opened {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Opened")
@@ -284,12 +327,7 @@ fields = [{ name = "b", type = "u1" }]"#,
 
     #[test]
     fn pick_names_what_is_there() {
-        let t = |name: &str| Table {
-            name: name.into(),
-            kind: "array".into(),
-            internal: false,
-            columns: Vec::new(),
-        };
+        let t = |name: &str| Table::plain(name, "array", Vec::<String>::new());
         let display = Path::new("run.npz");
         let several = vec![t("x"), t("y")];
         assert!(matches!(

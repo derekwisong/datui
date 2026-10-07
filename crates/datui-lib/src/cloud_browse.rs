@@ -1625,42 +1625,17 @@ async fn list_gcs_buckets(source: &Source) -> Result<Vec<String>, String> {
     })?;
     let bearer = google_bearer(source).await?;
 
-    let mut buckets = Vec::new();
-    let mut page_token: Option<String> = None;
-    // Bounded rather than "while there is a token". A paginating API that keeps
-    // handing back a token is a loop, and this runs on a worker nobody is watching.
-    for _ in 0..MAX_BUCKET_PAGES {
+    let mut buckets = crate::cloud_command::paged(MAX_BUCKET_PAGES, |token| {
         let mut url = format!(
             "https://storage.googleapis.com/storage/v1/b?project={}&maxResults=1000",
             urlencode(project)
         );
-        if let Some(token) = &page_token {
+        if let Some(token) = token {
             url.push_str(&format!("&pageToken={}", urlencode(token)));
         }
-        let mut response = http_agent()
-            .get(&url)
-            .config()
-            .http_status_as_error(false)
-            .build()
-            .header("Authorization", &format!("Bearer {bearer}"))
-            .call()
-            .map_err(|e| format!("{e}"))?;
-        let status = response.status().as_u16();
-        let body = response
-            .body_mut()
-            .read_to_string()
-            .map_err(|e| format!("could not read the response: {e}"))?;
-        if status != 200 {
-            return Err(crate::gcloud::describe_error(status, &body));
-        }
-
-        buckets.extend(parse_gcs_buckets(&body)?);
-        match gcs_next_page_token(&body) {
-            Some(token) => page_token = Some(token),
-            None => break,
-        }
-    }
-
+        let body = crate::gcloud::get(&url, &bearer)?;
+        Ok((parse_gcs_buckets(&body)?, gcs_next_page_token(&body)))
+    })?;
     buckets.sort();
     Ok(buckets)
 }

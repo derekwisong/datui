@@ -355,22 +355,15 @@ pub fn identity_token(
     }
 }
 
-/// Tokens by scope, kept until shortly before they expire so `az`, which is slow to
-/// start, runs once an hour rather than once per request.
-type TokenCache = Mutex<HashMap<String, (String, Option<SystemTime>)>>;
-
-fn tokens() -> &'static TokenCache {
-    static TOKENS: OnceLock<TokenCache> = OnceLock::new();
+/// Tokens by scope or login, until shortly before they expire.
+fn tokens() -> &'static crate::cloud_command::Expiring<String> {
+    static TOKENS: OnceLock<crate::cloud_command::Expiring<String>> = OnceLock::new();
     TOKENS.get_or_init(Default::default)
 }
 
 /// A token for `scope` from the signed-in `az`.
 pub fn token(scope: &str, env: &Environment<'_>) -> Result<String, String> {
-    if let Some((token, _)) = tokens().lock().ok().and_then(|t| {
-        t.get(scope).cloned().filter(|(_, expires)| {
-            expires.is_none_or(|at| at > SystemTime::now() + Duration::from_secs(5 * 60))
-        })
-    }) {
+    if let Some(token) = tokens().get(scope) {
         return Ok(token);
     }
     let output = (env.run)(
@@ -393,10 +386,7 @@ pub fn token(scope: &str, env: &Environment<'_>) -> Result<String, String> {
     })?;
     let (token, expires) =
         parse_token(&output).ok_or_else(|| "az returned no token".to_string())?;
-    crate::logging::keep_out_of_log(&token);
-    if let Ok(mut cached) = tokens().lock() {
-        cached.insert(scope.to_string(), (token.clone(), expires));
-    }
+    cache_token(scope, token.clone(), expires);
     Ok(token)
 }
 
@@ -435,7 +425,7 @@ $out | ConvertTo-Json -Compress";
 /// are cached.
 fn powershell_token(scope: &str, env: &Environment<'_>) -> Result<String, String> {
     let key = |scope: &str| format!("powershell {scope}");
-    if let Some(token) = cached_token(&key(scope)) {
+    if let Some(token) = tokens().get(&key(scope)) {
         return Ok(token);
     }
     let args = [
@@ -500,7 +490,7 @@ fn service_principal_token(
     env: &Environment<'_>,
 ) -> Result<String, String> {
     let key = format!("sp {} {} {scope}", sp.tenant, sp.client_id);
-    if let Some(token) = cached_token(&key) {
+    if let Some(token) = tokens().get(&key) {
         return Ok(token);
     }
     let mut form: Vec<(&str, String)> = vec![
@@ -564,7 +554,7 @@ fn service_principal_token(
 /// service. Only reached when the platform or `instance_identity` allows it.
 fn managed_identity_token(scope: &str, env: &Environment<'_>) -> Result<String, String> {
     let key = format!("managed {scope}");
-    if let Some(token) = cached_token(&key) {
+    if let Some(token) = tokens().get(&key) {
         return Ok(token);
     }
     let resource = crate::cloud_browse::urlencode(scope.trim_end_matches(".default"));
@@ -635,21 +625,9 @@ pub fn parse_entra_token(text: &str) -> Option<(String, SystemTime)> {
     (!token.is_empty()).then_some((token, expires))
 }
 
-fn cached_token(key: &str) -> Option<String> {
-    tokens().lock().ok().and_then(|t| {
-        t.get(key)
-            .filter(|(_, expires)| {
-                expires.is_none_or(|at| at > SystemTime::now() + Duration::from_secs(5 * 60))
-            })
-            .map(|(token, _)| token.clone())
-    })
-}
-
 fn cache_token(key: &str, token: String, expires: Option<SystemTime>) {
     crate::logging::keep_out_of_log(&token);
-    if let Ok(mut cached) = tokens().lock() {
-        cached.insert(key.to_string(), (token, expires));
-    }
+    tokens().put(key, token, expires);
 }
 
 /// Account keys fetched after a 403, by account. In memory only: never cached to disk,
@@ -860,12 +838,10 @@ pub fn discover_accounts(
     env: &Environment<'_>,
 ) -> Result<Vec<Account>, String> {
     let token = identity_token(identity, MANAGEMENT_SCOPE, env)?;
-    let mut accounts = Vec::new();
-    let mut skip_token: Option<String> = None;
-    for _ in 0..MAX_ACCOUNT_PAGES {
+    crate::cloud_command::paged(MAX_ACCOUNT_PAGES, |skip| {
         let mut options = serde_json::json!({ "$top": 1000 });
-        if let Some(skip) = &skip_token {
-            options["$skipToken"] = serde_json::Value::String(skip.clone());
+        if let Some(skip) = skip {
+            options["$skipToken"] = serde_json::Value::String(skip.to_string());
         }
         let body = serde_json::json!({ "query": ACCOUNTS_QUERY, "options": options });
         let text = crate::cloud_browse::http_agent()
@@ -877,14 +853,8 @@ pub fn discover_accounts(
             .body_mut()
             .read_to_string()
             .map_err(|e| format!("could not read the response: {e}"))?;
-        let (page, next) = parse_accounts(&text)?;
-        accounts.extend(page);
-        match next {
-            Some(next) => skip_token = Some(next),
-            None => break,
-        }
-    }
-    Ok(accounts)
+        parse_accounts(&text)
+    })
 }
 
 /// The accounts in one Resource Graph response, and the token for the next page.
@@ -934,24 +904,16 @@ pub fn parse_accounts(text: &str) -> Result<(Vec<Account>, Option<String>), Stri
 /// Containers in one account. `settings` must already hold a token or key, not `AzCli`.
 pub fn list_containers(account: &str, settings: &AzureSettings) -> Result<Vec<String>, String> {
     let endpoint = settings.blob_endpoint_for(account);
-    let mut names = Vec::new();
-    let mut marker: Option<String> = None;
-    for _ in 0..MAX_ACCOUNT_PAGES {
+    let mut names = crate::cloud_command::paged(MAX_ACCOUNT_PAGES, |marker| {
         let mut url = format!("{endpoint}?comp=list&maxresults=5000");
-        if let Some(marker) = &marker {
+        if let Some(marker) = marker {
             url.push_str(&format!(
                 "&marker={}",
                 crate::cloud_browse::urlencode(marker)
             ));
         }
-        let text = send_signed(&url, account, settings)?;
-        let (page, next) = parse_containers(&text)?;
-        names.extend(page);
-        match next {
-            Some(next) => marker = Some(next),
-            None => break,
-        }
-    }
+        parse_containers(&send_signed(&url, account, settings)?)
+    })?;
     names.sort();
     Ok(names)
 }

@@ -11,8 +11,8 @@ use crate::cloud_browse::Environment;
 use crate::cloud_command::CommandError;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, SystemTime};
+use std::sync::OnceLock;
+use std::time::SystemTime;
 
 /// One profile, merged from the config and credentials files.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -250,13 +250,10 @@ pub struct Credentials {
 
 /// Temporary credentials by profile, so a command runs once per expiry rather than once
 /// per open.
-fn cached() -> &'static Mutex<HashMap<String, Credentials>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, Credentials>>> = OnceLock::new();
+fn cached() -> &'static crate::cloud_command::Expiring<Credentials> {
+    static CACHE: OnceLock<crate::cloud_command::Expiring<Credentials>> = OnceLock::new();
     CACHE.get_or_init(Default::default)
 }
-
-/// A credential this close to expiring is fetched again rather than used.
-const REFRESH_BEFORE_EXPIRY: Duration = Duration::from_secs(5 * 60);
 
 /// The keys for `profile`: straight from the files, from its `credential_process`, or
 /// from the AWS CLI. Runs commands, so only ever call it from a worker.
@@ -273,15 +270,7 @@ pub fn credentials(profile: &Profile, env: &Environment<'_>) -> Result<Credentia
         });
     }
 
-    if let Some(fresh) = cached()
-        .lock()
-        .ok()
-        .and_then(|c| c.get(&profile.name).cloned())
-        .filter(|c| {
-            c.expires
-                .is_none_or(|at| at > SystemTime::now() + REFRESH_BEFORE_EXPIRY)
-        })
-    {
+    if let Some(fresh) = cached().get(&profile.name) {
         return Ok(fresh);
     }
 
@@ -317,9 +306,7 @@ pub fn credentials(profile: &Profile, env: &Environment<'_>) -> Result<Credentia
 
     let fresh = parse_process_output(&output)
         .ok_or_else(|| format!("profile {}: credentials were not readable", profile.name))?;
-    if let Ok(mut cache) = cached().lock() {
-        cache.insert(profile.name.clone(), fresh.clone());
-    }
+    cached().put(&profile.name, fresh.clone(), fresh.expires);
     Ok(fresh)
 }
 

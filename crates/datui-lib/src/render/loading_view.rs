@@ -80,7 +80,7 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderContex
         )));
         let mut detail = crate::home::display_path(path);
         if size > 0 {
-            detail = format!("{detail}   {}", crate::discover::format_size(size));
+            detail = format!("{detail}   {}", crate::numfmt::bytes(size));
         }
         lines.push(Line::from(Span::styled(
             truncate_start(&detail, area.width as usize),
@@ -337,6 +337,6 @@ mod tests {
         let text = cells(&buf);
         assert!(text.contains("Reading schema"), "phase missing: {text:?}");
         assert!(text.contains("quarterly.parquet"), "file missing: {text:?}");
-        assert!(text.contains("2.0 KB"), "size missing: {text:?}");
+        assert!(text.contains("2.0 KiB"), "size missing: {text:?}");
     }
 }

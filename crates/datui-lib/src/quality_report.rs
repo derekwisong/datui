@@ -1720,7 +1720,7 @@ pub fn coverage(
                 .push(format!("at least {} traversed", count(reads.rows)));
         }
         if let Some(copy) = reads.copy {
-            let bytes = crate::widgets::info::format_bytes(copy.bytes);
+            let bytes = crate::numfmt::bytes(copy.bytes);
             coverage.rows.push(if copy.fetched {
                 format!("passes read a local copy, fetched once ({bytes})")
             } else {

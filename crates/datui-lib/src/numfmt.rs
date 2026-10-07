@@ -345,6 +345,22 @@ impl NumberFormat {
     }
 }
 
+/// A byte count in binary units: `512 B`, `1.2 MiB`, and whole from 100 up, `340 MiB`.
+pub fn bytes(n: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = n as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    match unit {
+        0 => format!("{n} B"),
+        _ if value >= 100.0 => format!("{value:.0} {}", UNITS[unit]),
+        _ => format!("{value:.1} {}", UNITS[unit]),
+    }
+}
+
 /// Comma-group a count for the application's own chrome — the control bar's
 /// row count, info-panel totals, and similar labels.
 ///
@@ -630,6 +646,16 @@ pub fn system_locale_tag() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bytes_are_binary_units_whole_from_100_up() {
+        assert_eq!(bytes(0), "0 B");
+        assert_eq!(bytes(512), "512 B");
+        assert_eq!(bytes(1536), "1.5 KiB");
+        assert_eq!(bytes(3 << 20), "3.0 MiB");
+        assert_eq!(bytes(340 << 20), "340 MiB");
+        assert_eq!(bytes(5 << 40), "5.0 TiB");
+    }
 
     fn fmt_i64(nf: &NumberFormat, v: i64) -> String {
         let mut s = String::new();

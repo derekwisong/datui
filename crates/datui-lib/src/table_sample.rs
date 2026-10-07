@@ -193,7 +193,7 @@ impl MemoryCheck {
         if estimate <= room {
             return None;
         }
-        let bytes = |n: u64| crate::widgets::info::format_bytes(n);
+        let bytes = |n: u64| crate::numfmt::bytes(n);
         let against = match self.limit {
             Limit::Fixed(limit) => format!("more than {MEMORY_SETTING} ({})", bytes(limit)),
             _ => format!("more than the {} available now", bytes(room)),
@@ -226,7 +226,7 @@ impl MemoryCheck {
             };
             format!(
                 "Sample stopped at {} ({} rows): {why}; -c {MEMORY_SETTING}=0 draws on",
-                crate::widgets::info::format_bytes(held),
+                crate::numfmt::bytes(held),
                 crate::numfmt::group_chrome(rows)
             )
         })

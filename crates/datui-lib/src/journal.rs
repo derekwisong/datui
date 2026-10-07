@@ -138,7 +138,7 @@ fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
     let detail = summary(&lf).map_err(|e| failed(&e))?;
     let mut notes = Vec::new();
     if left_out > 0 {
-        let size = crate::widgets::info::format_bytes;
+        let size = crate::numfmt::bytes;
         notes.push(crate::text_formats::note(
             format!(
                 "{} left out: past the first {} {} limits.journal_bytes raises it",

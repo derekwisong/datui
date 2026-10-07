@@ -19478,7 +19478,7 @@ fn test_info_panel_reads_the_file_facts_off_the_ui_thread() {
     app.render(area, &mut buf);
     let text = rendered_text(&buf);
     assert!(
-        text.contains(&datui::widgets::info::format_bytes(size)),
+        text.contains(&datui::numfmt::bytes(size)),
         "the Resources tab shows the file's size; got:\n{text}"
     );
 

@@ -1,13 +1,6 @@
 use super::*;
 use crate::data_quality::fixtures::measure;
 
-#[test]
-fn byte_estimates_use_binary_units() {
-    assert_eq!(approximate_bytes(512), "about 512 B");
-    assert_eq!(approximate_bytes(2 * 1024), "about 2.0 KiB");
-    assert_eq!(approximate_bytes(3 * 1024 * 1024), "about 3.0 MiB");
-}
-
 /// A value that fits keeps its spaces; one that does not wraps under itself.
 #[test]
 fn field_values_keep_their_spaces_and_wrap_under_themselves() {

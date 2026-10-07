@@ -83,8 +83,8 @@ pub fn detail(meta: &FileMetadata) -> Detail {
         }
         lines.push(format!(
             "Compressed: {} of {} ({:.1}{times}), {}",
-            crate::widgets::info::format_bytes(comp),
-            crate::widgets::info::format_bytes(uncomp),
+            crate::numfmt::bytes(comp),
+            crate::numfmt::bytes(uncomp),
             uncomp as f64 / comp as f64,
             codecs.join(", ")
         ));

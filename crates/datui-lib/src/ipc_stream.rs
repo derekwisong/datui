@@ -391,9 +391,9 @@ fn room(needs: u64, free: Option<u64>, dir: &Path) -> Result<()> {
     match free {
         Some(free) if free < needs => Err(eyre!(
             "Converting the Arrow stream needs {} free in {}, which has {}. {ELSEWHERE}",
-            crate::discover::format_size(needs),
+            crate::numfmt::bytes(needs),
             dir.display(),
-            crate::discover::format_size(free),
+            crate::numfmt::bytes(free),
         )),
         _ => Ok(()),
     }
@@ -804,7 +804,7 @@ pub(crate) mod tests {
         assert!(room(10, None, dir).is_ok(), "free space unknown");
         let error = room(2 << 30, Some(1 << 30), dir).unwrap_err().to_string();
         assert!(
-            error.contains("needs 2.0 GB free in /scratch, which has 1.0 GB"),
+            error.contains("needs 2.0 GiB free in /scratch, which has 1.0 GiB"),
             "{error}"
         );
         assert!(error.contains("--temp-dir"), "{error}");

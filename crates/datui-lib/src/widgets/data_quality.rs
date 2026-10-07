@@ -79,7 +79,7 @@ impl KeptRows {
         let middot = glyphs::get().middot;
         let copy = format!(
             "local copy {middot} {}",
-            crate::widgets::info::format_bytes(self.copy_bytes)
+            crate::numfmt::bytes(self.copy_bytes)
         );
         if self.samples == 0 {
             return copy;
@@ -88,7 +88,7 @@ impl KeptRows {
             "{} {} kept {middot} {}",
             numfmt::group_chrome(self.rows),
             if self.rows == 1 { "row" } else { "rows" },
-            crate::widgets::info::format_bytes(self.bytes as u64)
+            crate::numfmt::bytes(self.bytes as u64)
         );
         let rows = if self.samples > 1 {
             format!("{} samples, {rows}", numfmt::group_chrome(self.samples))
@@ -882,7 +882,7 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
 /// A full scan's first lines in Read: one pass per check, over the source, over a
 /// local copy fetched first, or over one fetched earlier, and why no copy where none.
 fn copy_lines(view: &SetupView<'_>, passes: usize) -> Vec<String> {
-    let bytes = crate::widgets::info::format_bytes;
+    let bytes = crate::numfmt::bytes;
     let over_source =
         format!("Every eligible row · up to {passes} passes over the source, 1 per check");
     match view.copy {
@@ -959,7 +959,7 @@ fn copy_transfer(copy: CopyPlan, state: &DataTableState) -> Option<String> {
     match copy {
         CopyPlan::Fetch { bytes, .. } => Some(format!(
             "{}, one request per object{conflicts}",
-            crate::widgets::info::format_bytes(bytes)
+            crate::numfmt::bytes(bytes)
         )),
         CopyPlan::Kept { .. } if conflicts.is_empty() => Some("none".to_string()),
         CopyPlan::Kept { .. } => Some("only the conflict reads".to_string()),
@@ -4149,7 +4149,7 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
     let plan = config.plan;
     let remote = state.is_remote_source();
     let copy = config.setup.copy;
-    let format_bytes = crate::widgets::info::format_bytes;
+    let format_bytes = crate::numfmt::bytes;
     let row = |label: &str, value: String| FieldRow {
         mark: None,
         label: label.to_string(),
@@ -4392,11 +4392,9 @@ pub(crate) fn planned_read_label(state: &DataTableState, plan: &DataQualityPlan)
         && plan.method != crate::sampling::SampleMethod::FirstRows
         && planned_scope_rows(state, plan).is_some_and(|rows| rows > dataset_rows(plan));
     match bytes {
-        Some(bytes) if sampled => format!(
-            "up to {}",
-            approximate_bytes(bytes).trim_start_matches("about ")
-        ),
-        other => approximate_bytes_option(other),
+        Some(bytes) if sampled => format!("up to {}", crate::numfmt::bytes(bytes as u64)),
+        Some(bytes) => format!("about {}", crate::numfmt::bytes(bytes as u64)),
+        None => "unknown".to_string(),
     }
 }
 
@@ -4409,17 +4407,10 @@ pub(crate) fn scope_read_label(state: &DataTableState, plan: &DataQualityPlan) -
     match planned_scope_rows(state, plan) {
         Some(rows) => format!(
             "up to {}",
-            approximate_bytes(rows.saturating_mul(state.estimated_row_bytes()))
-                .trim_start_matches("about ")
+            crate::numfmt::bytes(rows.saturating_mul(state.estimated_row_bytes()) as u64)
         ),
         None => "unknown".to_string(),
     }
-}
-
-fn approximate_bytes_option(bytes: Option<usize>) -> String {
-    bytes
-        .map(approximate_bytes)
-        .unwrap_or_else(|| "unknown".to_string())
 }
 
 /// Rows a dataset-grain run keeps: the shared sample's size.
@@ -4437,22 +4428,6 @@ pub(crate) fn compute_label(plan: &DataQualityPlan) -> String {
             plan.sample_seed
         ),
         QualityCompute::Full => "full scan".to_string(),
-    }
-}
-
-fn approximate_bytes(bytes: usize) -> String {
-    const KIB: f64 = 1024.0;
-    const MIB: f64 = KIB * 1024.0;
-    const GIB: f64 = MIB * 1024.0;
-    let bytes = bytes as f64;
-    if bytes >= GIB {
-        format!("about {:.1} GiB", bytes / GIB)
-    } else if bytes >= MIB {
-        format!("about {:.1} MiB", bytes / MIB)
-    } else if bytes >= KIB {
-        format!("about {:.1} KiB", bytes / KIB)
-    } else {
-        format!("about {} B", bytes as usize)
     }
 }
 

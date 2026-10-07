@@ -91,8 +91,8 @@ fn meta_columns(entry: &Entry, unmeasured: bool, hint: Option<u64>, gone: Option
     };
     let size = match (gone, entry.size, hint) {
         (Some(gone), _, _) => gone.to_string(),
-        (None, Some(size), _) => discover::format_size(size),
-        (None, None, Some(hint)) => format!("~{}", discover::format_size(hint)),
+        (None, Some(size), _) => crate::numfmt::bytes(size),
+        (None, None, Some(hint)) => format!("~{}", crate::numfmt::bytes(hint)),
         (None, None, None) => String::new(),
     };
     let age = entry.modified.map(discover::format_age).unwrap_or_default();
@@ -2295,14 +2295,14 @@ fn preview_head_keyed(
         facts.push(("columns", format!("{cols}{more}"), plain));
     }
     if let Some(size) = entry.size {
-        facts.push(("on disk", discover::format_size(size), plain));
+        facts.push(("on disk", crate::numfmt::bytes(size), plain));
     }
     if let Some(uncompressed) = entry.cost.uncompressed {
         // The one number nothing else here implies: 200 MB of zstd Parquet is two
         // gigabytes once it is open.
         facts.push((
             "in memory",
-            discover::format_size(uncompressed),
+            crate::numfmt::bytes(uncompressed),
             Style::default().fg(ctx.float_col),
         ));
     }

@@ -2476,24 +2476,6 @@ fn nested_keys(dir: &Path) -> Vec<String> {
     keys
 }
 
-/// Render a byte count compactly for a listing (`340 MB`).
-pub fn format_size(bytes: u64) -> String {
-    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{} {}", bytes, UNITS[0])
-    } else if value >= 100.0 {
-        format!("{:.0} {}", value, UNITS[unit])
-    } else {
-        format!("{:.1} {}", value, UNITS[unit])
-    }
-}
-
 /// Render a row count compactly (`2.4M`).
 pub fn format_rows(rows: usize) -> String {
     let r = rows as f64;

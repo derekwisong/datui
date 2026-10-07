@@ -880,19 +880,19 @@ fn row_groups_are_noted_by_their_middle_size_and_only_when_it_is_large() {
     );
     assert_eq!(
         note(&[&[100 * MIB, 100 * MIB], &[MIB]]).as_deref(),
-        Some("median row group 100.0 MiB, each read whole"),
+        Some("median row group 100 MiB, each read whole"),
         "the middle of every row group of every file, not the middle of the files"
     );
     assert_eq!(
         note(&[&[MIB], &[100 * MIB, 100 * MIB]]).as_deref(),
-        Some("median row group 100.0 MiB, each read whole"),
+        Some("median row group 100 MiB, each read whole"),
         "including when the large ones are not in the first file"
     );
     // Row groups arrive in file order, which is no order at all by size: a middle
     // partition rewritten by another job puts a big one between two small ones.
     assert_eq!(
         note(&[&[100 * MIB], &[MIB], &[100 * MIB]]).as_deref(),
-        Some("median row group 100.0 MiB, each read whole"),
+        Some("median row group 100 MiB, each read whole"),
         "and when they arrive out of order"
     );
     assert_eq!(

@@ -123,7 +123,7 @@ pub fn render(form: &SampleForm, focused: bool, area: Rect, buf: &mut Buffer, ct
                         "{} rows {} ~{}",
                         crate::numfmt::group_chrome(rows),
                         g.middot,
-                        crate::widgets::info::format_bytes(bytes)
+                        crate::numfmt::bytes(bytes)
                     ),
                     _ => format!("{per}, like 50000, 50k or 2m"),
                 };

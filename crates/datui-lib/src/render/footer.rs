@@ -248,7 +248,7 @@ impl ProgressCount {
 
     fn number(&self, n: u64) -> String {
         if self.in_bytes {
-            crate::discover::format_size(n)
+            crate::numfmt::bytes(n)
         } else {
             crate::numfmt::group_chrome(n as usize)
         }

@@ -818,12 +818,12 @@ enum RunOrigin {
 /// error. The second value is that last.
 fn recording_label(spool: &crate::follow::Spool) -> (String, bool) {
     let dot = crate::glyphs::get().middot;
-    let size = crate::discover::format_size(spool.bytes());
+    let size = crate::numfmt::bytes(spool.bytes());
     match spool.ended() {
         None => (
             format!(
                 "rec {size} {dot} {}/s",
-                crate::discover::format_size(spool.rate() as u64)
+                crate::numfmt::bytes(spool.rate() as u64)
             ),
             false,
         ),
@@ -2565,7 +2565,7 @@ impl App {
                 let chip = format!(
                     "reading stdin {} {}",
                     crate::glyphs::get().middot,
-                    crate::discover::format_size(read)
+                    crate::numfmt::bytes(read)
                 );
                 let note = (follow.new_below > 0 && !state.on_last_row())
                     .then(|| rows(follow.new_below, "new below"));
@@ -5580,25 +5580,6 @@ impl App {
         .map_err(|e| color_eyre::eyre::eyre!("Object store config failed: {}", e))
     }
 
-    /// Human-readable byte size, for the download confirmation and the load's progress.
-    fn format_bytes(n: u64) -> String {
-        const KB: u64 = 1024;
-        const MB: u64 = KB * 1024;
-        const GB: u64 = MB * 1024;
-        const TB: u64 = GB * 1024;
-        if n >= TB {
-            format!("{:.2} TB", n as f64 / TB as f64)
-        } else if n >= GB {
-            format!("{:.2} GB", n as f64 / GB as f64)
-        } else if n >= MB {
-            format!("{:.2} MB", n as f64 / MB as f64)
-        } else if n >= KB {
-            format!("{:.2} KB", n as f64 / KB as f64)
-        } else {
-            format!("{} bytes", n)
-        }
-    }
-
     /// Build an HTTP agent with a total time budget.
     ///
     /// ureq 3 moved timeouts off the request and onto agent configuration, so
@@ -6121,7 +6102,7 @@ impl App {
                     .parts()
                     .1
                     .filter(|_| status == "Downloading...")
-                    .map(|size| format!("Downloading {}...", discover::format_size(size)));
+                    .map(|size| format!("Downloading {}...", crate::numfmt::bytes(size)));
                 let status = sized.as_deref().unwrap_or(status);
                 self.spawn_job(job, Some(status), move |_| {
                     let (url, _, options) = pending.parts();
@@ -6518,7 +6499,7 @@ impl App {
         };
         format!(
             "{what} {} into memory before the table appears.\n\nRead it?",
-            Self::format_bytes(read.bytes)
+            crate::numfmt::bytes(read.bytes)
         )
     }
 
@@ -6530,7 +6511,7 @@ impl App {
     ) -> String {
         let (url, size, options) = pending.parts();
         let size_str = size
-            .map(Self::format_bytes)
+            .map(crate::numfmt::bytes)
             .unwrap_or_else(|| "unknown".to_string());
         let dest_dir = options
             .temp_dir
@@ -12129,7 +12110,7 @@ impl App {
                         Some(bytes) if bytes > Self::COPY_REFUSE_BYTES => Err(format!(
                             "The table is about {} — too much to hold on a clipboard. \
                              Export it to a file instead (e).",
-                            Self::format_bytes(bytes as u64)
+                            crate::numfmt::bytes(bytes as u64)
                         )),
                         Some(bytes) if bytes.min(cap) > Self::COPY_CONFIRM_BYTES => {
                             Ok(Planned::Confirm(Some(bytes)))
@@ -12161,7 +12142,7 @@ impl App {
                 self.confirmation_modal.show(match bytes {
                     Some(bytes) => format!(
                         "This copies about {} to the clipboard.\n\nCopy the whole table?",
-                        Self::format_bytes(bytes as u64)
+                        crate::numfmt::bytes(bytes as u64)
                     ),
                     None if counting => "The table's size is not known yet — the row count \
                                          is still being read.\n\nCopy the whole table anyway?"

@@ -1,13 +1,7 @@
-//! The main view while a dataset is on its way in.
-//!
-//! It stands in for the table from the moment a load starts until that load installs
-//! its dataset. Without it the previous dataset stayed on screen for the whole load —
-//! one file's rows under another file's name, with only the footer to say so.
-//!
-//! Drawn in the same family as the home screen: no boxes, centred, one accent. The
-//! phase name is the progress indicator. It is a real, observable step ("Scanning
-//! input", "Reading schema", "Loading buffer"), unlike the percentage beside it in
-//! the footer, which is a constant per phase.
+//! The main view while a dataset loads, standing in for the table from load start to
+//! install, so the previous dataset's rows never show under the new name. Home's style
+//! (no boxes, centered, one accent); the phase name ("Scanning input", "Reading
+//! schema", "Loading buffer") is the progress indicator.
 
 use std::path::Path;
 
@@ -29,11 +23,8 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderContex
         Some((phase, _, path, size)) => (phase, path.map(Path::to_path_buf), size),
         _ => ("Loading", None, 0),
     };
-    // A directory of many files reads a footer from each before a row is shown, and on a
-    // few thousand that is seconds of a screen saying only "Reading schema". The count
-    // is what makes the wait legible: a number climbing is a wait, a number stopped is
-    // a problem. `App::loading_phase` decides it for the footer too, so the two
-    // halves of the screen cannot say different things about one wait.
+    // The footer count replaces the phase while footers are read (a climbing number shows
+    // progress); `App::loading_phase` decides it for the footer too, so both agree.
     let phase = app.loading_phase(phase);
     let phase = phase.as_ref();
 
@@ -50,10 +41,8 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderContex
                 Style::default().fg(ctx.throbber),
             ),
             Span::styled(
-                // Truncated like the name and the location below it. The phase used to
-                // be a couple of words and always fitted; "Reading footers: 1,203 of
-                // 6,541" needs thirty-six columns, and cut by the terminal instead it
-                // reads "of 6" — a smaller number than the one it is counting towards.
+                // Truncated like the name and location: cut by the terminal, "Reading footers: 1,203 of
+                // 6,541" could read "of 6".
                 glyphs::fit(
                     &format!("{phase}{}", g.ellipsis),
                     // The spinner and its two spaces come first on this line.

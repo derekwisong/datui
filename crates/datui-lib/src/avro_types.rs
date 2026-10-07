@@ -1,22 +1,12 @@
-//! Columns cast to types Polars' Avro writer can hold, for an Avro export only.
-//!
-//! The writer knows booleans, 32- and 64-bit integers and floats, strings,
-//! binary, dates, naive millisecond and microsecond datetimes, and lists and
-//! structs of those. Anything else fails the whole export with "not yet
-//! implemented", so each is cast to the nearest type it does know. The casts
-//! are strict: a value that does not fit (a `u64` past `i64::MAX`) fails the
-//! export by column name instead of turning null.
-//!
-//! It also writes decimals, but wrongly: it drops the sign byte of a positive
-//! value whose leading byte is 0x80 or more, so every reader sees 327.68 as
-//! -327.68. Decimals are written as their exact text instead.
-//!
-//! And it writes names as they are, with an empty record name, but an Avro name
-//! is `[A-Za-z_][A-Za-z0-9_]*` and strict readers refuse the file. [`write()`]
-//! names the record and gives each column and struct field a valid name in the
-//! file's schema, with the original as the field's `doc`. It also writes the
-//! header once, where Polars' writer repeats it for every chunk, and cuts
-//! blocks by size rather than one per chunk.
+//! Columns cast to types Polars' Avro writer can hold, for Avro export. The writer
+//! handles booleans, 32/64-bit ints and floats, strings, binary, dates, naive ms/µs
+//! datetimes, and lists and structs of those; other types fail the export, so they are
+//! strictly cast to the nearest (a value that does not fit fails by column name).
+//! Decimals are written as exact text: the writer drops a positive value's sign byte
+//! when its leading byte is ≥ 0x80 (327.68 reads -327.68). Avro names must be
+//! `[A-Za-z_][A-Za-z0-9_]*`, so [`write()`] names the record and gives columns and
+//! struct fields valid names (originals in `doc`), writes the header once (Polars
+//! repeats it per chunk) and cuts blocks by size.
 
 use std::io::Write;
 

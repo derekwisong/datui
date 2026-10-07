@@ -254,7 +254,11 @@ pub(crate) fn metadata_lines(
     let value_width = width.saturating_sub(key_width + 2).max(1);
     let mut out = Vec::new();
     for (key, value) in metadata {
-        let key_cell = format!("{:<w$}  ", clip(key, key_width), w = key_width);
+        let key_cell = format!(
+            "{:<w$}  ",
+            crate::glyphs::fit(key, key_width),
+            w = key_width
+        );
         let blank = " ".repeat(key_width + 2);
         // Borrowed, not copied: this runs every frame.
         let listed;
@@ -650,23 +654,6 @@ impl FileFacts {
     }
 }
 
-/// `text` cut to `room` columns, with the ellipsis glyph saying where.
-fn clip(text: &str, room: usize) -> String {
-    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-    if text.width() <= room {
-        return text.to_string();
-    }
-    let mark = crate::glyphs::get().ellipsis;
-    let mut kept = String::new();
-    for ch in text.chars() {
-        if kept.width() + ch.width().unwrap_or(0) + mark.width() > room {
-            break;
-        }
-        kept.push(ch);
-    }
-    kept + mark
-}
-
 /// Context for the info panel: the format, and what the file says about itself.
 ///
 /// What the open cost is not here: it belongs to the dataset, and the panel already
@@ -873,7 +860,7 @@ impl<'a> DataTableInfo<'a> {
                         // The last line that fits carries the rest, cut with the ellipsis.
                         let rest = wrapped[left - 1..].join(" ");
                         wrapped.truncate(left - 1);
-                        wrapped.push(clip(&rest, width));
+                        wrapped.push(crate::glyphs::fit(&rest, width));
                     }
                     lines.extend(wrapped);
                 }
@@ -881,7 +868,7 @@ impl<'a> DataTableInfo<'a> {
             None => lines.push(format!("{name}: not documented")),
         }
         for (i, line) in lines.iter().take(rows).enumerate() {
-            Paragraph::new(clip(line, width))
+            Paragraph::new(crate::glyphs::fit(line, width))
                 .style(Style::default().fg(self.theme.text_secondary))
                 .render(
                     Rect {
@@ -915,7 +902,7 @@ impl<'a> DataTableInfo<'a> {
         if let Some(book) = self.codebook_here()
             && !book.source.is_empty()
         {
-            lines.push(clip(
+            lines.push(crate::glyphs::fit(
                 &format!("Documentation: {}", book.source),
                 area.width as usize,
             ));
@@ -1116,7 +1103,7 @@ impl<'a> DataTableInfo<'a> {
             if let Some(col) = cols.get(about) {
                 for cells in &mut rows {
                     if let Some(cell) = cells.get_mut(about) {
-                        *cell = clip(cell, col.width as usize);
+                        *cell = crate::glyphs::fit(cell, col.width as usize);
                     }
                 }
             }
@@ -1202,7 +1189,7 @@ impl<'a> DataTableInfo<'a> {
                 Span::styled("reading...", Style::default().fg(self.theme.dimmed))
             }
             Some(FileFacts::Failed(why)) => Span::styled(
-                clip(why, size_chunks[1].width as usize),
+                crate::glyphs::fit(why, size_chunks[1].width as usize),
                 Style::default().fg(self.theme.error),
             ),
         };
@@ -1435,7 +1422,7 @@ impl<'a> DataTableInfo<'a> {
                     Style::default().fg(self.theme.dimmed),
                 ),
             };
-            Paragraph::new(clip(&said, area.width as usize))
+            Paragraph::new(crate::glyphs::fit(&said, area.width as usize))
                 .style(style)
                 .render(
                     Rect {
@@ -1494,14 +1481,16 @@ impl<'a> DataTableInfo<'a> {
                 if y >= bottom {
                     return;
                 }
-                Paragraph::new(clip(&part, width)).style(*style).render(
-                    Rect {
-                        y,
-                        height: 1,
-                        ..area
-                    },
-                    buf,
-                );
+                Paragraph::new(crate::glyphs::fit(&part, width))
+                    .style(*style)
+                    .render(
+                        Rect {
+                            y,
+                            height: 1,
+                            ..area
+                        },
+                        buf,
+                    );
                 y += 1;
             }
         }

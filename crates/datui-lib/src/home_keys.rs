@@ -14,7 +14,7 @@ impl App {
         // stayed until the next time the listing changed.
         self.home.status = None;
 
-        if self.documentation.is_open() {
+        if self.info.documentation.is_open() {
             self.documentation_key(event);
             return None;
         }

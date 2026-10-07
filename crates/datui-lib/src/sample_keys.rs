@@ -49,22 +49,22 @@ impl App {
         form.view = true;
         form.bytes_per_row = Some(state.unsampled().sample_row_bytes(false));
         form.source_bytes_per_row = Some(state.unsampled().sample_row_bytes(true));
-        self.sample_form = Some(form);
+        self.sample.form = Some(form);
         self.input_mode = InputMode::Sample;
     }
 
     /// Keys while the table's Sample form is open.
     pub(crate) fn table_sample_form_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
-        self.sample_form.as_ref()?;
+        self.sample.form.as_ref()?;
         match self.sample_form_edit(event) {
             form::FormKey::Cancel => {
                 self.close_overlay();
             }
             form::FormKey::Submit => match Self::submit_view_sample(
-                self.sample_form.as_mut()?,
+                self.sample.form.as_mut()?,
                 MemoryCheck {
                     limit: Limit::of_setting(self.app_config.analysis.sample_memory_limit),
-                    probe: Arc::clone(&self.memory_probe),
+                    probe: Arc::clone(&self.sample.memory_probe),
                 },
             ) {
                 Submitted::Stays => {}
@@ -88,7 +88,7 @@ impl App {
         &mut self,
         event: &KeyEvent,
     ) -> form::FormKey<crate::sample_modal::SampleField> {
-        let Some(form) = self.sample_form.as_mut() else {
+        let Some(form) = self.sample.form.as_mut() else {
             return form::FormKey::Other;
         };
         let file_count = form.context.files.len();
@@ -185,7 +185,9 @@ impl App {
         }
         match self.input_mode {
             InputMode::Inspect | InputMode::Info => return true,
-            InputMode::Editing if self.input_type == Some(crate::InputType::Find) => return true,
+            InputMode::Editing if self.prompt.input_type == Some(crate::InputType::Find) => {
+                return true;
+            }
             InputMode::Normal if self.help.is_open() => return true,
             InputMode::Normal if self.in_normal_table_view() => {}
             _ => return false,

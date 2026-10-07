@@ -10,9 +10,10 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::chart_data::{AxisNumbers, XAxisTemporalKind, x_datetime, x_time};
+use crate::chart_data::{XAxisTemporalKind, x_datetime, x_time};
 use crate::glyphs::Glyphs;
 use crate::widgets::axes::{Track, cut};
+use crate::widgets::axis_numbers::AxisNumbers;
 
 /// Cells between two entries of the readout.
 const READOUT_GAP: usize = 3;
@@ -117,21 +118,7 @@ pub fn format_x(x: f64, kind: XAxisTemporalKind, numbers: &AxisNumbers) -> Strin
         XAxisTemporalKind::Time => x_time(x).map(|t| t.format("%H:%M:%S%.f").to_string()),
         _ => x_datetime(x, kind).map(|d| d.format("%Y-%m-%d %H:%M:%S%.f").to_string()),
     };
-    when.unwrap_or_else(|| format_number(x, numbers))
-}
-
-/// `v` as the table writes its column: a whole number plainly, a fraction to the
-/// format's precision or, without one, as Polars writes it (`19.434783`), never every
-/// digit an aggregate's division left.
-pub fn format_number(v: f64, numbers: &AxisNumbers) -> String {
-    let mut out = String::new();
-    let format = &numbers.format;
-    if v.fract() == 0.0 || format.float_precision.is_some() || !v.is_finite() {
-        format.write_f64(v, &mut String::new(), &mut out);
-    } else {
-        format.regroup_decimal(&polars::prelude::AnyValue::Float64(v).str_value(), &mut out);
-    }
-    out
+    when.unwrap_or_else(|| numbers.write(x))
 }
 
 /// Each series' value at `x`, by its points before any log: `None` where it has no
@@ -224,18 +211,18 @@ mod tests {
     #[test]
     fn readout_numbers_read_as_the_table_writes_them() {
         let plain = AxisNumbers::default();
-        assert_eq!(format_number(19.434782608695652, &plain), "19.434783");
-        assert_eq!(format_number(-0.5, &plain), "-0.5");
+        assert_eq!(plain.write(19.434782608695652), "19.434783");
+        assert_eq!(plain.write(-0.5), "-0.5");
         let grouped = AxisNumbers {
             format: crate::numfmt::NumberFormat::preset("thousands").unwrap(),
             whole: false,
         };
-        assert_eq!(format_number(12345.678901234, &grouped), "12,345.678901");
+        assert_eq!(grouped.write(12345.678901234), "12,345.678901");
         let whole = AxisNumbers {
             whole: true,
             ..grouped
         };
-        assert_eq!(format_number(1234.0, &whole), "1,234");
+        assert_eq!(whole.write(1234.0), "1,234");
     }
 
     fn place(width: u16) -> PlotPlace {

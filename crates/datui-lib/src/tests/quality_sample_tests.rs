@@ -83,7 +83,7 @@ fn a_copy_that_does_not_read_as_the_source_is_let_go() {
         dataset_generation: generation,
         copy: None,
     });
-    assert_eq!(app.quality_copy_unusable, Some(generation));
+    assert_eq!(app.quality.copy_unusable, Some(generation));
 }
 
 fn key(app: &mut App, code: KeyCode) -> Option<AppEvent> {
@@ -446,7 +446,7 @@ fn stages_and_spinner_frames_do_not_move_the_layout() {
                 .enumerate()
                 .find_map(|(y, row)| row.find(stage.label()).map(|x| (y, x)))
                 .unwrap_or_else(|| panic!("{} on screen: {rows:#?}", stage.label()));
-            let clock = crate::numfmt::duration(seconds as i64);
+            let clock = crate::numfmt::clock(std::time::Duration::from_secs(seconds));
             assert!(rows[at.0].contains(&clock), "the clock beside the stage");
             drawn.push((rows, at));
         }

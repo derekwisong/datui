@@ -77,7 +77,7 @@ fn app() -> (App, std::sync::mpsc::Receiver<AppEvent>) {
         "Q_FLAG".to_string(),
     ]);
     app.data_table_state = Some(state);
-    app.codebook = Some(std::sync::Arc::new(codebook()));
+    app.info.codebook = Some(std::sync::Arc::new(codebook()));
     draw(&mut app);
     (app, rx)
 }
@@ -121,7 +121,7 @@ fn info_says_what_each_column_means_and_where_that_comes_from() {
 #[test]
 fn info_without_a_codebook_has_no_about_column() {
     let (mut app, _rx) = app();
-    app.codebook = None;
+    app.info.codebook = None;
     press(&mut app, KeyCode::Char('i'));
     let screen = draw(&mut app);
     assert!(!screen.contains("About"), "{screen}");

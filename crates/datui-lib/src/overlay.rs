@@ -12,7 +12,7 @@ impl App {
             InputMode::SortFilter => self.sort_filter_modal.close(),
             InputMode::PivotMelt => self.pivot_melt_modal.close(),
             InputMode::Export => self.export_modal.close(),
-            InputMode::Sample => self.sample_form = None,
+            InputMode::Sample => self.sample.form = None,
             _ => {}
         }
         self.input_mode = InputMode::Normal;

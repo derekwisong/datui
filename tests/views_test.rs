@@ -385,7 +385,7 @@ fn a_view_draws_its_sample_again_from_the_seed() {
     drain_events(&mut app, &rx);
 
     press(&mut app, KeyCode::Char('S'));
-    let form = app.sample_form.as_mut().unwrap();
+    let form = app.sample.form.as_mut().unwrap();
     form.size.set_value("700");
     form.seed.set_value("31");
     press(&mut app, KeyCode::Enter);
@@ -492,7 +492,7 @@ fn a_view_keeps_the_sorted_view_its_row_range_was_drawn_through() {
     drain_events(&mut app, &rx);
 
     press(&mut app, KeyCode::Char('S'));
-    let form = app.sample_form.as_mut().unwrap();
+    let form = app.sample.form.as_mut().unwrap();
     form.kind = datui::sample_modal::RowsKind::Range;
     form.range_from.set_value("1");
     form.range_to.set_value("200");

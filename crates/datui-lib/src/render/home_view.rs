@@ -49,7 +49,7 @@ const META_MIN_WIDTH: u16 = 56;
 /// nothing has read yet, and a blank there beside rows that have a shape reads as
 /// broken. The same admission the label makes for a directory nothing has looked into.
 ///
-/// `hint` is what a catalog says the file weighs, shown as `~33 MB` until something
+/// `hint` is what a catalog says the file weighs, shown as `~33.0 MiB` until something
 /// has measured it. `gone` takes the size's place for a web file that cannot be had
 /// (`HTTP 404`, `no answer`): beside the name, where the choice to open it is made.
 fn meta_columns(entry: &Entry, unmeasured: bool, hint: Option<u64>, gone: Option<&str>) -> String {
@@ -336,7 +336,11 @@ fn render_wordmark(
                 .map(|p| crate::home::display_path(&p))
         })
         .unwrap_or_default();
-    let mark_w = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    let mark_w = lines
+        .iter()
+        .map(|l| glyphs::display_width(l))
+        .max()
+        .unwrap_or(0);
     let start = ctx.gradient_start;
     let end = ctx.gradient_end;
     for (row, line) in lines.iter().enumerate() {
@@ -399,7 +403,7 @@ fn render_title_bar(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &Render
     );
     // Keep the tail of a long path; the leaf is what tells you where you are.
     let location = glyphs::fit_start(&location, (area.width as usize).saturating_sub(12));
-    let pad = (area.width as usize).saturating_sub(8 + location.chars().count());
+    let pad = (area.width as usize).saturating_sub(8 + glyphs::display_width(&location));
     Paragraph::new(Line::from(vec![
         left,
         Span::styled(" ".repeat(pad), bar),
@@ -447,7 +451,10 @@ fn render_prompt(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderCon
     if let Some(status) = &home.status {
         // Keep the tail: these read "\"<long path>\": <reason>", and the
         // reason is the part worth the space. The name is already on the row.
-        let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+        let used: usize = spans
+            .iter()
+            .map(|s| glyphs::display_width(&s.content))
+            .sum();
         let room = (area.width as usize).saturating_sub(used + 3);
         spans.push(Span::styled(
             format!("   {}", glyphs::fit_start(status, room)),
@@ -802,7 +809,8 @@ fn render_path_list(
     let candidates = home.path_candidates();
     let shown_dir = if dir.is_empty() { "./" } else { dir };
     let count = format!("{}", candidates.len());
-    let rule_w = width.saturating_sub(shown_dir.chars().count() + count.chars().count() + 6);
+    let rule_w =
+        width.saturating_sub(glyphs::display_width(shown_dir) + glyphs::display_width(&count) + 6);
     let mut lines = vec![Line::from(vec![
         Span::styled(g.expanded, Style::default().fg(ctx.accent)),
         Span::styled(
@@ -907,7 +915,7 @@ const SHAPE_COLUMNS_WIDTH: usize = 13 + 2;
 /// meta columns when shown, and one cell of air. The rows that carry no meta columns
 /// of their own — a place, the `more` row — are drawn to this same edge.
 fn row_width(name_width: usize, show_meta: bool) -> usize {
-    let marker = glyphs::get().selector_blank.chars().count();
+    let marker = glyphs::display_width(glyphs::get().selector_blank);
     marker + name_width + if show_meta { META_COLUMNS_WIDTH } else { 0 } + 1
 }
 
@@ -953,15 +961,19 @@ fn place_line(
     // marker, name, [label,] at least one space, source, space. The padding is what
     // puts the source on the right edge, and a name cut to fit still leaves it a cell
     // of air. The label goes before the name is cut, since the name is the place.
-    let fixed = chrome.marker.chars().count() + source.chars().count() + 1;
+    let fixed = glyphs::display_width(chrome.marker) + glyphs::display_width(&source) + 1;
     let room = width.saturating_sub(fixed + 1).max(1);
-    let label = if name.chars().count() + label.chars().count() <= room {
+    let label = if glyphs::display_width(&name) + glyphs::display_width(&label) <= room {
         label
     } else {
         String::new()
     };
-    let name = glyphs::fit_start(&name, room.saturating_sub(label.chars().count()).max(1));
-    let pad = width.saturating_sub(fixed + name.chars().count() + label.chars().count());
+    let name = glyphs::fit_start(
+        &name,
+        room.saturating_sub(glyphs::display_width(&label)).max(1),
+    );
+    let pad =
+        width.saturating_sub(fixed + glyphs::display_width(&name) + glyphs::display_width(&label));
     Line::from(vec![
         chrome.marker(),
         Span::styled(name, chrome.name(ctx.text_secondary)),
@@ -1030,7 +1042,8 @@ fn note_row(
 ) -> Line<'static> {
     let chrome = RowChrome::new(selected, ctx);
     let width = row_width(name_width, show_meta);
-    let pad = width.saturating_sub(chrome.marker.chars().count() + text.chars().count() + 1);
+    let pad = width
+        .saturating_sub(glyphs::display_width(chrome.marker) + glyphs::display_width(&text) + 1);
     Line::from(vec![
         chrome.marker(),
         Span::styled(text, chrome.base.fg(ctx.dimmed)),
@@ -1113,7 +1126,7 @@ fn section_header<'a>(
     // heading carrying a long path would otherwise crowd the title out entirely.
     // `Found`'s title is one short word, and its note is the answer to the search.
     let note_room = if section.title == crate::home::HomeState::SEARCH_SECTION {
-        width.saturating_sub(section.title.chars().count() + 16)
+        width.saturating_sub(glyphs::display_width(&section.title) + 16)
     } else {
         width / 2
     };
@@ -1157,7 +1170,7 @@ fn section_header<'a>(
     let origin_cells = if origin.is_empty() {
         0
     } else {
-        origin.chars().count() + 1
+        glyphs::display_width(&origin) + 1
     };
     // marker, title, space, chip, space, [origin, space,] rule, space, note, space.
     // The title gives way to the note only down to three cells; below that the note
@@ -1169,25 +1182,31 @@ fn section_header<'a>(
     let mut note = note;
     let mut origin = origin;
     let mut origin_cells = origin_cells;
-    let mut fixed = marker.chars().count()
+    let mut fixed = glyphs::display_width(marker)
         + 1
-        + chip.chars().count()
+        + glyphs::display_width(&chip)
         + 1
         + origin_cells
-        + note.chars().count()
+        + glyphs::display_width(&note)
         + 2
         + MIN_RULE;
     if width.saturating_sub(fixed) < 3 {
         note = String::new();
-        fixed = marker.chars().count() + 1 + chip.chars().count() + 1 + origin_cells + 2 + MIN_RULE;
+        fixed = glyphs::display_width(marker)
+            + 1
+            + glyphs::display_width(&chip)
+            + 1
+            + origin_cells
+            + 2
+            + MIN_RULE;
     }
     if width.saturating_sub(fixed) < 3 {
         origin = String::new();
         origin_cells = 0;
-        fixed = marker.chars().count() + 1 + chip.chars().count() + 1 + 2 + MIN_RULE;
+        fixed = glyphs::display_width(marker) + 1 + glyphs::display_width(&chip) + 1 + 2 + MIN_RULE;
     }
     title = glyphs::fit_start(&title, width.saturating_sub(fixed));
-    let rule_w = width.saturating_sub(fixed + title.chars().count()) + MIN_RULE;
+    let rule_w = width.saturating_sub(fixed + glyphs::display_width(&title)) + MIN_RULE;
 
     // A title on a rule, not a filled bar: the accent carries the title, the count
     // sits in a flat chip, and the rule runs out to the provenance note. The section
@@ -1312,7 +1331,8 @@ fn source_line<'a>(
     const API_W: usize = 7;
     const COUNT_W: usize = 14;
     let place = format!("{} ", g.in_object_store);
-    let fixed = chrome.marker.chars().count() + place.chars().count() + API_W + COUNT_W + 3;
+    let fixed =
+        glyphs::display_width(chrome.marker) + glyphs::display_width(&place) + API_W + COUNT_W + 3;
     let name_w = entry
         .name
         .chars()
@@ -1331,11 +1351,7 @@ fn source_line<'a>(
     let note_w = width.saturating_sub(fixed + name_w);
     // Cut from the end: the account or endpoint leads, and it is the part that tells
     // two sources apart.
-    let note = if note.chars().count() > note_w && note_w > 1 {
-        note.chars().take(note_w - 1).collect::<String>() + g.ellipsis
-    } else {
-        note
-    };
+    let note = glyphs::fit(&note, note_w);
 
     let mut spans = vec![
         chrome.marker(),
@@ -1357,7 +1373,7 @@ fn source_line<'a>(
     let count = glyphs::fit_start(&count, COUNT_W - 1);
     spans.push(Span::styled(format!("{count:<COUNT_W$}"), count_style));
     spans.push(Span::styled(" ".to_string(), base));
-    let note_pad = note_w.saturating_sub(note.chars().count());
+    let note_pad = note_w.saturating_sub(glyphs::display_width(&note));
     spans.push(Span::styled(note, base.fg(ctx.dimmed)));
     spans.push(Span::styled(" ".repeat(note_pad + 1), base));
     Line::from(spans)
@@ -1481,7 +1497,7 @@ fn entry_line<'a>(
         .as_deref()
         .map(crate::locality::Locality::of_fstype);
     let place_cell = format!("{} ", locality_glyph(locality));
-    let place_w = place_cell.chars().count();
+    let place_w = glyphs::display_width(&place_cell);
     let (name_width, meta) = meta_cells(entry, &notes, locality, show_meta, name_width);
     let cell = fit_kind_cell(
         entry,
@@ -1499,9 +1515,10 @@ fn entry_line<'a>(
     } else {
         Vec::new()
     };
-    let budget = name_width.saturating_sub(2 + place_w + cell.text.chars().count() + 1);
+    let budget = name_width.saturating_sub(2 + place_w + glyphs::display_width(&cell.text) + 1);
     let (name, name_positions) = fit_name(name, marks, budget, entry.opens_whole_directory);
-    let pad = name_width.saturating_sub(2 + name.chars().count() + cell.text.chars().count());
+    let pad = name_width
+        .saturating_sub(2 + glyphs::display_width(&name) + glyphs::display_width(&cell.text));
 
     // A file datui cannot read is listed so the directory reads as it is, and dimmed so
     // the eye passes over it to the data.
@@ -1651,7 +1668,8 @@ fn fit_kind_cell(
         Some((shown, _)) => format!(" {}{shown}", g.middot),
         None => text,
     };
-    let fits = |cell: &str| name_width.saturating_sub(2 + place_w + cell.chars().count() + 1) > 1;
+    let fits =
+        |cell: &str| name_width.saturating_sub(2 + place_w + glyphs::display_width(cell) + 1) > 1;
     // A label describes and the name identifies, so on a narrow screen the label goes.
     // Not a column note (why the row is listed), not a source id or `source not found:`
     // (which store, or a broken recent), not the curated word (the one mark of a
@@ -1673,7 +1691,7 @@ fn fit_kind_cell(
         Some(marker) if matched_column.is_none() && text.is_empty() => {
             let cell = format!("  {marker}");
             let room = name_width.saturating_sub(2 + place_w + 1);
-            if name.chars().count() + cell.chars().count() <= room {
+            if glyphs::display_width(name) + glyphs::display_width(&cell) <= room {
                 cell
             } else {
                 text
@@ -1788,7 +1806,7 @@ fn pane_heading_counted(
 ) -> Line<'static> {
     let g = glyphs::get();
     let label = text.to_string();
-    let mut used = label.chars().count() + 2;
+    let mut used = glyphs::display_width(&label) + 2;
     let mut spans = vec![
         Span::styled(
             label,
@@ -1798,7 +1816,7 @@ fn pane_heading_counted(
     ];
     if let Some(chip) = chip {
         let chip = format!(" {chip} ");
-        used += chip.chars().count() + 1;
+        used += glyphs::display_width(&chip) + 1;
         spans.push(Span::styled(
             chip,
             Style::default().bg(ctx.controls_bg).fg(ctx.text_primary),
@@ -1913,14 +1931,11 @@ fn schema_lines(
     room: usize,
     ctx: &RenderContext,
 ) -> (usize, Vec<Line<'static>>) {
-    let g = glyphs::get();
+    let _g = glyphs::get();
     let mut lines = Vec::new();
     let mut used = 0;
     for (name, dtype) in schema {
-        let mut display = name.clone();
-        if display.chars().count() > name_w {
-            display = display.chars().take(name_w - 1).collect::<String>() + g.ellipsis;
-        }
+        let display = glyphs::fit(name, name_w);
         let line = Line::from(vec![
             Span::styled(
                 format!("{display:<name_w$}  "),
@@ -1956,7 +1971,7 @@ fn fact_lines(
     let room = width.saturating_sub(indent);
     let key_span = Span::styled(format!("{key:<key_w$}  "), Style::default().fg(ctx.dimmed));
     // Too narrow to hang anything under: the pane's own wrap does what it can.
-    if room < 12 || value.chars().count() <= room {
+    if room < 12 || glyphs::display_width(&value) <= room {
         return vec![Line::from(vec![key_span, Span::styled(value, style)])];
     }
     let pieces = crate::render::overlays::wrap_help_line(&value, room);
@@ -1978,7 +1993,7 @@ fn fact_lines(
 /// values line up down the pane.
 fn key_column<'a>(keys: impl IntoIterator<Item = &'a str>) -> usize {
     keys.into_iter()
-        .map(|k| k.chars().count())
+        .map(glyphs::display_width)
         .max()
         .unwrap_or(0)
 }
@@ -2607,7 +2622,7 @@ fn render_preview(
 
             let name_w = schema
                 .iter()
-                .map(|(n, _)| n.chars().count())
+                .map(|(n, _)| glyphs::display_width(n))
                 .max()
                 .unwrap_or(0)
                 .min(22);
@@ -2833,7 +2848,7 @@ fn spec_schema_lines(
     };
     let name_w = columns
         .iter()
-        .map(|(n, _)| n.chars().count())
+        .map(|(n, _)| glyphs::display_width(n))
         .max()
         .unwrap_or(0)
         .min(22);

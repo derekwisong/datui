@@ -33,7 +33,7 @@ impl MainViewContent {
             MainViewContent::Home
         } else if app.awaiting_dataset() {
             MainViewContent::Loading
-        } else if app.input_mode == crate::InputMode::Hex && app.hex.is_some() {
+        } else if app.input_mode == crate::InputMode::Hex && app.hex_view.view.is_some() {
             MainViewContent::Hex
         } else if app.value_counts_shown() {
             MainViewContent::ValueCounts
@@ -67,7 +67,7 @@ pub fn mode_hints(app: &crate::App, content: MainViewContent) -> Vec<Hint> {
     match content {
         MainViewContent::Datatable => {
             if app.input_mode == crate::InputMode::Editing {
-                return match app.input_type {
+                return match app.prompt.input_type {
                     Some(crate::InputType::Find) => vec![
                         // The switches are on the prompt's own line, beside their state.
                         registry_hint_in(Context::Find, Some("Find"), "Enter"),
@@ -96,7 +96,7 @@ pub fn mode_hints(app: &crate::App, content: MainViewContent) -> Vec<Hint> {
                 };
             }
             if app.input_mode == crate::InputMode::Sample
-                && let Some(form) = &app.sample_form
+                && let Some(form) = &app.sample.form
             {
                 return sample_form_hints(form);
             }
@@ -172,7 +172,7 @@ pub fn mode_hints(app: &crate::App, content: MainViewContent) -> Vec<Hint> {
         MainViewContent::Loading => vec![registry_hint(Context::Global, "Ctrl+O")],
         MainViewContent::Home => {
             // The Documentation view names its keys in its own footer.
-            if app.documentation.is_open() {
+            if app.info.documentation.is_open() {
                 return Vec::new();
             }
             if app.home.path_input_active {
@@ -280,10 +280,14 @@ pub fn help_key(app: &crate::App, content: MainViewContent) -> Option<&'static s
         }
         // The Documentation view over home takes no text, whatever the filter holds.
         MainViewContent::Home => {
-            !app.documentation.is_open()
+            !app.info.documentation.is_open()
                 && (!app.home.filter.is_empty() || app.home.path_input_active)
         }
-        MainViewContent::Hex => app.hex.as_ref().is_some_and(|v| v.prompt.is_some()),
+        MainViewContent::Hex => app
+            .hex_view
+            .view
+            .as_ref()
+            .is_some_and(|v| v.prompt.is_some()),
         _ => false,
     };
     Some(if types { "F1" } else { "?" })
@@ -785,7 +789,7 @@ fn hex_control_keys(app: &crate::App) -> Vec<Hint> {
     let say = |keys, label| registry_hint_as(Context::Hex, None, keys, label);
     let prompt = |keys| registry_hint_in(Context::Hex, Some("Prompt"), keys);
     let prompt_as = |keys, label| registry_hint_as(Context::Hex, Some("Prompt"), keys, label);
-    let Some(view) = app.hex.as_ref() else {
+    let Some(view) = app.hex_view.view.as_ref() else {
         return Vec::new();
     };
     if view.picker.is_some() {

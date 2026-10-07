@@ -804,21 +804,20 @@ impl Footer {
 pub const QUERY_STAGE: &str = "query";
 
 /// A message in `width` columns. One that ends in a path keeps what it says and
-/// the path's end, `Exported to ...daily/out.csv`; any other is cut at its end.
+/// the path's end, `Exported to …daily/out.csv`; any other is cut at its end.
 pub fn cut_message(message: &str, path_from: Option<usize>, width: usize) -> String {
-    if crate::glyphs::display_width(message) <= width {
+    use crate::glyphs::{display_width, fit, fit_start, get};
+    if display_width(message) <= width {
         return message.to_string();
     }
     if let Some((prefix, path)) = path_from.and_then(|at| message.split_at_checked(at)) {
-        let mark = "...";
-        let lead = crate::glyphs::display_width(prefix) + mark.len();
+        let room = width.saturating_sub(display_width(prefix));
         // Room for a file name's worth of the path, or the plain cut.
-        if width >= lead + 8 {
-            let tail = crate::glyphs::take_columns_end(path, width - lead);
-            return format!("{prefix}{mark}{tail}");
+        if room >= display_width(get().ellipsis) + 8 {
+            return format!("{prefix}{}", fit_start(path, room));
         }
     }
-    crate::glyphs::fit_cells(message, width, "...").into_owned()
+    fit(message, width)
 }
 
 /// Draw the rule above the footer: the table's column separator color, no fill.
@@ -1079,12 +1078,13 @@ mod tests {
     fn a_path_flash_keeps_its_file_name() {
         let message = "Exported to /home/someone/projects/weather/daily/out.csv";
         let cut = super::cut_message(message, Some("Exported to ".len()), 32);
-        assert!(cut.starts_with("Exported to ..."), "{cut}");
+        let mark = crate::glyphs::get().ellipsis;
+        assert!(cut.starts_with(&format!("Exported to {mark}")), "{cut}");
         assert!(cut.ends_with("/out.csv"), "{cut}");
         assert_eq!(crate::glyphs::display_width(&cut), 32);
         let plain = super::cut_message("Copied 3 rows to the clipboard", None, 12);
         assert!(
-            plain.starts_with("Copied") && plain.ends_with("..."),
+            plain.starts_with("Copied") && plain.ends_with(mark),
             "{plain}"
         );
         assert_eq!(super::cut_message(message, Some(12), 200), message);

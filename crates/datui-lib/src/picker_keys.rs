@@ -5,6 +5,17 @@ use crate::open_options::OpenOptions;
 use crate::{App, AppEvent, InputMode, table_switch};
 use crossterm::event::{KeyCode, KeyEvent};
 
+/// The go-to-column, format and table pickers.
+pub struct Pickers {
+    /// The shown columns, narrowed by what is typed, while `g` is choosing one.
+    pub go_to_column: crate::widgets::ui::PickerState,
+    /// The specs `b` offers for the dataset on screen.
+    pub format_picker: crate::widgets::ui::PickerState,
+    /// The tables `T` offers: the picker's lines, and what each opens.
+    pub table_picker: crate::widgets::ui::PickerState,
+    pub table_choices: Option<crate::table_switch::Tables>,
+}
+
 impl App {
     /// `g` at the table: pick a shown column by name, bring it on screen and put the
     /// column cursor on it. Starts on the cursor's column, so ↑↓ move from there.
@@ -20,8 +31,8 @@ impl App {
             .current_column()
             .and_then(|current| names.iter().position(|n| n == current))
             .unwrap_or(0);
-        self.go_to_column = crate::widgets::ui::PickerState::new(names);
-        self.go_to_column.select_original(at);
+        self.pickers.go_to_column = crate::widgets::ui::PickerState::new(names);
+        self.pickers.go_to_column.select_original(at);
         self.input_mode = InputMode::GoToColumn;
     }
 
@@ -31,21 +42,21 @@ impl App {
         match event.code {
             KeyCode::Esc => self.input_mode = InputMode::Normal,
             KeyCode::Enter => {
-                let Some(index) = self.go_to_column.selected_original() else {
+                let Some(index) = self.pickers.go_to_column.selected_original() else {
                     // Nothing matches; the picker says so and stays.
                     return;
                 };
                 // By name: the order may have changed under the picker since it opened.
-                let name = self.go_to_column.items()[index].clone();
+                let name = self.pickers.go_to_column.items()[index].clone();
                 if let Some(state) = self.data_table_state.as_mut() {
                     state.go_to_column(&name);
                 }
                 self.input_mode = InputMode::Normal;
             }
-            KeyCode::Up => self.go_to_column.move_up(),
-            KeyCode::Down => self.go_to_column.move_down(),
-            KeyCode::Backspace => self.go_to_column.backspace(),
-            KeyCode::Char(c) => self.go_to_column.filter_key(c, event.modifiers),
+            KeyCode::Up => self.pickers.go_to_column.move_up(),
+            KeyCode::Down => self.pickers.go_to_column.move_down(),
+            KeyCode::Backspace => self.pickers.go_to_column.backspace(),
+            KeyCode::Char(c) => self.pickers.go_to_column.filter_key(c, event.modifiers),
             _ => {}
         }
     }
@@ -72,7 +83,7 @@ impl App {
                 names.push(found.spec.name.clone());
             }
         }
-        self.format_picker = crate::widgets::ui::PickerState::new(names);
+        self.pickers.format_picker = crate::widgets::ui::PickerState::new(names);
         self.input_mode = InputMode::PickFormat;
     }
 
@@ -82,8 +93,8 @@ impl App {
         match event.code {
             KeyCode::Esc => self.input_mode = InputMode::Normal,
             KeyCode::Enter => {
-                let index = self.format_picker.selected_original()?;
-                let name = self.format_picker.items()[index].clone();
+                let index = self.pickers.format_picker.selected_original()?;
+                let name = self.pickers.format_picker.items()[index].clone();
                 self.input_mode = InputMode::Normal;
                 let current = self
                     .data_table_state
@@ -93,7 +104,7 @@ impl App {
                 if current.as_deref() == Some(name.as_str()) {
                     return None;
                 }
-                let (paths, options) = self.opened.clone()?;
+                let (paths, options) = self.source.opened.clone()?;
                 let options = OpenOptions {
                     spec_name: Some(name),
                     spec_file: None,
@@ -108,10 +119,10 @@ impl App {
                 self.name_what_is_loading(paths[0].clone());
                 return Some(AppEvent::Open(paths, options));
             }
-            KeyCode::Up => self.format_picker.move_up(),
-            KeyCode::Down => self.format_picker.move_down(),
-            KeyCode::Backspace => self.format_picker.backspace(),
-            KeyCode::Char(c) => self.format_picker.filter_key(c, event.modifiers),
+            KeyCode::Up => self.pickers.format_picker.move_up(),
+            KeyCode::Down => self.pickers.format_picker.move_down(),
+            KeyCode::Backspace => self.pickers.format_picker.backspace(),
+            KeyCode::Char(c) => self.pickers.format_picker.filter_key(c, event.modifiers),
             _ => {}
         }
         None
@@ -121,13 +132,13 @@ impl App {
     /// source of one.
     pub fn sibling_tables(&self) -> Option<table_switch::Tables> {
         let state = self.data_table_state.as_ref()?;
-        let (paths, options) = self.opened.as_ref()?;
+        let (paths, options) = self.source.opened.as_ref()?;
         table_switch::of(state, paths, options)
     }
 
     /// Whether the source on screen has another table for `T` to open.
     pub fn offers_other_tables(&self) -> bool {
-        match (self.data_table_state.as_ref(), self.opened.as_ref()) {
+        match (self.data_table_state.as_ref(), self.source.opened.as_ref()) {
             (Some(state), Some((paths, options))) => table_switch::several(state, paths, options),
             _ => false,
         }
@@ -141,11 +152,11 @@ impl App {
             return;
         };
         let labels = tables.tables.iter().map(|t| t.label.clone()).collect();
-        self.table_picker = crate::widgets::ui::PickerState::new(labels);
+        self.pickers.table_picker = crate::widgets::ui::PickerState::new(labels);
         if let Some(at) = tables.current {
-            self.table_picker.select_original(at);
+            self.pickers.table_picker.select_original(at);
         }
-        self.table_choices = Some(tables);
+        self.pickers.table_choices = Some(tables);
         self.input_mode = InputMode::PickTable;
     }
 
@@ -155,11 +166,11 @@ impl App {
         match event.code {
             KeyCode::Esc => {
                 self.input_mode = InputMode::Normal;
-                self.table_choices = None;
+                self.pickers.table_choices = None;
             }
             KeyCode::Enter => {
-                let index = self.table_picker.selected_original()?;
-                let tables = self.table_choices.take()?;
+                let index = self.pickers.table_picker.selected_original()?;
+                let tables = self.pickers.table_choices.take()?;
                 self.input_mode = InputMode::Normal;
                 if tables.current == Some(index) {
                     return None;
@@ -167,10 +178,10 @@ impl App {
                 let table = tables.tables.get(index)?.table.clone();
                 return self.switch_table(table);
             }
-            KeyCode::Up => self.table_picker.move_up(),
-            KeyCode::Down => self.table_picker.move_down(),
-            KeyCode::Backspace => self.table_picker.backspace(),
-            KeyCode::Char(c) => self.table_picker.filter_key(c, event.modifiers),
+            KeyCode::Up => self.pickers.table_picker.move_up(),
+            KeyCode::Down => self.pickers.table_picker.move_down(),
+            KeyCode::Backspace => self.pickers.table_picker.backspace(),
+            KeyCode::Char(c) => self.pickers.table_picker.filter_key(c, event.modifiers),
             _ => {}
         }
         None
@@ -180,7 +191,7 @@ impl App {
     /// `--table` or home's row for it would: the query, filters and sort go with the
     /// table they were on, recents record it, and a view for it applies.
     pub(crate) fn switch_table(&mut self, table: Option<String>) -> Option<AppEvent> {
-        let (paths, options) = self.opened.clone()?;
+        let (paths, options) = self.source.opened.clone()?;
         let shown = match &table {
             Some(name) => crate::members::place(&paths[0], name),
             None => paths[0].clone(),

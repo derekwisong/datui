@@ -14,7 +14,7 @@ use ratatui::widgets::{Clear, Paragraph, Widget};
 
 pub fn render(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderContext) {
     let has_specs = app.has_format_specs();
-    if let Some(view) = app.hex.as_mut() {
+    if let Some(view) = app.hex_view.view.as_mut() {
         draw(area, buf, view, ctx, has_specs);
     }
 }

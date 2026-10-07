@@ -7,6 +7,16 @@ use crate::{App, AppEvent, InputMode};
 use crossterm::event::{KeyCode, KeyEvent};
 use polars::prelude::DataType;
 
+/// The retype and combine forms.
+pub struct ColumnForms {
+    /// The type picker, while it is open.
+    pub retype: Option<crate::retype_modal::RetypeModal>,
+    /// The combine form, while it is open.
+    pub combine: Option<crate::retype_modal::CombineModal>,
+    /// The type picker or the combine form go back to the Info panel, not the table.
+    pub(crate) retype_from_info: bool,
+}
+
 /// How many values on screen the format picker judges and previews formats by.
 const EXAMPLES: usize = 20;
 
@@ -37,13 +47,13 @@ impl App {
         };
         let current = state.column_type_of(column).cloned();
         let examples = state.values_on_screen(column, EXAMPLES);
-        self.retype = Some(RetypeModal::new(
+        self.column_forms.retype = Some(RetypeModal::new(
             column.to_string(),
             as_read,
             current.as_ref(),
             examples,
         ));
-        self.retype_from_info = self.input_mode == InputMode::Info;
+        self.column_forms.retype_from_info = self.input_mode == InputMode::Info;
         self.input_mode = InputMode::Retype;
     }
 
@@ -61,15 +71,15 @@ impl App {
             .map(|(name, _)| name.to_string())
             .collect();
         let taken: Vec<String> = schema.iter_names().map(|n| n.to_string()).collect();
-        self.combine = Some(CombineModal::new(date.to_string(), columns, &taken));
-        self.retype_from_info = self.input_mode == InputMode::Info;
+        self.column_forms.combine = Some(CombineModal::new(date.to_string(), columns, &taken));
+        self.column_forms.retype_from_info = self.input_mode == InputMode::Info;
         self.input_mode = InputMode::Combine;
     }
 
     fn close_retype(&mut self) {
-        self.retype = None;
-        self.combine = None;
-        self.input_mode = if self.retype_from_info {
+        self.column_forms.retype = None;
+        self.column_forms.combine = None;
+        self.input_mode = if self.column_forms.retype_from_info {
             InputMode::Info
         } else {
             InputMode::Normal
@@ -78,7 +88,7 @@ impl App {
 
     /// The type picker's keys: type to narrow, ↑↓ move, Enter chooses, Esc goes back.
     pub(crate) fn retype_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
-        let modal = self.retype.as_mut()?;
+        let modal = self.column_forms.retype.as_mut()?;
         match event.code {
             KeyCode::Esc => {
                 if !modal.back() {
@@ -123,7 +133,7 @@ impl App {
 
     /// The combine form's keys: the shared form keys, then what each field does.
     pub(crate) fn combine_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
-        let modal = self.combine.as_mut()?;
+        let modal = self.column_forms.combine.as_mut()?;
         if crate::form::picker_form_key(modal, event) {
             return None;
         }
@@ -144,7 +154,7 @@ impl App {
                     .map(|state| state.add_made_column(derived));
                 match made {
                     Some(Err(problem)) => {
-                        if let Some(modal) = self.combine.as_mut() {
+                        if let Some(modal) = self.column_forms.combine.as_mut() {
                             modal.problem = Some(problem);
                         }
                     }

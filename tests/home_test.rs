@@ -8105,7 +8105,8 @@ mod first_rows {
         let stamp = Stamp::of_entry(&entry);
         render(app, w, h);
         settle(app, rx, |app| {
-            app.home_previews
+            app.home_app
+                .previews
                 .rows(&entry.path, stamp)
                 .is_some_and(|rows| rows.is_some())
         });
@@ -8149,15 +8150,18 @@ mod first_rows {
         let screen = render(&mut app, 200, 50).join("\n");
         assert!(screen.contains("ROWS"), "{screen}");
         assert!(screen.contains("person_000"), "real values: {screen}");
-        assert_eq!(app.reads.previews, 1);
+        assert_eq!(app.home_app.reads.previews, 1);
         // Drawn again, at another size too, it is not read again.
         render(&mut app, 80, 24);
         render(&mut app, 200, 50);
-        assert_eq!(app.reads.previews, 1);
+        assert_eq!(app.home_app.reads.previews, 1);
 
-        let read = app.reads;
+        let read = app.home_app.reads;
         assert!(open(&mut app, &rx), "the open takes what the preview built");
-        assert_eq!(app.reads, read, "the open read nothing of {file:?} again");
+        assert_eq!(
+            app.home_app.reads, read,
+            "the open read nothing of {file:?} again"
+        );
         assert_eq!(first_cell(&app, "name"), "\"person_000\"");
         let state = app.data_table_state.as_ref().unwrap();
         assert_eq!(
@@ -8180,11 +8184,14 @@ mod first_rows {
         go_into(&mut app, &rx, KeyCode::Right, &tmp.path().join("small"));
         select(&mut app, &file);
         render(&mut app, 200, 50);
-        let before = app.reads;
+        let before = app.home_app.reads;
         assert!(!open(&mut app, &rx));
-        assert_eq!(app.reads.previews, before.previews, "nothing previewed");
-        assert_eq!(app.reads.scans, before.scans + 1);
-        assert!(app.reads.pages > before.pages);
+        assert_eq!(
+            app.home_app.reads.previews, before.previews,
+            "nothing previewed"
+        );
+        assert_eq!(app.home_app.reads.scans, before.scans + 1);
+        assert!(app.home_app.reads.pages > before.pages);
         assert_eq!(first_cell(&app, "name"), "\"person_000\"");
     }
 
@@ -8195,9 +8202,9 @@ mod first_rows {
         let (mut app, rx, file) = into_small(tmp.path());
         wait_for_rows(&mut app, &rx, 200, 50);
         std::fs::write(&file, "id,name,score\n7,changed,1.0\n").unwrap();
-        let before = app.reads;
+        let before = app.home_app.reads;
         assert!(!open(&mut app, &rx), "the old page is not installed");
-        assert_eq!(app.reads.scans, before.scans + 1);
+        assert_eq!(app.home_app.reads.scans, before.scans + 1);
         assert_eq!(first_cell(&app, "name"), "\"changed\"");
     }
 
@@ -8221,9 +8228,9 @@ mod first_rows {
         wait_for_rows(&mut app, &rx, 200, 50);
         let screen = render(&mut app, 200, 50).join("\n");
         assert!(screen.contains("ROWS"), "{screen}");
-        let read = app.reads;
+        let read = app.home_app.reads;
         assert!(open(&mut app, &rx));
-        assert_eq!(app.reads, read, "nothing read again");
+        assert_eq!(app.home_app.reads, read, "nothing read again");
     }
 
     /// Below the pane's width the rows take the lines the list leaves free, at the
@@ -8254,10 +8261,10 @@ mod first_rows {
         let (mut app, rx) = home_app(config(full.path()));
         settle(&mut app, &rx, |_| true);
         select(&mut app, &full.path().join("f00.csv"));
-        let before = app.reads;
+        let before = app.home_app.reads;
         let screen = render(&mut app, 80, 24);
         assert!(!screen.iter().any(|l| l.contains("ROWS")), "{screen:#?}");
-        assert_eq!(app.reads.previews, before.previews);
+        assert_eq!(app.home_app.reads.previews, before.previews);
         draw(&mut app);
     }
 

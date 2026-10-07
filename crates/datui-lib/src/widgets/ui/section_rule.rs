@@ -27,10 +27,10 @@ impl SectionRule<'_> {
         let rule_style = Style::default().fg(ctx.column_separator);
 
         let mut spans = vec![Span::styled(self.title, title_style), Span::raw(" ")];
-        let mut used = self.title.chars().count() + 1;
+        let mut used = crate::glyphs::display_width(self.title) + 1;
         if let Some(chip) = self.chip {
             let chip = format!(" {chip} ");
-            used += chip.chars().count() + 1;
+            used += crate::glyphs::display_width(&chip) + 1;
             spans.push(Span::styled(
                 chip,
                 Style::default().bg(ctx.controls_bg).fg(ctx.text_primary),

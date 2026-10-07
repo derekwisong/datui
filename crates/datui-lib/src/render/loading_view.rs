@@ -158,7 +158,7 @@ mod tests {
         }
         // The count is taken once a frame rather than where it is shown; these tests
         // paint the body alone, so they do for themselves what a whole frame does
-        // first. That the app does it is `test_the_control_bar_counts_the_footers_the
+        // first. That the app does it is `test_the_footer_counts_the_footers_the
         // _loading_screen_does`, which renders the App and not this function.
         app.begin_frame();
         let text = painted(&app);

@@ -226,10 +226,10 @@ use chart_export::ChartExportRequest;
 use chart_export_modal::ChartExportModal;
 use chart_jobs::{ChartCache, ChartRequest};
 use chart_modal::{ChartColumns, ChartModal};
-use counting::FootersReported;
+
 pub use error_display::{ErrorKindForPython, error_for_python};
 pub use export::{ExportOptions, ExportRequest};
-use export_modal::{ExportFocus, ExportFormat, ExportModal};
+use export_modal::{ExportFocus, ExportModal};
 use feedback::Confirm;
 pub use feedback::{ConfirmationModal, ErrorModal, Flash};
 use filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
@@ -241,7 +241,6 @@ pub use open_options::{
 };
 use output_file::Overwrite;
 use pivot_melt_modal::{MeltSpec, PivotMeltModal, PivotSpec};
-use quality_memory::QualityCacheEntry;
 pub use quality_memory::{KeptQualitySample, QUALITY_MEMORY_BUDGET, RetainedCopy};
 use sort_filter_modal::SortFilterModal;
 use sort_modal::{SortColumn, order_with_hidden};
@@ -833,12 +832,10 @@ struct QueryRun {
     /// (a sort, a filter, another dataset) the rollback no longer applies.
     frame: u64,
     rollback: crate::table::ViewRollback,
-    /// The App's count markers as they were, for the frame the rollback restores.
-    /// A count of that frame still running when the query began lands while the
-    /// query's frame is installed; its answer goes into `rollback`.
-    len_count_inflight: Option<u64>,
-    count_after_paint: Option<u64>,
-    len_count_failed: Option<u64>,
+    /// The count markers as they were, for the frame the rollback restores. A count
+    /// of that frame still running when the query began lands while the query's frame
+    /// is installed; its answer goes into `rollback`.
+    counts: counting::CountMarkers,
     /// Rows `df` holds, when known, so a failure can say "of N".
     rows: Option<usize>,
 }
@@ -1033,214 +1030,51 @@ const CANCEL_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub struct App {
     pub data_table_state: Option<DataTableState>,
-    /// The footer counter of the dataset on screen, which its pass behind the open
-    /// reports to. Handed over by the load that installed it; a load in flight counts on
-    /// its own until then. See [`Self::footer_progress`].
-    footer_progress: Arc<crate::schema_union::FooterProgress>,
-    /// The count as it stood when this frame began, or `None` if no pass was running.
-    ///
-    /// Taken once because the pass is running on other threads while the frame is
-    /// drawn. The loading body and the footer are painted a millisecond apart,
-    /// and when each read the counter for itself they printed different numbers for
-    /// one wait — and the bar could print a phase's flat percentage beside a count
-    /// that had finished between the two reads.
-    footers_this_frame: Option<(usize, usize)>,
-    /// The objects a listing had found when this frame began, for the same reason.
-    listed_this_frame: Option<usize>,
-    /// Network roots currently being listed off-thread, so a probe is not started
-    /// twice. Entries are never removed for a root that never answers — that thread
-    /// is unreclaimable, and retrying it would only block another one.
-    home_probes_inflight: Vec<PathBuf>,
-    /// The stop flag of each cloud listing out, by place: leaving the place sets it, and
-    /// the listing ends before its next page.
-    home_listing_cancels: HashMap<PathBuf, Arc<std::sync::atomic::AtomicBool>>,
-    /// The listing out for the names a filter asked of a cut-short cloud directory:
-    /// where, the name prefix, and its stop flag.
-    home_narrowing: Option<(PathBuf, String, Arc<std::sync::atomic::AtomicBool>)>,
-    /// True once cloud discovery has been started. Enumeration costs a request per
-    /// provider, so it happens once and its result is kept for the session.
-    #[cfg(feature = "cloud")]
-    cloud_discovery_started: bool,
-    /// True while a recursive search below the working directory is out. One at a
-    /// time: the walk is bounded, and a second one would only compete for the disk.
-    home_search_inflight: bool,
-    /// The home generation the walk out was started in. Its batches and its end are its
-    /// own, whatever refreshes the listing meanwhile; the root decides whether they
-    /// still describe where the user is.
-    home_search_generation: u64,
-    /// Whether a browser opened here opens in front of the user: `o` on a
-    /// documentation link is offered only then (`link_open::local_desktop`).
-    pub local_desktop: bool,
-    /// Why the last open failed, shown on the home screen when the error is dismissed
-    /// and there is nothing to fall back to.
-    last_load_error: Option<String>,
-    /// Schema reads currently out, so the same one is not requested every frame.
-    home_schema_inflight: Vec<PathBuf>,
-    /// Invalidates listings and measurements from a request the user has moved past.
-    home_generation: u64,
-    /// Rows came in for a listing still being read; it is listed again before the
-    /// next frame.
-    home_refresh_owed: bool,
+    /// The dataset's row count, footer pass and line indexing, and what waits on them.
+    counting: counting::Counting,
+    /// The home screen's work in flight, and what it keeps for the session.
+    pub home_app: home_app::HomeApp,
     /// Home screen state. Rebuilt from the filesystem whenever home is entered;
     /// nothing here is persisted beyond the recents list.
     pub home: home::HomeState,
-    /// Schema previews, memoised for the session only. Persisting these would be a
-    /// catalogue by another name, and it would go stale.
-    home_schema_cache: HashMap<PathBuf, Option<discover::SchemaPreview>>,
-    /// The home screen's `ROWS` previews, and the dataset the newest one built.
-    pub home_previews: crate::home_preview::Previews,
-    /// The reads of data started this session, by kind.
-    pub reads: crate::home_preview::ReadCounts,
-    /// The dataset whose downloaded shape is kept already. See
-    /// [`Self::remember_a_downloads_shape`].
-    shape_remembered: Option<u64>,
+    /// Where the dataset on screen came from, and how it was opened.
+    source: open_scan::OpenedSource,
     path: Option<PathBuf>,
-    original_file_format: Option<ExportFormat>,
-    original_file_delimiter: Option<u8>,
-    /// What `-` reads in place of standard input: a test's pipe.
-    stdin_reader: Option<Box<dyn std::io::Read + Send>>,
-    /// Where `--tee -` passes the stream on: standard output as the process got it.
-    stdout_pass: Option<Box<dyn std::io::Write + Send>>,
-    /// The follow mark as last drawn, so its clock redraws only when it changes.
-    follow_drawn: Option<crate::render::footer::FollowMark>,
-    /// A recording kept going after the user went home or quit, until its stream ends.
-    recording_on: Option<Arc<crate::follow::SpoolHandle>>,
-    /// A recording's end has been said: once, in the bar or the error dialog.
-    recording_end_said: bool,
+    /// Standard input and output when datui sits in a pipe.
+    pipes: run::Pipes,
     events: Sender<AppEvent>,
     debug: DebugState,
     pub info_modal: InfoModal,
-    /// What the Info panel's read found about the open file, and the
-    /// `dataset_generation` it belongs to. Asked for when the panel opens, read on a
-    /// worker ([`Job::FileFacts`], whose record says it is reading), and kept for the
-    /// dataset however the read ended, so neither drawing nor reopening reads again.
-    file_facts: Option<(u64, FileFacts)>,
-    /// What the dataset's columns mean, when a catalog that lists it says.
-    pub codebook: Option<std::sync::Arc<codebook::Codebook>>,
-    /// The catalog entry the open dataset is, or is inside, and its catalog's label:
-    /// what Info's Documentation tab shows.
-    pub catalog_entry: Option<(String, std::sync::Arc<catalog::Dataset>)>,
-    /// The Documentation view, full screen over home (Ctrl+E).
-    pub documentation: widgets::documentation::DocState,
-    /// The same page for the open dataset, on Info's Documentation tab.
-    pub info_documentation: widgets::documentation::DocState,
-    /// The directories Ctrl+D kept in the cache before 0.4.0 have been moved into
-    /// `catalog.toml`, or there were none.
-    remembered_moved: bool,
-    /// Send a HEAD for the HTTP(S) file under the cursor on home, to show its size.
-    /// Off under `cargo test`, which never reaches the network unless a test asks.
-    pub head_web_rows: bool,
-    // One input per command line language, each with its own history. The history
-    // ids ("query", "sql") name files already on disk; they stay as they are so no
-    // history is lost or read as another language's.
-    query_input: TextInput, // q, history id "query"
-    sql_input: TextInput,   // SQL, history id "sql"
-    /// The find prompt (`/`) and the find `n` and `N` repeat; history id "find".
-    pub find: find::Find,
-    /// The column cursor moved last: the footer offers the column's keys.
-    column_hints: bool,
+    /// What the Info panel shows of the dataset beyond its schema.
+    pub info: info_keys::InfoState,
+    /// The command line: its inputs per mode, completion, and the query it is running.
+    pub prompt: query_prompt::QueryPrompt,
     pub input_mode: InputMode,
-    input_type: Option<InputType>,
-    query_mode: QueryMode,
-    /// The language Ctrl+T last chose, which the command line opens on until a query
-    /// in effect says otherwise.
-    query_mode_chosen: Option<QueryMode>,
-    /// The command line holds the query in effect, selected and untouched: Ctrl+T
-    /// carries it selected, so typing still replaces it.
-    query_text_restored: bool,
-    /// The columns of `df`, for the command line's list and completion. Taken from
-    /// the schema when it opens.
-    sql_columns: Vec<(String, DataType)>,
-    /// A Tab completion in progress in the command line.
-    sql_completion: Option<sql_assist::Cycle>,
-    /// A query whose first collect is running, and the view to go back to if it
-    /// fails. From the prompt, the prompt stays open until it is done.
-    query_running: Option<QueryRun>,
-    /// Why the last statement failed once it ran, shown under it in the prompt.
-    query_run_error: Option<String>,
-    /// Bumped when a running statement's failure lands in the prompt. Keys typed while
-    /// it ran were not answers to it; see `EventPump`.
-    inline_failures: u64,
     pub sort_filter_modal: SortFilterModal,
     pub pivot_melt_modal: PivotMeltModal,
     pub view_modal: ViewModal,
-    /// Whether the open dataset was reached through the home screen. `q` pops
-    /// the context: opened from home it returns there, launched straight onto
-    /// a file it quits — the user's mental stack, not a mode.
-    opened_from_home: bool,
-    /// `--view NAME`, waiting for the dataset from the command line to land.
-    /// Taken on the first install, so datasets opened later are not re-dressed.
-    startup_view: Option<String>,
     pub analysis_modal: AnalysisModal,
-    /// The Sample form over the table (`S`): the view's sample, the step under its
-    /// query.
-    pub sample_form: Option<sample_modal::SampleForm>,
-    /// Where the memory available now is read from, which a sample is checked
-    /// against. The system's, unless a test says otherwise.
-    memory_probe: table_sample::MemoryProbe,
-    /// How each random sample of a stream was drawn on this dataset, by what it was
-    /// drawn from: drawn again, the same seed keeps the same rows whether or not the
-    /// count has come in since.
-    sample_paths: Vec<(String, table_sample::DrawPath)>,
-    /// Reports, newest first, within [`QUALITY_MEMORY_BUDGET`].
-    quality_cache: Vec<QualityCacheEntry>,
-    /// See [`KeptQualitySample`]. Newest first, within [`QUALITY_MEMORY_BUDGET`].
-    quality_samples: Vec<KeptQualitySample>,
-    /// Acquisitions the budget released, newest first: (dataset, view, sample).
-    quality_released: Vec<(u64, u64, sampling::Sample)>,
-    /// [`QUALITY_MEMORY_BUDGET`], smaller in a test that fills it.
-    quality_memory_budget: usize,
-    /// Local copies Data Quality's full scans read instead of a remote source, newest
-    /// first, within `analysis.quality_local_copy`. Removed from disk when
-    /// released, when the dataset is opened again or replaced, and at exit.
-    quality_copies: Vec<RetainedCopy>,
-    /// The dataset whose copy was released, so Setup says why Run fetches again.
-    quality_copy_released: Option<u64>,
-    /// The dataset whose copy did not read as its source: its full scans read the
-    /// source, and Setup says why.
-    quality_copy_unusable: Option<u64>,
-    /// Free bytes in the cache directory, and when they were asked: Setup redraws
-    /// often, and the answer only feeds a line of text until Run asks again.
-    quality_copy_free: std::sync::Mutex<Option<(std::time::Instant, Option<u64>)>>,
-    /// The table an analysis drill left behind: Data Quality's matching rows or the
-    /// sample's, shown in its place until Esc brings it back.
-    quality_evidence_return: Option<Box<DataTableState>>,
-    pub(crate) quality_evidence_label: Option<String>,
+    /// The sample form, and what the draws learned of memory and of the paths they took.
+    pub sample: sample_draw::SampleState,
+    /// What Data Quality runs keep within the memory budget.
+    quality: quality_runs::QualityRuns,
     pub chart_modal: ChartModal,
     pub chart_export_modal: ChartExportModal,
     pub export_modal: ExportModal,
     pub copy_modal: copy_modal::CopyModal,
     pub inspector_modal: inspector_modal::InspectorModal,
-    /// A value the inspector wrote for another program, for the run loop to open:
-    /// it owns the terminal that a waiting program takes over.
-    external_open: Option<external_open::ExternalOpen>,
-    /// Where those values are written; removed when the app is.
-    open_dir: Option<tempfile::TempDir>,
-    /// The shown columns, narrowed by what is typed, while `g` is choosing one.
-    pub go_to_column: crate::widgets::ui::PickerState,
+    /// What datui hands to other programs, and the clipboard.
+    external: run::External,
+    /// The go-to-column, format and table pickers.
+    pub pickers: picker_keys::Pickers,
     /// The Value Counts screen (`F`).
     pub value_counts: value_counts_modal::ValueCountsModal,
     /// The counts the export dialog writes, when it was opened from Value Counts.
     export_counts: Option<polars::prelude::DataFrame>,
-    /// The specs `b` offers for the dataset on screen.
-    pub format_picker: crate::widgets::ui::PickerState,
-    /// The type picker, while it is open.
-    pub retype: Option<retype_modal::RetypeModal>,
-    /// The combine form, while it is open.
-    pub combine: Option<retype_modal::CombineModal>,
-    /// The type picker or the combine form go back to the Info panel, not the table.
-    pub(crate) retype_from_info: bool,
-    /// The tables `T` offers: the picker's lines, and what each opens.
-    pub table_picker: crate::widgets::ui::PickerState,
-    pub table_choices: Option<table_switch::Tables>,
-    /// The hex view (`InputMode::Hex`), kept while it is up.
-    pub hex: Option<hex_view::HexView>,
-    /// Bumped per hex view opened, so a find's answer for another is dropped.
-    hex_serial: u64,
-    /// Where copies go. Built at the first copy and kept for the run: on
-    /// Wayland and X11 the clipboard offer dies with the process that owns it,
-    /// so this handle must live as long as the copy should.
-    clipboard: Option<Box<dyn clipboard::Destination>>,
+    /// The retype and combine forms.
+    pub column_forms: retype_keys::ColumnForms,
+    /// The hex view, and the number its next read is tagged with.
+    pub hex_view: hex_keys::HexState,
     pub(crate) chart_cache: ChartCache,
     /// The selection the chart last asked for, and, when it stepped the aggregate of
     /// the one before, until when it waits for the next step before it is prepared.
@@ -1260,18 +1094,13 @@ pub struct App {
     cache: CacheManager,
     /// The recent and the shape an open writes, which the home listing waits on.
     cache_writes: CacheWrites,
-    view_manager: Views,
-    active_view_id: Option<String>, // ID of currently applied view
+    /// Saved views, and the one applied to the dataset on screen.
+    views: view_apply::SavedViews,
     /// An export under way, which the footer reports.
     export_progress: Option<ExportProgress>,
-    theme: Theme,            // Color theme for UI rendering
-    history_limit: usize,    // History limit for all text inputs (from config.query.history_limit)
-    table_cell_padding: u16, // Spaces between columns (from config.display.cell_padding)
-    column_colors: bool, // When true, colorize table cells by column type (from config.display.column_colors)
-    /// Second header row of column types. Starts from `display.type_row`; `D` flips it.
-    dtype_row: bool,
-    // Resolved display-time number formatting. `enabled` is flipped by the F key.
-    number_format: NumberFormatSettings,
+    theme: Theme, // Color theme for UI rendering
+    /// How the table is drawn this session: from the config, with the session's own toggles.
+    display: render::context::DisplaySettings,
     runtime: tokio::runtime::Handle, // Tokio runtime handle for background tasks
     /// Every general background operation, and the generation their answers are judged
     /// by. See [`jobs`].
@@ -1280,86 +1109,11 @@ pub struct App {
     /// loading screen says, and what it holds. See [`loading`]. Going home abandons it;
     /// an answer from an open it no longer holds is dropped.
     loading: loading::Loader,
-    /// The paths the dataset on screen was opened from, with the options it installed
-    /// with: what `H` opens again with its header turned the other way.
-    opened: Option<(Vec<PathBuf>, OpenOptions)>,
-    /// Where the last load-ahead was asked from. See [`App::load_ahead`].
-    loaded_ahead_from: Option<(u64, usize, usize, usize)>,
-    // `len_generation` of the in-flight background row-count, if any. Prevents re-spawning
-    // the (potentially minutes-long) count on every scroll while it's still running.
-    len_count_inflight: Option<u64>,
-    /// The `len_generation` of a count `len_count_inflight` promises that has not
-    /// started. A full count of a local frame competes with reading its first page for
-    /// the disk and the Polars workers, and that page's rows can make it unnecessary,
-    /// so it starts once a frame has painted them. See [`App::frame_painted`].
-    count_after_paint: Option<u64>,
-    /// Counts started, so a test can say none began before the page was painted.
-    #[cfg(test)]
-    counts_spawned: std::cell::Cell<usize>,
-    /// Times an installed dataset's own first rows were asked for, so a test can say a
-    /// view applied on open read them instead.
-    #[cfg(test)]
-    first_rows_asked: usize,
-    // `len_generation` whose background row-count failed. While this matches the current
-    // generation (and the count is still invalid) the row count is shown as "?" rather than a
-    // misleading provisional total.
-    len_count_failed: Option<u64>,
-    /// End was pressed on a remote dataset before its rows were counted: go there when
-    /// the count for this generation arrives, rather than to a guess.
-    end_after_count: Option<u64>,
-    /// What the pass behind a staged open found, for the frame that applies it: large
-    /// enough to be worth keeping out of the event, and discarded if the dataset it
-    /// belongs to has been replaced.
-    pending_footers_result: std::sync::Arc<std::sync::Mutex<FootersReported>>,
     /// Bumped once per dataset put on screen, which the jobs' generation is not: a collect
     /// bumps that, and the pass reading the rest of a dataset's footers outlives
     /// several. It is what says whether the columns arriving belong to the dataset the
     /// user is looking at.
     dataset_generation: u64,
-    /// End was pressed while a dataset was still reading its footers, which is where
-    /// its end is coming from. Jump when they land — and only for that dataset, which
-    /// is what the generation is for: a directory the user pressed End on and then walked
-    /// away from must not move the view of the one they opened next. `end_after_count`
-    /// alongside keys itself the same way, to `len_generation`.
-    end_when_the_footers_land: Option<u64>,
-    /// End was pressed while a text file's lines were still being indexed: jump when
-    /// the last of them is, for that dataset alone.
-    end_when_indexed: Option<u64>,
-    /// Stops the indexing thread of the dataset on screen's lines.
-    indexing_stop: Arc<std::sync::atomic::AtomicBool>,
-    /// The lines being indexed, until they all are.
-    indexing_lines: Option<Arc<crate::lines::Lines>>,
-    /// The indexing waits while home is up.
-    indexing_paused: bool,
-    /// `:N` past the lines indexed so far, for that dataset: gone to once they all are.
-    goto_when_indexed: Option<(u64, usize)>,
-    /// The last count started: what it has read of the footers, and its stop (Esc).
-    count_progress: Arc<crate::schema_union::FooterProgress>,
-    /// The dataset (`dataset_generation`) an exact count was asked for (`c` in the
-    /// Info panel), of more files than the count reads unasked.
-    exact_count_asked: Option<u64>,
-    /// `c` was pressed while a stopped count was still winding down: count again when
-    /// its answer, for this `len_generation`, comes in.
-    count_after_stop: Option<u64>,
-    /// What a dataset's footers found while the user was looking at a query, a pivot or
-    /// a drill-down rather than at the data. Held rather than applied, because widening
-    /// the scan under a query takes the query's own columns away, and offered again the
-    /// moment the view comes back to the dataset itself.
-    footers_held: Option<(u64, crate::table::FootersFound)>,
-    /// Fields a followed pipe's NDJSON brought after the open, held as footers are
-    /// until the view is back on the data.
-    followed_fields_held: Option<(u64, Vec<polars::prelude::Field>)>,
-    /// A re-read the dataset is owed by a footer pass that came back empty-handed, held
-    /// back because the collect it goes through would bump the generation out from
-    /// under work already running. The pass that failed brings no columns to hold, so
-    /// `footers_held` has nothing to say about it, and the dataset still needs the
-    /// ordinary count the pass was going to save it — hence an errand of its own, tried
-    /// again after every event until the work it would cancel is done.
-    reread_owed: Option<u64>,
-    /// Which home screen workers panic before their work starts, for tests of what a
-    /// dying worker leaves behind. The jobs' own is [`Jobs::worker_dies`].
-    #[cfg(test)]
-    home_worker_dies: Option<HomeWorkerDies>,
     /// Reads the open file's facts in place of [`FileFacts::read`], for tests of a
     /// read that is slow or fails.
     #[cfg(test)]
@@ -1381,8 +1135,6 @@ pub struct App {
     /// is busy: an End waiting on a remote row count parks without setting `busy`.
     status_message: Option<String>,
     app_config: AppConfig,
-    /// The terminal should be asked for its background before the next frame.
-    background_query: bool,
     /// The format specs on the search path, read when the app was built.
     formats: Arc<crate::formats::Registry>,
 }
@@ -1427,7 +1179,8 @@ impl App {
     /// Whether the dataset on screen was piped in: named `stdin`, with no file behind
     /// that name.
     fn reads_stdin(&self) -> bool {
-        self.opened
+        self.source
+            .opened
             .as_ref()
             .is_some_and(|(paths, _)| matches!(paths.as_slice(), [path] if stdin::is_stdin(path)))
     }
@@ -1451,7 +1204,7 @@ impl App {
     /// `--table`, or by a path inside the file (`shop.db/orders`), which opens as the
     /// file with `--table`.
     fn view_table(&self) -> Option<&str> {
-        let (_, options) = self.opened.as_ref()?;
+        let (_, options) = self.source.opened.as_ref()?;
         options.table.as_deref()
     }
 
@@ -1541,11 +1294,16 @@ impl App {
             Option<usize>,
             bool,
         ) -> Result<crate::statistics::AnalysisResults>;
-        let (status, compute): (&str, Compute) = match tool {
+        type Install = fn(&mut analysis_modal::AnalysisModal, crate::statistics::AnalysisResults);
+        let (status, compute, install): (&str, Compute, Install) = match tool {
             AnalysisTool::DataQuality => return self.run_quality_compute(),
-            AnalysisTool::Describe => ("Running analysis...", |lf, sample, known, streaming| {
-                crate::statistics::compute_describe_from_lazy(lf, known, sample, streaming)
-            }),
+            AnalysisTool::Describe => (
+                "Running analysis...",
+                |lf, sample, known, streaming| {
+                    crate::statistics::compute_describe_from_lazy(lf, known, sample, streaming)
+                },
+                |modal, results| modal.describe_results = Some(results),
+            ),
             AnalysisTool::DistributionAnalysis => (
                 "Analyzing distributions...",
                 |lf, sample, known, streaming| {
@@ -1558,10 +1316,13 @@ impl App {
                     };
                     crate::statistics::compute_statistics_for_sample(lf, sample, known, options)
                 },
+                |modal, results| modal.distribution_results = Some(results),
             ),
-            AnalysisTool::CorrelationMatrix => {
-                ("Computing correlation matrix...", correlations_of_sample)
-            }
+            AnalysisTool::CorrelationMatrix => (
+                "Computing correlation matrix...",
+                correlations_of_sample,
+                analysis_modal::AnalysisModal::install_correlations,
+            ),
         };
         let Some(state) = &self.data_table_state else {
             self.analysis_modal.computing = None;
@@ -1584,7 +1345,7 @@ impl App {
                     .cut(&sample.scope)
                     .and_then(|lf| compute(&lf, &sample, known_total, streaming))
                     .map_err(|e| format!("{e}"))?;
-                Ok(Answer::Analysis(tool, results))
+                Ok(Answer::Analysis(install, results))
             },
         );
         None
@@ -1714,14 +1475,14 @@ impl App {
     /// Read `reader` where `-` reads standard input: what a test pipes in.
     #[doc(hidden)]
     pub fn read_stdin_from(&mut self, reader: impl std::io::Read + Send + 'static) {
-        self.stdin_reader = Some(Box::new(reader));
+        self.pipes.stdin_reader = Some(Box::new(reader));
     }
 
     /// Pass the stream on to `out` for `--tee -`: standard output as the process got
     /// it, or a test's pipe.
     #[doc(hidden)]
     pub fn pass_stdout_to(&mut self, out: impl std::io::Write + Send + 'static) {
-        self.stdout_pass = Some(Box::new(out));
+        self.pipes.stdout_pass = Some(Box::new(out));
     }
 
     /// The follow of the dataset on screen, while it is followed.
@@ -1763,7 +1524,7 @@ impl App {
             self.flash_note(message);
         }
         if !fields.is_empty() {
-            self.followed_fields_held = Some((self.dataset_generation, fields));
+            self.counting.followed_fields_held = Some((self.dataset_generation, fields));
         }
         self.catch_up_follow();
         self.join_followed_fields();
@@ -1800,11 +1561,11 @@ impl App {
     /// take them now, and read the rows on screen through the wider frame. Tried again
     /// after every event while they wait, as footers are.
     fn join_followed_fields(&mut self) {
-        let Some((generation, _)) = self.followed_fields_held.as_ref() else {
+        let Some((generation, _)) = self.counting.followed_fields_held.as_ref() else {
             return;
         };
         if *generation != self.dataset_generation {
-            self.followed_fields_held = None;
+            self.counting.followed_fields_held = None;
             return;
         }
         // Not under rows still being taken: the view reads the new rows first.
@@ -1814,7 +1575,7 @@ impl App {
         {
             return;
         }
-        let Some((generation, fields)) = self.followed_fields_held.take() else {
+        let Some((generation, fields)) = self.counting.followed_fields_held.take() else {
             return;
         };
         let Some(state) = self.data_table_state.as_mut() else {
@@ -1825,7 +1586,7 @@ impl App {
                 self.spawn_async_collect(Self::LOADING_BUFFER);
             }
             Ok(false) => {}
-            Err(()) => self.followed_fields_held = Some((generation, fields)),
+            Err(()) => self.counting.followed_fields_held = Some((generation, fields)),
         }
     }
 
@@ -1887,7 +1648,7 @@ impl App {
                 state.aim_at_end();
             } else {
                 // A filtered view's end is known once its count lands.
-                self.end_after_count = Some(state.len_generation());
+                self.counting.end_after_count = Some(state.len_generation());
             }
         }
         if read && !self.spawn_collect(None) {
@@ -1907,7 +1668,8 @@ impl App {
     /// screen.
     pub fn recording(&self) -> Option<&Arc<crate::follow::Spool>> {
         self.data_table_state.as_ref()?;
-        self.opened
+        self.source
+            .opened
             .as_ref()
             .and_then(|(_, options)| options.spool.as_ref())
             .map(|handle| handle.spool())
@@ -1926,7 +1688,7 @@ impl App {
             KeyCode::Char('o') if ctrl => Some(Leaving::Home),
             KeyCode::Char('Q') if !ctrl && self.in_normal_table_view() => Some(Leaving::Quit),
             KeyCode::Char('q') if !ctrl && self.in_normal_table_view() => {
-                Some(if self.opened_from_home {
+                Some(if self.source.opened_from_home {
                     Leaving::Home
                 } else {
                     Leaving::Quit
@@ -1963,6 +1725,7 @@ impl App {
     /// until its stream ends, while datui goes home or quits.
     fn leave_recording(&mut self, leaving: Leaving, stop: bool) -> Option<AppEvent> {
         let handle = self
+            .source
             .opened
             .as_ref()
             .and_then(|(_, options)| options.spool.clone());
@@ -1972,7 +1735,7 @@ impl App {
             }
         } else {
             // Held past the dataset, so letting it go does not stop the copy.
-            self.recording_on = handle;
+            self.pipes.recording_on = handle;
         }
         match leaving {
             Leaving::Quit => Some(AppEvent::Exit),
@@ -1988,7 +1751,7 @@ impl App {
     pub fn recording_after_exit(
         &mut self,
     ) -> Option<(crate::follow::Tee, Arc<crate::follow::SpoolHandle>)> {
-        let handle = self.recording_on.take()?;
+        let handle = self.pipes.recording_on.take()?;
         let spool = handle.spool();
         let tee = spool.tee()?.clone();
         spool.live().then_some((tee, handle))
@@ -2001,10 +1764,10 @@ impl App {
             return false;
         };
         let Some(ended) = spool.ended() else {
-            self.recording_end_said = false;
+            self.pipes.recording_end_said = false;
             return false;
         };
-        if std::mem::replace(&mut self.recording_end_said, true) {
+        if std::mem::replace(&mut self.pipes.recording_end_said, true) {
             return false;
         }
         let said = match spool.tee() {
@@ -2063,10 +1826,10 @@ impl App {
     pub fn tick_follow_clock(&mut self) -> bool {
         let ended = self.notice_recording_end();
         let now = self.follow_mark();
-        if now == self.follow_drawn {
+        if now == self.pipes.follow_drawn {
             return ended;
         }
-        self.follow_drawn = now;
+        self.pipes.follow_drawn = now;
         true
     }
 
@@ -2177,7 +1940,7 @@ impl App {
             }
             return None;
         }
-        let (paths, options) = self.opened.clone()?;
+        let (paths, options) = self.source.opened.clone()?;
         if paths.iter().any(|path| crate::stdin::is_stdin(path)) {
             self.flash_note("Standard input is followed from the start: datui -f -".to_string());
             return None;
@@ -2262,7 +2025,7 @@ impl App {
             && self.analysis_modal.computing.is_some()
             && key.code == KeyCode::Esc;
         let cancel_pivot = self.pivot_computing() && key.code == KeyCode::Esc;
-        let leave_quality_evidence = self.quality_evidence_return.is_some()
+        let leave_quality_evidence = self.quality.evidence_return.is_some()
             && self.input_mode == InputMode::Normal
             && key.code == KeyCode::Esc;
         let cancel_view = key.code == KeyCode::Esc && self.view_applying();
@@ -2540,13 +2303,15 @@ impl App {
             // The Picker narrows by typing, so it types.
             InputMode::GoToColumn => true,
             InputMode::PickFormat | InputMode::Retype => true,
-            InputMode::Combine => self
-                .combine
-                .as_ref()
-                .is_some_and(|c| c.picker.is_some() || c.focus == retype_modal::CombineField::Name),
+            InputMode::Combine => {
+                self.column_forms.combine.as_ref().is_some_and(|c| {
+                    c.picker.is_some() || c.focus == retype_modal::CombineField::Name
+                })
+            }
             InputMode::PickTable => true,
             InputMode::Sample => self
-                .sample_form
+                .sample
+                .form
                 .as_ref()
                 .is_some_and(|form| form.field.is_text()),
             // The whole inline editor types (pickers narrow, the value edits), as
@@ -2587,7 +2352,8 @@ impl App {
             InputMode::Home | InputMode::Info | InputMode::ValueCounts => false,
             // The prompt types, and so does the spec picker's filter.
             InputMode::Hex => self
-                .hex
+                .hex_view
+                .view
                 .as_ref()
                 .is_some_and(|view| view.prompt.is_some() || view.picker.is_some()),
         }
@@ -2619,11 +2385,11 @@ impl App {
     /// moments, and a background thread is moving it between them.
     fn begin_frame(&mut self) {
         // Back from home to the table whose lines were being indexed.
-        if self.indexing_paused && self.input_mode != InputMode::Home {
+        if self.counting.indexing_paused && self.input_mode != InputMode::Home {
             self.index_lines();
         }
-        self.footers_this_frame = self.footer_progress().reading();
-        self.listed_this_frame = self.footer_progress().listed();
+        self.counting.footers_this_frame = self.footer_progress().reading();
+        self.counting.listed_this_frame = self.footer_progress().listed();
         // Whatever this frame does not draw cannot be clicked.
         self.pointer.forget_drawn();
         if let Some(state) = self.data_table_state.as_mut() {
@@ -2636,7 +2402,9 @@ impl App {
     /// replaced half way through cannot count under the name of the file that replaced
     /// it.
     pub fn footer_progress(&self) -> &Arc<crate::schema_union::FooterProgress> {
-        self.loading.progress().unwrap_or(&self.footer_progress)
+        self.loading
+            .progress()
+            .unwrap_or(&self.counting.footer_progress)
     }
 
     /// Hold past the app: dropped after it, it removes the temp files the app's opens
@@ -2715,10 +2483,10 @@ impl App {
         // row group too large to add under the caps — and asking again every frame
         // would plan it again every frame.
         let position = state.buffer_position();
-        if !state.wants_to_load_ahead() || self.loaded_ahead_from == Some(position) {
+        if !state.wants_to_load_ahead() || self.counting.loaded_ahead_from == Some(position) {
             return;
         }
-        self.loaded_ahead_from = Some(position);
+        self.counting.loaded_ahead_from = Some(position);
         self.spawn_collect(None);
     }
 
@@ -2765,7 +2533,7 @@ impl App {
         let mut count = None;
         let generation = state.len_generation();
         if !state.is_num_rows_valid()
-            && self.len_count_inflight != Some(generation)
+            && self.counting.len_count_inflight != Some(generation)
             // Marked as running only once it is going to run. A dataset still reading
             // its own footers declines this count, because that pass is bringing it —
             // and the marker is cleared by a count coming back, so setting it for one
@@ -2774,16 +2542,16 @@ impl App {
             // and `End` waiting on nothing.
             && !state.counts_itself_later()
             // A count that failed is not tried again on every scroll. End asks again.
-            && self.len_count_failed != Some(generation)
+            && self.counting.len_count_failed != Some(generation)
             // A dataset of too many files to count unasked shows its estimate.
             && !held
         {
-            self.len_count_inflight = Some(generation);
+            self.counting.len_count_inflight = Some(generation);
             count = Some(LenCount::for_state(state));
         }
         let footers = count.take_if(|job| job.reads_footers());
         if count.take_if(|_| !state.is_remote_source()).is_some() {
-            self.count_after_paint = Some(generation);
+            self.counting.count_after_paint = Some(generation);
         }
         if let Some(job) = footers {
             self.spawn_count(job);
@@ -2835,7 +2603,7 @@ impl App {
             // `len()`, which is the expensive thing the riding exists to avoid. Putting
             // the marker down with it is what lets the retry ask again.
             if count.is_some() {
-                self.len_count_inflight = None;
+                self.counting.len_count_inflight = None;
             }
             // A load-ahead is not owed: nobody asked for it.
             let Some(status) = status else {
@@ -2853,7 +2621,7 @@ impl App {
             return true;
         }
         self.jobs.advance();
-        self.reads.pages += 1;
+        self.home_app.reads.pages += 1;
         let inflight = InflightCollect {
             began: std::time::Instant::now(),
             files: state.files_a_page_reads(
@@ -3092,10 +2860,6 @@ impl App {
         None
     }
 
-    /// Run a scroll on `data_table_state` and resolve the busy/spawn cycle.
-    /// `scroll` returns true when its movement leaves the buffered window (caller must collect).
-    /// We clear `busy` ourselves when no collect is needed or the spawn no-ops, otherwise
-    /// the busy flag set by the key handler would gate further input forever.
     /// Home, End and G. A jump may need a fill, so it is deferred behind a frame that
     /// shows the throbber — setting `start_row` alone used to leave the old buffer on
     /// screen, drawn from its first row — unless the view is already there, in which
@@ -3119,7 +2883,7 @@ impl App {
             && let Some(state) = self.data_table_state.as_ref()
             && state.indexing().is_some()
         {
-            self.end_when_indexed = Some(self.dataset_generation);
+            self.counting.end_when_indexed = Some(self.dataset_generation);
             self.status_message = Some(Self::COUNTING_FOR_END.to_string());
             return None;
         }
@@ -3129,7 +2893,7 @@ impl App {
             && state.scan_is_the_root()
             && !state.is_num_rows_valid()
         {
-            self.end_when_the_footers_land = Some(self.dataset_generation);
+            self.counting.end_when_the_footers_land = Some(self.dataset_generation);
             self.status_message = Some(Self::COUNTING_FOR_END.to_string());
             return None;
         }
@@ -3141,14 +2905,14 @@ impl App {
             && !state.is_num_rows_valid()
         {
             let generation = state.len_generation();
-            self.end_after_count = Some(generation);
+            self.counting.end_after_count = Some(generation);
             self.status_message = Some(Self::COUNTING_FOR_END.to_string());
-            let held = self.count_after_paint == Some(generation);
+            let held = self.counting.count_after_paint == Some(generation);
             if held {
-                self.count_after_paint = None;
+                self.counting.count_after_paint = None;
             }
-            if held || self.len_count_inflight != Some(generation) {
-                self.len_count_inflight = Some(generation);
+            if held || self.counting.len_count_inflight != Some(generation) {
+                self.counting.len_count_inflight = Some(generation);
                 self.spawn_count(LenCount::for_state(state));
             }
             return None;
@@ -3166,6 +2930,10 @@ impl App {
         Some(AppEvent::Scroll(jump))
     }
 
+    /// Run a scroll on `data_table_state` and resolve the busy/spawn cycle.
+    /// `scroll` returns true when its movement leaves the buffered window (caller must collect).
+    /// We clear `busy` ourselves when no collect is needed or the spawn no-ops, otherwise
+    /// the busy flag set by the key handler would gate further input forever.
     fn handle_scroll<F>(&mut self, scroll: F) -> Option<AppEvent>
     where
         F: FnOnce(&mut crate::table::DataTableState) -> bool,
@@ -3236,112 +3004,161 @@ impl App {
         let mut app = App {
             path: None,
             data_table_state: None,
-            footer_progress: Arc::new(crate::schema_union::FooterProgress::default()),
-            footers_this_frame: None,
-            listed_this_frame: None,
+            counting: counting::Counting {
+                footer_progress: Arc::new(crate::schema_union::FooterProgress::default()),
+                footers_this_frame: None,
+                loaded_ahead_from: None,
+                len_count_inflight: None,
+                count_after_paint: None,
+                #[cfg(test)]
+                counts_spawned: std::cell::Cell::new(0),
+                #[cfg(test)]
+                first_rows_asked: 0,
+                len_count_failed: None,
+                end_after_count: None,
+                pending_footers_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
+                end_when_the_footers_land: None,
+                end_when_indexed: None,
+                indexing_stop: Arc::default(),
+                indexing_lines: None,
+                indexing_paused: false,
+                goto_when_indexed: None,
+                count_progress: Arc::default(),
+                exact_count_asked: None,
+                count_after_stop: None,
+                footers_held: None,
+                followed_fields_held: None,
+                reread_owed: None,
+                listed_this_frame: None,
+            },
             home: home::HomeState {
                 hide_unreadable: !app_config.home.show_unreadable,
                 formats: formats.clone(),
                 ..Default::default()
             },
-            home_probes_inflight: Vec::new(),
-            home_listing_cancels: HashMap::new(),
-            home_narrowing: None,
-            #[cfg(feature = "cloud")]
-            cloud_discovery_started: false,
-            home_search_inflight: false,
-            home_search_generation: 0,
-            home_generation: 0,
-            home_refresh_owed: false,
-            home_schema_inflight: Vec::new(),
-            last_load_error: None,
-            local_desktop: link_open::local_desktop(link_open::Platform::current(), |name| {
-                std::env::var(name).ok()
-            }),
-            home_schema_cache: HashMap::new(),
-            home_previews: crate::home_preview::Previews::default(),
-            reads: crate::home_preview::ReadCounts::default(),
-            shape_remembered: None,
-            original_file_format: None,
-            original_file_delimiter: None,
-            stdin_reader: None,
-            stdout_pass: None,
-            follow_drawn: None,
-            recording_on: None,
-            recording_end_said: false,
+            home_app: home_app::HomeApp {
+                probes_inflight: Vec::new(),
+                listing_cancels: HashMap::new(),
+                narrowing: None,
+                #[cfg(feature = "cloud")]
+                cloud_discovery_started: false,
+                search_inflight: false,
+                search_generation: 0,
+                last_load_error: None,
+                schema_inflight: Vec::new(),
+                generation: 0,
+                refresh_owed: false,
+                schema_cache: HashMap::new(),
+                previews: crate::home_preview::Previews::default(),
+                remembered_moved: false,
+                #[cfg(test)]
+                worker_dies: None,
+                local_desktop: link_open::local_desktop(link_open::Platform::current(), |name| {
+                    std::env::var(name).ok()
+                }),
+                reads: crate::home_preview::ReadCounts::default(),
+            },
+            source: open_scan::OpenedSource {
+                original_file_format: None,
+                original_file_delimiter: None,
+                opened: None,
+                opened_from_home: false,
+                startup_view: None,
+                shape_remembered: None,
+            },
+            pipes: run::Pipes {
+                stdin_reader: None,
+                stdout_pass: None,
+                follow_drawn: None,
+                recording_on: None,
+                recording_end_said: false,
+            },
             events,
             debug: DebugState::default(),
             info_modal: InfoModal::new(),
-            file_facts: None,
-            codebook: None,
-            catalog_entry: None,
-            documentation: Default::default(),
-            info_documentation: Default::default(),
-            remembered_moved: false,
-            head_web_rows: !cache::running_as_a_cargo_test(),
-            query_input: TextInput::new()
-                .with_history_limit(app_config.query.history_limit)
-                .with_theme(&theme)
-                .with_history("query".to_string()),
-            sql_input: TextInput::statement()
-                .with_history_limit(app_config.query.history_limit)
-                .with_theme(&theme)
-                .with_history("sql".to_string()),
-            find: find::Find::new(
-                TextInput::new()
+            info: info_keys::InfoState {
+                file_facts: None,
+                codebook: None,
+                catalog_entry: None,
+                documentation: Default::default(),
+                info_documentation: Default::default(),
+                head_web_rows: !cache::running_as_a_cargo_test(),
+            },
+            prompt: query_prompt::QueryPrompt {
+                query_input: TextInput::new()
                     .with_history_limit(app_config.query.history_limit)
                     .with_theme(&theme)
-                    .with_history("find".to_string()),
-            ),
-            column_hints: false,
+                    .with_history("query".to_string()),
+                sql_input: TextInput::statement()
+                    .with_history_limit(app_config.query.history_limit)
+                    .with_theme(&theme)
+                    .with_history("sql".to_string()),
+                find: find::Find::new(
+                    TextInput::new()
+                        .with_history_limit(app_config.query.history_limit)
+                        .with_theme(&theme)
+                        .with_history("find".to_string()),
+                ),
+                column_hints: false,
+                input_type: None,
+                query_mode: QueryMode::default().resolve(),
+                query_mode_chosen: None,
+                query_text_restored: false,
+                sql_columns: Vec::new(),
+                sql_completion: None,
+                query_running: None,
+                query_run_error: None,
+                inline_failures: 0,
+            },
             input_mode: InputMode::Normal,
-            input_type: None,
-            query_mode: QueryMode::default().resolve(),
-            query_mode_chosen: None,
-            query_text_restored: false,
-            sql_columns: Vec::new(),
-            sql_completion: None,
-            query_running: None,
-            query_run_error: None,
-            inline_failures: 0,
             sort_filter_modal: SortFilterModal::new(),
             pivot_melt_modal: PivotMeltModal::new(),
             view_modal: ViewModal::new(),
-            opened_from_home: false,
-            startup_view: None,
             analysis_modal: AnalysisModal::with_sample_rows(app_config.analysis.sample_rows),
-            sample_form: None,
-            memory_probe: std::sync::Arc::new(table_sample::available_memory),
-            sample_paths: Vec::new(),
-            quality_cache: Vec::new(),
-            quality_samples: Vec::new(),
-            quality_released: Vec::new(),
-            quality_memory_budget: QUALITY_MEMORY_BUDGET,
-            quality_copies: Vec::new(),
-            quality_copy_released: None,
-            quality_copy_unusable: None,
-            quality_copy_free: std::sync::Mutex::new(None),
-            quality_evidence_return: None,
-            quality_evidence_label: None,
+            sample: sample_draw::SampleState {
+                form: None,
+                memory_probe: std::sync::Arc::new(table_sample::available_memory),
+                paths: Vec::new(),
+            },
+            quality: quality_runs::QualityRuns {
+                cache: Vec::new(),
+                samples: Vec::new(),
+                released: Vec::new(),
+                memory_budget: QUALITY_MEMORY_BUDGET,
+                copies: Vec::new(),
+                copy_released: None,
+                copy_unusable: None,
+                copy_free: std::sync::Mutex::new(None),
+                evidence_return: None,
+                evidence_label: None,
+            },
             chart_modal: ChartModal::new(),
             chart_export_modal,
             export_modal: ExportModal::new(),
             copy_modal: copy_modal::CopyModal::new(),
             inspector_modal: inspector_modal::InspectorModal::new(),
-            external_open: None,
-            open_dir: None,
-            go_to_column: crate::widgets::ui::PickerState::default(),
+            external: run::External {
+                open: None,
+                open_dir: None,
+                clipboard: None,
+            },
+            pickers: picker_keys::Pickers {
+                go_to_column: crate::widgets::ui::PickerState::default(),
+                format_picker: crate::widgets::ui::PickerState::default(),
+                table_picker: crate::widgets::ui::PickerState::default(),
+                table_choices: None,
+            },
             value_counts: value_counts_modal::ValueCountsModal::default(),
-            hex: None,
-            hex_serial: 0,
+            hex_view: hex_keys::HexState {
+                view: None,
+                serial: 0,
+            },
             export_counts: None,
-            format_picker: crate::widgets::ui::PickerState::default(),
-            retype: None,
-            combine: None,
-            retype_from_info: false,
-            table_picker: crate::widgets::ui::PickerState::default(),
-            table_choices: None,
-            clipboard: None,
+            column_forms: retype_keys::ColumnForms {
+                retype: None,
+                combine: None,
+                retype_from_info: false,
+            },
             chart_cache: ChartCache::default(),
             chart_asked: None,
             chart_export_waiting: None,
@@ -3353,63 +3170,42 @@ impl App {
             context_menu: None,
             cache,
             cache_writes: CacheWrites::default(),
-            view_manager,
-            active_view_id: None,
+            views: view_apply::SavedViews {
+                manager: view_manager,
+                active_id: None,
+            },
             export_progress: None,
             theme,
-            history_limit: app_config.query.history_limit,
-            table_cell_padding: app_config.display.cell_padding.cells(),
-            column_colors: app_config.display.column_colors,
-            dtype_row: app_config.display.type_row,
-            number_format: app_config
-                .display
-                .number_format
-                .resolve(app_config.display.right_align_numbers)
-                // AppConfig::load validates this, but App can be built from an
-                // unvalidated config (e.g. the Python API): fall back to no
-                // formatting while still honouring the alignment setting.
-                .unwrap_or_else(|_| NumberFormatSettings {
-                    align_numeric_right: app_config.display.right_align_numbers,
-                    ..Default::default()
-                }),
+            display: render::context::DisplaySettings {
+                history_limit: app_config.query.history_limit,
+                table_cell_padding: app_config.display.cell_padding.cells(),
+                column_colors: app_config.display.column_colors,
+                dtype_row: app_config.display.type_row,
+                number_format: app_config
+                    .display
+                    .number_format
+                    .resolve(app_config.display.right_align_numbers)
+                    // AppConfig::load validates this, but App can be built from an
+                    // unvalidated config (e.g. the Python API): fall back to no
+                    // formatting while still honouring the alignment setting.
+                    .unwrap_or_else(|_| NumberFormatSettings {
+                        align_numeric_right: app_config.display.right_align_numbers,
+                        ..Default::default()
+                    }),
+                background_query: false,
+            },
             jobs,
             runtime,
             loading: loading::Loader::default(),
-            opened: None,
-            loaded_ahead_from: None,
-            pending_footers_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             dataset_generation: 0,
-            footers_held: None,
-            followed_fields_held: None,
-            reread_owed: None,
-            #[cfg(test)]
-            home_worker_dies: None,
             #[cfg(test)]
             file_facts_reader: None,
-            end_when_the_footers_land: None,
-            end_when_indexed: None,
-            indexing_stop: Arc::default(),
-            indexing_lines: None,
-            indexing_paused: false,
-            goto_when_indexed: None,
-            count_progress: Arc::default(),
-            exact_count_asked: None,
-            count_after_stop: None,
-            len_count_inflight: None,
-            count_after_paint: None,
-            #[cfg(test)]
-            counts_spawned: std::cell::Cell::new(0),
-            #[cfg(test)]
-            first_rows_asked: 0,
-            len_count_failed: None,
-            end_after_count: None,
             busy: false,
             throbber_frame: 0,
             screen_generation: 0,
             input_dropped: false,
             status_message: None,
             app_config,
-            background_query: false,
             formats,
         };
         // A theme that could not be used: why is said on stderr after exit.
@@ -3448,7 +3244,7 @@ impl App {
         if self.input_mode != InputMode::Home {
             return;
         }
-        if self.home_refresh_owed {
+        if self.home_app.refresh_owed {
             self.home_refresh();
         }
         #[cfg(feature = "http")]
@@ -3486,7 +3282,7 @@ impl App {
         // The home filter types too once something is typed into it.
         let typing = self.text_field_focused()
             || (self.input_mode == InputMode::Home
-                && !self.documentation.is_open()
+                && !self.info.documentation.is_open()
                 && (!self.home.filter.is_empty() || self.home.path_input_active));
         self.help.open(context, typing);
     }
@@ -3526,7 +3322,7 @@ impl App {
         }
         match self.input_mode {
             InputMode::Normal => Context::Table,
-            InputMode::Editing => match self.input_type {
+            InputMode::Editing => match self.prompt.input_type {
                 Some(InputType::Find) => Context::Find,
                 _ => Context::Query,
             },
@@ -3543,7 +3339,7 @@ impl App {
             InputMode::Sample => Context::Sample,
             InputMode::Info => Context::Info,
             InputMode::Chart => Context::Chart,
-            InputMode::Home if self.documentation.is_open() => Context::Documentation,
+            InputMode::Home if self.info.documentation.is_open() => Context::Documentation,
             InputMode::Home => Context::Home,
             InputMode::Hex => Context::Hex,
             InputMode::ValueCounts => Context::ValueCounts,
@@ -3557,7 +3353,8 @@ impl App {
     /// size probe behind a download can take fifteen seconds, and the answer to
     /// "actually, never mind" is the home screen, not the exit.
     pub fn awaiting_open_confirmation(&self) -> bool {
-        self.confirmation_modal.active && self.loading.asking()
+        self.confirmation_modal.active
+            && matches!(self.confirmation_modal.asking, Some(Confirm::Download))
     }
 
     /// Enter on the confirmation's Yes, or on either choice of one whose No acts too.
@@ -3589,7 +3386,7 @@ impl App {
                 None
             }
             Confirm::DeleteView(id) => {
-                if self.view_manager.delete_view(&id).is_ok() {
+                if self.views.manager.delete_view(&id).is_ok() {
                     self.refresh_view_list();
                 }
                 None
@@ -3831,7 +3628,7 @@ impl App {
                     // list the dataset was chosen from, carrying the reason, so the
                     // next choice is one keystroke away.
                     if self.data_table_state.is_none() {
-                        let reason = self.last_load_error.take();
+                        let reason = self.home_app.last_load_error.take();
                         self.enter_home();
                         self.home.status = reason;
                     }
@@ -3852,8 +3649,8 @@ impl App {
         // The footer offers the column's keys once the column cursor moves, until a
         // key that is not about the column.
         if in_main_table && event.is_press() {
-            self.column_hints = Self::column_cursor_key(event).is_some()
-                || (self.column_hints
+            self.prompt.column_hints = Self::column_cursor_key(event).is_some()
+                || (self.prompt.column_hints
                     && matches!(
                         event.code,
                         KeyCode::Char(
@@ -3991,7 +3788,7 @@ impl App {
             // there; launched straight onto a file, it quits as it always
             // has. Q and Ctrl+Q stay unconditional.
             KeyCode::Char('q') => {
-                if self.opened_from_home {
+                if self.source.opened_from_home {
                     self.enter_home();
                     None
                 } else {
@@ -4057,8 +3854,8 @@ impl App {
             KeyCode::Char('D') => {
                 // The type row is drawn from the schema the table already has, so
                 // this is a render-time flip like `,`. Session-only.
-                self.dtype_row = !self.dtype_row;
-                let on = if self.dtype_row { "on" } else { "off" };
+                self.display.dtype_row = !self.display.dtype_row;
+                let on = if self.display.dtype_row { "on" } else { "off" };
                 self.debug.action(|| format!("toggle_dtype_row({on})"));
                 None
             }
@@ -4070,8 +3867,8 @@ impl App {
                 // Formatting is applied at render time, so this takes effect on
                 // the next frame with no re-collect. Session-only: the config
                 // file stays the source of truth at launch.
-                self.number_format.enabled = !self.number_format.enabled;
-                let on = if self.number_format.enabled {
+                self.display.number_format.enabled = !self.display.number_format.enabled;
+                let on = if self.display.number_format.enabled {
                     "on"
                 } else {
                     "off"
@@ -4082,7 +3879,7 @@ impl App {
             KeyCode::Esc => {
                 // The find is the nearest layer: its mark goes first, then a drill.
                 if self.find_shown() {
-                    self.find.active = None;
+                    self.prompt.find.active = None;
                     return None;
                 }
                 // A sample being drawn stops, keeping the rows so far.
@@ -4222,7 +4019,8 @@ impl App {
                     && let Some(dataset) = self.view_dataset()
                 {
                     match self
-                        .view_manager
+                        .views
+                        .manager
                         .get_most_relevant(dataset, state.source_schema())
                     {
                         Some((view, why)) => {
@@ -4257,7 +4055,7 @@ impl App {
                         .and_then(|state| state.current_column())
                         .map(str::to_string);
                     self.sort_filter_modal.open(
-                        self.history_limit,
+                        self.display.history_limit,
                         &self.theme,
                         current.as_deref(),
                     );
@@ -4276,7 +4074,7 @@ impl App {
                 // Open analysis modal; no computation until user selects a tool from the sidebar (Enter)
                 if self.data_table_state.is_some()
                     && self.input_mode == InputMode::Normal
-                    && self.quality_evidence_return.is_none()
+                    && self.quality.evidence_return.is_none()
                 {
                     // The results a close put down come back on the view they are of.
                     let view = self.data_table_state.as_ref().map(|s| s.len_generation());
@@ -4375,10 +4173,10 @@ impl App {
                 if self.data_table_state.is_some() && self.input_mode == InputMode::Normal {
                     self.export_counts = None;
                     self.export_modal.open(
-                        self.original_file_format,
-                        self.history_limit,
+                        self.source.original_file_format,
+                        self.display.history_limit,
                         &self.theme,
-                        self.original_file_delimiter,
+                        self.source.original_file_delimiter,
                     );
                     // A name to start from, beside the source's rather than on it.
                     let stem = self.dataset_stem();
@@ -4529,7 +4327,7 @@ impl App {
                 // Home is now in the stack, so q pops back to it. Never unset:
                 // a reread from the table (H) is not a new place.
                 if self.input_mode == InputMode::Home {
-                    self.opened_from_home = true;
+                    self.source.opened_from_home = true;
                 }
                 // `az://container/path` and its kin name no account; where they were
                 // typed, or the config, does.
@@ -4609,7 +4407,7 @@ impl App {
                         || !state.view_sort_columns().is_empty()
                         || !state.view_sort_ascending())
                 {
-                    self.goto_when_indexed = Some((self.dataset_generation, n));
+                    self.counting.goto_when_indexed = Some((self.dataset_generation, n));
                     self.status_message = Some(Self::INDEXING_FOR_ROW.to_string());
                     self.busy = false;
                     return None;
@@ -4812,7 +4610,7 @@ impl App {
                     state.deferred(|s| s.reset());
                 }
                 self.spawn_async_collect(Self::LOADING_BUFFER);
-                self.active_view_id = None;
+                self.views.active_id = None;
                 None
             }
             AppEvent::ApplyView(order, locked, filters, columns, descending) => {
@@ -5023,7 +4821,7 @@ impl App {
                 None
             }
             AppEvent::TerminalFocused => {
-                self.background_query |= self.app_config.theme.follow;
+                self.display.background_query |= self.app_config.theme.follow;
                 None
             }
             _ => None,
@@ -5044,7 +4842,8 @@ impl App {
     /// Whether the dataset on screen is delimited text, whose first row `H` on the
     /// Info panel's Schema tab reads the other way.
     pub fn header_toggle_offered(&self) -> bool {
-        self.opened
+        self.source
+            .opened
             .as_ref()
             .and_then(|(_, options)| options.format)
             .and_then(FileFormat::separator)
@@ -5058,7 +4857,7 @@ impl App {
         if !self.header_toggle_offered() {
             return None;
         }
-        let (paths, options) = self.opened.clone()?;
+        let (paths, options) = self.source.opened.clone()?;
         let options = OpenOptions {
             has_header: Some(!options.has_header.unwrap_or(true)),
             ..options
@@ -5320,6 +5119,7 @@ impl App {
     /// as its format says (a stream or a compressed copy has no footer).
     fn facts_of_open(&self) -> Option<(FileFormat, crate::readers::Facts)> {
         let hive = self
+            .source
             .opened
             .as_ref()
             .is_some_and(|(_, options)| options.hive);
@@ -5338,7 +5138,7 @@ impl App {
     /// screen, from the read's job record. The rows drawn meanwhile are the view it
     /// replaces, under columns it may have changed.
     pub(crate) fn query_reading(&self) -> Option<&str> {
-        let run = self.query_running.as_ref()?;
+        let run = self.prompt.query_running.as_ref()?;
         let frame = self.data_table_state.as_ref()?.len_generation();
         if !matches!(run.origin, RunOrigin::Query(_)) || run.frame != frame {
             return None;
@@ -5588,22 +5388,10 @@ impl App {
                 self.rows_failed(current, waited, &message, conversion.as_deref());
                 None
             }
-            Answer::Analysis(tool, results) => {
+            Answer::Analysis(install, results) => {
                 if current {
-                    let modal = &mut self.analysis_modal;
-                    match tool {
-                        analysis_modal::AnalysisTool::Describe => {
-                            modal.describe_results = Some(results)
-                        }
-                        analysis_modal::AnalysisTool::DistributionAnalysis => {
-                            modal.distribution_results = Some(results)
-                        }
-                        analysis_modal::AnalysisTool::CorrelationMatrix => {
-                            modal.install_correlations(results)
-                        }
-                        analysis_modal::AnalysisTool::DataQuality => {}
-                    }
-                    modal.computing = None;
+                    install(&mut self.analysis_modal, results);
+                    self.analysis_modal.computing = None;
                 }
                 None
             }
@@ -5779,7 +5567,7 @@ impl App {
             }
             Answer::ValueWritten(open) => {
                 if current && self.inspector_modal.active {
-                    self.external_open = Some(open);
+                    self.external.open = Some(open);
                 }
                 None
             }
@@ -6100,6 +5888,7 @@ impl App {
         let dataset = self.dataset_generation;
         if self.data_table_state.is_none()
             || self
+                .info
                 .file_facts
                 .as_ref()
                 .is_some_and(|(read, _)| *read == dataset)
@@ -6110,6 +5899,7 @@ impl App {
         // One file on this machine, or nothing: a glob is no file to stat, and several
         // files are not the first one's size.
         let several = self
+            .source
             .opened
             .as_ref()
             .is_some_and(|(paths, _)| paths.len() > 1);
@@ -6147,7 +5937,7 @@ impl App {
     /// An answer for one replaced since is about a file no longer there.
     fn file_facts_landed(&mut self, dataset: u64, facts: FileFacts) {
         if dataset == self.dataset_generation {
-            self.file_facts = Some((dataset, facts));
+            self.info.file_facts = Some((dataset, facts));
         }
     }
 
@@ -6156,7 +5946,7 @@ impl App {
     /// what is here is the open dataset's.
     pub fn file_facts(&self) -> Option<&FileFacts> {
         Self::facts_shown(
-            &self.file_facts,
+            &self.info.file_facts,
             self.dataset_generation,
             self.file_facts_reading(),
         )
@@ -6205,10 +5995,10 @@ impl App {
         // has said it, and the prompt's line saying it again was the same failure
         // reported twice (#547 D8).
         if from_home {
-            self.last_load_error = None;
+            self.home_app.last_load_error = None;
             self.enter_home();
         } else {
-            self.last_load_error = Some(message.clone());
+            self.home_app.last_load_error = Some(message.clone());
         }
         self.error_modal.show(message);
     }
@@ -6236,16 +6026,16 @@ impl App {
         }
         // A count waiting for this page to paint would read the frame that just
         // failed to: it fails with it, the way a count riding in the collect does.
-        if let Some(generation) = self.count_after_paint.take() {
-            if self.len_count_inflight == Some(generation) {
-                self.len_count_inflight = None;
+        if let Some(generation) = self.counting.count_after_paint.take() {
+            if self.counting.len_count_inflight == Some(generation) {
+                self.counting.len_count_inflight = None;
             }
             if self
                 .data_table_state
                 .as_ref()
                 .is_some_and(|state| state.len_generation() == generation)
             {
-                self.len_count_failed = Some(generation);
+                self.counting.len_count_failed = Some(generation);
             }
         }
         self.first_rows_settled();
@@ -6322,9 +6112,9 @@ impl App {
                 // The prompts live as long as the app and keep the colors they were
                 // given; a dialog's fields take the theme each time it opens.
                 for input in [
-                    &mut self.query_input,
-                    &mut self.sql_input,
-                    &mut self.find.input,
+                    &mut self.prompt.query_input,
+                    &mut self.prompt.sql_input,
+                    &mut self.prompt.find.input,
                 ] {
                     *input = std::mem::take(input).with_theme(&self.theme);
                 }
@@ -6361,7 +6151,7 @@ impl App {
     /// Whether the run loop should ask the terminal for its background, once. Asked by
     /// [`AppEvent::TerminalFocused`] under `auto`.
     pub fn take_background_query(&mut self) -> bool {
-        std::mem::take(&mut self.background_query)
+        std::mem::take(&mut self.display.background_query)
     }
 
     /// The colors the next frame is drawn with.
@@ -6376,7 +6166,7 @@ impl App {
 
     /// The value the inspector wrote for another program, for the run loop.
     pub fn take_external_open(&mut self) -> Option<external_open::ExternalOpen> {
-        self.external_open.take()
+        self.external.open.take()
     }
 
     /// Whether the session reports the mouse, to take it again after a program
@@ -6424,11 +6214,11 @@ impl App {
 
         let ctx = RenderContext::from_theme_and_config(
             &self.theme,
-            self.table_cell_padding,
-            self.column_colors,
-            self.number_format.clone(),
+            self.display.table_cell_padding,
+            self.display.column_colors,
+            self.display.number_format.clone(),
         )
-        .with_dtype_row(self.dtype_row);
+        .with_dtype_row(self.display.dtype_row);
 
         let main_view_content = MainViewContent::current(self);
 
@@ -6585,12 +6375,13 @@ impl Drop for App {
         // whatever holds it drops. Drop rather than the end of `run`, because it covers
         // every exit: a normal quit, an error return, an unwind from a panic, and the
         // Python binding calling `run` again in the same process.
-        self.footer_progress.cancel();
+        self.counting.footer_progress.cancel();
         // The indexing stops, and the reads waiting on it give up, so nothing holds
         // the file once the app is gone (the Python binding runs on in the process).
-        self.indexing_stop
+        self.counting
+            .indexing_stop
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        if let Some(lines) = self.indexing_lines.take() {
+        if let Some(lines) = self.counting.indexing_lines.take() {
             lines.stop_indexing();
         }
     }

@@ -96,7 +96,7 @@ fn a_pass_that_outlives_its_listing_still_counts() {
     app.home.classify_in_flight = true;
 
     // What a rebuild does to the generation while the pass is out.
-    app.home_generation = app.home_generation.wrapping_add(1);
+    app.home_app.generation = app.home_app.generation.wrapping_add(1);
     app.event(&AppEvent::HomeClassified {
         measured: vec![(
             path.clone(),

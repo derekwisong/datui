@@ -13,8 +13,62 @@ use crate::{
     APP_NAME, App, AppEvent, InputMode, catalog, config, discover, home, loading, source, widgets,
 };
 use color_eyre::Result;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+
+/// The home screen's work in flight and what it keeps for the session: probes, listings,
+/// search, previews and schemas.
+pub struct HomeApp {
+    /// Network roots currently being listed off-thread, so a probe is not started
+    /// twice. Entries are never removed for a root that never answers — that thread
+    /// is unreclaimable, and retrying it would only block another one.
+    pub(crate) probes_inflight: Vec<PathBuf>,
+    /// The stop flag of each cloud listing out, by place: leaving the place sets it, and
+    /// the listing ends before its next page.
+    pub(crate) listing_cancels: HashMap<PathBuf, Arc<std::sync::atomic::AtomicBool>>,
+    /// The listing out for the names a filter asked of a cut-short cloud directory:
+    /// where, the name prefix, and its stop flag.
+    pub(crate) narrowing: Option<(PathBuf, String, Arc<std::sync::atomic::AtomicBool>)>,
+    /// True once cloud discovery has been started. Enumeration costs a request per
+    /// provider, so it happens once and its result is kept for the session.
+    #[cfg(feature = "cloud")]
+    pub(crate) cloud_discovery_started: bool,
+    /// True while a recursive search below the working directory is out. One at a
+    /// time: the walk is bounded, and a second one would only compete for the disk.
+    pub(crate) search_inflight: bool,
+    /// The home generation the walk out was started in. Its batches and its end are its
+    /// own, whatever refreshes the listing meanwhile; the root decides whether they
+    /// still describe where the user is.
+    pub(crate) search_generation: u64,
+    /// Why the last open failed, shown on the home screen when the error is dismissed
+    /// and there is nothing to fall back to.
+    pub(crate) last_load_error: Option<String>,
+    /// Schema reads currently out, so the same one is not requested every frame.
+    pub(crate) schema_inflight: Vec<PathBuf>,
+    /// Invalidates listings and measurements from a request the user has moved past.
+    pub(crate) generation: u64,
+    /// Rows came in for a listing still being read; it is listed again before the
+    /// next frame.
+    pub(crate) refresh_owed: bool,
+    /// Schema previews, memoised for the session only. Persisting these would be a
+    /// catalogue by another name, and it would go stale.
+    pub(crate) schema_cache: HashMap<PathBuf, Option<discover::SchemaPreview>>,
+    /// The home screen's `ROWS` previews, and the dataset the newest one built.
+    pub previews: crate::home_preview::Previews,
+    /// The directories Ctrl+D kept in the cache before 0.4.0 have been moved into
+    /// `catalog.toml`, or there were none.
+    pub(crate) remembered_moved: bool,
+    /// Which home screen workers panic before their work starts, for tests of what a
+    /// dying worker leaves behind. The jobs' own is [`Jobs::worker_dies`].
+    #[cfg(test)]
+    pub(crate) worker_dies: Option<crate::HomeWorkerDies>,
+    /// Whether a browser opened here opens in front of the user: `o` on a
+    /// documentation link is offered only then (`link_open::local_desktop`).
+    pub local_desktop: bool,
+    /// The reads of data started this session, by kind.
+    pub reads: crate::home_preview::ReadCounts,
+}
 
 /// Rows measured per background pass. Small enough that a slow filesystem shows
 /// progress rather than a long silence.
@@ -192,7 +246,7 @@ impl App {
         if home::is_cloud_place(&entry.path) || home::is_object_store_url(&entry.path) {
             return None;
         }
-        if let Some(cached) = self.home_schema_cache.get(&entry.path) {
+        if let Some(cached) = self.home_app.schema_cache.get(&entry.path) {
             return cached.clone();
         }
         // Reading a schema opens a file, so it is requested rather than done here.
@@ -207,7 +261,8 @@ impl App {
             tx: self.events.clone(),
             #[cfg(test)]
             dies: self
-                .home_worker_dies
+                .home_app
+                .worker_dies
                 .as_mut()
                 .is_some_and(|dies| dies(&instead)),
             instead: Some(instead),
@@ -259,7 +314,7 @@ impl App {
         if typed.is_empty() {
             return;
         }
-        let generation = self.home_generation;
+        let generation = self.home_app.generation;
         let tx = self.events.clone();
         std::thread::spawn(move || {
             let (completed, candidates) = home::complete_path(&typed);
@@ -285,10 +340,10 @@ impl App {
             return None;
         }
         let stamp = crate::home_preview::Stamp::of_entry(entry);
-        if let Some(known) = self.home_previews.rows(&entry.path, stamp) {
+        if let Some(known) = self.home_app.previews.rows(&entry.path, stamp) {
             return known;
         }
-        if self.home_previews.inflight.is_none() {
+        if self.home_app.previews.inflight.is_none() {
             self.request_home_preview(entry.path.clone(), stamp, screen_height);
         }
         None
@@ -296,7 +351,7 @@ impl App {
 
     /// Whether `entry` is one the preview reads, before its rows are in.
     pub fn home_preview_pending(&self, path: &Path) -> bool {
-        self.home_previews.reading(path)
+        self.home_app.previews.reading(path)
     }
 
     /// Read a file's first page on a worker, through the open's own scan and schema
@@ -307,8 +362,8 @@ impl App {
         stamp: crate::home_preview::Stamp,
         screen_height: u16,
     ) {
-        self.home_previews.inflight = Some(path.clone());
-        self.reads.previews += 1;
+        self.home_app.previews.inflight = Some(path.clone());
+        self.home_app.reads.previews += 1;
         let tx = self.events.clone();
         let cloud = self.app_config.cloud.clone();
         let formats = self.formats.clone();
@@ -428,17 +483,17 @@ impl App {
 
     /// Whether a schema read is currently out for this path.
     pub fn home_schema_pending(&self, path: &Path) -> bool {
-        self.home_schema_inflight.iter().any(|p| p == path)
+        self.home_app.schema_inflight.iter().any(|p| p == path)
     }
 
     /// Read the selected dataset's schema on a worker.
     fn request_home_schema(&mut self, entry: discover::Entry) {
-        if self.home_schema_inflight.contains(&entry.path) {
+        if self.home_app.schema_inflight.contains(&entry.path) {
             return;
         }
-        self.home_schema_inflight.push(entry.path.clone());
+        self.home_app.schema_inflight.push(entry.path.clone());
 
-        let generation = self.home_generation;
+        let generation = self.home_app.generation;
         let tx = self.events.clone();
         // Remembered as having none, so the preview is not asked for again.
         let owed = self.owed_answer(AppEvent::HomeSchemaReady {
@@ -467,9 +522,9 @@ impl App {
     pub(crate) fn spawn_home_probes(&mut self) {
         self.stop_listings_left_behind();
         for root in self.home.pending_probes() {
-            if self.home_probes_inflight.contains(&root) {
+            if self.home_app.probes_inflight.contains(&root) {
                 // Left and come back to before its next page: it goes on.
-                if let Some(cancelled) = self.home_listing_cancels.get(&root) {
+                if let Some(cancelled) = self.home_app.listing_cancels.get(&root) {
                     cancelled.store(false, std::sync::atomic::Ordering::Relaxed);
                 }
                 continue;
@@ -484,10 +539,10 @@ impl App {
             // spinner long after it could have been read. One more thread per
             // directory the user opens is bounded by the user.
             let browsed = self.home.browsing.as_ref() == Some(&root);
-            if !browsed && self.home_probes_inflight.len() >= MAX_CONCURRENT_PROBES {
+            if !browsed && self.home_app.probes_inflight.len() >= MAX_CONCURRENT_PROBES {
                 continue;
             }
-            self.home_probes_inflight.push(root.clone());
+            self.home_app.probes_inflight.push(root.clone());
             let tx = self.events.clone();
             let cache = self.cache.clone();
             let owed = self.owed_answer(AppEvent::HomeProbeFailed {
@@ -501,7 +556,9 @@ impl App {
             #[cfg(feature = "cloud")]
             let cancelled = {
                 let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                self.home_listing_cancels.insert(root.clone(), flag.clone());
+                self.home_app
+                    .listing_cancels
+                    .insert(root.clone(), flag.clone());
                 flag
             };
             // A detached OS thread, not the runtime's blocking pool. A thread wedged
@@ -656,7 +713,7 @@ impl App {
     /// roots of the home listing. One left and come back to is listed again.
     fn stop_listings_left_behind(&mut self) {
         let home = &self.home;
-        for (root, cancelled) in &self.home_listing_cancels {
+        for (root, cancelled) in &self.home_app.listing_cancels {
             let wanted = match &home.browsing {
                 Some(dir) => dir == root,
                 None => home
@@ -668,11 +725,11 @@ impl App {
                 cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
             }
         }
-        if let Some((dir, _, cancelled)) = &self.home_narrowing
+        if let Some((dir, _, cancelled)) = &self.home_app.narrowing
             && home.browsing.as_ref() != Some(dir)
         {
             cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
-            self.home_narrowing = None;
+            self.home_app.narrowing = None;
         }
         if self
             .home
@@ -699,7 +756,7 @@ impl App {
             crate::cloud_browse::narrowing_prefix(&self.home.filter, &names)
         });
         let (Some(dir), Some(prefix)) = (dir, prefix) else {
-            if let Some((_, _, cancelled)) = self.home_narrowing.take() {
+            if let Some((_, _, cancelled)) = self.home_app.narrowing.take() {
                 cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
             }
             if self.home.narrowed.take().is_some() {
@@ -713,17 +770,17 @@ impl App {
         }) {
             return;
         }
-        if let Some((d, p, _)) = &self.home_narrowing
+        if let Some((d, p, _)) = &self.home_app.narrowing
             && *d == dir
             && *p == prefix
         {
             return;
         }
-        if let Some((_, _, cancelled)) = self.home_narrowing.take() {
+        if let Some((_, _, cancelled)) = self.home_app.narrowing.take() {
             cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        self.home_narrowing = Some((dir.clone(), prefix.clone(), cancelled.clone()));
+        self.home_app.narrowing = Some((dir.clone(), prefix.clone(), cancelled.clone()));
         let tx = self.events.clone();
         let owed = self.owed_answer(AppEvent::HomeNarrowed {
             dir: dir.clone(),
@@ -760,10 +817,10 @@ impl App {
     /// buckets when `[cloud] list_on_start` asks. Once per session; Ctrl+R asks again.
     #[cfg(feature = "cloud")]
     fn spawn_cloud_discovery(&mut self) {
-        if self.cloud_discovery_started {
+        if self.home_app.cloud_discovery_started {
             return;
         }
-        self.cloud_discovery_started = true;
+        self.home_app.cloud_discovery_started = true;
         let list = self.app_config.cloud.list_on_start;
         self.list_cloud_sources(None, list);
     }
@@ -975,7 +1032,7 @@ impl App {
     /// signal that someone is looking for something. Launching datui, pressing Enter
     /// on a recent dataset and leaving costs no walk at all.
     pub(crate) fn spawn_home_search(&mut self) {
-        if self.home_search_inflight || self.home.search.done {
+        if self.home_app.search_inflight || self.home.search.done {
             return;
         }
         let config = self.app_config.home.search.clone();
@@ -993,10 +1050,10 @@ impl App {
         self.home.search.running = true;
         self.home.search.epoch = next_search_epoch();
         self.home.search_limit = config.max_results;
-        self.home_search_inflight = true;
+        self.home_app.search_inflight = true;
 
-        let generation = self.home_generation;
-        self.home_search_generation = generation;
+        let generation = self.home_app.generation;
+        self.home_app.search_generation = generation;
         let tx = self.events.clone();
         let formats = self.formats.clone();
         // Ended, with what the batches already found kept.
@@ -1076,15 +1133,15 @@ impl App {
 
     /// Rebuild the home listing from the filesystem.
     pub(crate) fn home_refresh(&mut self) {
-        self.home_refresh_owed = false;
+        self.home_app.refresh_owed = false;
         // Every way into a source comes through here: Enter, Backspace up from a
         // bucket, a jump, and rows arriving while the source is already open.
         #[cfg(feature = "cloud")]
         self.list_browsed_cloud_source();
         // Somewhere else now, a listing of where the user was is pages for nobody.
         self.stop_listings_left_behind();
-        self.home_generation = self.home_generation.wrapping_add(1);
-        let generation = self.home_generation;
+        self.home_app.generation = self.home_app.generation.wrapping_add(1);
+        let generation = self.home_app.generation;
 
         self.move_remembered_places();
         let mut catalogs = home::catalogs(&self.app_config);
@@ -1189,7 +1246,7 @@ impl App {
     /// lands, and the answer is kept with what datui measured, for the next listing.
     #[cfg(feature = "http")]
     pub(crate) fn size_selected_web_file(&mut self) {
-        if !self.head_web_rows {
+        if !self.info.head_web_rows {
             return;
         }
         let Some(entry) = self.home.selected_entry().cloned() else {
@@ -1289,7 +1346,7 @@ impl App {
         self.view_modal.close();
         self.inspector_modal.close();
         self.stop_find();
-        self.hex = None;
+        self.hex_view.view = None;
         // A count of the dataset being left is read for nobody.
         self.stop_value_count();
         self.export_counts = None;
@@ -1518,8 +1575,8 @@ impl App {
         // The open dataset's notes and Documentation tab follow the file.
         let shown = home::catalogs(&self.app_config);
         let path = self.path.clone();
-        self.codebook = path.as_deref().and_then(|p| home::codebook_for(&shown, p));
-        self.catalog_entry = path
+        self.info.codebook = path.as_deref().and_then(|p| home::codebook_for(&shown, p));
+        self.info.catalog_entry = path
             .as_deref()
             .and_then(|p| home::catalog_entry_for(&shown, p));
         self.open_info_documentation();
@@ -1638,7 +1695,7 @@ impl App {
     /// Before 0.4.0 Ctrl+D kept directories in the cache. Once, they move into
     /// `catalog.toml`, where Ctrl+D keeps them now, and the cache's list goes.
     fn move_remembered_places(&mut self) {
-        if std::mem::replace(&mut self.remembered_moved, true) {
+        if std::mem::replace(&mut self.home_app.remembered_moved, true) {
             return;
         }
         let places = self.cache.load_remembered_places();
@@ -1681,8 +1738,8 @@ impl App {
                         .is_some_and(|(_, entry)| entry.location() == path)
             })
             .and_then(|e| e.size);
-        self.documentation.open(doc, measured);
-        self.documentation.links_open = self.local_desktop;
+        self.info.documentation.open(doc, measured);
+        self.info.documentation.links_open = self.home_app.local_desktop;
     }
 
     /// What Ctrl+E documents for the row under the cursor, with the row's path: the
@@ -2346,7 +2403,7 @@ impl App {
                 // Only the current listing's answer clears the flag: a stale one landing
                 // first said nothing was in flight while the listing for where the user
                 // is still ran. Every refresh asks again, so the newest always answers.
-                if *generation == self.home_generation {
+                if *generation == self.home_app.generation {
                     self.home.listing_in_flight = false;
                 }
                 // Read fresh from the cache, so true whichever listing carried them:
@@ -2360,7 +2417,7 @@ impl App {
                 }
                 // A listing from a superseded request describes somewhere the user has
                 // already left.
-                if *generation != self.home_generation {
+                if *generation != self.home_app.generation {
                     return None;
                 }
                 self.home.apply_listing((**listing).clone());
@@ -2448,7 +2505,7 @@ impl App {
             } => {
                 // Discard if the user has typed since asking: completing onto a
                 // different string would scramble what they are in the middle of.
-                if *generation != self.home_generation || &self.home.path_input != typed {
+                if *generation != self.home_app.generation || &self.home.path_input != typed {
                     return None;
                 }
                 if *candidates == 0 {
@@ -2479,10 +2536,12 @@ impl App {
                         .iter()
                         .map(|(name, dtype)| (name.to_string(), dtype.clone()))
                         .collect();
-                    self.home_schema_cache.insert(path.clone(), Some(schema));
+                    self.home_app
+                        .schema_cache
+                        .insert(path.clone(), Some(schema));
                 }
                 let prepared = prepared.filter(|_| read_at.is_some());
-                self.home_previews.landed(
+                self.home_app.previews.landed(
                     path.clone(),
                     *stamp,
                     read_at.unwrap_or(*stamp),
@@ -2496,14 +2555,17 @@ impl App {
                 path,
                 preview,
             } => {
-                self.home_schema_inflight.retain(|p| p != path);
+                self.home_app.schema_inflight.retain(|p| p != path);
                 // A preview's columns are not taken back by a metadata read that had none.
                 let known = self
-                    .home_schema_cache
+                    .home_app
+                    .schema_cache
                     .get(path)
                     .is_some_and(Option::is_some);
-                if *generation == self.home_generation && (preview.is_some() || !known) {
-                    self.home_schema_cache.insert(path.clone(), preview.clone());
+                if *generation == self.home_app.generation && (preview.is_some() || !known) {
+                    self.home_app
+                        .schema_cache
+                        .insert(path.clone(), preview.clone());
                 }
                 None
             }
@@ -2517,7 +2579,7 @@ impl App {
                 // place the user has left. The walk is abandoned, not cancelled, so
                 // late batches are expected rather than exceptional. A refresh of the
                 // same place supersedes nothing: its end dropped kept it running.
-                if *generation == self.home_search_generation {
+                if *generation == self.home_app.search_generation {
                     self.home.search_batch(root, found.clone(), *scanned);
                 }
                 None
@@ -2536,10 +2598,10 @@ impl App {
                 scanned,
                 limited,
             } => {
-                if *generation == self.home_search_generation {
+                if *generation == self.home_app.search_generation {
                     self.home.search_finished(root, *scanned, limited.clone());
                 }
-                self.home_search_inflight = false;
+                self.home_app.search_inflight = false;
                 // A walk abandoned by a browse held up the one the filter now asks for.
                 if !self.home.filter.is_empty() && self.home.search.root.is_none() {
                     self.spawn_home_search();
@@ -2597,11 +2659,12 @@ impl App {
                 // Only the request out now: one replaced by a later key may still
                 // answer, after the later one, and put back the shorter prefix.
                 let asked = self
-                    .home_narrowing
+                    .home_app
+                    .narrowing
                     .as_ref()
                     .is_some_and(|(d, p, _)| d == dir && p == prefix);
                 if asked {
-                    self.home_narrowing = None;
+                    self.home_app.narrowing = None;
                 }
                 // Only while it is still where the user is and what the filter asks.
                 let wanted = asked
@@ -2619,8 +2682,8 @@ impl App {
                 None
             }
             AppEvent::HomeProbeCancelled { root } => {
-                self.home_probes_inflight.retain(|p| p != root);
-                self.home_listing_cancels.remove(root);
+                self.home_app.probes_inflight.retain(|p| p != root);
+                self.home_app.listing_cancels.remove(root);
                 self.home.probes.stopped(root);
                 // Come back to after it had stopped: listed afresh.
                 if self.home.browsing.as_ref() == Some(root) {
@@ -2629,8 +2692,8 @@ impl App {
                 None
             }
             AppEvent::HomeProbeFailed { root, message } => {
-                self.home_probes_inflight.retain(|p| p != root);
-                self.home_listing_cancels.remove(root);
+                self.home_app.probes_inflight.retain(|p| p != root);
+                self.home_app.listing_cancels.remove(root);
                 self.home.probe_failed(root.clone(), Some(message.clone()));
                 self.home_refresh();
                 None
@@ -2638,10 +2701,10 @@ impl App {
             AppEvent::HomeProbeProgress { root, rows } => {
                 // Only while that listing is still out: a late batch must not paint
                 // over the whole answer.
-                if self.home_probes_inflight.contains(root) && !self.home.probes.settled(root) {
+                if self.home_app.probes_inflight.contains(root) && !self.home.probes.settled(root) {
                     self.home.probes.read(root, rows);
                     // Listed once a frame, however many batches came in it.
-                    self.home_refresh_owed = true;
+                    self.home_app.refresh_owed = true;
                 }
                 None
             }
@@ -2655,8 +2718,8 @@ impl App {
                 // good — a probe that answered is not one of those. Without this the
                 // list only grows, and after MAX_CONCURRENT_PROBES roots no further
                 // root is ever probed for the rest of the session.
-                self.home_probes_inflight.retain(|p| p != root);
-                self.home_listing_cancels.remove(root);
+                self.home_app.probes_inflight.retain(|p| p != root);
+                self.home_app.listing_cancels.remove(root);
                 let landed = rows.is_some();
                 match rows {
                     Some(rows) => self

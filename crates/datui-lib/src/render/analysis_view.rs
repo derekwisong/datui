@@ -144,10 +144,7 @@ fn render_body(
                     Style::default().fg(ctx.text_primary),
                 ),
                 Span::styled(
-                    format!(
-                        "  {}",
-                        crate::numfmt::duration(progress.started.elapsed().as_secs() as i64)
-                    ),
+                    format!("  {}", crate::numfmt::clock(progress.started.elapsed())),
                     Style::default().fg(ctx.dimmed),
                 ),
             ]),
@@ -276,7 +273,7 @@ fn render_body(
             selected_theoretical_distribution: app.analysis_modal.selected_theoretical_distribution,
             histogram_scale: app.analysis_modal.histogram_scale,
             theme: &app.theme,
-            table_cell_padding: app.table_cell_padding,
+            table_cell_padding: app.display.table_cell_padding,
             number_format: &ctx.number_format,
             sample: &app.analysis_modal.sample,
             ctx,

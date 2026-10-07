@@ -31,8 +31,7 @@ impl App {
         self.request_reshape_preview();
     }
 
-    /// Keys in the Pivot & Melt builder. Whatever the key changed, the preview
-    /// follows the spec it leaves staged.
+    /// Keys in the Pivot & Melt builder; the preview follows the staged spec.
     pub(crate) fn pivot_melt_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         let out = self.pivot_melt_form_key(event);
         if self.overlay == Overlay::PivotMelt {
@@ -41,9 +40,8 @@ impl App {
         out
     }
 
-    /// Ask for a preview of the staged spec, unless it is the one already asked for.
-    /// One worker runs at a time: an edit made while it runs is previewed when it
-    /// ends.
+    /// Ask for a preview of the staged spec unless already asked. One worker at a time:
+    /// an edit made meanwhile is previewed when it ends.
     pub fn request_reshape_preview(&mut self) {
         let modal = &mut self.pivot_melt_modal;
         let wanted = modal.staged_spec();
@@ -58,8 +56,8 @@ impl App {
         }
     }
 
-    /// Run the preview of the staged spec over the view's head, reading the head
-    /// first if this opening of the builder has not yet.
+    /// Preview the staged spec over the view's head, reading the head first if this
+    /// opening has not.
     fn spawn_reshape_preview(&mut self) {
         let preview = &self.pivot_melt_modal.preview;
         let Some(spec) = preview.wanted.clone() else {
@@ -76,8 +74,8 @@ impl App {
                         Some((spec, Err("Nothing to preview".to_string())));
                     return;
                 };
-                // A small view is read in its order: sorting it costs nothing, and
-                // the preview's rows are then the ones Enter makes.
+                // A small view is read in order: sorting is cheap, and the preview then shows the
+                // rows Enter makes.
                 let small = state
                     .num_rows_if_valid()
                     .is_some_and(|rows| rows <= PREVIEW_INPUT_ROWS);
@@ -106,8 +104,7 @@ impl App {
                         )
                     };
                     let mut head = head_of(lf).map_err(message)?;
-                    // The unsorted head turned out to be the whole view: small enough
-                    // to read again in the view's order.
+                    // The unsorted head was the whole view: small enough to reread in order.
                     if head.height() <= PREVIEW_INPUT_ROWS
                         && let Some(sorted) = sorted
                     {
@@ -129,8 +126,8 @@ impl App {
         });
     }
 
-    /// A preview's worker ended, with the head it read and its result, or `Err` with
-    /// why the head could not be read. An answer for an earlier opening is dropped.
+    /// A preview ended with its head and result, or `Err` if the head could not be read.
+    /// An earlier opening's answer is dropped.
     pub(crate) fn reshape_preview_ended(
         &mut self,
         epoch: u64,
@@ -165,8 +162,8 @@ impl App {
 
     /// Keys in the builder's form.
     fn pivot_melt_form_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
-        // Acts at once (see `hard_escape_while_busy`), ahead of the keys held
-        // behind the pivot; a second Esc closes the form.
+        // Acts at once (see `hard_escape_while_busy`), ahead of keys held behind the pivot;
+        // a second Esc closes the form.
         if event.code == KeyCode::Esc && self.pivot_computing() {
             self.cancel_pivot();
             return None;
@@ -180,16 +177,15 @@ impl App {
             return None;
         }
 
-        // Whatever this key does, the form is being edited again: the
-        // re-accented gap line goes back to plain (Enter below re-arms it).
+        // Any key means the form is being edited again: the accented gap line returns to
+        // plain (Enter re-arms it).
         self.pivot_melt_modal.attention = false;
 
         match crate::form::key(&mut self.pivot_melt_modal, event) {
             FormKey::Cancel => {
                 self.close_overlay();
             }
-            // Enter applies from anywhere in the form; what it will do has
-            // been echoed on the spec line all along.
+            // Enter applies from anywhere; the spec line has echoed what it will do.
             FormKey::Submit => return self.submit_pivot_melt(),
             FormKey::Step(PivotMeltFocus::TabBar, _) => self.pivot_melt_modal.switch_tab(),
             FormKey::Step(row, delta) => {
@@ -213,8 +209,8 @@ impl App {
         None
     }
 
-    /// Enter: run the staged pivot or melt, or re-accent the spec line that names
-    /// what is missing rather than a modal repeating it.
+    /// Enter: run the staged pivot or melt, or re-accent the spec line naming what is
+    /// missing.
     fn submit_pivot_melt(&mut self) -> Option<AppEvent> {
         let modal = &mut self.pivot_melt_modal;
         match modal.active_tab {

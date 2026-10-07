@@ -9,9 +9,8 @@ impl App {
     /// Key handling for the home screen.
     pub(crate) fn home_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
-        // The line beside the prompt answers the last key, and this one replaces it: a
-        // key with something to say sets it again below. Left up, "Forgot laps.parquet"
-        // stayed until the next time the listing changed.
+        // The line beside the prompt answers the last key only; a key with something to
+        // say sets it again below.
         self.home.status = None;
 
         if self.info.documentation.is_open() {
@@ -19,9 +18,8 @@ impl App {
             return None;
         }
 
-        // The home screen puts every plain character into the filter — `q` has to
-        // type a `q`, or you could never search for "quarterly". Quitting is Ctrl+C,
-        // handled before this is reached, and Esc once there is no context left to
+        // Every plain character goes into the filter (`q` must type, to search
+        // "quarterly"); Ctrl+C quits, handled earlier, as does Esc with nothing left to
         // back out of.
         if self.home.path_input_active {
             match event.code {
@@ -32,8 +30,8 @@ impl App {
                     self.home.path_pick = None;
                     self.home.status = None;
                 }
-                // The list under the prompt is the directory being typed: ↑↓ pick a
-                // name in it, which Enter and Tab then take.
+                // The list under the prompt is the typed directory: ↑↓ pick a name, which Enter
+                // and Tab take.
                 KeyCode::Up | KeyCode::Down => {
                     let n = self.home.path_candidates().len();
                     self.home.path_pick = match (event.code, self.home.path_pick) {
@@ -56,10 +54,8 @@ impl App {
                         return None;
                     }
                     let path = home::expand_user_path(&raw);
-                    // A URL is not stat'ed: `exists` asks the working directory about a
-                    // file called `gs:`. Its name decides, as it does for a recent — a
-                    // file opens, and anything else in a bucket is browsed, where the
-                    // listing says what is there.
+                    // A URL is not stat'ed (`exists` would look for a local `gs:`): its name decides,
+                    // as for a recent: a file opens, anything else in a bucket is browsed.
                     if home::is_object_store_url(&path) || home::is_cloud_place(&path) {
                         self.home.path_input.clear();
                         self.home.path_input_active = false;
@@ -76,17 +72,14 @@ impl App {
                         self.home.path_input_active = false;
                         return self.open_what_it_is(path, discover::EntryKind::File, true);
                     }
-                    // Whether it is there, whether it is a directory and what kind of one
-                    // are three filesystem calls, and a typed path is exactly where a
-                    // dead mount gets named. All three go to a worker when the mount is
-                    // one that might not answer.
+                    // Existence, directory-ness and kind are filesystem calls, and a typed path may
+                    // name a dead mount: a worker does them when the mount might not answer.
                     if self.looking_could_block(&path) {
                         self.home.path_input.clear();
                         self.home.path_input_active = false;
                         return Some(AppEvent::ClassifyThenOpen { path, jump: true });
                     }
-                    // Before the prompt closes: a typo is worth fixing where it was
-                    // typed, rather than retyping the whole path.
+                    // Before the prompt closes, so a typo is fixed in place.
                     if !path.exists()
                         && crate::members::split(&path).is_none()
                         && crate::members::split_variant(&path, &self.formats).is_none()
@@ -108,9 +101,8 @@ impl App {
                     self.home.status = None;
                 }
                 KeyCode::Char('u') if ctrl => self.home.path_input.clear(),
-                // What the names listed agree on, as a shell completes, or a name
-                // picked further down with ↓. Before the listing is in, completion
-                // reads the directory on a worker.
+                // Complete as a shell does (the listed names' common prefix), or take a name picked
+                // with ↓. Before the listing is in, completion reads the directory on a worker.
                 KeyCode::Tab => {
                     let completed = match self.home.path_pick {
                         Some(i) if i > 0 => self.home.picked_path(),
@@ -133,8 +125,8 @@ impl App {
                 }
                 _ => {}
             }
-            // Whatever changed what is typed puts the pick back on the first name
-            // that matches, and a new directory is listed.
+            // Any change to the typed text resets the pick to the first match and lists the
+            // new directory.
             self.list_the_typed_directory();
             if !matches!(event.code, KeyCode::Up | KeyCode::Down) {
                 self.home.pick_first_path();
@@ -142,8 +134,8 @@ impl App {
             return None;
         }
 
-        // A filter kept from before is selected: a character, Backspace or Delete
-        // replaces it, as a selection in any field; any other key keeps it.
+        // A kept filter is selected: a character, Backspace or Delete replaces it as in any
+        // field; other keys keep it.
         if std::mem::take(&mut self.home.filter_selected) {
             let replaces = match event.code {
                 KeyCode::Char(_) => !ctrl,
@@ -160,9 +152,8 @@ impl App {
             }
         }
 
-        // Every plain character types into the filter, so no letter or bracket is
-        // a key here: typing "json" must not move the cursor on the "j". Navigation
-        // is the arrows and the Ctrl chords, which cannot be part of a name.
+        // Every plain character types into the filter ("json" must not move on "j");
+        // navigation is arrows and Ctrl chords.
         match event.code {
             KeyCode::Esc => return self.home_escape(),
             KeyCode::Enter => return self.home_open_selected(),
@@ -173,23 +164,18 @@ impl App {
             KeyCode::Down => self.home.move_selection(1),
             KeyCode::Char('n') if ctrl => self.home.move_selection(1),
             KeyCode::Char('p') if ctrl => self.home.move_selection(-1),
-            // Left/right fold the section the cursor is in, wherever in it the cursor
-            // happens to be — so collapsing does not require first finding the header.
-            // Tab cycles the sort. Every plain key goes into the filter, so an
-            // ordinary letter is not available for this.
+            // ←→ fold the cursor's section from anywhere in it. Tab cycles the sort (letters
+            // are all filter input).
             KeyCode::Tab => {
                 self.home.sort = self.home.sort.next();
                 self.home.select_first_entry();
             }
             KeyCode::Left => self.home_collapse(true),
             KeyCode::Right => match self.selected_directory_to_enter() {
-                // Into a directory that opens as one dataset rather than opening it, to
-                // reach one partition or one file. This clears the filter, as browsing
-                // anywhere does.
+                // Into a directory that opens as one dataset, to reach one partition or file; this
+                // clears the filter, as browsing does.
                 Some(directory) => {
-                    // The heading Enter leaves, for the same reason: this is the door
-                    // the footer advertises on a lake row, and arriving inside one
-                    // with no explanation is the silent wrong answer #237 is about.
+                    // The heading Enter shows, so arriving inside a lake table is explained.
                     if let Some(format) = self
                         .home
                         .selected_entry()
@@ -277,11 +263,9 @@ impl App {
                     self.narrow_cloud_listing();
                 }
             }
-            // Forget the highlighted entry. Only meaningful in Recent — elsewhere the
-            // row is a real directory listing, and datui does not delete files.
-            // Shift+Delete forgets the lot. It sits next to the key that forgets
-            // one, so it asks first — an accidental press should not silently throw
-            // away every place the user has been.
+            // Delete forgets the highlighted entry, only in Recent (elsewhere rows are real
+            // files, and datui does not delete). Shift+Delete forgets all, asking first since
+            // it sits beside Delete.
             KeyCode::Delete if event.modifiers.contains(KeyModifiers::SHIFT) => {
                 let count = self.cache.load_recents().len();
                 if count == 0 {
@@ -302,15 +286,13 @@ impl App {
                 self.list_the_typed_directory();
                 self.home.pick_first_path();
             }
-            // The one printable that is a key, and only before typing starts: a
-            // filter beginning with a literal `?` matches nothing anyway, and this
-            // is where a new user asks for the keys. F1 opens help mid-filter.
+            // `?` is a key only before typing starts (a filter starting with `?` matches
+            // nothing); F1 opens help mid-filter.
             KeyCode::Char('?') if self.home.filter.is_empty() && !ctrl => {
                 self.open_help_overlay();
             }
-            // Space before typing starts folds a header, as Enter does, and is otherwise
-            // nothing: a filter of one space is invisible at the prompt and matched every
-            // name with a space in it, below the working directory too.
+            // Space before typing folds a header, as Enter does, and otherwise does nothing: a
+            // one-space filter is invisible and matches every name with a space.
             KeyCode::Char(' ') if self.home.filter.is_empty() && !ctrl => {
                 if self.home.selection_is_header() {
                     self.home_toggle_fold();
@@ -318,9 +300,7 @@ impl App {
             }
             KeyCode::Char(c) if !ctrl => {
                 self.home.filter.push(c);
-                // Typing is what asks for the recursive search. Starting it here and
-                // not on open means the walk is only ever paid for by someone who is
-                // actually looking for something.
+                // Typing starts the recursive search, so only someone looking pays for the walk.
                 self.spawn_home_search();
                 self.home.sync_search_section();
                 self.home.select_first_entry();

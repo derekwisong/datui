@@ -44,8 +44,7 @@ impl App {
         None
     }
 
-    /// Enter, from any field: build the export from the state every row already
-    /// echoes. A blank path cannot, and says so inline instead of doing nothing.
+    /// Enter from any field: build the export. A blank path says so inline.
     fn submit_export(&mut self) -> Option<AppEvent> {
         let path_str = self.export_modal.path_input.value().trim().to_string();
         if path_str.is_empty() {
@@ -53,8 +52,7 @@ impl App {
             crate::form::Form::focus(&mut self.export_modal, ExportFocus::PathInput);
             return None;
         }
-        // `~` and `$VAR` expand as everywhere else a path is typed; unexpanded they
-        // become a literal `~` directory or a NotFound from the writer.
+        // `~` and `$VAR` expand as in every typed path.
         let path = home::expand_user_path(&path_str);
         let format = self.export_modal.selected_format;
         let compression = self.export_modal.compression();
@@ -96,21 +94,18 @@ impl App {
                 "Overwrite",
                 Confirm::Export(Box::new(request)),
             );
-            // Suspended, not closed: declining returns to the filled form with the
-            // typed path intact.
+            // Suspended, not closed: declining returns to the filled form.
             self.step_back();
             return None;
         }
-        // Suspended while it writes: a failed write brings the form back as it was,
-        // with the reason on its status line.
+        // Suspended while writing: a failed write brings the form back with the reason.
         self.step_back();
         Some(AppEvent::Export(request))
     }
 
-    /// Hand the export modal's path input a key, and when the value changed, follow
-    /// the typed extension with the format radio — the alternative was Parquet bytes
-    /// in a file named `out.csv`, with nothing on screen saying so. Cursor-only keys
-    /// change nothing and re-pick nothing, so a format chosen after typing stands.
+    /// Give the path input a key; when the value changed, follow the typed extension
+    /// with the format choice, so Parquet bytes never land in `out.csv`. Cursor-only
+    /// keys re-pick nothing, so a format chosen after typing stands.
     fn export_path_key(&mut self, event: &KeyEvent) {
         let before = self.export_modal.path_input.value().to_string();
         self.export_modal
@@ -176,19 +171,15 @@ impl App {
             {
                 new_path.set_extension(format!("{}.{}", current_ext, comp.extension()));
             }
-            // else: path stays as-is (e.g. foo.feather stays foo.feather)
-            // else: path with format extension stays as-is
+            // Otherwise the path keeps its extension (foo.feather stays foo.feather).
         }
 
         new_path
     }
 
-    /// The export format to offer by default for a dataset opened from `path`.
-    ///
-    /// The format the open read wins (`format`: what it sniffed, or `--format`), then
-    /// the extension. A compressed CSV keeps its CSV identity: `sales.csv.gz` has
-    /// extension `gz`, and the `.csv` that matters is in the stem, so reading the
-    /// extension alone offered no default at all.
+    /// The default export format for a dataset opened from `path`: the format the open
+    /// read (sniffed or `--format`), else the extension. A compressed CSV stays CSV:
+    /// `sales.csv.gz`'s `.csv` is in the stem.
     pub(crate) fn export_format_for(
         path: &Path,
         format: Option<FileFormat>,
@@ -212,16 +203,15 @@ impl App {
         }
     }
 
-    /// What the error modal says when writing an export, report or chart fails.
-    /// Why an export did not write, for the dialog's status line, which sits under
-    /// the path it is about.
+    /// Why an export, report or chart did not write, for the dialog's status line under
+    /// its path.
     pub(crate) fn format_export_error(error: &color_eyre::eyre::Report) -> String {
         use std::io::{self, ErrorKind};
 
         for cause in error.chain() {
             if let Some(io_err) = cause.downcast_ref::<io::Error>() {
-                // Matched by type, not kind: an encoder's own errors share
-                // kinds such as InvalidInput with the destination checks.
+                // Matched by type, not kind: encoder errors share kinds like InvalidInput with the
+                // destination checks.
                 let msg = match (crate::output_file::Refused::of(io_err), io_err.kind()) {
                     (Some(refused), _) => format!("{refused}."),
                     // A CSV open in a spreadsheet app, on Windows.

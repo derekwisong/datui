@@ -1,5 +1,5 @@
-//! The hex view's part of the App: opening a file in it, its keys, and its find.
-//! The view itself, and everything about it that needs no App, is [`crate::hex_view`].
+//! The hex view's App side: opening a file in it, its keys, and its find. The view
+//! itself is [`crate::hex_view`].
 
 use crate::hex_view::{
     Found, HexFindRun, HexHit, HexSource, HexView, MAX_RECORD_SIZE, Origin, PromptKind,
@@ -33,8 +33,8 @@ impl App {
             .filter(|_| self.overlay == Overlay::Hex)
     }
 
-    /// The one local file the dataset on screen was read from, which the Info panel's
-    /// `x` shows as hex: not a glob, a remote source, standard input, or several paths.
+    /// The one local file the dataset was read from, which Info's `x` shows as hex: not
+    /// a glob, remote source, stdin, or several paths.
     pub(crate) fn hex_target(&self) -> Option<PathBuf> {
         let several = self
             .source
@@ -50,8 +50,8 @@ impl App {
         })
     }
 
-    /// Show `path` in the hex view: it is mapped on a worker, and the view opens when it
-    /// is. `fallback` says no reader and no spec took it.
+    /// Show `path` in the hex view once a worker maps it. `fallback`: no reader or spec
+    /// took it.
     pub(crate) fn open_hex(
         &mut self,
         path: PathBuf,
@@ -108,8 +108,8 @@ impl App {
         self.open_hex(file, origin, !asked, record_size);
     }
 
-    /// Leave the hex view the way it was entered: home, the table, or (from the
-    /// command line) out of datui.
+    /// Leave the hex view the way it was entered: home, the table, or (from the command
+    /// line) out of datui.
     fn leave_hex(&mut self, quit: bool) -> Option<AppEvent> {
         let origin = self.hex_view.view.as_ref()?.origin;
         match origin {

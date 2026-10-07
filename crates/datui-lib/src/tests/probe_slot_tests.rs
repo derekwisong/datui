@@ -133,7 +133,7 @@ fn without_cloud_a_bucket_says_it_cannot_be_listed() {
         app.event(&event);
     }
     assert_eq!(
-        app.home.probe_errors.get(&bucket).map(String::as_str),
+        app.home.probes.error(&bucket),
         Some("cloud support not in this build")
     );
 }
@@ -162,7 +162,11 @@ fn batches_read_before_a_frame_are_listed_once() {
         app.home_generation, generation,
         "nothing listed between frames"
     );
-    let names: Vec<&str> = app.home.listing_so_far[&dir]
+    let names: Vec<&str> = app
+        .home
+        .probes
+        .so_far(&dir)
+        .unwrap()
         .iter()
         .map(|row| row.name.as_str())
         .collect();

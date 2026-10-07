@@ -11463,7 +11463,7 @@ fn test_remote_listing_shows_progress_until_it_arrives() {
     assert!(waiting.contains("Listing gs://bucket/demo"), "{waiting}");
     assert!(!waiting.contains("No datasets here."), "{waiting}");
 
-    app.home.probe_ready(dir, Vec::new());
+    app.home.probe_ready(dir, Vec::new(), false);
     let done = screen(&mut app);
     assert!(!done.contains("Listing gs://bucket/demo"), "{done}");
     assert_eq!(app.home.waiting_since, None);
@@ -15579,7 +15579,7 @@ fn test_the_cloud_door_reads_a_prefix_with_the_reader_its_listing_calls_for() {
         let mut app = App::new(tx, common::test_runtime());
         app.enter_home();
         app.home.network_check = |_| true;
-        app.home.probe_ready(place.clone(), rows);
+        app.home.probe_ready(place.clone(), rows, false);
         app.home.browsing = Some(place);
         app.home.rebuild(&[]);
         let row = app

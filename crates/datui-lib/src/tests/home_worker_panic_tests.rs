@@ -93,7 +93,7 @@ fn a_probe_whose_worker_dies_gives_its_slot_back_and_says_so() {
     assert!(app.home_probes_inflight.contains(&root));
     pump(&mut app, &rx, |a| a.home_probes_inflight.is_empty());
     assert_eq!(
-        app.home.probe_errors.get(&root).map(String::as_str),
+        app.home.probes.error(&root),
         Some("Could not read it; see the log")
     );
 }

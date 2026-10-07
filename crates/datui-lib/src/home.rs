@@ -1518,19 +1518,10 @@ pub struct HomeState {
     /// The recent opened last. Recent is ranked by frecency, and the cursor lands here
     /// so the last file is still one Enter away.
     pub newest_recent: Option<PathBuf>,
-    /// Network roots whose listing has come back, keyed by path.
-    pub probed: std::collections::HashMap<PathBuf, std::sync::Arc<[Entry]>>,
-    /// Network roots that did not answer.
-    pub unreachable: std::collections::HashSet<PathBuf>,
-    /// The rows of network directories still being listed, read so far, in the order
-    /// they came. [`build_listing`] puts them in listing order.
-    pub listing_so_far: std::collections::HashMap<PathBuf, Vec<Entry>>,
-    /// Network directories whose listing stopped at [`discover::MAX_ENTRIES_PER_DIR`].
-    pub cut_short: std::collections::HashSet<PathBuf>,
+    /// Where the listing of each network root and remote directory is.
+    pub probes: Probes,
     /// The names a filter asked the server for, in a cloud directory cut short.
     pub narrowed: Option<Narrowed>,
-    /// Why a cloud listing was refused, when the service said.
-    pub probe_errors: std::collections::HashMap<PathBuf, String>,
     /// What cloud directories turned out to hold when peeked into: `hive` or `multi`.
     /// Kept for the session, so a directory is peeked at once however often it is listed.
     pub cloud_kinds: std::collections::HashMap<PathBuf, (EntryKind, crate::discover::Holds)>,
@@ -1752,12 +1743,8 @@ impl Default for HomeState {
             measure_in_flight: false,
             classify_in_flight: false,
             peeking: std::collections::HashSet::new(),
-            probed: std::collections::HashMap::new(),
-            unreachable: std::collections::HashSet::new(),
-            listing_so_far: std::collections::HashMap::new(),
-            cut_short: std::collections::HashSet::new(),
+            probes: Probes::default(),
             narrowed: None,
-            probe_errors: std::collections::HashMap::new(),
             cloud_kinds: std::collections::HashMap::new(),
             peek_failed: std::collections::HashSet::new(),
             waiting_since: None,
@@ -1782,16 +1769,10 @@ pub struct ListingRequest {
     pub recents: Vec<PathBuf>,
     pub desktop_dirs: Vec<PathBuf>,
     pub browsing: Option<PathBuf>,
-    pub probed: std::collections::HashMap<PathBuf, std::sync::Arc<[Entry]>>,
-    pub unreachable: std::collections::HashSet<PathBuf>,
-    /// Rows of network directories still being listed. See [`HomeState::listing_so_far`].
-    pub listing_so_far: std::collections::HashMap<PathBuf, Vec<Entry>>,
-    /// See [`HomeState::cut_short`].
-    pub cut_short: std::collections::HashSet<PathBuf>,
+    /// See [`HomeState::probes`].
+    pub probes: Probes,
     /// See [`HomeState::narrowed`].
     pub narrowed: Option<Narrowed>,
-    /// Why a cloud listing was refused.
-    pub probe_errors: std::collections::HashMap<PathBuf, String>,
     pub network_check: fn(&Path) -> bool,
     /// Cloud sources and the buckets already enumerated for them.
     pub cloud: Vec<CloudSource>,
@@ -1955,29 +1936,144 @@ pub fn measured_from(probe: &Entry, original: &Entry) -> Measured {
     }
 }
 
-/// A row a completed probe already produced for this exact path, if any.
-fn probed_entry(
-    probed: &std::collections::HashMap<PathBuf, std::sync::Arc<[Entry]>>,
-    path: &Path,
-) -> Option<Entry> {
-    probed
-        .values()
-        .flat_map(|rows| rows.iter())
-        .find(|e| e.path == path)
-        .cloned()
+/// Where the listing of one network root or remote directory is. Read off the
+/// interface thread; see [`HomeState::pending_probes`].
+#[derive(Debug, Clone)]
+pub enum Probe {
+    /// Still being read: the rows so far, in the order they came.
+    Listing(Vec<Entry>),
+    /// Answered. `cut_short`: the listing stopped at [`discover::MAX_ENTRIES_PER_DIR`].
+    Listed {
+        rows: std::sync::Arc<[Entry]>,
+        cut_short: bool,
+    },
+    /// Did not answer, with why when the service said.
+    Unreachable(Option<String>),
 }
 
-/// Rows read so far of a listing still going on, as the finished listing will order
-/// them: a bucket's directories above its objects, a directory's sorted as
-/// [`discover::sort_entries`] does.
-fn in_listing_order(dir: &Path, rows: &[Entry]) -> Vec<Entry> {
-    let mut rows = rows.to_vec();
-    if is_object_store_url(dir) {
-        rows.sort_by_key(|row| row.kind != EntryKind::Directory);
-    } else {
-        discover::sort_entries(&mut rows);
+/// Every probe, by the place it lists.
+#[derive(Debug, Clone, Default)]
+pub struct Probes(std::collections::HashMap<PathBuf, Probe>);
+
+impl Probes {
+    pub fn get(&self, place: &Path) -> Option<&Probe> {
+        self.0.get(place)
     }
-    rows
+
+    /// The rows of a listing that has answered.
+    pub fn listed(&self, place: &Path) -> Option<&[Entry]> {
+        match self.0.get(place)? {
+            Probe::Listed { rows, .. } => Some(rows),
+            _ => None,
+        }
+    }
+
+    /// The rows read so far of a listing still going on.
+    pub fn so_far(&self, place: &Path) -> Option<&[Entry]> {
+        match self.0.get(place)? {
+            Probe::Listing(rows) => Some(rows),
+            _ => None,
+        }
+    }
+
+    /// Answered, or written off: nothing more to ask.
+    pub fn settled(&self, place: &Path) -> bool {
+        matches!(
+            self.0.get(place),
+            Some(Probe::Listed { .. } | Probe::Unreachable(_))
+        )
+    }
+
+    pub fn cut_short(&self, place: &Path) -> bool {
+        matches!(
+            self.0.get(place),
+            Some(Probe::Listed {
+                cut_short: true,
+                ..
+            })
+        )
+    }
+
+    pub fn unreachable(&self, place: &Path) -> bool {
+        matches!(self.0.get(place), Some(Probe::Unreachable(_)))
+    }
+
+    /// Why the listing was refused, when the service said.
+    pub fn error(&self, place: &Path) -> Option<&str> {
+        match self.0.get(place)? {
+            Probe::Unreachable(why) => why.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// What the place lists now: its answer, or the rows so far as the finished
+    /// listing will order them (a bucket's directories above its objects, a
+    /// directory's as [`discover::sort_entries`] does), or nothing yet.
+    fn rows(&self, place: &Path) -> Vec<Entry> {
+        match self.0.get(place) {
+            Some(Probe::Listed { rows, .. }) => rows.to_vec(),
+            Some(Probe::Listing(rows)) => {
+                let mut rows = rows.clone();
+                if is_object_store_url(place) {
+                    rows.sort_by_key(|row| row.kind != EntryKind::Directory);
+                } else {
+                    discover::sort_entries(&mut rows);
+                }
+                rows
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// The places answered, with their rows.
+    pub fn answered(&self) -> impl Iterator<Item = (&PathBuf, &[Entry])> {
+        self.0.iter().filter_map(|(place, probe)| match probe {
+            Probe::Listed { rows, .. } => Some((place, &rows[..])),
+            _ => None,
+        })
+    }
+
+    /// A row an answered probe produced for this exact path, if any.
+    fn entry(&self, path: &Path) -> Option<Entry> {
+        self.answered()
+            .flat_map(|(_, rows)| rows.iter())
+            .find(|e| e.path == path)
+            .cloned()
+    }
+
+    /// Rows read since the last batch, while the listing is still out.
+    pub fn read(&mut self, place: &Path, rows: &[Entry]) {
+        if let Probe::Listing(so_far) = self
+            .0
+            .entry(place.to_path_buf())
+            .or_insert(Probe::Listing(Vec::new()))
+        {
+            so_far.extend_from_slice(rows);
+        }
+    }
+
+    pub fn insert(&mut self, place: PathBuf, probe: Probe) {
+        self.0.insert(place, probe);
+    }
+
+    /// Forget a place's listing, so it is asked for again.
+    pub fn forget(&mut self, place: &Path) {
+        self.0.remove(place);
+    }
+
+    /// Forget a listing still being read: it was stopped.
+    pub fn stopped(&mut self, place: &Path) {
+        if let Some(Probe::Listing(_)) = self.0.get(place) {
+            self.0.remove(place);
+        }
+    }
+
+    fn listed_mut(&mut self, place: &Path) -> Option<&mut std::sync::Arc<[Entry]>> {
+        match self.0.get_mut(place)? {
+            Probe::Listed { rows, .. } => Some(rows),
+            _ => None,
+        }
+    }
 }
 
 /// Build the home listing.
@@ -2003,12 +2099,8 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         recents,
         desktop_dirs,
         browsing,
-        probed,
-        unreachable,
-        listing_so_far,
-        cut_short,
+        probes,
         narrowed,
-        probe_errors,
         network_check,
         cloud,
         catalogs,
@@ -2068,20 +2160,11 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         // and kept showing nothing.
         let remote = network_check(&dir);
         // A remote listing still being read shows what it has, and says so.
-        let so_far = remote && !probed.contains_key(&dir) && listing_so_far.contains_key(&dir);
+        let so_far = remote && probes.so_far(&dir).is_some();
         // A SQLite database is a place too, whose rows are its tables.
         let database = !remote && dir.is_file();
         let (mut rows, truncated) = if remote {
-            let rows = probed
-                .get(&dir)
-                .map(|rows| rows.to_vec())
-                .or_else(|| {
-                    listing_so_far
-                        .get(&dir)
-                        .map(|rows| in_listing_order(&dir, rows))
-                })
-                .unwrap_or_default();
-            (rows, cut_short.contains(&dir))
+            (probes.rows(&dir), probes.cut_short(&dir))
         } else if database {
             let tables = discover::database_rows(&dir);
             let rows = if tables.is_empty() {
@@ -2137,7 +2220,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         } else {
             None
         };
-        let unavailable = remote && unreachable.contains(&dir);
+        let unavailable = remote && probes.unreachable(&dir);
         // The first row inside any directory opens the whole of it, since `Enter` on the
         // rows below opens one file. The other door.
         let mut door = (!database)
@@ -2187,7 +2270,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             unavailable,
             // A browsed remote place that did not answer has nothing to add; one whose
             // listing was refused says why.
-            unavailable_note: probe_errors.get(&dir).cloned(),
+            unavailable_note: probes.error(&dir).map(str::to_string),
             folded_by_default: false,
             // Its wait is drawn in place of the whole list until rows arrive (see
             // `awaiting_listing`), and on the heading once they do.
@@ -2223,7 +2306,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             // A probe of the containing root has already classified and measured
             // this; reuse it, so the same dataset does not read as `hive` under
             // its directory and `dir` under Recent.
-            if let Some(known) = probed_entry(probed, p) {
+            if let Some(known) = probes.entry(p) {
                 return known;
             }
             if let Some(variant) = discover::variant_row(p, formats) {
@@ -2284,16 +2367,8 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         // where a directory big enough to hit the cap realistically lives.
         let mut truncated = false;
         let rows = if root.network {
-            truncated = cut_short.contains(&root.path);
-            probed
-                .get(&root.path)
-                .map(|rows| rows.to_vec())
-                .or_else(|| {
-                    listing_so_far
-                        .get(&root.path)
-                        .map(|rows| in_listing_order(&root.path, rows))
-                })
-                .unwrap_or_default()
+            truncated = probes.cut_short(&root.path);
+            probes.rows(&root.path)
         } else if root.available {
             let scan = discover::scan_dir_specs(&root.path, formats);
             truncated = scan.truncated;
@@ -2319,8 +2394,8 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         // A root that cannot be *read* stays: a network share that has stopped
         // answering is the case the section heading exists to report, and silently
         // dropping it is the worst answer.
-        let unreachable = root.network && unreachable.contains(&root.path);
-        let waiting = root.network && !unreachable && !probed.contains_key(&root.path);
+        let unreachable = root.network && probes.unreachable(&root.path);
+        let waiting = root.network && !unreachable && probes.listed(&root.path).is_none();
         // A network root is worth flagging: it is the one that will be slow, and
         // the one that can stop answering.
         // Naming the filesystem rather than saying "network" costs one word and says
@@ -2966,12 +3041,8 @@ impl HomeState {
             recents: recents.to_vec(),
             desktop_dirs: desktop_dirs.to_vec(),
             browsing: self.browsing.clone(),
-            probed: self.probed.clone(),
-            unreachable: self.unreachable.clone(),
-            listing_so_far: self.listing_so_far.clone(),
-            cut_short: self.cut_short.clone(),
+            probes: self.probes.clone(),
             narrowed: self.narrowed.clone(),
-            probe_errors: self.probe_errors.clone(),
             network_check: self.network_check,
             cloud: self.cloud.clone(),
             catalogs: self.catalogs.clone(),
@@ -3554,8 +3625,8 @@ impl HomeState {
     fn project_of_bucket(&self, bucket_root: &Path) -> Option<PathBuf> {
         let root = bucket_root.to_string_lossy();
         let root = root.trim_end_matches('/');
-        self.probed
-            .iter()
+        self.probes
+            .answered()
             .filter(|(place, _)| cloud_account(place).is_some())
             .find(|(_, rows)| {
                 rows.iter()
@@ -4352,7 +4423,7 @@ impl HomeState {
                 add(bucket);
             }
         }
-        for (root, rows) in &self.probed {
+        for (root, rows) in self.probes.answered() {
             add(root);
             for row in rows.iter() {
                 add(&row.path);
@@ -4434,10 +4505,7 @@ impl HomeState {
         // filesystem, and matching on the word "network" meant NFS roots were never
         // listed at all.
         for root in self.sections.iter().filter_map(|s| s.remote_root.as_ref()) {
-            if !self.probed.contains_key(root)
-                && !self.unreachable.contains(root)
-                && !out.contains(root)
-            {
+            if !self.probes.settled(root) && !out.contains(root) {
                 out.push(root.clone());
             }
         }
@@ -4447,8 +4515,7 @@ impl HomeState {
         if let Some(dir) = &self.browsing
             && check(dir)
             && cloud_source_id(dir).is_none()
-            && !self.probed.contains_key(dir)
-            && !self.unreachable.contains(dir)
+            && !self.probes.settled(dir)
             && !out.contains(dir)
         {
             out.push(dir.clone());
@@ -4496,25 +4563,24 @@ impl HomeState {
                 .is_some_and(|s| s.status == CloudStatus::Listing && s.buckets.is_empty())
                 .then_some(dir);
         }
-        ((self.network_check)(dir)
-            && !self.probed.contains_key(dir)
-            && !self.unreachable.contains(dir))
-        .then_some(dir)
+        ((self.network_check)(dir) && !self.probes.settled(dir)).then_some(dir)
     }
 
     /// Record what a probe found. An empty listing is still an answer.
-    pub fn probe_ready(&mut self, root: PathBuf, rows: Vec<Entry>) {
-        self.unreachable.remove(&root);
-        self.probe_errors.remove(&root);
-        self.listing_so_far.remove(&root);
-        self.cut_short.remove(&root);
-        self.probed.insert(root.clone(), rows.into());
+    pub fn probe_ready(&mut self, root: PathBuf, rows: Vec<Entry>, cut_short: bool) {
+        self.probes.insert(
+            root.clone(),
+            Probe::Listed {
+                rows: rows.into(),
+                cut_short,
+            },
+        );
         self.apply_cloud_kinds(&root);
     }
 
     /// Label the rows of a cloud listing with what peeking inside them found.
     pub fn apply_cloud_kinds(&mut self, root: &Path) {
-        let Some(rows) = self.probed.get_mut(root) else {
+        let Some(rows) = self.probes.listed_mut(root) else {
             return;
         };
         // Copied only when a listing being built still holds these rows.
@@ -4588,11 +4654,9 @@ impl HomeState {
         out
     }
 
-    /// Record that a probe could not read the root.
-    pub fn probe_failed(&mut self, root: PathBuf) {
-        self.probed.remove(&root);
-        self.listing_so_far.remove(&root);
-        self.unreachable.insert(root);
+    /// Record that a probe could not read the root, and why when the service said.
+    pub fn probe_failed(&mut self, root: PathBuf, why: Option<String>) {
+        self.probes.insert(root, Probe::Unreachable(why));
     }
 
     /// Measure a batch of rows on the calling thread.
@@ -5280,12 +5344,12 @@ mod holds_flow_tests {
         row.holds = counted(15);
 
         let mut home = HomeState::default();
-        home.probed.insert(root.clone(), vec![row].into());
+        home.probe_ready(root.clone(), vec![row], false);
         home.cloud_kinds.insert(path, in_flight());
         home.apply_cloud_kinds(&root);
 
         assert_eq!(
-            home.probed[&root][0].holds.label(),
+            home.probes.listed(&root).unwrap()[0].holds.label(),
             "15 parquet",
             "the placeholder erased a count the row already had"
         );
@@ -5331,7 +5395,7 @@ mod holds_flow_tests {
             ..Default::default()
         };
         let root = std::path::PathBuf::from("gs://pitscope");
-        home.probe_ready(root.clone(), vec![row.clone()]);
+        home.probe_ready(root.clone(), vec![row.clone()], false);
         home.browsing = Some(root);
         home.rebuild(&[]);
         assert_eq!(
@@ -5365,13 +5429,19 @@ mod holds_flow_tests {
         row.holds = counted(15);
 
         let mut home = HomeState::default();
-        home.probed.insert(root.clone(), vec![row].into());
+        home.probe_ready(root.clone(), vec![row], false);
         home.cloud_kinds
             .insert(path, (EntryKind::MultiFile, counted(40)));
         home.apply_cloud_kinds(&root);
 
-        assert_eq!(home.probed[&root][0].holds.label(), "40 parquet");
-        assert_eq!(home.probed[&root][0].kind, EntryKind::MultiFile);
+        assert_eq!(
+            home.probes.listed(&root).unwrap()[0].holds.label(),
+            "40 parquet"
+        );
+        assert_eq!(
+            home.probes.listed(&root).unwrap()[0].kind,
+            EntryKind::MultiFile
+        );
     }
 
     #[test]
@@ -5386,13 +5456,16 @@ mod holds_flow_tests {
         row.holds = counted(40);
 
         let mut home = HomeState::default();
-        home.probed.insert(root.clone(), vec![row].into());
+        home.probe_ready(root.clone(), vec![row], false);
         home.cloud_kinds
             .insert(settled, (EntryKind::Directory, counted(1)));
         home.apply_cloud_kinds(&root);
 
-        assert_eq!(home.probed[&root][0].kind, EntryKind::Hive);
-        assert_eq!(home.probed[&root][0].holds.label(), "40 parquet");
+        assert_eq!(home.probes.listed(&root).unwrap()[0].kind, EntryKind::Hive);
+        assert_eq!(
+            home.probes.listed(&root).unwrap()[0].holds.label(),
+            "40 parquet"
+        );
     }
 
     /// A peek is a request, so it is spent on the row the cursor is on.
@@ -5416,7 +5489,7 @@ mod holds_flow_tests {
                 row
             })
             .collect();
-        home.probe_ready(root.clone(), rows);
+        home.probe_ready(root.clone(), rows, false);
         home.browsing = Some(root.clone());
         home.rebuild(&[]);
         // One already answered, and one with a request already out.

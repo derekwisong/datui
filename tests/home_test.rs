@@ -1243,7 +1243,7 @@ fn test_a_share_named_by_its_filesystem_is_still_probed_and_shown() {
         "a section still being listed should be on screen, not hidden as empty"
     );
 
-    home.probe_ready(root, Vec::new());
+    home.probe_ready(root, Vec::new(), false);
     assert!(home.pending_probes().is_empty());
 }
 
@@ -1263,7 +1263,7 @@ fn test_a_probe_result_fills_the_remote_root_in() {
 
     // Whatever the probe thread found is what gets shown.
     let rows = discover::scan_dir(&remote);
-    home.probe_ready(remote.clone(), rows);
+    home.probe_ready(remote.clone(), rows, false);
     home.rebuild(&[]);
 
     assert!(
@@ -1288,7 +1288,7 @@ fn test_a_root_that_never_answers_is_marked_unreachable() {
         ..Default::default()
     };
     home.rebuild(&[]);
-    home.probe_failed(remote.clone());
+    home.probe_failed(remote.clone(), None);
     home.rebuild(&[]);
 
     let section = home
@@ -1443,7 +1443,7 @@ fn test_a_recent_adopts_the_classification_its_root_probe_found() {
 
     // After it, and after something looks into the rows it returned: whatever that
     // found. A probe lists a remote directory; it does not read every subdirectory in it.
-    home.probe_ready(root.clone(), discover::scan_dir(&root));
+    home.probe_ready(root.clone(), discover::scan_dir(&root), false);
     home.rebuild(std::slice::from_ref(&dataset));
     home.classify_now(10);
 
@@ -1553,12 +1553,8 @@ fn test_listing_can_be_built_away_from_the_state_it_updates() {
         recents: Vec::new(),
         desktop_dirs: Vec::new(),
         browsing: Some(tmp.path().to_path_buf()),
-        probed: Default::default(),
-        unreachable: Default::default(),
-        listing_so_far: Default::default(),
-        cut_short: Default::default(),
+        probes: Default::default(),
         narrowed: None,
-        probe_errors: Default::default(),
         network_check: |_| false,
         cloud: Vec::new(),
         known: Default::default(),
@@ -1791,12 +1787,8 @@ fn test_a_recent_opened_from_a_bucket_shows_what_the_open_learned() {
         recents: vec![dataset.clone()],
         desktop_dirs: Vec::new(),
         browsing: None,
-        probed: Default::default(),
-        unreachable: Default::default(),
-        listing_so_far: Default::default(),
-        cut_short: Default::default(),
+        probes: Default::default(),
         narrowed: None,
-        probe_errors: Default::default(),
         network_check: |_| true,
         cloud: Vec::new(),
         known: cache.load_dataset_facts(),
@@ -1884,12 +1876,8 @@ fn test_a_recent_typed_through_a_named_source_finds_the_record_its_open_wrote() 
         recents: typed.clone(),
         desktop_dirs: Vec::new(),
         browsing: None,
-        probed: Default::default(),
-        unreachable: Default::default(),
-        listing_so_far: Default::default(),
-        cut_short: Default::default(),
+        probes: Default::default(),
         narrowed: None,
-        probe_errors: Default::default(),
         network_check: |_| true,
         cloud: Vec::new(),
         known: cache.load_dataset_facts(),
@@ -1954,12 +1942,8 @@ fn test_a_place_label_is_held_to_the_directories_mtime() {
             recents: vec![dataset.clone()],
             desktop_dirs: Vec::new(),
             browsing: None,
-            probed: Default::default(),
-            unreachable: Default::default(),
-            listing_so_far: Default::default(),
-            cut_short: Default::default(),
+            probes: Default::default(),
             narrowed: None,
-            probe_errors: Default::default(),
             network_check: |_| false,
             cloud: Vec::new(),
             known: cache.load_dataset_facts(),
@@ -2012,12 +1996,8 @@ fn test_a_place_row_says_nothing_it_does_not_know() {
         recents: vec![dataset],
         desktop_dirs: Vec::new(),
         browsing: None,
-        probed: Default::default(),
-        unreachable: Default::default(),
-        listing_so_far: Default::default(),
-        cut_short: Default::default(),
+        probes: Default::default(),
         narrowed: None,
-        probe_errors: Default::default(),
         network_check: |_| false,
         cloud: Vec::new(),
         known: cache.load_dataset_facts(),
@@ -2104,12 +2084,8 @@ fn test_a_remote_row_uses_remembered_facts_without_a_stat() {
         recents: vec![dataset.clone()],
         desktop_dirs: Vec::new(),
         browsing: None,
-        probed: Default::default(),
-        unreachable: Default::default(),
-        listing_so_far: Default::default(),
-        cut_short: Default::default(),
+        probes: Default::default(),
         narrowed: None,
-        probe_errors: Default::default(),
         network_check: pretend_remote,
         cloud: Vec::new(),
         known: cache.load_dataset_facts(),
@@ -2180,12 +2156,8 @@ fn test_a_changed_local_dataset_ignores_its_remembered_facts() {
         recents: Vec::new(),
         desktop_dirs: Vec::new(),
         browsing: Some(tmp.path().to_path_buf()),
-        probed: Default::default(),
-        unreachable: Default::default(),
-        listing_so_far: Default::default(),
-        cut_short: Default::default(),
+        probes: Default::default(),
         narrowed: None,
-        probe_errors: Default::default(),
         network_check: |_| false,
         cloud: Vec::new(),
         known: cache.load_dataset_facts(),
@@ -4054,12 +4026,8 @@ fn test_sections_are_ordered_by_intent_and_elsewhere_starts_folded() {
         recents: vec![recent],
         desktop_dirs: vec![elsewhere_dir],
         browsing: None,
-        probed: Default::default(),
-        unreachable: Default::default(),
-        listing_so_far: Default::default(),
-        cut_short: Default::default(),
+        probes: Default::default(),
         narrowed: None,
-        probe_errors: Default::default(),
         network_check: |_| false,
         cloud: vec![CloudSource {
             id: "s3-default".to_string(),
@@ -4338,6 +4306,7 @@ fn test_partitioned_cloud_directories_are_labelled_and_open_whole() {
                 "transactions",
             ),
         ],
+        false,
     );
     // Every directory on screen is to be peeked at, once. The picker reads the listing,
     // so the rows have to be on it.
@@ -4347,13 +4316,16 @@ fn test_partitioned_cloud_directories_are_labelled_and_open_whole() {
     home.cloud_kinds
         .insert(blocks.clone(), (EntryKind::Hive, Default::default()));
     home.apply_cloud_kinds(&btc);
-    assert_eq!(home.probed[&btc][0].kind, EntryKind::Hive);
-    assert_eq!(home.probed[&btc][1].kind, EntryKind::Directory);
+    assert_eq!(home.probes.listed(&btc).unwrap()[0].kind, EntryKind::Hive);
+    assert_eq!(
+        home.probes.listed(&btc).unwrap()[1].kind,
+        EntryKind::Directory
+    );
     home.rebuild(&[]);
     assert_eq!(home.cloud_directories_to_peek(48).len(), 1);
     // A later listing of the same place keeps what was found.
-    home.probe_ready(btc.clone(), vec![directory(&blocks, "blocks")]);
-    assert_eq!(home.probed[&btc][0].kind, EntryKind::Hive);
+    home.probe_ready(btc.clone(), vec![directory(&blocks, "blocks")], false);
+    assert_eq!(home.probes.listed(&btc).unwrap()[0].kind, EntryKind::Hive);
     // Nothing local is ever queued for a peek: `read_dir` on an `s3://` path is a
     // different question from a listing request, and a local directory is the other pass.
     let mut local = HomeState {
@@ -4376,6 +4348,7 @@ fn test_partitioned_cloud_directories_are_labelled_and_open_whole() {
                 "date=2009-01-09",
             ),
         ],
+        false,
     );
     home.browsing = Some(blocks.clone());
     home.rebuild(&[]);
@@ -4405,6 +4378,7 @@ fn test_partitioned_cloud_directories_are_labelled_and_open_whole() {
                 "by_station",
             ),
         ],
+        false,
     );
     home.browsing = Some(parquet);
     home.rebuild(&[]);
@@ -4453,6 +4427,7 @@ fn test_google_steps_through_project_bucket_and_prefix() {
     home.probe_ready(
         project.clone(),
         vec![datui::discover::Entry::directory(Path::new("gs://events"))],
+        false,
     );
     let prefix = Path::new("gs://events/2024/");
     assert_eq!(
@@ -4694,12 +4669,8 @@ fn test_a_directory_found_to_be_separate_tables_stays_a_plain_directory() {
             recents: Vec::new(),
             desktop_dirs: Vec::new(),
             browsing: Some(tmp.path().to_path_buf()),
-            probed: Default::default(),
-            unreachable: Default::default(),
-            listing_so_far: Default::default(),
-            cut_short: Default::default(),
+            probes: Default::default(),
             narrowed: None,
-            probe_errors: Default::default(),
             network_check: |_| false,
             cloud: Vec::new(),
             known: known.into_iter().collect(),
@@ -4777,6 +4748,7 @@ fn test_a_directory_of_separate_tables_still_offers_to_read_them_together() {
             object("drivers.parquet"),
             object("laps.parquet"),
         ],
+        false,
     );
     home.browsing = Some(exports.clone());
 
@@ -4833,6 +4805,7 @@ fn test_the_whole_directory_row_says_what_the_listing_holds() {
         (0..12)
             .map(|i| object(&format!("part-{i:05}.parquet")))
             .collect(),
+        false,
     );
     home.browsing = Some(exports.clone());
     home.rebuild(&[]);
@@ -5151,6 +5124,7 @@ fn test_an_azure_account_place_gets_no_door() {
         vec![datui::discover::Entry::directory(std::path::Path::new(
             "abfss://raw@storageaccount.dfs.core.windows.net/",
         ))],
+        false,
     );
     home.rebuild(&[]);
     assert!(
@@ -5266,7 +5240,7 @@ fn test_the_door_on_a_share_is_built_from_the_probe_not_the_disk() {
     stale.name = "stale.csv".to_string();
     stale.kind = EntryKind::File;
     stale.size = Some(10);
-    home.probe_ready(share, vec![stale]);
+    home.probe_ready(share, vec![stale], false);
     home.rebuild(&[]);
 
     let door = door_of(&home).expect("the directory carries the row");
@@ -5299,7 +5273,7 @@ fn test_the_door_is_named_the_way_the_title_is() {
         object.name = "one.parquet".to_string();
         object.kind = EntryKind::File;
         object.size = Some(10);
-        home.probe_ready(place, vec![object]);
+        home.probe_ready(place, vec![object], false);
         home.rebuild(&[]);
         door_of(&home)
             .map(|r| r.name.clone())
@@ -6406,21 +6380,21 @@ mod cloud_level_paging {
         browse(&mut app);
         // The first page is on screen while the rest is listed, and says so.
         until(&mut app, &rx, "the first page", |app| {
-            app.home.listing_so_far.contains_key(&level)
+            app.home.probes.so_far(&level).is_some()
         });
-        assert!(!app.home.probed.contains_key(&level));
+        assert!(!app.home.probes.listed(&level).is_some());
         until(&mut app, &rx, "the rows so far, said", |app| {
             subtitle(app).is_some_and(|s| s.ends_with(" so far"))
         });
         until(&mut app, &rx, "the whole listing", |app| {
-            app.home.probed.contains_key(&level)
+            app.home.probes.listed(&level).is_some()
         });
         settle(&mut app, &rx, |_| true);
         assert_eq!(
-            app.home.probed[&level].len(),
+            app.home.probes.listed(&level).unwrap().len(),
             datui::cloud_browse::MAX_LEVEL_ROWS
         );
-        assert!(app.home.cut_short.contains(&level));
+        assert!(app.home.probes.cut_short(&level));
         assert_eq!(subtitle(&app).as_deref(), Some("first 5,000"));
         assert_eq!(s3.wire.level_pages("by_station/"), 6);
 
@@ -6468,17 +6442,17 @@ mod cloud_level_paging {
         let level = PathBuf::from(LEVEL);
         browse(&mut app);
         until(&mut app, &rx, "the first page", |app| {
-            app.home.listing_so_far.contains_key(&level)
+            app.home.probes.so_far(&level).is_some()
         });
         press(&mut app, KeyCode::Backspace);
         assert_ne!(app.home.browsing.as_ref(), Some(&level));
         // Stopped, not finished: nothing kept, and not written off either.
         until(&mut app, &rx, "the listing to stop", |app| {
-            !app.home.listing_so_far.contains_key(&level)
+            !app.home.probes.so_far(&level).is_some()
         });
-        assert!(!app.home.probed.contains_key(&level));
-        assert!(!app.home.unreachable.contains(&level));
-        assert!(!app.home.cut_short.contains(&level));
+        assert!(!app.home.probes.listed(&level).is_some());
+        assert!(!app.home.probes.unreachable(&level));
+        assert!(!app.home.probes.cut_short(&level));
         let pages = s3.wire.level_pages("by_station/");
         assert!(pages < 6, "stopped after {pages} pages");
 
@@ -6486,9 +6460,9 @@ mod cloud_level_paging {
         s3.slow_lists(0);
         browse(&mut app);
         until(&mut app, &rx, "the listing again", |app| {
-            app.home.probed.contains_key(&level)
+            app.home.probes.listed(&level).is_some()
         });
-        assert!(app.home.cut_short.contains(&level));
+        assert!(app.home.probes.cut_short(&level));
     }
 }
 
@@ -7246,6 +7220,7 @@ fn test_late_footers_move_a_landed_cursor_and_only_a_landed_one() {
                 object("b.parquet"),
                 object("c.parquet"),
             ],
+            false,
         );
         home.browsing = Some(exports.clone());
         home.rebuild(&[]);
@@ -7316,6 +7291,7 @@ fn test_a_mixed_prefix_says_it_reads_below() {
             row("c.json", EntryKind::File),
             row("sub", EntryKind::Directory),
         ],
+        false,
     );
     home.browsing = Some(place);
     home.rebuild(&[]);
@@ -8646,12 +8622,8 @@ mod catalog {
             )],
             desktop_dirs: Vec::new(),
             browsing: None,
-            probed: Default::default(),
-            unreachable: Default::default(),
-            listing_so_far: Default::default(),
-            cut_short: Default::default(),
+            probes: Default::default(),
             narrowed: None,
-            probe_errors: Default::default(),
             network_check: |_| true,
             cloud: Vec::new(),
             known: Default::default(),

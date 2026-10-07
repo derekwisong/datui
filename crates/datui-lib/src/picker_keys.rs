@@ -6,6 +6,7 @@ use crate::{App, AppEvent, Overlay, table_switch};
 use crossterm::event::{KeyCode, KeyEvent};
 
 /// The go-to-column, format and table pickers.
+#[derive(Default)]
 pub struct Pickers {
     /// The shown columns, narrowed by what is typed, while `g` is choosing one.
     pub go_to_column: crate::widgets::ui::PickerState,

@@ -112,7 +112,7 @@ impl App {
             Overlay::PickTable => self.pickers.table_choices = None,
             Overlay::Hex => {
                 self.stop_hex_find();
-                self.hex_view.view = None;
+                self.hex.view = None;
             }
             Overlay::Chart => {
                 self.chart.modal.close();

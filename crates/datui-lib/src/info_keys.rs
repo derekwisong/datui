@@ -9,6 +9,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 
 /// What the Info panel shows of the dataset beyond its schema: file facts, codebook, catalog
 /// entry and documentation.
+#[derive(Default)]
 pub struct InfoState {
     /// What Info's read found about the open file, with its `dataset_generation`.
     /// Read on a worker ([`Job::FileFacts`]) when the panel opens and kept however it

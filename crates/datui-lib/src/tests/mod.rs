@@ -3818,6 +3818,147 @@ fn a_late_event_from_an_old_pass_does_not_throw_away_the_live_answer() {
     assert_eq!(last_column(&app).as_deref(), Some("oops"));
 }
 
+/// A footer pass that answered before another open began still reaches its dataset
+/// when that open fails: the dataset on screen is still the one it read.
+#[test]
+fn a_footer_answer_survives_an_open_that_fails() {
+    use crate::table::{DataTableState, FootersFound};
+    use crate::{App, AppEvent, OpenOptions};
+    use polars::prelude::*;
+    use std::sync::Arc;
+
+    let frame = || df!("id" => &[1i64]).unwrap().lazy();
+    let wider = || df!("id" => &[1i64], "oops" => &["a"]).unwrap().lazy();
+    let dataset_of = |lf: LazyFrame| {
+        let mut lf = lf;
+        let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+        let footer = crate::schema_union::FileFooter {
+            schema,
+            row_group_rows: vec![1],
+            file_bytes: 0,
+            row_group_bytes: Vec::new(),
+            column_bytes: Vec::new(),
+        };
+        crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+    };
+    let found = FootersFound {
+        estimate: None,
+        dataset: dataset_of(wider()),
+        lf: wider(),
+        file_rows: Vec::new(),
+        files: Vec::new(),
+        row_groups: Vec::new(),
+        remote: None,
+    };
+    let found = std::sync::Mutex::new(Some(found));
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new(tx.clone(), crate::tests::test_runtime());
+    let state = DataTableState::from_schema_and_lazyframe(
+        dataset_of(frame()).schema.clone(),
+        frame(),
+        &OpenOptions::default(),
+        None,
+    )
+    .unwrap()
+    .with_open(crate::table::OpenFacts {
+        footers_pending: Some(Arc::new(move |_progress| found.lock().unwrap().take())),
+        ..Default::default()
+    });
+    app.install_for_tests(state, None, &OpenOptions::default(), None);
+
+    // The pass has answered; its end is not handled until the next open has failed.
+    let answered = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the pass answers");
+    assert!(
+        matches!(answered, AppEvent::JobEnded(ticket) if ticket.kind() == crate::JobKind::FootersJoin)
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let broken = dir.path().join("broken.parquet");
+    std::fs::write(&broken, b"not parquet").unwrap();
+    let mut next = Some(AppEvent::Open(vec![broken], OpenOptions::default()));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while app.error_message().is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the open never failed"
+        );
+        let event = match next.take() {
+            Some(event) => event,
+            None => match rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                Ok(event) => event,
+                Err(_) => continue,
+            },
+        };
+        next = app.event(event);
+    }
+
+    let _ = app.handle(answered);
+    assert_eq!(
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .get_column_order()
+            .last()
+            .map(String::as_str),
+        Some("oops"),
+        "the dataset still on screen gets its columns"
+    );
+}
+
+/// A journal's Info tab read again for a dataset since replaced is dropped: it does
+/// not describe the one on screen.
+#[test]
+fn a_journal_reread_for_a_replaced_dataset_is_dropped() {
+    use crate::jobs::{Answer, Job, Outcome};
+    use crate::table::DataTableState;
+    use crate::{App, AppEvent, OpenOptions};
+    use polars::prelude::*;
+
+    let state = || {
+        let lf = df!("id" => &[1i64]).unwrap().lazy();
+        let mut probe = lf.clone();
+        let schema = probe.collect_schema().unwrap();
+        DataTableState::from_schema_and_lazyframe(schema, lf, &OpenOptions::default(), None)
+            .unwrap()
+    };
+    let detail = || {
+        Answer::JournalDescribed(Some(Box::new(crate::text_formats::Detail {
+            tab: "Journal",
+            ..Default::default()
+        })))
+    };
+    let tab = |app: &App| {
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .format_detail()
+            .map(|detail| detail.tab)
+    };
+
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new(tx, crate::tests::test_runtime());
+    app.install_for_tests(state(), None, &OpenOptions::default(), None);
+
+    let dataset = app.dataset_generation;
+    let started = app.job_for_tests(Job::JournalDetail { dataset }, None);
+    app.install_for_tests(state(), None, &OpenOptions::default(), None);
+    let ticket = started.ticket();
+    started.end(Outcome::answered(detail()));
+    let _ = app.handle(AppEvent::JobEnded(ticket));
+    assert_eq!(tab(&app), None, "the dataset on screen keeps its own tab");
+
+    // The same answer for the dataset on screen is taken.
+    let dataset = app.dataset_generation;
+    let started = app.job_for_tests(Job::JournalDetail { dataset }, None);
+    let ticket = started.ticket();
+    started.end(Outcome::answered(detail()));
+    let _ = app.handle(AppEvent::JobEnded(ticket));
+    assert_eq!(tab(&app), Some("Journal"));
+}
+
 /// Columns that arrive while the user is inside a query wait for them to leave it.
 ///
 /// The scan a query is built on is not the frame on screen: rebuilding it wider

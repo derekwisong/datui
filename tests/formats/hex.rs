@@ -51,7 +51,7 @@ fn screen(app: &mut App, width: u16, height: u16) -> String {
 }
 
 fn cursor(app: &App) -> u64 {
-    app.hex_view.view.as_ref().unwrap().cursor
+    app.hex.view.as_ref().unwrap().cursor
 }
 
 /// Records of 21 bytes, each starting with `SYNC`; `SY` and `NC` straddle the row
@@ -144,7 +144,7 @@ fn keys_move_go_to_an_offset_and_set_the_row_size() {
     press(&mut app, KeyCode::Char(':'));
     type_in(&mut app, "99999");
     press(&mut app, KeyCode::Enter);
-    let view = app.hex_view.view.as_ref().unwrap();
+    let view = app.hex.view.as_ref().unwrap();
     assert!(view.prompt.is_some());
     assert!(
         view.prompt_error
@@ -155,12 +155,12 @@ fn keys_move_go_to_an_offset_and_set_the_row_size() {
     let s = screen(&mut app, 80, 24);
     assert!(s.contains("past the end"), "{s}");
     press(&mut app, KeyCode::Esc);
-    assert!(app.hex_view.view.as_ref().unwrap().prompt.is_none());
+    assert!(app.hex.view.as_ref().unwrap().prompt.is_none());
 
     press(&mut app, KeyCode::Char('r'));
     type_in(&mut app, "21");
     press(&mut app, KeyCode::Enter);
-    assert_eq!(app.hex_view.view.as_ref().unwrap().record_size, Some(21));
+    assert_eq!(app.hex.view.as_ref().unwrap().record_size, Some(21));
     let s = screen(&mut app, 120, 24);
     assert!(s.contains("00000015  53 59 4e 43  01 00 00 00"), "{s}");
     assert!(s.contains("0000002a  53 59 4e 43  02 00 00 00"), "{s}");
@@ -210,12 +210,12 @@ fn a_find_spans_rows_takes_wildcards_and_guesses_the_stride() {
     press(&mut app, KeyCode::Char('N'));
     drain_events(&mut app, &rx);
     assert_eq!(cursor(&app), 8);
-    let found = app.hex_view.view.as_ref().unwrap().found.clone().unwrap();
+    let found = app.hex.view.as_ref().unwrap().found.clone().unwrap();
     assert_eq!(found.stride, Some(21), "every record has one");
     let s = screen(&mut app, 100, 24);
     assert!(s.contains("every 21 bytes"), "{s}");
     press(&mut app, KeyCode::Char('R'));
-    assert_eq!(app.hex_view.view.as_ref().unwrap().record_size, Some(21));
+    assert_eq!(app.hex.view.as_ref().unwrap().record_size, Some(21));
 
     // Text, and no match.
     press(&mut app, KeyCode::Char('f'));
@@ -254,7 +254,7 @@ fn esc_stops_a_find_on_a_large_file() {
         Overlay::Hex,
         "Esc stopped the find, not the view"
     );
-    assert!(app.hex_view.view.as_ref().unwrap().found.is_none());
+    assert!(app.hex.view.as_ref().unwrap().found.is_none());
     std::fs::remove_file(path).unwrap();
 }
 
@@ -285,9 +285,9 @@ fn an_empty_file_and_a_one_byte_file_open() {
     type_in(&mut app, "0");
     press(&mut app, KeyCode::Enter);
     assert!(
-        app.hex_view.view.as_ref().unwrap().prompt_error.as_deref() == Some("The file is empty"),
+        app.hex.view.as_ref().unwrap().prompt_error.as_deref() == Some("The file is empty"),
         "{:?}",
-        app.hex_view.view.as_ref().unwrap().prompt_error
+        app.hex.view.as_ref().unwrap().prompt_error
     );
     press(&mut app, KeyCode::Esc);
     press(&mut app, KeyCode::Char('f'));
@@ -340,7 +340,7 @@ fn the_info_panel_shows_the_file_as_hex_and_esc_comes_back_to_it() {
     press(&mut app, KeyCode::Esc);
     assert_eq!(app.overlay, Overlay::Info);
     assert!(app.overlay.shows(&Overlay::Info));
-    assert!(app.hex_view.view.is_none());
+    assert!(app.hex.view.is_none());
     press(&mut app, KeyCode::Esc);
     assert!(app.at_table());
     assert!(app.data_table_state.is_some(), "the table is still there");

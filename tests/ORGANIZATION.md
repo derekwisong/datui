@@ -52,13 +52,13 @@ machine, so wall times are approximate.
 | Rebuild after a one-line test edit | under 1 s | under 1 s (`app`, the largest, 1.0 s) |
 | `scripts/dev/test.sh full`, built | 38.8 s wall | 23.4 s wall |
 | Tests | 4,002 passed, 32 ignored | 3,977 passed, 31 ignored |
-| `sleep` calls in test code | 49 | 28, none waiting for work: 11 poll a condition no event reports (a file on disk, a flag), 15 have a real timer as the subject (a slow disk or server, a sampler, a frame rate, a wait that must not end), 2 in `src/tests` not yet reviewed |
+| `sleep` calls in test code | 49 | 28, none waiting for work: 11 poll a condition no event reports (a file on disk, a flag), 15 have a real timer as the subject (a slow disk or server, a sampler, a frame rate, a wait that must not end), 2 in `src/tests` that set an order (views sent after an open starts, a future that outlasts the runtime's shutdown) |
 
 The library's own test executable (about 9.5 s after an edit) is the critical path
 after a library edit; the root executables link beside it. The fresh-target-dir
 build after the change missed sccache and ran under a load average of 13, so only
 its root test units are compared. 29 tests were folded into table-driven or exact
-neighbors that cover the same cases (listed in the Phase E reports); two were added
+neighbors that cover the same cases; two were added
 (a followed file replaced before its watcher opens it, and `NO_COLOR` given to the
 color parser, which replaced an ignored test), and other work added two.
 
@@ -154,7 +154,7 @@ before, 16.9 s after.
 
 `full` after: 29.9 s wall, 28.5 s summed (`integration_test` measured 10.4 s
 under other agents' load; its tests' nextest times are unchanged), 3,981
-passed, 32 ignored: 21 tests folded, listed in the Phase E report.
+passed, 32 ignored: 21 tests folded into neighbors that cover their cases.
 
 Left as they are, each for a reason:
 

@@ -24,12 +24,14 @@ use crate::statistics::collect_lazy;
 use crate::widgets::column_paging::{ColumnMove, CursorMove, OnScreen, Room};
 use crate::widgets::column_widths::{ColumnWidths, WidthChoice};
 
-pub struct DataTableState {
+/// The view on screen: the frames, what built them, the rows held and how they are
+/// laid out. One value, so a checkpoint is a clone of it and putting one back is
+/// one assignment.
+#[derive(Clone)]
+pub(crate) struct View {
     lf: LazyFrame,
     /// `lf` before its sort, when it has one. See [`DataTableState::analysis_lf`].
     unsorted_lf: Option<LazyFrame>,
-    original_lf: LazyFrame,
-    original_schema: Arc<Schema>,
     /// What the sidebar filters and sort are applied to: the active query's result (DSL,
     /// SQL or fuzzy), the last pivot/melt, or `original_lf` when there is none. The
     /// pipeline is original → query/reshape (`base_lf`) → filters → sort (`lf`) → column
@@ -37,44 +39,17 @@ pub struct DataTableState {
     base_lf: LazyFrame,
     pub(crate) df: Option<DataFrame>, // Scrollable columns dataframe
     pub(crate) locked_df: Option<DataFrame>, // Locked columns dataframe
-    pub table_state: TableState,
     pub(crate) start_row: usize,
-    pub visible_rows: usize,
-    pub termcol_index: usize,
     /// The column cursor's column, by name, so it follows hide, reorder and freeze.
     /// `None` is the first column. See [`Self::current_column`].
     cursor_column: Option<String>,
     /// Where the cursor stood in `column_order` when placed: a column hidden from
     /// under it hands the cursor to the one now in its place.
     cursor_at: usize,
-    /// The cursor may be off screen (the order, the frozen count or the room
-    /// changed): the next draw brings it back, scrolling as little as it takes.
-    reveal_cursor: bool,
-    pub visible_termcols: usize,
-    /// The scrolling side as last drawn, which a sideways page is planned in. `None`
-    /// before the first draw.
-    scroll_room: Option<Room>,
-    /// Sideways moves waiting on the next draw to measure columns not drawn yet, in
-    /// the order asked. See [`Self::scroll_columns`].
-    column_moves: Vec<WaitingMove>,
-    /// The pages `]` went, from and to, so `[` straight after goes back exactly.
-    page_trail: Vec<(usize, usize)>,
-    /// Which columns the last draw showed, while some are off screen.
-    pub(crate) on_screen: Option<OnScreen>,
-    /// Where the last frame drew the rows and columns, for a click.
-    pub(crate) drawn: Option<DrawnTable>,
-    /// The cells the last frame formatted, for the next one to draw again.
-    pub(crate) page_cells: crate::widgets::table::PageCells,
-    error: Option<PolarsError>,
-    pub suppress_error_display: bool, // When true, don't show errors in main view (e.g., when query input is active)
     pub(crate) schema: Arc<Schema>,
     num_rows: usize,
     /// When true, collect() skips the len() query.
     pub(crate) num_rows_valid: bool,
-    /// The dataset's own row count, remembered from the last moment the frame was
-    /// pristine. Lets the footer say "417 of 1,000" under a filter or query
-    /// without a second count; `None` until a pristine count has resolved.
-    pristine_rows: Option<usize>,
     /// Bumped whenever `lf` changes (via `invalidate_num_rows`). A background `len()`
     /// count carries the generation it was spawned under; a result whose generation no
     /// longer matches is stale (the data changed) and is dropped. Decoupled from
@@ -85,20 +60,6 @@ pub struct DataTableState {
     /// zero meant a count still running for the dataset you just closed matched the
     /// one you just opened, and set its row count to the wrong number.
     len_generation: u64,
-    /// Taken afresh whenever `original_lf` is replaced. A checkpoint records it, so one
-    /// taken over other data is never put back over this data.
-    root_generation: u64,
-    /// The local Parquet hive directory the data was loaded from, whose per-file footer
-    /// counts sum to the exact row count while the frame is the scan as loaded
-    /// (`is_pristine`) — far cheaper than a `len()` data scan over a huge/partitioned set.
-    parquet_count_dir: Option<PathBuf>,
-    /// What finding and reading this dataset cost.
-    ///
-    /// On the dataset rather than on the app, for the reason `dataset_generation` is
-    /// bumped per dataset that reaches the screen rather than per open started: an open
-    /// that fails leaves the last dataset up, and its figures have to stay with it. A
-    /// meter the app held would by then be the failed load's.
-    measurements: Arc<crate::measurements::Meter>,
     filters: Vec<FilterStatement>,
     sort_columns: Vec<String>,
     /// Per entry of `sort_columns`, whether that column runs descending. Always the
@@ -122,10 +83,6 @@ pub struct DataTableState {
     /// many of them fit frozen beside a usable scrolling column. The rest scroll until
     /// a wider window has room again; a different count asked for starts over.
     frozen_fit: (usize, usize),
-    /// The width each column is drawn at, by column identity, so paging, reordering,
-    /// hiding and opening a sidebar move nothing. Learned by the renderer from rows it
-    /// formats anyway; not part of a rollback, since it describes columns, not a view.
-    pub(crate) widths: ColumnWidths,
     /// The grouped view a drill-down left, restored exactly by `drill_up`.
     grouped: Option<GroupedView>,
     /// The rows behind a grouped query result, so Enter can drill from an aggregate.
@@ -136,6 +93,112 @@ pub struct DataTableState {
     drilled_down_group_index: Option<usize>, // Index of the group we're viewing
     drilled_down_group_key: Option<Vec<String>>, // Key values of the drilled down group
     drilled_down_group_key_columns: Option<Vec<String>>, // Key column names of the drilled down group
+    /// Whether the frame still carries the scan's hidden drift column. True from the
+    /// open of a dataset whose files differ; false once a query or reshape has built a
+    /// new frame, which has no file behind each row any more.
+    drift_column_present: bool,
+    /// What each drift group is missing, shared with the renderer so a frame costs no
+    /// allocation. Indexed by the drift column's values.
+    drift_groups: Arc<Vec<crate::schema_union::DriftGroup>>,
+    /// The sorted or filtered view numbers its rows itself, `#` being on and the data
+    /// as loaded carrying no place of its own: a row index over the base, under the
+    /// filters and sort. Taken only while `#` is on, because a row index between a
+    /// scan and a filter keeps the filter from being pushed into the scan.
+    view_numbered: bool,
+    /// What datui noticed about the dataset, from the footers it had to read anyway.
+    notes: Vec<crate::notes::Note>,
+    /// Whether the Info panel has been opened since the notes were gathered. Belongs to
+    /// the dataset, so opening another one offers its notes afresh.
+    notes_seen: bool,
+    /// Notes about the view rather than the dataset: what the filter and sort on
+    /// screen are leaving out. Recomputed whenever either changes, so clearing them
+    /// takes the note away with them.
+    view_notes: Vec<crate::notes::Note>,
+    /// Bytes per row of the last buffer collected, which outranks the estimate from
+    /// the schema.
+    observed_bytes_per_row: Option<usize>,
+    pub(crate) buffered_start_row: usize,
+    buffered_end_row: usize,
+    /// Full buffered DataFrame (all columns in column_order) for the current buffer range.
+    /// When set, column scroll (scroll_left/scroll_right) only re-slices columns without re-collecting from LazyFrame.
+    buffered_df: Option<DataFrame>,
+    /// The first row of the last page drawn whole. See [`Self::start_to_draw`].
+    drawn_start: usize,
+    /// Last applied pivot spec, if current lf is result of a pivot. Used for views.
+    last_pivot_spec: Option<PivotSpec>,
+    /// Last applied melt spec, if current lf is result of a melt. Used for views.
+    last_melt_spec: Option<MeltSpec>,
+    /// The query, filters and sort the pivot or melt in effect ran over, for a view to
+    /// replay before it. `None` while none is in effect, or when it ran over the data as
+    /// loaded.
+    reshape_source: Option<ReshapeSource>,
+    /// How `base_lf` was built from the data as loaded, step by step, for Copy as
+    /// Python. Set with every new base; empty for the data as loaded.
+    base_steps: Vec<Step>,
+    /// The view's own column types and columns made from others, in the order asked:
+    /// a step of `lf`, before the filters, as a spec's `[columns]` would say them.
+    column_changes: Vec<crate::column_types::ColumnChange>,
+    /// Bumped with every change to `column_changes`, so a count of what they made null
+    /// answers for the changes it was asked about.
+    changes_version: u64,
+    /// Steps of a saved view whose columns this data does not have.
+    changes_dropped: Vec<crate::notes::Note>,
+    /// How `reshaped_lf` was built, while there is one: what SQL runs over.
+    reshape_steps: Option<Vec<Step>>,
+    /// Which loaded column each column of the base is (see [`Lineage`]).
+    lineage: Lineage,
+    /// The same for the pivot or melt in effect, which SQL runs against.
+    reshape_lineage: Lineage,
+}
+
+pub struct DataTableState {
+    original_lf: LazyFrame,
+    original_schema: Arc<Schema>,
+    pub table_state: TableState,
+    pub visible_rows: usize,
+    pub termcol_index: usize,
+    /// The cursor may be off screen (the order, the frozen count or the room
+    /// changed): the next draw brings it back, scrolling as little as it takes.
+    reveal_cursor: bool,
+    pub visible_termcols: usize,
+    /// The scrolling side as last drawn, which a sideways page is planned in. `None`
+    /// before the first draw.
+    scroll_room: Option<Room>,
+    /// Sideways moves waiting on the next draw to measure columns not drawn yet, in
+    /// the order asked. See [`Self::scroll_columns`].
+    column_moves: Vec<WaitingMove>,
+    /// The pages `]` went, from and to, so `[` straight after goes back exactly.
+    page_trail: Vec<(usize, usize)>,
+    /// Which columns the last draw showed, while some are off screen.
+    pub(crate) on_screen: Option<OnScreen>,
+    /// Where the last frame drew the rows and columns, for a click.
+    pub(crate) drawn: Option<DrawnTable>,
+    /// The cells the last frame formatted, for the next one to draw again.
+    pub(crate) page_cells: crate::widgets::table::PageCells,
+    error: Option<PolarsError>,
+    pub suppress_error_display: bool, // When true, don't show errors in main view (e.g., when query input is active)
+    /// The dataset's own row count, remembered from the last moment the frame was
+    /// pristine. Lets the footer say "417 of 1,000" under a filter or query
+    /// without a second count; `None` until a pristine count has resolved.
+    pristine_rows: Option<usize>,
+    /// Taken afresh whenever `original_lf` is replaced. A checkpoint records it, so one
+    /// taken over other data is never put back over this data.
+    root_generation: u64,
+    /// The local Parquet hive directory the data was loaded from, whose per-file footer
+    /// counts sum to the exact row count while the frame is the scan as loaded
+    /// (`is_pristine`) — far cheaper than a `len()` data scan over a huge/partitioned set.
+    parquet_count_dir: Option<PathBuf>,
+    /// What finding and reading this dataset cost.
+    ///
+    /// On the dataset rather than on the app, for the reason `dataset_generation` is
+    /// bumped per dataset that reaches the screen rather than per open started: an open
+    /// that fails leaves the last dataset up, and its figures have to stay with it. A
+    /// meter the app held would by then be the failed load's.
+    measurements: Arc<crate::measurements::Meter>,
+    /// The width each column is drawn at, by column identity, so paging, reordering,
+    /// hiding and opening a sidebar move nothing. Learned by the renderer from rows it
+    /// formats anyway; not part of a rollback, since it describes columns, not a view.
+    pub(crate) widths: ColumnWidths,
     pages_lookahead: usize,
     pages_lookback: usize,
     max_buffered_rows: usize, // 0 = no limit
@@ -155,24 +218,12 @@ pub struct DataTableState {
     /// What the footers said about a many-file dataset's columns: where the schema came
     /// from, and which columns are not in every file. `None` for a single file.
     dataset_schema: Option<crate::schema_union::DatasetSchema>,
-    /// Whether the frame still carries the scan's hidden drift column. True from the
-    /// open of a dataset whose files differ; false once a query or reshape has built a
-    /// new frame, which has no file behind each row any more.
-    drift_column_present: bool,
-    /// What each drift group is missing, shared with the renderer so a frame costs no
-    /// allocation. Indexed by the drift column's values.
-    drift_groups: Arc<Vec<crate::schema_union::DriftGroup>>,
     /// The two above as the dataset was opened, so a reset returns to them.
     drift_at_open: bool,
     groups_at_open: Arc<Vec<crate::schema_union::DriftGroup>>,
     /// The data as loaded carries each row's place in the source in the hidden row
     /// index (lines), which `#` shows while the frame is the scan's.
     source_rows_at_open: bool,
-    /// The sorted or filtered view numbers its rows itself, `#` being on and the data
-    /// as loaded carrying no place of its own: a row index over the base, under the
-    /// filters and sort. Taken only while `#` is on, because a row index between a
-    /// scan and a filter keeps the filter from being pushed into the scan.
-    view_numbered: bool,
     /// Lines still being indexed behind the first rows: the frames grow as they are.
     indexing: Option<Arc<crate::lines::Lines>>,
     /// The lines of several files, which `#` numbers by their line in their own file.
@@ -203,17 +254,8 @@ pub struct DataTableState {
     /// Set while the dataset is on screen from a footer or two and the rest are still
     /// to be read. Cleared when their answer joins. See [`FootersJoin`].
     footers_pending: Option<FootersJoin>,
-    /// What datui noticed about the dataset, from the footers it had to read anyway.
-    notes: Vec<crate::notes::Note>,
-    /// Whether the Info panel has been opened since the notes were gathered. Belongs to
-    /// the dataset, so opening another one offers its notes afresh.
-    notes_seen: bool,
     /// The notes as the dataset was opened, so a reset and a drill up restore them.
     notes_at_open: Vec<crate::notes::Note>,
-    /// Notes about the view rather than the dataset: what the filter and sort on
-    /// screen are leaving out. Recomputed whenever either changes, so clearing them
-    /// takes the note away with them.
-    view_notes: Vec<crate::notes::Note>,
     /// Notes about the read itself rather than about what it found: which files this
     /// open passed over, and whether it is reading a lake table's plain files.
     ///
@@ -251,30 +293,9 @@ pub struct DataTableState {
     /// Uncompressed bytes per row of each column, from the Parquet footer, for
     /// `bytes_per_row` before anything has been collected.
     column_bytes: Vec<(String, usize)>,
-    /// Bytes per row of the last buffer collected, which outranks the estimate from
-    /// the schema.
-    observed_bytes_per_row: Option<usize>,
-    pub(crate) buffered_start_row: usize,
-    buffered_end_row: usize,
-    /// Full buffered DataFrame (all columns in column_order) for the current buffer range.
-    /// When set, column scroll (scroll_left/scroll_right) only re-slices columns without re-collecting from LazyFrame.
-    buffered_df: Option<DataFrame>,
     proximity_threshold: usize,
-    /// The first row of the last page drawn whole. See [`Self::start_to_draw`].
-    drawn_start: usize,
     row_numbers: bool,
     row_start_index: usize,
-    /// Last applied pivot spec, if current lf is result of a pivot. Used for views.
-    last_pivot_spec: Option<PivotSpec>,
-    /// Last applied melt spec, if current lf is result of a melt. Used for views.
-    last_melt_spec: Option<MeltSpec>,
-    /// The query, filters and sort the pivot or melt in effect ran over, for a view to
-    /// replay before it. `None` while none is in effect, or when it ran over the data as
-    /// loaded.
-    reshape_source: Option<ReshapeSource>,
-    /// How `base_lf` was built from the data as loaded, step by step, for Copy as
-    /// Python. Set with every new base; empty for the data as loaded.
-    base_steps: Vec<Step>,
     /// What the open did to the rows its reader gave, as Python method calls: names
     /// trimmed, text columns typed.
     read_python: Vec<String>,
@@ -282,22 +303,8 @@ pub struct DataTableState {
     typing: Typing,
     /// The notes on the values the types made null, once counted.
     unfit_notes: Option<Vec<crate::notes::Note>>,
-    /// The view's own column types and columns made from others, in the order asked:
-    /// a step of `lf`, before the filters, as a spec's `[columns]` would say them.
-    column_changes: Vec<crate::column_types::ColumnChange>,
-    /// Bumped with every change to `column_changes`, so a count of what they made null
-    /// answers for the changes it was asked about.
-    changes_version: u64,
     /// The notes on the values the view's types made null: for the version counted.
     changes_unfit: Option<(u64, Vec<crate::notes::Note>)>,
-    /// Steps of a saved view whose columns this data does not have.
-    changes_dropped: Vec<crate::notes::Note>,
-    /// How `reshaped_lf` was built, while there is one: what SQL runs over.
-    reshape_steps: Option<Vec<Step>>,
-    /// Which loaded column each column of the base is (see [`Lineage`]).
-    lineage: Lineage,
-    /// The same for the pivot or melt in effect, which SQL runs against.
-    reshape_lineage: Lineage,
     /// When set, dataset was loaded with hive partitioning; partition column names for Info panel and predicate pushdown.
     partition_columns: Option<Vec<String>>,
     /// When set, decompressed CSV was written to this temp file; kept alive so the file exists for lazy scan.
@@ -327,6 +334,8 @@ pub struct DataTableState {
     /// The sample this view's rows are, and the view it was drawn from, while the
     /// view has one: the step between the source and the query.
     sampled: Option<Box<Sampled>>,
+    /// What the view is: everything a checkpoint keeps and puts back.
+    pub(crate) view: View,
 }
 
 /// A view's sample: the step between the source and the query. The view's frames
@@ -580,136 +589,15 @@ impl DataTableState {
         max_buffered_mb: Option<usize>,
         polars_streaming: bool,
     ) -> Result<Self> {
-        let (schema, source_rows_at_open) = Self::without_source_rows(lf.clone().collect_schema()?);
-        let column_order: Vec<String> = schema.iter_names().map(|s| s.to_string()).collect();
-        Ok(Self {
-            unsorted_lf: None,
-            original_lf: lf.clone(),
-            original_schema: schema.clone(),
-            base_lf: lf.clone(),
-            lf,
-            df: None,
-            locked_df: None,
-            table_state: TableState::default(),
-            start_row: 0,
-            visible_rows: 0,
-            termcol_index: 0,
-            visible_termcols: 0,
-            scroll_room: None,
-            column_moves: Vec::new(),
-            page_trail: Vec::new(),
-            on_screen: None,
-            drawn: None,
-            page_cells: Default::default(),
-            error: None,
-            suppress_error_display: false,
-            schema,
-            num_rows: 0,
-            num_rows_valid: false,
-            pristine_rows: None,
-            len_generation: next_len_generation(),
-            root_generation: next_len_generation(),
-            parquet_count_dir: None,
-            measurements: Arc::new(crate::measurements::Meter::default()),
-            filters: Vec::new(),
-            sort_columns: Vec::new(),
-            sort_descending: Vec::new(),
-            sort_ascending: true,
-            cursor_column: None,
-            cursor_at: 0,
-            reveal_cursor: false,
-            active_query: String::new(),
-            active_sql_query: String::new(),
-            query_order: Vec::new(),
-            active_fuzzy_query: String::new(),
-            column_order,
-            locked_columns_count: 0,
-            frozen_fit: (0, 0),
-            widths: ColumnWidths::default(),
-            grouped: None,
-            group_source: None,
-            reshaped_lf: None,
-            drilled_down_group_index: None,
-            drilled_down_group_key: None,
-            drilled_down_group_key_columns: None,
-            pages_lookahead: pages_lookahead.unwrap_or(3),
-            pages_lookback: pages_lookback.unwrap_or(3),
-            max_buffered_rows: max_buffered_rows.unwrap_or(DEFAULT_MAX_BUFFERED_ROWS),
-            max_buffered_mb: max_buffered_mb.unwrap_or(512),
-            remote_source: false,
-            row_group_offsets: None,
-            remote_files: None,
-            remote_objects: None,
-            dataset_schema: None,
-            drift_column_present: false,
-            drift_groups: Arc::new(Vec::new()),
-            drift_at_open: false,
-            groups_at_open: Arc::new(Vec::new()),
-            source_rows_at_open,
-            view_numbered: false,
-            indexing: None,
-            numbering: None,
-            row_estimate: None,
-            indexing_notes: Vec::new(),
-            indexing_guessed: false,
-            drift_file_starts: Vec::new(),
-            drift_file_group: Vec::new(),
-            drift_files: Vec::new(),
-            footers_pending: None,
-            notes: Vec::new(),
-            open_notes: Vec::new(),
-            not_the_table: None,
-            format_read: None,
-            delimited: None,
-            fixed_window: None,
-            pushdown: None,
-            source_hold: None,
-            read_mode: None,
-            read_as: None,
-            fetched: false,
-            detail: None,
-            file_units: Arc::new(Vec::new()),
-            notes_seen: false,
-            notes_at_open: Vec::new(),
-            view_notes: Vec::new(),
-            drift_dataset_rows: 0,
-            dataset_at_open: None,
-            read_as_text: Vec::new(),
-            column_bytes: Vec::new(),
-            observed_bytes_per_row: None,
-            buffered_start_row: 0,
-            buffered_end_row: 0,
-            buffered_df: None,
-            proximity_threshold: 0, // Will be set when visible_rows is known
-            drawn_start: 0,
-            row_numbers: false, // Will be set from options
-            row_start_index: 1, // Will be set from options
-            last_pivot_spec: None,
-            last_melt_spec: None,
-            reshape_source: None,
-            base_steps: Vec::new(),
-            read_python: Vec::new(),
-            typing: Typing::default(),
-            unfit_notes: None,
-            column_changes: Vec::new(),
-            changes_version: 0,
-            changes_unfit: None,
-            changes_dropped: Vec::new(),
-            reshape_steps: None,
-            lineage: None,
-            reshape_lineage: None,
-            partition_columns: None,
-            decompress_temp_file: None,
-            download: None,
-            converted: Vec::new(),
-            other_tables: Vec::new(),
+        let options = OpenOptions {
+            pages_lookahead,
+            pages_lookback,
+            max_buffered_rows,
+            max_buffered_mb,
             polars_streaming,
-            defer_collect: false,
-            needs_recollect: false,
-            follow: None,
-            follow_known: None,
-            sampled: None,
-        })
+            ..OpenOptions::default()
+        };
+        Self::from_lazyframe(lf, &options)
     }
 
     /// `schema` without the hidden row index, and whether it had one: the rows' place
@@ -725,17 +613,8 @@ impl DataTableState {
 
     /// Create state from an existing LazyFrame (e.g. from Python or in-memory). Uses OpenOptions for display/buffer settings.
     pub fn from_lazyframe(lf: LazyFrame, options: &crate::OpenOptions) -> Result<Self> {
-        let mut state = Self::new(
-            lf,
-            options.pages_lookahead,
-            options.pages_lookback,
-            options.max_buffered_rows,
-            options.max_buffered_mb,
-            options.polars_streaming,
-        )?;
-        state.row_numbers = options.row_numbers;
-        state.row_start_index = options.row_start_index;
-        Ok(state)
+        let schema = lf.clone().collect_schema()?;
+        Self::from_schema_and_lazyframe(schema, lf, options, None)
     }
 
     /// Create state from a pre-collected schema and LazyFrame (for phased loading). Does not call collect_schema();
@@ -760,15 +639,9 @@ impl DataTableState {
             schema.iter_names().map(|s| s.to_string()).collect()
         };
         Ok(Self {
-            unsorted_lf: None,
             original_lf: lf.clone(),
             original_schema: schema.clone(),
-            base_lf: lf.clone(),
-            lf,
-            df: None,
-            locked_df: None,
             table_state: TableState::default(),
-            start_row: 0,
             visible_rows: 0,
             termcol_index: 0,
             visible_termcols: 0,
@@ -780,35 +653,12 @@ impl DataTableState {
             page_cells: Default::default(),
             error: None,
             suppress_error_display: false,
-            schema,
-            num_rows: 0,
-            num_rows_valid: false,
             pristine_rows: None,
-            len_generation: next_len_generation(),
             root_generation: next_len_generation(),
             parquet_count_dir: None,
             measurements: Arc::new(crate::measurements::Meter::default()),
-            filters: Vec::new(),
-            sort_columns: Vec::new(),
-            sort_descending: Vec::new(),
-            sort_ascending: true,
-            cursor_column: None,
-            cursor_at: 0,
             reveal_cursor: false,
-            active_query: String::new(),
-            active_sql_query: String::new(),
-            query_order: Vec::new(),
-            active_fuzzy_query: String::new(),
-            column_order,
-            locked_columns_count: 0,
-            frozen_fit: (0, 0),
             widths: ColumnWidths::default(),
-            grouped: None,
-            group_source: None,
-            reshaped_lf: None,
-            drilled_down_group_index: None,
-            drilled_down_group_key: None,
-            drilled_down_group_key_columns: None,
             pages_lookahead: options.pages_lookahead.unwrap_or(3),
             pages_lookback: options.pages_lookback.unwrap_or(3),
             max_buffered_rows: options
@@ -820,12 +670,9 @@ impl DataTableState {
             remote_files: None,
             remote_objects: None,
             dataset_schema: None,
-            drift_column_present: false,
-            drift_groups: Arc::new(Vec::new()),
             drift_at_open: false,
             groups_at_open: Arc::new(Vec::new()),
             source_rows_at_open,
-            view_numbered: false,
             indexing: None,
             numbering: None,
             row_estimate: None,
@@ -835,7 +682,6 @@ impl DataTableState {
             drift_file_group: Vec::new(),
             drift_files: Vec::new(),
             footers_pending: None,
-            notes: Vec::new(),
             open_notes: Vec::new(),
             not_the_table: None,
             format_read: None,
@@ -848,35 +694,19 @@ impl DataTableState {
             fetched: false,
             detail: None,
             file_units: Arc::new(Vec::new()),
-            notes_seen: false,
             notes_at_open: Vec::new(),
-            view_notes: Vec::new(),
             drift_dataset_rows: 0,
             dataset_at_open: None,
             read_as_text: Vec::new(),
             column_bytes: Vec::new(),
-            observed_bytes_per_row: None,
-            buffered_start_row: 0,
-            buffered_end_row: 0,
-            buffered_df: None,
+            // Set when the rows on screen are known.
             proximity_threshold: 0,
-            drawn_start: 0,
             row_numbers: options.row_numbers,
             row_start_index: options.row_start_index,
-            last_pivot_spec: None,
-            last_melt_spec: None,
-            reshape_source: None,
-            base_steps: Vec::new(),
             read_python: Vec::new(),
             typing: Typing::default(),
             unfit_notes: None,
-            column_changes: Vec::new(),
-            changes_version: 0,
             changes_unfit: None,
-            changes_dropped: Vec::new(),
-            reshape_steps: None,
-            lineage: None,
-            reshape_lineage: None,
             partition_columns,
             decompress_temp_file: None,
             download: None,
@@ -888,6 +718,58 @@ impl DataTableState {
             follow: None,
             follow_known: None,
             sampled: None,
+            view: View {
+                unsorted_lf: None,
+                base_lf: lf.clone(),
+                lf,
+                df: None,
+                locked_df: None,
+                start_row: 0,
+                schema,
+                num_rows: 0,
+                num_rows_valid: false,
+                len_generation: next_len_generation(),
+                filters: Vec::new(),
+                sort_columns: Vec::new(),
+                sort_descending: Vec::new(),
+                sort_ascending: true,
+                cursor_column: None,
+                cursor_at: 0,
+                active_query: String::new(),
+                active_sql_query: String::new(),
+                query_order: Vec::new(),
+                active_fuzzy_query: String::new(),
+                column_order,
+                locked_columns_count: 0,
+                frozen_fit: (0, 0),
+                grouped: None,
+                group_source: None,
+                reshaped_lf: None,
+                drilled_down_group_index: None,
+                drilled_down_group_key: None,
+                drilled_down_group_key_columns: None,
+                drift_column_present: false,
+                drift_groups: Arc::new(Vec::new()),
+                view_numbered: false,
+                notes: Vec::new(),
+                notes_seen: false,
+                view_notes: Vec::new(),
+                observed_bytes_per_row: None,
+                buffered_start_row: 0,
+                buffered_end_row: 0,
+                buffered_df: None,
+                drawn_start: 0,
+                last_pivot_spec: None,
+                last_melt_spec: None,
+                reshape_source: None,
+                base_steps: Vec::new(),
+                column_changes: Vec::new(),
+                changes_version: 0,
+                changes_dropped: Vec::new(),
+                reshape_steps: None,
+                lineage: None,
+                reshape_lineage: None,
+            },
         })
     }
 
@@ -1017,13 +899,13 @@ impl DataTableState {
         self.root_generation = next_len_generation();
         self.invalidate_num_rows();
         self.original_schema = schema.clone();
-        self.schema = schema;
+        self.view.schema = schema;
         self.original_lf = lf.clone();
-        self.base_lf = lf.clone();
-        self.lf = lf;
-        self.unsorted_lf = None;
-        self.base_steps = Vec::new();
-        self.reshape_steps = None;
+        self.view.base_lf = lf.clone();
+        self.view.lf = lf;
+        self.view.unsorted_lf = None;
+        self.view.base_steps = Vec::new();
+        self.view.reshape_steps = None;
         self.drop_buffer();
     }
 
@@ -1035,42 +917,47 @@ impl DataTableState {
         // stand for rows of a file, so nulls in it are just nulls, no column is marked
         // as missing from one, and notes about the files behind it no longer describe
         // what is on screen.
-        self.drift_column_present = false;
-        self.view_numbered = false;
-        self.drift_groups = Arc::new(Vec::new());
-        self.notes = Vec::new();
-        self.view_notes = Vec::new();
+        self.view.drift_column_present = false;
+        self.view.view_numbered = false;
+        self.view.drift_groups = Arc::new(Vec::new());
+        self.view.notes = Vec::new();
+        self.view.view_notes = Vec::new();
         // Rows of the new shape are measured afresh; the old width would plan the
         // window of a wide frame from a narrow one, or the reverse.
-        self.observed_bytes_per_row = None;
+        self.view.observed_bytes_per_row = None;
         // A new frame is in no order a query named; `sql_query` names it after.
-        self.query_order = Vec::new();
+        self.view.query_order = Vec::new();
         // A column may keep its name and type and hold other values now.
         self.widths.relearn();
-        self.base_lf = lf.clone();
-        self.lf = lf;
-        self.unsorted_lf = None;
+        self.view.base_lf = lf.clone();
+        self.view.lf = lf;
+        self.view.unsorted_lf = None;
         // Every caller says how the base was built; one that does not leaves a script
         // that says so rather than one that computes something else.
-        self.base_steps = vec![Step::Unreproducible(
+        self.view.base_steps = vec![Step::Unreproducible(
             "datui built the view from here in a way it cannot write as Python".to_string(),
         )];
-        self.schema = schema;
-        self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
+        self.view.schema = schema;
+        self.view.column_order = self
+            .view
+            .schema
+            .iter_names()
+            .map(|s| s.to_string())
+            .collect();
         // No column is a loaded one until the caller says which are.
-        self.lineage = Some(Arc::default());
+        self.view.lineage = Some(Arc::default());
         self.settle_cursor();
         // A query that groups records its source after installing its result.
-        self.group_source = None;
+        self.view.group_source = None;
         self.drop_buffer();
     }
 
     /// Forget the rows read through the frame being replaced, so the next collect reads
     /// the new one. Without this a view that fits in the old buffer keeps drawing it.
     fn drop_buffer(&mut self) {
-        self.buffered_start_row = 0;
-        self.buffered_end_row = 0;
-        self.buffered_df = None;
+        self.view.buffered_start_row = 0;
+        self.view.buffered_end_row = 0;
+        self.view.buffered_df = None;
     }
 
     /// The view state for a new pipeline root: no query bar text, no sidebar filters or
@@ -1078,22 +965,22 @@ impl DataTableState {
     /// dropped and the cursor at the top left.
     fn reset_view_state(&mut self, locked_columns_count: usize) {
         self.forget_column_changes();
-        self.active_query.clear();
-        self.active_sql_query.clear();
-        self.active_fuzzy_query.clear();
-        self.locked_columns_count = locked_columns_count;
-        self.filters.clear();
-        self.sort_columns.clear();
-        self.sort_descending.clear();
-        self.sort_ascending = true;
-        self.start_row = 0;
+        self.view.active_query.clear();
+        self.view.active_sql_query.clear();
+        self.view.active_fuzzy_query.clear();
+        self.view.locked_columns_count = locked_columns_count;
+        self.view.filters.clear();
+        self.view.sort_columns.clear();
+        self.view.sort_descending.clear();
+        self.view.sort_ascending = true;
+        self.view.start_row = 0;
         self.termcol_index = 0;
         self.clear_column_moves();
         self.place_cursor_at(0);
-        self.drilled_down_group_index = None;
-        self.drilled_down_group_key = None;
-        self.drilled_down_group_key_columns = None;
-        self.grouped = None;
+        self.view.drilled_down_group_index = None;
+        self.view.drilled_down_group_key = None;
+        self.view.drilled_down_group_key_columns = None;
+        self.view.grouped = None;
         self.drop_buffer();
         self.table_state.select(Some(0));
     }
@@ -1110,47 +997,41 @@ impl DataTableState {
         steps: Vec<Step>,
     ) {
         self.install_base(lf, schema);
-        self.base_steps = steps;
+        self.view.base_steps = steps;
         self.reset_view_state(locked_columns_count);
         match query {
-            ActiveQuery::Dsl(q) => self.active_query = q,
+            ActiveQuery::Dsl(q) => self.view.active_query = q,
             #[cfg(feature = "sql")]
-            ActiveQuery::Sql(q) => self.active_sql_query = q,
-            ActiveQuery::Fuzzy(q) => self.active_fuzzy_query = q,
+            ActiveQuery::Sql(q) => self.view.active_sql_query = q,
+            ActiveQuery::Fuzzy(q) => self.view.active_fuzzy_query = q,
         }
     }
 
     /// The view no longer shows the pivot or melt, so nothing may run against it.
     fn forget_reshape(&mut self) {
-        self.reshaped_lf = None;
-        self.reshape_lineage = None;
-        self.reshape_steps = None;
-        self.last_pivot_spec = None;
-        self.last_melt_spec = None;
-        self.reshape_source = None;
+        self.view.reshaped_lf = None;
+        self.view.reshape_lineage = None;
+        self.view.reshape_steps = None;
+        self.view.last_pivot_spec = None;
+        self.view.last_melt_spec = None;
+        self.view.reshape_source = None;
     }
 
-    /// Reset LazyFrame and view state to original_lf. Schema is re-fetched so it matches
-    /// after a previous query/SQL that may have changed columns. Caller should call
-    /// collect() afterward if display update is needed (reset/query/fuzzy do; sql_query
-    /// relies on event loop Collect).
+    /// Reset LazyFrame and view state to original_lf, with the schema it was loaded
+    /// with, whatever a query since made of the columns. The caller reads the rows.
     fn reset_lf_to_original(&mut self) {
-        let schema = self
-            .query_source()
-            .collect_schema()
-            .unwrap_or_else(|_| Arc::new(Schema::with_capacity(0)));
-        self.install_base(self.original_lf.clone(), schema);
-        self.base_steps = Vec::new();
-        self.reshape_steps = None;
-        self.lineage = None;
-        self.reshape_lineage = None;
+        self.install_base(self.original_lf.clone(), self.query_source_schema());
+        self.view.base_steps = Vec::new();
+        self.view.reshape_steps = None;
+        self.view.lineage = None;
+        self.view.reshape_lineage = None;
         // A reset is a return to the data as opened, so the rows stand for files again
         // and what datui noticed about them applies once more.
-        self.drift_column_present = self.drift_at_open;
-        self.drift_groups = self.groups_at_open.clone();
-        self.notes = self.notes_at_open.clone();
-        self.reshaped_lf = None;
-        self.reshape_source = None;
+        self.view.drift_column_present = self.drift_at_open;
+        self.view.drift_groups = self.groups_at_open.clone();
+        self.view.notes = self.notes_at_open.clone();
+        self.view.reshaped_lf = None;
+        self.view.reshape_source = None;
         self.reset_view_state(0);
         self.restore_footer_count();
     }
@@ -1160,8 +1041,8 @@ impl DataTableState {
         self.reset_lf_to_original();
         self.error = None;
         self.suppress_error_display = false;
-        self.last_pivot_spec = None;
-        self.last_melt_spec = None;
+        self.view.last_pivot_spec = None;
+        self.view.last_melt_spec = None;
     }
 
     /// Back to the data as loaded with nothing applied, for a view's steps to be laid
@@ -1176,23 +1057,14 @@ impl DataTableState {
         self.widths = ColumnWidths::default();
         self.return_to_root();
         self.collect();
-        if self.num_rows > 0 {
-            self.start_row = 0;
+        if self.view.num_rows > 0 {
+            self.view.start_row = 0;
         }
     }
 
     /// The state of what a reader read, with the open's paging and row numbers.
     pub(crate) fn from_read(read: Read, options: &OpenOptions) -> Result<Self> {
-        let mut state = Self::new(
-            read.lf,
-            options.pages_lookahead,
-            options.pages_lookback,
-            options.max_buffered_rows,
-            options.max_buffered_mb,
-            options.polars_streaming,
-        )?;
-        state.row_numbers = options.row_numbers;
-        state.row_start_index = options.row_start_index;
+        let mut state = Self::from_lazyframe(read.lf, options)?;
         state.read_python = read.python;
         state.typing = read.typing;
         state.decompress_temp_file = read.temp;
@@ -1208,7 +1080,7 @@ impl DataTableState {
     /// numbers its rows once `#` is on.
     pub fn toggle_row_numbers(&mut self) -> bool {
         self.row_numbers = !self.row_numbers;
-        if self.row_numbers && self.wants_view_numbers() && !self.view_numbered {
+        if self.row_numbers && self.wants_view_numbers() && !self.view.view_numbered {
             self.drop_buffer();
             self.apply_transformations();
             return true;
@@ -1233,10 +1105,12 @@ impl DataTableState {
             && self.remote_files.is_none()
             && self.parquet_count_dir.is_none()
             && !too_many
-            && !self.drift_column_present
+            && !self.view.drift_column_present
             && !self.source_rows_at_open
             && self.pushed_view().is_none()
-            && (!self.filters.is_empty() || !self.sort_columns.is_empty() || !self.sort_ascending)
+            && (!self.view.filters.is_empty()
+                || !self.view.sort_columns.is_empty()
+                || !self.view.sort_ascending)
     }
 
     /// Whether the row-number column is shown.
@@ -1328,47 +1202,64 @@ impl DataTableState {
     pub(crate) fn snapshot(&self) -> ViewSnapshot {
         let rows = |lf: &LazyFrame| lf.clone().collect().map_err(|e| e.to_string());
         ViewSnapshot {
-            rows: rows(&self.lf),
+            rows: rows(&self.view.lf),
             analysis_rows: rows(&self.analysis_lf()),
-            base_rows: rows(&self.base_lf),
-            reshaped_rows: self.reshaped_lf.as_ref().map(rows),
-            schema: self.schema.clone(),
+            base_rows: rows(&self.view.base_lf),
+            reshaped_rows: self.view.reshaped_lf.as_ref().map(rows),
+            schema: self.view.schema.clone(),
             queries: [
-                self.active_query.clone(),
-                self.active_sql_query.clone(),
-                self.active_fuzzy_query.clone(),
+                self.view.active_query.clone(),
+                self.view.active_sql_query.clone(),
+                self.view.active_fuzzy_query.clone(),
             ],
-            filters: format!("{:?}", self.filters),
+            filters: format!("{:?}", self.view.filters),
             sort: (
-                self.sort_columns.clone(),
-                self.sort_descending.clone(),
-                self.sort_ascending,
+                self.view.sort_columns.clone(),
+                self.view.sort_descending.clone(),
+                self.view.sort_ascending,
             ),
-            layout: (self.column_order.clone(), self.locked_columns_count),
+            layout: (
+                self.view.column_order.clone(),
+                self.view.locked_columns_count,
+            ),
             reshape: format!(
                 "{:?} {:?} {:?}",
-                self.last_pivot_spec, self.last_melt_spec, self.reshape_source
+                self.view.last_pivot_spec, self.view.last_melt_spec, self.view.reshape_source
             ),
-            grouped: (self.grouped.is_some(), self.group_source.is_some()),
+            grouped: (
+                self.view.grouped.is_some(),
+                self.view.group_source.is_some(),
+            ),
             drill: (
-                self.drilled_down_group_index,
-                self.drilled_down_group_key.clone(),
-                self.drilled_down_group_key_columns.clone(),
+                self.view.drilled_down_group_index,
+                self.view.drilled_down_group_key.clone(),
+                self.view.drilled_down_group_key_columns.clone(),
             ),
-            drift: (self.drift_column_present, self.drift_groups.clone()),
-            notes: (self.notes.clone(), self.notes_seen, self.view_notes.clone()),
+            drift: (
+                self.view.drift_column_present,
+                self.view.drift_groups.clone(),
+            ),
+            notes: (
+                self.view.notes.clone(),
+                self.view.notes_seen,
+                self.view.view_notes.clone(),
+            ),
             selection: (
                 self.table_state.selected(),
-                self.start_row,
+                self.view.start_row,
                 self.termcol_index,
             ),
-            count: (self.num_rows, self.num_rows_valid, self.len_generation),
-            buffer: (
-                self.buffered_start_row,
-                self.buffered_end_row,
-                self.buffered_df.clone(),
+            count: (
+                self.view.num_rows,
+                self.view.num_rows_valid,
+                self.view.len_generation,
             ),
-            shown: self.df.clone(),
+            buffer: (
+                self.view.buffered_start_row,
+                self.view.buffered_end_row,
+                self.view.buffered_df.clone(),
+            ),
+            shown: self.view.df.clone(),
             error: self.error.as_ref().map(|e| e.to_string()),
         }
     }

@@ -158,13 +158,9 @@ impl App {
                     modal.open_picker();
                 }
             }
-            FormKey::Text(CombineField::Name) => match event.code {
-                KeyCode::Char(c) => modal.name.push(c),
-                KeyCode::Backspace => {
-                    modal.name.pop();
-                }
-                _ => {}
-            },
+            FormKey::Text(CombineField::Name) => {
+                modal.name.handle_key(event, None);
+            }
             _ => {}
         }
         None

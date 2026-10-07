@@ -6671,7 +6671,8 @@ fn test_absent_cells_still_read_as_absent_after_a_sort() {
     // Descending by id interleaves the two files: 4, 3, 2, 1.
     let state = app.data_table_state.as_mut().unwrap();
     state.sort(vec!["id".to_string()], false);
-    state.collect();
+    common::read_rows(&mut app, &rx);
+    let state = app.data_table_state.as_mut().unwrap();
     assert!(state.error().is_none(), "the sort itself must succeed");
 
     let text = painted(&mut app, &rx, &tx, area);
@@ -6940,7 +6941,8 @@ fn test_each_row_takes_its_glyph_from_the_file_it_came_from() {
     // window starts where the view does, so the groups have to shift with it.
     let state = app.data_table_state.as_mut().unwrap();
     state.scroll_to(4);
-    state.collect();
+    common::read_rows(&mut app, &rx);
+    let state = app.data_table_state.as_mut().unwrap();
     assert_eq!(
         state.display_drift(6),
         vec![middle, middle, middle, middle, last, last],
@@ -9510,7 +9512,7 @@ fn test_a_query_never_turns_the_drift_column_into_a_real_one() {
         ("a SQL query", 2),
         ("a reset", 3),
     ] {
-        let mut app = open_local_dataset(dir.path());
+        let (mut app, rx, _tx) = open_local_dataset_with_channel(dir.path());
         let state = app.data_table_state.as_mut().unwrap();
         match run {
             0 => state.fuzzy_search("x".to_string()),
@@ -9519,7 +9521,8 @@ fn test_a_query_never_turns_the_drift_column_into_a_real_one() {
             _ => state.reset(),
         }
         assert!(state.error().is_none(), "{what}: {:?}", state.error());
-        state.collect();
+        common::read_rows(&mut app, &rx);
+        let state = app.data_table_state.as_mut().unwrap();
         assert!(
             state.error().is_none(),
             "{what} collect: {:?}",
@@ -9564,7 +9567,8 @@ fn test_a_reset_brings_back_the_absent_cells() {
 
     let state = app.data_table_state.as_mut().unwrap();
     state.sql_query("select * from df".to_string());
-    state.collect();
+    common::read_rows(&mut app, &rx);
+    let state = app.data_table_state.as_mut().unwrap();
     assert!(state.error().is_none(), "the query: {:?}", state.error());
     assert!(
         !state.drifts(),
@@ -9573,7 +9577,8 @@ fn test_a_reset_brings_back_the_absent_cells() {
 
     let state = app.data_table_state.as_mut().unwrap();
     state.reset();
-    state.collect();
+    common::read_rows(&mut app, &rx);
+    let state = app.data_table_state.as_mut().unwrap();
     assert!(state.error().is_none(), "the reset: {:?}", state.error());
     assert!(state.drifts(), "and the reset puts the files back");
     assert!(
@@ -9604,11 +9609,12 @@ fn test_counting_a_union_of_scans_does_not_panic() {
         df!("id" => &[2i64, 3], "n" => &[10i64, 20]).unwrap(),
     );
 
-    let mut app = open_local_dataset(dir.path());
+    let (mut app, rx, _tx) = open_local_dataset_with_channel(dir.path());
     let state = app.data_table_state.as_mut().unwrap();
     state.fuzzy_search("a".to_string());
     assert!(state.error().is_none(), "fuzzy search: {:?}", state.error());
-    state.collect();
+    common::read_rows(&mut app, &rx);
+    let state = app.data_table_state.as_mut().unwrap();
     assert!(
         state.error().is_none(),
         "collect after the search: {:?}",
@@ -9698,12 +9704,13 @@ fn test_a_query_puts_the_notes_away_and_a_reset_brings_them_back() {
         df!("id" => &[2i64], "extra" => &["x"]).unwrap(),
     );
 
-    let mut app = open_local_dataset(dir.path());
+    let (mut app, rx, _tx) = open_local_dataset_with_channel(dir.path());
     let state = app.data_table_state.as_mut().unwrap();
     assert_eq!(state.notes().len(), 1, "the dataset has something to say");
 
     state.sql_query("select id from df".to_string());
-    state.collect();
+    common::read_rows(&mut app, &rx);
+    let state = app.data_table_state.as_mut().unwrap();
     assert!(state.error().is_none(), "the query: {:?}", state.error());
     assert!(
         state.notes().is_empty(),
@@ -9711,7 +9718,8 @@ fn test_a_query_puts_the_notes_away_and_a_reset_brings_them_back() {
     );
 
     state.reset();
-    state.collect();
+    common::read_rows(&mut app, &rx);
+    let state = app.data_table_state.as_mut().unwrap();
     assert!(state.error().is_none(), "the reset: {:?}", state.error());
     assert_eq!(state.notes().len(), 1, "and the reset brings them back");
 }
@@ -10103,7 +10111,8 @@ fn test_asking_to_name_files_on_a_query_result_leaks_nothing() {
     // naming them is refused — but the export still runs.
     let state = app.data_table_state.as_mut().unwrap();
     state.sql_query("select * from df".to_string());
-    state.collect();
+    common::read_rows(&mut app, &rx);
+    let state = app.data_table_state.as_mut().unwrap();
     assert!(!state.can_name_source_files(), "nothing to name any more");
 
     let out = dir.path().join("refused.csv");
@@ -20859,6 +20868,7 @@ fn test_inspector_reads_hidden_and_binary_fields_on_enter() {
         .as_mut()
         .unwrap()
         .set_column_order(["id", "amount", "blob"].map(String::from).to_vec());
+    pump_until_idle(&mut app, &rx, &tx);
     draw_inspector(&mut app);
 
     press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);

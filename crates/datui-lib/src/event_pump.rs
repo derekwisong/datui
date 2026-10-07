@@ -599,7 +599,7 @@ impl EventPump {
             }
             if !pass.updated {
                 let now = Instant::now();
-                pacer.spinning(self.app.something_is_spinning(), now);
+                pacer.spinning(self.app.something_is_spinning(), self.app.is_busy(), now);
                 let timeout = pacer.timeout(self.app.next_deadline(), now);
                 if let Some(end) = pass.add(self.wait_and_drain(timeout)?) {
                     return Ok(end);
@@ -610,7 +610,7 @@ impl EventPump {
             let mut redraw = pacer.handled(pass.updated, pass.progress_only, now);
             // The throbber turns while busy, and while a background row count or
             // anything else with a spinner of its own is still out.
-            pacer.spinning(app.something_is_spinning(), now);
+            pacer.spinning(app.something_is_spinning(), app.is_busy(), now);
             if pacer.turn_spinner(now) {
                 app.throbber_frame = app.throbber_frame.wrapping_add(1);
                 redraw = true;
@@ -624,17 +624,11 @@ impl EventPump {
 
             if redraw {
                 draw(app)?;
-                // A count waiting for the rows to be on screen starts now.
+                // The rows the frame found it needs are read, and a count waiting for
+                // them to be on screen starts.
                 app.frame_painted();
                 first_rows.painted(app);
                 pacer.drew(now);
-                // The frame sets the visible row count; a change asks for a collect.
-                if let Some(state) = &mut app.data_table_state
-                    && state.needs_recollect
-                {
-                    state.needs_recollect = false;
-                    app.spawn_async_collect(App::LOADING_BUFFER);
-                }
                 // And it marks the rows it drew without knowing them. Asked now, not
                 // on the next pass: with nothing else arriving there may not be one.
                 app.request_what_the_frame_needs();
@@ -782,8 +776,13 @@ impl Pass {
     }
 }
 
-/// How often a spinner turns: about 30 frames a second, plenty for a throbber.
+/// How often a spinner turns while the user waits on it: about 30 frames a second,
+/// plenty for a throbber.
 pub const SPINNER_FRAME: Duration = Duration::from_millis(33);
+
+/// How often it turns for work nobody waits on (a row count, a read ahead): ten
+/// frames a second still reads as moving, and the screen is redrawn a third as often.
+pub const SPINNER_IDLE_FRAME: Duration = Duration::from_millis(100);
 
 /// The least time between two frames drawn for progress reports alone. A worker
 /// reporting a thousand times a second is drawn thirty times; a key or a result is
@@ -803,13 +802,22 @@ pub struct Pacer {
     owed: bool,
     /// The spinner's next frame, while one is on screen.
     spin_due: Option<Instant>,
+    /// How far apart its frames are: see [`SPINNER_IDLE_FRAME`].
+    spin_every: Duration,
 }
 
 impl Pacer {
-    /// Say whether a spinner is on screen. One that starts turns a frame later.
-    pub fn spinning(&mut self, on: bool, now: Instant) {
+    /// Say whether a spinner is on screen, and whether the user waits on what it
+    /// stands for. One that starts turns a frame later.
+    pub fn spinning(&mut self, on: bool, waited_on: bool, now: Instant) {
+        self.spin_every = if waited_on {
+            SPINNER_FRAME
+        } else {
+            SPINNER_IDLE_FRAME
+        };
         if on {
-            self.spin_due.get_or_insert(now + SPINNER_FRAME);
+            let next = now + self.spin_every;
+            self.spin_due = Some(self.spin_due.map_or(next, |due| due.min(next)));
         } else {
             self.spin_due = None;
         }
@@ -819,7 +827,7 @@ impl Pacer {
     pub fn turn_spinner(&mut self, now: Instant) -> bool {
         match self.spin_due {
             Some(due) if now >= due => {
-                self.spin_due = Some(now + SPINNER_FRAME);
+                self.spin_due = Some(now + self.spin_every);
                 true
             }
             _ => false,

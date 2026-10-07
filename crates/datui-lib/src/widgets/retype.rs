@@ -142,7 +142,7 @@ pub fn render_combine(area: Rect, buf: &mut Buffer, modal: &CombineModal, ctx: &
                     selected: kind_at,
                     clicks: None,
                 },
-                CombineField::Name => FormValue::Choice(&modal.name),
+                CombineField::Name => FormValue::Input(&modal.name),
             };
             (field, label(field), value)
         })

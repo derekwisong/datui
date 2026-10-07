@@ -15,7 +15,7 @@ impl DataTableState {
             file_starts: self.drift_file_starts.clone(),
             row_index_column: String::new(),
             file_group: self.drift_file_group.clone(),
-            drift_groups: self.drift_groups.clone(),
+            drift_groups: self.view.drift_groups.clone(),
             file_omitted: self
                 .dataset_schema
                 .as_ref()
@@ -35,7 +35,7 @@ impl DataTableState {
     /// How many extra one-column file reads a full data-quality run would make for the
     /// values a type conflict hides. Zero when the dataset's files agree.
     pub(crate) fn quality_conflict_reads(&self) -> usize {
-        if !self.drift_column_present
+        if !self.view.drift_column_present
             || !self
                 .dataset_at_open
                 .as_ref()
@@ -43,7 +43,7 @@ impl DataTableState {
         {
             return 0;
         }
-        crate::data_quality::conflict_reads(&self.drift_file_group, &self.drift_groups)
+        crate::data_quality::conflict_reads(&self.drift_file_group, &self.view.drift_groups)
     }
 
     /// Reads one column of named files at the type each of them wrote it in, for the
@@ -51,7 +51,7 @@ impl DataTableState {
     /// when this frame is not the dataset as it opened.
     pub(crate) fn quality_conflict_scan(&self) -> Option<crate::data_quality::QualityConflictScan> {
         let dataset = self.dataset_at_open.clone()?;
-        if !self.drift_column_present || !dataset.drifts() {
+        if !self.view.drift_column_present || !dataset.drifts() {
             return None;
         }
         if let Some(remote) = self.remote_files.as_ref() {
@@ -115,7 +115,7 @@ impl DataTableState {
             expressions.push(col(crate::schema_union::DRIFT_COLUMN));
         }
         let lf = if ordered {
-            self.lf.clone()
+            self.view.lf.clone()
         } else {
             self.analysis_lf()
         }
@@ -176,7 +176,7 @@ impl DataTableState {
         if scope.uses_source() {
             &self.original_schema
         } else {
-            &self.schema
+            &self.view.schema
         }
     }
 
@@ -254,8 +254,8 @@ impl DataTableState {
             self.partition_columns.clone(),
         )?;
         if !scope.uses_source() {
-            view.column_order = self.column_order.clone();
-            view.locked_columns_count = self.locked_columns_count;
+            view.view.column_order = self.view.column_order.clone();
+            view.view.locked_columns_count = self.view.locked_columns_count;
         }
         view.visible_rows = self.visible_rows;
         view.remote_source = self.remote_source;
@@ -293,7 +293,7 @@ impl DataTableState {
         } else {
             (
                 crate::data_quality::apply_quality_scope(self.visible_lf(), scope, None)?,
-                self.schema.clone(),
+                self.view.schema.clone(),
             )
         })
     }

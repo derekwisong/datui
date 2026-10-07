@@ -233,7 +233,8 @@ impl DataTableState {
     pub fn install_pivot(&mut self, spec: &PivotSpec, pivoted: DataFrame) -> Result<()> {
         let index = if spec.index.is_empty() {
             // What the pivot itself took as the index: every other column of the view.
-            self.schema
+            self.view
+                .schema
                 .iter_names()
                 .map(|n| n.to_string())
                 .filter(|n| {
@@ -252,8 +253,8 @@ impl DataTableState {
             values: spec.value_column.clone(),
             aggregation: spec.aggregation,
         };
-        self.last_pivot_spec = Some(spec.clone());
-        self.last_melt_spec = None;
+        self.view.last_pivot_spec = Some(spec.clone());
+        self.view.last_melt_spec = None;
         self.replace_lf_after_reshape(pivoted.lazy(), step, &kept)
     }
 
@@ -287,8 +288,8 @@ impl DataTableState {
             variable_name: spec.variable_name.clone(),
             value_name: spec.value_name.clone(),
         };
-        self.last_melt_spec = Some(spec.clone());
-        self.last_pivot_spec = None;
+        self.view.last_melt_spec = Some(spec.clone());
+        self.view.last_pivot_spec = None;
         self.replace_lf_after_reshape(lf, step, &spec.index)?;
         Ok(())
     }
@@ -338,7 +339,7 @@ impl DataTableState {
     ) -> Result<()> {
         let schema = lf.clone().collect_schema()?;
         let lineage = traced(
-            &self.lineage,
+            &self.view.lineage,
             kept.iter().map(|c| (c.clone(), c.clone())).collect(),
         );
         let mut steps = self.view_steps();
@@ -347,33 +348,35 @@ impl DataTableState {
         // no source a view could replay, so none is kept.
         let text = |q: &str| Some(q.trim().to_string()).filter(|q| !q.is_empty());
         let source = ReshapeSource {
-            query: text(&self.active_query),
-            sql_query: text(&self.active_sql_query),
-            fuzzy_query: text(&self.active_fuzzy_query),
-            filters: self.filters.clone(),
-            sort_columns: self.sort_columns.clone(),
-            sort_descending: self.sort_descending.clone(),
+            query: text(&self.view.active_query),
+            sql_query: text(&self.view.active_sql_query),
+            fuzzy_query: text(&self.view.active_fuzzy_query),
+            filters: self.view.filters.clone(),
+            sort_columns: self.view.sort_columns.clone(),
+            sort_descending: self.view.sort_descending.clone(),
         };
-        self.reshape_source = (self.reshaped_lf.is_none() && !source.is_empty()).then_some(source);
-        self.reshaped_lf = Some(lf.clone());
+        self.view.reshape_source =
+            (self.view.reshaped_lf.is_none() && !source.is_empty()).then_some(source);
+        self.view.reshaped_lf = Some(lf.clone());
         self.install_base(lf, schema);
-        self.base_steps = steps.clone();
-        self.reshape_steps = Some(steps);
-        self.lineage = lineage.clone();
-        self.reshape_lineage = lineage;
+        self.view.base_steps = steps.clone();
+        self.view.reshape_steps = Some(steps);
+        self.view.lineage = lineage.clone();
+        self.view.reshape_lineage = lineage;
         self.reset_view_state(0);
         self.error = None;
-        self.df = None;
-        self.locked_df = None;
+        self.view.df = None;
+        self.view.locked_df = None;
         self.collect();
         Ok(())
     }
 
     /// The sidebar filters with their values typed against the columns they test.
     fn typed_filters(&self) -> Vec<SidebarFilter> {
-        self.filters
+        self.view
+            .filters
             .iter()
-            .map(|f| SidebarFilter::typed_in(f, &self.schema, &self.column_order))
+            .map(|f| SidebarFilter::typed_in(f, &self.view.schema, &self.view.column_order))
             .collect()
     }
 
@@ -393,12 +396,13 @@ impl DataTableState {
 
     /// The view's column types and made columns, in the order asked.
     pub fn column_changes(&self) -> &[crate::column_types::ColumnChange] {
-        &self.column_changes
+        &self.view.column_changes
     }
 
     /// The columns the view gave a type: the type row draws them in the accent.
     pub fn retyped_columns(&self) -> Vec<String> {
-        self.column_changes
+        self.view
+            .column_changes
             .iter()
             .filter(|c| matches!(c.change, crate::column_types::Change::Typed(_)))
             .map(|c| c.name.clone())
@@ -407,9 +411,9 @@ impl DataTableState {
 
     /// `column`'s type before the view's: as the read gave it, or as the view made it.
     pub fn type_as_read(&self, column: &str) -> Option<DataType> {
-        let base = self.base_lf.clone().collect_schema().ok()?;
+        let base = self.view.base_lf.clone().collect_schema().ok()?;
         base.get(column)
-            .or_else(|| self.schema.get(column))
+            .or_else(|| self.view.schema.get(column))
             .cloned()
     }
 
@@ -418,9 +422,10 @@ impl DataTableState {
     pub fn values_on_screen(&self, column: &str, n: usize) -> Vec<String> {
         let from_buffer = self.column_type_of(column).is_none();
         let df = if from_buffer {
-            self.buffered_df.clone()
+            self.view.buffered_df.clone()
         } else {
-            self.base_lf
+            self.view
+                .base_lf
                 .clone()
                 .select([col(column)])
                 .limit(n as IdxSize * 10)
@@ -447,20 +452,24 @@ impl DataTableState {
 
     /// The type the view gives `column`, if it gives one.
     pub fn column_type_of(&self, column: &str) -> Option<&crate::column_types::ColumnType> {
-        self.column_changes.iter().find_map(|c| match &c.change {
-            crate::column_types::Change::Typed(ty) if c.name == column => Some(ty),
-            _ => None,
-        })
+        self.view
+            .column_changes
+            .iter()
+            .find_map(|c| match &c.change {
+                crate::column_types::Change::Typed(ty) if c.name == column => Some(ty),
+                _ => None,
+            })
     }
 
     /// `column` as `ty`, or as read again with `None`. The view's own type wins over
     /// what the read gave the column. Lazy: the next rows read are typed.
     pub fn set_column_type(&mut self, column: &str, ty: Option<crate::column_types::ColumnType>) {
         use crate::column_types::{Change, ColumnChange};
-        self.column_changes
+        self.view
+            .column_changes
             .retain(|c| !(c.name == column && matches!(c.change, Change::Typed(_))));
         if let Some(ty) = ty {
-            self.column_changes.push(ColumnChange {
+            self.view.column_changes.push(ColumnChange {
                 name: column.to_string(),
                 change: Change::Typed(ty),
             });
@@ -475,22 +484,23 @@ impl DataTableState {
         derived: crate::column_types::Derived,
     ) -> std::result::Result<(), String> {
         use crate::column_types::{Change, ColumnChange};
-        if self.schema.contains(&derived.name) {
+        if self.view.schema.contains(&derived.name) {
             return Err(format!("a column is named {} already", derived.name));
         }
         for from in &derived.from {
-            if !self.schema.contains(from) {
+            if !self.view.schema.contains(from) {
                 return Err(format!("no column {from}"));
             }
         }
         let first = derived.from[0].clone();
         let at = self
+            .view
             .column_order
             .iter()
             .position(|c| *c == first)
-            .unwrap_or(self.column_order.len());
-        self.column_order.insert(at, derived.name.clone());
-        self.column_changes.push(ColumnChange {
+            .unwrap_or(self.view.column_order.len());
+        self.view.column_order.insert(at, derived.name.clone());
+        self.view.column_changes.push(ColumnChange {
             name: derived.name,
             change: Change::Made {
                 from: derived.from,
@@ -509,12 +519,13 @@ impl DataTableState {
         &mut self,
         changes: &[crate::column_types::ColumnChange],
     ) -> Vec<String> {
-        self.column_changes = Vec::new();
+        self.view.column_changes = Vec::new();
         let base = self
+            .view
             .base_lf
             .clone()
             .collect_schema()
-            .unwrap_or_else(|_| self.schema.clone());
+            .unwrap_or_else(|_| self.view.schema.clone());
         let mut known: Vec<String> = base.iter_names().map(|n| n.to_string()).collect();
         let mut dropped = Vec::new();
         for change in changes {
@@ -528,12 +539,12 @@ impl DataTableState {
                 if !known.contains(&change.name) {
                     known.push(change.name.clone());
                 }
-                self.column_changes.push(change.clone());
+                self.view.column_changes.push(change.clone());
             } else {
                 dropped.push(change.name.clone());
             }
         }
-        self.changes_dropped = if dropped.is_empty() {
+        self.view.changes_dropped = if dropped.is_empty() {
             Vec::new()
         } else {
             vec![crate::notes::Note {
@@ -547,16 +558,17 @@ impl DataTableState {
             }]
         };
         // The made columns go before their first source, as they did when made.
-        for change in &self.column_changes {
+        for change in &self.view.column_changes {
             if let crate::column_types::Change::Made { from, .. } = &change.change
-                && !self.column_order.contains(&change.name)
+                && !self.view.column_order.contains(&change.name)
             {
                 let at = self
+                    .view
                     .column_order
                     .iter()
                     .position(|c| *c == from[0])
-                    .unwrap_or(self.column_order.len());
-                self.column_order.insert(at, change.name.clone());
+                    .unwrap_or(self.view.column_order.len());
+                self.view.column_order.insert(at, change.name.clone());
             }
         }
         self.column_changes_changed();
@@ -565,28 +577,28 @@ impl DataTableState {
 
     /// Drop the view's column changes and their notes, as a new pipeline root does.
     pub(super) fn forget_column_changes(&mut self) {
-        if self.column_changes.is_empty() && self.changes_dropped.is_empty() {
+        if self.view.column_changes.is_empty() && self.view.changes_dropped.is_empty() {
             return;
         }
-        self.column_changes.clear();
-        self.changes_dropped.clear();
-        self.changes_version += 1;
+        self.view.column_changes.clear();
+        self.view.changes_dropped.clear();
+        self.view.changes_version += 1;
         self.changes_unfit = None;
     }
 
     /// After the column changes change: the schema shows them, a made column gone
     /// leaves the column order, and the rows are read again.
     fn column_changes_changed(&mut self) {
-        self.changes_version += 1;
-        let (changed, _) = self.with_column_changes(self.base_lf.clone());
+        self.view.changes_version += 1;
+        let (changed, _) = self.with_column_changes(self.view.base_lf.clone());
         if let Ok(schema) = changed.clone().collect_schema() {
-            self.schema = schema;
+            self.view.schema = schema;
         }
-        let schema = self.schema.clone();
-        self.column_order.retain(|c| schema.contains(c));
+        let schema = self.view.schema.clone();
+        self.view.column_order.retain(|c| schema.contains(c));
         for name in schema.iter_names() {
-            if !self.column_order.iter().any(|c| c == name.as_str()) {
-                self.column_order.push(name.to_string());
+            if !self.view.column_order.iter().any(|c| c == name.as_str()) {
+                self.view.column_order.push(name.to_string());
             }
         }
         self.widths.relearn();
@@ -606,7 +618,7 @@ impl DataTableState {
         Option<(LazyFrame, Vec<crate::column_types::Typed>)>,
     ) {
         use crate::column_types::Change;
-        if self.column_changes.is_empty() {
+        if self.view.column_changes.is_empty() {
             return (lf, None);
         }
         let Ok(schema) = lf.collect_schema() else {
@@ -615,7 +627,7 @@ impl DataTableState {
         let mut schema = (*schema).clone();
         let mut made = lf.clone();
         let mut typed = Vec::new();
-        for change in &self.column_changes {
+        for change in &self.view.column_changes {
             let name = PlSmallStr::from(change.name.as_str());
             match &change.change {
                 Change::Typed(ty) => {
@@ -655,13 +667,13 @@ impl DataTableState {
         if self
             .changes_unfit
             .as_ref()
-            .is_some_and(|(version, _)| *version == self.changes_version)
+            .is_some_and(|(version, _)| *version == self.view.changes_version)
         {
             return None;
         }
-        let (_, count) = self.with_column_changes(self.base_lf.clone());
+        let (_, count) = self.with_column_changes(self.view.base_lf.clone());
         let (source, typed) = count?;
-        Some((source, typed, self.changes_version))
+        Some((source, typed, self.view.changes_version))
     }
 
     /// The counts for the view's column types at `version`, as notes.
@@ -670,10 +682,10 @@ impl DataTableState {
         version: u64,
         unfit: &[crate::column_types::Unfit],
     ) {
-        if version == self.changes_version {
+        if version == self.view.changes_version {
             // Something new to say: the `i` chip lights again.
             if !unfit.is_empty() {
-                self.notes_seen = false;
+                self.view.notes_seen = false;
             }
             self.changes_unfit = Some((
                 version,
@@ -685,7 +697,7 @@ impl DataTableState {
     /// The counts of the values the types made null, as notes.
     pub(crate) fn unfit_counted(&mut self, unfit: &[crate::column_types::Unfit]) {
         if !unfit.is_empty() {
-            self.notes_seen = false;
+            self.view.notes_seen = false;
         }
         self.unfit_notes = Some(crate::column_types::unfit_notes(
             unfit,
@@ -695,9 +707,10 @@ impl DataTableState {
 
     /// How `lf` was built: the base's steps, then the filters and the sort.
     pub(super) fn view_steps(&self) -> Vec<Step> {
-        let mut steps = self.base_steps.clone();
-        if !self.column_changes.is_empty() {
+        let mut steps = self.view.base_steps.clone();
+        if !self.view.column_changes.is_empty() {
             let said: Vec<String> = self
+                .view
                 .column_changes
                 .iter()
                 .map(crate::column_types::ColumnChange::to_toml)
@@ -707,7 +720,7 @@ impl DataTableState {
                 said.join("; ")
             )));
         }
-        if !self.filters.is_empty() {
+        if !self.view.filters.is_empty() {
             let typed = self.typed_filters();
             let durations: Vec<String> = typed
                 .iter()
@@ -733,12 +746,12 @@ impl DataTableState {
         if !left_out.is_empty() {
             steps.push(Step::Unreproducible(left_out.join("; ")));
         }
-        if !self.sort_columns.is_empty() {
+        if !self.view.sort_columns.is_empty() {
             steps.push(Step::Sort {
-                columns: self.sort_columns.clone(),
-                descending: self.sort_descending.clone(),
+                columns: self.view.sort_columns.clone(),
+                descending: self.view.sort_descending.clone(),
             });
-        } else if !self.sort_ascending {
+        } else if !self.view.sort_ascending {
             steps.push(Step::Reverse);
         }
         steps
@@ -748,45 +761,54 @@ impl DataTableState {
     /// the columns shown, in their order.
     pub fn python_steps(&self) -> Vec<Step> {
         let mut steps = self.view_steps();
-        let in_order = self.column_order.iter().map(String::as_str).eq(self
+        let in_order = self.view.column_order.iter().map(String::as_str).eq(self
+            .view
             .schema
             .iter_names()
             .map(|s| s.as_str())
             .filter(|s| *s != crate::schema_union::DRIFT_COLUMN));
         if !in_order {
-            steps.push(Step::Select(self.column_order.clone()));
+            steps.push(Step::Select(self.view.column_order.clone()));
         }
         steps
     }
 
     pub fn is_drilled_down(&self) -> bool {
-        self.drilled_down_group_index.is_some()
+        self.view.drilled_down_group_index.is_some()
     }
 
     /// Rebuild `lf` as `base_lf` → filters → sort. Column order is applied at collect.
     /// A source that runs the filters and sort itself gives the frame instead.
     pub(super) fn apply_transformations(&mut self) {
-        if let Some(view) = self.pushed_view() {
-            let sorted = !self.sort_columns.is_empty() || !self.sort_ascending;
-            self.unsorted_lf = sorted
-                .then(|| {
-                    self.pushdown
-                        .as_ref()
-                        .and_then(|p| p.view(&self.filters, &[], false))
-                        .map(|unsorted| unsorted.lf)
-                })
-                .flatten();
-            self.view_notes = Vec::new();
-            self.view_numbered = false;
-            self.invalidate_num_rows();
-            self.lf = self.with_column_changes(view.lf).0;
-            self.restore_footer_count();
-            self.collect();
-            return;
-        }
-        let mut lf = self.with_column_changes(self.base_lf.clone()).0;
-        self.view_numbered = self.row_numbers && self.wants_view_numbers();
-        if self.view_numbered {
+        let lf = match self.pushed_view() {
+            Some(view) => {
+                let sorted = !self.view.sort_columns.is_empty() || !self.view.sort_ascending;
+                self.view.unsorted_lf = sorted
+                    .then(|| {
+                        self.pushdown
+                            .as_ref()
+                            .and_then(|p| p.view(&self.view.filters, &[], false))
+                            .map(|unsorted| unsorted.lf)
+                    })
+                    .flatten();
+                self.view.view_notes = Vec::new();
+                self.view.view_numbered = false;
+                self.with_column_changes(view.lf).0
+            }
+            None => self.build_view(),
+        };
+        self.invalidate_num_rows();
+        self.view.lf = lf;
+        self.restore_footer_count();
+        self.collect();
+    }
+
+    /// `base_lf` with the view's column changes, row numbers, filters and order, in
+    /// that order; the frame before the order is kept as `unsorted_lf`.
+    fn build_view(&mut self) -> LazyFrame {
+        let mut lf = self.with_column_changes(self.view.base_lf.clone()).0;
+        self.view.view_numbered = self.row_numbers && self.wants_view_numbers();
+        if self.view.view_numbered {
             lf = lf.with_row_index(crate::schema_union::DRIFT_COLUMN, None);
         }
         if let Some(e) = crate::python_script::filters_expr(&self.typed_filters()) {
@@ -798,35 +820,31 @@ impl DataTableState {
         let (excluded, view_notes) = self.leave_out_unread_rows(lf);
         lf = excluded;
         // A new thing to say, so the quiet accent on `i` earns its place again.
-        if !view_notes.is_empty() && view_notes != self.view_notes {
-            self.notes_seen = false;
+        if !view_notes.is_empty() && view_notes != self.view.view_notes {
+            self.view.notes_seen = false;
         }
-        self.view_notes = view_notes;
+        self.view.view_notes = view_notes;
 
         // What an analysis reads: the view before its order, which no statistic
         // depends on and every sampled read of a sorted frame would pay for.
-        self.unsorted_lf =
-            (!self.sort_columns.is_empty() || !self.sort_ascending).then(|| lf.clone());
-        if !self.sort_columns.is_empty() {
+        self.view.unsorted_lf =
+            (!self.view.sort_columns.is_empty() || !self.view.sort_ascending).then(|| lf.clone());
+        if !self.view.sort_columns.is_empty() {
             lf = lf.sort_by_exprs(
-                self.sort_columns.iter().map(col).collect::<Vec<_>>(),
-                sort_options(self.sort_descending.clone()),
+                self.view.sort_columns.iter().map(col).collect::<Vec<_>>(),
+                sort_options(self.view.sort_descending.clone()),
             );
-        } else if !self.sort_ascending {
+        } else if !self.view.sort_ascending {
             lf = lf.reverse();
         }
-
-        self.invalidate_num_rows();
-        self.lf = lf;
-        self.restore_footer_count();
-        self.collect();
+        lf
     }
 
     /// Sort with one direction for every column. `ascending` also sets the natural
     /// order when `columns` is empty.
     pub fn sort(&mut self, columns: Vec<String>, ascending: bool) {
         let descending = vec![!ascending; columns.len()];
-        self.sort_ascending = ascending;
+        self.view.sort_ascending = ascending;
         self.sort_by(columns, descending);
     }
 
@@ -837,63 +855,69 @@ impl DataTableState {
         // that still speak it: views written for older readers, and `r`'s
         // natural-order fallback (which an empty sort leaves alone).
         if let Some(first) = descending.first() {
-            self.sort_ascending = !first;
+            self.view.sort_ascending = !first;
         }
         // Other rows come first. The sidebar sends the sort again on any apply, so
         // only a sort that changed counts.
-        if columns != self.sort_columns || descending != self.sort_descending {
+        if columns != self.view.sort_columns || descending != self.view.sort_descending {
             self.widths.relearn();
         }
-        self.sort_columns = columns;
-        self.sort_descending = descending;
+        self.view.sort_columns = columns;
+        self.view.sort_descending = descending;
         self.drop_buffer();
         self.apply_transformations();
     }
 
+    /// The view the other way round: every sort column's direction flipped, or the
+    /// natural order reversed, so `r` twice is always the identity.
     pub fn reverse(&mut self) {
-        // The order is laid on top of what is there, so what is there is the frame
-        // before it — unless an order was already laid, whose own frame is kept.
-        if self.unsorted_lf.is_none() {
-            self.unsorted_lf = Some(self.lf.clone());
-        }
-        self.sort_ascending = !self.sort_ascending;
+        self.view.sort_ascending = !self.view.sort_ascending;
         self.widths.relearn();
-        // Reversing a sorted view flips every column's direction, so `r` twice is
-        // always the identity whatever mix of directions was applied.
-        for direction in &mut self.sort_descending {
+        for direction in &mut self.view.sort_descending {
             *direction = !*direction;
         }
-
         self.drop_buffer();
+        self.apply_transformations();
+    }
 
-        // A source that runs the order runs it backward too.
-        if self.pushed_view().is_some() {
-            self.apply_transformations();
-            return;
+    /// The sidebar's Apply: the column order, the frozen count, the filters and the
+    /// sort as one change, planned once and read from the top.
+    pub fn apply_view(
+        &mut self,
+        order: Vec<String>,
+        locked: usize,
+        filters: Vec<FilterStatement>,
+        columns: Vec<String>,
+        descending: Vec<bool>,
+    ) {
+        self.set_column_order(order);
+        self.set_locked_columns(locked);
+        if filters != self.view.filters
+            || columns != self.view.sort_columns
+            || descending != self.view.sort_descending
+        {
+            self.widths.relearn();
         }
-        if !self.sort_columns.is_empty() {
-            self.invalidate_num_rows();
-            self.lf = self.lf.clone().sort_by_exprs(
-                self.sort_columns.iter().map(col).collect::<Vec<_>>(),
-                sort_options(self.sort_descending.clone()),
-            );
-            self.collect();
-        } else {
-            self.invalidate_num_rows();
-            self.lf = self.lf.clone().reverse();
-            self.collect();
+        if let Some(first) = descending.first() {
+            self.view.sort_ascending = !first;
         }
+        self.view.filters = filters;
+        self.view.sort_columns = columns;
+        self.view.sort_descending = descending;
+        self.view.start_row = 0;
+        self.drop_buffer();
+        self.apply_transformations();
     }
 
     pub fn filter(&mut self, filters: Vec<FilterStatement>) {
         // The sidebar sends the filters again on any apply; only a change is new rows.
-        if filters != self.filters {
+        if filters != self.view.filters {
             self.widths.relearn();
         }
-        self.filters = filters;
+        self.view.filters = filters;
         // A new result set, viewed from the top: a position deep in the old one would
         // plan a slice past a smaller result, which reads nothing.
-        self.start_row = 0;
+        self.view.start_row = 0;
         self.drop_buffer();
         self.apply_transformations();
     }
@@ -908,9 +932,9 @@ impl DataTableState {
             return;
         }
 
-        let source_schema = self.query_source().collect_schema().ok();
-        let parsed = parse_query_over(&query, source_schema.as_deref())
-            .map(|parsed| parsed.past_calendar_safe(source_schema.as_deref()));
+        let source_schema = self.query_source_schema();
+        let parsed = parse_query_over(&query, Some(&source_schema))
+            .map(|parsed| parsed.past_calendar_safe(Some(&source_schema)));
         match parsed {
             Ok(ParsedQuery {
                 cols,
@@ -931,8 +955,7 @@ impl DataTableState {
                         // Every other column, as each group's list of its values.
                         kept.extend(
                             source_schema
-                                .iter()
-                                .flat_map(|schema| schema.iter_names())
+                                .iter_names()
                                 .filter(|n| !group_by_col_names.iter().any(|g| g == n.as_str()))
                                 .map(|n| (n.to_string(), n.to_string())),
                         );
@@ -953,25 +976,13 @@ impl DataTableState {
                     if !cols.is_empty() {
                         lf = lf.group_by(group_by_cols.clone()).agg(cols);
                     } else {
-                        let schema = match lf.clone().collect_schema() {
-                            Ok(s) => s,
-                            Err(e) => {
-                                self.error = Some(e);
-                                return; // Don't modify state on error
-                            }
-                        };
-                        let all_columns: Vec<String> =
-                            schema.iter_names().map(|s| s.to_string()).collect();
-
-                        // In Polars, when you group_by and aggregate columns without explicit aggregation functions,
-                        // Polars automatically collects the values as lists. We need to aggregate all columns
-                        // except the group columns to avoid duplicates.
-                        let mut agg_exprs = Vec::new();
-                        for col_name in &all_columns {
-                            if !group_by_col_names.contains(col_name) {
-                                agg_exprs.push(col(col_name));
-                            }
-                        }
+                        // Every other column of the source (a filter keeps them all),
+                        // each group's values as a list.
+                        let agg_exprs: Vec<Expr> = source_schema
+                            .iter_names()
+                            .filter(|n| !group_by_col_names.iter().any(|g| g == n.as_str()))
+                            .map(|n| col(n.clone()))
+                            .collect();
 
                         lf = lf.group_by(group_by_cols.clone()).agg(agg_exprs);
                     }
@@ -1020,7 +1031,7 @@ impl DataTableState {
                 let keys: Vec<(PlSmallStr, Expr)> =
                     schema.iter_names().cloned().zip(group_by_cols).collect();
                 // Python's division depends on the types the query read.
-                let input = source_schema.unwrap_or_default();
+                let input = source_schema;
                 let steps = vec![Step::Query {
                     query: query.clone(),
                     input: input.clone(),
@@ -1043,9 +1054,9 @@ impl DataTableState {
                     input,
                 }]);
                 self.install_query_result(lf, schema, ActiveQuery::Dsl(query), locked, steps);
-                self.lineage = lineage;
+                self.view.lineage = lineage;
                 if !keys.is_empty() {
-                    self.group_source = Some(GroupSource {
+                    self.view.group_source = Some(GroupSource {
                         rows: group_rows,
                         keys,
                         scratch: Vec::new(),
@@ -1057,13 +1068,10 @@ impl DataTableState {
                     });
                 }
                 self.forget_reshape();
-                // Collect will clamp start_row to valid range, but we want to ensure it's 0
-                // So we set it to 0, collect (which may clamp it), then ensure it's 0 again
                 self.collect();
-                // After collect(), ensure we're at the top (collect() may have clamped if num_rows was wrong)
-                // But if num_rows > 0, we want start_row = 0 to show the first row
-                if self.num_rows > 0 {
-                    self.start_row = 0;
+                // The result is viewed from its top, whatever a read clamped.
+                if self.view.num_rows > 0 {
+                    self.view.start_row = 0;
                 }
             }
             Err(e) => {
@@ -1077,12 +1085,13 @@ impl DataTableState {
     /// pivot/melt result while one is in effect, otherwise the data as loaded. Never the
     /// sidebar filters or sort, which go on top, and never a previous SQL result.
     pub(crate) fn query_root(&self) -> LazyFrame {
-        if self.grouped.is_some() {
+        if self.view.grouped.is_some() {
             // While drilled, `base_lf` is the group (see `drill_down_into_group`).
-            return self.base_lf.clone();
+            return self.view.base_lf.clone();
         }
         Self::without_drift(
-            self.reshaped_lf
+            self.view
+                .reshaped_lf
                 .clone()
                 .unwrap_or_else(|| self.original_lf.clone()),
         )
@@ -1091,10 +1100,10 @@ impl DataTableState {
     /// Which loaded column each column of [`Self::query_root`] is.
     #[cfg(feature = "sql")]
     fn root_lineage(&self) -> Lineage {
-        if self.grouped.is_some() {
-            self.lineage.clone()
-        } else if self.reshaped_lf.is_some() {
-            self.reshape_lineage.clone()
+        if self.view.grouped.is_some() {
+            self.view.lineage.clone()
+        } else if self.view.reshaped_lf.is_some() {
+            self.view.reshape_lineage.clone()
         } else {
             None
         }
@@ -1103,10 +1112,10 @@ impl DataTableState {
     /// How [`Self::query_root`] was built, as Copy as Python steps.
     #[cfg(feature = "sql")]
     fn query_root_steps(&self) -> Vec<Step> {
-        if self.grouped.is_some() {
-            return self.base_steps.clone();
+        if self.view.grouped.is_some() {
+            return self.view.base_steps.clone();
         }
-        match (&self.reshaped_lf, &self.reshape_steps) {
+        match (&self.view.reshaped_lf, &self.view.reshape_steps) {
             (None, _) => Vec::new(),
             (Some(_), Some(steps)) => steps.clone(),
             (Some(_), None) => vec![Step::Unreproducible(
@@ -1209,8 +1218,8 @@ impl DataTableState {
                         .take_while(|(name, _)| schema.contains(name))
                         .collect();
                     self.install_query_result(result_lf, schema, ActiveQuery::Sql(sql), 0, steps);
-                    self.query_order = query_order;
-                    self.lineage = lineage;
+                    self.view.query_order = query_order;
+                    self.view.lineage = lineage;
                     self.install_sql_group_source(group_source.map(|(source, _)| source));
                 }
                 Err(e) => {
@@ -1308,12 +1317,13 @@ impl DataTableState {
         let Some(source) = source else {
             return;
         };
-        self.locked_columns_count = self
+        self.view.locked_columns_count = self
+            .view
             .schema
             .iter_names()
             .take_while(|c| source.keys.iter().any(|(k, _)| k == *c))
             .count();
-        self.group_source = Some(source);
+        self.view.group_source = Some(source);
     }
 
     /// Fuzzy search: filter rows where any string column matches the query.
@@ -1329,13 +1339,7 @@ impl DataTableState {
         }
         // The search runs over the data as loaded, so its columns come from there too,
         // not from a DSL query's possibly renamed schema.
-        let schema = match self.query_source().collect_schema() {
-            Ok(schema) => schema,
-            Err(e) => {
-                self.error = Some(e);
-                return;
-            }
-        };
+        let schema = self.query_source_schema();
         let string_cols: Vec<String> = schema
             .iter()
             .filter(|(_, dtype)| dtype.is_string())
@@ -1370,7 +1374,7 @@ impl DataTableState {
         }];
         self.install_query_result(lf, schema, ActiveQuery::Fuzzy(query), 0, steps);
         // Rows of the data as loaded, every column as it is.
-        self.lineage = None;
+        self.view.lineage = None;
         self.forget_reshape();
         self.collect();
     }

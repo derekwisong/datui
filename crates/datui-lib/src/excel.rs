@@ -544,58 +544,31 @@ fn excel_column_to_series(
 ) -> Result<Series> {
     use calamine::DataType as CalamineTrait;
     use polars::datatypes::TimeUnit;
+    let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).expect("valid date");
     let series = match col_type {
-        ExcelColType::Int64 => {
-            let v: Vec<Option<i64>> = cells
-                .iter()
-                .map(|c| c.and_then(|cell| cell.as_i64()))
-                .collect();
-            Series::new(name.into(), v)
-        }
-        ExcelColType::Float64 => {
-            let v: Vec<Option<f64>> = cells
-                .iter()
-                .map(|c| c.and_then(|cell| cell.as_f64()))
-                .collect();
-            Series::new(name.into(), v)
-        }
-        ExcelColType::Boolean => {
-            let v: Vec<Option<bool>> = cells
-                .iter()
-                .map(|c| c.and_then(|cell| cell.get_bool()))
-                .collect();
-            Series::new(name.into(), v)
-        }
-        ExcelColType::Utf8 => {
-            let v: Vec<Option<String>> = cells
-                .iter()
-                .map(|c| c.and_then(|cell| cell.as_string()))
-                .collect();
-            Series::new(name.into(), v)
-        }
-        ExcelColType::Date => {
-            let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).expect("valid date");
-            let v: Vec<Option<i32>> = cells
-                .iter()
-                .map(|c| {
-                    c.and_then(excel_cell_to_naive_datetime)
-                        .map(|dt| (dt.date() - epoch).num_days() as i32)
-                })
-                .collect();
-            Series::new(name.into(), v).cast(&DataType::Date)?
-        }
-        ExcelColType::Datetime => {
-            let v: Vec<Option<i64>> = cells
-                .iter()
-                .map(|c| {
-                    c.and_then(excel_cell_to_naive_datetime)
-                        .map(|dt| dt.and_utc().timestamp_micros())
-                })
-                .collect();
-            Series::new(name.into(), v).cast(&DataType::Datetime(TimeUnit::Microseconds, None))?
-        }
+        ExcelColType::Int64 => values(name, cells, |c| c.as_i64()),
+        ExcelColType::Float64 => values(name, cells, |c| c.as_f64()),
+        ExcelColType::Boolean => values(name, cells, |c| c.get_bool()),
+        ExcelColType::Utf8 => values(name, cells, |c| c.as_string()),
+        ExcelColType::Date => values(name, cells, |c| {
+            excel_cell_to_naive_datetime(c).map(|dt| (dt.date() - epoch).num_days() as i32)
+        })
+        .cast(&DataType::Date)?,
+        ExcelColType::Datetime => values(name, cells, |c| {
+            excel_cell_to_naive_datetime(c).map(|dt| dt.and_utc().timestamp_micros())
+        })
+        .cast(&DataType::Datetime(TimeUnit::Microseconds, None))?,
     };
     Ok(series)
+}
+
+/// The column of `cells` as `get` reads each, empty cells null.
+fn values<T>(name: &str, cells: &[Option<&Data>], get: impl Fn(&Data) -> Option<T>) -> Series
+where
+    Series: NamedFrom<Vec<Option<T>>, [Option<T>]>,
+{
+    let values: Vec<Option<T>> = cells.iter().map(|c| c.and_then(&get)).collect();
+    Series::new(name.into(), values)
 }
 
 /// Inferred type for an Excel column (preserves numbers, bools, dates; avoids stringifying).

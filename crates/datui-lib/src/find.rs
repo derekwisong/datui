@@ -709,8 +709,10 @@ impl App {
         self.refresh_live_matches();
     }
 
-    /// Light up the cells the prompt's pattern matches among the rows on hand. Only
-    /// what is already in memory is matched, so typing never waits on a read.
+    /// Light up the cells the prompt's pattern matches among the rows on screen and a
+    /// page either side. Only rows already in memory are matched, so typing never waits
+    /// on a read, and only those near the view, so a buffer of a whole row group is not
+    /// matched on every key.
     pub(crate) fn refresh_live_matches(&mut self) {
         self.find.live = None;
         self.find.live_rows = self.rows_on_hand_key();
@@ -718,10 +720,10 @@ impl App {
         if spec.pattern.trim().is_empty() || spec.check().is_err() {
             return;
         }
-        let Some(state) = self.data_table_state.as_ref() else {
+        let Some((df, start)) = self.live_window() else {
             return;
         };
-        let Some((df, start)) = state.rows_on_hand() else {
+        let Some(state) = self.data_table_state.as_ref() else {
             return;
         };
         let columns: Vec<(String, Expr)> =
@@ -739,7 +741,7 @@ impl App {
             .map(|(i, (_, expr))| expr.clone().alias(format!("m{i}")))
             .collect();
         // In memory: the rows on hand are a frame already collected.
-        let Ok(found) = df.clone().lazy().select(exprs).collect() else {
+        let Ok(found) = df.lazy().select(exprs).collect() else {
             return;
         };
         let mut cells = MatchCells::new();
@@ -765,11 +767,22 @@ impl App {
         });
     }
 
-    /// Which rows are on hand, to tell when the live matches were worked out over
-    /// others.
-    fn rows_on_hand_key(&self) -> Option<(usize, usize, u64)> {
+    /// The rows the live find matches: those on screen and a page either side, of
+    /// the rows on hand, and the row the first is.
+    fn live_window(&self) -> Option<(DataFrame, usize)> {
         let state = self.data_table_state.as_ref()?;
         let (df, start) = state.rows_on_hand()?;
+        let page = state.visible_rows.max(1);
+        let from = state.start_row().saturating_sub(page).max(start);
+        let to = (state.start_row() + 2 * page).min(start + df.height());
+        (to > from).then(|| (df.slice((from - start) as i64, to - from), from))
+    }
+
+    /// Which rows the live matches were worked out over, to tell when they need
+    /// working out again.
+    fn rows_on_hand_key(&self) -> Option<(usize, usize, u64)> {
+        let state = self.data_table_state.as_ref()?;
+        let (df, start) = self.live_window()?;
         Some((start, df.height(), state.len_generation()))
     }
 

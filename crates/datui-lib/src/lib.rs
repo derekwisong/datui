@@ -519,6 +519,15 @@ pub enum AppEvent {
     Filter(Vec<FilterStatement>),
     Sort(Vec<String>, Vec<bool>), // Columns, and per column whether it runs descending
     ColumnOrder(Vec<String>, usize), // Column order, locked columns count
+    /// The sidebar's Apply as one change: column order, locked count, filters, and the
+    /// sort's columns with whether each runs descending.
+    ApplyView(
+        Vec<String>,
+        usize,
+        Vec<FilterStatement>,
+        Vec<String>,
+        Vec<bool>,
+    ),
     Pivot(PivotSpec),
     Melt(MeltSpec),
     Export(ExportRequest),
@@ -4814,6 +4823,21 @@ impl App {
                 self.active_view_id = None;
                 None
             }
+            AppEvent::ApplyView(order, locked, filters, columns, descending) => {
+                if let Some(state) = &mut self.data_table_state {
+                    state.deferred(|s| {
+                        s.apply_view(
+                            order.clone(),
+                            *locked,
+                            filters.clone(),
+                            columns.clone(),
+                            descending.clone(),
+                        )
+                    });
+                    self.spawn_async_collect("Sorting...");
+                }
+                None
+            }
             AppEvent::ColumnOrder(order, locked_count) => {
                 if let Some(state) = &mut self.data_table_state {
                     state.deferred(|s| {
@@ -5291,9 +5315,13 @@ impl App {
         if view_unchanged {
             return None;
         }
-        let _ = self.send_event(AppEvent::ColumnOrder(column_order, locked_count));
-        let _ = self.send_event(AppEvent::Filter(statements));
-        Some(AppEvent::Sort(columns, descending))
+        Some(AppEvent::ApplyView(
+            column_order,
+            locked_count,
+            statements,
+            columns,
+            descending,
+        ))
     }
 
     /// The facts read for the dataset on screen, if its file has one: one file, stored

@@ -496,11 +496,23 @@ impl App {
             .is_some_and(|generation| !self.waited_on_rows_pending(generation))
     }
 
-    /// A frame has been painted. Start the count that was waiting for its rows to be on
-    /// screen, unless they are still being read; retire it if the frame it was for has
-    /// gone or its rows already said how many there are.
+    /// A frame has been painted. Read the rows it found it needed (it set the rows on
+    /// screen, or a change asked for them), and start the count waiting on it.
     pub fn frame_painted(&mut self) {
         self.pointer.painted();
+        self.count_what_was_painted();
+        if let Some(state) = &mut self.data_table_state
+            && state.needs_recollect
+        {
+            state.needs_recollect = false;
+            self.spawn_async_collect(App::LOADING_BUFFER);
+        }
+    }
+
+    /// Start the count that was waiting for a frame's rows to be on screen, unless they
+    /// are still being read; retire it if the frame it was for has gone or its rows
+    /// already said how many there are.
+    fn count_what_was_painted(&mut self) {
         let Some(generation) = self.count_after_paint else {
             return;
         };

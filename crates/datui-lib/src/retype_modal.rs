@@ -222,7 +222,7 @@ pub struct CombineModal {
     pub time: Option<String>,
     pub offset: Option<String>,
     pub kind: DerivedKind,
-    pub name: String,
+    pub name: crate::widgets::text_input::TextInput,
     /// The open picker and the field it is for.
     pub picker: Option<(CombineField, PickerState)>,
     /// Why Enter did not apply, said on the form's own line.
@@ -253,7 +253,11 @@ impl CombineModal {
             time,
             offset: None,
             kind: DerivedKind::Datetime,
-            name,
+            name: {
+                let mut input = crate::widgets::text_input::TextInput::new();
+                input.set_value(name);
+                input
+            },
             picker: None,
             problem: None,
         }
@@ -274,7 +278,7 @@ impl CombineModal {
 
     /// The derived column it makes, as a spec's `[columns]` entry would.
     pub fn derived(&self) -> Result<crate::column_types::Derived, String> {
-        let name = self.name.trim();
+        let name = self.name.value().trim();
         if name.is_empty() {
             return Err("the new column needs a name".to_string());
         }
@@ -290,7 +294,7 @@ impl CombineModal {
     pub fn spec_line(&self) -> String {
         format!(
             "{} = {} from {}",
-            self.name.trim(),
+            self.name.value().trim(),
             self.kind.name(),
             self.from().join(", ")
         )
@@ -388,6 +392,7 @@ impl crate::form::Form for CombineModal {
 
     fn set_focused(&mut self, field: CombineField) {
         self.focus = field;
+        self.name.set_focused(field == CombineField::Name);
     }
 }
 
@@ -461,7 +466,7 @@ mod tests {
         modal.step_kind(1);
         assert_eq!(modal.kind, DerivedKind::Date);
         assert_eq!(modal.from(), ["Lcl Date"], "a date from one column");
-        modal.name = " ".into();
+        modal.name.set_value(" ");
         assert!(modal.derived().is_err());
     }
 }

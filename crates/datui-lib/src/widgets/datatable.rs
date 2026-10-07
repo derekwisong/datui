@@ -3577,96 +3577,6 @@ impl DataTableState {
         columns
     }
 
-    /// Load Parquet with Hive partitioning from a directory or glob path.
-    /// When path is a directory, partition columns are discovered from path structure.
-    /// When path contains glob (e.g. `**/*.parquet`), partition columns are inferred from the pattern (e.g. `year=*/month=*`).
-    /// Partition columns are moved to the left in the initial LazyFrame before state is created.
-    ///
-    /// **Performance**: The slow part is Polars, not our code. `scan_parquet` + `collect_schema()` trigger
-    /// path expansion (full directory tree or glob) and parquet metadata reads; we only do a single-spine
-    /// walk for partition key discovery and cheap schema/select work.
-    pub fn from_parquet_hive(
-        path: &Path,
-        pages_lookahead: Option<usize>,
-        pages_lookback: Option<usize>,
-        max_buffered_rows: Option<usize>,
-        max_buffered_mb: Option<usize>,
-        row_numbers: bool,
-        row_start_index: usize,
-    ) -> Result<Self> {
-        let is_glob = crate::source::expands_as_glob(path);
-        let pl_path = PlRefPath::try_from_path(path)?;
-        let args = ScanArgsParquet {
-            hive_options: HiveOptions::new_enabled(),
-            glob: is_glob,
-            ..Default::default()
-        };
-        let mut lf = LazyFrame::scan_parquet(pl_path, args)?;
-        let schema = lf.collect_schema()?;
-
-        let mut discovered = if path.is_dir() {
-            Self::discover_partition_columns_from_path(path)
-        } else {
-            Self::discover_partition_columns_from_glob_pattern(path)
-        };
-
-        // Fallback: glob like "**/*.parquet" has no key= in the pattern, so discovery is empty.
-        // Try discovering from a directory prefix (e.g. path.parent() or walk up until we find a dir).
-        if discovered.is_empty() {
-            let mut dir = path;
-            while !dir.is_dir() {
-                match dir.parent() {
-                    Some(p) => dir = p,
-                    None => break,
-                }
-            }
-            if dir.is_dir() {
-                discovered = Self::discover_partition_columns_from_path(dir);
-            }
-        }
-
-        let partition_columns: Vec<String> = discovered
-            .into_iter()
-            .filter(|c| schema.contains(c.as_str()))
-            .collect();
-
-        let new_order: Vec<String> = if partition_columns.is_empty() {
-            schema.iter_names().map(|s| s.to_string()).collect()
-        } else {
-            let part_set: HashSet<&str> = partition_columns.iter().map(String::as_str).collect();
-            let all_names: Vec<String> = schema.iter_names().map(|s| s.to_string()).collect();
-            let rest: Vec<String> = all_names
-                .into_iter()
-                .filter(|c| !part_set.contains(c.as_str()))
-                .collect();
-            partition_columns.iter().cloned().chain(rest).collect()
-        };
-
-        if !partition_columns.is_empty() {
-            let exprs: Vec<Expr> = new_order.iter().map(|s| col(s.as_str())).collect();
-            lf = lf.select(exprs);
-        }
-
-        let mut state = Self::new(
-            lf,
-            pages_lookahead,
-            pages_lookback,
-            max_buffered_rows,
-            max_buffered_mb,
-            true,
-        )?;
-        state.row_numbers = row_numbers;
-        state.row_start_index = row_start_index;
-        state.partition_columns = if partition_columns.is_empty() {
-            None
-        } else {
-            Some(partition_columns)
-        };
-        // Ensure display order is partition-first (Self::new uses schema order; be explicit).
-        state.set_column_order(new_order);
-        Ok(state)
-    }
-
     pub fn set_row_numbers(&mut self, enabled: bool) {
         self.row_numbers = enabled;
     }
@@ -4893,30 +4803,6 @@ impl DataTableState {
         Ok(state)
     }
 
-    pub fn from_csv_customize<F>(
-        path: &Path,
-        pages_lookahead: Option<usize>,
-        pages_lookback: Option<usize>,
-        max_buffered_rows: Option<usize>,
-        max_buffered_mb: Option<usize>,
-        func: F,
-    ) -> Result<Self>
-    where
-        F: FnOnce(LazyCsvReader) -> LazyCsvReader,
-    {
-        let pl_path = PlRefPath::try_from_path(path)?;
-        let reader = LazyCsvReader::new(pl_path).with_glob(crate::source::expands_as_glob(path));
-        let lf = func(reader).finish()?;
-        Self::new(
-            lf,
-            pages_lookahead,
-            pages_lookback,
-            max_buffered_rows,
-            max_buffered_mb,
-            true,
-        )
-    }
-
     /// Load multiple CSV files (uncompressed) and concatenate into one LazyFrame.
     pub fn from_csv_paths(paths: &[impl AsRef<Path>], options: &OpenOptions) -> Result<Self> {
         if paths.is_empty() {
@@ -5195,8 +5081,6 @@ impl DataTableState {
         self.start_row = new_start_row;
 
         if within_buffer {
-            // Re-slice display from existing buffer.
-            self.slice_from_buffer();
             if self.table_state.selected().is_none() {
                 self.table_state.select(Some(0));
             }
@@ -5253,9 +5137,7 @@ impl DataTableState {
             }
         } else {
             self.start_row = 0;
-            self.buffered_start_row = 0;
-            self.buffered_end_row = 0;
-            self.buffered_df = None;
+            self.drop_buffer();
             self.df = None;
             self.locked_df = None;
             return;
@@ -5413,7 +5295,6 @@ impl DataTableState {
             self.load_buffer(new_buffer_start, new_buffer_end);
         }
 
-        self.slice_from_buffer();
         if self.table_state.selected().is_none() {
             self.table_state.select(Some(0));
         }
@@ -5768,9 +5649,7 @@ impl DataTableState {
             } else {
                 // Confirmed-empty dataset: clear everything.
                 self.start_row = 0;
-                self.buffered_start_row = 0;
-                self.buffered_end_row = 0;
-                self.buffered_df = None;
+                self.drop_buffer();
                 self.df = None;
                 self.locked_df = None;
                 return None;
@@ -6830,7 +6709,7 @@ impl DataTableState {
     /// The frame a query, a SQL statement or a fuzzy search builds on. Never carries
     /// the drift column: a query's rows are its own, and its schema becomes the
     /// column order, so the column would otherwise become one of the data's.
-    pub fn query_source(&self) -> LazyFrame {
+    fn query_source(&self) -> LazyFrame {
         Self::without_drift(self.original_lf.clone())
     }
 
@@ -6871,15 +6750,6 @@ impl DataTableState {
                 files: None,
             }
         }
-    }
-
-    /// What datui noticed about the dataset itself, as its footers were read.
-    ///
-    /// Separate from [`Self::notes`] because this is the half that belongs to the
-    /// data: a snapshot taken to roll a view back has to put back these and not
-    /// the view's, which describe a filter and sort that the rollback is undoing.
-    pub fn dataset_notes(&self) -> &[crate::notes::Note] {
-        &self.notes
     }
 
     /// What datui noticed: about the dataset when it opened, then about the view the
@@ -7233,12 +7103,6 @@ impl DataTableState {
         (lf, notes)
     }
 
-    /// Whether the notes have been offered. Exact, where `!notes_unseen()` would also
-    /// be true of a dataset that has nothing to say.
-    pub fn notes_seen(&self) -> bool {
-        self.notes_seen
-    }
-
     /// The Info panel has been opened; the quiet accent has done its job.
     pub fn mark_notes_seen(&mut self) {
         self.notes_seen = true;
@@ -7456,7 +7320,7 @@ impl DataTableState {
     /// Whether the frame's rows carry their place in the source, for `#`: a dataset's
     /// rows that know their file, or lines, while the frame is still the scan's. A
     /// query's rows, a reshape's and a group's stand for no row of the source.
-    pub fn carries_source_rows(&self) -> bool {
+    pub(crate) fn carries_source_rows(&self) -> bool {
         self.drift_column_present
             || (self.scan_is_the_root() && (self.source_rows_at_open || self.view_numbered))
     }
@@ -7920,13 +7784,6 @@ impl DataTableState {
         }
     }
 
-    fn slice_from_buffer(&mut self) {
-        // Buffer contains the full range [buffered_start_row, buffered_end_row)
-        // The displayed portion [start_row, start_row + visible_rows) is a subset
-        // We'll slice the displayed portion when rendering based on offset
-        // No action needed here - the buffer is stored, slicing happens at render time
-    }
-
     /// Returns true if a buffer collect is needed after the scroll.
     pub fn select_next(&mut self) -> bool {
         self.table_state.select_next();
@@ -8073,7 +7930,7 @@ impl DataTableState {
     /// reads nothing. A page that needs a column not drawn yet waits for the next
     /// draw, which measures it from the rows on hand; a relative move typed behind it
     /// waits too and lands after it, in order, so no key is lost or planned on a guess.
-    pub fn scroll_columns(&mut self, mv: ColumnMove) {
+    fn scroll_columns(&mut self, mv: ColumnMove) {
         if matches!(
             mv,
             ColumnMove::First | ColumnMove::Last | ColumnMove::Reveal(_)
@@ -8421,9 +8278,7 @@ impl DataTableState {
         self.termcol_index = self
             .termcol_index
             .min(self.scroll_count().saturating_sub(1));
-        self.buffered_start_row = 0;
-        self.buffered_end_row = 0;
-        self.buffered_df = None;
+        self.drop_buffer();
         self.settle_cursor();
         self.collect();
     }
@@ -8435,9 +8290,7 @@ impl DataTableState {
         self.termcol_index = self
             .termcol_index
             .min(self.scroll_count().saturating_sub(1));
-        self.buffered_start_row = 0;
-        self.buffered_end_row = 0;
-        self.buffered_df = None;
+        self.drop_buffer();
         self.collect();
     }
 
@@ -8578,7 +8431,7 @@ impl DataTableState {
 
     /// The header's sort marks: the sidebar's sort, or else the ORDER BY of the SQL
     /// in effect, while its own rows are on screen (not a group drilled into).
-    pub fn header_sort(&self) -> (Vec<String>, Vec<bool>) {
+    fn header_sort(&self) -> (Vec<String>, Vec<bool>) {
         if self.sort_columns.is_empty() && self.grouped.is_none() {
             self.query_order.iter().cloned().unzip()
         } else {
@@ -8587,7 +8440,8 @@ impl DataTableState {
     }
 
     /// The pivot/melt result in effect, for a snapshot that may need to put it back.
-    pub fn reshaped_lf_clone(&self) -> Option<LazyFrame> {
+    #[cfg(test)]
+    pub(crate) fn reshaped_lf_clone(&self) -> Option<LazyFrame> {
         self.reshaped_lf.clone()
     }
 
@@ -9123,7 +8977,7 @@ impl DataTableState {
             .any(|(_, dtype)| matches!(dtype, DataType::List(_)))
     }
 
-    pub fn group_key_columns(&self) -> Vec<String> {
+    fn group_key_columns(&self) -> Vec<String> {
         self.schema
             .iter()
             .filter(|(_, dtype)| !matches!(dtype, DataType::List(_)))
@@ -9131,7 +8985,7 @@ impl DataTableState {
             .collect()
     }
 
-    pub fn group_value_columns(&self) -> Vec<String> {
+    fn group_value_columns(&self) -> Vec<String> {
         self.schema
             .iter()
             .filter(|(_, dtype)| matches!(dtype, DataType::List(_)))
@@ -9833,10 +9687,6 @@ impl DataTableState {
         Ok(())
     }
 
-    pub fn get_analysis_dataframe(&self) -> Result<DataFrame> {
-        Ok(collect_lazy(self.visible_lf(), self.polars_streaming)?)
-    }
-
     pub fn get_analysis_context(&self) -> crate::statistics::AnalysisContext {
         crate::statistics::AnalysisContext {
             has_query: !self.active_query.is_empty(),
@@ -10497,9 +10347,7 @@ impl DataTableState {
         }
         self.sort_columns = columns;
         self.sort_descending = descending;
-        self.buffered_start_row = 0;
-        self.buffered_end_row = 0;
-        self.buffered_df = None;
+        self.drop_buffer();
         self.apply_transformations();
     }
 
@@ -10517,9 +10365,7 @@ impl DataTableState {
             *direction = !*direction;
         }
 
-        self.buffered_start_row = 0;
-        self.buffered_end_row = 0;
-        self.buffered_df = None;
+        self.drop_buffer();
 
         // A source that runs the order runs it backward too.
         if self.pushed_view().is_some() {
@@ -10549,9 +10395,7 @@ impl DataTableState {
         // A new result set, viewed from the top: a position deep in the old one would
         // plan a slice past a smaller result, which reads nothing.
         self.start_row = 0;
-        self.buffered_start_row = 0;
-        self.buffered_end_row = 0;
-        self.buffered_df = None;
+        self.drop_buffer();
         self.apply_transformations();
     }
 
@@ -10733,7 +10577,7 @@ impl DataTableState {
     /// The data a query runs against: the drilled group while drilled into one, else the
     /// pivot/melt result while one is in effect, otherwise the data as loaded. Never the
     /// sidebar filters or sort, which go on top, and never a previous SQL result.
-    pub fn query_root(&self) -> LazyFrame {
+    pub(crate) fn query_root(&self) -> LazyFrame {
         if self.grouped.is_some() {
             // While drilled, `base_lf` is the group (see `drill_down_into_group`).
             return self.base_lf.clone();
@@ -11656,7 +11500,6 @@ impl DataTable {
         buf: &mut Buffer,
         state: &mut TableState,
         leading_gap: bool,
-        _start_row_offset: usize,
     ) -> usize {
         let mut widths = ColumnWidths::default();
         let sizing = Sizing {

@@ -2773,7 +2773,7 @@ fn grouping_is_off_by_default() {
     let area = Rect::new(0, 0, 30, 3);
     let mut buf = Buffer::empty(area);
     let mut ts = TableState::default();
-    table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+    table.render_dataframe(&df, area, &mut buf, &mut ts, false);
     let row = row_string(&buf, area, 1);
     assert!(row.contains("1234567"), "got: {row:?}");
     assert!(!row.contains("1,234,567"), "got: {row:?}");
@@ -2787,7 +2787,7 @@ fn thousands_separators_are_applied_to_integer_columns() {
     let area = Rect::new(0, 0, 30, 4);
     let mut buf = Buffer::empty(area);
     let mut ts = TableState::default();
-    table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+    table.render_dataframe(&df, area, &mut buf, &mut ts, false);
     assert!(row_string(&buf, area, 1).contains("248,956,422"));
     assert!(row_string(&buf, area, 2).contains("3,088,269,832"));
 }
@@ -2801,7 +2801,7 @@ fn column_width_accounts_for_separators() {
     let area = Rect::new(0, 0, 12, 3);
     let mut buf = Buffer::empty(area);
     let mut ts = TableState::default();
-    let shown = table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+    let shown = table.render_dataframe(&df, area, &mut buf, &mut ts, false);
     assert_eq!(shown, 1);
     assert!(row_string(&buf, area, 1).contains("1,234,567"));
 }
@@ -2817,7 +2817,7 @@ fn strings_are_untouched_and_integers_group_uniformly() {
     let area = Rect::new(0, 0, 30, 3);
     let mut buf = Buffer::empty(area);
     let mut ts = TableState::default();
-    table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+    table.render_dataframe(&df, area, &mut buf, &mut ts, false);
     let row = row_string(&buf, area, 1);
     assert!(row.contains("chr1"), "got: {row:?}");
     // No magnitude threshold: a column must not mix grouped and ungrouped
@@ -2843,7 +2843,7 @@ fn excluding_a_column_is_how_identifier_columns_stay_plain() {
     let area = Rect::new(0, 0, 40, 3);
     let mut buf = Buffer::empty(area);
     let mut ts = TableState::default();
-    table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+    table.render_dataframe(&df, area, &mut buf, &mut ts, false);
     let row = row_string(&buf, area, 1);
     assert!(row.contains("2024"), "excluded column stays plain: {row:?}");
     assert!(row.contains("2,024"), "other column groups: {row:?}");
@@ -2858,7 +2858,7 @@ fn numeric_columns_and_their_headers_render_flush_right() {
     let area = Rect::new(0, 0, 5, 4);
     let mut buf = Buffer::empty(area);
     let mut ts = TableState::default();
-    table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+    table.render_dataframe(&df, area, &mut buf, &mut ts, false);
     assert_eq!(row_string(&buf, area, 1), "    7");
     assert_eq!(row_string(&buf, area, 2), "   42");
     assert_eq!(header_row_string(&buf, area), "value");
@@ -2873,7 +2873,7 @@ fn header_follows_its_column_alignment() {
     let area = Rect::new(0, 0, 7, 3);
     let mut buf = Buffer::empty(area);
     let mut ts = TableState::default();
-    table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+    table.render_dataframe(&df, area, &mut buf, &mut ts, false);
     assert_eq!(header_row_string(&buf, area), "      n");
     assert_eq!(row_string(&buf, area, 1), "1234567");
 }
@@ -2885,7 +2885,7 @@ fn non_numeric_columns_stay_left_aligned() {
     let area = Rect::new(0, 0, 4, 3);
     let mut buf = Buffer::empty(area);
     let mut ts = TableState::default();
-    table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+    table.render_dataframe(&df, area, &mut buf, &mut ts, false);
     assert_eq!(row_string(&buf, area, 1), "ab  ");
     assert_eq!(header_row_string(&buf, area), "name");
 }
@@ -2897,7 +2897,7 @@ fn alignment_can_be_turned_off() {
     let area = Rect::new(0, 0, 5, 3);
     let mut buf = Buffer::empty(area);
     let mut ts = TableState::default();
-    table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+    table.render_dataframe(&df, area, &mut buf, &mut ts, false);
     assert_eq!(row_string(&buf, area, 1), "7    ");
 }
 
@@ -2917,7 +2917,7 @@ fn excluded_columns_are_not_grouped() {
     let area = Rect::new(0, 0, 40, 3);
     let mut buf = Buffer::empty(area);
     let mut ts = TableState::default();
-    table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+    table.render_dataframe(&df, area, &mut buf, &mut ts, false);
     let row = row_string(&buf, area, 1);
     assert!(row.contains("1234567"), "excluded column raw: {row:?}");
     assert!(row.contains("1,234,567"), "other column grouped: {row:?}");
@@ -2938,7 +2938,7 @@ fn disabled_formatting_renders_raw_digits() {
     let area = Rect::new(0, 0, 20, 3);
     let mut buf = Buffer::empty(area);
     let mut ts = TableState::default();
-    table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+    table.render_dataframe(&df, area, &mut buf, &mut ts, false);
     assert!(row_string(&buf, area, 1).contains("1234567"));
 }
 
@@ -2953,7 +2953,7 @@ fn binary_stub_columns_are_never_formatted_or_aligned() {
     let area = Rect::new(0, 0, 10, 3);
     let mut buf = Buffer::empty(area);
     let mut ts = TableState::default();
-    table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+    table.render_dataframe(&df, area, &mut buf, &mut ts, false);
     assert!(row_string(&buf, area, 1).starts_with(binary_stub()));
 }
 
@@ -2969,7 +2969,7 @@ fn a_binary_column_s_type_row_says_binary() {
     let area = Rect::new(0, 0, 30, 4);
     let mut buf = Buffer::empty(area);
     let mut ts = TableState::default();
-    table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+    table.render_dataframe(&df, area, &mut buf, &mut ts, false);
     let types = row_string(&buf, area, 1);
     assert!(types.contains("binary"), "{types:?}");
     assert_eq!(types.matches("str").count(), 1, "{types:?}");
@@ -2984,7 +2984,7 @@ fn breaks_tabs_and_controls_are_marked_in_a_cell() {
     let area = Rect::new(0, 0, 30, 4);
     let mut buf = Buffer::empty(area);
     let mut ts = TableState::default();
-    table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+    table.render_dataframe(&df, area, &mut buf, &mut ts, false);
     let g = table.glyphs;
     assert!(
         row_string(&buf, area, 1).starts_with(&format!("line1{}line2", g.newline_mark)),
@@ -3003,7 +3003,7 @@ fn direction_controls_are_marked_in_a_cell() {
     let df = df!("s" => ["a\u{202e}evil\u{202c}z"]).unwrap();
     let area = Rect::new(0, 0, 30, 3);
     let mut buf = Buffer::empty(area);
-    table.render_dataframe(&df, area, &mut buf, &mut TableState::default(), false, 0);
+    table.render_dataframe(&df, area, &mut buf, &mut TableState::default(), false);
     let m = table.glyphs.control_mark;
     let row = row_string(&buf, area, 1);
     assert!(row.starts_with(&format!("a{m}evil{m}z")), "{row:?}");
@@ -3044,7 +3044,7 @@ fn trailing_overflow_string_column_is_truncated_not_dropped() {
     let area = Rect::new(0, 0, 8, 4);
     let mut buf = Buffer::empty(area);
     let mut ts = TableState::default();
-    let shown = table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+    let shown = table.render_dataframe(&df, area, &mut buf, &mut ts, false);
     assert_eq!(
         shown, 2,
         "the overflowing trailing string column should be kept (truncated)"
@@ -3076,7 +3076,7 @@ fn binary_stub_cells_are_styled_with_binary_color_and_italic() {
     let area = Rect::new(0, 0, 20, 4);
     let mut buf = Buffer::empty(area);
     let mut ts = TableState::default();
-    table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+    table.render_dataframe(&df, area, &mut buf, &mut ts, false);
 
     // A data row (y = 1; y = 0 is the header). The stub cells should be dark gray + italic.
     let stub_styled = (area.x..area.x + area.width).any(|x| {
@@ -3110,7 +3110,7 @@ fn trailing_overflow_numeric_column_is_dropped_not_truncated() {
     let area = Rect::new(0, 0, 8, 4);
     let mut buf = Buffer::empty(area);
     let mut ts = TableState::default();
-    let shown = table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+    let shown = table.render_dataframe(&df, area, &mut buf, &mut ts, false);
     assert_eq!(
         shown, 1,
         "an overflowing numeric column should be dropped, not truncated"
@@ -4923,7 +4923,7 @@ fn trailing_overflow_binary_column_is_truncated() {
     let area = Rect::new(0, 0, 8, 4);
     let mut buf = Buffer::empty(area);
     let mut ts = TableState::default();
-    let shown = table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+    let shown = table.render_dataframe(&df, area, &mut buf, &mut ts, false);
     assert_eq!(
         shown, 2,
         "an overflowing binary column should be shown truncated"
@@ -4943,7 +4943,7 @@ fn tiny_remaining_width_drops_overflow_string_column() {
     let area = Rect::new(0, 0, 5, 4);
     let mut buf = Buffer::empty(area);
     let mut ts = TableState::default();
-    let shown = table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+    let shown = table.render_dataframe(&df, area, &mut buf, &mut ts, false);
     assert_eq!(shown, 1, "a sub-minimal sliver should not be shown");
 }
 
@@ -4992,7 +4992,7 @@ fn sorted_column_header_carries_the_direction_mark() {
     let area = Rect::new(0, 0, 20, 3);
     let mut buf = Buffer::empty(area);
     let mut ts = TableState::default();
-    table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+    table.render_dataframe(&df, area, &mut buf, &mut ts, false);
     let header = header_row_string(&buf, area);
     assert!(
         header.contains(&format!("age{}", g.sort_asc)),
@@ -5016,7 +5016,7 @@ fn the_direction_mark_flips_with_the_sort() {
     let area = Rect::new(0, 0, 20, 3);
     let mut buf = Buffer::empty(area);
     let mut ts = TableState::default();
-    table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+    table.render_dataframe(&df, area, &mut buf, &mut ts, false);
     let header = header_row_string(&buf, area);
     assert!(
         header.contains(&format!("age{}", g.sort_desc)),
@@ -5037,7 +5037,7 @@ fn every_column_of_a_multi_sort_is_marked() {
     let area = Rect::new(0, 0, 20, 3);
     let mut buf = Buffer::empty(area);
     let mut ts = TableState::default();
-    table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+    table.render_dataframe(&df, area, &mut buf, &mut ts, false);
     let header = header_row_string(&buf, area);
     for name in ["name", "age"] {
         assert!(
@@ -5065,7 +5065,7 @@ fn the_sort_mark_composes_with_the_drift_mark() {
     let area = Rect::new(0, 0, 20, 3);
     let mut buf = Buffer::empty(area);
     let mut ts = TableState::default();
-    table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+    table.render_dataframe(&df, area, &mut buf, &mut ts, false);
     let header = header_row_string(&buf, area);
     assert!(
         header.contains(&format!("age{}{}", g.drift_mark, g.sort_asc)),
@@ -5947,7 +5947,7 @@ fn a_clipped_heading_keeps_its_sort_mark() {
         let area = Rect::new(0, 0, 30, 2);
         let mut buf = Buffer::empty(area);
         let mut ts = TableState::default();
-        table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+        table.render_dataframe(&df, area, &mut buf, &mut ts, false);
         let header = header_row_string(&buf, area);
         assert!(
             header
@@ -5976,7 +5976,7 @@ fn a_heading_is_placed_by_the_cells_it_draws() {
         let area = Rect::new(0, 0, 30, 3);
         let mut buf = Buffer::empty(area);
         let mut ts = TableState::default();
-        table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+        table.render_dataframe(&df, area, &mut buf, &mut ts, false);
         let rows: Vec<String> = (0..3).map(|y| drawn_from(&buf, y, 0)).collect();
         assert!(rows[0].starts_with(&format!("{name}{mark}")), "{rows:#?}");
         let width = crate::glyphs::cell_width(name) + 1;

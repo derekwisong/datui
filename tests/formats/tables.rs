@@ -212,7 +212,7 @@ fn enter_on_the_schema_tab_retypes_and_on_the_excel_tab_opens() {
         press(&mut app, KeyCode::Left);
     }
     press(&mut app, KeyCode::Enter);
-    assert_eq!(app.overlay, Overlay::Retype);
+    assert!(matches!(app.overlay, Overlay::Retype { .. }));
     assert_eq!(app.open_path(), Some(book.as_path()), "no table opened");
     press(&mut app, KeyCode::Esc);
     assert_eq!(app.overlay, Overlay::Info, "back to the panel");
@@ -223,7 +223,7 @@ fn enter_on_the_schema_tab_retypes_and_on_the_excel_tab_opens() {
     press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Enter);
     assert!(app.column_forms.retype.is_none(), "no type picker");
-    assert_ne!(app.overlay, Overlay::Retype);
+    assert!(!matches!(app.overlay, Overlay::Retype { .. }));
 }
 
 #[cfg(feature = "sqlite")]

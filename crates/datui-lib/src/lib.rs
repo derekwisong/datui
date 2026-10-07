@@ -2290,7 +2290,7 @@ impl App {
                             ))
                 }
             },
-            Overlay::Export => matches!(
+            Overlay::Export { .. } => matches!(
                 self.export_modal.focus,
                 ExportFocus::PathInput | ExportFocus::CsvDelimiter
             ),
@@ -2300,8 +2300,8 @@ impl App {
             Overlay::Inspect => self.inspector_modal.finding,
             // The Picker narrows by typing, so it types.
             Overlay::GoToColumn => true,
-            Overlay::PickFormat | Overlay::Retype => true,
-            Overlay::Combine => {
+            Overlay::PickFormat | Overlay::Retype { .. } => true,
+            Overlay::Combine { .. } => {
                 self.column_forms.combine.as_ref().is_some_and(|c| {
                     c.picker.is_some() || c.focus == retype_modal::CombineField::Name
                 })
@@ -3142,7 +3142,6 @@ impl App {
             column_forms: retype_keys::ColumnForms {
                 retype: None,
                 combine: None,
-                retype_from_info: false,
             },
             chart_cache: ChartCache::default(),
             chart_asked: None,
@@ -3317,13 +3316,13 @@ impl App {
             },
             Overlay::SortFilter => Context::SortFilter,
             Overlay::PivotMelt => Context::PivotMelt,
-            Overlay::Export => Context::Export,
+            Overlay::Export { .. } => Context::Export,
             Overlay::Copy => Context::Copy,
             Overlay::Inspect => Context::Inspector,
             Overlay::GoToColumn => Context::GoToColumn,
             Overlay::PickFormat => Context::FormatPicker,
-            Overlay::Retype => Context::Retype,
-            Overlay::Combine => Context::Combine,
+            Overlay::Retype { .. } => Context::Retype,
+            Overlay::Combine { .. } => Context::Combine,
             Overlay::PickTable => Context::TablePicker,
             Overlay::Sample => Context::Sample,
             Overlay::Info => Context::Info,
@@ -3417,10 +3416,7 @@ impl App {
     fn declined(&mut self) -> Option<AppEvent> {
         match self.confirmation_modal.take() {
             Some(Confirm::ChartExport(_)) => self.chart_export_modal.resume(),
-            Some(Confirm::Export(_)) => {
-                self.export_modal.resume();
-                self.open_overlay(Overlay::Export);
-            }
+            Some(Confirm::Export(_)) => self.open_over(|returns_to| Overlay::Export { returns_to }),
             // Backing out of a download, or a large read, goes home: `enter_home` puts
             // the open down.
             Some(Confirm::Download) => self.enter_home(),
@@ -3679,7 +3675,7 @@ impl App {
         match self.overlay {
             Overlay::None => {}
             Overlay::SortFilter => return self.sort_filter_key(event),
-            Overlay::Export => return self.export_key(event),
+            Overlay::Export { .. } => return self.export_key(event),
             Overlay::Sample => return self.table_sample_form_key(event),
             Overlay::Inspect => return self.inspector_key(event),
             Overlay::ValueCounts => return self.value_counts_key(event),
@@ -3689,8 +3685,8 @@ impl App {
                 return None;
             }
             Overlay::PickFormat => return self.format_picker_key(event),
-            Overlay::Retype => return self.retype_key(event),
-            Overlay::Combine => return self.combine_key(event),
+            Overlay::Retype { .. } => return self.retype_key(event),
+            Overlay::Combine { .. } => return self.combine_key(event),
             Overlay::PickTable => return self.table_picker_key(event),
             Overlay::Copy => return self.copy_key(event),
             Overlay::PivotMelt => return self.pivot_melt_key(event),
@@ -4144,7 +4140,7 @@ impl App {
                                     .is_some_and(|dtype| crate::avro_types::renames(name, dtype))
                             });
                     }
-                    self.open_overlay(Overlay::Export);
+                    self.open_over(|returns_to| Overlay::Export { returns_to });
                 }
                 None
             }
@@ -5771,12 +5767,10 @@ impl App {
             Job::Export => {
                 if current {
                     self.export_progress = None;
-                    self.export_modal.resume();
                     self.export_modal.path_error = Some(message.to_string());
-                    self.open_overlay(Overlay::Export);
+                    self.open_over(|returns_to| Overlay::Export { returns_to });
                 } else {
-                    self.export_modal.close();
-                    self.export_counts = None;
+                    self.forget_export();
                 }
             }
             Job::ChartExport { path, format } => {

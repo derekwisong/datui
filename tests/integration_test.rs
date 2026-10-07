@@ -2352,7 +2352,10 @@ fn modified_letters_are_not_table_feature_keys() {
         KeyCode::Char('e'),
         KeyModifiers::CONTROL,
     )));
-    assert!(!app.export_modal.active, "Ctrl+E is not e");
+    assert!(
+        !matches!(app.overlay, Overlay::Export { .. }),
+        "Ctrl+E is not e"
+    );
 
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Char('y'),
@@ -2366,7 +2369,10 @@ fn modified_letters_are_not_table_feature_keys() {
         KeyCode::Char('e'),
         KeyModifiers::NONE,
     )));
-    assert!(app.export_modal.active, "e still opens Export");
+    assert!(
+        matches!(app.overlay, Overlay::Export { .. }),
+        "e still opens Export"
+    );
 }
 
 /// Declining an overwrite returns to the filled export form: the typed path
@@ -2391,7 +2397,7 @@ fn declining_an_overwrite_keeps_the_export_form() {
         |app: &mut App, code| app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
 
     key(&mut app, KeyCode::Char('e'));
-    assert!(app.export_modal.active);
+    assert!(matches!(app.overlay, Overlay::Export { .. }));
     // The form suggests a name; Backspace takes it away.
     assert_eq!(app.export_modal.path_input.value(), "people-export.parquet");
     key(&mut app, KeyCode::Backspace);
@@ -2400,7 +2406,10 @@ fn declining_an_overwrite_keeps_the_export_form() {
     // Enter on the empty form says why inline instead of doing nothing,
     // and typing is the correction that clears it.
     key(&mut app, KeyCode::Enter);
-    assert!(app.export_modal.active, "an empty path raises no modal");
+    assert!(
+        matches!(app.overlay, Overlay::Export { .. }),
+        "an empty path raises no modal"
+    );
     assert_eq!(
         app.export_modal.path_error.as_deref(),
         Some("Enter a file path.")
@@ -2423,9 +2432,12 @@ fn declining_an_overwrite_keeps_the_export_form() {
     // A reflexive second Enter declines, and the form comes back as typed.
     key(&mut app, KeyCode::Enter);
     assert!(!app.confirmation_modal.active);
-    assert!(app.export_modal.active, "No returns to the form");
+    assert!(
+        matches!(app.overlay, Overlay::Export { .. }),
+        "No returns to the form"
+    );
     assert_eq!(app.export_modal.path_input.value(), typed);
-    assert_eq!(app.overlay, Overlay::Export);
+    assert!(matches!(app.overlay, Overlay::Export { .. }));
     assert_eq!(
         std::fs::read_to_string(&target).unwrap(),
         "old contents",
@@ -2436,12 +2448,15 @@ fn declining_an_overwrite_keeps_the_export_form() {
     key(&mut app, KeyCode::Enter);
     assert!(app.confirmation_modal.active);
     key(&mut app, KeyCode::Esc);
-    assert!(app.export_modal.active, "Esc returns to the form");
+    assert!(
+        matches!(app.overlay, Overlay::Export { .. }),
+        "Esc returns to the form"
+    );
     assert_eq!(app.export_modal.path_input.value(), typed);
 
     // Esc from the form itself discards it.
     key(&mut app, KeyCode::Esc);
-    assert!(!app.export_modal.active);
+    assert!(!matches!(app.overlay, Overlay::Export { .. }));
     assert!(app.at_table());
 }
 
@@ -8734,12 +8749,15 @@ fn test_a_failed_export_reopens_the_form_as_it_was() {
     app.export_modal.sync_format_to_path();
     app.export_modal.csv_include_header = false;
     let export = press(&mut app, KeyCode::Enter).expect("the export starts");
-    assert!(!app.export_modal.active, "out of the way while it writes");
+    assert!(
+        !matches!(app.overlay, Overlay::Export { .. }),
+        "out of the way while it writes"
+    );
     run_to_idle(&mut app, &rx, &tx, export);
 
     assert_eq!(app.error_message(), None, "no modal");
-    assert!(app.export_modal.active);
-    assert_eq!(app.overlay, datui::Overlay::Export);
+    assert!(matches!(app.overlay, Overlay::Export { .. }));
+    assert!(matches!(app.overlay, datui::Overlay::Export { .. }));
     assert_eq!(
         app.export_modal.path_input.value(),
         target.display().to_string()
@@ -8765,7 +8783,7 @@ fn test_a_failed_export_reopens_the_form_as_it_was() {
     let export = press(&mut app, KeyCode::Enter).expect("the export starts again");
     run_to_idle(&mut app, &rx, &tx, export);
     assert!(target.exists());
-    assert!(!app.export_modal.active);
+    assert!(!matches!(app.overlay, Overlay::Export { .. }));
     assert!(
         app.flash_message()
             .is_some_and(|m| m.starts_with("Exported to "))
@@ -18893,7 +18911,7 @@ fn test_export_format_follows_typed_extension() {
     let (mut app, _rx, _tx) = open_query_filter_fixture("export_ext_follows.csv");
 
     press(&mut app, KeyCode::Char('e'));
-    assert!(app.export_modal.active);
+    assert!(matches!(app.overlay, Overlay::Export { .. }));
     app.export_modal.selected_format = ExportFormat::Parquet;
 
     let out = common::fixture_dir().join("export_ext_follows_out.csv");
@@ -18938,7 +18956,7 @@ fn test_export_enter_applies_from_any_row() {
     let (mut app, _rx, _tx) = open_query_filter_fixture("export_enter_anywhere.csv");
 
     press(&mut app, KeyCode::Char('e'));
-    assert!(app.export_modal.active);
+    assert!(matches!(app.overlay, Overlay::Export { .. }));
     let out = common::fixture_dir().join("export_enter_anywhere_out.csv");
     for ch in out.to_str().unwrap().chars() {
         press(&mut app, KeyCode::Char(ch));
@@ -18966,7 +18984,10 @@ fn test_export_enter_applies_from_any_row() {
         }
         _ => panic!("Enter on a checkbox builds the export"),
     }
-    assert!(!app.export_modal.active, "and the dialog is gone");
+    assert!(
+        !matches!(app.overlay, Overlay::Export { .. }),
+        "and the dialog is gone"
+    );
 }
 
 /// Every dialog takes the same keys (`datui::form`): ↓ / ↑ move between fields from
@@ -19008,7 +19029,7 @@ fn every_dialog_moves_between_fields_with_the_arrows_on_open() {
     press(&mut app, KeyCode::Char(' '));
     assert!(!app.export_modal.csv_include_header, "Space toggles");
     press(&mut app, KeyCode::Esc);
-    assert!(!app.export_modal.active);
+    assert!(!matches!(app.overlay, Overlay::Export { .. }));
 
     // Copy opens on the scope; Space takes the next, ↓ the format.
     press(&mut app, KeyCode::Char('y'));
@@ -23221,7 +23242,7 @@ fn test_value_counts_copy_and_export() {
     let out = tempfile::tempdir().unwrap();
     let csv = out.path().join("counts.csv");
     press_and_send(&mut app, &tx, KeyCode::Char('e'));
-    assert_eq!(app.overlay, Overlay::Export);
+    assert!(matches!(app.overlay, Overlay::Export { .. }));
     let screen = counts_screen(&mut app, 80, 24);
     assert!(
         screen.contains("Value Counts"),
@@ -25095,7 +25116,7 @@ fn test_a_sniffed_file_copies_and_exports_as_the_format_read() {
         KeyCode::Char('e'),
         KeyModifiers::NONE,
     )));
-    assert!(app.export_modal.active);
+    assert!(matches!(app.overlay, Overlay::Export { .. }));
     assert_eq!(
         app.export_modal.selected_format,
         datui::export_modal::ExportFormat::Parquet
@@ -25815,7 +25836,7 @@ fn retype_from_schema(app: &mut App, column: &str) {
         app.event(&key(KeyCode::Down));
     }
     app.event(&key(KeyCode::Enter));
-    assert_eq!(app.overlay, datui::Overlay::Retype);
+    assert!(matches!(app.overlay, datui::Overlay::Retype { .. }));
 }
 
 fn summaries(app: &App) -> Vec<String> {
@@ -26014,7 +26035,7 @@ fn combine_into_datetime_matches_the_specs_column() {
     app.open_context_menu(ratatui::layout::Position { x: 2, y: 2 });
     app.event(&key(KeyCode::Up));
     app.event(&key(KeyCode::Enter));
-    assert_eq!(app.overlay, datui::Overlay::Combine);
+    assert!(matches!(app.overlay, datui::Overlay::Combine { .. }));
     // Date, Time, then the UTC offset: Space picks it.
     app.event(&key(KeyCode::Tab));
     app.event(&key(KeyCode::Tab));

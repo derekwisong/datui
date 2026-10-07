@@ -454,7 +454,7 @@ fn the_export_modal_takes_a_path() {
     let mut h = Harness::with_data();
 
     h.press(KeyCode::Char('e'));
-    assert_eq!(h.app.overlay, Overlay::Export);
+    assert!(matches!(h.app.overlay, Overlay::Export { .. }));
 
     // The modal suggests a filename; replace it with one of our own.
     let suggested = h.app.export_modal.path_input.value().to_string();

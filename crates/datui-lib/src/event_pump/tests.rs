@@ -482,11 +482,14 @@ fn a_dialog_s_footer_chips_press_their_keys() {
     p.send(AppEvent::Terminal(Event::Key(plain(KeyCode::Char('e')))))
         .unwrap();
     settle(&mut p);
-    assert!(p.app.export_modal.active);
+    assert!(matches!(p.app.overlay, Overlay::Export { .. }));
     let cancel = on_screen(&mut p.app, "Cancel");
     assert!(p.terminal_mouse(click(cancel)).unwrap());
     settle(&mut p);
-    assert!(!p.app.export_modal.active, "Esc Cancel closed the form");
+    assert!(
+        !matches!(p.app.overlay, Overlay::Export { .. }),
+        "Esc Cancel closed the form"
+    );
 
     // A question: its Cancel chip answers it; a click beside it does nothing.
     p.app.confirmation_modal.show(
@@ -734,7 +737,7 @@ fn an_export_whose_worker_dies_ends_and_the_next_one_writes() {
     }
     let reason = p.app.export_modal.path_error.clone().unwrap_or_default();
     assert!(reason.contains("worker died"), "{reason}");
-    assert!(p.app.export_modal.active);
+    assert!(matches!(p.app.overlay, Overlay::Export { .. }));
     assert!(!p.app.error_modal.active);
     assert!(!p.app.is_busy());
     assert!(p.app.status_message.is_none());
@@ -746,7 +749,7 @@ fn an_export_whose_worker_dies_ends_and_the_next_one_writes() {
     );
 
     p.terminal_key(plain(KeyCode::Esc)).unwrap();
-    assert!(!p.app.export_modal.active);
+    assert!(!matches!(p.app.overlay, Overlay::Export { .. }));
     p.send(AppEvent::Export(csv_export(&out))).unwrap();
     settle(&mut p);
     assert!(!p.app.error_modal.active, "{}", p.app.error_modal.message);
@@ -1737,14 +1740,15 @@ fn a_prompt_a_replayed_key_opens_keeps_its_answer_keys() {
     std::fs::write(&path, "old").expect("seed an existing file");
 
     // Stage the export modal on an existing path, focused on the path field.
-    p.app.export_modal.active = true;
     p.app.export_modal.selected_format = ExportFormat::Csv;
     p.app.export_modal.focus = ExportFocus::PathInput;
     p.app
         .export_modal
         .path_input
         .set_value(path.display().to_string());
-    p.app.overlay = Overlay::Export;
+    p.app.overlay = Overlay::Export {
+        returns_to: Box::default(),
+    };
 
     // Keys typed while busy in Export mode are all held (not a plain table view).
     p.app.busy = true;
@@ -2801,7 +2805,7 @@ fn a_click_focuses_a_form_row_and_acts_on_it() {
     use crate::export_modal::{ExportFocus, ExportFormat};
     let (mut p, _dir) = loaded_pump();
     p.terminal_key(plain(KeyCode::Char('e'))).unwrap();
-    assert_eq!(p.app.overlay, Overlay::Export);
+    assert!(matches!(p.app.overlay, Overlay::Export { .. }));
     assert_eq!(p.app.export_modal.selected_format, ExportFormat::Csv);
     let header = p.app.export_modal.csv_include_header;
 
@@ -2828,7 +2832,10 @@ fn a_click_focuses_a_form_row_and_acts_on_it() {
     let at = on_screen(&mut p.app, "Parquet");
     p.terminal_mouse(click(at)).unwrap();
     assert_eq!(p.app.export_modal.selected_format, ExportFormat::Parquet);
-    assert_eq!(p.app.overlay, Overlay::Export, "still open");
+    assert!(
+        matches!(p.app.overlay, Overlay::Export { .. }),
+        "still open"
+    );
 }
 
 /// A click on a tab switches to it: the Sort & Filter sidebar's, through its tab
@@ -2908,7 +2915,7 @@ fn a_click_outside_a_dialog_does_nothing() {
     assert!(!p.terminal_mouse(click(alan)).unwrap());
     assert_eq!(p.app.export_modal.focus, focus);
     assert_eq!(p.app.export_modal.csv_include_header, header);
-    assert_eq!(p.app.overlay, Overlay::Export);
+    assert!(matches!(p.app.overlay, Overlay::Export { .. }));
 }
 
 /// A header dragged over another column moves there on release, as `L` would,

@@ -150,7 +150,6 @@ pub const COMPRESSION_OPTIONS: [Option<CompressionFormat>; 5] = [
 ];
 
 pub struct ExportModal {
-    pub active: bool,
     pub focus: ExportFocus,
     pub selected_format: ExportFormat,
     pub path_input: TextInput,
@@ -187,7 +186,6 @@ impl ExportModal {
         theme: &crate::config::Theme,
         file_delimiter: Option<u8>,
     ) {
-        self.active = true;
         self.focus = ExportFocus::PathInput;
         self.history_limit = history_limit;
         if let Some(format) = default_format {
@@ -218,20 +216,9 @@ impl ExportModal {
     }
 
     pub fn close(&mut self) {
-        self.active = false;
         self.focus = ExportFocus::FormatSelector;
         self.path_input.clear();
         self.path_error = None;
-    }
-
-    /// Hide behind a child confirmation without discarding the form; `resume`
-    /// brings it back exactly as typed. `close` is the discard.
-    pub fn suspend(&mut self) {
-        self.active = false;
-    }
-
-    pub fn resume(&mut self) {
-        self.active = true;
     }
 
     /// Follow the typed path's extension with the format picker, so `out.csv` never
@@ -391,7 +378,6 @@ impl crate::form::Form for ExportModal {
 impl Default for ExportModal {
     fn default() -> Self {
         Self {
-            active: false,
             focus: ExportFocus::FormatSelector,
             selected_format: ExportFormat::Csv,
             path_input: TextInput::new(),

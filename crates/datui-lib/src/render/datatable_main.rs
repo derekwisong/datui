@@ -188,7 +188,7 @@ pub fn render(
         pivot_melt::render(main_area, buf, &mut app.pivot_melt_modal, ctx);
     }
 
-    if app.export_modal.active {
+    if matches!(app.overlay, crate::Overlay::Export { .. }) {
         // A commitment, so a compact centered dialog that never scales with
         // the terminal.
         let modal_area = export::dialog_area(area);
@@ -225,13 +225,13 @@ pub fn render(
         );
     }
 
-    if app.overlay == crate::Overlay::Retype
+    if matches!(app.overlay, crate::Overlay::Retype { .. })
         && let Some(modal) = &app.column_forms.retype
     {
         crate::widgets::retype::render_retype(area, buf, modal, ctx);
     }
 
-    if app.overlay == crate::Overlay::Combine
+    if matches!(app.overlay, crate::Overlay::Combine { .. })
         && let Some(modal) = &app.column_forms.combine
     {
         crate::widgets::retype::render_combine(area, buf, modal, ctx);

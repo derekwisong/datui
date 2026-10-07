@@ -28,22 +28,12 @@ impl App {
     /// Whether the Value Counts screen is up: on its own, or under the export
     /// dialog writing its counts.
     pub(crate) fn value_counts_shown(&self) -> bool {
-        self.overlay == Overlay::ValueCounts
-            || (self.overlay == Overlay::Export && self.export_counts.is_some())
+        self.overlay.shows(&Overlay::ValueCounts)
     }
 
     /// Whether a count for the Value Counts screen is being read while it is up.
     pub(crate) fn value_counts_computing(&self) -> bool {
         self.overlay == Overlay::ValueCounts && self.value_counts.computing.is_some()
-    }
-
-    /// Where the export dialog goes back to: Value Counts when it is writing them.
-    pub(crate) fn export_returns_to(&self) -> Overlay {
-        if self.export_counts.is_some() {
-            Overlay::ValueCounts
-        } else {
-            Overlay::None
-        }
     }
 
     /// Count the column on the Value Counts screen, unless its counts are already
@@ -287,6 +277,6 @@ impl App {
             .iter()
             .any(|c| crate::avro_types::renames(c.name(), c.dtype()));
         self.export_counts = Some(table);
-        self.open_overlay(Overlay::Export);
+        self.open_over(|returns_to| Overlay::Export { returns_to });
     }
 }

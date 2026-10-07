@@ -855,7 +855,7 @@ fn value_counts_control_keys(app: &crate::App) -> Vec<Hint> {
     let key = |keys| registry_hint(Context::ValueCounts, keys);
     let say = |keys, label| registry_hint_as(Context::ValueCounts, None, keys, label);
     // The export dialog carries its own footer.
-    if app.overlay == crate::Overlay::Export {
+    if matches!(app.overlay, crate::Overlay::Export { .. }) {
         return vec![
             registry_hint(Context::Global, "Ctrl+Q"),
             registry_hint_in(Context::Export, Some("Form"), "Esc"),

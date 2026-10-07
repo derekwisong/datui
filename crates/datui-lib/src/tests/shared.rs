@@ -12,7 +12,7 @@ use fs2::FileExt;
 use sha2::{Digest, Sha256};
 
 /// What a contributor runs to set up the fixtures' Python environment.
-const SETUP: &str = "./scripts/dev/setup-test-data.sh";
+const SETUP: &str = "scripts/dev/test.sh setup (on Windows: python scripts\\setup_dev.py)";
 
 /// The repository: the nearest directory above the crate under test that holds the
 /// fixture generator.

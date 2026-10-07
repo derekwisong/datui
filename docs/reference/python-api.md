@@ -41,19 +41,20 @@ variables or from the config's one Azure connection.
 `polars.LazyFrame`: the applied query, filters, sort, drill-down, reshape and
 column order, over every matching row. It is a plan, not the rows datui
 showed: collecting it runs the plan again with Python's Polars, rereading
-files that must still exist. A Polars that cannot read the plans this wheel
-writes, such as 2.0, gets the view's rows instead, collected at quit, with a
-`UserWarning`.
+files that must still exist. When your Polars cannot read the plans this
+wheel writes (2.0 cannot), or the view has no plan form (a SQLite table, a text
+or log file), the result is the view's rows instead, collected at quit, with a
+`UserWarning` saying why.
 
 ### Errors
 
 | Raised | When |
 |---|---|
 | `TypeError` | `data` is not a frame, path or list of paths; a keyword is not an option |
-| `ValueError` | An empty list of paths; an option value the flag or key would refuse (`format="cvs"`, `max_buffered="512"`, an unknown `config` key); a LazyFrame plan this wheel's Polars cannot read, naming the Polars release it is built for |
+| `ValueError` | An empty list of paths; an option value the flag or key would refuse (`format="cvs"`, `max_buffered="512"`, an unknown `config` key); a LazyFrame plan this wheel's Polars cannot read, naming the Polars release it is built for; a DataFrame column datui cannot read (`pl.Object`, `Float16`), naming it |
 | `FileNotFoundError` | A path that does not exist. A glob is not checked |
 | `PermissionError` | A path that cannot be read |
-| `RuntimeError` | No terminal (a notebook, piped output); the terminal UI failing; a captured view over a file datui downloaded or decompressed into a temporary file, which is removed at quit; a captured view your Polars can read neither as a plan nor as rows |
+| `RuntimeError` | No terminal (a notebook, piped output); the terminal UI failing; a captured view over a file datui downloaded or decompressed into a temporary file, which is removed at quit; a captured view that comes back neither as a plan nor as rows; on the paired Polars release, a captured plan it cannot read |
 
 ## datui.DatuiOptions
 

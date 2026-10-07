@@ -205,16 +205,21 @@ fn run_input(input: RunInput, capture: bool) -> PyResult<Option<Captured>> {
                 ErrorKindForPython::Other => PyRuntimeError::new_err(msg),
             })
         }
-        Err(panic_payload) => {
-            let msg: String = if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                s.to_string()
-            } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-                s.clone()
-            } else {
-                "datui panicked".to_string()
-            };
-            Err(PyRuntimeError::new_err(format!("datui panicked: {}", msg)))
-        }
+        Err(panic_payload) => Err(PyRuntimeError::new_err(format!(
+            "datui panicked: {}",
+            panic_text(panic_payload.as_ref())
+        ))),
+    }
+}
+
+/// What a caught panic said.
+fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        s.to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "datui panicked".to_string()
     }
 }
 
@@ -256,9 +261,18 @@ impl Captured {
     ) -> PyResult<Bound<'py, PyCapsule>> {
         let _ = requested_schema;
         let lf = self.lf.clone();
-        let df = py.detach(|| lf.collect()).map_err(|e| {
-            PyRuntimeError::new_err(format!("datui could not collect the captured view: {}", e))
-        })?;
+        // A panic would otherwise reach Python as a PanicException, past `except Exception`.
+        let df = py
+            .detach(|| panic::catch_unwind(panic::AssertUnwindSafe(|| lf.collect())))
+            .map_err(|p| {
+                PyRuntimeError::new_err(format!(
+                    "datui panicked collecting the captured view: {}",
+                    panic_text(p.as_ref())
+                ))
+            })?
+            .map_err(|e| {
+                PyRuntimeError::new_err(format!("datui could not collect the captured view: {}", e))
+            })?;
         PyCapsule::new_with_value(py, export_stream(df), ARROW_STREAM)
     }
 }
@@ -471,7 +485,13 @@ fn view_from_arrow(
     options: Option<Bound<'_, DatuiOptionsPy>>,
     capture: bool,
 ) -> PyResult<Option<Captured>> {
-    let df = import_stream(data)?;
+    let df =
+        panic::catch_unwind(panic::AssertUnwindSafe(|| import_stream(data))).map_err(|p| {
+            PyValueError::new_err(format!(
+                "datui cannot read this frame: {}",
+                panic_text(p.as_ref())
+            ))
+        })??;
     let args = datui_options_to_args(options.as_ref())?;
     run_tui(df.lazy(), args, capture)
 }

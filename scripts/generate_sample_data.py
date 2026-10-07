@@ -1842,10 +1842,19 @@ def main():
         default=DEFAULT_OUTPUT_DIR,
         help="directory to write (default: tests/sample-data)",
     )
+    parser.add_argument(
+        "--if-stale",
+        action="store_true",
+        help="do nothing when the output's stamp matches these inputs",
+    )
     args = parser.parse_args()
 
     global OUTPUT_DIR
     out = args.out.resolve()
+    stamp = out / STAMP
+    if args.if_stale and stamp.is_file() and stamp.read_text().strip() == inputs_digest():
+        print(f"{out} is up to date.")
+        return
     out.mkdir(parents=True, exist_ok=True)
     # A sibling, so the renames into `out` stay on one filesystem.
     scratch = out.parent / f".{out.name}.tmp-{os.getpid()}"

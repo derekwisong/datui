@@ -155,6 +155,10 @@ shows those of `datui-COMMAND.1`). Every command page needs one. Files a command
 
 ### Run the checks
 
+`./scripts/dev/test.sh docs` runs what CI's Python job checks without a
+binary: `lint_docs.py`, `doc_examples.py --lint`, `lint_manpages.py` and the
+docs and demo scripts' unit tests. Each, and the rest:
+
 | Command | Checks |
 |---|---|
 | `.venv/bin/python scripts/docs/doc_examples.py --lint` | Every block's label, placeholders and flags. Needs no binary |

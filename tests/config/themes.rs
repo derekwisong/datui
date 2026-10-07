@@ -2,7 +2,7 @@ use datui::config::{AppConfig, Theme};
 use datui::{App, AppEvent};
 use std::sync::mpsc::channel;
 
-mod common;
+use crate::common;
 
 #[test]
 fn test_app_accepts_theme() {

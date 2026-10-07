@@ -114,7 +114,7 @@ All packages include the MIT license as required:
 - **aur**: `scripts/packaging/PKGBUILD.in` installs the tarball's `LICENSE` at `/usr/share/licenses/datui-bin/LICENSE`.
 - **desktop entry**: `scripts/packaging/datui.desktop` installs to
   `/usr/share/applications/datui.desktop` in all three package formats, putting
-  datui in desktop launchers. `tests/desktop_entry_test.rs` validates the file and
+  datui in desktop launchers. `tests/repo/desktop_entry.rs` validates the file and
   checks it is wired into every packager.
 - **Python wheel**: `python/pyproject.toml` uses `license = { file = "LICENSE" }` and `sdist-include = ["LICENSE"]`. CI and release workflows copy the root `LICENSE` into `python/LICENSE`.
 
@@ -148,7 +148,7 @@ Write notes before tagging: `publish-packages.yml` copies the release body into
 the winget manifest. Editing the GitHub release afterward does not update winget.
 
 To write notes for a release, run `python scripts/bump_version.py notes` and
-commit the file with the release. `tests/release_notes_test.rs` checks the
+commit the file with the release. `tests/repo/release_notes.rs` checks the
 wiring in CI, which runs on the release commit before the tag is pushed, and the
 winget job refuses to run komac against an empty release body. See
 [the release-notes guide](https://github.com/derekwisong/datui/blob/main/release-notes/README.md).

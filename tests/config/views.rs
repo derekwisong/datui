@@ -1,8 +1,7 @@
 //! The Views surface, end to end: save form, list annotations, apply, delete.
 //!
-//! These live in their own binary because saving a view writes into the
-//! process's config dir, which the `integration_test.rs` tests that assert
-//! "no view matches" read.
+//! Kept out of `integration_test` because saving a view writes into the
+//! process's config dir, which its tests that assert "no view matches" read.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use datui::view::MatchReason;
@@ -13,9 +12,9 @@ use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 use std::fs::File;
 use std::sync::mpsc;
 
-mod common;
+use crate::common;
 
-use common::{drain_events, pump_open_until_loaded};
+use crate::common::{drain_events, pump_open_until_loaded};
 
 fn press(app: &mut App, code: KeyCode) {
     app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));

@@ -168,36 +168,6 @@ fn test_parse_special_modifiers() {
 }
 
 #[test]
-#[ignore] // This test modifies global environment and may interfere with parallel tests
-fn test_no_color_environment() {
-    // Save original NO_COLOR state
-    let original = std::env::var("NO_COLOR").ok();
-
-    // Set NO_COLOR
-    // SAFETY: test-only. Tests run on parallel threads, so this can race another test
-    // reading the environment; accepted in tests and never done outside them.
-    unsafe { std::env::set_var("NO_COLOR", "1") };
-
-    // Create parser AFTER setting NO_COLOR
-    let parser = ColorParser::new();
-
-    // All colors should return Reset when NO_COLOR is set
-    assert_eq!(parser.parse("red").unwrap(), Color::Reset);
-    assert_eq!(parser.parse("#ff0000").unwrap(), Color::Reset);
-    assert_eq!(parser.parse("cyan").unwrap(), Color::Reset);
-
-    // Restore original NO_COLOR state
-    match original {
-        // SAFETY: test-only. Tests run on parallel threads, so this can race another test
-        // reading the environment; accepted in tests and never done outside them.
-        Some(val) => unsafe { std::env::set_var("NO_COLOR", val) },
-        // SAFETY: test-only. Tests run on parallel threads, so this can race another test
-        // reading the environment; accepted in tests and never done outside them.
-        None => unsafe { std::env::remove_var("NO_COLOR") },
-    }
-}
-
-#[test]
 fn test_rgb_to_256_color_grayscale() {
     use datui::config::rgb_to_256_color;
 

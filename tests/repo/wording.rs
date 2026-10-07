@@ -469,7 +469,7 @@ fn retired_words_stay_out_of_what_users_read() {
     assert!(
         found.is_empty(),
         "retired wording; see docs/reference/glossary.md, or add a real use to ALLOWED in \
-         tests/wording_test.rs:\n{}",
+         tests/repo/wording.rs:\n{}",
         found.join("\n")
     );
     let stale: Vec<_> = ALLOWED

@@ -2,8 +2,6 @@ use clap::Parser;
 use datui::config::AppConfig;
 use datui::{Args, OpenOptions, ParseStringsTarget};
 
-mod common;
-
 fn args(flags: &[&str]) -> Args {
     Args::try_parse_from(std::iter::once("datui").chain(flags.iter().copied())).expect("parses")
 }

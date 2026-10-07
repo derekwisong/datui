@@ -61,7 +61,7 @@ broad check merely because another small scoped check finished.
 Select multiple affected targets explicitly when needed:
 
 ```bash,repo
-cargo test --locked -p datui --test data --test view_store_test
+cargo test --locked -p datui --test data --test config
 ```
 
 For changes to the binary itself, also run `cargo check --locked -p datui` and
@@ -172,13 +172,13 @@ Run it after adding tests that build an `App` or touch the cache or config.
 | `tests/quality_spill_test.rs` | What a full Data Quality scan leaves on disk. Its own process: it sets Polars' spill directory before Polars reads it |
 | `tests/quality_bench_test.rs` | Data Quality's cost: time, requests, bytes, peak memory and spill. Ignored; `scripts/dev/quality_bench.py BEFORE_REF` runs it here and at an earlier commit |
 | `tests/data/` | One executable, a module each: `statistics`, `distribution` (analysis), `reshape` (pivot and melt), `excel` |
-| `tests/view_store_test.rs` | Saved views on disk and their scoring |
-| `tests/home_test.rs`, `tests/search_test.rs`, `tests/locality_test.rs` | Home screen, recursive search, filesystem detection |
-| `tests/config_test.rs`, `tests/config_integration_test.rs`, `tests/theme_application_test.rs` | Configuration and themes |
+| `tests/home_test.rs` | Home screen |
+| `tests/home/` | `search` (recursive search), `locality` (filesystem detection) |
+| `tests/config/` | `settings`, `flags`, `themes`, `colors`, `indexed_colors`, `views` (the Views surface), `view_store` (saved views on disk and their scoring). Tests here only remove `NO_COLOR`; a test that needs it set gives the parser it |
 | `tests/startup_test.rs` | The binary in a pseudo-terminal (Linux): a silent terminal, stalled settings, keys typed before the app exists, startup errors |
 | `tests/fuzz_corpus_test.rs` | Every committed fuzz corpus input through its target's body in `fuzz/src/`; see [Fuzzing](fuzzing.md) |
 | `tests/cloud_live_test.rs` | Against a real object store. Ignored by default; run with `DATUI_LIVE_GCS=1` or `DATUI_LIVE_S3=<endpoint>` and `--ignored` |
-| `tests/wording_test.rs` | Retired words ([glossary](../reference/glossary.md)) and "opens anything" claims, in the UI strings, the key registry, docs, `--help` and the manpages. A real use goes in its `ALLOWED` list |
+| `tests/repo/` | `desktop_entry`, `release_notes`, and `wording`: retired words ([glossary](../reference/glossary.md)) and "opens anything" claims, in the UI strings, the key registry, docs, `--help` and the manpages. A real use goes in its `ALLOWED` list |
 | `crates/datui-cli/src/docgen.rs` | `the_generated_docs_are_current`: the generated pages match the code ([Build documentation](documentation.md#generated-pages)) |
 | `crates/datui-lib/src/tests/doc_queries_tests.rs` | The docs' `q` blocks parse, and their `sql` and `q` blocks run on the datasets they name |
 | `tests/common/` | Shared helpers |

@@ -44,8 +44,8 @@ executables. `scripts/dev/test.sh --help` lists the scoped commands;
 |---|---|
 | Library implementation | `scripts/dev/test.sh check`, then `scripts/dev/test.sh unit MODULE::` |
 | App/key/background behavior | `scripts/dev/test.sh integration integration_test FILTER` |
-| Home/search | `scripts/dev/test.sh integration home_test FILTER` or `integration search_test FILTER` |
-| Config/theme | `scripts/dev/test.sh integration config_test FILTER`, plus the relevant theme/App tests |
+| Home/search | `scripts/dev/test.sh integration home_test FILTER` or `integration home search::` |
+| Config/theme/views | `scripts/dev/test.sh integration config settings::` (or `colors::`, `themes::`, `views::`), plus the relevant App tests |
 | CLI definitions | `scripts/dev/test.sh check datui-cli`, then `scripts/dev/test.sh cli` |
 | A specific integration target | `scripts/dev/test.sh integration TARGET FILTER`: a `tests/*.rs` file without `.rs`, or a directory with a `main.rs` (`data`) |
 | Formatting/lint before submission | `scripts/dev/test.sh preflight` |
@@ -230,7 +230,7 @@ work. The short version:
 - Do not downgrade a dependency without being asked. Do not add one for
   something the tree already has.
 - American English everywhere: code, UI strings, docs, notes.
-- One word per concept: `docs/reference/glossary.md`. `tests/wording_test.rs`
+- One word per concept: `docs/reference/glossary.md`. `tests/repo/wording.rs`
   fails on a retired word in UI strings, the key registry, docs or the manpage.
 - Docs: lead with the command or the key, then a table. No essays. Verify every
   claim against the code. Never link `plans/` or other unpublished paths.

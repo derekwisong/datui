@@ -80,5 +80,5 @@ color in a widget. Name it for its purpose, such as `modal_border_active`.
 ```bash,repo
 scripts/dev/test.sh cli
 scripts/dev/test.sh unit config::
-scripts/dev/test.sh integration config_test
+scripts/dev/test.sh integration config
 ```

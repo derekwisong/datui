@@ -3702,6 +3702,21 @@ mod tests {
         }
     }
 
+    /// Under `NO_COLOR` every color, named or hex, is no color. Set on the parser
+    /// rather than in the environment, which other tests read.
+    #[test]
+    fn no_color_parses_every_color_as_reset() {
+        use ratatui::style::Color;
+        let parser = super::ColorParser {
+            supports_true_color: true,
+            supports_256: true,
+            no_color: true,
+        };
+        for name in ["red", "#ff0000", "cyan", "indexed(240)"] {
+            assert_eq!(parser.parse(name).unwrap(), Color::Reset, "{name}");
+        }
+    }
+
     /// Windows Terminal and conhost set no `TERM`; with virtual terminal processing
     /// on, they take 24-bit color. A legacy console, or a terminal that sets `TERM`
     /// for `supports_color` to read, is left to it.

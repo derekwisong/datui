@@ -1,7 +1,7 @@
-use crate::chart_export::ChartExportFormat;
-use crate::chart_jobs::ChartCache;
-use crate::chart_modal::{Aggregate, ChartFocus, ChartModal, Mark};
-use crate::chart_plot::{LinesData, PlotData};
+use crate::chart::chart_export::ChartExportFormat;
+use crate::chart::chart_jobs::ChartCache;
+use crate::chart::chart_modal::{Aggregate, ChartFocus, ChartModal, Mark};
+use crate::chart::chart_plot::{LinesData, PlotData};
 use crate::*;
 use std::sync::mpsc;
 
@@ -20,7 +20,7 @@ fn histogram_request(column: &str) -> ChartRequest {
 }
 
 fn prepared_histogram(column: &str) -> PlotData {
-    PlotData::Histogram(chart_data::HistogramData {
+    PlotData::Histogram(chart::chart_data::HistogramData {
         column: column.to_string(),
         bins: Vec::new(),
         groups: Vec::new(),
@@ -29,7 +29,7 @@ fn prepared_histogram(column: &str) -> PlotData {
         x_min: 0.0,
         x_max: 1.0,
         max_count: 0.0,
-        rows: chart_data::RowsRead::default(),
+        rows: chart::chart_data::RowsRead::default(),
         clipped: None,
     })
 }
@@ -88,7 +88,7 @@ fn chart_request(path: &str) -> ChartExportRequest {
     ChartExportRequest {
         path: PathBuf::from(path),
         format: ChartExportFormat::Png,
-        options: chart_export::ExportOptions::default(),
+        options: chart::chart_export::ExportOptions::default(),
         overwrite: Overwrite::Forbid,
         recipe: false,
     }
@@ -306,7 +306,7 @@ fn moving_on_cancels_the_preparation_in_flight() {
     app.chart.modal.spec.encoding.y.aggregate = Aggregate::Count;
     let count = ChartRequest::from_modal(&app.chart.modal).unwrap();
     let _counting = start_prep(&mut app, &count, None);
-    app.chart.modal.bar_order = chart_data::BarOrder::Label;
+    app.chart.modal.bar_order = chart::chart_data::BarOrder::Label;
     app.chart.modal.row_limit = Some(100);
     app.ensure_chart_data();
     assert!(!cancelled(&app), "the same count");
@@ -356,12 +356,12 @@ fn xy_request(x: &str) -> ChartRequest {
 
 fn prepared_xy() -> PlotData {
     PlotData::Lines(LinesData::new(
-        chart_data::GroupedSeries {
+        chart::chart_data::GroupedSeries {
             names: vec!["y".to_string()],
             series: vec![vec![(0.0, 1.0)]],
             breaks: vec![Vec::new()],
-            x_axis_kind: chart_data::XAxisTemporalKind::Numeric,
-            rows: chart_data::RowsRead::default(),
+            x_axis_kind: chart::chart_data::XAxisTemporalKind::Numeric,
+            rows: chart::chart_data::RowsRead::default(),
             other: false,
         },
         None,
@@ -770,7 +770,10 @@ fn a_bar_chart_draws_a_grouped_string_column() {
 
     app.chart.modal.focus = ChartFocus::Order;
     key(&mut app, KeyCode::Right);
-    assert_eq!(app.chart.modal.bar_order, chart_data::BarOrder::Label);
+    assert_eq!(
+        app.chart.modal.bar_order,
+        chart::chart_data::BarOrder::Label
+    );
     pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
     assert_eq!(
         starts(&rows(&mut app)),

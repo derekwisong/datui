@@ -10,7 +10,7 @@
 //! The panel is one form of the shared focus model (`crate::form`); column and
 //! value rows are edited through the one shared Picker.
 
-use crate::chart_data::{BarOrder, ValueRange};
+use crate::chart::chart_data::{BarOrder, ValueRange};
 use crate::widgets::ui::PickerState;
 use polars::prelude::DataType;
 use serde::{Deserialize, Serialize};

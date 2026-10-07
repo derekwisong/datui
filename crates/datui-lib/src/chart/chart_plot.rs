@@ -6,11 +6,11 @@ use std::borrow::Cow;
 
 use polars::prelude::Schema;
 
-use crate::chart_data::{
+use crate::chart::chart_data::{
     self, BarData, BoxPlotData, ChartXRangeResult, HeatmapData, HistogramData, KdeData, RowsRead,
     XAxisTemporalKind,
 };
-use crate::chart_modal::{Aggregate, ChartModal, ChartSpec, Mark};
+use crate::chart::chart_modal::{Aggregate, ChartModal, ChartSpec, Mark};
 use crate::numfmt;
 use crate::widgets::axis_numbers::AxisNumbers;
 

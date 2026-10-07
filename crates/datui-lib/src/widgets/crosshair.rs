@@ -10,7 +10,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::chart_data::{XAxisTemporalKind, x_datetime, x_time};
+use crate::chart::chart_data::{XAxisTemporalKind, x_datetime, x_time};
 use crate::glyphs::Glyphs;
 use crate::widgets::axes::{Track, cut};
 use crate::widgets::axis_numbers::AxisNumbers;

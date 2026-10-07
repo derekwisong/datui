@@ -183,13 +183,13 @@ pub struct ViewSettings {
 pub struct SavedChart {
     /// The type, X, Y with its aggregate, and Color, as Vega-Lite names them.
     #[serde(flatten)]
-    pub spec: crate::chart_modal::ChartSpec,
+    pub spec: crate::chart::chart_modal::ChartSpec,
     pub histogram_bins: usize,
     pub heatmap_bins: usize,
     /// The KDE's bandwidth, as a factor of its rule of thumb.
     pub bandwidth: f64,
-    pub range: crate::chart_data::ValueRange,
-    pub bar_order: crate::chart_data::BarOrder,
+    pub range: crate::chart::chart_data::ValueRange,
+    pub bar_order: crate::chart::chart_data::BarOrder,
     /// A histogram's bars as each group's share of its rows.
     pub share: bool,
     pub y_starts_at_zero: bool,
@@ -211,16 +211,16 @@ pub struct SavedChart {
 /// A chart export's settings, as a view keeps them.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedChartExport {
-    pub format: crate::chart_export::ChartExportFormat,
-    pub style: crate::chart_export::ExportStyle,
-    pub size: crate::chart_export::SizePreset,
+    pub format: crate::chart::chart_export::ChartExportFormat,
+    pub style: crate::chart::chart_export::ExportStyle,
+    pub size: crate::chart::chart_export::SizePreset,
     pub width: u32,
     pub height: u32,
     pub dpi: f32,
-    pub legend: crate::chart_export::LegendPlace,
-    pub point_opacity: crate::chart_export::PointOpacity,
-    pub point_size: crate::chart_export::PointSize,
-    pub line_width: crate::chart_export::LineWidth,
+    pub legend: crate::chart::chart_export::LegendPlace,
+    pub point_opacity: crate::chart::chart_export::PointOpacity,
+    pub point_size: crate::chart::chart_export::PointSize,
+    pub line_width: crate::chart::chart_export::LineWidth,
     pub y_from_zero: bool,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub title: String,

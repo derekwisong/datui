@@ -1288,7 +1288,7 @@ fn ctrl_c_in_the_query_bar_quits() {
 /// search, the chart view's open column Picker, and the plain table.
 #[test]
 fn ctrl_c_quits_from_the_sort_and_chart_search_boxes() {
-    use crate::chart_modal::ChartFocus;
+    use crate::chart::chart_modal::ChartFocus;
     use crate::sort_filter_modal::{SortFilterField, SortFilterTab};
 
     let (mut p, _dir) = loaded_pump();
@@ -1307,7 +1307,7 @@ fn ctrl_c_quits_from_the_sort_and_chart_search_boxes() {
     let (mut p2, _d) = loaded_pump();
     p2.app.overlay = Overlay::Chart;
     p2.app.chart.modal.open(
-        crate::chart_modal::ChartColumns {
+        crate::chart::chart_modal::ChartColumns {
             numeric: &["a".to_string(), "b".to_string()],
             ..Default::default()
         },
@@ -3066,7 +3066,7 @@ fn a_key_handled_puts_the_next_click_behind_a_frame() {
 /// Space, so the type steps and a toggle flips.
 #[test]
 fn a_click_on_the_chart_panel_focuses_and_acts() {
-    use crate::chart_modal::ChartFocus;
+    use crate::chart::chart_modal::ChartFocus;
     let (mut p, _dir) = loaded_pump();
     p.terminal_key(plain(KeyCode::Char('c'))).unwrap();
     settle(&mut p);

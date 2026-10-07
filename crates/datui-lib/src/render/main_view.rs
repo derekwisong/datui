@@ -918,7 +918,7 @@ fn chart_hints(app: &crate::App) -> Vec<Hint> {
             .map(|keys| in_group("Crosshair", keys))
             .collect();
     }
-    use crate::chart_modal::ChartFocus;
+    use crate::chart::chart_modal::ChartFocus;
     let focus = modal.focus;
     // A Rows change waits for Enter; Esc puts it back.
     if focus == ChartFocus::LimitRows && modal.rows_pending() {

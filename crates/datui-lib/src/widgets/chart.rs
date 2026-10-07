@@ -9,14 +9,14 @@ use ratatui::{
     widgets::{Chart, Clear, Dataset, GraphType, Paragraph, Widget, Wrap},
 };
 
-use crate::chart_data::{
+use crate::chart::chart_data::{
     BarData, BoxPlotData, HeatmapData, HistogramData, KdeData, XAxisTemporalKind, other_at,
     segments,
 };
-use crate::chart_modal::{
+use crate::chart::chart_modal::{
     Aggregate, ChartFocus, ChartModal, Cumulative, Mark, PickerFor, ShelfUse, TimeUnit,
 };
-use crate::chart_plot::{Axis, Curve, LinesData, Plot, PlotData};
+use crate::chart::chart_plot::{Axis, Curve, LinesData, Plot, PlotData};
 use crate::config::Theme;
 use crate::glyphs::Glyphs;
 use crate::pointer::Hit;
@@ -142,7 +142,7 @@ fn panel_lines(modal: &ChartModal, schema: Option<&Schema>, ctx: &RenderContext)
     // X.
     let x_value = match encoding.x.field.as_deref() {
         Some(x) => vec![column_span(x, schema, ctx)],
-        None if mark == Mark::Box => vec![quiet(crate::chart_modal::NONE_ITEM, ctx)],
+        None if mark == Mark::Box => vec![quiet(crate::chart::chart_modal::NONE_ITEM, ctx)],
         None if mark == Mark::Bar => pick("a category"),
         None => pick("a column"),
     };
@@ -159,14 +159,14 @@ fn panel_lines(modal: &ChartModal, schema: Option<&Schema>, ctx: &RenderContext)
     }
     if mark == Mark::Bar {
         let order = match modal.bar_order {
-            crate::chart_data::BarOrder::Value => format!("by value {}", g.sort_desc),
-            crate::chart_data::BarOrder::Label => format!("by label {}", g.sort_asc),
+            crate::chart::chart_data::BarOrder::Value => format!("by value {}", g.sort_desc),
+            crate::chart::chart_data::BarOrder::Label => format!("by label {}", g.sort_asc),
         };
         lines.push(sub(vec![plain(order, ctx)], Some(ChartFocus::Order), false));
     }
     if mark == Mark::Histogram {
         let mut value = vec![plain(format!("{} bins", modal.hist_bins), ctx)];
-        if modal.value_range != crate::chart_data::ValueRange::All {
+        if modal.value_range != crate::chart::chart_data::ValueRange::All {
             value.push(quiet(
                 format!(" {} {}", g.middot, modal.value_range.label()),
                 ctx,
@@ -241,7 +241,7 @@ fn panel_lines(modal: &ChartModal, schema: Option<&Schema>, ctx: &RenderContext)
         ShelfUse::Dimmed(why) => {
             let value = match encoding.color.field.as_deref() {
                 Some(c) => c.to_string(),
-                None => crate::chart_modal::NONE_ITEM.to_string(),
+                None => crate::chart::chart_modal::NONE_ITEM.to_string(),
             };
             lines.push(row("Color", vec![quiet(value, ctx)], None, true));
             lines.push(sub(vec![quiet(why, ctx)], None, true));
@@ -249,7 +249,7 @@ fn panel_lines(modal: &ChartModal, schema: Option<&Schema>, ctx: &RenderContext)
         ShelfUse::Used => {
             let value = match encoding.color.field.as_deref() {
                 Some(c) => vec![column_span(c, schema, ctx)],
-                None => vec![quiet(crate::chart_modal::NONE_ITEM, ctx)],
+                None => vec![quiet(crate::chart::chart_modal::NONE_ITEM, ctx)],
             };
             lines.push(row("Color", value, Some(ChartFocus::Color), false));
             if encoding.color.field.is_some() {

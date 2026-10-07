@@ -7,13 +7,14 @@ use std::sync::Arc;
 use color_eyre::Result;
 use polars::prelude::{LazyFrame, Schema};
 
-use crate::chart_data::{self, ColorSplit, ValueRange};
-use crate::chart_modal::{Aggregate, ChartModal, ChartSpec, ColorCounts, Mark};
-use crate::chart_plot::{LinesData, PlotContext, PlotData, plot};
+use crate::chart::chart_data::{self, ColorSplit, ValueRange};
+use crate::chart::chart_modal::{Aggregate, ChartModal, ChartSpec, ColorCounts, Mark};
+use crate::chart::chart_plot::{LinesData, PlotContext, PlotData, plot};
 use crate::jobs::{Answer, ChartPrep, Job};
 use crate::output_file::Overwrite;
 use crate::{
-    App, AppEvent, ExportProgress, Overlay, analysis::sampling, chart_export, numfmt, output_file,
+    App, AppEvent, ExportProgress, Overlay, analysis::sampling, chart::chart_export, numfmt,
+    output_file,
 };
 use chart_export::{ChartExportFormat, ChartExportRequest, ExportOptions, Figure};
 
@@ -21,7 +22,7 @@ use chart_export::{ChartExportFormat, ChartExportRequest, ExportOptions, Figure}
 #[derive(Default)]
 pub struct Charts {
     pub modal: ChartModal,
-    pub export_modal: crate::chart_export_modal::ChartExportModal,
+    pub export_modal: crate::chart::chart_export_modal::ChartExportModal,
     pub(crate) cache: ChartCache,
     /// The selection the chart last asked for, and, when it stepped the aggregate of
     /// the one before, until when it waits for the next step before it is prepared.
@@ -866,7 +867,7 @@ impl App {
     /// chart can be drawn again.
     pub(crate) fn chart_notes_of(
         &self,
-        prepared: &crate::chart_jobs::PlotData,
+        prepared: &crate::chart::chart_jobs::PlotData,
         middot: &str,
     ) -> Vec<String> {
         let mut notes = prepared.notes(middot);

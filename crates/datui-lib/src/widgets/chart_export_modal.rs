@@ -1,7 +1,7 @@
 //! Chart export dialog rendering: one Surface, a FormRow per field, the actions in
 //! the footer.
 
-use crate::chart_export_modal::{ChartExportModal, FIELDS};
+use crate::chart::chart_export_modal::{ChartExportModal, FIELDS};
 use crate::render::context::RenderContext;
 use crate::widgets::ui::{FormRow, FormValue, HintBar, Surface};
 use ratatui::layout::Rect;
@@ -102,7 +102,7 @@ pub fn render_chart_export_modal(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chart_export_modal::ExportDefaults;
+    use crate::chart::chart_export_modal::ExportDefaults;
     use ratatui::buffer::Buffer;
 
     fn render_rows(width: u16, height: u16) -> Vec<String> {

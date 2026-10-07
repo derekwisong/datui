@@ -18,15 +18,7 @@ pub mod avro_types;
 mod background;
 pub mod cache;
 pub mod canonical;
-pub mod chart_data;
-pub mod chart_export;
-pub mod chart_export_modal;
-mod chart_jobs;
-mod chart_keys;
-pub mod chart_modal;
-mod chart_pdf;
-pub mod chart_plot;
-mod chart_recipe;
+pub mod chart;
 pub mod cli;
 pub mod clipboard;
 pub mod cloud;
@@ -130,10 +122,10 @@ pub use config::{
 
 use analysis::analysis_modal::{AnalysisModal, AnalysisProgress};
 use background::{CacheWrites, InflightCollect, LenCount, OwedCount};
-use chart_export::ChartExportRequest;
-use chart_export_modal::ChartExportModal;
-use chart_jobs::ChartRequest;
-use chart_modal::ChartColumns;
+use chart::chart_export::ChartExportRequest;
+use chart::chart_export_modal::ChartExportModal;
+use chart::chart_jobs::ChartRequest;
+use chart::chart_modal::ChartColumns;
 
 pub use analysis::quality_memory::{KeptQualitySample, QUALITY_MEMORY_BUDGET, RetainedCopy};
 pub use error_display::{ErrorKindForPython, error_for_python};
@@ -873,7 +865,7 @@ pub struct App {
     /// What Data Quality runs keep within the memory budget.
     quality: analysis::quality_runs::QualityRuns,
     /// The chart view, its export form, and the preparations it keeps or waits on.
-    pub chart: chart_jobs::Charts,
+    pub chart: chart::chart_jobs::Charts,
     pub export_modal: ExportModal,
     pub copy_modal: copy_modal::CopyModal,
     pub inspector_modal: inspector_modal::InspectorModal,
@@ -2739,7 +2731,7 @@ impl App {
                 memory_budget: QUALITY_MEMORY_BUDGET,
                 ..Default::default()
             },
-            chart: chart_jobs::Charts {
+            chart: chart::chart_jobs::Charts {
                 export_modal: chart_export_modal,
                 ..Default::default()
             },
@@ -3610,7 +3602,7 @@ impl App {
                     let category_columns: Vec<String> = state
                         .schema()
                         .iter()
-                        .filter(|(_, dtype)| chart_data::is_category_dtype(dtype))
+                        .filter(|(_, dtype)| chart::chart_data::is_category_dtype(dtype))
                         .map(|(name, _)| name.to_string())
                         .collect();
                     // Show Me: the chart starts from the cursor column's type.

@@ -16,7 +16,7 @@ use ratatui::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::chart_data::{XAxisTemporalKind, x_axis_label_at};
+use crate::chart::chart_data::{XAxisTemporalKind, x_axis_label_at};
 use crate::glyphs::Glyphs;
 use crate::widgets::axis_numbers::{AxisFormat, AxisNumbers};
 use crate::widgets::ticks;
@@ -1141,7 +1141,7 @@ pub fn cut(text: &str, width: usize, g: &Glyphs) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chart_data::{XAxisTemporalKind, x_axis_label_at};
+    use crate::chart::chart_data::{XAxisTemporalKind, x_axis_label_at};
     use ratatui::widgets::{Dataset, GraphType};
 
     /// Days since the epoch of 2020-01-01 and 2024-12-31.

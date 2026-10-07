@@ -2531,7 +2531,7 @@ fn an_error_and_a_panic_end_a_job_the_same_way() {
 /// flight alone: its spinner, its record, and the screen with no error on it.
 #[test]
 fn a_failure_leaves_other_work_alone() {
-    use crate::chart_export::ChartExportFormat;
+    use crate::chart::chart_export::ChartExportFormat;
     use crate::{AnalysisProgress, App, AppEvent, InflightCollect, Job, Outcome};
     use std::path::PathBuf;
 
@@ -3611,7 +3611,7 @@ fn columns_arriving_during_work_already_asked_for_wait_for_it() {
             (Some(app.hold_the_generation()), None)
         }),
         ("a chart", |app: &mut App| {
-            let mut modal = crate::chart_modal::ChartModal::new();
+            let mut modal = crate::chart::chart_modal::ChartModal::new();
             modal.spec.encoding.x.field = Some("id".to_string());
             let prep = crate::jobs::ChartPrep {
                 dataset: None,

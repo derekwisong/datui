@@ -150,7 +150,7 @@ fn pump_open_until_error(
 
 /// A line of y over x, on the chart view `open_chart_view` opened.
 fn select_line(app: &mut App) {
-    use datui::chart_modal::Mark;
+    use datui::chart::chart_modal::Mark;
     app.chart.modal.set_mark(Mark::Line);
     app.chart.modal.spec.encoding.x.field = Some("x".to_string());
     app.chart.modal.spec.encoding.y.field = vec!["y".to_string()];
@@ -196,12 +196,12 @@ fn pump_until_chart_ready(
 /// A small chart export to `path`, where nothing is yet.
 fn chart_export_request(
     path: &Path,
-    format: datui::chart_export::ChartExportFormat,
-) -> datui::chart_export::ChartExportRequest {
-    datui::chart_export::ChartExportRequest {
+    format: datui::chart::chart_export::ChartExportFormat,
+) -> datui::chart::chart_export::ChartExportRequest {
+    datui::chart::chart_export::ChartExportRequest {
         path: path.to_path_buf(),
         format,
-        options: datui::chart_export::ExportOptions {
+        options: datui::chart::chart_export::ExportOptions {
             width: 400,
             height: 300,
             dpi: 96.0,

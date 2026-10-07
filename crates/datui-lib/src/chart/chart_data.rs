@@ -2076,18 +2076,18 @@ pub const AGGREGATE_POINTS_MAX: usize = 200_000;
 #[derive(Clone, Copy, Debug)]
 pub struct AggregateSpec<'a> {
     pub x: &'a str,
-    pub time_unit: crate::chart_modal::TimeUnit,
+    pub time_unit: crate::chart::chart_modal::TimeUnit,
     pub ys: &'a [String],
-    pub aggregate: crate::chart_modal::Aggregate,
+    pub aggregate: crate::chart::chart_modal::Aggregate,
     /// The percentile a quantile takes.
     pub quantile: u8,
-    pub cumulative: crate::chart_modal::Cumulative,
+    pub cumulative: crate::chart::chart_modal::Cumulative,
     pub color: Option<ColorSplit<'a>>,
 }
 
 /// Y as an aggregate reads it: as numbers, or as it is for a distinct count, which
 /// counts strings and dates too.
-fn y_values(y: Expr, aggregate: crate::chart_modal::Aggregate) -> Expr {
+fn y_values(y: Expr, aggregate: crate::chart::chart_modal::Aggregate) -> Expr {
     if aggregate.takes_any_y() {
         y
     } else {
@@ -2100,8 +2100,12 @@ const ROW_ORDER: &str = "__i";
 
 /// `values`' aggregate in a plan: quantiles at `quantile` percent; first and last by
 /// [`ROW_ORDER`] (which the plan must carry), so the view's order holds.
-fn aggregate_expr(values: Expr, aggregate: crate::chart_modal::Aggregate, quantile: u8) -> Expr {
-    use crate::chart_modal::Aggregate;
+fn aggregate_expr(
+    values: Expr,
+    aggregate: crate::chart::chart_modal::Aggregate,
+    quantile: u8,
+) -> Expr {
+    use crate::chart::chart_modal::Aggregate;
     let in_order = || {
         values
             .clone()
@@ -2128,7 +2132,7 @@ fn aggregate_expr(values: Expr, aggregate: crate::chart_modal::Aggregate, quanti
 }
 
 /// `lf` with [`ROW_ORDER`] when `aggregate` reads the rows' order.
-fn with_row_order(lf: &LazyFrame, aggregate: crate::chart_modal::Aggregate) -> LazyFrame {
+fn with_row_order(lf: &LazyFrame, aggregate: crate::chart::chart_modal::Aggregate) -> LazyFrame {
     if aggregate.follows_row_order() {
         lf.clone().with_row_index(ROW_ORDER, None)
     } else {
@@ -2142,7 +2146,7 @@ fn with_row_order(lf: &LazyFrame, aggregate: crate::chart_modal::Aggregate) -> L
 fn group_plan(
     lf: &LazyFrame,
     (mut select, mut keys): (Vec<Expr>, Vec<Expr>),
-    aggregate: crate::chart_modal::Aggregate,
+    aggregate: crate::chart::chart_modal::Aggregate,
     color: Option<ColorSplit<'_>>,
 ) -> (LazyFrame, Vec<Expr>) {
     if aggregate.follows_row_order() {
@@ -2218,7 +2222,7 @@ pub fn prepare_aggregate_xy(
     spec: &AggregateSpec<'_>,
     sampling: &ChartSampling,
 ) -> Result<GroupedSeries> {
-    use crate::chart_modal::{Aggregate, Cumulative};
+    use crate::chart::chart_modal::{Aggregate, Cumulative};
     let x_dtype = x_dtype(schema, spec.x)?;
     let mut x = col(spec.x);
     let bucketed = spec.time_unit.every().is_some()
@@ -2339,8 +2343,8 @@ pub fn prepare_aggregate_xy(
 
 /// Make `points` cumulative along X: a running sum, or returns compounded (each
 /// value a rate; the point is what 1 grew to, less 1).
-pub fn accumulate(points: &mut [(f64, f64)], how: crate::chart_modal::Cumulative) {
-    use crate::chart_modal::Cumulative;
+pub fn accumulate(points: &mut [(f64, f64)], how: crate::chart::chart_modal::Cumulative) {
+    use crate::chart::chart_modal::Cumulative;
     let mut total = 0.0;
     for (_, y) in points.iter_mut() {
         total = match how {
@@ -2358,7 +2362,7 @@ pub struct BarAggregate<'a> {
     pub category: &'a str,
     /// The Y column; none for a count.
     pub value: Option<&'a str>,
-    pub aggregate: crate::chart_modal::Aggregate,
+    pub aggregate: crate::chart::chart_modal::Aggregate,
     /// The percentile a quantile takes.
     pub quantile: u8,
     pub color: Option<ColorSplit<'a>>,
@@ -2374,7 +2378,7 @@ pub fn prepare_bar_aggregate(
     spec: &BarAggregate<'_>,
     sampling: &ChartSampling,
 ) -> Result<BarData> {
-    use crate::chart_modal::Aggregate;
+    use crate::chart::chart_modal::Aggregate;
     let BarAggregate {
         category,
         value,

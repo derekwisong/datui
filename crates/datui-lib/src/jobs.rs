@@ -151,7 +151,7 @@ pub(crate) enum Job {
     /// Writing a chart. The path and format reopen the form on a failure.
     ChartExport {
         path: PathBuf,
-        format: crate::chart_export::ChartExportFormat,
+        format: crate::chart::chart_export::ChartExportFormat,
     },
     /// A chart's data for the selection on screen; judged by itself (see
     /// [`ChartPrep`]).
@@ -436,8 +436,8 @@ pub(crate) enum Answer {
     /// counted.
     ChartPrepared(
         Box<(
-            crate::chart_plot::PlotData,
-            Option<crate::chart_modal::ColorCounts>,
+            crate::chart::chart_plot::PlotData,
+            Option<crate::chart::chart_modal::ColorCounts>,
         )>,
     ),
     /// [`Job::FileFacts`]: what the file is.
@@ -1226,7 +1226,7 @@ mod tests {
         let own = jobs.start(
             Job::ChartExport {
                 path: PathBuf::from("chart.png"),
-                format: crate::chart_export::ChartExportFormat::Png,
+                format: crate::chart::chart_export::ChartExportFormat::Png,
             },
             None,
         );
@@ -1471,7 +1471,7 @@ mod tests {
         let footers = jobs.start(Job::FootersJoin { dataset: 1 }, None);
         let journal = jobs.start(Job::JournalDetail { dataset: 1 }, None);
         let index = jobs.start(Job::IndexLines { dataset: 1 }, None);
-        let mut modal = crate::chart_modal::ChartModal::new();
+        let mut modal = crate::chart::chart_modal::ChartModal::new();
         modal.spec.encoding.x.field = Some("a".into());
         let chart = jobs.start(
             Job::ChartPrepare(Box::new(ChartPrep {

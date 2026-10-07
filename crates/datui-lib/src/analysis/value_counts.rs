@@ -2,14 +2,14 @@
 //! summary of the column, from one read of that column.
 //!
 //! The count is exact: one streamed pass over the column that keeps a count per
-//! value and no rows (`crate::chart_data::Tally`). A view too large to count at
+//! value and no rows (`crate::chart::chart_data::Tally`). A view too large to count at
 //! once, where the sampler can read part of it (one Parquet or IPC file, read a few
 //! row groups at a time), is sampled first instead and says so; counting every row
 //! is then the user's call. Where the sampler would stream every row anyway, the
 //! exact count is the same read and is what runs.
 
 use crate::analysis::sampling::ReadWatch;
-use crate::chart_data::{COUNT_COLUMN, Counted, Tally, count_frame};
+use crate::chart::chart_data::{COUNT_COLUMN, Counted, Tally, count_frame};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use polars::prelude::*;
@@ -250,8 +250,8 @@ fn histogram_of(
     column: &str,
     values: &Series,
     rows: &[u64],
-) -> Option<crate::chart_data::HistogramData> {
-    use crate::chart_data::{Clipped, HistogramBin, HistogramData, RowsRead, ValueRange};
+) -> Option<crate::chart::chart_data::HistogramData> {
+    use crate::chart::chart_data::{Clipped, HistogramBin, HistogramData, RowsRead, ValueRange};
     let dtype = values.dtype();
     if !dtype.is_primitive_numeric() {
         return None;
@@ -369,7 +369,7 @@ pub struct ValueCounts {
     value_lines: Vec<Line>,
     /// A number column's counts in bins, for the histogram view; made with the
     /// counts, off the UI thread.
-    pub histogram: Option<crate::chart_data::HistogramData>,
+    pub histogram: Option<crate::chart::chart_data::HistogramData>,
 }
 
 impl ValueCounts {

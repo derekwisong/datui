@@ -68,7 +68,7 @@ fn test_chart_q_does_not_exit() {
 /// and an open Picker takes digits as letters to narrow by.
 #[test]
 fn test_chart_type_switches_from_anywhere() {
-    use datui::chart_modal::{ChartFocus, Mark};
+    use datui::chart::chart_modal::{ChartFocus, Mark};
     let (mut app, _rx, _tx) = open_chart_view("chart_direct_type_test.csv");
     let press = |app: &mut App, c: char| {
         app.event(AppEvent::Key(KeyEvent::new(
@@ -121,7 +121,7 @@ fn test_chart_type_switches_from_anywhere() {
 /// An open Picker takes `g` as a letter to narrow by.
 #[test]
 fn test_chart_g_toggles_the_grid() {
-    use datui::chart_modal::{ChartFocus, Mark};
+    use datui::chart::chart_modal::{ChartFocus, Mark};
     let (mut app, _rx, _tx) = open_chart_view("chart_grid_key_test.csv");
     let press = |app: &mut App, code: KeyCode| {
         app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
@@ -165,7 +165,7 @@ fn test_chart_g_toggles_the_grid() {
 #[test]
 fn test_chart_crosshair_keys_and_click() {
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
-    use datui::chart_modal::{ChartFocus, Mark};
+    use datui::chart::chart_modal::{ChartFocus, Mark};
     let (mut app, rx, tx) = open_chart_view("chart_crosshair_test.csv");
     select_line(&mut app);
     app.chart.modal.focus = ChartFocus::Type;
@@ -259,7 +259,7 @@ fn test_chart_crosshair_keys_and_click() {
 /// Enter chooses, and the choice is echoed on the row.
 #[test]
 fn test_chart_columns_picked_through_the_picker() {
-    use datui::chart_modal::{ChartFocus, Mark};
+    use datui::chart::chart_modal::{ChartFocus, Mark};
     let (mut app, _rx, _tx) = open_chart_view("chart_picker_test.csv");
     let press = |app: &mut App, code: KeyCode| {
         app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
@@ -289,7 +289,7 @@ fn test_chart_columns_picked_through_the_picker() {
 /// the list blanks under the key that just opened it.
 #[test]
 fn test_space_chooses_in_a_pick_one_chart_picker() {
-    use datui::chart_modal::{ChartFocus, Mark};
+    use datui::chart::chart_modal::{ChartFocus, Mark};
     let (mut app, _rx, _tx) = open_chart_view("chart_space_chooses_test.csv");
     let press = |app: &mut App, code: KeyCode| {
         app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
@@ -325,7 +325,9 @@ fn test_chart_export_path_expands_tilde() {
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
-    let Some(AppEvent::ChartExport(datui::chart_export::ChartExportRequest { path, .. })) = out
+    let Some(AppEvent::ChartExport(datui::chart::chart_export::ChartExportRequest {
+        path, ..
+    })) = out
     else {
         panic!("Enter starts the export");
     };
@@ -381,7 +383,7 @@ fn test_chart_data_is_prepared_in_the_background() {
 /// yet drawn, the plot gives way to the message.
 #[test]
 fn a_chart_being_computed_says_so() {
-    use datui::chart_modal::Mark;
+    use datui::chart::chart_modal::Mark;
     let (mut app, rx, tx) = open_chart_view("chart_computing_test.csv");
     let area = Rect::new(0, 0, 100, 24);
     let screen = |app: &mut App| {
@@ -472,7 +474,7 @@ fn test_chart_prepares_one_selection_at_a_time() {
 /// with that selection's error: it waits for the current selection's data and completes.
 #[test]
 fn test_chart_export_waits_for_the_current_selection_not_a_failed_one() {
-    use datui::chart_export::ChartExportFormat;
+    use datui::chart::chart_export::ChartExportFormat;
     let (mut app, rx, tx) = open_chart_view("chart_export_after_failure_test.csv");
     pump_until_chart_ready(&mut app, &rx, &tx);
     // A column the view does not have cannot be charted, and takes a moment to fail.
@@ -561,7 +563,7 @@ fn test_chart_footer_offers_export_only_when_there_is_a_chart() {
 /// not ready yet the export waits for it rather than collecting on the UI thread.
 #[test]
 fn test_chart_export_waits_for_prepared_data_and_writes_in_background() {
-    use datui::chart_export::ChartExportFormat;
+    use datui::chart::chart_export::ChartExportFormat;
     let (mut app, rx, tx) = open_chart_view("chart_export_bg_test.csv");
     pump_until_chart_ready(&mut app, &rx, &tx);
     select_line(&mut app);
@@ -601,7 +603,7 @@ fn test_chart_export_waits_for_prepared_data_and_writes_in_background() {
 /// format says: a PNG, an SVG, a PDF.
 #[test]
 fn test_chart_export_replaces_only_what_was_agreed() {
-    use datui::chart_export::{ChartExportFormat, ChartExportRequest};
+    use datui::chart::chart_export::{ChartExportFormat, ChartExportRequest};
     use datui::output_file::Overwrite;
     let (mut app, rx, tx) = open_chart_view("chart_export_overwrite_test.csv");
     select_line(&mut app);
@@ -660,7 +662,7 @@ fn test_chart_export_replaces_only_what_was_agreed() {
 /// Show Me: `c` chooses the chart from the cursor column's type, and says so.
 #[test]
 fn quick_chart_picks_the_type_from_the_cursor_column() {
-    use datui::chart_modal::{Aggregate, Mark};
+    use datui::chart::chart_modal::{Aggregate, Mark};
     let (mut app, rx, tx) = open_flights("chart_quick_test.parquet");
     // carrier, origin, day, delay: the cursor starts on carrier.
     for (steps, mark, x, suggested) in [
@@ -704,7 +706,7 @@ fn quick_chart_picks_the_type_from_the_cursor_column() {
 /// focus passes over it.
 #[test]
 fn shelves_dim_by_type() {
-    use datui::chart_modal::{ChartFocus, Mark};
+    use datui::chart::chart_modal::{ChartFocus, Mark};
     let (mut app, rx, tx) = open_flights("chart_shelves_test.parquet");
     press(&mut app, KeyCode::Char('c'));
     let area = Rect::new(0, 0, 100, 30);
@@ -749,7 +751,7 @@ fn shelves_dim_by_type() {
 /// picker lists every value by rows, and picking some charts those.
 #[test]
 fn chart_color_splits_and_the_value_picker_lists_by_rows() {
-    use datui::chart_modal::{Aggregate, ChartFocus, Mark, TimeUnit};
+    use datui::chart::chart_modal::{Aggregate, ChartFocus, Mark, TimeUnit};
     let (mut app, rx, tx) = open_flights("chart_color_test.parquet");
     // `c` on day: a line of delay over it.
     table_key(&mut app, &rx, &tx, 'l');
@@ -827,7 +829,7 @@ fn chart_color_splits_and_the_value_picker_lists_by_rows() {
 /// waits the chart stays as drawn and the row says so.
 #[test]
 fn chart_rows_are_read_on_enter() {
-    use datui::chart_modal::{ChartFocus, Mark};
+    use datui::chart::chart_modal::{ChartFocus, Mark};
     let (mut app, rx, tx) = open_flights("chart_rows_enter_test.parquet");
     press(&mut app, KeyCode::Char('c'));
     app.chart.modal.set_mark(Mark::Histogram);
@@ -891,9 +893,9 @@ fn chart_rows_are_read_on_enter() {
 /// the pixels, and the file written is the format and the size asked for.
 #[test]
 fn chart_export_dialog_presets_and_legend() {
-    use datui::chart_export::{LegendPlace, SizePreset};
-    use datui::chart_export_modal::ChartExportFocus;
-    use datui::chart_modal::ChartFocus;
+    use datui::chart::chart_export::{LegendPlace, SizePreset};
+    use datui::chart::chart_export_modal::ChartExportFocus;
+    use datui::chart::chart_modal::ChartFocus;
     let (mut app, rx, tx) = open_chart_view("chart_export_dialog_test.csv");
     select_line(&mut app);
     app.chart.modal.focus = ChartFocus::ShowLegend;
@@ -913,13 +915,13 @@ fn chart_export_dialog_presets_and_legend() {
     // the figure names y at its axis.
     assert_eq!(app.chart.export_modal.description_input.value(), "");
     press(&mut app, KeyCode::Esc);
-    app.chart.modal.spec.encoding.y.aggregate = datui::chart_modal::Aggregate::Mean;
+    app.chart.modal.spec.encoding.y.aggregate = datui::chart::chart_modal::Aggregate::Mean;
     press(&mut app, KeyCode::Char('e'));
     assert_eq!(
         app.chart.export_modal.description_input.value(),
         "Mean by x"
     );
-    app.chart.modal.spec.encoding.y.aggregate = datui::chart_modal::Aggregate::None;
+    app.chart.modal.spec.encoding.y.aggregate = datui::chart::chart_modal::Aggregate::None;
     // Size: Document -> Slide 16:9.
     datui::form::Form::focus(&mut app.chart.export_modal, ChartExportFocus::Size);
     press(&mut app, KeyCode::Left);

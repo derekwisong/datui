@@ -191,7 +191,7 @@ fn analysis_and_charts_read_the_views_sample() {
         !app.chart
             .modal
             .row_order()
-            .contains(&datui::chart_modal::ChartFocus::LimitRows),
+            .contains(&datui::chart::chart_modal::ChartFocus::LimitRows),
         "no Rows row while the view has a sample"
     );
     pump_until(&mut app, &rx, &tx, App::chart_data_ready);
@@ -277,7 +277,7 @@ fn reset_takes_the_sample_away() {
 /// Omit the file carries no datui metadata at all.
 #[test]
 fn an_exported_chart_carries_its_recipe_unless_omitted() {
-    use datui::chart_export::{ChartExportFormat, recipe_in};
+    use datui::chart::chart_export::{ChartExportFormat, recipe_in};
     let path = parquet("table_sample_recipe.parquet", 10_000);
     let (mut app, rx, tx) = open(path.clone());
     draw(&mut app, "300");

@@ -6,7 +6,7 @@
 //! place of a plot when there is neither. A selection that failed to prepare shows why.
 
 use crate::ChartRequest;
-use crate::chart_plot::PlotContext;
+use crate::chart::chart_plot::PlotContext;
 use crate::render::context::RenderContext;
 use crate::widgets::{self, chart::ChartView, ui::Working};
 use ratatui::layout::Rect;
@@ -57,7 +57,7 @@ pub fn render(
             &unrequested
         }
     };
-    let plot = crate::chart_plot::plot(
+    let plot = crate::chart::chart_plot::plot(
         prepared,
         &PlotContext {
             modal: &app.chart.modal,

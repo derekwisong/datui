@@ -45,7 +45,7 @@ struct PlotNumbers {
 
 impl Draw<'_> {
     fn plot(self, modal: &ChartModal, ctx: &RenderContext) -> Option<Plot<'static>> {
-        use crate::chart_plot::{LinesData, PlotContext};
+        use crate::chart::chart_plot::{LinesData, PlotContext};
         // The data says what kind of chart it is, whatever the modal's type.
         let mut spec = modal.effective_spec();
         spec.mark = match &self {
@@ -79,14 +79,14 @@ impl Draw<'_> {
                         other,
                         ..LinesData::default()
                     })),
-                    (None, Some((x_min, x_max))) => {
-                        Some(PlotData::XRange(crate::chart_data::ChartXRangeResult {
+                    (None, Some((x_min, x_max))) => Some(PlotData::XRange(
+                        crate::chart::chart_data::ChartXRangeResult {
                             x_min,
                             x_max,
                             x_axis_kind,
                             rows: Default::default(),
-                        }))
-                    }
+                        },
+                    )),
                     (None, None) => None,
                 };
                 (data, Some((numbers.x, numbers.y)), Some(x_axis_kind))
@@ -116,7 +116,7 @@ impl Draw<'_> {
             ),
             Draw::Bar { data } => (data.cloned().map(PlotData::Bars), None, None),
         };
-        let mut plot = crate::chart_plot::plot(
+        let mut plot = crate::chart::chart_plot::plot(
             data.as_ref(),
             &PlotContext {
                 modal,
@@ -190,7 +190,7 @@ fn render_chart_view(
 fn open_modal() -> ChartModal {
     let mut modal = ChartModal::new();
     modal.open(
-        crate::chart_modal::ChartColumns {
+        crate::chart::chart_modal::ChartColumns {
             numeric: &["price".to_string(), "volume".to_string()],
             datetime: &["date".to_string()],
             bucketable: &["date".to_string()],
@@ -474,7 +474,7 @@ fn the_values_line_counts_other() {
     modal.spec.encoding.x.field = Some("price".to_string());
     modal.spec.encoding.y.field = vec!["volume".to_string()];
     modal.spec.encoding.color.field = Some("carrier".to_string());
-    modal.color_counts = Some(crate::chart_modal::ColorCounts {
+    modal.color_counts = Some(crate::chart::chart_modal::ColorCounts {
         column: "carrier".to_string(),
         values: (0..16)
             .map(|i| (Some(format!("C{i}")), 100 - i as u64))
@@ -535,7 +535,7 @@ fn the_aggregate_row_says_percentile_and_order() {
         rows[at],
         format!("Aggregate    last {} by row order", g.middot)
     );
-    let request = crate::chart_jobs::ChartRequest::from_modal(&modal).unwrap();
+    let request = crate::chart::chart_jobs::ChartRequest::from_modal(&modal).unwrap();
     assert!(!request.sorted);
     modal.row_order = Some(format!("time {}", g.sort_asc));
     let rows = panel(&mut modal);
@@ -543,10 +543,10 @@ fn the_aggregate_row_says_percentile_and_order() {
         rows[at],
         format!("Aggregate    last {} by time {}", g.middot, g.sort_asc)
     );
-    let request = crate::chart_jobs::ChartRequest::from_modal(&modal).unwrap();
+    let request = crate::chart::chart_jobs::ChartRequest::from_modal(&modal).unwrap();
     assert!(request.sorted, "first and last read the view sorted");
     modal.spec.encoding.y.aggregate = Aggregate::Mean;
-    let request = crate::chart_jobs::ChartRequest::from_modal(&modal).unwrap();
+    let request = crate::chart::chart_jobs::ChartRequest::from_modal(&modal).unwrap();
     assert!(!request.sorted, "a mean needs no order");
 }
 
@@ -659,7 +659,7 @@ fn sixteen_colors_cap_the_series() {
     modal.spec.encoding.x.field = Some("price".to_string());
     modal.spec.encoding.y.field = vec!["volume".to_string()];
     modal.spec.encoding.color.field = Some("carrier".to_string());
-    modal.color_counts = Some(crate::chart_modal::ColorCounts {
+    modal.color_counts = Some(crate::chart::chart_modal::ColorCounts {
         column: "carrier".to_string(),
         values: (0..16)
             .map(|i| (Some(format!("C{i}")), 100 - i as u64))
@@ -672,7 +672,7 @@ fn sixteen_colors_cap_the_series() {
         "{}",
         rows[at + 1]
     );
-    let request = crate::chart_jobs::ChartRequest::from_modal(&modal).unwrap();
+    let request = crate::chart::chart_jobs::ChartRequest::from_modal(&modal).unwrap();
     assert_eq!(request.series_cap, colors.len());
 }
 
@@ -687,7 +687,7 @@ fn other_is_the_legends_last_entry() {
     let series: Vec<Vec<(f64, f64)>> = (0..3)
         .map(|s| (0..5).map(|i| (i as f64, (i * 10 + s) as f64)).collect())
         .collect();
-    let names: Vec<String> = ["UA", "B6", crate::chart_data::OTHER]
+    let names: Vec<String> = ["UA", "B6", crate::chart::chart_data::OTHER]
         .iter()
         .map(|s| s.to_string())
         .collect();
@@ -735,7 +735,7 @@ fn the_value_picker_lists_values_by_rows() {
     let g = crate::glyphs::get();
     let mut modal = open_modal();
     modal.spec.encoding.color.field = Some("carrier".to_string());
-    modal.color_counts = Some(crate::chart_modal::ColorCounts {
+    modal.color_counts = Some(crate::chart::chart_modal::ColorCounts {
         column: "carrier".to_string(),
         values: vec![(Some("UA".to_string()), 2514), (Some("B6".to_string()), 12)],
     });
@@ -926,7 +926,7 @@ fn a_line_does_not_bridge_a_gap() {
 }
 
 fn bar_data(n: usize) -> BarData {
-    use crate::chart_data::Bar;
+    use crate::chart::chart_data::Bar;
     BarData {
         category: "carrier".to_string(),
         value_column: "delay".to_string(),
@@ -1004,7 +1004,7 @@ fn bars_past_the_height_are_counted_on_a_chip() {
 /// A negative value draws left of the zero line; a null category reads as null.
 #[test]
 fn negative_bars_grow_left_and_null_categories_show() {
-    use crate::chart_data::Bar;
+    use crate::chart::chart_data::Bar;
     let g = crate::glyphs::get();
     let full = g.bar_eighths[7];
     let mut data = bar_data(0);
@@ -1037,7 +1037,7 @@ fn negative_bars_grow_left_and_null_categories_show() {
 /// no bar that is not zero reads as zero.
 #[test]
 fn a_tiny_value_still_draws_a_mark() {
-    use crate::chart_data::Bar;
+    use crate::chart::chart_data::Bar;
     let g = crate::glyphs::get();
     let mut data = bar_data(0);
     data.bars = [
@@ -1105,7 +1105,7 @@ fn axis_labels_stand_apart_and_titles_keep_their_rows() {
         &'a str,
         &'a dyn Fn(&str) -> bool,
     );
-    use crate::chart_data::{HistogramBin, KdeSeries};
+    use crate::chart::chart_data::{HistogramBin, KdeSeries};
     // 2020-01-01 to 2024-12-31, in days since the epoch.
     let dates: Vec<Vec<(f64, f64)>> = vec![
         (0..=100)
@@ -1244,7 +1244,7 @@ fn axis_labels_stand_apart_and_titles_keep_their_rows() {
 /// european format a narrow axis's short form reads `12,5k`.
 #[test]
 fn an_axis_writes_every_label_in_one_format() {
-    use crate::chart_data::KdeSeries;
+    use crate::chart::chart_data::KdeSeries;
     use crate::numfmt::NumberFormat;
     let g = crate::glyphs::unicode();
     let y_labels = |text: &str| -> Vec<String> {
@@ -1383,7 +1383,7 @@ fn heatmap_y_labels_are_whole_where_the_column_is() {
 /// them: never `4321.00`, and never a tick between two whole numbers.
 #[test]
 fn whole_number_axes_tick_whole_in_the_table_format() {
-    use crate::chart_data::HistogramBin;
+    use crate::chart::chart_data::HistogramBin;
     use crate::numfmt::NumberFormat;
     let thousands = NumberFormat::preset("thousands").unwrap();
     let whole = AxisNumbers {
@@ -1471,7 +1471,7 @@ fn whole_number_axes_tick_whole_in_the_table_format() {
 /// its bars, its axes and its legend. The Unicode set keeps its own.
 #[test]
 fn every_plot_is_ascii_under_the_ascii_set() {
-    use crate::chart_data::{BoxPlotStats, HistogramBin, KdeSeries};
+    use crate::chart::chart_data::{BoxPlotStats, HistogramBin, KdeSeries};
     let (ascii, unicode) = (crate::glyphs::ascii(), crate::glyphs::unicode());
     let check = |what: &str, text: &str, marks: &[char]| {
         assert!(text.is_ascii(), "{what}:\n{text}");
@@ -1974,7 +1974,7 @@ fn a_scatter_picks_its_marker_by_density() {
 /// enough to spare one.
 #[test]
 fn histogram_bins_fill_their_columns() {
-    use crate::chart_data::HistogramBin;
+    use crate::chart::chart_data::HistogramBin;
     let histogram = HistogramData {
         column: "price".to_string(),
         groups: Vec::new(),

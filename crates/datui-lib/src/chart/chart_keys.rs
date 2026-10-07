@@ -2,10 +2,10 @@
 //! (`crate::form`); the chart's own keys come after them.
 
 use crate::ChartRequest;
-use crate::chart_export::{ChartExportFormat, ChartExportRequest};
-use crate::chart_export_modal::{ChartExportFocus, ExportDefaults};
-use crate::chart_modal::{ChartFocus, Mark};
-use crate::chart_plot::PlotData;
+use crate::chart::chart_export::{ChartExportFormat, ChartExportRequest};
+use crate::chart::chart_export_modal::{ChartExportFocus, ExportDefaults};
+use crate::chart::chart_modal::{ChartFocus, Mark};
+use crate::chart::chart_plot::PlotData;
 use crate::feedback::Confirm;
 use crate::form::FormKey;
 use crate::logging::LogFailure;
@@ -258,11 +258,11 @@ impl App {
         };
         let (width, height) = modal.export_dimensions();
         let recipe = modal.recipe;
-        let options = crate::chart_export::ExportOptions {
+        let options = crate::chart::chart_export::ExportOptions {
             width,
             height,
             dpi: modal.dpi,
-            palette: crate::chart_export::Palette::for_style(
+            palette: crate::chart::chart_export::Palette::for_style(
                 modal.style,
                 &self.app_config.theme.colors,
             ),

@@ -317,7 +317,7 @@ fn draw_histogram(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderCo
         width: area.width.saturating_sub(2),
         height: area.bottom() - top,
     };
-    let notes = crate::chart_data::chart_notes(
+    let notes = crate::chart::chart_data::chart_notes(
         &Default::default(),
         histogram.clipped.as_ref(),
         crate::glyphs::get().middot,

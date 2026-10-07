@@ -1963,12 +1963,12 @@ mod tests {
         let source = Arc::new(source);
         let lf = source.lazy();
         let schema = source.schema();
-        let result = crate::chart_data::prepare_chart_data(
+        let result = crate::chart::chart_data::prepare_chart_data(
             &lf,
             &schema,
             SECONDS,
             &["ch1".into()],
-            &crate::chart_data::ChartSampling::rows(Some(1_000)),
+            &crate::chart::chart_data::ChartSampling::rows(Some(1_000)),
             true,
         )
         .unwrap();

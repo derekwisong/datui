@@ -44,10 +44,10 @@ fn export_request() -> ExportRequest {
     }
 }
 
-fn chart_request() -> crate::chart_export::ChartExportRequest {
-    crate::chart_export::ChartExportRequest {
+fn chart_request() -> crate::chart::chart_export::ChartExportRequest {
+    crate::chart::chart_export::ChartExportRequest {
         path: PathBuf::from("out.png"),
-        format: crate::chart_export::ChartExportFormat::Png,
+        format: crate::chart::chart_export::ChartExportFormat::Png,
         options: Default::default(),
         overwrite: Overwrite::Forbid,
         recipe: false,

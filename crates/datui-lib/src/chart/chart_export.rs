@@ -9,12 +9,12 @@ use std::sync::{Arc, OnceLock};
 use color_eyre::Result;
 use resvg::{tiny_skia, usvg};
 
-use crate::chart_data::{BarData, segments};
-use crate::chart_plot::{Axis, Plot, PlotData};
+use crate::chart::chart_data::{BarData, segments};
+use crate::chart::chart_plot::{Axis, Plot, PlotData};
 use crate::widgets::axes::{AxisSpec, TickSet};
 
-const FONT_REGULAR: &[u8] = include_bytes!("../assets/fonts/IBMPlexSans-Regular.ttf");
-const FONT_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/IBMPlexSans-SemiBold.ttf");
+const FONT_REGULAR: &[u8] = include_bytes!("../../assets/fonts/IBMPlexSans-Regular.ttf");
+const FONT_SEMIBOLD: &[u8] = include_bytes!("../../assets/fonts/IBMPlexSans-SemiBold.ttf");
 const FONT_FAMILY: &str = "IBM Plex Sans";
 
 /// Export format for a chart.
@@ -586,9 +586,12 @@ pub fn render(
                 None => png,
             }
         }
-        ChartExportFormat::Pdf => {
-            crate::chart_pdf::write(&tree, (options.width, options.height), options.dpi, recipe)?
-        }
+        ChartExportFormat::Pdf => crate::chart::chart_pdf::write(
+            &tree,
+            (options.width, options.height),
+            options.dpi,
+            recipe,
+        )?,
     })
 }
 
@@ -660,7 +663,7 @@ pub fn recipe_in(bytes: &[u8]) -> Option<String> {
         return None;
     }
     if bytes.starts_with(b"%PDF") {
-        return crate::chart_pdf::recipe_in(bytes);
+        return crate::chart::chart_pdf::recipe_in(bytes);
     }
     let text = std::str::from_utf8(bytes).ok()?;
     let open = format!("<{RECIPE_KEY} xmlns=\"{RECIPE_NAMESPACE}\">");
@@ -1651,14 +1654,15 @@ fn draw_bars(c: &mut Canvas<'_>, frame: Area, data: &BarData, value: &Axis, grid
     // than squeezed.
     let row_min = (tick * 1.3).max(tick * 0.5 * groups as f64);
     let fits = (((bottom - top) / row_min) as usize).max(1);
-    let mut bars: Vec<&crate::chart_data::Bar> = data.bars.iter().collect();
+    let mut bars: Vec<&crate::chart::chart_data::Bar> = data.bars.iter().collect();
     let mut more = data.more;
     if bars.len() > fits {
         more += bars.len() - (fits - 1);
         bars.truncate(fits - 1);
     }
     let null = "null".to_string();
-    let label_of = |b: &crate::chart_data::Bar| b.label.clone().unwrap_or_else(|| null.clone());
+    let label_of =
+        |b: &crate::chart::chart_data::Bar| b.label.clone().unwrap_or_else(|| null.clone());
     let more_label = format!("+ {} more", crate::numfmt::group_chrome(more));
     let label_w = bars
         .iter()
@@ -1767,11 +1771,11 @@ fn draw_bars(c: &mut Canvas<'_>, frame: Area, data: &BarData, value: &Axis, grid
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chart_data::{
+    use crate::chart::chart_data::{
         Bar, BoxPlotData, BoxPlotStats, HeatmapData, HistogramBin, HistogramData, HistogramGroup,
         OTHER, RowsRead, XAxisTemporalKind,
     };
-    use crate::chart_plot::LinesData;
+    use crate::chart::chart_plot::LinesData;
     use std::borrow::Cow;
 
     /// A figure of `data` on plain axes.

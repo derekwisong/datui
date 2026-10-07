@@ -4,8 +4,8 @@
 //! them anew after a change meant to alter what a chart looks like.
 
 use super::chart_prepare_tests::{open, pump};
-use crate::chart_export::{self, ChartExportFormat, ExportOptions};
-use crate::chart_modal::{Aggregate, ChartModal, Mark};
+use crate::chart::chart_export::{ChartExportFormat, ExportOptions};
+use crate::chart::chart_modal::{Aggregate, ChartModal, Mark};
 use crate::*;
 use std::sync::mpsc;
 
@@ -144,9 +144,9 @@ fn charts_draw_and_export_as_their_goldens() {
     for scenario in SCENARIOS {
         // As `c` opened it: the settings a scenario changes, back at their defaults.
         let modal = &mut app.chart.modal;
-        modal.spec = crate::chart_modal::ChartSpec::default();
+        modal.spec = crate::chart::chart_modal::ChartSpec::default();
         modal.log_scale = false;
-        modal.hist_bins = crate::chart_modal::HISTOGRAM_DEFAULT_BINS;
+        modal.hist_bins = crate::chart::chart_modal::HISTOGRAM_DEFAULT_BINS;
         (scenario.set)(&mut app.chart.modal);
         app.chart.modal.row_limit = None;
         let request = ChartRequest::from_modal(&app.chart.modal).expect(scenario.name);
@@ -177,10 +177,10 @@ fn charts_draw_and_export_as_their_goldens() {
             .expect(scenario.name);
         golden(
             &format!("{}.svg", scenario.name),
-            &chart_export::svg(&figure, &options).unwrap(),
+            &chart::chart_export::svg(&figure, &options).unwrap(),
         );
         for format in [ChartExportFormat::Png, ChartExportFormat::Pdf] {
-            let bytes = chart_export::render(&figure, &options, format).unwrap();
+            let bytes = chart::chart_export::render(&figure, &options, format).unwrap();
             binaries.push_str(&format!(
                 "{} {} {}\n",
                 scenario.name,

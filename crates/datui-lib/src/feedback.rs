@@ -81,7 +81,7 @@ pub(crate) enum Confirm {
         std::path::PathBuf,
         crate::analysis::quality_export::ReportFormat,
     ),
-    ChartExport(Box<crate::chart_export::ChartExportRequest>),
+    ChartExport(Box<crate::chart::chart_export::ChartExportRequest>),
     Export(Box<crate::ExportRequest>),
     Copy(crate::clipboard::CopyFormat, bool),
     /// Download a remote file, or read a large one whole: the open in flight asks.

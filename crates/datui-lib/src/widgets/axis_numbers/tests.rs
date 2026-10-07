@@ -1,5 +1,5 @@
 use super::*;
-use crate::chart_data::{XAxisTemporalKind, x_axis_label_at};
+use crate::chart::chart_data::{XAxisTemporalKind, x_axis_label_at};
 
 /// Every label of an axis at one level: its ticks' labels in order.
 fn tick_labels(ticks: &[f64], numbers: &AxisNumbers, level: usize) -> Vec<String> {

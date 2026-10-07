@@ -133,7 +133,7 @@ fn test_help_clears_the_command_line_at_80_by_24() {
 /// so; a bar chart of the mean per category needs no query.
 #[test]
 fn aggregates_run_over_every_row() {
-    use datui::chart_modal::{Aggregate, ChartFocus, Mark};
+    use datui::chart::chart_modal::{Aggregate, ChartFocus, Mark};
     let (mut app, rx, tx) = open_flights("chart_aggregate_test.parquet");
     press(&mut app, KeyCode::Char('c'));
     assert_eq!(app.chart.modal.mark(), Mark::Bar);

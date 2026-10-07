@@ -1048,9 +1048,9 @@ fn returns() -> LazyFrame {
 
 fn aggregate(
     lf: &LazyFrame,
-    unit: crate::chart_modal::TimeUnit,
-    aggregate: crate::chart_modal::Aggregate,
-    cumulative: crate::chart_modal::Cumulative,
+    unit: crate::chart::chart_modal::TimeUnit,
+    aggregate: crate::chart::chart_modal::Aggregate,
+    cumulative: crate::chart::chart_modal::Cumulative,
     color: Option<ColorSplit<'_>>,
 ) -> GroupedSeries {
     let schema = lf.clone().collect_schema().unwrap();
@@ -1076,7 +1076,7 @@ fn aggregate(
 /// it, per color group, at the month's first day.
 #[test]
 fn a_time_bucket_aggregates_every_row_per_month_and_color() {
-    use crate::chart_modal::{Aggregate, Cumulative, TimeUnit};
+    use crate::chart::chart_modal::{Aggregate, Cumulative, TimeUnit};
     let lf = returns();
     let groups = [Some("A".to_string()), Some("B".to_string())];
     let split = ColorSplit {
@@ -1133,7 +1133,7 @@ fn a_time_bucket_aggregates_every_row_per_month_and_color() {
 /// compounded.
 #[test]
 fn cumulative_sums_or_compounds_along_x() {
-    use crate::chart_modal::{Aggregate, Cumulative, TimeUnit};
+    use crate::chart::chart_modal::{Aggregate, Cumulative, TimeUnit};
     let lf = returns();
     let groups = [Some("A".to_string())];
     let split = ColorSplit {
@@ -1166,7 +1166,7 @@ fn cumulative_sums_or_compounds_along_x() {
 /// February's (29 days in 2024), 1.01^90 - 1 at March's.
 #[test]
 fn compound_runs_over_the_rows_of_each_bucket() {
-    use crate::chart_modal::{Aggregate, Cumulative, TimeUnit};
+    use crate::chart::chart_modal::{Aggregate, Cumulative, TimeUnit};
     let mut df = df!(
         "date" => (0..90).map(|d| 19723 + d).collect::<Vec<i32>>(),
         "ret" => vec![0.01; 90]
@@ -1201,7 +1201,7 @@ fn compound_runs_over_the_rows_of_each_bucket() {
 /// A group with no values is a gap, not the zero a sum of nothing is.
 #[test]
 fn a_bucket_with_no_values_is_a_gap() {
-    use crate::chart_modal::{Aggregate, Cumulative, TimeUnit};
+    use crate::chart::chart_modal::{Aggregate, Cumulative, TimeUnit};
     let lf = df!(
         "date" => [0i32, 0, 1, 2],
         "ret" => [Some(1.0), Some(2.0), None, Some(4.0)]
@@ -1218,7 +1218,7 @@ fn a_bucket_with_no_values_is_a_gap() {
 /// would hold a group per row.
 #[test]
 fn an_x_of_too_many_values_is_refused_first() {
-    use crate::chart_modal::{Aggregate, Cumulative};
+    use crate::chart::chart_modal::{Aggregate, Cumulative};
     let n = AGGREGATE_POINTS_MAX as i64 + 10_000;
     let lf = df!("x" => (0..n).collect::<Vec<i64>>(), "ret" => vec![1.0; n as usize])
         .unwrap()
@@ -1230,7 +1230,7 @@ fn an_x_of_too_many_values_is_refused_first() {
         schema.as_ref(),
         &AggregateSpec {
             x: "x",
-            time_unit: crate::chart_modal::TimeUnit::None,
+            time_unit: crate::chart::chart_modal::TimeUnit::None,
             ys: &ys,
             aggregate: Aggregate::Mean,
             quantile: 90,
@@ -1301,7 +1301,7 @@ fn a_color_splits_the_sampled_points() {
 /// and last value in the rows' order, nulls passed over, which a sort sets.
 #[test]
 fn stdev_quantile_first_and_last_per_x() {
-    use crate::chart_modal::{Aggregate, Cumulative, TimeUnit};
+    use crate::chart::chart_modal::{Aggregate, Cumulative, TimeUnit};
     // Read order is not value order: x=1 reads 4, 1, 3, 2.
     let lf = df!(
         "x" => [1i64, 1, 1, 1, 2, 3, 3],
@@ -1400,7 +1400,7 @@ fn stdev_quantile_first_and_last_per_x() {
 /// nulls is a gap; per color, and within a time bucket.
 #[test]
 fn distinct_counts_any_y_per_x() {
-    use crate::chart_modal::{Aggregate, Cumulative, TimeUnit};
+    use crate::chart::chart_modal::{Aggregate, Cumulative, TimeUnit};
     let mut df = df!(
         "date" => [19723i32, 19723, 19723, 19724, 19724, 19754, 19755],
         "name" => [Some("Ann"), Some("Bo"), Some("Ann"), None, None, Some("Cy"), Some("Di")],
@@ -1473,7 +1473,7 @@ fn distinct_counts_any_y_per_x() {
 /// rest as they do a group. Off, those rows are left out.
 #[test]
 fn other_gathers_every_value_without_a_series() {
-    use crate::chart_modal::{Aggregate, Cumulative, TimeUnit};
+    use crate::chart::chart_modal::{Aggregate, Cumulative, TimeUnit};
     let lf = df!(
         "x" => [1i64, 1, 2, 2, 3, 3],
         "y" => [10.0, 1.0, 20.0, 2.0, 30.0, 4.0],
@@ -1562,7 +1562,7 @@ fn other_gathers_every_value_without_a_series() {
 /// bar, ordered by the largest group; a count needs no value column.
 #[test]
 fn bars_aggregate_per_category_and_color() {
-    use crate::chart_modal::Aggregate;
+    use crate::chart::chart_modal::Aggregate;
     let lf = df!(
         "carrier" => ["UA", "UA", "UA", "AA", "AA"],
         "origin" => ["EWR", "EWR", "JFK", "EWR", "JFK"],

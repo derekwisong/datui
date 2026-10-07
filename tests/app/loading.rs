@@ -6090,11 +6090,11 @@ fn out_of_range_dates_draw_on_every_screen() {
     // A chart over the datetimes: the axis falls back to the stored numbers.
     press_through(&mut app, KeyCode::Char('c'));
     press_through(&mut app, KeyCode::Char('1'));
-    app.chart.modal.focus = datui::chart_modal::ChartFocus::X;
+    app.chart.modal.focus = datui::chart::chart_modal::ChartFocus::X;
     press_through(&mut app, KeyCode::Char(' '));
     type_text(&mut app, "t_us");
     press_through(&mut app, KeyCode::Enter);
-    app.chart.modal.focus = datui::chart_modal::ChartFocus::Y;
+    app.chart.modal.focus = datui::chart::chart_modal::ChartFocus::Y;
     press_through(&mut app, KeyCode::Char(' '));
     type_text(&mut app, "id");
     press_through(&mut app, KeyCode::Char(' '));

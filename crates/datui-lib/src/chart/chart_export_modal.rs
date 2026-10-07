@@ -2,10 +2,10 @@
 //! and the words around the chart. Its keys are the shared form keys
 //! (`crate::form`).
 
-use crate::chart_export::{
+use crate::chart::chart_export::{
     ChartExportFormat, ExportStyle, LegendPlace, LineWidth, PointOpacity, PointSize, SizePreset,
 };
-use crate::chart_modal::Mark;
+use crate::chart::chart_modal::Mark;
 use crate::widgets::text_input::TextInput;
 use std::path::Path;
 
@@ -537,7 +537,10 @@ mod tests {
         modal.step(YFromZero, 1);
         assert_eq!(modal.y_from_zero_option(), Some(false));
         modal.mark = Mark::Scatter;
-        assert_eq!(modal.point_opacity, crate::chart_export::PointOpacity::Auto);
+        assert_eq!(
+            modal.point_opacity,
+            crate::chart::chart_export::PointOpacity::Auto
+        );
         modal.step(PointOpacity, 1);
         assert_eq!(modal.choice(PointOpacity), Some("100%"));
         modal.step(PointSize, -1);

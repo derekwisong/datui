@@ -53,6 +53,7 @@ mod cloud_hive;
 pub mod cloud_sources;
 pub mod codebook;
 pub mod column_types;
+pub mod columns;
 pub mod commands;
 pub mod config;
 pub mod config_command;

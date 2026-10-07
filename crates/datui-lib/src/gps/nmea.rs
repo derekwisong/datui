@@ -12,7 +12,7 @@
 use chrono::NaiveDate;
 use polars::prelude::*;
 
-use super::table::{Builder, Cell, Kind};
+use crate::columns::{Builder, Cell, Kind};
 
 /// The longest line read as a sentence. The standard allows 82 characters; vendors'
 /// own sentences run longer. A longer line is not NMEA and is skipped.

@@ -1,8 +1,6 @@
 //! A named web file in a catalog uses the normal download and open path.
 
-#![cfg(all(feature = "cloud", feature = "http"))]
-
-mod common;
+use crate::common;
 
 use std::io::{Read, Write};
 use std::sync::Arc;

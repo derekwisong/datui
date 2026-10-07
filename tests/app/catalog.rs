@@ -1,10 +1,9 @@
 //! Catalogs on the home screen: local and remote datasets under one heading, opened
 //! and browsed the way the rest of the home screen opens and browses; `catalog.toml`,
 //! which Ctrl+D writes; and the Documentation view.
-#![cfg(all(feature = "cloud", feature = "http"))]
 
-mod common;
-#[path = "common/fake_s3.rs"]
+use crate::common;
+#[path = "../common/fake_s3.rs"]
 mod fake_s3;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};

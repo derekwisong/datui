@@ -169,6 +169,7 @@ Run it after adding tests that build an `App` or touch the cache or config.
 | Path | Tests |
 |---|---|
 | `tests/integration_test.rs` | Load, query, display, end to end; `remote_quality::` (in `tests/quality/remote.rs`) counts Data Quality's requests at an in-process S3 bucket (`tests/common/fake_s3.rs`) |
+| `tests/app/` | `capture` (the view handed back at quit), `terminal_escape` (escape sequences in what is drawn), `catalog` and `public_datasets` (with the `cloud` and `http` features), `quality_export` (Data Quality intent and export) |
 | `tests/quality_spill_test.rs` | What a full Data Quality scan leaves on disk. Its own process: it sets Polars' spill directory before Polars reads it |
 | `tests/quality_bench_test.rs` | Data Quality's cost: time, requests, bytes, peak memory and spill. Ignored; `scripts/dev/quality_bench.py BEFORE_REF` runs it here and at an earlier commit |
 | `tests/data/` | One executable, a module each: `statistics`, `distribution` (analysis), `reshape` (pivot and melt), `excel` |

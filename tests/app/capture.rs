@@ -1,8 +1,8 @@
 //! `App::capture_view`: the frame `datui.view(..., capture=True)` hands back at quit.
 
-mod common;
+use crate::common;
 
-use common::{drain_events, pump_open_until_loaded};
+use crate::common::{drain_events, pump_open_until_loaded};
 
 use std::path::PathBuf;
 use std::sync::mpsc;

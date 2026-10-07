@@ -20,9 +20,9 @@ use ratatui::widgets::Widget;
 use std::path::PathBuf;
 use std::sync::mpsc;
 
-mod common;
+use crate::common;
 
-use common::pump_open_until_loaded;
+use crate::common::pump_open_until_loaded;
 
 /// Sequences worth trying, and what each would do if it escaped.
 ///

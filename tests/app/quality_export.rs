@@ -14,7 +14,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
-mod common;
+use crate::common;
 
 fn work_pending(app: &App) -> bool {
     app.is_busy() || app.row_count_pending()

@@ -558,35 +558,35 @@ impl DataTableState {
     /// Returns true if a scroll by `rows` would trigger a collect (view would leave the buffer).
     /// Used so the UI only shows the throbber when actual data loading will occur.
     pub fn scroll_would_trigger_collect(&self, rows: i64) -> bool {
-        if rows < 0 && self.start_row == 0 {
+        if rows < 0 && self.view.start_row == 0 {
             return false;
         }
-        let new_start_row = if self.start_row as i64 + rows <= 0 {
+        let new_start_row = if self.view.start_row as i64 + rows <= 0 {
             0
         } else {
-            if let Some(df) = self.df.as_ref()
+            if let Some(df) = self.view.df.as_ref()
                 && rows > 0
                 && df.shape().0 <= self.visible_rows
             {
                 return false;
             }
-            let unclamped = (self.start_row as i64 + rows) as usize;
+            let unclamped = (self.view.start_row as i64 + rows) as usize;
             if rows > 0 {
-                unclamped.min(self.num_rows.saturating_sub(self.visible_rows))
+                unclamped.min(self.view.num_rows.saturating_sub(self.visible_rows))
             } else {
                 unclamped
             }
         };
-        if new_start_row == self.start_row {
+        if new_start_row == self.view.start_row {
             return false;
         }
         let view_end = new_start_row
             + self
                 .visible_rows
-                .min(self.num_rows.saturating_sub(new_start_row));
-        let within_buffer = new_start_row >= self.buffered_start_row
-            && view_end <= self.buffered_end_row
-            && self.buffered_end_row > 0;
+                .min(self.view.num_rows.saturating_sub(new_start_row));
+        let within_buffer = new_start_row >= self.view.buffered_start_row
+            && view_end <= self.view.buffered_end_row
+            && self.view.buffered_end_row > 0;
         !within_buffer
     }
 
@@ -595,44 +595,44 @@ impl DataTableState {
     /// (synchronous or async) to load the new buffer range.
     /// Returns true if a collect is needed (view is outside the current buffer).
     pub fn slide_table(&mut self, rows: i64) -> bool {
-        if rows < 0 && self.start_row == 0 {
+        if rows < 0 && self.view.start_row == 0 {
             return false;
         }
 
-        let new_start_row = if self.start_row as i64 + rows <= 0 {
+        let new_start_row = if self.view.start_row as i64 + rows <= 0 {
             0
         } else {
-            if let Some(df) = self.df.as_ref()
+            if let Some(df) = self.view.df.as_ref()
                 && rows > 0
                 && df.shape().0 <= self.visible_rows
             {
                 return false;
             }
-            let unclamped = (self.start_row as i64 + rows) as usize;
+            let unclamped = (self.view.start_row as i64 + rows) as usize;
             if rows > 0 {
                 // Clamp forward scroll to keep at least visible_rows of data in view.
                 // Without this, holding PageDown at the bottom pushes start_row past
                 // num_rows, which makes scroll_would_trigger_collect fire repeatedly
                 // and can leave busy stuck if the resulting collect is a no-op.
-                unclamped.min(self.num_rows.saturating_sub(self.visible_rows))
+                unclamped.min(self.view.num_rows.saturating_sub(self.visible_rows))
             } else {
                 unclamped
             }
         };
 
-        if new_start_row == self.start_row {
+        if new_start_row == self.view.start_row {
             return false;
         }
 
         let view_end = new_start_row
             + self
                 .visible_rows
-                .min(self.num_rows.saturating_sub(new_start_row));
-        let within_buffer = new_start_row >= self.buffered_start_row
-            && view_end <= self.buffered_end_row
-            && self.buffered_end_row > 0;
+                .min(self.view.num_rows.saturating_sub(new_start_row));
+        let within_buffer = new_start_row >= self.view.buffered_start_row
+            && view_end <= self.view.buffered_end_row
+            && self.view.buffered_end_row > 0;
 
-        self.start_row = new_start_row;
+        self.view.start_row = new_start_row;
 
         if within_buffer {
             if self.table_state.selected().is_none() {
@@ -652,10 +652,10 @@ impl DataTableState {
         if self.defer_collect {
             return;
         }
-        if !self.num_rows_valid {
+        if !self.view.num_rows_valid {
             // A count that fails means the frame itself is broken: say so rather than
             // draw it as empty.
-            match collect_lazy(row_count_lf(&self.lf), self.polars_streaming) {
+            match collect_lazy(row_count_lf(&self.view.lf), self.polars_streaming) {
                 Ok(df) => {
                     self.error = None;
                     let n = match df.get(0).as_deref().and_then(|row| row.first()) {
@@ -701,10 +701,11 @@ impl DataTableState {
     /// correlation), where reading multi-GB blobs across partitions would otherwise exhaust
     /// memory and freeze the process. The full bytes stay available through `lf` for export.
     pub(crate) fn binary_stub_exprs(&self) -> Vec<Expr> {
-        self.column_order
+        self.view
+            .column_order
             .iter()
             .map(|name| {
-                if matches!(self.schema.get(name.as_str()), Some(DataType::Binary)) {
+                if matches!(self.view.schema.get(name.as_str()), Some(DataType::Binary)) {
                     lit(binary_stub()).alias(name.as_str())
                 } else {
                     col(name.as_str())
@@ -722,91 +723,93 @@ impl DataTableState {
         }
 
         if let Some(n) = num_rows_override {
-            self.num_rows = n;
-            self.num_rows_valid = true;
+            self.view.num_rows = n;
+            self.view.num_rows_valid = true;
         }
 
         // `bound` is the exact total when known, or `usize::MAX` while the background
-        // `len()` is still running. Using it instead of `self.num_rows` lets us plan a
+        // `len()` is still running. Using it instead of `self.view.num_rows` lets us plan a
         // top-of-data window for first paint without waiting for the count. See
         // `num_rows_bound`.
-        let count_known = self.num_rows_valid;
+        let count_known = self.view.num_rows_valid;
         let bound = self.num_rows_bound();
 
         if count_known {
-            if self.num_rows > 0 {
-                let max_start = self.num_rows.saturating_sub(1);
-                if self.start_row > max_start {
-                    self.start_row = max_start;
+            if self.view.num_rows > 0 {
+                let max_start = self.view.num_rows.saturating_sub(1);
+                if self.view.start_row > max_start {
+                    self.view.start_row = max_start;
                 }
             } else {
                 // Confirmed-empty dataset: clear everything.
-                self.start_row = 0;
+                self.view.start_row = 0;
                 self.drop_buffer();
-                self.df = None;
-                self.locked_df = None;
+                self.view.df = None;
+                self.view.locked_df = None;
                 return None;
             }
         }
 
         // No column shown: there are no rows to read, and a read of none would come
         // back empty and ask again.
-        if self.column_order.is_empty() {
+        if self.view.column_order.is_empty() {
             self.drop_buffer();
-            self.df = None;
-            self.locked_df = None;
+            self.view.df = None;
+            self.view.locked_df = None;
             return None;
         }
 
-        let view_start = self.start_row;
-        let view_end = self.start_row + self.visible_rows.min(bound - self.start_row);
-        let within_buffer = view_start >= self.buffered_start_row
-            && view_end <= self.buffered_end_row
-            && self.buffered_end_row > 0;
+        let view_start = self.view.start_row;
+        let view_end = self.view.start_row + self.visible_rows.min(bound - self.view.start_row);
+        let within_buffer = view_start >= self.view.buffered_start_row
+            && view_end <= self.view.buffered_end_row
+            && self.view.buffered_end_row > 0;
 
         // Compute the buffer range using the same logic as collect().
         let (new_buffer_start, new_buffer_end) = if within_buffer {
-            let dist_to_start = view_start.saturating_sub(self.buffered_start_row);
-            let dist_to_end = self.buffered_end_row.saturating_sub(view_end);
+            let dist_to_start = view_start.saturating_sub(self.view.buffered_start_row);
+            let dist_to_end = self.view.buffered_end_row.saturating_sub(view_end);
             let needs_expansion_back =
-                dist_to_start <= self.proximity_threshold && self.buffered_start_row > 0;
+                dist_to_start <= self.proximity_threshold && self.view.buffered_start_row > 0;
             let needs_expansion_forward =
-                dist_to_end <= self.proximity_threshold && self.buffered_end_row < bound;
+                dist_to_end <= self.proximity_threshold && self.view.buffered_end_row < bound;
 
             if !needs_expansion_back && !needs_expansion_forward {
                 // Buffer is fine, just re-slice display.
-                (self.buffered_start_row, self.buffered_end_row)
+                (self.view.buffered_start_row, self.view.buffered_end_row)
             } else {
                 let mut s = if needs_expansion_back {
                     view_start.saturating_sub(self.reach_rows(self.pages_lookback))
                 } else {
-                    self.buffered_start_row
+                    self.view.buffered_start_row
                 };
                 let mut e = if needs_expansion_forward {
                     (view_end + self.reach_rows(self.pages_lookahead)).min(bound)
                 } else {
-                    self.buffered_end_row
+                    self.view.buffered_end_row
                 };
                 self.fit_window(view_start, view_end, &mut s, &mut e);
                 (s, e)
             }
         } else {
-            let had_buffer = self.buffered_end_row > 0;
-            let scrolled_past_end = had_buffer && view_start >= self.buffered_end_row;
-            let scrolled_past_start = had_buffer && view_end <= self.buffered_start_row;
+            let had_buffer = self.view.buffered_end_row > 0;
+            let scrolled_past_end = had_buffer && view_start >= self.view.buffered_end_row;
+            let scrolled_past_start = had_buffer && view_end <= self.view.buffered_start_row;
             let extend_forward_ok = scrolled_past_end
-                && (view_start - self.buffered_end_row) <= self.reach_rows(self.pages_lookahead);
+                && (view_start - self.view.buffered_end_row)
+                    <= self.reach_rows(self.pages_lookahead);
             let extend_backward_ok = scrolled_past_start
-                && (self.buffered_start_row - view_end) <= self.reach_rows(self.pages_lookback);
+                && (self.view.buffered_start_row - view_end)
+                    <= self.reach_rows(self.pages_lookback);
 
             let mut s;
             let mut e;
             if extend_forward_ok {
-                s = self.buffered_start_row;
+                s = self.view.buffered_start_row;
                 e = (view_end + self.reach_rows(self.pages_lookahead)).min(bound);
             } else if extend_backward_ok {
                 s = view_start.saturating_sub(self.reach_rows(self.pages_lookback));
-                e = self.buffered_end_row;
+                e = self.view.buffered_end_row;
             } else {
                 s = view_start.saturating_sub(self.reach_rows(self.pages_lookback));
                 e = (view_end + self.reach_rows(self.pages_lookahead)).min(bound);
@@ -856,7 +859,7 @@ impl DataTableState {
         // this buffer). `apply_async_collect` keeps `num_rows_valid` false so the
         // background `len()` corrects it, unless the short read reveals the true end.
         let num_rows = if count_known {
-            self.num_rows
+            self.view.num_rows
         } else {
             new_buffer_end
         };
@@ -882,9 +885,9 @@ impl DataTableState {
     ) -> FillPlan {
         let held = self
             .abuts_buffer(buffer_start, buffer_end.saturating_sub(buffer_start))
-            .then(|| self.buffered_df.clone())
+            .then(|| self.view.buffered_df.clone())
             .flatten()
-            .map(|df| (df, self.buffered_start_row));
+            .map(|df| (df, self.view.buffered_start_row));
         FillPlan {
             buffer_start,
             buffer_end,
@@ -892,7 +895,7 @@ impl DataTableState {
             count_known,
             indexing: self.indexing().is_some(),
             held,
-            view_start: self.start_row,
+            view_start: self.view.start_row,
             view_len: self.visible_rows,
             max_rows: self.max_buffered_rows,
             max_mb: self.max_buffered_mb,
@@ -916,8 +919,8 @@ impl DataTableState {
         let requested_rows = buffer_end.saturating_sub(buffer_start);
 
         if count_known {
-            self.num_rows = num_rows;
-            self.num_rows_valid = true;
+            self.view.num_rows = num_rows;
+            self.view.num_rows_valid = true;
         } else if returned_rows < requested_rows
             && (buffer_start == 0 || returned_rows > 0)
             // Lines still being indexed end where the indexing has got to, not the file.
@@ -928,13 +931,13 @@ impl DataTableState {
             // without waiting for the background len() count. A slice deep in the
             // frame that found nothing may lie past the data entirely; only the count
             // can say where it ends.
-            self.num_rows = buffer_start + returned_rows;
-            self.num_rows_valid = true;
-        } else if !self.num_rows_valid {
+            self.view.num_rows = buffer_start + returned_rows;
+            self.view.num_rows_valid = true;
+        } else if !self.view.num_rows_valid {
             // Full buffer with the count still unresolved: render with a provisional
             // total (at least this buffer's end) and leave num_rows_valid false so the
             // in-flight background len() corrects it via count_landed().
-            self.num_rows = self.num_rows.max(buffer_end);
+            self.view.num_rows = self.view.num_rows.max(buffer_end);
         }
         // else: the background len() already resolved the exact count between this
         // buffer being requested and applied — keep it; don't downgrade to provisional.
@@ -942,7 +945,7 @@ impl DataTableState {
         self.remember_pristine_count();
 
         if bytes_per_row.is_some() {
-            self.observed_bytes_per_row = bytes_per_row;
+            self.view.observed_bytes_per_row = bytes_per_row;
         }
         // A fill that does not hold the view's first row was planned for rows since
         // replaced (a synchronous collect re-planned while it was out, or the view
@@ -953,24 +956,24 @@ impl DataTableState {
         // A read that came back short ends the data, so a view past it is shown by the
         // rows kept up to that end, and only by them: a cut may have dropped the end.
         let end = start + df.height();
-        let view_end = self.start_row + self.visible_rows.max(1);
+        let view_end = self.view.start_row + self.visible_rows.max(1);
         let reaches_end = end >= buffer_start + returned_rows;
-        let shows_view = start <= self.start_row
-            && (self.start_row < end || (returned_rows < requested_rows && reaches_end));
+        let shows_view = start <= self.view.start_row
+            && (self.view.start_row < end || (returned_rows < requested_rows && reaches_end));
         if !shows_view {
             self.needs_recollect = true;
             return;
         }
         self.release_display_buffer();
-        self.buffered_start_row = start;
-        self.buffered_end_row = end;
-        self.buffered_df = Some(df);
+        self.view.buffered_start_row = start;
+        self.view.buffered_end_row = end;
+        self.view.buffered_df = Some(df);
         // Slice the buffered DataFrame into display DataFrames (locked + scroll columns).
         self.slice_buffer_into_display();
         if self.table_state.selected().is_none() {
             self.table_state.select(Some(0));
         }
-        if view_end > end && end < self.num_rows {
+        if view_end > end && end < self.view.num_rows {
             self.needs_recollect = true;
         }
     }
@@ -979,7 +982,7 @@ impl DataTableState {
     /// them, so a fill of them is planned to be stitched on (see [`FillPlan`]).
     fn abuts_buffer(&self, start: usize, rows: usize) -> bool {
         self.stitches_buffer()
-            && (start == self.buffered_end_row || start + rows == self.buffered_start_row)
+            && (start == self.view.buffered_end_row || start + rows == self.view.buffered_start_row)
     }
 
     /// Invalidate num_rows cache when lf is mutated. Takes a fresh `len_generation` so any
@@ -1079,8 +1082,8 @@ impl DataTableState {
             return false;
         };
         let rows_stand = !reordered
-            && self.sort_columns.is_empty()
-            && self.sort_ascending
+            && self.view.sort_columns.is_empty()
+            && self.view.sort_ascending
             && self.scan_is_the_root();
         let rows = frame.height();
         self.each_frame(|lf| crate::table_sample::rebind(&mut lf.logical_plan, &old, &frame));
@@ -1107,7 +1110,7 @@ impl DataTableState {
         let schema = if from_source {
             &self.original_schema
         } else {
-            &self.schema
+            &self.view.schema
         };
         let columns: Vec<String> = schema
             .iter_names()
@@ -1115,7 +1118,7 @@ impl DataTableState {
             .map(|name| name.to_string())
             .collect();
         // What the table measured, when it measured these columns.
-        if !from_source && columns.len() == self.column_order.len() {
+        if !from_source && columns.len() == self.view.column_order.len() {
             return self.bytes_per_row();
         }
         estimate_bytes_per_row(schema, &columns, &self.column_bytes)
@@ -1149,8 +1152,8 @@ impl DataTableState {
     /// rows that know their file, or lines, while the frame is still the scan's. A
     /// query's rows, a reshape's and a group's stand for no row of the source.
     pub(crate) fn carries_source_rows(&self) -> bool {
-        self.drift_column_present
-            || (self.scan_is_the_root() && (self.source_rows_at_open || self.view_numbered))
+        self.view.drift_column_present
+            || (self.scan_is_the_root() && (self.source_rows_at_open || self.view.view_numbered))
     }
 
     /// What `#` shows for `rows` rows from `start`: each row's place in the source
@@ -1159,12 +1162,13 @@ impl DataTableState {
     pub fn row_numbers_from(&self, start: usize, rows: usize) -> Vec<usize> {
         let view = |i: usize| start + i + self.row_start_index;
         let places = self
+            .view
             .buffered_df
             .as_ref()
             .filter(|_| self.carries_source_rows())
             .and_then(|df| df.column(crate::schema_union::DRIFT_COLUMN).ok())
             .and_then(|column| {
-                let offset = start.checked_sub(self.buffered_start_row)?;
+                let offset = start.checked_sub(self.view.buffered_start_row)?;
                 let len = rows.min(column.len().saturating_sub(offset));
                 let slice = column.slice(offset as i64, len);
                 let places = slice.u32().ok()?;
@@ -1201,7 +1205,7 @@ impl DataTableState {
         all_columns: Vec<Expr>,
     ) -> PolarsResult<LazyFrame> {
         window_of(
-            &self.lf,
+            &self.view.lf,
             self.files_window(),
             self.window_now().as_deref(),
             &self.read_as_text,
@@ -1215,21 +1219,22 @@ impl DataTableState {
     /// read, and the buffer already on hand.
     pub(crate) fn view_rows(&self) -> ViewRows {
         ViewRows {
-            lf: self.lf.clone(),
+            lf: self.view.lf.clone(),
             files: self.files_window().cloned(),
             // A find reads every row it can reach: lines still being indexed are read
             // through the frame, which waits for them, not the window of those so far.
             records: self.window_now().filter(|_| self.indexing().is_none()),
             read_as_text: self.read_as_text.clone(),
             buffer: self
+                .view
                 .buffered_df
                 .as_ref()
                 .filter(|_| self.buffer_on_hand())
-                .map(|df| (df.clone(), self.buffered_start_row)),
-            num_rows: self.num_rows_valid.then_some(self.num_rows),
+                .map(|df| (df.clone(), self.view.buffered_start_row)),
+            num_rows: self.view.num_rows_valid.then_some(self.view.num_rows),
             streaming: self.polars_streaming,
-            whole: sees_every_row_first(&self.lf),
-            reads_up_to: reads_up_to_a_window(&self.lf),
+            whole: sees_every_row_first(&self.view.lf),
+            reads_up_to: reads_up_to_a_window(&self.view.lf),
         }
     }
 
@@ -1237,22 +1242,26 @@ impl DataTableState {
     /// Returns true if a collect is needed. A row past a provisional total is one the
     /// find read, so the total reaches it until the count lands.
     pub(crate) fn go_to_found_row(&mut self, row: usize) -> bool {
-        if !self.num_rows_valid && self.num_rows <= row {
-            self.num_rows = row + 1;
+        if !self.view.num_rows_valid && self.view.num_rows <= row {
+            self.view.num_rows = row + 1;
         }
         self.scroll_to_row_centered(row)
     }
 
     /// The view row the cursor is on.
     pub(crate) fn cursor_row(&self) -> usize {
-        self.start_row + self.table_state.selected().unwrap_or(0)
+        self.view.start_row + self.table_state.selected().unwrap_or(0)
     }
 
     /// Bytes a buffered row takes: measured on the last buffer collected, or until
     /// then estimated from the schema.
     pub(super) fn bytes_per_row(&self) -> usize {
-        self.observed_bytes_per_row.unwrap_or_else(|| {
-            estimate_bytes_per_row(&self.schema, &self.column_order, &self.column_bytes)
+        self.view.observed_bytes_per_row.unwrap_or_else(|| {
+            estimate_bytes_per_row(
+                &self.view.schema,
+                &self.view.column_order,
+                &self.column_bytes,
+            )
         })
     }
 
@@ -1336,7 +1345,7 @@ impl DataTableState {
 
     /// True when the view already shows the last page, so End has nothing to load.
     pub fn at_end(&self) -> bool {
-        self.start_row == self.num_rows.saturating_sub(self.visible_rows)
+        self.view.start_row == self.view.num_rows.saturating_sub(self.visible_rows)
     }
 
     /// Fit a planned buffer `[buffer_start, buffer_end)` to the caps: `max_buffered_rows`
@@ -1409,7 +1418,7 @@ impl DataTableState {
         // A view straddling two groups needs both, but one is on hand: fetch the other
         // alone and stitch it on (see `apply_async_collect`).
         if self.buffer_on_hand() {
-            let (held_start, held_end) = (self.buffered_start_row, self.buffered_end_row);
+            let (held_start, held_end) = (self.view.buffered_start_row, self.view.buffered_end_row);
             if held_start <= *buffer_start && *buffer_start < held_end && held_end < *buffer_end {
                 *buffer_start = held_end;
             } else if *buffer_start < held_start
@@ -1426,43 +1435,45 @@ impl DataTableState {
     /// asked for takes effect.
     fn release_display_buffer(&mut self) {
         self.widths.rows_arrived();
-        self.buffered_df = None;
-        self.locked_df = None;
-        self.df = None;
+        self.view.buffered_df = None;
+        self.view.locked_df = None;
+        self.view.df = None;
     }
 
     /// Recompute locked_df and df from the cached full buffer. Used when only termcol_index (or locked columns) changed.
     pub(super) fn slice_buffer_into_display(&mut self) {
-        let full_df = match self.buffered_df.as_ref() {
+        let full_df = match self.view.buffered_df.as_ref() {
             Some(df) => df,
             None => return,
         };
 
-        if self.locked_columns_count > 0 {
+        if self.view.locked_columns_count > 0 {
             let locked_names: Vec<&str> = self
+                .view
                 .column_order
                 .iter()
-                .take(self.locked_columns_count)
+                .take(self.view.locked_columns_count)
                 .map(|s| s.as_str())
                 .collect();
             if let Ok(locked_df) = full_df.select(locked_names) {
-                self.locked_df = Some(locked_df);
+                self.view.locked_df = Some(locked_df);
             }
         } else {
-            self.locked_df = None;
+            self.view.locked_df = None;
         }
 
         let scroll_names: Vec<&str> = self
+            .view
             .column_order
             .iter()
             .skip(self.frozen_shown() + self.termcol_index)
             .map(|s| s.as_str())
             .collect();
         if scroll_names.is_empty() {
-            self.df = None;
+            self.view.df = None;
         } else {
             if let Ok(scroll_df) = full_df.select(scroll_names) {
-                self.df = Some(scroll_df);
+                self.view.df = Some(scroll_df);
             }
         }
     }
@@ -1473,20 +1484,20 @@ impl DataTableState {
     /// view had left it — and the page was blank while it happened.
     pub fn wants_to_load_ahead(&self) -> bool {
         if self.visible_rows == 0
-            || self.buffered_df.is_none()
-            || !self.page_on_hand(self.start_row)
+            || self.view.buffered_df.is_none()
+            || !self.page_on_hand(self.view.start_row)
         {
             return false;
         }
         let near = self.proximity();
-        let view_end = self.start_row
+        let view_end = self.view.start_row
             + self
                 .visible_rows
-                .min(self.num_rows_bound().saturating_sub(self.start_row));
-        let behind =
-            self.start_row - self.buffered_start_row <= near && self.buffered_start_row > 0;
-        let ahead = self.buffered_end_row - view_end <= near
-            && self.buffered_end_row < self.num_rows_bound();
+                .min(self.num_rows_bound().saturating_sub(self.view.start_row));
+        let behind = self.view.start_row - self.view.buffered_start_row <= near
+            && self.view.buffered_start_row > 0;
+        let ahead = self.view.buffered_end_row - view_end <= near
+            && self.view.buffered_end_row < self.num_rows_bound();
         behind || ahead
     }
 
@@ -1501,9 +1512,9 @@ impl DataTableState {
     pub fn buffer_position(&self) -> (u64, usize, usize, usize) {
         (
             self.len_generation(),
-            self.start_row,
-            self.buffered_start_row,
-            self.buffered_end_row,
+            self.view.start_row,
+            self.view.buffered_start_row,
+            self.view.buffered_end_row,
         )
     }
 
@@ -1511,10 +1522,10 @@ impl DataTableState {
     pub(crate) fn page_on_hand(&self, start: usize) -> bool {
         let bound = self.num_rows_bound();
         let end = start + self.visible_rows.min(bound.saturating_sub(start));
-        self.buffered_df.is_some()
-            && self.buffered_end_row > 0
-            && start >= self.buffered_start_row
-            && end <= self.buffered_end_row
+        self.view.buffered_df.is_some()
+            && self.view.buffered_end_row > 0
+            && start >= self.view.buffered_start_row
+            && end <= self.view.buffered_end_row
     }
 
     /// The first row to draw: the view's own once its rows are on hand, and until then
@@ -1522,13 +1533,13 @@ impl DataTableState {
     /// its rows are fetched, and drawn from there it was half a page of rows over half a
     /// page of nothing until the fetch landed.
     pub(crate) fn start_to_draw(&mut self) -> usize {
-        if self.page_on_hand(self.start_row) {
-            self.drawn_start = self.start_row;
-            self.start_row
-        } else if self.page_on_hand(self.drawn_start) {
-            self.drawn_start
+        if self.page_on_hand(self.view.start_row) {
+            self.view.drawn_start = self.view.start_row;
+            self.view.start_row
+        } else if self.page_on_hand(self.view.drawn_start) {
+            self.view.drawn_start
         } else {
-            self.start_row
+            self.view.start_row
         }
     }
 }

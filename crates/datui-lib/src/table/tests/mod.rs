@@ -77,7 +77,10 @@ fn evidence_rows_hold_the_download_they_scan() {
     assert!(view.scans_a_download());
     drop(state);
     assert!(path.exists(), "the view still scans it");
-    assert_eq!(collect_lazy(view.lf.clone(), false).unwrap().height(), 2);
+    assert_eq!(
+        collect_lazy(view.view.lf.clone(), false).unwrap().height(),
+        2
+    );
     drop(view);
     assert!(!path.exists());
 }
@@ -114,7 +117,10 @@ fn evidence_rows_hold_the_decompressed_file_they_scan() {
     assert!(view.scans_a_temp_file());
     drop(state);
     assert!(path.exists(), "the view still scans it");
-    assert_eq!(collect_lazy(view.lf.clone(), false).unwrap().height(), 2);
+    assert_eq!(
+        collect_lazy(view.view.lf.clone(), false).unwrap().height(),
+        2
+    );
     drop(view);
     assert!(!path.exists());
 }
@@ -278,7 +284,7 @@ fn the_join_drops_the_rows_read_through_the_frame_it_replaced() {
     state.visible_rows = 2;
     state.collect();
     assert!(
-        state.buffered_df.is_some(),
+        state.view.buffered_df.is_some(),
         "there are rows on hand, read at the old schema"
     );
 
@@ -297,11 +303,11 @@ fn the_join_drops_the_rows_read_through_the_frame_it_replaced() {
     );
 
     assert!(
-        state.buffered_df.is_none(),
+        state.view.buffered_df.is_none(),
         "and they are let go, rather than drawn under the columns that replaced them"
     );
     assert_eq!(
-        (state.buffered_start_row, state.buffered_end_row),
+        (state.view.buffered_start_row, state.view.buffered_end_row),
         (0, 0),
         "with nothing left saying which rows they were"
     );
@@ -342,7 +348,7 @@ fn the_join_does_not_keep_a_width_measured_on_the_frame_it_replaced() {
         None,
     )
     .unwrap();
-    state.observed_bytes_per_row = Some(8);
+    state.view.observed_bytes_per_row = Some(8);
     let measured_narrow = state.bytes_per_row();
 
     assert!(
@@ -421,7 +427,7 @@ fn a_count_that_has_arrived_is_not_held_back_with_the_columns() {
     );
 
     // The user is in a query when it lands, so the columns cannot go in.
-    state.active_query = "select doubled: id * 2".to_string();
+    state.view.active_query = "select doubled: id * 2".to_string();
     let held = state.join_dataset_schema(FootersFound {
         estimate: None,
         dataset: dataset_of(wider()),
@@ -435,7 +441,7 @@ fn a_count_that_has_arrived_is_not_held_back_with_the_columns() {
 
     // What the footers said about the files stays, so letting the query go gets the
     // total back rather than sending anyone to fetch it again.
-    state.active_query.clear();
+    state.view.active_query.clear();
     state.restore_footer_count();
     assert_eq!(
         state.num_rows_if_valid(),
@@ -620,7 +626,7 @@ fn test_from_csv() {
     // Test uncompressed CSV loading
     let path = crate::tests::sample_data_dir().join("3-sfd-header.csv");
     let state = DataTableState::from_csv(&path, &Default::default()).unwrap(); // Uses default buffer params from options
-    assert_eq!(state.schema.len(), 6); // id, integer_col, float_col, string_col, boolean_col, date_col
+    assert_eq!(state.view.schema.len(), 6); // id, integer_col, float_col, string_col, boolean_col, date_col
 }
 
 #[test]
@@ -629,7 +635,7 @@ fn test_from_csv_gzipped() {
     // Test gzipped CSV loading
     let path = crate::tests::sample_data_dir().join("mixed_types.csv.gz");
     let state = DataTableState::from_csv(&path, &Default::default()).unwrap(); // Uses default buffer params from options
-    assert_eq!(state.schema.len(), 6); // id, integer_col, float_col, string_col, boolean_col, date_col
+    assert_eq!(state.view.schema.len(), 6); // id, integer_col, float_col, string_col, boolean_col, date_col
 }
 
 /// `--delimiter` reaches the in-memory readers of every compression, and the
@@ -680,7 +686,7 @@ fn test_delimiter_reaches_every_csv_reader() {
         ("null values, xz", &xz, &null_values_in_memory),
     ] {
         let state = DataTableState::from_csv(path, opts).unwrap();
-        let df = state.lf.clone().collect().unwrap();
+        let df = state.view.lf.clone().collect().unwrap();
         let names: Vec<_> = df
             .get_column_names()
             .iter()
@@ -705,12 +711,12 @@ fn test_from_delimited_tsv_has_header() {
     };
     let mut state = DataTableState::from_delimited(&path, b'\t', &opts).unwrap();
     state.collect();
-    assert_eq!(state.schema.len(), 4);
-    assert!(state.schema.contains("a"));
-    assert!(state.schema.contains("b"));
-    assert!(state.schema.contains("c"));
-    assert!(state.schema.contains("d"));
-    assert_eq!(state.num_rows, 2);
+    assert_eq!(state.view.schema.len(), 4);
+    assert!(state.view.schema.contains("a"));
+    assert!(state.view.schema.contains("b"));
+    assert!(state.view.schema.contains("c"));
+    assert!(state.view.schema.contains("d"));
+    assert_eq!(state.view.num_rows, 2);
 }
 
 #[test]
@@ -725,12 +731,12 @@ fn test_from_delimited_tsv_no_header() {
     };
     let mut state = DataTableState::from_delimited(&path, b'\t', &opts).unwrap();
     state.collect();
-    assert_eq!(state.schema.len(), 4);
-    assert!(state.schema.contains("column_1"));
-    assert!(state.schema.contains("column_2"));
-    assert!(state.schema.contains("column_3"));
-    assert!(state.schema.contains("column_4"));
-    assert_eq!(state.num_rows, 3);
+    assert_eq!(state.view.schema.len(), 4);
+    assert!(state.view.schema.contains("column_1"));
+    assert!(state.view.schema.contains("column_2"));
+    assert!(state.view.schema.contains("column_3"));
+    assert!(state.view.schema.contains("column_4"));
+    assert_eq!(state.view.num_rows, 3);
 }
 
 #[test]
@@ -745,11 +751,11 @@ fn test_from_delimited_psv_no_header() {
     };
     let mut state = DataTableState::from_delimited(&path, b'|', &opts).unwrap();
     state.collect();
-    assert_eq!(state.schema.len(), 3);
-    assert!(state.schema.contains("column_1"));
-    assert!(state.schema.contains("column_2"));
-    assert!(state.schema.contains("column_3"));
-    assert_eq!(state.num_rows, 3);
+    assert_eq!(state.view.schema.len(), 3);
+    assert!(state.view.schema.contains("column_1"));
+    assert!(state.view.schema.contains("column_2"));
+    assert!(state.view.schema.contains("column_3"));
+    assert_eq!(state.view.num_rows, 3);
 }
 
 #[test]
@@ -757,7 +763,7 @@ fn test_sort() {
     let lf = create_test_lf();
     let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
     state.sort(vec!["a".to_string()], false);
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.view.lf.clone().collect().unwrap();
     assert_eq!(df.column("a").unwrap().get(0).unwrap(), AnyValue::Int32(3));
 }
 
@@ -782,15 +788,15 @@ fn test_page_up_down() {
     state.visible_rows = 20;
     state.collect();
 
-    assert_eq!(state.start_row, 0);
+    assert_eq!(state.view.start_row, 0);
     state.page_down();
-    assert_eq!(state.start_row, 20);
+    assert_eq!(state.view.start_row, 20);
     state.page_down();
-    assert_eq!(state.start_row, 40);
+    assert_eq!(state.view.start_row, 40);
     state.page_up();
-    assert_eq!(state.start_row, 20);
+    assert_eq!(state.view.start_row, 20);
     state.page_up();
-    assert_eq!(state.start_row, 0);
+    assert_eq!(state.view.start_row, 0);
 }
 
 #[test]
@@ -815,6 +821,7 @@ fn test_reverse() {
     state.sort(vec!["a".to_string()], true);
     assert_eq!(
         state
+            .view
             .lf
             .clone()
             .collect()
@@ -828,6 +835,7 @@ fn test_reverse() {
     state.reverse();
     assert_eq!(
         state
+            .view
             .lf
             .clone()
             .collect()
@@ -841,7 +849,7 @@ fn test_reverse() {
 }
 
 fn column_values(state: &DataTableState, name: &str) -> Vec<Option<i64>> {
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.view.lf.clone().collect().unwrap();
     df.column(name)
         .unwrap()
         .cast(&DataType::Int64)
@@ -1205,25 +1213,25 @@ fn compacted_rows_own_their_storage() {
 /// A state with a 1 MB byte budget and the first column locked.
 fn trimming_state(lf: LazyFrame) -> DataTableState {
     let mut state = DataTableState::new(lf, None, None, None, Some(1), true).unwrap();
-    state.locked_columns_count = 1;
+    state.view.locked_columns_count = 1;
     state.visible_rows = 40;
     state
 }
 
 fn assert_view_rows(state: &DataTableState, source: &DataFrame) {
     let (start, end) = (state.buffered_start(), state.buffered_end());
-    assert!(start <= state.start_row && state.start_row + 40 <= end);
-    let held = state.buffered_df.as_ref().unwrap();
+    assert!(start <= state.view.start_row && state.view.start_row + 40 <= end);
+    let held = state.view.buffered_df.as_ref().unwrap();
     assert_eq!(held.height(), end - start);
     assert!(held.equals_missing(&source.slice(start as i64, end - start)));
     let id = |df: &DataFrame, row: usize| df.column("id").unwrap().i64().unwrap().get(row);
-    let locked = state.locked_df.as_ref().unwrap();
+    let locked = state.view.locked_df.as_ref().unwrap();
     assert_eq!(locked.get_column_names(), ["id"]);
     assert_eq!(
-        id(locked, state.start_row - start),
-        Some(state.start_row as i64)
+        id(locked, state.view.start_row - start),
+        Some(state.view.start_row as i64)
     );
-    let shown = state.df.as_ref().unwrap();
+    let shown = state.view.df.as_ref().unwrap();
     assert_eq!(shown.height(), held.height());
     assert!(
         shown.column("id").is_err(),
@@ -1243,9 +1251,9 @@ fn a_trimmed_fill_lets_go_of_the_rows_it_drops() {
 
     // Asynchronous: a plain fill over the budget.
     let mut state = trimming_state(source.clone().lazy());
-    state.num_rows = N;
-    state.num_rows_valid = true;
-    state.start_row = 7_500;
+    state.view.num_rows = N;
+    state.view.num_rows_valid = true;
+    state.view.start_row = 7_500;
     // The worker makes the copy; the UI thread installs it as it is.
     let plan = state.fill_plan(0, N, N, true);
     let fill = source.clone();
@@ -1272,24 +1280,24 @@ fn a_fill_cut_around_a_view_since_left_is_not_installed() {
     let source = mixed_frame(0, N);
     for short in [false, true] {
         let mut state = trimming_state(source.clone().lazy());
-        state.num_rows = N;
-        state.num_rows_valid = !short;
-        state.start_row = 300;
+        state.view.num_rows = N;
+        state.view.num_rows_valid = !short;
+        state.view.start_row = 300;
         let asked = if short { N + 5_000 } else { N };
         let result = state.fill_plan(0, asked, asked, !short).fit(source.clone());
         assert!(
             result.start + result.df.height() < 9_000,
             "the fill was cut"
         );
-        state.start_row = 9_000;
+        state.view.start_row = 9_000;
         state.needs_recollect = false;
         state.apply_async_collect(result);
         assert!(
-            state.buffered_df.is_none(),
+            state.view.buffered_df.is_none(),
             "nothing drawn under wrong numbers (short {short})"
         );
         assert!(state.needs_recollect);
-        assert_eq!((state.num_rows, state.num_rows_valid), (N, true));
+        assert_eq!((state.view.num_rows, state.view.num_rows_valid), (N, true));
     }
 }
 
@@ -1305,7 +1313,7 @@ fn an_untrimmed_fill_is_kept_as_collected() {
         num_rows: 200,
         count_known: true,
     });
-    let held = state.buffered_df.as_ref().unwrap();
+    let held = state.view.buffered_df.as_ref().unwrap();
     assert_eq!(frame_storage(held), frame_storage(&source));
 }
 
@@ -1332,16 +1340,16 @@ fn a_stitched_trim_lets_go_of_both_groups() {
     };
     let check = |state: &DataTableState, fetched: &[&DataFrame]| {
         let (start, end) = (state.buffered_start(), state.buffered_end());
-        assert!(start <= state.start_row && state.start_row + 40 <= end);
+        assert!(start <= state.view.start_row && state.view.start_row + 40 <= end);
         assert_eq!(end - start, CAP, "trimmed back to the cap");
-        let held = state.buffered_df.as_ref().unwrap();
+        let held = state.view.buffered_df.as_ref().unwrap();
         let ids = held.column("id").unwrap().i64().unwrap();
         assert_eq!(ids.get(0), Some(start as i64));
         assert_eq!(ids.get(CAP - 1), Some(end as i64 - 1));
         for df in fetched {
             assert!(!shares_storage(held, df));
-            assert!(!shares_storage(state.locked_df.as_ref().unwrap(), df));
-            assert!(!shares_storage(state.df.as_ref().unwrap(), df));
+            assert!(!shares_storage(state.view.locked_df.as_ref().unwrap(), df));
+            assert!(!shares_storage(state.view.df.as_ref().unwrap(), df));
         }
     };
     let lf = rows(0, 1).df.lazy();
@@ -1353,7 +1361,7 @@ fn a_stitched_trim_lets_go_of_both_groups() {
                 row_groups: vec![vec![G; 10]],
                 ..Default::default()
             });
-        state.locked_columns_count = 1;
+        state.view.locked_columns_count = 1;
         state.visible_rows = 40;
         let (first, view) = if forward {
             (G - 60, G - 20)
@@ -1390,7 +1398,7 @@ fn a_stitched_trim_lets_go_of_both_groups() {
         check(&state, &[&first_df, &second_df]);
 
         // A window inside one group: the rows of the other are let go.
-        let stitched = state.buffered_df.clone().unwrap();
+        let stitched = state.view.buffered_df.clone().unwrap();
         let (start, end) = (state.buffered_start(), state.buffered_end());
         let (start, end, other) = if forward {
             (G, end, stitched.slice(0, G - start))
@@ -1402,10 +1410,10 @@ fn a_stitched_trim_lets_go_of_both_groups() {
         assert_eq!(compactions(), before, "the cut falls on the seam: a slice");
         state.slice_buffer_into_display();
         assert_eq!((state.buffered_start(), state.buffered_end()), (start, end));
-        let held = state.buffered_df.as_ref().unwrap();
+        let held = state.view.buffered_df.as_ref().unwrap();
         assert_eq!(held.height(), end - start);
         assert!(!shares_storage(held, &other));
-        assert!(!shares_storage(state.df.as_ref().unwrap(), &other));
+        assert!(!shares_storage(state.view.df.as_ref().unwrap(), &other));
         let ids = held.column("id").unwrap().i64().unwrap();
         assert_eq!(ids.get(0), Some(state.buffered_start() as i64));
     }
@@ -1648,7 +1656,7 @@ fn a_remote_dataset_reads_a_conflicting_column_as_text_on_every_window() {
         "the offer is taken"
     );
     assert_eq!(
-        state.schema.get("n"),
+        state.view.schema.get("n"),
         Some(&DataType::String),
         "the column is text now"
     );
@@ -1788,8 +1796,8 @@ fn a_remote_source_buffers_one_window_and_pages_inside_it_for_free() {
             remote_source: true,
             ..Default::default()
         });
-    state.num_rows = 1_000_000;
-    state.num_rows_valid = true;
+    state.view.num_rows = 1_000_000;
+    state.view.num_rows_valid = true;
     state.visible_rows = 40;
     let window = |start: usize| Fill {
         df: df!("a" => (0..10_000).collect::<Vec<i32>>()).unwrap(),
@@ -1874,7 +1882,7 @@ fn a_remote_object_is_read_inside_its_row_group() {
             row_groups: vec![vec![G; 10]],
             ..Default::default()
         });
-    assert_eq!(state.num_rows, 10 * G);
+    assert_eq!(state.view.num_rows, 10 * G);
     state.visible_rows = 40;
     let rows = |start: usize, end: usize| Fill {
         df: df!("a" => (start as i32..end as i32).collect::<Vec<i32>>()).unwrap(),
@@ -1910,7 +1918,7 @@ fn a_remote_object_is_read_inside_its_row_group() {
         "the view is on hand"
     );
     assert_eq!(held_end - held_start, CAP, "trimmed back to the cap");
-    let held = state.buffered_df.as_ref().unwrap();
+    let held = state.view.buffered_df.as_ref().unwrap();
     assert_eq!(held.height(), CAP);
     assert_eq!(
         held.column("a").unwrap().i32().unwrap().get(G - held_start),
@@ -1984,7 +1992,7 @@ fn a_wide_schema_is_budgeted_before_the_collect() {
             ..Default::default()
         });
     assert_eq!(
-        estimate_bytes_per_row(&state.schema, &state.column_order, &[]),
+        estimate_bytes_per_row(&state.view.schema, &state.view.column_order, &[]),
         8_000
     );
     state.visible_rows = 40;
@@ -2030,8 +2038,8 @@ fn a_collected_buffer_measures_the_next_plan() {
     let big: Vec<String> = (0..100).map(|_| "z".repeat(2_000)).collect();
     let lf = df!("a" => &big).unwrap().lazy();
     let mut state = DataTableState::new(lf, None, None, None, Some(1), true).unwrap();
-    state.num_rows = 1_000_000;
-    state.num_rows_valid = true;
+    state.view.num_rows = 1_000_000;
+    state.view.num_rows_valid = true;
     state.visible_rows = 40;
     let guessed = state.byte_cap_rows();
     assert_eq!(guessed, 1024 * 1024 / STRING_BYTES_GUESS);
@@ -2058,18 +2066,18 @@ fn a_count_below_the_view_brings_the_view_back() {
         .lazy();
     let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
     state.visible_rows = 10;
-    state.num_rows = 10_000;
-    state.num_rows_valid = true;
+    state.view.num_rows = 10_000;
+    state.view.num_rows_valid = true;
     assert!(state.scroll_to_end());
-    assert_eq!(state.start_row, 9_990);
+    assert_eq!(state.view.start_row, 9_990);
     state.set_num_rows(100);
-    assert_eq!(state.start_row, 90);
+    assert_eq!(state.view.start_row, 90);
     assert!(state.needs_recollect);
 
     // A slice deep in the frame that found nothing is not the count.
     state.needs_recollect = false;
-    state.num_rows_valid = false;
-    state.start_row = 9_990;
+    state.view.num_rows_valid = false;
+    state.view.start_row = 9_990;
     state.land(Fill {
         df: df!("a" => Vec::<i32>::new()).unwrap(),
         buffer_start: 9_990,
@@ -2078,7 +2086,7 @@ fn a_count_below_the_view_brings_the_view_back() {
         count_known: false,
     });
     assert!(
-        !state.num_rows_valid,
+        !state.view.num_rows_valid,
         "only the count can say where it ends"
     );
 }
@@ -2237,7 +2245,7 @@ fn binary_columns_are_stubbed_in_display_buffer() {
     state.visible_rows = 10;
     state.collect();
 
-    let df = state.df.as_ref().expect("display df present");
+    let df = state.view.df.as_ref().expect("display df present");
     let col = df.column("blob").expect("blob column present in buffer");
     assert_eq!(
         col.dtype(),
@@ -2263,7 +2271,7 @@ fn analysis_describe_stubs_binary_columns_without_reading_blobs() {
         .lazy();
     let state = DataTableState::new(lf, None, None, None, None, true).unwrap();
 
-    let analysis_lf = state.lf.clone().select(state.binary_stub_exprs());
+    let analysis_lf = state.view.lf.clone().select(state.binary_stub_exprs());
     let results = crate::statistics::compute_describe_from_lazy(
         &analysis_lf,
         Some(3),
@@ -2362,8 +2370,8 @@ fn a_sideways_scroll_keeps_lists_in_the_display_frames() {
     state.scroll_right();
     let is_list =
         |df: &DataFrame, name: &str| matches!(df.column(name).unwrap().dtype(), DataType::List(_));
-    assert!(is_list(state.locked_df.as_ref().unwrap(), "tags"));
-    assert!(is_list(state.df.as_ref().unwrap(), "more"));
+    assert!(is_list(state.view.locked_df.as_ref().unwrap(), "tags"));
+    assert!(is_list(state.view.df.as_ref().unwrap(), "more"));
 }
 
 /// A state over thirty text columns of mixed widths, drawn once at 50 wide.

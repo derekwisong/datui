@@ -187,7 +187,10 @@ fn test_hive_directory_is_one_dataset() {
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].name, "sales");
     assert_eq!(entries[0].kind, EntryKind::Unknown);
-    assert_eq!(datui::home::look_into(&entries[0]).kind, EntryKind::Hive);
+    assert_eq!(
+        datui::home::look_into_as(&entries[0], &Default::default()).kind,
+        EntryKind::Hive
+    );
 }
 
 /// Files of one format make a dataset; two formats, or a few data files among many
@@ -3871,7 +3874,7 @@ fn test_a_directory_row_is_labelled_by_what_the_pass_counted() {
     assert_eq!(unlooked.kind, datui::discover::EntryKind::Unknown);
 
     // What the background pass does with it, and what it hands back.
-    let probe = datui::home::look_into(&unlooked);
+    let probe = datui::home::look_into_as(&unlooked, &Default::default());
     home.enriched.insert(
         directory.clone(),
         datui::home::measured_from(&probe, &unlooked),
@@ -5329,9 +5332,10 @@ fn a_found_dataset_matches_by_its_remembered_columns() {
     home.search.running = true;
 
     let mut walked = Vec::new();
-    datui::search::walk(
+    datui::search::walk_with_specs(
         tmp.path(),
         &datui::config::SearchConfig::default(),
+        &datui::formats::Registry::default(),
         |batch, _| {
             walked.extend(batch);
             true

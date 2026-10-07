@@ -15,10 +15,15 @@ fn touch(path: &Path) {
 /// Collect every result of a walk, ignoring the streaming.
 fn walk_all(root: &Path, config: &SearchConfig) -> (Vec<Entry>, search::Outcome) {
     let mut all = Vec::new();
-    let outcome = search::walk(root, config, |batch, _| {
-        all.extend(batch);
-        true
-    });
+    let outcome = search::walk_with_specs(
+        root,
+        config,
+        &datui::formats::Registry::default(),
+        |batch, _| {
+            all.extend(batch);
+            true
+        },
+    );
     (all, outcome)
 }
 
@@ -217,13 +222,18 @@ fn test_results_stream_rather_than_arriving_all_at_once() {
 
     let mut batches = 0usize;
     let mut total = 0usize;
-    search::walk(tmp.path(), &SearchConfig::default(), |batch, _| {
-        if !batch.is_empty() {
-            batches += 1;
-            total += batch.len();
-        }
-        true
-    });
+    search::walk_with_specs(
+        tmp.path(),
+        &SearchConfig::default(),
+        &datui::formats::Registry::default(),
+        |batch, _| {
+            if !batch.is_empty() {
+                batches += 1;
+                total += batch.len();
+            }
+            true
+        },
+    );
     assert_eq!(total, 500);
     assert!(batches >= 1, "results must be handed back at least once");
 }
@@ -238,10 +248,15 @@ fn test_a_walk_stops_when_the_caller_stops_wanting_it() {
     }
 
     let mut seen = 0usize;
-    search::walk(tmp.path(), &SearchConfig::default(), |batch, _| {
-        seen += batch.len();
-        false // stop after the first batch
-    });
+    search::walk_with_specs(
+        tmp.path(),
+        &SearchConfig::default(),
+        &datui::formats::Registry::default(),
+        |batch, _| {
+            seen += batch.len();
+            false // stop after the first batch
+        },
+    );
     assert!(
         seen < 5_000,
         "returning false should abandon the walk, not merely be ignored"

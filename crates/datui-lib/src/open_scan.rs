@@ -603,7 +603,7 @@ impl App {
     }
 
     /// What `datui <path>` does with a directory, by the same rule as `Enter` on its
-    /// row ([`home::look_into`]): a hive root or a one-table directory opens as one
+    /// row ([`home::look_into_as`]): a hive root or a one-table directory opens as one
     /// table, any other opens home browsed into it. `--hive` still forces partition
     /// columns. Stats the path, so `run` calls it on a worker
     /// ([`AppEvent::OpenNamed`]); returns `LookThenOpenDirectory` or `Open`.

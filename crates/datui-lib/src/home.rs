@@ -1796,22 +1796,17 @@ impl Listing {
     }
 }
 
-/// Find out what a row is, then what is in it, in one pass on the same filesystem.
-/// `measure_row` does nothing for a plain directory.
-pub fn look_into(entry: &Entry) -> Entry {
-    look_into_as(entry, &crate::schema_union::ReadAs::default())
-}
-
-/// As [`look_into`], reading files as the following open will: for the command line,
-/// which has the user's reader settings. Listing passes use the defaults, as a home
-/// open does.
+/// Find out what a row is, then what is in it, in one pass on the same filesystem
+/// (`measure_row` does nothing for a plain directory), reading files as the following
+/// open will: the command line passes the user's reader settings; listing passes use
+/// the defaults, as a home open does.
 pub fn look_into_as(entry: &Entry, as_read: &crate::schema_union::ReadAs) -> Entry {
     let mut probe = classify_row(entry);
     measure_row(&mut probe, entry, as_read, None);
     probe
 }
 
-/// The first half of [`look_into`]: what a row nothing has looked into is.
+/// The first half of [`look_into_as`]: what a row nothing has looked into is.
 fn classify_row(entry: &Entry) -> Entry {
     let mut probe = entry.clone();
     if probe.kind == EntryKind::Unknown && probe.path.is_dir() {
@@ -1822,7 +1817,7 @@ fn classify_row(entry: &Entry) -> Entry {
     probe
 }
 
-/// The second half of [`look_into`]: what is in it, from the files or from what an
+/// The second half of [`look_into_as`]: what is in it, from the files or from what an
 /// open kept in `remembered`.
 fn measure_row(
     probe: &mut Entry,
@@ -4489,7 +4484,7 @@ impl HomeState {
         let wanted = self.unclassified_visible(limit);
         let more = self.unclassified_visible(limit + 1).len() > wanted.len();
         for entry in wanted {
-            let probe = look_into(&entry);
+            let probe = look_into_as(&entry, &Default::default());
             self.enriched
                 .insert(entry.path.clone(), measured_from(&probe, &entry));
         }
@@ -5368,7 +5363,7 @@ mod known_facts_tests {
 
     /// What a directory holds comes back with its kind, on both routes.
     ///
-    /// A row given a kind from the cache is never looked into again — `look_into` only
+    /// A row given a kind from the cache is never looked into again — `look_into_as` only
     /// classifies an `Unknown`, and `unclassified_visible` skips anything else. So a
     /// count left behind is left behind for the session: the row says `dir` about a
     /// directory of fifteen Parquet files, and `enrich` goes on to describe it by

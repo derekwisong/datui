@@ -54,16 +54,9 @@ const BATCH_INTERVAL: Duration = Duration::from_millis(120);
 
 /// Walk `root` for datasets, handing batches to `emit`; `emit` returns `false` to
 /// abandon the walk. Blocks on the filesystem: never call from the drawing thread.
-pub fn walk<F>(root: &Path, config: &SearchConfig, emit: F) -> Outcome
-where
-    F: FnMut(Vec<Entry>, Outcome) -> bool,
-{
-    walk_up_to(root, config, MAX_INDEXED, emit)
-}
-
-/// [`walk`], keeping the files `formats` reads as well, as the listing names them: by a
-/// spec's glob, or by its magic in the first bytes of a file whose name says nothing,
-/// at most `crate::discover::MAX_SNIFFS_PER_DIR` of them a directory.
+/// Keeps the files `formats` reads as well, as the listing names them: by a spec's
+/// glob, or by its magic in the first bytes of a file whose name says nothing, at most
+/// `crate::discover::MAX_SNIFFS_PER_DIR` of them a directory.
 pub fn walk_with_specs<F>(
     root: &Path,
     config: &SearchConfig,
@@ -76,7 +69,7 @@ where
     walk_inner(root, config, MAX_INDEXED, formats, emit)
 }
 
-/// [`walk`], keeping at most `cap` files.
+/// [`walk_with_specs`] with no specs, keeping at most `cap` files.
 pub fn walk_up_to<F>(root: &Path, config: &SearchConfig, cap: usize, emit: F) -> Outcome
 where
     F: FnMut(Vec<Entry>, Outcome) -> bool,

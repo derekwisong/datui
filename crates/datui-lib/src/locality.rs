@@ -80,13 +80,6 @@ impl Source {
         &self.fstype
     }
 
-    /// Whether this is worth flagging on a row. Local disk is the unremarkable case
-    /// and saying so on every row would be noise; everything else changes what
-    /// pressing Enter means.
-    pub fn notable(&self) -> bool {
-        !matches!(self.locality, Locality::Local)
-    }
-
     pub fn network(&self) -> bool {
         self.locality == Locality::Network
     }

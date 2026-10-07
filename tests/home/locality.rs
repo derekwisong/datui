@@ -76,15 +76,6 @@ fn test_locality_separates_what_behaves_differently() {
 }
 
 #[test]
-fn test_local_disk_is_not_worth_flagging_but_everything_else_is() {
-    // Saying "ext4" on every row would be noise. Saying "nfs4" on one row is not.
-    let m = mounts();
-    assert!(!m.describe(Path::new("/home/x")).notable());
-    assert!(m.describe(Path::new("/tmp/x")).notable());
-    assert!(m.describe(Path::new("/mnt/nas/data/x")).notable());
-}
-
-#[test]
 fn test_object_store_urls_are_recognised_without_touching_the_network() {
     let m = mounts();
     for (url, scheme) in [
@@ -95,7 +86,6 @@ fn test_object_store_urls_are_recognised_without_touching_the_network() {
         let source = m.describe(Path::new(url));
         assert_eq!(source.fstype, scheme, "for {url}");
         assert_eq!(source.locality, Locality::Object, "for {url}");
-        assert!(source.notable());
     }
 }
 

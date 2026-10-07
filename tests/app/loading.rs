@@ -4781,7 +4781,7 @@ fn test_a_directory_of_csv_is_judged_by_its_headers_like_one_of_parquet() {
     let looked_at = |dir: &Path| {
         let mut entry = datui::discover::Entry::directory(dir);
         entry.kind = datui::discover::EntryKind::Unknown;
-        datui::home::look_into(&entry)
+        datui::home::look_into_as(&entry, &Default::default())
     };
 
     // Files that agree: one table, as before.

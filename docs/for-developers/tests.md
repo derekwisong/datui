@@ -30,7 +30,7 @@ the executables Cargo builds.
 | `./scripts/dev/test.sh integration data statistics::` | Data integration executable; only its statistics module executes |
 | `./scripts/dev/test.sh cli` | CLI library tests |
 | `./scripts/dev/test.sh fmt` | Format the workspace, the fuzz targets and `crates/datui-pyo3` (`--check` only checks) |
-| `./scripts/dev/test.sh lint` | Formatting check and clippy with all targets, in the workspace, the fuzz targets and `crates/datui-pyo3`; `preflight` is the same |
+| `./scripts/dev/test.sh lint` | Formatting check and clippy with all targets, in the workspace, the fuzz targets and `crates/datui-pyo3`; then `ruff check`, `shellcheck` and `typos`, each skipped with a note when not installed; `preflight` is the same |
 | `./scripts/dev/test.sh clippy` | Workspace clippy alone, as the pre-commit hook runs it |
 | `./scripts/dev/test.sh msrv` | `cargo +<rust-version> check --workspace`, with the version from `Cargo.toml` |
 | `./scripts/dev/test.sh docs` | The [documentation checks](documentation.md#run-the-checks) and the docs and demo scripts' tests |

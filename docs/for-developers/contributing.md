@@ -59,7 +59,11 @@ hand.
 ```
 
 `lint` checks formatting and runs clippy in the workspace, the fuzz targets and
-`crates/datui-pyo3`, as CI does. Then:
+`crates/datui-pyo3`, as CI does. Then it runs
+[ruff](https://docs.astral.sh/ruff/) on the Python scripts (`ruff.toml`),
+[shellcheck](https://www.shellcheck.net) on the shell scripts and
+[typos](https://github.com/crate-ci/typos) on everything (`_typos.toml` holds
+the words spelled on purpose), each only when installed. Then:
 
 | Changed | Also |
 |---|---|

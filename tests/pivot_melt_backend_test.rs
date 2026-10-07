@@ -13,11 +13,7 @@ use std::sync::mpsc;
 
 mod common;
 
-use common::{drain_events, pump_open_until_loaded};
-
-fn ensure_sample_data() {
-    common::ensure_sample_data();
-}
+use common::{drain_events, ensure_sample_data, pump_open_until_loaded};
 
 fn load_file_with(
     app: &mut App,

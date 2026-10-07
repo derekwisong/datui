@@ -9,7 +9,7 @@ use datui::{App, AppEvent, OpenOptions};
 #[path = "../../crates/datui-lib/src/tests/shared.rs"]
 mod shared;
 #[allow(unused_imports)]
-pub use shared::{buffer_lines, buffer_text, ensure_sample_data, sample_data_dir};
+pub use shared::{buffer_lines, buffer_text, ensure_sample_data, sample_data_dir, test_runtime};
 
 /// How long a wait goes before it fails the test. Only a hang guard; nothing is timed.
 #[allow(dead_code)]
@@ -153,24 +153,6 @@ pub fn pump_open_until_loaded(
             },
         }
     }
-}
-
-/// Returns a tokio runtime handle for use in tests.
-#[allow(dead_code)]
-pub fn test_runtime() -> tokio::runtime::Handle {
-    // Every test that builds an App comes through here, so this is the one place
-    // that guarantees none of them writes to the developer's real cache.
-    isolate_cache();
-    static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
-    RT.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
-            .enable_all()
-            .build()
-            .expect("test tokio runtime")
-    })
-    .handle()
-    .clone()
 }
 
 /// A scratch directory named at random and kept for the life of the process.

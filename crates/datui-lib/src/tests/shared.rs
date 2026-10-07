@@ -1,5 +1,6 @@
 //! What the library's tests and the integration tests share: the generated fixtures in
-//! `tests/sample-data`, and a drawn buffer as text. `tests/common` includes this file.
+//! `tests/sample-data`, a drawn buffer as text, and the tokio runtime. `tests/common`
+//! includes this file.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -155,4 +156,20 @@ pub fn buffer_lines(buf: &ratatui::buffer::Buffer) -> Vec<String> {
 /// `buf` as drawn, a line a row.
 pub fn buffer_text(buf: &ratatui::buffer::Buffer) -> String {
     buffer_lines(buf).join("\n")
+}
+
+/// The tests' one tokio runtime. Every test that builds an App comes through here, so
+/// it is the one place that keeps them all out of the developer's real cache.
+pub fn test_runtime() -> tokio::runtime::Handle {
+    super::isolate_cache();
+    static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    RT.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("test tokio runtime")
+    })
+    .handle()
+    .clone()
 }

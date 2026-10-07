@@ -1,7 +1,9 @@
 use std::path::Path;
 
 mod shared;
-pub use shared::{buffer_lines, buffer_text, ensure_sample_data, sample_data_dir};
+pub use shared::{buffer_lines, buffer_text, ensure_sample_data, sample_data_dir, test_runtime};
+// `CacheManager::new` and `ConfigManager::new` isolate themselves in a unit test too.
+use crate::cache::isolate_cache;
 
 pub(crate) mod fixtures;
 
@@ -205,24 +207,6 @@ mod cloud_recent_facts {
 /// not waited on; a cancelled analysis can run for minutes.
 pub fn work_pending(app: &crate::App) -> bool {
     app.is_busy() || app.row_count_pending() || app.rows_in_flight().is_some()
-}
-
-/// Returns a tokio runtime handle for use in tests.
-///
-/// The cache and config need no setup here: `CacheManager::new` and
-/// `ConfigManager::new` point themselves at scratch directories in a unit test
-/// (`cache::isolate_cache`).
-pub fn test_runtime() -> tokio::runtime::Handle {
-    static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
-    RT.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
-            .enable_all()
-            .build()
-            .expect("test tokio runtime")
-    })
-    .handle()
-    .clone()
 }
 
 /// For `App::worker_dies`: the first job `dies` picks panics as it starts, and

@@ -1667,17 +1667,43 @@ fn axes_with(
             label,
         );
     }
-    for (v, label) in &x_ticks {
+    draw_x_ticks(c, plot, &sx, &x_ticks, (grid, true));
+    c.line(
+        (plot.left, plot.bottom),
+        (plot.right, plot.bottom),
+        palette.text_secondary,
+        hair,
+    );
+    draw_y_title(c, frame, &y.title);
+    draw_x_title(c, (frame, plot), &x.title);
+    (sx, sy, plot)
+}
+
+/// X's labels under `plot` at its ticks, with the grid when `grid` and a short mark
+/// above each label when `marks`.
+fn draw_x_ticks(
+    c: &mut Canvas<'_>,
+    plot: Area,
+    sx: &Scale,
+    ticks: &[(f64, String)],
+    (grid, marks): (bool, bool),
+) {
+    let tick = c.body * 0.9;
+    let hair = 0.6 * c.pt;
+    let palette = c.palette.clone();
+    for (v, label) in ticks {
         let px = sx.at(*v);
         if grid {
             c.line((px, plot.top), (px, plot.bottom), palette.grid, hair);
         }
-        c.line(
-            (px, plot.bottom),
-            (px, plot.bottom + tick * 0.35),
-            palette.text_secondary,
-            hair,
-        );
+        if marks {
+            c.line(
+                (px, plot.bottom),
+                (px, plot.bottom + tick * 0.35),
+                palette.text_secondary,
+                hair,
+            );
+        }
         c.text(
             (px, plot.bottom + tick * 1.35),
             tick,
@@ -1686,31 +1712,38 @@ fn axes_with(
             label,
         );
     }
-    c.line(
-        (plot.left, plot.bottom),
-        (plot.right, plot.bottom),
-        palette.text_secondary,
-        hair,
+}
+
+/// X's title, centered under the plot at the foot of `frame`.
+fn draw_x_title(c: &mut Canvas<'_>, (frame, plot): (Area, Area), title: &str) {
+    if title.is_empty() {
+        return;
+    }
+    let tick = c.body * 0.9;
+    let color = c.palette.text;
+    c.text(
+        ((plot.left + plot.right) / 2.0, frame.bottom - tick * 0.2),
+        tick,
+        color,
+        ("middle", 600),
+        title,
     );
-    if !y.title.is_empty() {
-        c.text(
-            (frame.left, frame.top + tick),
-            tick,
-            palette.text,
-            ("start", 600),
-            &y.title,
-        );
+}
+
+/// The title written over the plot's left edge, not turned on its side.
+fn draw_y_title(c: &mut Canvas<'_>, frame: Area, title: &str) {
+    if title.is_empty() {
+        return;
     }
-    if !x.title.is_empty() {
-        c.text(
-            ((plot.left + plot.right) / 2.0, frame.bottom - tick * 0.2),
-            tick,
-            palette.text,
-            ("middle", 600),
-            &x.title,
-        );
-    }
-    (sx, sy, plot)
+    let tick = c.body * 0.9;
+    let color = c.palette.text;
+    c.text(
+        (frame.left, frame.top + tick),
+        tick,
+        color,
+        ("start", 600),
+        title,
+    );
 }
 
 /// Axes with a category on X, one slot per name, and Y as `axes` draws it.
@@ -1892,35 +1925,9 @@ fn draw_bars(c: &mut Canvas<'_>, frame: Area, data: &BarData, value: &Axis, grid
     };
     let (_, x_ticks) = axis_ticks((lo, hi), value, plot.width(), tick, true);
     let hair = 0.6 * c.pt;
-    for (v, label) in &x_ticks {
-        let px = sx.at(*v);
-        if grid {
-            c.line((px, plot.top), (px, plot.bottom), palette.grid, hair);
-        }
-        c.text(
-            (px, plot.bottom + tick * 1.35),
-            tick,
-            palette.text_secondary,
-            ("middle", 400),
-            label,
-        );
-    }
-    if !value.title.is_empty() {
-        c.text(
-            ((plot.left + plot.right) / 2.0, frame.bottom - tick * 0.2),
-            tick,
-            palette.text,
-            ("middle", 600),
-            &value.title,
-        );
-    }
-    c.text(
-        (frame.left, frame.top + tick),
-        tick,
-        palette.text,
-        ("start", 600),
-        &data.category,
-    );
+    draw_x_ticks(c, plot, &sx, &x_ticks, (grid, false));
+    draw_x_title(c, (frame, plot), &value.title);
+    draw_y_title(c, frame, &data.category);
     let rows = bars.len() + usize::from(more > 0);
     let row_h = (plot.height() / rows.max(1) as f64).min(tick * 2.5 * groups as f64);
     let zero = sx.at(0.0);

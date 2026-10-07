@@ -343,7 +343,7 @@ jobs:
   # build and pass. The full suite stays on the macos job below
   # (release versions) and on Nightly. No `needs`, like linux.
   macos-pr:
-    name: macOS check and unit tests
+    name: macOS unit tests
     runs-on: macos-latest
     timeout-minutes: 60
     env:

@@ -21,6 +21,8 @@ on:
       - 'crates/datui-cli/man/**'
       - 'scripts/docs/**'
       - '.github/workflows/build-and-publish-docs.yml'
+      - '.github/actions/setup/**'
+      - '.github/actions/install-tools/**'
       - '.github/tool-versions'
 
 # One deploy at a time; a newer push waits rather than racing the older one's deploy.

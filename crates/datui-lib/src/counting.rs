@@ -187,9 +187,8 @@ impl App {
     /// might be running.
     ///
     /// One thing more than a bump, though: a join takes a fresh `len_generation` too. A
-    /// chart is prepared against the frame rather than the generation
-    /// (`BackgroundChartReady` carries no generation at all), so a bump cannot strand
-    /// one but changing the frame under it can.
+    /// chart is prepared against the frame rather than the generation, so a bump cannot
+    /// strand one but changing the frame under it can.
     pub(crate) fn work_the_join_would_cancel(&self) -> bool {
         self.work_a_bump_would_strand() || self.chart_preparing()
     }

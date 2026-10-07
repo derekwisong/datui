@@ -3615,28 +3615,39 @@ fn columns_arriving_during_work_already_asked_for_wait_for_it() {
     // longer a list of the kinds that happen to exist today. The chart is here
     // beside it because it is the one that a bump would *not* strand: it is
     // prepared against the frame, and the join takes a fresh one of those too.
-    type Start = fn(&mut App) -> Option<crate::jobs::Hold>;
+    /// What keeps the work under way: a hold on the generation, or a running job.
+    type Underway = (Option<crate::jobs::Hold>, Option<crate::jobs::Started>);
+    type Start = fn(&mut App) -> Underway;
     let under_way: Vec<(&str, Start)> = vec![
         ("leased background work", |app: &mut App| {
-            Some(app.hold_the_generation())
+            (Some(app.hold_the_generation()), None)
         }),
         ("a chart", |app: &mut App| {
             let mut modal = crate::chart_modal::ChartModal::new();
             modal.spec.encoding.x.field = Some("id".to_string());
-            app.chart_inflight = Some(crate::ChartInflight {
+            let prep = crate::jobs::ChartPrep {
                 dataset: None,
                 request: crate::ChartRequest::from_modal(&modal).expect("an x range"),
-                stale: false,
                 cancel: Default::default(),
-            });
-            None
+            };
+            (
+                None,
+                Some(app.job_for_tests(crate::jobs::Job::ChartPrepare(Box::new(prep)), None)),
+            )
         }),
     ];
-    let put_away = |app: &mut App, lease: Option<crate::jobs::Hold>| {
+    let put_away = |app: &mut App, (lease, job): Underway| {
         // The hold is released by dropping it; the event after it lets the errands in.
         drop(lease);
+        if let Some(job) = job {
+            let ticket = job.ticket();
+            job.end(crate::jobs::Outcome::Failed {
+                message: "put away".to_string(),
+                panicked: false,
+            });
+            app.jobs.end(ticket);
+        }
         let _ = app.handle(&AppEvent::Update);
-        app.chart_inflight = None;
     };
 
     for (what, start) in under_way {

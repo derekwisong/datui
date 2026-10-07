@@ -1,11 +1,8 @@
-//! Data Quality results read as a report: what is likely wrong, what depends on
-//! intent, and which columns have nothing to report.
-//!
-//! Each kind of check is one row of [`ObservationKind::spec`]: its names, severity,
-//! rank, advice, how its observations group, and the words its numbers are given in.
-//! The report is built once when results arrive, so the engine, the session cache and
-//! the evidence drill-in keep working on observations; a finding only groups and
-//! ranks them.
+//! Data Quality results as a report: what is likely wrong, what depends on intent, and
+//! which columns have nothing to report. Each check kind is one row of
+//! [`ObservationKind::spec`] (names, severity, rank, advice, grouping, wording). Built
+//! once per result; the engine, cache and drill-in work on observations, which a
+//! finding only groups and ranks.
 
 use crate::data_quality::{
     ColumnQualityProfile, DataQualityPlan, DataQualityResults, ObservationKind, QualityObservation,
@@ -35,9 +32,8 @@ impl Severity {
     }
 }
 
-/// A kind read more than one way: how much of a column is missing, and what the
-/// text that parses holds. Each has its own title, and some their own severity, rank
-/// and advice.
+/// A kind read more than one way (how much is missing; what parsing text holds), each
+/// with its own title and sometimes severity, rank and advice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Variant {
     /// Null in every row checked.
@@ -128,9 +124,8 @@ impl Finding {
         columns_label(&self.columns, width)
     }
 
-    /// Rows matching any of the grouped observations. Grouped columns missing on the
-    /// same rows match the same rows either way; otherwise "any" is what the list
-    /// promised: every row behind the finding.
+    /// Rows matching any grouped observation: every row behind the finding (columns missing
+    /// on the same rows match alike).
     pub fn evidence_predicate(&self, results: &DataQualityResults) -> Option<Expr> {
         self.observations
             .iter()
@@ -180,9 +175,9 @@ impl Finding {
             .ok_or_else(|| "No rows: nothing to filter on".to_string())
     }
 
-    /// How many rows Enter shows, where one count is all of them: one observation,
-    /// the same rows in every column, or spellings of one column, which never
-    /// overlap. `None` for a union nobody counted, and for the files' rows.
+    /// How many rows Enter shows when one count covers them all (one observation, identical
+    /// rows per column, or non-overlapping spellings). `None` for an uncounted union or
+    /// file rows.
     pub fn evidence_count(&self, results: &DataQualityResults) -> Option<usize> {
         match self.kind?.spec().evidence {
             Evidence::Duplicates => {
@@ -232,9 +227,8 @@ impl Finding {
             && !self.same_rows
     }
 
-    /// Each column's count and rate, one a line, worst first; then the rows with
-    /// any of them, which no check counted: at least the largest column's count and
-    /// at most their sum.
+    /// Each column's count and rate, worst first, then the rows with any of them (uncounted:
+    /// between the largest column's count and their sum).
     pub fn breakdown(&self, results: &DataQualityResults) -> Vec<String> {
         let rows = self
             .observations
@@ -308,9 +302,8 @@ pub enum Grouping {
     ByRows,
     /// One finding per column, of all its observations.
     ByColumn,
-    /// Missing values: every column always missing together, every column mostly
-    /// missing together, columns missing on the very same rows together, and the
-    /// rest as one finding with each column's rate inside it.
+    /// Missing values: columns always missing together, mostly together, on the very same
+    /// rows, and the rest as one finding with per-column rates.
     Missing,
 }
 
@@ -828,12 +821,9 @@ pub struct QualityReport {
     pub no_rows: bool,
 }
 
-/// The report and checks a [`DataQualityResults`] reads as, built the first time
-/// either is asked for and kept with the results: a frame draws them and a key moves
-/// through them without building them again. Both read the results' observations,
-/// columns, identity, intent and precision, which no one changes once a run's
-/// results are installed. A copy of the results starts empty, so a copy changed
-/// before it is drawn reads as changed.
+/// The report and checks a [`DataQualityResults`] reads as, built once on first ask and
+/// kept with the results (their inputs never change after install). A copy starts
+/// empty, so a changed copy reads fresh.
 #[derive(Debug, Default)]
 pub struct ReportCache(std::sync::OnceLock<Built>);
 

@@ -1,5 +1,6 @@
 # The tools CI installs through .github/actions/install-tools.
-# One per line: name, version. Bump on purpose; scripts/setup_dev.py reads mdbook's.
+# One per line: name, version. Bump on purpose; scripts/setup_dev.py reads mdbook's and
+# typos' (typos from PyPI into .venv, at the same version).
 cargo-deb 3.8.0
 cargo-generate-rpm 0.21.0
 cargo-fuzz 0.13.2

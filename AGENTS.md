@@ -8,12 +8,12 @@ https://derekwisong.github.io/datui/; do not restate them here.
 ## Build, test, lint
 
 ```bash
-./scripts/dev/test.sh setup                     # once: .venv, hooks, test fixtures (scripts/setup_dev.py)
+./scripts/dev/test.sh setup                     # once: .venv (with CI's ruff and typos), hooks, test fixtures (scripts/setup_dev.py)
 cargo build                                     # debug binary at target/debug/datui
 cargo run -- data.parquet
 ./scripts/dev/test.sh full                      # cargo test --workspace; `ci` runs CI's nextest + doctests
 ./scripts/dev/test.sh fmt                       # root, fuzz/ and crates/datui-pyo3
-./scripts/dev/test.sh lint                      # fmt --check + clippy -D warnings in all three
+./scripts/dev/test.sh lint                      # fmt --check + clippy -D warnings in all three; ruff, shellcheck, typos
 ./scripts/dev/test.sh integration fuzz_corpus_test  # fast fuzz corpus replay; run if you touched a parser or matcher
 ```
 

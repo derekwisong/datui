@@ -25,7 +25,7 @@ Edit loop
 What CI checks
   lint                     Check formatting and run clippy in the workspace, the fuzz
                            targets and datui-pyo3; then ruff, shellcheck and typos,
-                           each when installed (preflight is the same)
+                           each when installed, .venv's first (preflight is the same)
   clippy                   Clippy on the root workspace alone (the pre-commit hook)
   msrv                     Check the workspace with the rust-version in Cargo.toml
   docs [--require]         Lint the docs, their examples and the manpages, and run the
@@ -169,10 +169,18 @@ need_venv() {
 # Workspaces of their own, which the root's `cargo fmt` and clippy do not reach.
 OTHER_WORKSPACES=(fuzz/Cargo.toml crates/datui-pyo3/Cargo.toml)
 
-# Whether an optional tool is installed; says so when it is not.
+# An optional tool, .venv's first (setup installs CI's ruff and typos there), then
+# PATH's: sets $found, or says it is missing and fails.
 have() {
-    command -v "$1" >/dev/null 2>&1 && return 0
-    printf '%s not installed; skipping it.\n' "$1" >&2
+    local venv_tool
+    for venv_tool in ".venv/bin/$1" ".venv/Scripts/$1.exe"; do
+        if [[ -x $venv_tool ]]; then
+            found=$venv_tool
+            return 0
+        fi
+    done
+    found=$(command -v "$1" 2>/dev/null) && return 0
+    printf '%s not installed; skipping it (scripts/dev/test.sh setup installs ruff and typos).\n' "$1" >&2
     return 1
 }
 
@@ -248,13 +256,13 @@ case "$command" in
                 || failed=1
         done
         # Not Rust: each runs when installed, so a contributor without one is not blocked.
-        if have ruff; then run ruff check scripts python || failed=1; fi
+        if have ruff; then run "$found" check scripts python || failed=1; fi
         if have shellcheck; then
             shell_scripts=()  # not mapfile: macOS ships bash 3.2
             while IFS= read -r script; do shell_scripts+=("$script"); done < <(git ls-files '*.sh')
-            run shellcheck "${shell_scripts[@]}" || failed=1
+            run "$found" "${shell_scripts[@]}" || failed=1
         fi
-        if have typos; then run typos || failed=1; fi
+        if have typos; then run "$found" || failed=1; fi
         exit "$failed"
         ;;
     clippy)

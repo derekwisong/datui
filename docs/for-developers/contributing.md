@@ -12,9 +12,10 @@ lists the prerequisites):
 
 On Windows without Git Bash, run `python scripts\setup_dev.py`, which is what
 `setup` runs. It creates `.venv` (with uv when installed, otherwise
-`python -m venv`), installs `scripts/requirements.txt`, installs the pre-commit
-hooks (not from a `git worktree add` checkout, which shares the main one's) and
-generates the test fixtures. Rerunning it is cheap.
+`python -m venv`), installs `scripts/requirements.txt` and the linters CI runs
+(ruff and typos), installs the pre-commit hooks (not from a `git worktree add`
+checkout, which shares the main one's) and generates the test fixtures.
+Rerunning it is cheap.
 
 | Option | Adds |
 |---|---|
@@ -64,8 +65,10 @@ hand.
 [ruff](https://docs.astral.sh/ruff/) on the Python scripts (`ruff.toml`),
 [shellcheck](https://www.shellcheck.net) on the shell scripts and
 [typos](https://github.com/crate-ci/typos) on everything (`_typos.toml` holds
-the words spelled on purpose), each only when installed; CI installs all three, at
-the versions in `scripts/requirements-lint.txt` and `.github/tool-versions`. Then:
+the words spelled on purpose), each only when installed, `.venv`'s copy first.
+`setup` installs ruff and typos into `.venv` at CI's versions
+(`scripts/requirements-lint.txt` and `.github/tool-versions`); shellcheck is
+yours to install, and CI uses the runner image's. Then:
 
 | Changed | Also |
 |---|---|

@@ -2,8 +2,8 @@
 """Set up a datui checkout for development, on Linux, macOS or Windows.
 
 Creates .venv (with uv when it is installed, python -m venv otherwise), installs
-scripts/requirements.txt into it, installs the pre-commit hooks, and generates the
-test fixtures in tests/sample-data. Safe to rerun: it reuses .venv and regenerates
+scripts/requirements.txt and the linters CI runs (ruff, typos) into it, installs the
+pre-commit hooks, and generates the test fixtures in tests/sample-data. Safe to rerun: it reuses .venv and regenerates
 the fixtures only when the generator or its pins changed.
 
   python3 scripts/setup_dev.py            # the above
@@ -55,14 +55,27 @@ def make_venv(uv):
         run([python, "-m", "pip", "install", "--upgrade", "pip"])
 
 
+def pip_install(uv, args):
+    if uv:
+        # uv installs into the environment VIRTUAL_ENV names.
+        run([uv, "pip", "install", *args], env={**os.environ, "VIRTUAL_ENV": str(VENV)})
+    else:
+        run([venv_bin("python"), "-m", "pip", "install", *args])
+
+
 def install(uv, requirements):
     for path in requirements:
         step(f"Installing {path.relative_to(REPO_ROOT)}")
-        if uv:
-            # uv installs into the environment VIRTUAL_ENV names.
-            run([uv, "pip", "install", "-r", path], env={**os.environ, "VIRTUAL_ENV": str(VENV)})
-        else:
-            run([venv_bin("python"), "-m", "pip", "install", "-r", path])
+        pip_install(uv, ["-r", path])
+
+
+def install_linters(uv):
+    """ruff and typos at CI's versions, so `scripts/dev/test.sh lint` gives CI's verdict.
+    typos is the Rust tool's PyPI build, pinned where CI's copy is."""
+    install(uv, [SCRIPTS / "requirements-lint.txt"])
+    typos = f"typos=={pinned_version('typos')}"
+    step(f"Installing {typos}")
+    pip_install(uv, [typos])
 
 
 def linked_worktree():
@@ -155,6 +168,7 @@ def main():
         name = "requirements-wheel-windows.txt" if WINDOWS else "requirements-wheel.txt"
         requirements.append(SCRIPTS / name)
     install(uv, requirements)
+    install_linters(uv)
     if not args.no_hooks:
         install_hooks()
     generate_fixtures(args.force)

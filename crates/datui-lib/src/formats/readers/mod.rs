@@ -35,8 +35,8 @@ use crate::export_modal::ExportFormat;
 use crate::formats::members::Table;
 use crate::formats::segments::Converted;
 use crate::formats::text_formats::Detail;
-use crate::scan::Scan;
-use crate::unfinished::Writer;
+use crate::loading::scan::Scan;
+use crate::loading::unfinished::Writer;
 use crate::{FileFormat, OpenOptions, ReadReport};
 
 pub(crate) mod csv;
@@ -534,7 +534,7 @@ pub(crate) mod bad_input {
     use std::sync::atomic::{AtomicBool, AtomicU64};
 
     use super::{ConvertIn, ScanIn};
-    use crate::scan::Scan;
+    use crate::loading::scan::Scan;
     use crate::{FileFormat, OpenOptions, ReadReport};
 
     /// What the user is told opening `bytes`, written to a file called `name` in
@@ -567,7 +567,7 @@ pub(crate) mod bad_input {
             Err(e) => return Some(said(e)),
             Ok(Scan::Frame(lf)) => *lf,
             Ok(Scan::ReadInto { files, format }) => {
-                let unfinished = crate::unfinished::Unfinished::default();
+                let unfinished = crate::loading::unfinished::Unfinished::default();
                 let writer = unfinished.writer(Arc::new(AtomicBool::new(false)));
                 let read = AtomicU64::new(0);
                 match super::convert(&ConvertIn {

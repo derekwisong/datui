@@ -1268,7 +1268,7 @@ impl<'a> DataTableInfo<'a> {
     }
 
     /// What the open cost, under its heading at the tab's foot. Only what was measured: no
-    /// zeros for figures datui cannot stand behind (see [`crate::measurements`] and
+    /// zeros for figures datui cannot stand behind (see [`crate::loading::measurements`] and
     /// `docs/user-guide/dataset-info.md`).
     fn render_measurements(&self, area: Rect, buf: &mut Buffer, y: &mut u16, label_w: u16) {
         let meter = self.state.measurements();
@@ -1761,7 +1761,7 @@ fn format_took(took: std::time::Duration) -> String {
 }
 
 /// What datui asked for over a network, where it did the asking.
-fn wire_line(wire: crate::measurements::OverTheWire) -> String {
+fn wire_line(wire: crate::loading::measurements::OverTheWire) -> String {
     let mut line = format!(
         ", {} request{}",
         format_int(wire.requests),
@@ -1777,7 +1777,11 @@ fn wire_line(wire: crate::measurements::OverTheWire) -> String {
 /// One measurement as a line: time, count of what it counted, and requests and bytes
 /// where datui made them. `unit` varies: footer passes count footers, which may
 /// exceed the dataset's files.
-fn measurement_line(cost: &crate::measurements::Cost, unit: &str, singular: &str) -> String {
+fn measurement_line(
+    cost: &crate::loading::measurements::Cost,
+    unit: &str,
+    singular: &str,
+) -> String {
     let mut line = format_took(cost.took);
     // Without a count, just the time: no number that is not the dataset's size.
     if let Some(files) = cost.files {
@@ -1791,8 +1795,8 @@ fn measurement_line(cost: &crate::measurements::Cost, unit: &str, singular: &str
 }
 
 /// The total as a line: time and requests, no file count (see
-/// [`crate::measurements::Meter::total`]).
-fn total_line(total: &crate::measurements::Total) -> String {
+/// [`crate::loading::measurements::Meter::total`]).
+fn total_line(total: &crate::loading::measurements::Total) -> String {
     let mut line = format_took(total.took);
     if let Some(wire) = total.over_the_wire {
         line.push_str(&wire_line(wire));
@@ -2292,7 +2296,7 @@ mod tests {
     /// listing took no time at all.
     #[test]
     fn the_resources_tab_shows_what_was_measured_and_nothing_else() {
-        use crate::measurements::Meter;
+        use crate::loading::measurements::Meter;
         use crate::table::DataTableState;
         use polars::prelude::*;
         use std::time::Duration;

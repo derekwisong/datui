@@ -1,7 +1,7 @@
 //! The three pickers: go to a column, read as a format, and switch to another table
 //! of the same source.
 
-use crate::open_options::OpenOptions;
+use crate::loading::open_options::OpenOptions;
 use crate::{App, AppEvent, Overlay, table_switch};
 use crossterm::event::{KeyCode, KeyEvent};
 

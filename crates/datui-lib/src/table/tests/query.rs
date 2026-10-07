@@ -1961,11 +1961,12 @@ fn a_followed_view_reads_and_counts_from_its_marks() {
         .unwrap();
     let options = crate::OpenOptions::default();
     let (lf, tail) =
-        crate::follow::bound_to_complete(scan, &path, crate::FileFormat::Csv, &options).unwrap();
+        crate::loading::follow::bound_to_complete(scan, &path, crate::FileFormat::Csv, &options)
+            .unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     let mut state = DataTableState::new(lf, None, None, None, None, false).unwrap();
     let rows = tail.rows();
-    state.start_following(crate::follow::Follow::start(
+    state.start_following(crate::loading::follow::Follow::start(
         tail,
         std::time::Duration::from_secs(3_600),
         tx,

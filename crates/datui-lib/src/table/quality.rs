@@ -83,7 +83,7 @@ impl DataTableState {
                     drift.as_deref(),
                     as_text,
                 )?;
-                Ok(crate::open_scan::hoist_partition_columns(
+                Ok(crate::loading::open_scan::hoist_partition_columns(
                     lf,
                     &dataset.schema,
                     partition_columns.as_deref().unwrap_or(&[]),

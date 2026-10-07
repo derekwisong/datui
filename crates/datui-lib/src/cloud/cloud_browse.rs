@@ -609,7 +609,7 @@ async fn kind_from_footers(
     if parquet.len() < 2 {
         return None;
     }
-    let meter = std::sync::Arc::new(crate::measurements::Meter::default());
+    let meter = std::sync::Arc::new(crate::loading::measurements::Meter::default());
     let store = store.clone();
     let mut reads = tokio::task::JoinSet::new();
     for index in crate::home::discover::spread(parquet.len()) {

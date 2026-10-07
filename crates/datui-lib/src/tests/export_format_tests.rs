@@ -76,7 +76,7 @@ fn a_short_read_on_a_remote_scan_is_the_count() {
         counter: None,
         lf: unreadable,
         streaming: false,
-        meter: Arc::new(crate::measurements::Meter::default()),
+        meter: Arc::new(crate::loading::measurements::Meter::default()),
         progress: Default::default(),
     };
     let rows = |counted: Result<Counted, ()>| counted.map(|c| c.rows);

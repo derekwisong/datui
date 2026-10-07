@@ -305,7 +305,7 @@ pub fn read(data: &[u8]) -> std::result::Result<Elf, String> {
 }
 
 /// The scan of an ELF file: the table `--table` names, its symbols by default.
-fn scan(input: crate::formats::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
+fn scan(input: crate::formats::readers::ScanIn<'_>) -> Result<crate::loading::scan::Scan> {
     let path = input.path();
     let wanted = input.options.table.as_deref();
     let tables = tables();

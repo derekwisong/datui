@@ -19,6 +19,18 @@
 //!
 //! Home's looks, analyses and charts are not loads.
 
+pub(crate) mod counting;
+pub(crate) mod first_rows_trace;
+pub mod follow;
+pub(crate) mod local_glob;
+pub mod measurements;
+pub(crate) mod open_options;
+pub(crate) mod open_scan;
+pub(crate) mod scan;
+pub mod stdin;
+pub mod tee;
+pub(crate) mod unfinished;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -27,9 +39,9 @@ use polars::prelude::LazyFrame;
 
 use crate::cloud::download::TempDownload;
 use crate::formats::schema_union::FooterProgress;
+use crate::loading::unfinished::{Unfinished, Writer};
 use crate::table::DataTableState;
-use crate::unfinished::{Unfinished, Writer};
-use crate::{CompressionFormat, FileFormat, OpenOptions, cloud::source, stdin};
+use crate::{CompressionFormat, FileFormat, OpenOptions, cloud::source};
 
 use crate::jobs::Hold;
 #[cfg(any(feature = "http", feature = "cloud"))]
@@ -819,7 +831,7 @@ pub(crate) struct Loader {
     /// once the scanning dataset also lets go. Stdin, read once, is kept the same way.
     kept: Option<Fetched>,
     /// The files every load's workers have written and not yet let go, for quitting to
-    /// remove. See [`crate::unfinished`].
+    /// remove. See [`crate::loading::unfinished`].
     unfinished: Unfinished,
 }
 
@@ -1125,7 +1137,7 @@ impl Loader {
             return Step::Crash(message.to_string());
         }
         if options.follow
-            && let Some(message) = crate::follow::refuse_paths(&paths, &options)
+            && let Some(message) = crate::loading::follow::refuse_paths(&paths, &options)
         {
             self.load = None;
             return Step::Crash(message);

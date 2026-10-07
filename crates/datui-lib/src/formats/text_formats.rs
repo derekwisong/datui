@@ -21,9 +21,9 @@ use crate::cloud::download::TempDownload;
 use crate::formats::model_files::MetaValue;
 use crate::formats::readers::{ConvertIn, ConvertOut};
 use crate::formats::segments::{Converted, Segments};
+use crate::loading::unfinished::Writer;
 use crate::notes::Note;
 use crate::numfmt::group_chrome;
-use crate::unfinished::Writer;
 use crate::{CompressionFormat, OpenOptions};
 
 /// How much of the file is read at a time.

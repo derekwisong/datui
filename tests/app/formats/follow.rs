@@ -5,7 +5,7 @@
 //! cannot be followed.
 
 use super::*;
-use datui::follow::Standing;
+use datui::loading::follow::Standing;
 use std::io::Write as _;
 use std::time::Instant;
 
@@ -373,7 +373,7 @@ fn an_arrow_stream_is_followed_by_its_batches() {
         )
         .unwrap()
     };
-    let (schema, batches) = datui::follow::stream_messages(&frame(0, 40), 5);
+    let (schema, batches) = datui::loading::follow::stream_messages(&frame(0, 40), 5);
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("live.arrows");
     std::fs::write(&path, [schema.clone(), batches[0].clone()].concat()).unwrap();
@@ -511,7 +511,7 @@ fn recording(file: &Path, follow: bool) -> OpenOptions {
     }
 }
 
-fn spool(app: &App) -> std::sync::Arc<datui::follow::Spool> {
+fn spool(app: &App) -> std::sync::Arc<datui::loading::follow::Spool> {
     app.recording().expect("recording").clone()
 }
 

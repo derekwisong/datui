@@ -8,7 +8,7 @@
 //!
 //! A large file shows rows once its first [`FIRST_BYTES`] are indexed, the rest indexed
 //! behind ([`Lines::index_more`]) as the frame's height (`bound`) grows. A followed
-//! file's lines are counted by the watcher ([`crate::follow`]).
+//! file's lines are counted by the watcher ([`crate::loading::follow`]).
 //!
 //! [`guess`] says what unclaimed text is: JSON, CSV or TSV only on evidence, else lines.
 
@@ -672,7 +672,7 @@ pub(crate) fn bound(plan: &mut polars::lazy::dsl::DslPlan, rows: IdxSize) -> boo
 }
 
 /// The lines of `input`, for its reader.
-fn scan(input: crate::formats::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
+fn scan(input: crate::formats::readers::ScanIn<'_>) -> Result<crate::loading::scan::Scan> {
     let lines = Arc::new(Lines::open_first(
         input.paths,
         input.options.follow,

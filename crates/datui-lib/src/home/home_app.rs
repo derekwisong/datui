@@ -6,7 +6,7 @@ use crate::background::{CacheWrites, OwedAnswer};
 use crate::cache::CacheManager;
 use crate::cli::FileFormat;
 use crate::feedback::Confirm;
-use crate::open_options::OpenOptions;
+use crate::loading::open_options::OpenOptions;
 #[cfg(feature = "cloud")]
 use crate::wait_on_runtime;
 use crate::{
@@ -424,9 +424,9 @@ impl App {
             return None;
         };
         let progress = Arc::<crate::formats::schema_union::FooterProgress>::default();
-        let report = crate::measurements::OpenReport {
+        let report = crate::loading::measurements::OpenReport {
             progress: progress.clone(),
-            meter: Arc::new(crate::measurements::Meter::default()),
+            meter: Arc::new(crate::loading::measurements::Meter::default()),
             remembered: Some(cache),
             writes,
         };

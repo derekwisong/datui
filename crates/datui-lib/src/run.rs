@@ -38,7 +38,7 @@ pub struct Pipes {
     /// The follow mark as last drawn, so its clock redraws only when it changes.
     pub(crate) follow_drawn: Option<crate::render::footer::FollowMark>,
     /// A recording kept going after the user went home or quit, until its stream ends.
-    pub(crate) recording_on: Option<std::sync::Arc<crate::follow::SpoolHandle>>,
+    pub(crate) recording_on: Option<std::sync::Arc<crate::loading::follow::SpoolHandle>>,
     /// A recording's end has been said: once, in the bar or the error dialog.
     pub(crate) recording_end_said: bool,
 }
@@ -223,8 +223,13 @@ fn run_impl(
     // `--tee -` passes the stream to stdout, so the screen is drawn on the terminal;
     // the original stdout is kept for the copy.
     let passed = match &input {
-        RunInput::Cli(args) if args.tee.as_deref().is_some_and(crate::stdin::is_stdin) => {
-            Some(crate::tee::pass_stdout_on().map_err(|e| color_eyre::eyre::eyre!(e))?)
+        RunInput::Cli(args)
+            if args
+                .tee
+                .as_deref()
+                .is_some_and(crate::loading::stdin::is_stdin) =>
+        {
+            Some(crate::loading::tee::pass_stdout_on().map_err(|e| color_eyre::eyre::eyre!(e))?)
         }
         _ => None,
     };

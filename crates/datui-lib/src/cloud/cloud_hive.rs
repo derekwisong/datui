@@ -29,7 +29,7 @@ macro_rules! counted_range {
 pub async fn footer_of_cloud_parquet(
     store: Arc<dyn ObjectStore>,
     key: &str,
-    meter: &crate::measurements::Meter,
+    meter: &crate::loading::measurements::Meter,
 ) -> Result<(FileFooter, Option<String>)> {
     let began = std::time::Instant::now();
     let path = crate::cloud::cloud_browse::object_path(key);
@@ -559,7 +559,7 @@ pub async fn footers_of_files_reporting(
     files: &[DatasetFile],
     read: &[usize],
     progress: &crate::formats::schema_union::FooterProgress,
-    meter: &Arc<crate::measurements::Meter>,
+    meter: &Arc<crate::loading::measurements::Meter>,
 ) -> Vec<Option<FileFooter>> {
     let began = std::time::Instant::now();
     let pass = progress.pass(read.len());
@@ -614,7 +614,7 @@ pub async fn footers_of_files_reporting(
 pub(crate) async fn footer_of_file(
     store: &Arc<dyn ObjectStore>,
     file: &DatasetFile,
-    meter: &crate::measurements::Meter,
+    meter: &crate::loading::measurements::Meter,
 ) -> Result<FileFooter> {
     let path = crate::cloud::cloud_browse::object_path(&file.key);
     let tail_start = file.size.saturating_sub(COUNT_TAIL_BYTES);

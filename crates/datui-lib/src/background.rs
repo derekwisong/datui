@@ -82,7 +82,7 @@ pub(crate) struct LenCount {
     pub(crate) streaming: bool,
     /// The open's meter: a local directory's count re-reads every footer, tallied with
     /// the open's pass.
-    pub(crate) meter: Arc<crate::measurements::Meter>,
+    pub(crate) meter: Arc<crate::loading::measurements::Meter>,
     /// Footers read of how many, for the progress line; cancelling stops the count (Esc).
     pub(crate) progress: Arc<crate::formats::schema_union::FooterProgress>,
 }

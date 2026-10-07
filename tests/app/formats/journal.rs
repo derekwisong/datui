@@ -339,7 +339,7 @@ fn entry(i: usize, late: usize) -> String {
 
 fn ended(app: &App) -> bool {
     app.follow()
-        .is_some_and(|f| *f.standing() == datui::follow::Standing::Ended)
+        .is_some_and(|f| *f.standing() == datui::loading::follow::Standing::Ended)
         && app.follow_settled()
         && !app.is_busy()
 }

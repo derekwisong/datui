@@ -6,7 +6,7 @@
 //! answer, never a panic, and a pipe must be read as the stream it is.
 
 use datui_lib::formats::ipc_stream::is_stream_head;
-use datui_lib::{FileFormat, stdin::sniff};
+use datui_lib::{FileFormat, loading::stdin::sniff};
 
 /// The most a pipe's sniff looks at.
 const MAX_LEN: usize = 4096;

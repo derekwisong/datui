@@ -17,7 +17,7 @@ use object_store::{ObjectStore, ObjectStoreExt};
 use crate::cloud::download::TempDownload;
 use crate::error_display::{FileError, file_message, store_message};
 use crate::formats::ipc_stream::{Merge, Part};
-use crate::unfinished::Writer;
+use crate::loading::unfinished::Writer;
 use crate::{App, FileFormat, OpenOptions};
 
 /// One Arrow object an open reads.

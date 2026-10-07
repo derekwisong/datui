@@ -13,8 +13,8 @@ use polars::prelude::*;
 
 use crate::OpenOptions;
 use crate::cloud::download::TempDownload;
+use crate::loading::unfinished::Writer;
 use crate::notes::Note;
-use crate::unfinished::Writer;
 
 /// What a conversion made: the frame over its segments, the files they are, which the
 /// dataset holds for as long as it scans them, and what the read noticed.

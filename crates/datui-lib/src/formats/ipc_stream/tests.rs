@@ -1,5 +1,5 @@
 use super::*;
-use crate::unfinished::Unfinished;
+use crate::loading::unfinished::Unfinished;
 use polars::prelude::*;
 use polars_arrow::io::ipc::write::{Compression, StreamWriter};
 use std::sync::atomic::AtomicBool;
@@ -250,7 +250,7 @@ fn discovery_and_a_pipe_know_a_stream_by_its_bytes() {
             "{name}"
         );
         assert_eq!(
-            crate::stdin::sniff(&bytes),
+            crate::loading::stdin::sniff(&bytes),
             (crate::FileFormat::Arrow, None),
             "{name}"
         );

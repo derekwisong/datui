@@ -28,7 +28,6 @@ pub mod config_command;
 pub mod context_menu;
 mod copy_keys;
 pub mod copy_modal;
-mod counting;
 mod documentation_keys;
 mod editing_keys;
 pub mod error_display;
@@ -41,8 +40,6 @@ pub mod external_open;
 mod feedback;
 pub mod filter_modal;
 pub mod find;
-mod first_rows_trace;
-pub mod follow;
 mod footer_state;
 pub mod form;
 pub mod formats;
@@ -60,15 +57,11 @@ pub mod inspector_reader;
 mod jobs;
 pub mod limits;
 pub mod link_open;
-mod loading;
-pub(crate) mod local_glob;
+pub mod loading;
 pub mod logging;
-pub mod measurements;
 pub mod nested_json;
 pub mod notes;
 pub mod numfmt;
-mod open_options;
-mod open_scan;
 pub mod output_file;
 mod overlay;
 pub use overlay::Overlay;
@@ -87,7 +80,6 @@ pub use run::{ended_by_signal, run, run_captured};
 pub mod query;
 mod render;
 pub mod sanitize;
-mod scan;
 mod sort_filter_keys;
 pub mod sort_filter_modal;
 pub mod sort_modal;
@@ -98,16 +90,13 @@ pub mod sql_group;
 #[cfg(feature = "sql")]
 mod sql_plan;
 pub mod startup;
-pub mod stdin;
 pub mod table;
 pub mod table_switch;
-pub mod tee;
 mod terminal;
 mod terminal_color;
 pub mod terminal_input;
 pub mod themes;
 pub mod typed_value;
-mod unfinished;
 pub mod view;
 mod view_apply;
 mod view_keys;
@@ -136,16 +125,16 @@ pub use feedback::{ConfirmationModal, ErrorModal, Flash};
 use filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
 use jobs::{Answer, Job, Jobs, Outcome};
 pub use jobs::{JobKind, Progress, Ticket};
-use numfmt::NumberFormatSettings;
-pub use open_options::{
+pub use loading::open_options::{
     OpenOptions, ParseStringsTarget, ReadReport, SqliteOpen, TypedDialect, UnaskedDownload,
 };
+pub use loading::unfinished::ExitSweep;
+use numfmt::NumberFormatSettings;
 use output_file::Overwrite;
 use pivot_melt_modal::{MeltSpec, PivotMeltModal, PivotSpec};
 use sort_filter_modal::SortFilterModal;
 use sort_modal::{SortColumn, order_with_hidden};
 use table::{DataTableState, DrillRow};
-pub use unfinished::ExitSweep;
 pub use view::{SavedView, ViewManager, Views};
 use widgets::column_widths::WidthChoice;
 use widgets::debug::DebugState;
@@ -382,7 +371,7 @@ pub enum AppEvent {
     /// Run the export once the UI has drawn its progress.
     DoExport(ExportRequest),
     /// A followed file's watcher found more rows, or that the file went.
-    Followed(crate::follow::News),
+    Followed(crate::loading::follow::News),
     Exit,
     Crash(String),
     QQuery(String),
@@ -645,7 +634,7 @@ struct QueryRun {
     rollback: crate::table::ViewRollback,
     /// The count markers for the frame the rollback restores. A count of it still
     /// running lands into `rollback`.
-    counts: counting::CountMarkers,
+    counts: loading::counting::CountMarkers,
     /// Rows `df` holds, when known, so a failure can say "of N".
     rows: Option<usize>,
 }
@@ -665,7 +654,7 @@ enum RunOrigin {
 /// The bar's recording label (`--tee`): `rec` with size and rate, `saved` with
 /// size, length and file (`sent` for `--tee -`), or `stopped` and why. The bool
 /// is true for that last (warning color).
-fn recording_label(spool: &crate::follow::Spool) -> (String, bool) {
+fn recording_label(spool: &crate::loading::follow::Spool) -> (String, bool) {
     let dot = crate::glyphs::get().middot;
     let size = crate::numfmt::bytes(spool.bytes());
     match spool.ended() {
@@ -836,13 +825,13 @@ const CANCEL_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 pub struct App {
     pub data_table_state: Option<DataTableState>,
     /// The dataset's row count, footer pass and line indexing, and what waits on them.
-    counting: counting::Counting,
+    counting: loading::counting::Counting,
     /// The home screen's work in flight, and what it keeps for the session.
     pub home_app: home::home_app::HomeApp,
     /// Home screen state, rebuilt whenever home is entered.
     pub home: home::HomeState,
     /// Where the dataset on screen came from, and how it was opened.
-    source: open_scan::OpenedSource,
+    source: loading::open_scan::OpenedSource,
     path: Option<PathBuf>,
     /// Standard input and output when datui sits in a pipe.
     pipes: run::Pipes,
@@ -966,10 +955,9 @@ impl App {
 
     /// Whether the dataset on screen was piped in.
     fn reads_stdin(&self) -> bool {
-        self.source
-            .opened
-            .as_ref()
-            .is_some_and(|(paths, _)| matches!(paths.as_slice(), [path] if stdin::is_stdin(path)))
+        self.source.opened.as_ref().is_some_and(
+            |(paths, _)| matches!(paths.as_slice(), [path] if loading::stdin::is_stdin(path)),
+        )
     }
 
     /// What views are matched against: the path and table. Piped input or a handed
@@ -978,7 +966,7 @@ impl App {
         self.data_table_state.as_ref()?;
         let path = match self.path.as_deref() {
             Some(path) if !self.reads_stdin() => path,
-            _ => Path::new(stdin::PATH),
+            _ => Path::new(loading::stdin::PATH),
         };
         Some(view::Dataset {
             path,
@@ -1276,7 +1264,7 @@ impl App {
     }
 
     /// The follow of the dataset on screen, while it is followed.
-    pub fn follow(&self) -> Option<&crate::follow::Follow> {
+    pub fn follow(&self) -> Option<&crate::loading::follow::Follow> {
         self.data_table_state.as_ref()?.follow()
     }
 
@@ -1296,7 +1284,7 @@ impl App {
     }
 
     /// A watcher report: counted rows wait for the view; news for the user is flashed.
-    fn followed(&mut self, news: &crate::follow::News) {
+    fn followed(&mut self, news: &crate::loading::follow::News) {
         let Some(state) = self.data_table_state.as_mut() else {
             return;
         };
@@ -1441,7 +1429,7 @@ impl App {
     }
 
     /// Standard input being recorded to the `--tee` file, for the dataset on screen.
-    pub fn recording(&self) -> Option<&Arc<crate::follow::Spool>> {
+    pub fn recording(&self) -> Option<&Arc<crate::loading::follow::Spool>> {
         self.data_table_state.as_ref()?;
         self.source
             .opened
@@ -1523,7 +1511,10 @@ impl App {
     /// The recording to wait for after the terminal is handed back.
     pub fn recording_after_exit(
         &mut self,
-    ) -> Option<(crate::follow::Tee, Arc<crate::follow::SpoolHandle>)> {
+    ) -> Option<(
+        crate::loading::follow::Tee,
+        Arc<crate::loading::follow::SpoolHandle>,
+    )> {
         let handle = self.pipes.recording_on.take()?;
         let spool = handle.spool();
         let tee = spool.tee()?.clone();
@@ -1583,9 +1574,9 @@ impl App {
         let flash = self.flash.as_ref().map(|f| f.expires);
         let clock = self
             .follow()
-            .filter(|f| f.standing == crate::follow::Standing::Following)
+            .filter(|f| f.standing == crate::loading::follow::Standing::Following)
             .and_then(|f| f.last_append)
-            .map(crate::follow::next_tick);
+            .map(crate::loading::follow::next_tick);
         // A recording's size and rate change every second until it ends.
         let recording = self
             .recording()
@@ -1607,7 +1598,7 @@ impl App {
 
     /// What the footer says about the follow of the dataset on screen.
     fn follow_mark(&self) -> Option<crate::render::footer::FollowMark> {
-        use crate::follow::Standing;
+        use crate::loading::follow::Standing;
         // The hex view shows a file's bytes, not the table the follow moves.
         if self.overlay == Overlay::Hex {
             return None;
@@ -1644,7 +1635,7 @@ impl App {
                     Some(at) => format!(
                         "following {} {}",
                         crate::glyphs::get().middot,
-                        crate::follow::age(at.elapsed())
+                        crate::loading::follow::age(at.elapsed())
                     ),
                     None => "following".to_string(),
                 };
@@ -1699,7 +1690,7 @@ impl App {
     /// `t` at the table: pause or resume the follow, or start following (re-reading as
     /// `H` does).
     fn toggle_follow(&mut self) -> Option<AppEvent> {
-        use crate::follow::Standing;
+        use crate::loading::follow::Standing;
         if let Some(follow) = self.data_table_state.as_mut().and_then(|s| s.follow_mut()) {
             match follow.standing {
                 Standing::Following => follow.pause(),
@@ -1712,11 +1703,14 @@ impl App {
             return None;
         }
         let (paths, options) = self.source.opened.clone()?;
-        if paths.iter().any(|path| crate::stdin::is_stdin(path)) {
+        if paths
+            .iter()
+            .any(|path| crate::loading::stdin::is_stdin(path))
+        {
             self.flash_note("Standard input is followed from the start: datui -f -".to_string());
             return None;
         }
-        if let Some(refusal) = crate::follow::refuse_paths(&paths, &options) {
+        if let Some(refusal) = crate::loading::follow::refuse_paths(&paths, &options) {
             self.flash_note(refusal);
             return None;
         }
@@ -2669,7 +2663,7 @@ impl App {
         let mut app = App {
             path: None,
             data_table_state: None,
-            counting: counting::Counting::default(),
+            counting: loading::counting::Counting::default(),
             home: home::HomeState {
                 hide_unreadable: !app_config.home.show_unreadable,
                 formats: formats.clone(),
@@ -2681,7 +2675,7 @@ impl App {
                 }),
                 ..Default::default()
             },
-            source: open_scan::OpenedSource::default(),
+            source: loading::open_scan::OpenedSource::default(),
             pipes: run::Pipes::default(),
             events,
             debug: DebugState::default(),

@@ -1,4 +1,4 @@
-use crate::scan::Scan;
+use crate::loading::scan::Scan;
 use crate::*;
 use polars::prelude::*;
 use std::io::Write;

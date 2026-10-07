@@ -19,7 +19,7 @@ pub struct DebugState {
     /// Schema load path taken by the open's schema phase (one-file vs full scan); set when loading Parquet.
     pub schema_load: Option<String>,
     /// How long frames and event handlers take.
-    pub times: crate::measurements::LoopTimes,
+    pub times: crate::loading::measurements::LoopTimes,
 }
 
 impl DebugState {

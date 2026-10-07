@@ -18,7 +18,7 @@ use crate::formats::schema_union::{
     ESTIMATE_SAMPLE, FOOTERS_AT_ONCE, FileFooter, FooterProgress, Listing, RowEstimate,
     SkippedFiles, ends_of, footers_to_read, random_sample,
 };
-use crate::measurements::{Meter, OpenReport};
+use crate::loading::measurements::{Meter, OpenReport};
 use crate::table::{
     DataTableState, DatasetAtOpen, FileCounter, FileScan, FootersFound, OpenFacts, RemoteRead,
 };
@@ -725,7 +725,7 @@ impl Listed {
                     drift.as_deref(),
                     as_text,
                 )?;
-                Ok(crate::open_scan::hoist_partition_columns(
+                Ok(crate::loading::open_scan::hoist_partition_columns(
                     lf,
                     &schema,
                     &partition_columns,

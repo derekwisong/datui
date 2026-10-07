@@ -7,7 +7,7 @@
 //! the order a reader of logs looks for them. Every field stays. A file's records are
 //! read whole into memory, up to `limits.journal_bytes`, with the schema inferred from
 //! all of them, so a field first seen late is a column too. A pipe or a followed file is scanned as it grows
-//! (`crate::follow::lines`); a pipe's fields first seen after the open join once it
+//! (`crate::loading::follow::lines`); a pipe's fields first seen after the open join once it
 //! ends.
 
 use std::path::PathBuf;
@@ -126,14 +126,19 @@ fn read_all(paths: &[PathBuf], most: u64) -> Result<(DataFrame, u64)> {
     Ok((read(std::io::Cursor::new(bytes))?, left_out))
 }
 
-fn scan(input: crate::formats::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
+fn scan(input: crate::formats::readers::ScanIn<'_>) -> Result<crate::loading::scan::Scan> {
     let path = input.paths[0].clone();
     let failed = |e: &dyn std::fmt::Display| -> color_eyre::Report {
         crate::error_display::FileError::new(&path, format!("not journal JSON: {e}")).into()
     };
     let mut left_out = 0;
     let raw = if input.options.follow {
-        crate::follow::scan_lines(&path, input.options, true, &mut input.report.read_python)?
+        crate::loading::follow::scan_lines(
+            &path,
+            input.options,
+            true,
+            &mut input.report.read_python,
+        )?
     } else {
         let most = crate::limits::get().journal_bytes.bytes();
         let (df, past) = read_all(input.paths, most).map_err(|e| failed(&e))?;

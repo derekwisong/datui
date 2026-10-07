@@ -196,7 +196,7 @@ impl DataTableState {
     }
 
     /// What finding and reading this dataset cost.
-    pub fn measurements(&self) -> &Arc<crate::measurements::Meter> {
+    pub fn measurements(&self) -> &Arc<crate::loading::measurements::Meter> {
         &self.measurements
     }
 
@@ -864,7 +864,7 @@ impl DataTableState {
 
     /// A followed file's windows, read from the mark before each: rows as they are, or
     /// filtered unsorted, continuing from where the view's rows are known.
-    fn follow_window(&self) -> Option<crate::follow::Window> {
+    fn follow_window(&self) -> Option<crate::loading::follow::Window> {
         let follow = self.follow.as_ref()?;
         let known = if self.is_pristine() {
             None
@@ -876,7 +876,7 @@ impl DataTableState {
         } else {
             return None;
         };
-        Some(crate::follow::Window {
+        Some(crate::loading::follow::Window {
             lf: self.view.lf.clone(),
             path: follow.path().to_path_buf(),
             marks: follow.marks().clone(),
@@ -889,8 +889,13 @@ impl DataTableState {
     fn follow_counter(&self) -> Option<crate::formats::pushdown::Counter> {
         let follow = self.follow.as_ref()?;
         let &(before, row) = self.follow_known()?.last()?;
-        let rest =
-            crate::follow::from_marks(&self.view.lf, follow.path(), follow.marks(), row, None)?;
+        let rest = crate::loading::follow::from_marks(
+            &self.view.lf,
+            follow.path(),
+            follow.marks(),
+            row,
+            None,
+        )?;
         let streaming = self.polars_streaming;
         Some(Arc::new(move || {
             let df = crate::analysis::statistics::collect_lazy(row_count_lf(&rest), streaming)?;
@@ -1156,7 +1161,7 @@ impl DataTableState {
         let lf = if self.remote_files.is_some() {
             lf
         } else {
-            crate::open_scan::hoist_partition_columns(
+            crate::loading::open_scan::hoist_partition_columns(
                 lf,
                 &dataset.schema,
                 self.partition_columns.as_deref().unwrap_or(&[]),

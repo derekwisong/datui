@@ -1183,7 +1183,7 @@ pub fn detail(midi: &MidiSummary) -> crate::formats::text_formats::Detail {
 }
 
 /// The scan of MIDI files: their events, with the header, tracks and tempo.
-fn scan(input: crate::formats::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
+fn scan(input: crate::formats::readers::ScanIn<'_>) -> Result<crate::loading::scan::Scan> {
     let (lf, summary) = read_midi(input.paths)?;
     input.report.opened = Some(Arc::new(crate::formats::members::Opened {
         detail: Some(Arc::new(detail(&summary))),

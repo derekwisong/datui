@@ -1413,7 +1413,7 @@ pub(crate) fn opened(summary: &ModelSummary) -> crate::formats::members::Opened 
 }
 
 /// The scan of model files: their tensors, with the header's totals and metadata.
-fn scan(input: crate::formats::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
+fn scan(input: crate::formats::readers::ScanIn<'_>) -> Result<crate::loading::scan::Scan> {
     let (lf, summary) = read_model(input.paths, input.format)?;
     input.report.opened = Some(std::sync::Arc::new(opened(&summary)));
     Ok(lf.into())

@@ -44,7 +44,7 @@ impl App {
         let mut settings = crate::view_settings_of(state);
         settings.chart = self.saved_chart();
         let source = if self.reads_stdin() {
-            crate::stdin::PATH.to_string()
+            crate::loading::stdin::PATH.to_string()
         } else {
             public_location(&self.path.as_ref()?.to_string_lossy())
         };

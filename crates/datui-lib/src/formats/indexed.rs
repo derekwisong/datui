@@ -19,7 +19,7 @@ use crate::formats::fixed_records::{Bytes, ColumnLayout};
 use crate::formats::members::{Opened, Pick, Table};
 use crate::formats::readers::ScanIn;
 use crate::formats::text_formats::Detail;
-use crate::scan::Scan;
+use crate::loading::scan::Scan;
 
 /// Where each record of one type starts, four bytes a record when the file allows.
 #[derive(Debug, Clone)]

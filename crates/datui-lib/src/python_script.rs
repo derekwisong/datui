@@ -1260,13 +1260,13 @@ pub fn source(record: &OpenRecord) -> Source {
     // Standard input recorded with `--tee` is read again from its file.
     let teed;
     let paths = match (&record.options.tee, paths) {
-        (Some(tee), [one]) if crate::stdin::is_stdin(one) => {
+        (Some(tee), [one]) if crate::loading::stdin::is_stdin(one) => {
             teed = [tee.clone()];
             &teed[..]
         }
         _ => paths,
     };
-    if paths.iter().any(|p| crate::stdin::is_stdin(p)) {
+    if paths.iter().any(|p| crate::loading::stdin::is_stdin(p)) {
         return Source::Placeholder {
             what: "The data datui read from standard input: load it here.".to_string(),
         };

@@ -1071,7 +1071,7 @@ fn long_table(
 /// The scan of a candump log: its frames, or with DBC files that name its messages,
 /// the table `--table` names or the list of them. The pass that indexes the log is
 /// kept, as a flight log's is.
-fn scan(input: crate::formats::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
+fn scan(input: crate::formats::readers::ScanIn<'_>) -> Result<crate::loading::scan::Scan> {
     let path = &input.path().to_path_buf();
     let wanted = input.options.table.as_deref();
     let layers = Layers::new(input.formats, &input.options.dicts)?;

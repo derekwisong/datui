@@ -252,11 +252,11 @@ impl DataTableState {
     }
 
     /// The follow of the file this dataset reads, while it is followed.
-    pub fn follow(&self) -> Option<&crate::follow::Follow> {
+    pub fn follow(&self) -> Option<&crate::loading::follow::Follow> {
         self.follow.as_ref()
     }
 
-    pub fn follow_mut(&mut self) -> Option<&mut crate::follow::Follow> {
+    pub fn follow_mut(&mut self) -> Option<&mut crate::loading::follow::Follow> {
         self.follow.as_mut()
     }
 
@@ -274,7 +274,8 @@ impl DataTableState {
             return Ok(false);
         };
         let (path, rows) = (follow.path().to_path_buf(), follow.shown());
-        let Some(mut lf) = crate::follow::widen(&self.original_lf, &path, format, fields, rows)
+        let Some(mut lf) =
+            crate::loading::follow::widen(&self.original_lf, &path, format, fields, rows)
         else {
             return Ok(false);
         };
@@ -302,7 +303,7 @@ impl DataTableState {
     }
 
     /// Follow the file this dataset reads with `follow`, whose watcher is running.
-    pub fn start_following(&mut self, follow: crate::follow::Follow) {
+    pub fn start_following(&mut self, follow: crate::loading::follow::Follow) {
         self.follow = Some(follow);
     }
 
@@ -364,7 +365,7 @@ impl DataTableState {
             && self.view.sort_ascending
             && self.scan_is_the_root();
         let known = self.known_before_follow(&path, restarted);
-        self.each_frame(|lf| crate::follow::bound(lf, &path, rows));
+        self.each_frame(|lf| crate::loading::follow::bound(lf, &path, rows));
         self.invalidate_num_rows();
         self.follow_known = known.map(|known| (self.view.len_generation, known));
         if self.is_pristine() {
@@ -396,12 +397,12 @@ impl DataTableState {
             .filter(|(generation, _)| *generation == self.view.len_generation)
             .map(|(_, known)| known);
         if self.view.num_rows_valid
-            && let Some(row) = crate::follow::bound_of(&self.view.lf, path)
+            && let Some(row) = crate::loading::follow::bound_of(&self.view.lf, path)
         {
             let known = known.get_or_insert_with(Vec::new);
             // One point per stretch of marks is enough to read on from.
             if let [.., before, last] = known.as_slice()
-                && last.1 - before.1 < crate::follow::MARK_ROWS as usize
+                && last.1 - before.1 < crate::loading::follow::MARK_ROWS as usize
             {
                 known.pop();
             }
@@ -418,7 +419,7 @@ impl DataTableState {
         let Some(path) = self.follow.as_ref().map(|f| f.path().to_path_buf()) else {
             return;
         };
-        self.each_frame(|lf| crate::follow::read_through(lf, &path, file));
+        self.each_frame(|lf| crate::loading::follow::read_through(lf, &path, file));
     }
 
     /// The frame on screen: the root, then the query or reshape, the filters and the

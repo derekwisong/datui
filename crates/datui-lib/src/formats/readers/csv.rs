@@ -13,12 +13,12 @@ use tempfile::NamedTempFile;
 
 use super::{Read, Typing};
 use crate::analysis::statistics::collect_lazy;
+use crate::loading::unfinished::{Claim, Writer};
 use crate::python_script::py_str;
-use crate::unfinished::{Claim, Writer};
 use crate::{CompressionFormat, OpenOptions, ParseStringsTarget};
 
 /// Decompress `path` into a new file in `temp_dir`, claimed through `writer` (see
-/// [`crate::unfinished`]) and given up, removed, once its open is stopped.
+/// [`crate::loading::unfinished`]) and given up, removed, once its open is stopped.
 fn decompress_compressed_csv_to_temp(
     path: &Path,
     compression: CompressionFormat,
@@ -1252,7 +1252,7 @@ pub(crate) struct StringTypes {
 }
 
 /// A compressed CSV's decompressed copy, then the open's claim on it: dropped in that
-/// order, so the claim goes only once the file has. See [`crate::unfinished`].
+/// order, so the claim goes only once the file has. See [`crate::loading::unfinished`].
 pub(crate) struct Decompressed {
     file: NamedTempFile,
     _claim: Claim,

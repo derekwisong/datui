@@ -920,7 +920,7 @@ pub fn exact_path_matches<'a>(criteria: &MatchCriteria, dataset: impl Into<Datas
 /// Whether `file_path` is a path a path criterion can fit: not standard input's `-`,
 /// which views match by its columns alone.
 fn has_a_path(file_path: &Path) -> bool {
-    !crate::stdin::is_stdin(file_path)
+    !crate::loading::stdin::is_stdin(file_path)
 }
 
 fn url_key(path: &Path) -> String {
@@ -1329,7 +1329,7 @@ mod tests {
     fn stdin_matches_by_schema_only() {
         use polars::prelude::DataType;
         let schema = Schema::from_iter([("a".into(), DataType::Int64)]);
-        let stdin = Path::new(crate::stdin::PATH);
+        let stdin = Path::new(crate::loading::stdin::PATH);
         let by_path = a_view(
             "every path",
             MatchCriteria {

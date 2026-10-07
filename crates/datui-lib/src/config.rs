@@ -849,7 +849,7 @@ impl Default for ReadConfig {
             parquet_schema: ParquetSchema::Union,
             decompress_in_memory: false,
             temp_dir: None,
-            follow_interval: Interval(crate::follow::DEFAULT_INTERVAL),
+            follow_interval: Interval(crate::loading::follow::DEFAULT_INTERVAL),
             exact_count_files: 50_000,
             memory_warning: ByteSize::mib(1024),
             audio_float: false,

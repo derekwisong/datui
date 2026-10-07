@@ -18,9 +18,9 @@ use polars::prelude::*;
 use crate::cloud::download::TempDownload;
 use crate::formats::segments::Converted;
 use crate::formats::text_formats::{count, note, read_through};
+use crate::loading::unfinished::Writer;
 use crate::notes::Note;
 use crate::numfmt::group_chrome;
-use crate::unfinished::Writer;
 use crate::{FileFormat, OpenOptions};
 
 /// What datui does with an NMEA log: see [`crate::formats::readers`].

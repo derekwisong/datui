@@ -64,7 +64,7 @@ async fn footers_of_files(
     store: &Arc<dyn ObjectStore>,
     files: &[DatasetFile],
     read: &[usize],
-    meter: &Arc<crate::measurements::Meter>,
+    meter: &Arc<crate::loading::measurements::Meter>,
 ) -> Vec<Option<FileFooter>> {
     footers_of_files_reporting(
         store,
@@ -110,7 +110,7 @@ async fn schema_of(
         store,
         files,
         &read,
-        &Arc::new(crate::measurements::Meter::default()),
+        &Arc::new(crate::loading::measurements::Meter::default()),
     )
     .await;
     dataset_schema_from_footers(files, &read, &footers).unwrap()
@@ -435,7 +435,7 @@ fn a_cancelled_pass_reads_no_footers() {
         let read: Vec<usize> = (0..files.len()).collect();
         let progress = crate::formats::schema_union::FooterProgress::default();
         progress.cancel();
-        let meter = Arc::new(crate::measurements::Meter::default());
+        let meter = Arc::new(crate::loading::measurements::Meter::default());
         let footers = footers_of_files_reporting(&store, &files, &read, &progress, &meter).await;
         assert!(footers.iter().all(|f| f.is_none()), "nothing was read");
         let requests = meter
@@ -486,7 +486,7 @@ fn a_remote_dataset_carries_its_row_group_sizes_into_the_schema() {
             &store,
             &files,
             &read,
-            &Arc::new(crate::measurements::Meter::default()),
+            &Arc::new(crate::loading::measurements::Meter::default()),
         )
         .await;
 
@@ -533,7 +533,7 @@ fn a_remote_dataset_carries_its_row_group_sizes_into_the_schema() {
             &store,
             &wide_files,
             &[0],
-            &Arc::new(crate::measurements::Meter::default()),
+            &Arc::new(crate::loading::measurements::Meter::default()),
         )
         .await;
         let size = wide_footers[0].as_ref().unwrap().row_group_bytes[0];
@@ -585,7 +585,7 @@ fn a_sampled_remote_read_takes_each_size_from_the_file_it_read() {
             &store,
             &files,
             &read,
-            &Arc::new(crate::measurements::Meter::default()),
+            &Arc::new(crate::loading::measurements::Meter::default()),
         )
         .await;
         let (dataset, _) = dataset_schema_from_footers(&files, &read, &footers).unwrap();
@@ -646,9 +646,9 @@ fn a_cloud_open_counts_its_footers_against_the_counter_it_is_given() {
         polars::prelude::cloud::CloudOptions::default(),
         &crate::OpenOptions::default(),
         rt.handle(),
-        &crate::measurements::OpenReport {
+        &crate::loading::measurements::OpenReport {
             progress: progress.clone(),
-            meter: Arc::new(crate::measurements::Meter::default()),
+            meter: Arc::new(crate::loading::measurements::Meter::default()),
             remembered: None,
             writes: Default::default(),
         },
@@ -691,7 +691,7 @@ fn a_cloud_count_that_read_nothing_leaves_the_measurement_for_the_one_that_does(
         etag: None,
     }];
 
-    let meter = Arc::new(crate::measurements::Meter::default());
+    let meter = Arc::new(crate::loading::measurements::Meter::default());
     // As the open leaves it: a count belongs to an open this meter measured.
     meter.listed(std::time::Duration::from_millis(1), Some(1), false);
     let source = crate::formats::dataset_files::StoreFiles::new(
@@ -885,9 +885,9 @@ fn a_dataset_read_behind_the_open_is_remembered_by_the_pass_that_read_it() {
 
     let dir = tempfile::tempdir().unwrap();
     let cache = crate::cache::CacheManager::with_dir(dir.path().to_path_buf());
-    let report = || crate::measurements::OpenReport {
+    let report = || crate::loading::measurements::OpenReport {
         progress: Arc::new(crate::formats::schema_union::FooterProgress::default()),
-        meter: Arc::new(crate::measurements::Meter::default()),
+        meter: Arc::new(crate::loading::measurements::Meter::default()),
         remembered: Some(cache.clone()),
         writes: Default::default(),
     };
@@ -971,7 +971,7 @@ fn a_footer_that_would_not_read_is_not_remembered_as_unreadable() {
     let dir = tempfile::tempdir().unwrap();
     let cache = crate::cache::CacheManager::with_dir(dir.path().to_path_buf());
     let open = || {
-        let meter = Arc::new(crate::measurements::Meter::default());
+        let meter = Arc::new(crate::loading::measurements::Meter::default());
         let _ = crate::App::schema_state_from_cloud_hive_with(
             "memory://data/".to_string(),
             "data/".to_string(),
@@ -979,7 +979,7 @@ fn a_footer_that_would_not_read_is_not_remembered_as_unreadable() {
             polars::prelude::cloud::CloudOptions::default(),
             &crate::OpenOptions::default(),
             rt.handle(),
-            &crate::measurements::OpenReport {
+            &crate::loading::measurements::OpenReport {
                 progress: Arc::new(crate::formats::schema_union::FooterProgress::default()),
                 meter: meter.clone(),
                 remembered: Some(cache.clone()),
@@ -1039,7 +1039,7 @@ fn a_dataset_opened_again_is_not_read_again() {
     let dir = tempfile::tempdir().unwrap();
     let cache = crate::cache::CacheManager::with_dir(dir.path().to_path_buf());
     let open = |store: Arc<dyn ObjectStore>| {
-        let meter = Arc::new(crate::measurements::Meter::default());
+        let meter = Arc::new(crate::loading::measurements::Meter::default());
         let _ = crate::App::schema_state_from_cloud_hive_with(
             "memory://data/".to_string(),
             "data/".to_string(),
@@ -1047,7 +1047,7 @@ fn a_dataset_opened_again_is_not_read_again() {
             polars::prelude::cloud::CloudOptions::default(),
             &crate::OpenOptions::default(),
             rt.handle(),
-            &crate::measurements::OpenReport {
+            &crate::loading::measurements::OpenReport {
                 progress: Arc::new(crate::formats::schema_union::FooterProgress::default()),
                 meter: meter.clone(),
                 remembered: Some(cache.clone()),
@@ -1128,7 +1128,7 @@ fn a_glob_reaches_the_route_that_lists_and_reads_it() {
         }
     });
 
-    let meter = Arc::new(crate::measurements::Meter::default());
+    let meter = Arc::new(crate::loading::measurements::Meter::default());
     let _ = crate::App::schema_state_from_cloud_hive_with(
         "memory://data/year=*/*.parquet".to_string(),
         "data/year=*/*.parquet".to_string(),
@@ -1136,7 +1136,7 @@ fn a_glob_reaches_the_route_that_lists_and_reads_it() {
         polars::prelude::cloud::CloudOptions::default(),
         &crate::OpenOptions::default(),
         rt.handle(),
-        &crate::measurements::OpenReport {
+        &crate::loading::measurements::OpenReport {
             progress: Arc::new(crate::formats::schema_union::FooterProgress::default()),
             meter: meter.clone(),
             remembered: None,
@@ -1357,9 +1357,9 @@ fn partitions_are_the_same_from_a_disk_or_a_bucket() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, body()).unwrap();
     }
-    let report = || crate::measurements::OpenReport {
+    let report = || crate::loading::measurements::OpenReport {
         progress: Arc::new(crate::formats::schema_union::FooterProgress::default()),
-        meter: Arc::new(crate::measurements::Meter::default()),
+        meter: Arc::new(crate::loading::measurements::Meter::default()),
         remembered: None,
         writes: Default::default(),
     };
@@ -1448,7 +1448,7 @@ fn a_cloud_open_measures_what_its_listing_and_its_footers_cost() {
         }
     });
 
-    let meter = Arc::new(crate::measurements::Meter::default());
+    let meter = Arc::new(crate::loading::measurements::Meter::default());
     let _ = crate::App::schema_state_from_cloud_hive_with(
         "memory://data/".to_string(),
         "data/".to_string(),
@@ -1456,7 +1456,7 @@ fn a_cloud_open_measures_what_its_listing_and_its_footers_cost() {
         polars::prelude::cloud::CloudOptions::default(),
         &crate::OpenOptions::default(),
         rt.handle(),
-        &crate::measurements::OpenReport {
+        &crate::loading::measurements::OpenReport {
             progress: Arc::new(crate::formats::schema_union::FooterProgress::default()),
             meter: meter.clone(),
             remembered: None,
@@ -1553,9 +1553,9 @@ fn a_column_only_a_middle_file_has_joins_after_the_open() {
         polars::prelude::cloud::CloudOptions::default(),
         &crate::OpenOptions::default(),
         rt.handle(),
-        &crate::measurements::OpenReport {
+        &crate::loading::measurements::OpenReport {
             progress: progress.clone(),
-            meter: Arc::new(crate::measurements::Meter::default()),
+            meter: Arc::new(crate::loading::measurements::Meter::default()),
             remembered: None,
             writes: Default::default(),
         },
@@ -1715,9 +1715,9 @@ fn an_object_only_the_pass_finds_corrupt_is_left_out_by_the_pass() {
         polars::prelude::cloud::CloudOptions::default(),
         &crate::OpenOptions::default(),
         rt.handle(),
-        &crate::measurements::OpenReport {
+        &crate::loading::measurements::OpenReport {
             progress: progress.clone(),
-            meter: Arc::new(crate::measurements::Meter::default()),
+            meter: Arc::new(crate::loading::measurements::Meter::default()),
             remembered: None,
             writes: Default::default(),
         },
@@ -1798,9 +1798,9 @@ fn a_dataset_of_one_wave_of_footers_opens_whole() {
         polars::prelude::cloud::CloudOptions::default(),
         &crate::OpenOptions::default(),
         rt.handle(),
-        &crate::measurements::OpenReport {
+        &crate::loading::measurements::OpenReport {
             progress: progress.clone(),
-            meter: Arc::new(crate::measurements::Meter::default()),
+            meter: Arc::new(crate::loading::measurements::Meter::default()),
             remembered: None,
             writes: Default::default(),
         },
@@ -1857,7 +1857,7 @@ fn a_dataset_is_listed_once_and_counted_from_its_footers() {
             &store,
             &files,
             &[0, 1],
-            &Arc::new(crate::measurements::Meter::default()),
+            &Arc::new(crate::loading::measurements::Meter::default()),
         )
         .await;
         let groups: Vec<Vec<usize>> = footers
@@ -1950,7 +1950,7 @@ fn open_dataset(
             &store,
             &listed,
             &read,
-            &Arc::new(crate::measurements::Meter::default()),
+            &Arc::new(crate::loading::measurements::Meter::default()),
         )
         .await;
         let rows: Vec<usize> = footers
@@ -2159,7 +2159,7 @@ fn the_count_reads_only_what_the_open_did_not_and_remembers_the_dataset() {
     );
     let dir = tempfile::tempdir().unwrap();
     let cache = crate::cache::CacheManager::with_dir(dir.path().to_path_buf());
-    let meter = Arc::new(crate::measurements::Meter::default());
+    let meter = Arc::new(crate::loading::measurements::Meter::default());
     meter.listed(std::time::Duration::from_millis(1), Some(5), false);
 
     // As a sampled open leaves it: two footers read. The first is planted with a
@@ -2168,7 +2168,7 @@ fn the_count_reads_only_what_the_open_did_not_and_remembers_the_dataset() {
         &store,
         &files,
         &[0, 4],
-        &Arc::new(crate::measurements::Meter::default()),
+        &Arc::new(crate::loading::measurements::Meter::default()),
     ));
     let mut planted = sampled[0].clone().unwrap();
     planted.row_group_rows = vec![999];
@@ -2210,7 +2210,7 @@ fn the_count_reads_only_what_the_open_did_not_and_remembers_the_dataset() {
 
     // A reopen finds it, and reads no footers.
     let progress = Arc::new(crate::formats::schema_union::FooterProgress::default());
-    let reopen = Arc::new(crate::measurements::Meter::default());
+    let reopen = Arc::new(crate::loading::measurements::Meter::default());
     let (state, facts) = crate::App::schema_state_from_cloud_hive_with(
         full.to_string(),
         "data/".to_string(),
@@ -2218,7 +2218,7 @@ fn the_count_reads_only_what_the_open_did_not_and_remembers_the_dataset() {
         polars::prelude::cloud::CloudOptions::default(),
         &crate::OpenOptions::default(),
         rt.handle(),
-        &crate::measurements::OpenReport {
+        &crate::loading::measurements::OpenReport {
             progress: progress.clone(),
             meter: reopen.clone(),
             remembered: Some(cache),
@@ -2278,9 +2278,9 @@ fn a_dataset_with_a_corrupt_object_still_counts_the_rest() {
         polars::prelude::cloud::CloudOptions::default(),
         &crate::OpenOptions::default(),
         rt.handle(),
-        &crate::measurements::OpenReport {
+        &crate::loading::measurements::OpenReport {
             progress: progress.clone(),
-            meter: Arc::new(crate::measurements::Meter::default()),
+            meter: Arc::new(crate::loading::measurements::Meter::default()),
             remembered: None,
             writes: Default::default(),
         },
@@ -2445,9 +2445,9 @@ fn a_staged_open_does_not_lose_what_the_listing_passed_over() {
         polars::prelude::cloud::CloudOptions::default(),
         &crate::OpenOptions::default(),
         rt.handle(),
-        &crate::measurements::OpenReport {
+        &crate::loading::measurements::OpenReport {
             progress: progress.clone(),
-            meter: Arc::new(crate::measurements::Meter::default()),
+            meter: Arc::new(crate::loading::measurements::Meter::default()),
             remembered: None,
             writes: Default::default(),
         },

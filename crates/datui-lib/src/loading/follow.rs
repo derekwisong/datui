@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use polars::prelude::*;
 
 use crate::cloud::download::TempDownload;
-use crate::unfinished::Writer;
+use crate::loading::unfinished::Writer;
 use crate::{AppEvent, CompressionFormat, FileFormat, OpenOptions};
 
 pub(crate) mod lines;
@@ -113,7 +113,7 @@ pub fn refuse_paths(paths: &[PathBuf], options: &OpenOptions) -> Option<String> 
     let [path] = paths else {
         return Some("Only one file can be followed at a time.".to_string());
     };
-    if crate::stdin::is_stdin(path) {
+    if crate::loading::stdin::is_stdin(path) {
         // What it holds is known once its first bytes are in.
         return None;
     }
@@ -1828,7 +1828,7 @@ pub struct Tee {
 impl Tee {
     /// `--tee -`: the stream is passed on to standard output rather than kept in a file.
     pub fn to_stdout(&self) -> bool {
-        crate::stdin::is_stdin(&self.path)
+        crate::loading::stdin::is_stdin(&self.path)
     }
 
     /// Where the stream goes, as a message names it.
@@ -1997,7 +1997,7 @@ impl Spool {
             let finished = (if tee.raw {
                 Ok(())
             } else {
-                crate::tee::fix_wav_sizes(&mut file).map(|_| ())
+                crate::loading::tee::fix_wav_sizes(&mut file).map(|_| ())
             })
             .and_then(|()| file.sync_all());
             if let Err(e) = finished
@@ -2091,8 +2091,8 @@ pub enum Spooled {
 }
 
 /// Copy stdin from `open` to the `--tee` file or a temp file in
-/// [`crate::stdin::spool_dir`] (claimed via `writer`) until enough has arrived to show;
-/// the copy continues behind. Reports what the file holds, as [`crate::stdin::spool`]
+/// [`crate::loading::stdin::spool_dir`] (claimed via `writer`) until enough has arrived to show;
+/// the copy continues behind. Reports what the file holds, as [`crate::loading::stdin::spool`]
 /// does. Unfollowed stdin is still read as it arrives when its format allows
 /// (`OpenOptions::pipe`); otherwise (Parquet, compressed) it is copied to the end first.
 pub(crate) fn spool<R: Read + Send + 'static>(
@@ -2122,11 +2122,11 @@ pub(crate) fn spool<R: Read + Send + 'static>(
     let (reader, _) = open().map_err(|e| format!("Could not read standard input: {e}"))?;
     let (spooled, file) = match &tee {
         Some(tee) if !tee.to_stdout() => {
-            let file = crate::tee::create(&tee.path, options.force)?;
+            let file = crate::loading::tee::create(&tee.path, options.force)?;
             (Spooled::Kept(tee.path.clone()), file)
         }
         _ => {
-            let dir = crate::stdin::spool_dir(&options);
+            let dir = crate::loading::stdin::spool_dir(&options);
             let Some((named, claim)) = writer
                 .create(|| TempDownload::create(dir.as_deref(), None))
                 .map_err(|e| crate::error_display::user_message_from_report(&e, None))?
@@ -2190,7 +2190,7 @@ pub(crate) fn spool<R: Read + Send + 'static>(
     if head.is_empty() {
         return Err("Nothing came in on standard input.".to_string());
     }
-    let (format, compression, guessed) = crate::stdin::sniff_for(&head, &options);
+    let (format, compression, guessed) = crate::loading::stdin::sniff_for(&head, &options);
     let asked = options.clone();
     let options = OpenOptions {
         format_guessed: options.format.is_none() && guessed,
@@ -2231,7 +2231,7 @@ pub(crate) fn spool<R: Read + Send + 'static>(
             return Err(reason);
         }
         read.store(spool.bytes(), Ordering::Relaxed);
-        let options = crate::stdin::described(&path, asked)?;
+        let options = crate::loading::stdin::described(&path, asked)?;
         return Ok((spooled, options));
     }
     // A recording goes on whatever it holds; only the view is not followed then.

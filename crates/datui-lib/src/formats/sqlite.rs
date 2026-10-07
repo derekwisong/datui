@@ -1971,7 +1971,9 @@ mod tests;
 
 /// The scan of a SQLite database: the table `--table` names, or the database's only
 /// table of its own, read in place; or none yet when it has several.
-fn scan(input: crate::formats::readers::ScanIn<'_>) -> color_eyre::Result<crate::scan::Scan> {
+fn scan(
+    input: crate::formats::readers::ScanIn<'_>,
+) -> color_eyre::Result<crate::loading::scan::Scan> {
     let file = input.path();
     let tables = tables(file)?;
     match pick(tables.clone(), input.options.table.as_deref(), file)? {

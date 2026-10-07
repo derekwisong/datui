@@ -169,9 +169,9 @@ pub struct OpenOptions {
     pub follow: bool,
     /// Where the followed file's complete records end, counted by the scan and carried
     /// to the dataset as `left_out` is, for its watcher to read on from.
-    pub tail: Option<Arc<crate::follow::Tail>>,
+    pub tail: Option<Arc<crate::loading::follow::Tail>>,
     /// Standard input still being copied to the file a follow reads.
-    pub spool: Option<Arc<crate::follow::SpoolHandle>>,
+    pub spool: Option<Arc<crate::loading::follow::SpoolHandle>>,
     /// Standard input shown as it arrives without `--follow`: read by the follow's
     /// watcher until it ends, the view staying where it is rather than at the end.
     pub pipe: bool,

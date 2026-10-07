@@ -9,7 +9,7 @@ use color_eyre::eyre::eyre;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::unfinished::{Claim, Writer};
+use crate::loading::unfinished::{Claim, Writer};
 
 /// A downloaded file, removed from disk when its last holder drops it: the app keeps
 /// one to read the file again, the dataset scanning it keeps another, and an event
@@ -18,13 +18,13 @@ use crate::unfinished::{Claim, Writer};
 pub struct TempDownload(Arc<Held>);
 
 /// The file, then the open's claim on it: dropped in that order, so the claim is let
-/// go only once the file is gone. See [`crate::unfinished`].
+/// go only once the file is gone. See [`crate::loading::unfinished`].
 #[derive(Debug)]
 struct Held {
     path: tempfile::TempPath,
     _claim: Option<Claim>,
     /// A shared lock on the file while it is held, so another datui sweeping old
-    /// spools ([`crate::stdin`]) can tell a live one. Unix only: a lock there is
+    /// spools ([`crate::loading::stdin`]) can tell a live one. Unix only: a lock there is
     /// advisory, and reads and writes go on beside it.
     #[cfg(unix)]
     _lock: Option<std::fs::File>,
@@ -155,7 +155,7 @@ fn receive<B: AsRef<[u8]>>(
 /// A new file in `dir` (named as [`TempDownload::create`] does) filled by `fill`. Any
 /// failure or stop removes the partial file before returning. Claimed via `writer` from
 /// creation until its last holder drops it, so quitting removes it mid-write (see
-/// [`crate::unfinished`]); a stopped open's file is refused and removed.
+/// [`crate::loading::unfinished`]); a stopped open's file is refused and removed.
 fn fill_temp(
     dir: Option<&Path>,
     extension: Option<&str>,
@@ -524,7 +524,7 @@ mod tests {
     fn a_download_is_claimed_for_as_long_as_it_lives() {
         let rt = runtime();
         let dir = tempfile::tempdir().unwrap();
-        let unfinished = crate::unfinished::Unfinished::default();
+        let unfinished = crate::loading::unfinished::Unfinished::default();
         let stop = Arc::new(AtomicBool::new(false));
         let writer = unfinished.writer(stop.clone());
         let stream = futures::stream::iter(vec![Ok::<_, String>(chunk(0, 10))]);
@@ -750,7 +750,7 @@ mod tests {
         let rt = runtime();
         let dir = tempfile::tempdir().unwrap();
         let stop = Arc::new(AtomicBool::new(false));
-        let stopped = crate::unfinished::Unfinished::default().writer(stop.clone());
+        let stopped = crate::loading::unfinished::Unfinished::default().writer(stop.clone());
 
         let stream = {
             let stop = stop.clone();
@@ -1074,7 +1074,7 @@ mod read_tests {
             Some(dir.path()),
             None,
             move || Ok((reader, None)),
-            &crate::unfinished::Unfinished::default().writer(stop),
+            &crate::loading::unfinished::Unfinished::default().writer(stop),
             None,
         )
         .unwrap_err();

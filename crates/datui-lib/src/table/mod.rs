@@ -174,7 +174,7 @@ pub struct DataTableState {
     parquet_count_dir: Option<PathBuf>,
     /// What finding and reading this dataset cost. On the dataset, not the app: a failed
     /// open leaves the last dataset up, and its figures stay with it.
-    measurements: Arc<crate::measurements::Meter>,
+    measurements: Arc<crate::loading::measurements::Meter>,
     /// Each column's drawn width by identity, so paging, reordering, hiding and sidebars
     /// move nothing. Learned while formatting; not rolled back (it describes columns).
     pub(crate) widths: ColumnWidths,
@@ -293,7 +293,7 @@ pub struct DataTableState {
     /// collect.
     pub needs_recollect: bool,
     /// The watcher of the file this dataset follows (`--follow`), while it does.
-    follow: Option<crate::follow::Follow>,
+    follow: Option<crate::loading::follow::Follow>,
     /// For a followed view that filters or sorts: known points (view rows, file row),
     /// ascending, for the count generation they hold for. Counts read on from the last;
     /// filtered windows from the one before.
@@ -408,7 +408,7 @@ pub struct OpenFacts {
     /// The local Parquet hive directory whose footers sum to the count.
     pub parquet_count_dir: Option<PathBuf>,
     /// What finding and reading the dataset cost.
-    pub measurements: Arc<crate::measurements::Meter>,
+    pub measurements: Arc<crate::loading::measurements::Meter>,
     /// What the open itself has to say. See `DataTableState::open_notes`.
     pub open_notes: Vec<crate::notes::Note>,
     /// The lake format whose plain files this dataset is. See
@@ -605,7 +605,7 @@ impl DataTableState {
             pristine_rows: None,
             root_generation: next_len_generation(),
             parquet_count_dir: None,
-            measurements: Arc::new(crate::measurements::Meter::default()),
+            measurements: Arc::new(crate::loading::measurements::Meter::default()),
             reveal_cursor: false,
             widths: ColumnWidths::default(),
             pages_lookahead: options.pages_lookahead.unwrap_or(3),

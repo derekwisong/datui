@@ -5,7 +5,7 @@ use crate::copy_modal::CopyFocus;
 use crate::feedback::Confirm;
 use crate::form::FormKey;
 use crate::jobs::{Answer, Job};
-use crate::open_options::OpenOptions;
+use crate::loading::open_options::OpenOptions;
 use crate::table::DataTableState;
 use crate::{App, AppEvent, clipboard, cloud::source, copy_modal, python_script};
 use color_eyre::Result;

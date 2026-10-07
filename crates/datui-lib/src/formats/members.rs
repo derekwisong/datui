@@ -225,7 +225,7 @@ impl Opened {
         self,
         input: crate::formats::readers::ScanIn<'_>,
         lf: polars::prelude::LazyFrame,
-    ) -> crate::scan::Scan {
+    ) -> crate::loading::scan::Scan {
         input.report.opened = Some(std::sync::Arc::new(self));
         lf.into()
     }
@@ -236,8 +236,8 @@ impl Opened {
 pub(crate) fn several(
     input: &crate::formats::readers::ScanIn<'_>,
     tables: Vec<Table>,
-) -> crate::scan::Scan {
-    crate::scan::Scan::Tables {
+) -> crate::loading::scan::Scan {
+    crate::loading::scan::Scan::Tables {
         file: input.path().to_path_buf(),
         tables: tables
             .into_iter()

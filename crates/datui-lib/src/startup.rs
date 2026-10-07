@@ -68,19 +68,22 @@ pub(crate) fn read(input: RunInput, config: Option<AppConfig>) -> Result<Setting
             let opts = OpenOptions::from_args_and_config(&args, &config);
             // Only the command line reads standard input: a host such as Python has
             // its own, and it is not data.
-            let piped = crate::stdin::piped();
-            let paths = crate::stdin::paths_or_stdin(args.paths, piped);
-            if let Some(refused) = crate::stdin::refuse(&paths, piped) {
+            let piped = crate::loading::stdin::piped();
+            let paths = crate::loading::stdin::paths_or_stdin(args.paths, piped);
+            if let Some(refused) = crate::loading::stdin::refuse(&paths, piped) {
                 return Err(color_eyre::eyre::eyre!(refused));
             }
             if let Some(tee) = &opts.tee {
-                if !paths.iter().any(|path| crate::stdin::is_stdin(path)) {
+                if !paths
+                    .iter()
+                    .any(|path| crate::loading::stdin::is_stdin(path))
+                {
                     return Err(color_eyre::eyre::eyre!(
                         "--tee records standard input: pipe data in, as in: some_logger | datui --tee run1.csv -"
                     ));
                 }
-                if !opts.force && !crate::stdin::is_stdin(tee) && tee.exists() {
-                    return Err(color_eyre::eyre::eyre!(crate::tee::refusal(tee)));
+                if !opts.force && !crate::loading::stdin::is_stdin(tee) && tee.exists() {
+                    return Err(color_eyre::eyre::eyre!(crate::loading::tee::refusal(tee)));
                 }
             }
             if opts.follow && paths.is_empty() {
@@ -97,13 +100,20 @@ pub(crate) fn read(input: RunInput, config: Option<AppConfig>) -> Result<Setting
             match frame {
                 Some(lf) => (RunInput::LazyFrame(lf, opts), config),
                 None => {
-                    let paths = args.paths.into_iter().map(crate::stdin::as_file).collect();
+                    let paths = args
+                        .paths
+                        .into_iter()
+                        .map(crate::loading::stdin::as_file)
+                        .collect();
                     (RunInput::Paths(paths, opts), config)
                 }
             }
         }
         RunInput::Paths(paths, opts) => {
-            let paths = paths.into_iter().map(crate::stdin::as_file).collect();
+            let paths = paths
+                .into_iter()
+                .map(crate::loading::stdin::as_file)
+                .collect();
             (RunInput::Paths(paths, opts), config)
         }
         input => (input, config),
@@ -243,7 +253,7 @@ pub(crate) fn named_paths(input: &RunInput) -> &[PathBuf] {
 pub(crate) fn named(input: &RunInput) -> Option<PathBuf> {
     named_paths(input)
         .first()
-        .map(|path| crate::stdin::named(path))
+        .map(|path| crate::loading::stdin::named(path))
 }
 
 /// The screen while the settings are slow to read. The theme and the glyph set are

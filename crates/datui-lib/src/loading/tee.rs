@@ -1,6 +1,6 @@
 //! `--tee FILE`: standard input recorded to a file the user keeps, while it is viewed.
 //!
-//! The copy itself is a [`crate::follow::Spool`] writing to FILE rather than to a
+//! The copy itself is a [`crate::loading::follow::Spool`] writing to FILE rather than to a
 //! temporary file; this module creates FILE and, when the stream ends, fills in what
 //! a producer writing to a pipe could not: a WAV file's sizes. `--tee -` passes the
 //! stream on to standard output instead (`pass_stdout_on`).

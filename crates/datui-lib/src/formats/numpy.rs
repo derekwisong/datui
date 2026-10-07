@@ -1258,7 +1258,7 @@ pub(crate) fn convert(
     path: &Path,
     name: &str,
     options: &crate::OpenOptions,
-    writer: &crate::unfinished::Writer,
+    writer: &crate::loading::unfinished::Writer,
     read: &std::sync::atomic::AtomicU64,
 ) -> Result<(
     crate::cloud::download::TempDownload,
@@ -1321,7 +1321,7 @@ pub(crate) fn convert(
 /// The scan of a NumPy file: an `.npy` file's array, or the array of an archive
 /// `--table` names, or its only one, read in place; a compressed one decompressed
 /// first; or none yet when the archive has several.
-fn scan(input: crate::formats::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
+fn scan(input: crate::formats::readers::ScanIn<'_>) -> Result<crate::loading::scan::Scan> {
     let path = &input.path().to_path_buf();
     let wanted = input.options.table.as_deref();
     let mut head = [0u8; 8];
@@ -1363,7 +1363,7 @@ fn scan(input: crate::formats::readers::ScanIn<'_>) -> Result<crate::scan::Scan>
         .find(|m| m.name == picked.name)
         .expect("picked from the members");
     let Some(at) = member.stored_at else {
-        return Ok(crate::scan::Scan::Unpack {
+        return Ok(crate::loading::scan::Scan::Unpack {
             file: path.clone(),
             member: member.name.clone(),
             format: input.format,

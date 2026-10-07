@@ -6,9 +6,9 @@ use crate::cli::{CompressionFormat, FileFormat};
 use crate::cloud::cloud_hive;
 use crate::feedback::Confirm;
 use crate::jobs::{Answer, Job};
-use crate::open_options::{OpenOptions, ReadReport, UnaskedDownload};
+use crate::loading::open_options::{OpenOptions, ReadReport, UnaskedDownload};
+use crate::loading::scan::Scan;
 use crate::pivot_melt_modal::PivotMeltModal;
-use crate::scan::Scan;
 use crate::sort_filter_modal::SortFilterModal;
 use crate::table::{DataTableState, OpenFacts};
 #[cfg(feature = "cloud")]
@@ -100,7 +100,7 @@ impl App {
     }
 
     /// What the load is doing. While a footer pass runs its count stands in for the
-    /// phase, read once a frame from [`crate::counting::Counting::footers_this_frame`] so callers agree.
+    /// phase, read once a frame from [`crate::loading::counting::Counting::footers_this_frame`] so callers agree.
     pub(crate) fn loading_phase<'a>(&self, phase: &'a str) -> std::borrow::Cow<'a, str> {
         match self.counting.footers_this_frame {
             Some((read, total)) => std::borrow::Cow::Owned(format!(
@@ -355,7 +355,7 @@ impl App {
         {
             match options.tail.as_deref() {
                 Some(tail) => {
-                    let follow = crate::follow::Follow::start(
+                    let follow = crate::loading::follow::Follow::start(
                         tail.clone(),
                         self.app_config.read.follow_interval.duration(),
                         self.events.clone(),
@@ -673,7 +673,7 @@ impl App {
             .iter()
             .find(|path| {
                 !source::is_remote_url(path)
-                    && !crate::stdin::is_stdin(path)
+                    && !crate::loading::stdin::is_stdin(path)
                     && !source::expands_as_glob(path)
                     && !path.exists()
                     && crate::formats::members::split(path).is_none()
@@ -828,7 +828,7 @@ impl App {
     fn decompressed_delimited_state(
         path: &Path,
         options: &OpenOptions,
-        writer: &crate::unfinished::Writer,
+        writer: &crate::loading::unfinished::Writer,
     ) -> Result<DataTableState> {
         let separator = options
             .format
@@ -968,7 +968,7 @@ impl App {
         temp_dir: Option<&Path>,
         extension: Option<&str>,
         limit: Option<u64>,
-        writer: &crate::unfinished::Writer,
+        writer: &crate::loading::unfinished::Writer,
     ) -> Result<crate::cloud::download::TempDownload> {
         use crate::cloud::download::StreamError;
 
@@ -1007,7 +1007,7 @@ impl App {
         cloud: &crate::config::CloudConfig,
         options: &OpenOptions,
         runtime: &tokio::runtime::Handle,
-        writer: &crate::unfinished::Writer,
+        writer: &crate::loading::unfinished::Writer,
     ) -> Result<crate::cloud::download::TempDownload> {
         use crate::cloud::download::StreamError;
         use object_store::ObjectStoreExt;
@@ -1110,13 +1110,13 @@ impl App {
         // A followed Arrow IPC stream gets its own scan, not a conversion; followed NDJSON
         // is scanned rather than read whole.
         let followed_stream = options.follow
-            && crate::follow::followed_stream(
+            && crate::loading::follow::followed_stream(
                 &paths[0],
-                Some(crate::follow::format_of(&paths[0], options.format)),
+                Some(crate::loading::follow::format_of(&paths[0], options.format)),
                 &options,
             );
         let scan = if followed_stream {
-            crate::follow::stream::scan(&paths[0])
+            crate::loading::follow::stream::scan(&paths[0])
                 .map(Scan::from)
                 .map_err(|e| color_eyre::eyre::eyre!(e))
         } else {
@@ -1133,23 +1133,24 @@ impl App {
             .is_some_and(|handle| handle.spool().tee().is_some());
         let (scan, tail) = match scan {
             Scan::Frame(lf) if options.follow => {
-                let format = crate::follow::format_of(&paths[0], format);
+                let format = crate::loading::follow::format_of(&paths[0], format);
                 let refused = (!followed_stream)
-                    .then(|| crate::follow::refusal(Some(format), &options))
+                    .then(|| crate::loading::follow::refusal(Some(format), &options))
                     .flatten();
                 match refused {
                     Some(_) if recording => (Scan::Frame(lf), None),
                     Some(refusal) => return Err(refusal),
                     None => {
-                        let (lf, tail) =
-                            crate::follow::bound_to_complete(*lf, &paths[0], format, &options)
-                                .map_err(named)?;
+                        let (lf, tail) = crate::loading::follow::bound_to_complete(
+                            *lf, &paths[0], format, &options,
+                        )
+                        .map_err(named)?;
                         (Scan::Frame(Box::new(lf)), Some(Arc::new(tail)))
                     }
                 }
             }
             _ if options.follow && !recording => {
-                return Err(crate::follow::refusal(format, &options)
+                return Err(crate::loading::follow::refusal(format, &options)
                     .unwrap_or_else(|| "This file cannot be followed as it grows.".to_string()));
             }
             scan => (scan, None),
@@ -1236,7 +1237,7 @@ impl App {
         options: OpenOptions,
         cloud: &crate::config::CloudConfig,
         runtime: &tokio::runtime::Handle,
-        report: &crate::measurements::OpenReport,
+        report: &crate::loading::measurements::OpenReport,
         made: loading::Made,
     ) -> std::result::Result<loading::LoadAnswer, String> {
         use loading::LoadAnswer;
@@ -1485,13 +1486,14 @@ impl App {
                     // named file; and it is read as it arrives when its format allows.
                     let (download, options) = if options.follow
                         || options.tee.is_some()
-                        || crate::stdin::may_read_as_it_arrives(&options)
+                        || crate::loading::stdin::may_read_as_it_arrives(&options)
                     {
-                        match crate::follow::spool(open, options, &writer, &read, stdout)? {
-                            (crate::follow::Spooled::Temp(download), options) => {
+                        match crate::loading::follow::spool(open, options, &writer, &read, stdout)?
+                        {
+                            (crate::loading::follow::Spooled::Temp(download), options) => {
                                 (download, options)
                             }
-                            (crate::follow::Spooled::Kept(file), options) => {
+                            (crate::loading::follow::Spooled::Kept(file), options) => {
                                 return Ok(Answer::Load(Box::new(LoadAnswer::Recorded {
                                     file,
                                     options,
@@ -1499,7 +1501,7 @@ impl App {
                             }
                         }
                     } else {
-                        crate::stdin::spool(open, options, &writer, &read)?
+                        crate::loading::stdin::spool(open, options, &writer, &read)?
                     };
                     Ok(Answer::Load(Box::new(LoadAnswer::Spooled {
                         download,
@@ -1755,9 +1757,9 @@ impl App {
                 made,
             } => {
                 self.debug.schema_load = None;
-                let report = crate::measurements::OpenReport {
+                let report = crate::loading::measurements::OpenReport {
                     progress,
-                    meter: Arc::new(crate::measurements::Meter::default()),
+                    meter: Arc::new(crate::loading::measurements::Meter::default()),
                     remembered: Some(self.cache.clone()),
                     writes: self.cache_writes.clone(),
                 };
@@ -1860,7 +1862,7 @@ impl App {
     pub(crate) fn schema_state_from_local_hive(
         path: Option<&Path>,
         options: &OpenOptions,
-        report: &crate::measurements::OpenReport,
+        report: &crate::loading::measurements::OpenReport,
     ) -> Option<(DataTableState, OpenFacts)> {
         if !options.single_spine_schema {
             return None;
@@ -1876,7 +1878,7 @@ impl App {
         options: &OpenOptions,
         cloud: &crate::config::CloudConfig,
         runtime: &tokio::runtime::Handle,
-        report: &crate::measurements::OpenReport,
+        report: &crate::loading::measurements::OpenReport,
     ) -> Option<(DataTableState, OpenFacts)> {
         // A prefix of Arrow files is read from its download (`cloud_arrow`).
         if !options.single_spine_schema || options.format == Some(FileFormat::Arrow) {
@@ -1906,7 +1908,7 @@ impl App {
         cloud_opts: CloudOptions,
         options: &OpenOptions,
         runtime: &tokio::runtime::Handle,
-        report: &crate::measurements::OpenReport,
+        report: &crate::loading::measurements::OpenReport,
     ) -> Option<(DataTableState, OpenFacts)> {
         // List every file once; scan, schema and count work from that list. A listing
         // prefix is literal, so datui expands a glob itself: it lists the literal part
@@ -1950,7 +1952,7 @@ impl App {
         cloud_opts: CloudOptions,
         options: &OpenOptions,
         runtime: &tokio::runtime::Handle,
-        report: &crate::measurements::OpenReport,
+        report: &crate::loading::measurements::OpenReport,
     ) -> Option<(DataTableState, OpenFacts)> {
         let CloudTarget { full, key, pattern } = target;
         dataset_files::open(
@@ -2039,7 +2041,7 @@ impl App {
         options: &OpenOptions,
         cloud: &crate::config::CloudConfig,
         runtime: &tokio::runtime::Handle,
-        report: &crate::measurements::OpenReport,
+        report: &crate::loading::measurements::OpenReport,
     ) -> Result<(DataTableState, OpenFacts, String)> {
         // The facts carry the meter of the route that built the dataset, installed with it.
         // A failed open never gets here, so the dataset on screen keeps its own figures.
@@ -2249,7 +2251,7 @@ impl App {
         options: &OpenOptions,
         cloud: &crate::config::CloudConfig,
         runtime: &tokio::runtime::Handle,
-        report: &crate::measurements::OpenReport,
+        report: &crate::loading::measurements::OpenReport,
     ) -> Result<(DataTableState, OpenFacts)> {
         let (full, cloud_opts, store) = Self::cloud_store_for(path, cloud, runtime)?;
         let (_bucket, key) = Self::cloud_bucket_and_key(&full)?;
@@ -2296,7 +2298,7 @@ impl App {
         options: &OpenOptions,
         cloud: &crate::config::CloudConfig,
         runtime: &tokio::runtime::Handle,
-        report: &crate::measurements::OpenReport,
+        report: &crate::loading::measurements::OpenReport,
     ) -> Result<(DataTableState, OpenFacts, String)> {
         #[cfg(not(feature = "cloud"))]
         let _ = (cloud, runtime);
@@ -2306,11 +2308,13 @@ impl App {
         // on a dataset a later route built. Both full-scan arms also return an empty one;
         // `test_a_route_that_gave_up_leaves_no_figures_on_the_dataset_that_opened` holds
         // the two guards together.
-        let attempt = |report: &crate::measurements::OpenReport| crate::measurements::OpenReport {
-            progress: report.progress.clone(),
-            meter: Arc::new(crate::measurements::Meter::default()),
-            remembered: report.remembered.clone(),
-            writes: report.writes.clone(),
+        let attempt = |report: &crate::loading::measurements::OpenReport| {
+            crate::loading::measurements::OpenReport {
+                progress: report.progress.clone(),
+                meter: Arc::new(crate::loading::measurements::Meter::default()),
+                remembered: report.remembered.clone(),
+                writes: report.writes.clone(),
+            }
         };
 
         let local = attempt(report);
@@ -2878,7 +2882,7 @@ impl App {
             && options.format.is_none()
             && source::expands_as_glob(pattern)
         {
-            let files = crate::local_glob::expand(pattern);
+            let files = crate::loading::local_glob::expand(pattern);
             if let Some(first) = files
                 .iter()
                 .find(|f| !crate::formats::nul_tail::holds_nothing(f))

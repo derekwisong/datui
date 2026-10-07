@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
 
 use crate::cloud::download::{Opened, StreamError, TempDownload};
-use crate::unfinished::Writer;
+use crate::loading::unfinished::Writer;
 use crate::{CompressionFormat, FileFormat, OpenOptions};
 
 /// The path that names standard input on the command line.

@@ -208,7 +208,7 @@ fn a_stop_mid_spool_removes_the_partial_file() {
     let dir = tempfile::tempdir().unwrap();
     let (reader, mut pipe) = std::io::pipe().unwrap();
     let stop = Arc::new(AtomicBool::new(false));
-    let writer = crate::unfinished::Unfinished::default().writer(stop.clone());
+    let writer = crate::loading::unfinished::Unfinished::default().writer(stop.clone());
     let read = Arc::new(AtomicU64::new(0));
     let worker = {
         let (writer, read) = (writer.clone(), read.clone());

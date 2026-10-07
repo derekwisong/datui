@@ -1465,7 +1465,7 @@ pub fn detail(audio: &AudioSource) -> crate::formats::text_formats::Detail {
 /// The scan of an audio file: its frames, read from the file where they are shown.
 /// The source is the window the dataset reads them through, and what a full quality
 /// run checks the signal of ([`recording`]).
-fn scan(input: crate::formats::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
+fn scan(input: crate::formats::readers::ScanIn<'_>) -> Result<crate::loading::scan::Scan> {
     let source = Arc::new(AudioSource::open(input.path(), input.options.normalize)?);
     let lf = source.lazy();
     // The count is arithmetic on the file's size: nothing to scan for it.

@@ -530,7 +530,7 @@ impl EventPump {
     /// interval; a queued continuation runs right after the frame showing its phase.
     pub fn run(&mut self, mut draw: impl FnMut(&mut App) -> Result<()>) -> Result<Ended> {
         let mut pacer = Pacer::default();
-        let mut first_rows = crate::first_rows_trace::FirstRowsTrace::from_env();
+        let mut first_rows = crate::loading::first_rows_trace::FirstRowsTrace::from_env();
         draw(&mut self.app)?;
         self.app.frame_painted();
         first_rows.painted(&self.app);

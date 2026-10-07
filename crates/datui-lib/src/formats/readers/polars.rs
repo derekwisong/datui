@@ -7,8 +7,8 @@ use super::{BASE, EVERYWHERE, Kind, Reader, ScanIn, Signature, Trusted, Unnamed}
 #[cfg(feature = "cloud")]
 use crate::error_display::FileError;
 use crate::export_modal::ExportFormat;
+use crate::loading::scan::Scan;
 use crate::python_script::{self as py, Python};
-use crate::scan::Scan;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
@@ -22,7 +22,7 @@ use orc_rust::ArrowReaderBuilder;
 use polars::prelude::*;
 
 use super::Read;
-use crate::unfinished::Writer;
+use crate::loading::unfinished::Writer;
 use crate::{OpenOptions, ParseStringsTarget};
 
 /// A prefix of CSV in an object store, read with the flags the user gave as they are
@@ -189,7 +189,7 @@ fn scan_json(input: ScanIn<'_>) -> Result<Scan> {
 fn scan_json_lines(input: ScanIn<'_>) -> Result<Scan> {
     if input.options.follow {
         let path = input.paths[0].clone();
-        return crate::follow::scan_lines(
+        return crate::loading::follow::scan_lines(
             &path,
             input.options,
             false,

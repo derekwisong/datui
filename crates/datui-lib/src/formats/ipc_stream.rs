@@ -18,7 +18,7 @@ use polars_arrow::io::ipc::write::{FileWriter, WriteOptions};
 
 use crate::cloud::download::TempDownload;
 use crate::error_display::{FileError, user_message_from_io};
-use crate::unfinished::Writer;
+use crate::loading::unfinished::Writer;
 
 /// What a stream's messages start with since Arrow 0.15. Older streams start with the
 /// schema message's length.
@@ -181,7 +181,7 @@ pub(crate) struct Merge<'a> {
     out: Option<(FileWriter<BufWriter<File>>, PathBuf, Columns)>,
     /// The file, then its claim: dropped in that order.
     file: tempfile::NamedTempFile,
-    claim: crate::unfinished::Claim,
+    claim: crate::loading::unfinished::Claim,
     dir: PathBuf,
     writer: &'a Writer,
     /// The rows written so far.

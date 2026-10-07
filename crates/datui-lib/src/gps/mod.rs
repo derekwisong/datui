@@ -18,10 +18,8 @@ pub mod gpx;
 pub mod nmea;
 pub mod table;
 
-use std::fs::File;
-use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
@@ -30,9 +28,10 @@ use polars::prelude::*;
 use crate::download::TempDownload;
 use crate::notes::Note;
 use crate::numfmt::group_chrome;
-use crate::segments::{Converted, Segments};
+use crate::segments::Converted;
+use crate::text_formats::{count, note, read_through};
 use crate::unfinished::Writer;
-use crate::{CompressionFormat, FileFormat, OpenOptions};
+use crate::{FileFormat, OpenOptions};
 
 /// What datui does with an NMEA log: see [`crate::readers`].
 pub(crate) const NMEA: crate::readers::Reader = crate::readers::Reader {
@@ -100,48 +99,6 @@ pub(crate) const GPX: crate::readers::Reader = crate::readers::Reader {
     }],
     ..crate::readers::BASE
 };
-
-/// How much of the file is read at a time.
-const CHUNK: usize = 1 << 16;
-
-/// A reader that counts the bytes read through it, for the loading screen.
-struct Counted<'a, R> {
-    inner: R,
-    read: &'a AtomicU64,
-}
-
-impl<R: Read> Read for Counted<'_, R> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let n = self.inner.read(buf)?;
-        self.read.fetch_add(n as u64, Ordering::Relaxed);
-        Ok(n)
-    }
-}
-
-/// The file, decompressed as it is read when its name or `--compression` says so;
-/// `read` counts the bytes of the file as stored.
-pub(crate) fn open_reader<'a>(
-    file: &Path,
-    options: &OpenOptions,
-    read: &'a AtomicU64,
-) -> Result<Box<dyn Read + 'a>> {
-    let f = BufReader::new(Counted {
-        inner: File::open(file)?,
-        read,
-    });
-    Ok(
-        match options
-            .compression
-            .or_else(|| CompressionFormat::from_extension(file))
-        {
-            None => Box::new(f),
-            Some(CompressionFormat::Gzip) => Box::new(flate2::read::MultiGzDecoder::new(f)),
-            Some(CompressionFormat::Zstd) => Box::new(zstd::Decoder::new(f)?),
-            Some(CompressionFormat::Bzip2) => Box::new(bzip2::read::BzDecoder::new(f)),
-            Some(CompressionFormat::Xz) => Box::new(xz2::read::XzDecoder::new(f)),
-        },
-    )
-}
 
 /// Read `files` (named `display` to the user when there is one) as `format` into
 /// temporary IPC files, written through `writer`, counting the bytes of the files read
@@ -452,40 +409,13 @@ fn convert_one(
     writer: &Writer,
     read: &AtomicU64,
 ) -> Result<One> {
-    let mut reader = open_reader(file, options, read)?;
-    let mut segments = Segments::new(options, writer);
     let mut extent = Extent::default();
-    let mut chunk = vec![0u8; CHUNK];
-    let mut next = |chunk: &mut [u8]| -> Result<usize> {
-        if writer.stopped() {
-            return Err(eyre!("Reading was stopped."));
-        }
-        loop {
-            match reader.read(chunk) {
-                Ok(n) => return Ok(n),
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(e) => return Err(e.into()),
-            }
-        }
-    };
     match format {
         FileFormat::Gpx => {
             let mut gpx = gpx::GpxReader::new();
-            loop {
-                let n = next(&mut chunk)?;
-                if n == 0 {
-                    break;
-                }
-                gpx.push(&chunk[..n]).map_err(|e| eyre!(e))?;
-                if let Some(df) = gpx.take_batch()? {
-                    extent.absorb(&df);
-                    segments.write(&df)?;
-                }
-            }
-            let last = gpx.finish().map_err(|e| eyre!(e))?;
-            extent.absorb(&last);
-            segments.write(&last)?;
-            let (lf, files) = segments.finish()?;
+            let (lf, files) = read_through(file, options, writer, read, &mut gpx, |df| {
+                extent.absorb(df)
+            })?;
             let stats = gpx.stats().clone();
             Ok(One {
                 lf: type_gpx_fields(lf, gpx.fields()),
@@ -498,20 +428,10 @@ fn convert_one(
             })
         }
         FileFormat::Nmea => {
-            let table = nmea_table(options)?;
-            let mut log = nmea::NmeaReader::new(table);
-            loop {
-                let n = next(&mut chunk)?;
-                if n == 0 {
-                    break;
-                }
-                log.push(&chunk[..n]);
-                if let Some(df) = log.take_batch()? {
-                    extent.absorb(&df);
-                    segments.write(&df)?;
-                }
-            }
-            let last = log.finish()?;
+            let mut log = nmea::NmeaReader::new(nmea_table(options)?);
+            let (lf, files) = read_through(file, options, writer, read, &mut log, |df| {
+                extent.absorb(df)
+            })?;
             if log.stats().sentences == 0 {
                 return Err(crate::error_display::FileError::new(
                     display,
@@ -519,9 +439,6 @@ fn convert_one(
                 )
                 .into());
             }
-            extent.absorb(&last);
-            segments.write(&last)?;
-            let (lf, files) = segments.finish()?;
             let stats = log.stats().clone();
             Ok(One {
                 lf,
@@ -534,6 +451,35 @@ fn convert_one(
             })
         }
         other => Err(eyre!("{} is not a GPS format.", other.name())),
+    }
+}
+
+impl crate::text_formats::BatchReader for gpx::GpxReader {
+    fn push(&mut self, piece: &[u8]) -> Result<()> {
+        self.push(piece).map_err(|e| eyre!(e))
+    }
+
+    fn take_batch(&mut self) -> PolarsResult<Option<DataFrame>> {
+        self.take_batch()
+    }
+
+    fn finish(&mut self) -> Result<DataFrame> {
+        self.finish().map_err(|e| eyre!(e))
+    }
+}
+
+impl crate::text_formats::BatchReader for nmea::NmeaReader {
+    fn push(&mut self, piece: &[u8]) -> Result<()> {
+        self.push(piece);
+        Ok(())
+    }
+
+    fn take_batch(&mut self) -> PolarsResult<Option<DataFrame>> {
+        self.take_batch()
+    }
+
+    fn finish(&mut self) -> Result<DataFrame> {
+        Ok(self.finish()?)
     }
 }
 
@@ -557,20 +503,6 @@ fn type_gpx_fields(lf: LazyFrame, fields: &[gpx::FieldColumn]) -> LazyFrame {
     } else {
         lf.with_columns(casts)
     }
-}
-
-fn note(summary: String, scope: String) -> Note {
-    Note {
-        summary,
-        scope,
-        read_as_text: None,
-        passed_over: None,
-    }
-}
-
-fn count(n: u64, one: &str, many: &str) -> String {
-    let n = usize::try_from(n).unwrap_or(usize::MAX);
-    format!("{} {}", group_chrome(n), if n == 1 { one } else { many })
 }
 
 /// What reading an NMEA log noticed; of `of` logs, `undated` of them without a date.
@@ -695,6 +627,7 @@ fn gpx_notes(stats: &gpx::Stats, of: Option<usize>, truncated: usize) -> Vec<Not
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::Ordering;
 
     /// Every way a GPS log is refused names the file, in the one shape.
     #[test]

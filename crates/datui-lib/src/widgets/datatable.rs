@@ -4830,7 +4830,7 @@ impl DataTableState {
         let (lines, temp) = if options.decompress_in_memory {
             let mut bytes = Vec::new();
             let read = std::sync::atomic::AtomicU64::new(0);
-            crate::gps::open_reader(path, options, &read)?.read_to_end(&mut bytes)?;
+            crate::text_formats::open_reader(path, options, &read)?.read_to_end(&mut bytes)?;
             let name = path
                 .file_stem()
                 .map_or_else(String::new, |n| n.to_string_lossy().into_owned());

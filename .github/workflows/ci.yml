@@ -328,8 +328,8 @@ jobs:
           expect_exit_1 datui-no-such-file.csv "File not found: datui-no-such-file.csv"
           expect_exit_1 '~\datui-no-such-file.csv' "File not found: $USERPROFILE\\datui-no-such-file.csv"
 
-  # macOS on every pull request, kept cheap: the workspace compiles and the library
-  # and binary unit tests pass. The full suite stays on the macos job below
+  # macOS on every pull request, kept cheap: the library and binary unit tests
+  # build and pass. The full suite stays on the macos job below
   # (release versions) and on Nightly. No `needs`, like linux.
   macos-pr:
     name: macOS check and unit tests
@@ -349,9 +349,8 @@ jobs:
           cache-key: macos-pr
           fixtures: true
 
-      - name: Check
-        run: cargo check --workspace --locked
-
+      # The test build compiles every workspace crate; a separate check would only
+      # compile them twice.
       - name: Run unit tests
         run: cargo test --workspace --locked --lib --bins --no-fail-fast
 

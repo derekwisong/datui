@@ -79,8 +79,14 @@ impl Overlay {
 impl App {
     /// Open `overlay`. It is over the table: the query line, or home, is left.
     pub(crate) fn open_overlay(&mut self, overlay: Overlay) {
-        self.input_mode = InputMode::Normal;
+        self.show_table();
         self.overlay = overlay;
+    }
+
+    /// The table takes the keys: home, or the command line, is left.
+    pub(crate) fn show_table(&mut self) {
+        self.input_mode = InputMode::Normal;
+        self.prompt.input_type = None;
     }
 
     /// Open an overlay over the one open now, which closing it goes back to.
@@ -103,6 +109,11 @@ impl App {
                 self.column_forms.combine = None;
             }
             Overlay::Sample => self.sample.form = None,
+            Overlay::PickTable => self.pickers.table_choices = None,
+            Overlay::Hex => {
+                self.stop_hex_find();
+                self.hex_view.view = None;
+            }
             Overlay::Chart => {
                 self.chart.modal.close();
                 self.reset_chart_state();

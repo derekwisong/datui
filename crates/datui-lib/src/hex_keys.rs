@@ -130,9 +130,7 @@ impl App {
                 None
             }
             Origin::Table | Origin::Info => {
-                self.stop_hex_find();
-                self.hex_view.view = None;
-                self.overlay = Overlay::None;
+                self.close_overlay();
                 if self.data_table_state.is_none() {
                     self.input_mode = InputMode::Home;
                 }
@@ -476,9 +474,7 @@ impl App {
         };
         self.source.opened_from_home = from_home || self.source.opened_from_home;
         // The table takes the screen; a read that fails says why over it.
-        self.stop_hex_find();
-        self.hex_view.view = None;
-        self.overlay = Overlay::None;
+        self.close_overlay();
         self.set_loading_phase("Scanning input", 10);
         self.name_what_is_loading(path.clone());
         Some(AppEvent::Open(vec![path], options))

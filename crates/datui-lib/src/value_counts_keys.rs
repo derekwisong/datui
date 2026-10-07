@@ -125,7 +125,7 @@ impl App {
                 if counting && self.value_counts.current().is_some() {
                     self.flash_note("Count stopped".to_string());
                 } else {
-                    self.overlay = Overlay::None;
+                    self.close_overlay();
                 }
             }
             KeyCode::Char('G') if listing => self.value_counts.move_to_end(),
@@ -208,7 +208,7 @@ impl App {
                 // Inside a group already, Esc goes back past this view to the one
                 // the group came from, so there are no counts to come back to.
                 self.value_counts.drill_return = !nested;
-                self.overlay = Overlay::None;
+                self.close_overlay();
                 self.sync_sort_filter_modal();
                 self.spawn_async_collect(Self::LOADING_BUFFER);
             }

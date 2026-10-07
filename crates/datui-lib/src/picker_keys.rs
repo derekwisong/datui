@@ -40,7 +40,7 @@ impl App {
     /// closes without moving.
     pub(crate) fn go_to_column_key(&mut self, event: &KeyEvent) {
         match event.code {
-            KeyCode::Esc => self.overlay = Overlay::None,
+            KeyCode::Esc => self.close_overlay(),
             KeyCode::Enter => {
                 let Some(index) = self.pickers.go_to_column.selected_original() else {
                     // Nothing matches; the picker says so and stays.
@@ -51,7 +51,7 @@ impl App {
                 if let Some(state) = self.data_table_state.as_mut() {
                     state.go_to_column(&name);
                 }
-                self.overlay = Overlay::None;
+                self.close_overlay();
             }
             KeyCode::Up => self.pickers.go_to_column.move_up(),
             KeyCode::Down => self.pickers.go_to_column.move_down(),
@@ -91,11 +91,11 @@ impl App {
     /// again with the spec chosen, Esc closes.
     pub(crate) fn format_picker_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         match event.code {
-            KeyCode::Esc => self.overlay = Overlay::None,
+            KeyCode::Esc => self.close_overlay(),
             KeyCode::Enter => {
                 let index = self.pickers.format_picker.selected_original()?;
                 let name = self.pickers.format_picker.items()[index].clone();
-                self.overlay = Overlay::None;
+                self.close_overlay();
                 let current = self
                     .data_table_state
                     .as_ref()
@@ -164,14 +164,11 @@ impl App {
     /// chosen, Esc closes.
     pub(crate) fn table_picker_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         match event.code {
-            KeyCode::Esc => {
-                self.overlay = Overlay::None;
-                self.pickers.table_choices = None;
-            }
+            KeyCode::Esc => self.close_overlay(),
             KeyCode::Enter => {
                 let index = self.pickers.table_picker.selected_original()?;
                 let tables = self.pickers.table_choices.take()?;
-                self.overlay = Overlay::None;
+                self.close_overlay();
                 if tables.current == Some(index) {
                     return None;
                 }

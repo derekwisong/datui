@@ -63,6 +63,8 @@ pub struct DataTableState {
     pub(crate) on_screen: Option<OnScreen>,
     /// Where the last frame drew the rows and columns, for a click.
     pub(crate) drawn: Option<DrawnTable>,
+    /// The cells the last frame formatted, for the next one to draw again.
+    pub(crate) page_cells: crate::widgets::table::PageCells,
     error: Option<PolarsError>,
     pub suppress_error_display: bool, // When true, don't show errors in main view (e.g., when query input is active)
     pub(crate) schema: Arc<Schema>,
@@ -598,6 +600,7 @@ impl DataTableState {
             page_trail: Vec::new(),
             on_screen: None,
             drawn: None,
+            page_cells: Default::default(),
             error: None,
             suppress_error_display: false,
             schema,
@@ -774,6 +777,7 @@ impl DataTableState {
             page_trail: Vec::new(),
             on_screen: None,
             drawn: None,
+            page_cells: Default::default(),
             error: None,
             suppress_error_display: false,
             schema,

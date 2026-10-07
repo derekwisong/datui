@@ -375,6 +375,80 @@ impl Meter {
     }
 }
 
+/// How long the event loop's own work takes: each frame drawn and each event handled,
+/// for the debug overlay and the log.
+#[derive(Debug, Default)]
+pub struct LoopTimes {
+    pub frames: Durations,
+    pub handlers: Durations,
+}
+
+impl LoopTimes {
+    /// One frame drawn. Every [`Durations::WINDOW`] frames the log hears both
+    /// summaries at debug level.
+    pub fn frame(&mut self, took: Duration) {
+        self.frames.record(took);
+        if self.frames.count.is_multiple_of(Durations::WINDOW as u64) {
+            log::debug!(
+                target: "datui",
+                "frames {}; handlers {}",
+                self.frames.summary(),
+                self.handlers.summary()
+            );
+        }
+    }
+
+    /// One event handled, its key included.
+    pub fn handler(&mut self, took: Duration) {
+        self.handlers.record(took);
+    }
+}
+
+/// The most recent durations of one kind of work, for its median, 99th percentile and
+/// worst.
+#[derive(Debug, Default)]
+pub struct Durations {
+    recent: std::collections::VecDeque<Duration>,
+    count: u64,
+}
+
+impl Durations {
+    /// How many of the latest durations the figures are over.
+    pub const WINDOW: usize = 240;
+
+    pub fn record(&mut self, took: Duration) {
+        if self.recent.len() == Self::WINDOW {
+            self.recent.pop_front();
+        }
+        self.recent.push_back(took);
+        self.count += 1;
+    }
+
+    /// How many were ever recorded.
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// The duration `q` of the way up the recent ones (0.5 the median, 1.0 the worst).
+    pub fn quantile(&self, q: f64) -> Option<Duration> {
+        let mut sorted: Vec<Duration> = self.recent.iter().copied().collect();
+        sorted.sort_unstable();
+        let last = sorted.len().checked_sub(1)?;
+        sorted.get(((last as f64) * q).round() as usize).copied()
+    }
+
+    /// `p50 1.2ms p99 3.4ms max 5.0ms`, or `-` before the first.
+    pub fn summary(&self) -> String {
+        let ms = |d: Duration| format!("{:.1}ms", d.as_secs_f64() * 1000.0);
+        match (self.quantile(0.5), self.quantile(0.99), self.quantile(1.0)) {
+            (Some(p50), Some(p99), Some(max)) => {
+                format!("p50 {} p99 {} max {}", ms(p50), ms(p99), ms(max))
+            }
+            _ => "-".to_string(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -653,5 +727,27 @@ mod tests {
             "a pass recording afterwards publishes the two requests that were really \
              made, not the eight the declined passes would have added"
         );
+    }
+
+    /// The figures are over the latest window only, and say nothing before the first.
+    #[test]
+    fn durations_are_summed_up_over_the_latest_window() {
+        let mut d = Durations::default();
+        assert_eq!(d.summary(), "-");
+        for ms in 1..=10u64 {
+            d.record(Duration::from_millis(ms));
+        }
+        assert_eq!(d.quantile(0.5), Some(Duration::from_millis(6)));
+        assert_eq!(d.quantile(1.0), Some(Duration::from_millis(10)));
+        assert_eq!(d.summary(), "p50 6.0ms p99 10.0ms max 10.0ms");
+        for _ in 0..Durations::WINDOW {
+            d.record(Duration::from_millis(1));
+        }
+        assert_eq!(
+            d.quantile(1.0),
+            Some(Duration::from_millis(1)),
+            "the old ones aged out"
+        );
+        assert_eq!(d.count(), 10 + Durations::WINDOW as u64);
     }
 }

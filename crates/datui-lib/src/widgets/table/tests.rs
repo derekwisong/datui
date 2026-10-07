@@ -2,6 +2,11 @@ use super::*;
 use crate::numfmt::NumberFormatSettings;
 use crate::table::binary_stub;
 
+thread_local! {
+    /// Columns of cells formatted on this thread: a test's own thread draws.
+    pub(crate) static FORMATTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 // Read the header (top) row of a rendered buffer as a string.
 pub(crate) fn header_row_string(buf: &Buffer, area: Rect) -> String {
     (area.x..area.x + area.width)
@@ -281,10 +286,10 @@ fn a_huge_value_is_measured_by_its_start() {
     let huge = "x".repeat(crate::exact::CELL_PREVIEW_BYTES * 4);
     let df = df!("s" => [huge.as_str()]).unwrap();
     let mut scratch = String::new();
-    let slice = table.slice_column(&df, 0, 1, &HashSet::new(), &mut scratch);
+    let slice = table.slice_column(&df, 0, 1, &HashSet::new(), &mut scratch, None);
     let ellipsis = crate::glyphs::cell_width(table.glyphs.ellipsis);
     assert_eq!(
-        usize::from(slice.value_width),
+        usize::from(slice.cells.value_width),
         crate::exact::CELL_PREVIEW_BYTES + ellipsis
     );
 }

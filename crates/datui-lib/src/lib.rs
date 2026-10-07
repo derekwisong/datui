@@ -9501,9 +9501,16 @@ impl App {
     /// app is idle. The main loop ([`event_pump::EventPump`]) does exactly that;
     /// [`App::event`] is the same call for callers that have nowhere to hold a key.
     pub fn handle(&mut self, event: &AppEvent) -> EventOutcome {
+        let started = std::time::Instant::now();
+        let outcome = self.handle_event(event);
+        self.debug.times.handler(started.elapsed());
+        outcome
+    }
+
+    fn handle_event(&mut self, event: &AppEvent) -> EventOutcome {
         // Without the pump to offer it as typed, a pressed key is a key.
         if let AppEvent::Press(key) = event {
-            return self.handle(&AppEvent::Key(*key));
+            return self.handle_event(&AppEvent::Key(*key));
         }
         if let AppEvent::Key(key) = event
             && self.is_busy()
@@ -13173,6 +13180,14 @@ impl App {
 
 impl Widget for &mut App {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let started = std::time::Instant::now();
+        self.draw_frame(area, buf);
+        self.debug.times.frame(started.elapsed());
+    }
+}
+
+impl App {
+    fn draw_frame(&mut self, area: Rect, buf: &mut Buffer) {
         self.begin_frame();
         self.debug.num_frames += 1;
         if self.debug.enabled {

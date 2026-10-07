@@ -1,0 +1,628 @@
+//! The view's settings, its checkpoint (`rollback_point`, `roll_back`,
+//! `try_transition`) and a followed file's view.
+
+use super::*;
+
+/// The view as it stood before a query or view replaced it: a checkpoint. A query plans
+/// without reading anything and can still fail once it runs — a value that will not
+/// cast — and then the table goes back to this, rows and all, rather than keep a
+/// frame that fails on every scroll. Frames and buffers are shared, not copied.
+///
+/// Taken by [`DataTableState::rollback_point`] or [`DataTableState::try_transition`],
+/// put back by [`DataTableState::roll_back`].
+pub struct ViewRollback {
+    /// The data as loaded when this was taken; see [`DataTableState::roll_back`].
+    root_generation: u64,
+    /// A count of this frame that came back after it was replaced, to return with it.
+    counted: Option<CountedRows>,
+    drawn_start: usize,
+    lf: LazyFrame,
+    unsorted_lf: Option<LazyFrame>,
+    base_lf: LazyFrame,
+    df: Option<DataFrame>,
+    locked_df: Option<DataFrame>,
+    table_state: TableState,
+    start_row: usize,
+    termcol_index: usize,
+    cursor_column: Option<String>,
+    cursor_at: usize,
+    schema: Arc<Schema>,
+    num_rows: usize,
+    num_rows_valid: bool,
+    len_generation: u64,
+    filters: Vec<FilterStatement>,
+    sort_columns: Vec<String>,
+    sort_descending: Vec<bool>,
+    sort_ascending: bool,
+    active_query: String,
+    active_sql_query: String,
+    query_order: Vec<(String, bool)>,
+    active_fuzzy_query: String,
+    column_order: Vec<String>,
+    locked_columns_count: usize,
+    /// The frozen fit `df` was sliced for; a later layout may have changed it.
+    frozen_fit: (usize, usize),
+    grouped: Option<GroupedView>,
+    reshaped_lf: Option<LazyFrame>,
+    last_pivot_spec: Option<PivotSpec>,
+    last_melt_spec: Option<MeltSpec>,
+    reshape_source: Option<ReshapeSource>,
+    base_steps: Vec<Step>,
+    reshape_steps: Option<Vec<Step>>,
+    lineage: Lineage,
+    reshape_lineage: Lineage,
+    group_source: Option<GroupSource>,
+    drilled_down_group_index: Option<usize>,
+    drilled_down_group_key: Option<Vec<String>>,
+    drilled_down_group_key_columns: Option<Vec<String>>,
+    drift_column_present: bool,
+    view_numbered: bool,
+    drift_groups: Arc<Vec<crate::schema_union::DriftGroup>>,
+    notes: Vec<crate::notes::Note>,
+    notes_seen: bool,
+    view_notes: Vec<crate::notes::Note>,
+    column_changes: Vec<crate::column_types::ColumnChange>,
+    changes_version: u64,
+    changes_dropped: Vec<crate::notes::Note>,
+    observed_bytes_per_row: Option<usize>,
+    buffered_start_row: usize,
+    buffered_end_row: usize,
+    buffered_df: Option<DataFrame>,
+}
+
+impl ViewRollback {
+    /// A background count of frame `len_generation` came back while this checkpoint
+    /// was waiting. Kept when the frame is the one this restores, so the rows and the
+    /// count return together; returns whether it was.
+    pub fn count_landed(
+        &mut self,
+        len_generation: u64,
+        rows: usize,
+        file_row_groups: Option<&[Vec<usize>]>,
+    ) -> bool {
+        let ours = len_generation == self.len_generation;
+        if ours {
+            self.counted = Some(CountedRows {
+                rows,
+                file_row_groups: file_row_groups.map(<[_]>::to_vec),
+            });
+        }
+        ours
+    }
+}
+
+/// A row count read in the background: the total, and for a remote dataset of many
+/// files, the rows in each row group of each file.
+pub(super) struct CountedRows {
+    rows: usize,
+    file_row_groups: Option<Vec<Vec<usize>>>,
+}
+
+impl DataTableState {
+    // Getter methods for view creation
+    /// Filters for a view: while drilled into a group these are the grouped view's,
+    /// which is what a view reproduces (it cannot express a drill-down).
+    pub fn get_filters(&self) -> &[FilterStatement] {
+        match &self.grouped {
+            Some(view) => &view.filters,
+            None => &self.filters,
+        }
+    }
+
+    pub fn get_sort_columns(&self) -> &[String] {
+        match &self.grouped {
+            Some(view) => &view.sort_columns,
+            None => &self.sort_columns,
+        }
+    }
+
+    pub fn get_sort_ascending(&self) -> bool {
+        match &self.grouped {
+            Some(view) => view.sort_ascending,
+            None => self.sort_ascending,
+        }
+    }
+
+    pub fn get_sort_descending(&self) -> &[bool] {
+        match &self.grouped {
+            Some(view) => &view.sort_descending,
+            None => &self.sort_descending,
+        }
+    }
+
+    /// Filters applied to the frame on screen (inside the group while drilled). This is
+    /// what the Sort & Filter sidebar shows and edits.
+    pub fn view_filters(&self) -> &[FilterStatement] {
+        &self.filters
+    }
+
+    pub fn view_sort_columns(&self) -> &[String] {
+        &self.sort_columns
+    }
+
+    pub fn view_sort_ascending(&self) -> bool {
+        self.sort_ascending
+    }
+
+    pub fn view_sort_descending(&self) -> &[bool] {
+        &self.sort_descending
+    }
+
+    /// The header's sort marks: the sidebar's sort, or else the ORDER BY of the SQL
+    /// in effect, while its own rows are on screen (not a group drilled into).
+    pub(crate) fn header_sort(&self) -> (Vec<String>, Vec<bool>) {
+        if self.sort_columns.is_empty() && self.grouped.is_none() {
+            self.query_order.iter().cloned().unzip()
+        } else {
+            (self.sort_columns.clone(), self.sort_descending.clone())
+        }
+    }
+
+    /// The pivot/melt result in effect, for a snapshot that may need to put it back.
+    #[cfg(test)]
+    pub(crate) fn reshaped_lf_clone(&self) -> Option<LazyFrame> {
+        self.reshaped_lf.clone()
+    }
+
+    pub fn get_column_order(&self) -> &[String] {
+        &self.column_order
+    }
+
+    /// Whether the table shows its defaults: no query, filters, sort or
+    /// reshape, every column in file order, nothing locked. A view saved
+    /// from this state would carry nothing — and, matching by schema, it
+    /// would shadow real views in the apply gate as a well-used no-op.
+    pub fn is_at_defaults(&self) -> bool {
+        self.sampled.is_none()
+            && self.column_changes.is_empty()
+            && self.active_query.is_empty()
+            && self.active_sql_query.is_empty()
+            && self.active_fuzzy_query.is_empty()
+            && self.filters.is_empty()
+            && self.sort_columns.is_empty()
+            && self.last_pivot_spec.is_none()
+            && self.last_melt_spec.is_none()
+            && self.locked_columns_count() == 0
+            && self
+                .column_order
+                .iter()
+                .map(String::as_str)
+                .eq(self.schema.iter_names().map(|s| s.as_str()))
+    }
+
+    pub fn get_active_query(&self) -> &str {
+        &self.active_query
+    }
+
+    pub fn get_active_sql_query(&self) -> &str {
+        &self.active_sql_query
+    }
+
+    /// Whether the rows on screen can be read at all: a sort, a filter or a column
+    /// named in the layout that the frame does not have fails here. Resolves the plan
+    /// and reads no rows.
+    pub fn check_plan(&self) -> PolarsResult<()> {
+        self.lf
+            .clone()
+            .select(self.binary_stub_exprs())
+            .collect_schema()
+            .map(|_| ())
+    }
+
+    /// The view as it is now, to go back to if a query fails while running.
+    pub fn rollback_point(&self) -> ViewRollback {
+        ViewRollback {
+            root_generation: self.root_generation,
+            counted: None,
+            drawn_start: self.drawn_start,
+            lf: self.lf.clone(),
+            unsorted_lf: self.unsorted_lf.clone(),
+            base_lf: self.base_lf.clone(),
+            df: self.df.clone(),
+            locked_df: self.locked_df.clone(),
+            table_state: self.table_state,
+            start_row: self.start_row,
+            termcol_index: self.termcol_index,
+            cursor_column: self.cursor_column.clone(),
+            cursor_at: self.cursor_at,
+            schema: self.schema.clone(),
+            num_rows: self.num_rows,
+            num_rows_valid: self.num_rows_valid,
+            len_generation: self.len_generation,
+            filters: self.filters.clone(),
+            sort_columns: self.sort_columns.clone(),
+            sort_descending: self.sort_descending.clone(),
+            sort_ascending: self.sort_ascending,
+            active_query: self.active_query.clone(),
+            active_sql_query: self.active_sql_query.clone(),
+            query_order: self.query_order.clone(),
+            active_fuzzy_query: self.active_fuzzy_query.clone(),
+            column_order: self.column_order.clone(),
+            locked_columns_count: self.locked_columns_count,
+            frozen_fit: self.frozen_fit,
+            grouped: self.grouped.clone(),
+            reshaped_lf: self.reshaped_lf.clone(),
+            last_pivot_spec: self.last_pivot_spec.clone(),
+            last_melt_spec: self.last_melt_spec.clone(),
+            reshape_source: self.reshape_source.clone(),
+            base_steps: self.base_steps.clone(),
+            reshape_steps: self.reshape_steps.clone(),
+            lineage: self.lineage.clone(),
+            reshape_lineage: self.reshape_lineage.clone(),
+            group_source: self.group_source.clone(),
+            drilled_down_group_index: self.drilled_down_group_index,
+            drilled_down_group_key: self.drilled_down_group_key.clone(),
+            drilled_down_group_key_columns: self.drilled_down_group_key_columns.clone(),
+            drift_column_present: self.drift_column_present,
+            view_numbered: self.view_numbered,
+            drift_groups: self.drift_groups.clone(),
+            notes: self.notes.clone(),
+            notes_seen: self.notes_seen,
+            view_notes: self.view_notes.clone(),
+            column_changes: self.column_changes.clone(),
+            changes_version: self.changes_version,
+            changes_dropped: self.changes_dropped.clone(),
+            observed_bytes_per_row: self.observed_bytes_per_row,
+            buffered_start_row: self.buffered_start_row,
+            buffered_end_row: self.buffered_end_row,
+            buffered_df: self.buffered_df.clone(),
+        }
+    }
+
+    /// Put back the view `rollback_point` saved, with no error showing. Its row count
+    /// and buffer come back with it, and a count of it that landed meanwhile (see
+    /// [`ViewRollback::count_landed`]), so nothing is read again. Nothing is read here:
+    /// a view with no rows on hand has them read by the caller's next collect.
+    ///
+    /// A checkpoint taken over data since replaced — a join of the remaining footers,
+    /// a column read as text — holds frames built on data no longer loaded. Putting
+    /// those back would mix two roots, so the view returns to the data as loaded instead.
+    pub fn roll_back(&mut self, saved: ViewRollback) {
+        if saved.root_generation != self.root_generation {
+            self.return_to_root();
+            return;
+        }
+        self.widths.keep_learned();
+        self.drawn_start = saved.drawn_start;
+        self.lf = saved.lf;
+        self.unsorted_lf = saved.unsorted_lf;
+        self.base_lf = saved.base_lf;
+        self.df = saved.df;
+        self.locked_df = saved.locked_df;
+        self.table_state = saved.table_state;
+        self.start_row = saved.start_row;
+        self.termcol_index = saved.termcol_index;
+        self.clear_column_moves();
+        self.schema = saved.schema;
+        self.num_rows = saved.num_rows;
+        self.num_rows_valid = saved.num_rows_valid;
+        self.len_generation = saved.len_generation;
+        self.filters = saved.filters;
+        self.sort_columns = saved.sort_columns;
+        self.sort_descending = saved.sort_descending;
+        self.sort_ascending = saved.sort_ascending;
+        self.active_query = saved.active_query;
+        self.active_sql_query = saved.active_sql_query;
+        self.query_order = saved.query_order;
+        self.active_fuzzy_query = saved.active_fuzzy_query;
+        self.column_order = saved.column_order;
+        self.locked_columns_count = saved.locked_columns_count;
+        self.frozen_fit = saved.frozen_fit;
+        self.cursor_column = saved.cursor_column;
+        self.cursor_at = saved.cursor_at;
+        self.reveal_cursor = true;
+        self.grouped = saved.grouped;
+        // A q query or a search forgets the pivot or melt it replaces.
+        self.reshaped_lf = saved.reshaped_lf;
+        self.last_pivot_spec = saved.last_pivot_spec;
+        self.last_melt_spec = saved.last_melt_spec;
+        self.reshape_source = saved.reshape_source;
+        self.base_steps = saved.base_steps;
+        self.reshape_steps = saved.reshape_steps;
+        self.lineage = saved.lineage;
+        self.reshape_lineage = saved.reshape_lineage;
+        self.group_source = saved.group_source;
+        self.drilled_down_group_index = saved.drilled_down_group_index;
+        self.drilled_down_group_key = saved.drilled_down_group_key;
+        self.drilled_down_group_key_columns = saved.drilled_down_group_key_columns;
+        self.drift_column_present = saved.drift_column_present;
+        self.view_numbered = saved.view_numbered;
+        self.drift_groups = saved.drift_groups;
+        self.column_changes = saved.column_changes;
+        self.changes_version = saved.changes_version;
+        self.changes_dropped = saved.changes_dropped;
+        self.notes = saved.notes;
+        self.notes_seen = saved.notes_seen;
+        self.view_notes = saved.view_notes;
+        self.observed_bytes_per_row = saved.observed_bytes_per_row;
+        self.buffered_start_row = saved.buffered_start_row;
+        self.buffered_end_row = saved.buffered_end_row;
+        self.buffered_df = saved.buffered_df;
+        self.error = None;
+        // After the frame, so the count is taken as this frame's.
+        if let Some(counted) = saved.counted {
+            self.take_count(counted.rows, counted.file_row_groups.as_deref());
+        }
+    }
+
+    /// Run `steps` as one transition of the view: planned, never read (no collect
+    /// runs while they do), starting with no error showing. If a step fails, the view
+    /// before them is put back and the error returned. If they all plan, the view
+    /// before them comes back with the result, for the caller to restore with
+    /// [`Self::roll_back`] should reading the new view's rows fail.
+    pub fn try_transition<T, E>(
+        &mut self,
+        steps: impl FnOnce(&mut Self) -> std::result::Result<T, E>,
+    ) -> std::result::Result<(T, ViewRollback), E> {
+        let saved = self.rollback_point();
+        self.error = None;
+        match self.deferred(steps) {
+            Ok(value) => Ok((value, saved)),
+            Err(e) => {
+                self.roll_back(saved);
+                Err(e)
+            }
+        }
+    }
+
+    /// Run `steps` with every collect they would make left to the caller, who reads
+    /// the rows off the UI thread (`prepare_async_collect`).
+    pub fn deferred<R>(&mut self, steps: impl FnOnce(&mut Self) -> R) -> R {
+        let deferred = std::mem::replace(&mut self.defer_collect, true);
+        let result = steps(self);
+        self.defer_collect = deferred;
+        result
+    }
+
+    /// A background count of frame `len_generation` came back. Taken when that frame is
+    /// the one on screen; returns whether it was.
+    pub fn count_landed(
+        &mut self,
+        len_generation: u64,
+        rows: usize,
+        file_row_groups: Option<&[Vec<usize>]>,
+    ) -> bool {
+        let current = len_generation == self.len_generation;
+        if current {
+            self.take_count(rows, file_row_groups);
+        }
+        current
+    }
+
+    /// What a staged open leaves: a row total from however far the buffer reached,
+    /// with no count taken.
+    #[cfg(test)]
+    pub(crate) fn set_provisional_rows(&mut self, n: usize) {
+        self.num_rows = n;
+    }
+
+    /// The count of the frame on screen: from the files' row groups when there are
+    /// some, else the total.
+    fn take_count(&mut self, rows: usize, file_row_groups: Option<&[Vec<usize>]>) {
+        match file_row_groups {
+            Some(groups) => self.record_file_row_groups(groups),
+            None => self.set_num_rows(rows),
+        }
+    }
+
+    /// The follow of the file this dataset reads, while it is followed.
+    pub fn follow(&self) -> Option<&crate::follow::Follow> {
+        self.follow.as_ref()
+    }
+
+    pub fn follow_mut(&mut self) -> Option<&mut crate::follow::Follow> {
+        self.follow.as_mut()
+    }
+
+    /// Join `fields`, which arrived in a followed pipe's NDJSON after the open, to the
+    /// dataset: its scan reads them, and they go on the end of the column order, as a
+    /// dataset's footers join theirs. `Err` while the view is a query, a reshape or a
+    /// group, which would lose the columns it is built from: the caller holds them
+    /// until the view is back on the data. `Ok(false)` when there is nothing to join.
+    pub(crate) fn join_followed_fields(
+        &mut self,
+        fields: &[Field],
+    ) -> std::result::Result<bool, ()> {
+        if !self.scan_is_the_root() {
+            return Err(());
+        }
+        let (Some(follow), Some(format)) = (self.follow.as_ref(), self.read_as) else {
+            return Ok(false);
+        };
+        let (path, rows) = (follow.path().to_path_buf(), follow.shown());
+        let Some(mut lf) = crate::follow::widen(&self.original_lf, &path, format, fields, rows)
+        else {
+            return Ok(false);
+        };
+        let Ok(schema) = lf.collect_schema() else {
+            return Ok(false);
+        };
+        let known: std::collections::HashSet<&str> =
+            self.column_order.iter().map(String::as_str).collect();
+        let joining: Vec<String> = schema
+            .iter_names()
+            .map(|name| name.to_string())
+            .filter(|name| !known.contains(name.as_str()))
+            .collect();
+        drop(known);
+        self.column_order.extend(joining);
+        self.replace_root(lf, schema);
+        if self.is_pristine() {
+            // The same rows the watcher counted, with more columns.
+            self.set_num_rows(rows);
+        }
+        // Rebuilt but not read, as a footer join is: the caller reads the rows on
+        // screen off the event loop.
+        self.deferred(Self::apply_transformations);
+        Ok(true)
+    }
+
+    /// Follow the file this dataset reads with `follow`, whose watcher is running.
+    pub fn start_following(&mut self, follow: crate::follow::Follow) {
+        self.follow = Some(follow);
+    }
+
+    /// Stop following. The rows read so far stay.
+    pub fn stop_following(&mut self) {
+        if let Some(mut follow) = self.follow.take() {
+            follow.end();
+        }
+    }
+
+    /// Put the view on the last page, leaving the cursor where it is until the rows of
+    /// that page are read: the next read is of that page alone.
+    pub(crate) fn aim_at_end(&mut self) {
+        if self.num_rows_valid && self.visible_rows > 0 {
+            self.start_row = self.num_rows.saturating_sub(self.visible_rows);
+        }
+    }
+
+    /// Whether the cursor is on the last row of a view whose length is known.
+    pub fn on_last_row(&self) -> bool {
+        self.num_rows_valid
+            && (self.num_rows == 0
+                || self.start_row + self.table_state.selected().unwrap_or(0) + 1 >= self.num_rows)
+    }
+
+    /// Every frame the view holds that carries the scan of the data as loaded.
+    pub(super) fn each_frame(&mut self, mut f: impl FnMut(&mut LazyFrame)) {
+        f(&mut self.original_lf);
+        f(&mut self.base_lf);
+        f(&mut self.lf);
+        if let Some(lf) = self.unsorted_lf.as_mut() {
+            f(lf);
+        }
+        if let Some(lf) = self.reshaped_lf.as_mut() {
+            f(lf);
+        }
+        if let Some(source) = self.group_source.as_mut() {
+            f(&mut source.rows);
+        }
+        if let Some(grouped) = self.grouped.as_mut() {
+            f(&mut grouped.lf);
+            f(&mut grouped.base_lf);
+            if let Some(source) = grouped.group_source.as_mut() {
+                f(&mut source.rows);
+            }
+        }
+    }
+
+    /// The followed file holds `rows` complete rows now: every frame reads that many,
+    /// so the query, filters and sort run over the new ones too. `restarted` when the
+    /// file was read again from its start. Returns whether the rows on hand still
+    /// stand: a view that only filters, with nothing reordered, keeps the rows it had,
+    /// since rows only arrive after them.
+    pub(crate) fn follow_to(&mut self, rows: usize, restarted: bool) -> bool {
+        let Some(path) = self.follow.as_ref().map(|f| f.path().to_path_buf()) else {
+            return true;
+        };
+        let rows_stand = !restarted
+            && self.sort_columns.is_empty()
+            && self.sort_ascending
+            && self.scan_is_the_root();
+        let known = self.known_before_follow(&path, restarted);
+        self.each_frame(|lf| crate::follow::bound(lf, &path, rows));
+        self.invalidate_num_rows();
+        self.follow_known = known.map(|known| (self.len_generation, known));
+        if self.is_pristine() {
+            // The watcher counted them as the scan reads them: nothing to count again.
+            self.set_num_rows(rows);
+        } else if self.scan_is_the_root() {
+            self.pristine_rows = Some(rows);
+        }
+        if restarted {
+            self.start_row = 0;
+            self.table_state.select(Some(0));
+        }
+        if !rows_stand {
+            self.drop_buffer();
+        }
+        rows_stand
+    }
+
+    /// Where the view's rows are known, before the frames read more of the followed file
+    /// at `path`: what was known for the count on screen, and the count itself when it
+    /// is exact. Only for a view whose rows are each kept or not by itself (filters and
+    /// a sort over the file's rows), so the rows that arrive are counted alone.
+    fn known_before_follow(&mut self, path: &Path, restarted: bool) -> Option<Vec<(usize, usize)>> {
+        if restarted || self.is_pristine() || !self.scan_is_the_root() {
+            return None;
+        }
+        let mut known = self
+            .follow_known
+            .take()
+            .filter(|(generation, _)| *generation == self.len_generation)
+            .map(|(_, known)| known);
+        if self.num_rows_valid
+            && let Some(row) = crate::follow::bound_of(&self.lf, path)
+        {
+            let known = known.get_or_insert_with(Vec::new);
+            // One point per stretch of marks is enough to read on from.
+            if let [.., before, last] = known.as_slice()
+                && last.1 - before.1 < crate::follow::MARK_ROWS as usize
+            {
+                known.pop();
+            }
+            if known.last().is_none_or(|&(_, at)| at < row) {
+                known.push((self.num_rows, row));
+            }
+        }
+        known
+    }
+
+    /// The followed file was deleted: every frame reads it through `file`, a handle
+    /// held on it, which still reads what it held.
+    pub(crate) fn read_followed_through(&mut self, file: &std::fs::File) {
+        let Some(path) = self.follow.as_ref().map(|f| f.path().to_path_buf()) else {
+            return;
+        };
+        self.each_frame(|lf| crate::follow::read_through(lf, &path, file));
+    }
+
+    /// The frame on screen: the root, then the query or reshape, the filters and the
+    /// sort. Column order is applied when rows are read.
+    pub fn lf(&self) -> &LazyFrame {
+        &self.lf
+    }
+
+    /// Hand back the frame on screen, for a caller that built a state only to load it.
+    pub fn into_lf(self) -> LazyFrame {
+        self.lf
+    }
+
+    /// The schema of the frame on screen.
+    pub fn schema(&self) -> &Arc<Schema> {
+        &self.schema
+    }
+
+    /// The rows the frame holds: exact when [`Self::is_num_rows_valid`], else as far as
+    /// the reads so far have reached.
+    pub fn num_rows(&self) -> usize {
+        self.num_rows
+    }
+
+    /// Why the last query, step or read failed, while it is still showing.
+    pub fn error(&self) -> Option<&PolarsError> {
+        self.error.as_ref()
+    }
+
+    /// Stop showing the last failure. The view is as it was; only the message goes.
+    pub fn dismiss_error(&mut self) {
+        self.error = None;
+    }
+
+    /// The first row of the page on screen.
+    pub fn start_row(&self) -> usize {
+        self.start_row
+    }
+
+    /// The hive partition columns the dataset was loaded with.
+    pub fn partition_columns(&self) -> Option<&[String]> {
+        self.partition_columns.as_deref()
+    }
+
+    /// Whether reads use Polars' streaming engine.
+    pub fn polars_streaming(&self) -> bool {
+        self.polars_streaming
+    }
+}

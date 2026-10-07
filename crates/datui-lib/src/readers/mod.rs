@@ -54,8 +54,69 @@ use crate::text_formats::Detail;
 use crate::unfinished::Writer;
 use crate::{FileFormat, OpenOptions, ReadReport};
 
+pub(crate) mod csv;
 pub(crate) mod facts;
+pub mod hive;
 pub(crate) mod polars;
+#[cfg(test)]
+mod tests;
+
+/// What a reader made of a file: its frame, and what the read did to its rows.
+#[derive(Default)]
+pub(crate) struct Read {
+    pub(crate) lf: ::polars::prelude::LazyFrame,
+    /// What the read did to the rows, as Python method calls: names trimmed, text
+    /// columns typed.
+    pub(crate) python: Vec<String>,
+    /// What the read of several files has to say of them: files passed over, columns
+    /// not every file has.
+    pub(crate) notes: Vec<crate::notes::Note>,
+    /// Each column's unit, from the first of several files read through a spec that
+    /// has the column; `None` when the first file's header said them all.
+    pub(crate) units: Option<Vec<(String, String)>>,
+    /// The columns the read gave a type, and the frame before it did.
+    pub(crate) typing: Typing,
+    /// The decompressed copy the frame scans, removed when the last holder lets go.
+    pub(crate) temp: Option<Arc<csv::Decompressed>>,
+}
+
+impl From<::polars::prelude::LazyFrame> for Read {
+    fn from(lf: ::polars::prelude::LazyFrame) -> Self {
+        Self {
+            lf,
+            ..Default::default()
+        }
+    }
+}
+
+impl Read {
+    /// The read's typing: its notes go with the read's, its columns are counted later.
+    pub(crate) fn typed(mut self, mut typing: Typing) -> Self {
+        self.notes.append(&mut typing.notes);
+        self.typing = typing;
+        self
+    }
+}
+
+/// The columns a read gave a type, the frame before it did, and its notes.
+#[derive(Clone, Default)]
+pub struct Typing {
+    pub(crate) source: Option<::polars::prelude::LazyFrame>,
+    pub(crate) typed: Vec<crate::column_types::Typed>,
+    pub(crate) notes: Vec<crate::notes::Note>,
+    /// The columns the scan read as text, by the names it read them under, for Copy
+    /// as Python's `schema_overrides`.
+    pub(crate) text: Vec<String>,
+}
+
+impl std::fmt::Debug for Typing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Typing")
+            .field("typed", &self.typed)
+            .field("notes", &self.notes)
+            .finish_non_exhaustive()
+    }
+}
 
 /// Lists the tables of a file of a format.
 pub(crate) type ListTables = fn(&Path) -> Result<Vec<Table>>;
@@ -606,142 +667,6 @@ pub(crate) mod bad_input {
             eprintln!("{message}");
             assert_shape(&message, &dir.path().join(name));
             assert!(message.contains(says), "{name}: {message}");
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn piped(head: &[u8]) -> Option<FileFormat> {
-        sniff(head, None, Asked::Pipe, |_| true)
-    }
-
-    /// Text formats are known by their first bytes, and text no format claims is none.
-    #[test]
-    fn text_formats_by_their_first_bytes() {
-        let said = [
-            (
-                &b"8=FIX.4.4\x019=5\x0135=0\x0110=000\x01\n"[..],
-                FileFormat::Fix,
-            ),
-            (
-                b"$timescale 1ns $end\n$scope module top $end\n",
-                FileFormat::Vcd,
-            ),
-            (
-                b"aspirin\n  RDKit\n\n  0  0  0  0  0  0  0  0  0  0999 V2000\nM  END\n$$$$\n",
-                FileFormat::Sdf,
-            ),
-            (b"$GPGGA,1,2", FileFormat::Nmea),
-            (b"<?xml version=\"1.0\"?>\n<gpx>", FileFormat::Gpx),
-        ];
-        for (head, format) in said {
-            assert_eq!(piped(head), Some(format), "{format:?}");
-        }
-        assert_eq!(piped(b"a,b\n1,2\n"), None);
-    }
-
-    /// A file read through its compression is named under it and known by its bytes
-    /// inside it; a name that says a format needs no look.
-    #[test]
-    fn a_compressed_file_by_its_name_or_what_it_holds() {
-        use std::io::Write;
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("session.log.gz");
-        let mut gz = flate2::write::GzEncoder::new(
-            std::fs::File::create(&path).unwrap(),
-            Default::default(),
-        );
-        gz.write_all(b"20260101-00:00:00 : 8=FIX.4.2|9=5|35=0|10=000|\n")
-            .unwrap();
-        gz.finish().unwrap();
-        assert_eq!(sniff_open(&path, None), Some(FileFormat::Fix));
-        for (name, format) in [
-            ("lib.sdf.gz", Some(FileFormat::Sdf)),
-            ("a.nmea.gz", Some(FileFormat::Nmea)),
-            ("a.csv.gz", None),
-        ] {
-            assert_eq!(sniff_open(&dir.path().join(name), None), format, "{name}");
-        }
-    }
-
-    /// Signatures are believed where they say: an executable is never listed, ORC's
-    /// three letters are never piped, and only a file of tables is one.
-    #[test]
-    fn a_signature_is_believed_where_it_says() {
-        let elf = b"\x7fELF\x02\x01\x01\0\0\0\0\0\0\0\0\0";
-        assert_eq!(piped(elf), Some(FileFormat::Elf));
-        assert_eq!(sniff(elf, None, Asked::Listing, |_| true), None);
-        assert_eq!(
-            sniff(elf, None, Asked::Tables, |_| true),
-            Some(FileFormat::Elf)
-        );
-        assert_eq!(piped(b"ORC\x00"), None);
-        assert_eq!(
-            sniff(b"ORC\x00", None, Asked::Listing, |_| true),
-            Some(FileFormat::Orc)
-        );
-        let npy = b"\x93NUMPY\x01\x00";
-        assert_eq!(piped(npy), Some(FileFormat::Numpy));
-        assert_eq!(sniff(npy, None, Asked::Tables, |_| true), None);
-    }
-
-    /// The copying page's reader table names every format by its title and the Polars
-    /// call Copy as Python reads it with, or `df = ...` where it has none.
-    #[test]
-    fn the_copy_docs_name_each_format_s_reader() {
-        let page = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../docs/user-guide/copying.md");
-        let text = std::fs::read_to_string(&page).expect("the copying page");
-        let start = text.find("| Format | Reader |").expect("the reader table");
-        let rows: Vec<(String, String)> = text[start..]
-            .lines()
-            .skip(2)
-            .take_while(|l| l.starts_with('|'))
-            .map(|l| {
-                let (format, reader) = l.trim_matches('|').split_once(" | ").expect("two cells");
-                (format.trim().to_string(), reader.trim().to_string())
-            })
-            .collect();
-        let said: Vec<&str> = rows.iter().map(|(f, _)| f.as_str()).collect();
-        let titles: Vec<&str> = FileFormat::ALL.iter().map(|f| f.title()).collect();
-        assert_eq!(said, titles, "one row per format, in --format's order");
-        for ((title, reader), format) in rows.iter().zip(FileFormat::ALL) {
-            let expected = of(format)
-                .python
-                .as_ref()
-                .map_or("`df = ...`".to_string(), |p| format!("`{}`", p.call));
-            assert_eq!(*reader, expected, "{title}");
-        }
-    }
-
-    /// A reader does what its descriptor says: a format whose tables are listed has a
-    /// way to list them, and only such a format does; one read into files of its own
-    /// converts; a prefix is scanned in place only where the descriptor says it is.
-    #[test]
-    fn readers_agree_with_their_descriptors() {
-        for format in FileFormat::ALL {
-            let reader = of(format);
-            assert_eq!(
-                reader.tables.is_some(),
-                format.holds_tables(),
-                "{}",
-                format.name()
-            );
-            // A format read into files of its own has a conversion to do it.
-            if format.reads_into() {
-                assert!(reader.convert.is_some(), "{}", format.name());
-            }
-            // A tab the facts fill is one the descriptor names.
-            if reader.facts.is_some() {
-                assert!(format.summary_tab().is_some(), "{}", format.name());
-            }
-            #[cfg(feature = "cloud")]
-            if reader.bucket_scan.is_some() {
-                assert!(format.reads_bucket_prefix(), "{}", format.name());
-            }
         }
     }
 }

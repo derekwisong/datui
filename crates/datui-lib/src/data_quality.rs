@@ -288,7 +288,7 @@ pub fn prepare_source_quality_scan(
                 return None;
             }
             Some(if matches!(dtype, DataType::Binary) {
-                lit(crate::widgets::datatable::binary_stub()).alias(column)
+                lit(crate::table::binary_stub()).alias(column)
             } else {
                 col(column)
             })
@@ -2864,11 +2864,8 @@ fn profile_quality(
                 // Unwatched: Parquet and IPC answer a count from their metadata, which
                 // a watch between the count and the scan would turn into a read.
                 watch.stage(QualityStage::CountingRows, watch.scope_reads(true), false)?;
-                let count = collect_lazy(
-                    crate::widgets::datatable::row_count_lf(lf),
-                    polars_streaming,
-                )
-                .map_err(Report::from)?;
+                let count = collect_lazy(crate::table::row_count_lf(lf), polars_streaming)
+                    .map_err(Report::from)?;
                 let count_values = count
                     .get(0)
                     .ok_or_else(|| Report::msg("Data quality row count was not returned"))?;
@@ -5491,7 +5488,7 @@ pub(crate) fn conflict_reads(
 /// way back to the values a type conflict hides. Given to a run that already reads
 /// every value, so the extra read is one column of the few files that disagree.
 #[derive(Clone)]
-pub struct QualityConflictScan(pub crate::widgets::datatable::FileScan);
+pub struct QualityConflictScan(pub crate::table::FileScan);
 
 impl std::fmt::Debug for QualityConflictScan {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -6686,7 +6683,7 @@ mod tests {
         );
         assert_eq!(
             collected.column("blob").unwrap().str().unwrap().get(0),
-            Some(crate::widgets::datatable::binary_stub())
+            Some(crate::table::binary_stub())
         );
     }
 

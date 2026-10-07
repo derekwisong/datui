@@ -29,10 +29,8 @@ fn the_views_save_refusal_stays_on_the_surface() {
     let (tx, _rx) = mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
     let df = polars::df!("a" => [1i64, 2]).unwrap();
-    app.data_table_state = Some(
-        crate::widgets::datatable::DataTableState::new(df.lazy(), None, None, None, None, true)
-            .unwrap(),
-    );
+    app.data_table_state =
+        Some(crate::table::DataTableState::new(df.lazy(), None, None, None, None, true).unwrap());
     app.view_modal.active = true;
     key(&mut app, KeyCode::Char('s'));
     assert!(!app.error_modal.active, "a refusal is not a failure");

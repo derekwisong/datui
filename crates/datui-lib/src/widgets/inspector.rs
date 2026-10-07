@@ -8,6 +8,7 @@
 //! The value pane reads any length: only the rows on screen are wrapped (see
 //! [`crate::inspector_reader`]), so the end of a 2 MiB value is a key away.
 
+use crate::column_types::dtype_label;
 use crate::copy_modal::thousands;
 use crate::exact;
 use crate::inspector_bytes::{self, Decoded, Sniffed};
@@ -18,7 +19,7 @@ use crate::inspector_modal::{
 pub use crate::inspector_reader::Tone;
 use crate::inspector_reader::{self as reader, Content, TextForm, Window};
 use crate::render::context::RenderContext;
-use crate::widgets::datatable::{DataTableState, InspectField, InspectRow, NullKind, dtype_label};
+use crate::table::{DataTableState, InspectField, InspectRow, NullKind};
 use crate::widgets::ui::{HintBar, SectionRule, Surface};
 use polars::prelude::*;
 use ratatui::buffer::Buffer;

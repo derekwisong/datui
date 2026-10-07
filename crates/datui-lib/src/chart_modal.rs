@@ -734,7 +734,7 @@ impl ChartModal {
         } else {
             return;
         }
-        self.suggested = Some(crate::widgets::datatable::dtype_label(dtype));
+        self.suggested = Some(crate::column_types::dtype_label(dtype));
     }
 
     /// Close the chart view. The choices stay for the next open on this dataset.

@@ -1955,7 +1955,7 @@ impl Default for PerformanceConfig {
         Self {
             pages_ahead: 3,
             pages_behind: 3,
-            max_buffered_rows: crate::widgets::datatable::DEFAULT_MAX_BUFFERED_ROWS,
+            max_buffered_rows: crate::table::DEFAULT_MAX_BUFFERED_ROWS,
             max_buffered: ByteSize::mib(512),
             streaming: true,
         }

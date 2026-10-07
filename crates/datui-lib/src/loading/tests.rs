@@ -1428,7 +1428,7 @@ fn a_remote_file_is_asked_about_then_downloaded_and_kept() {
     // As the worker builds it: the dataset holds its file from the start.
     let state = DataTableState::from_lazyframe(frame(), &OpenOptions::default())
         .unwrap()
-        .with_open(crate::widgets::datatable::OpenFacts {
+        .with_open(crate::table::OpenFacts {
             download: Some(download),
             ..Default::default()
         });

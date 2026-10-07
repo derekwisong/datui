@@ -343,6 +343,7 @@ pub const SETTINGS: &[Setting] = &[
     s("limits.elf_symbols", Count, Value("10000000"), "Most symbols read from an ELF file."),
     s("limits.midi_bytes", Size, Value("\"64MiB\""), "Largest MIDI file read; a larger one is refused."),
     s("limits.midi_events", Count, Value("10000000"), "Most events read from MIDI files, all files of one open together."),
+    s("limits.journal_bytes", Size, Value("\"1GiB\""), "Most journal JSON read into memory, all files of one open together; the records past it are left out, and the Notes tab says how much."),
     s("limits.detail_rows", Count, Value("10000"), "Most rows of a list on an Info panel tab (symbols, sections, metadata); one more row says how many were left out."),
     s("log.file", Path, Unset("\"~/datui.log\""), "Where the log goes. Unset: datui.log in the cache directory.").flag("log-file"),
     s("log.level", Choice(&["error", "warn", "info", "debug", "trace", "off"]), Unset("\"warn\""), "How much the log says (default warn). DATUI_LOG beats a config file's; -c and --log-level beat DATUI_LOG.").flag("log-level"),

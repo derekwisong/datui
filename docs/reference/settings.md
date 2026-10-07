@@ -200,6 +200,7 @@ lives, imports, the theme and troubleshooting.
 | `limits.elf_symbols` | integer | `10000000` |  | Most symbols read from an ELF file. |
 | `limits.midi_bytes` | size | `"64MiB"` |  | Largest MIDI file read; a larger one is refused. |
 | `limits.midi_events` | integer | `10000000` |  | Most events read from MIDI files, all files of one open together. |
+| `limits.journal_bytes` | size | `"1GiB"` |  | Most journal JSON read into memory, all files of one open together; the records past it are left out, and the Notes tab says how much. |
 | `limits.detail_rows` | integer | `10000` |  | Most rows of a list on an Info panel tab (symbols, sections, metadata); one more row says how many were left out. |
 
 ## Log

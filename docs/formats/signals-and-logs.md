@@ -621,6 +621,7 @@ journalctl -o json -f | datui -f -
   [pipe](../user-guide/pipes-and-follow.md#standard-input); a field first seen
   after the table opened joins as a column when the stream ends, and the
   Journal tab is read again over every entry.
-- A journal file is read whole into memory. Narrow a large journal with
-  `--since`, `-u` or `-b`.
+- A journal file is read whole into memory, up to 1 GiB (`journal_bytes` in
+  `[limits]`); the Notes tab says how much was left out past it. Narrow a large
+  journal with `--since`, `-u` or `-b`.
 - Copy as Python reads a journal file with `pl.scan_ndjson` and derives the same columns.

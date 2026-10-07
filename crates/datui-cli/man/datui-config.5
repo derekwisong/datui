@@ -272,6 +272,9 @@ Largest MIDI file read; a larger one is refused. Default: \fB"64MiB"\fR.
 \fBlimits.midi_events\fR (\fIinteger\fR)
 Most events read from MIDI files, all files of one open together. Default: \fB10000000\fR.
 .TP
+\fBlimits.journal_bytes\fR (\fIsize\fR)
+Most journal JSON read into memory, all files of one open together; the records past it are left out, and the Notes tab says how much. Default: \fB"1GiB"\fR.
+.TP
 \fBlimits.detail_rows\fR (\fIinteger\fR)
 Most rows of a list on an Info panel tab (symbols, sections, metadata); one more row says how many were left out. Default: \fB10000\fR.
 .SS "[log]"

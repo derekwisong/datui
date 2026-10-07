@@ -1883,6 +1883,8 @@ pub struct LimitsConfig {
     pub midi_events: usize,
     /// Rows of a list on an Info panel tab.
     pub detail_rows: usize,
+    /// Journal JSON read into memory, all files of one open together.
+    pub journal_bytes: ByteSize,
 }
 
 impl LimitsConfig {
@@ -1892,6 +1894,7 @@ impl LimitsConfig {
         midi_bytes: ByteSize::mib(64),
         midi_events: 10_000_000,
         detail_rows: 10_000,
+        journal_bytes: ByteSize::mib(1024),
     };
 }
 

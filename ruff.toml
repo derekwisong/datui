@@ -1,0 +1,8 @@
+# Python tooling under scripts/ (and the wheel's python/): `scripts/dev/test.sh lint`
+# runs `ruff check` when ruff is installed. Not `ruff format`: it would rewrite most
+# of the scripts at once.
+target-version = "py310"
+
+[lint]
+# Ruff's defaults, named so a user-level config cannot widen them.
+select = ["E4", "E7", "E9", "F"]

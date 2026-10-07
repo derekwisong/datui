@@ -1,0 +1,54 @@
+# `typos` (https://github.com/crate-ci/typos), run by `scripts/dev/test.sh lint` when
+# installed. Everything below is spelled on purpose.
+
+[files]
+extend-exclude = [
+    # Data: the FIX field names, drawn screens and chart goldens, fuzz inputs.
+    "crates/datui-lib/src/formats/fix/dictionary.tsv",
+    "crates/datui-lib/src/render/snapshots/",
+    "crates/datui-lib/src/tests/golden/",
+    "fuzz/corpus/",
+]
+
+[default]
+# Partial input and near-misses that tests use on purpose, matched where they appear.
+extend-ignore-re = [
+    "3,thr\"",
+    "\\[ot\\]\\[nw\\]",
+    "\"\\\\\"abd\\\\\"\"",
+    "PAR1 hel\"",
+    "\"Clea \"",
+    "caf\\\\xe9",
+    "valu_xe",
+]
+
+[default.extend-words]
+# Names: the TUI library, Azure Kubernetes Service, a Spanish agency, ArduPilot's
+# SITL and PARM, DBC's BA_ attribute lines, Garmin's EIS, and mdBook's CSS variable.
+ratatui = "ratatui"
+aks = "aks"
+comision = "comision"
+sitl = "sitl"
+parm = "parm"
+ba = "ba"
+eis = "eis"
+existant = "existant"
+# Field names and prefixes in tests and specs.
+clen = "clen"
+doub = "doub"
+ded = "ded"
+nd = "nd"
+flate = "flate"
+# Words as used.
+alikes = "alikes"
+unparseable = "unparseable"
+missable = "missable"
+registrys = "registrys"
+directorys = "directorys"
+mis = "mis"
+
+[default.extend-identifiers]
+# Misspelled keys that tests feed the config parser.
+endpont_url = "endpont_url"
+row_numbr = "row_numbr"
+acent = "acent"

@@ -115,7 +115,7 @@ where
 
     let mut builder = ignore::WalkBuilder::new(root);
     builder
-        // Hidden directories are skipped for the same reason `scan_dir` skips them,
+        // Hidden directories are skipped for the same reason the listing skips them,
         // and it does most of this module's work: `.git`, `.venv`, `.tox`, the caches.
         .hidden(true)
         // Off on purpose. See `SearchConfig::follow_gitignore`.

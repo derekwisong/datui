@@ -427,7 +427,7 @@ fn whole_directory_row(dir: &Path, rows: &[Entry], remote: bool) -> Option<Entry
         .filter(|r| matches!(r.kind, EntryKind::File | EntryKind::Other))
         .map(|r| (r.path.to_string_lossy().into_owned(), r.size.unwrap_or(1)))
         .collect();
-    // Each route classifies in its own terms: `scan_dir` drops dotted names (so a
+    // Each route classifies in its own terms: the listing drops dotted names (so a
     // local `.hoodie` would be missed by the cloud classifier), and the cloud Iceberg
     // rule is looser by design. Nothing remote is read here: a listing of a dead share
     // freezes the UI, so local classification uses rows the probe already read.
@@ -2411,7 +2411,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         });
     }
 
-    // Fill in earlier measurements that still match: `scan_dir` already stat'ed every
+    // Fill in earlier measurements that still match: the listing already stat'ed every
     // row, and the mount table is read once and resolved as strings, so nothing blocks.
     annotate(&mut sections, known, network_check, &mounts);
 
@@ -2525,7 +2525,7 @@ fn take_cost(row: &mut Entry, cost: &discover::Cost) {
 }
 
 /// Apply a cached measurement to a row. A local row must still match its size and
-/// mtime (`scan_dir` already stat'ed it). A remote row cannot be stat'ed safely, so
+/// mtime (the listing already stat'ed it). A remote row cannot be stat'ed safely, so
 /// its cached facts are used as is: a stale count beats none for hard-to-reach data.
 fn apply_known_facts(
     row: &mut Entry,

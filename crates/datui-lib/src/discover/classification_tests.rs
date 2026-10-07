@@ -903,7 +903,7 @@ fn extensionless_part_files_are_measured_not_just_offered() {
 
     // → goes inside a directory labelled `multi`, so the listing has to show the
     // files the label was counted from — and each is a Parquet file in its own right.
-    let mut listed = scan_dir(&table);
+    let mut listed = scan_dir_progressive(&table, |_| {}).entries;
     assert_eq!(
         listed.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
         vec!["000001", "000002"],

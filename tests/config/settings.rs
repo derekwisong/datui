@@ -3170,13 +3170,13 @@ fn cloud_listings_and_hidden_sources_survive_a_restart() {
 
     let temp_dir = TempDir::new().expect("temp dir");
     let cache = CacheManager::with_dir(temp_dir.path().to_path_buf());
-    assert!(cache.load_cloud_listings().is_empty());
 
     let lab = CloudListing {
         fingerprint: "s3|http://127.0.0.1:9000|key||".to_string(),
         buckets: vec!["data".to_string(), "logs".to_string()],
         listed_at: 1_789_000_000,
     };
+    assert_eq!(cache.cloud_listing("lab", &lab.fingerprint), None);
     cache.save_cloud_listing("lab", lab.clone());
     cache.save_cloud_listing(
         "corp",
@@ -3186,13 +3186,18 @@ fn cloud_listings_and_hidden_sources_survive_a_restart() {
         },
     );
     let again = CacheManager::with_dir(temp_dir.path().to_path_buf());
-    let listings = again.load_cloud_listings();
     assert_eq!(
-        listings.get("lab"),
-        Some(&lab),
+        again.cloud_listing("lab", &lab.fingerprint),
+        Some(lab.clone()),
         "one source's save keeps the others"
     );
-    assert_eq!(listings["corp"].buckets, ["data"]);
+    assert_eq!(
+        again
+            .cloud_listing("corp", &lab.fingerprint)
+            .map(|listing| listing.buckets),
+        Some(vec!["data".to_string()])
+    );
+    assert_eq!(again.cloud_listing("lab", "another endpoint"), None);
 
     again.hide_cloud_source("corp");
     again.hide_cloud_source("corp");

@@ -1243,12 +1243,6 @@ fn lake_table(path: &Path) -> Option<EntryKind> {
     None
 }
 
-/// List one directory level, classified; never recurses. Errors give an empty
-/// listing; the caller reports availability.
-pub fn scan_dir(dir: &Path) -> Vec<Entry> {
-    scan_dir_bounded(dir).entries
-}
-
 /// What one directory listing produced, and whether it saw all of it.
 #[derive(Debug, Clone, Default)]
 pub struct Scan {
@@ -1258,15 +1252,7 @@ pub struct Scan {
     pub truncated: bool,
 }
 
-/// List one directory with bounded work: one `read_dir` and a stat per entry, up to
-/// [`MAX_ENTRIES_PER_DIR`]. Nothing is classified: subdirectories return
-/// [`EntryKind::Unknown`] and are looked into later from the viewport, so a label is
-/// a fact about the row, not its position.
-pub fn scan_dir_bounded(dir: &Path) -> Scan {
-    scan_dir_progressive(dir, |_| {})
-}
-
-/// [`scan_dir_bounded`], also naming sniffed files by `formats`' magic.
+/// [`scan_dir_progressive`], also naming sniffed files by `formats`' magic.
 pub fn scan_dir_specs(dir: &Path, formats: &crate::formats::Registry) -> Scan {
     scan_dir_with(dir, formats, |_| {})
 }
@@ -1274,8 +1260,12 @@ pub fn scan_dir_specs(dir: &Path, formats: &crate::formats::Registry) -> Scan {
 /// How often a listing still being read shows what it has so far.
 const LISTING_PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
 
-/// [`scan_dir_bounded`], passing `progress` the rows read since the last call, every
-/// `LISTING_PROGRESS_EVERY`, so a slow share shows rows as they arrive.
+/// List one directory with bounded work: one `read_dir` and a stat per entry, up to
+/// [`MAX_ENTRIES_PER_DIR`]; errors give an empty listing. Nothing is classified:
+/// subdirectories return [`EntryKind::Unknown`] and are looked into later from the
+/// viewport, so a label is a fact about the row, not its position. `progress` gets
+/// the rows read since the last call, every `LISTING_PROGRESS_EVERY`, so a slow share
+/// shows rows as they arrive.
 pub fn scan_dir_progressive(dir: &Path, progress: impl FnMut(&[Entry])) -> Scan {
     scan_dir_with(dir, &crate::formats::Registry::default(), progress)
 }

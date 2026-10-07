@@ -20,6 +20,11 @@ mod search;
 ///
 /// The door counts: it is a row on screen, drawn like any other. What it is not is one
 /// of the section's `rows` — see [`door_of`].
+/// One directory level as the home screen lists it.
+fn scan_dir(dir: &std::path::Path) -> Vec<discover::Entry> {
+    discover::scan_dir_progressive(dir, |_| {}).entries
+}
+
 fn visible_names(home: &HomeState) -> Vec<String> {
     home.visible()
         .iter()
@@ -178,7 +183,7 @@ fn test_hive_directory_is_one_dataset() {
     // And it appears as a single row, not a tree to walk. The listing does not look
     // into it — no listing looks into anything — so the row says only that nothing
     // has, until something does.
-    let entries = discover::scan_dir(tmp.path());
+    let entries = scan_dir(tmp.path());
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].name, "sales");
     assert_eq!(entries[0].kind, EntryKind::Unknown);
@@ -234,7 +239,7 @@ fn test_scan_skips_dotfiles_and_lists_non_data_last() {
     touch(tmp.path(), "notes.md");
     touch(tmp.path(), "sub/a.parquet");
 
-    let listed: Vec<(String, EntryKind)> = discover::scan_dir(tmp.path())
+    let listed: Vec<(String, EntryKind)> = scan_dir(tmp.path())
         .into_iter()
         .map(|e| (e.name, e.kind))
         .collect();
@@ -251,7 +256,7 @@ fn test_scan_skips_dotfiles_and_lists_non_data_last() {
 #[test]
 fn test_scan_of_unreadable_directory_is_empty_not_fatal() {
     // An unmounted NAS must degrade to an empty listing, never a panic or a hang.
-    let entries = discover::scan_dir(std::path::Path::new("/definitely/not/here"));
+    let entries = scan_dir(std::path::Path::new("/definitely/not/here"));
     assert!(entries.is_empty());
 }
 
@@ -261,7 +266,7 @@ fn test_datasets_sort_before_directories() {
     touch(tmp.path(), "zzz.parquet");
     touch(tmp.path(), "aaa_dir/readme.md");
 
-    let entries = discover::scan_dir(tmp.path());
+    let entries = scan_dir(tmp.path());
     assert_eq!(entries[0].kind, EntryKind::File);
     assert_eq!(entries[0].name, "zzz.parquet");
 }
@@ -1217,7 +1222,7 @@ fn test_a_probe_result_fills_the_remote_root_in() {
     home.rebuild(&[]);
 
     // Whatever the probe thread found is what gets shown.
-    let rows = discover::scan_dir(&remote);
+    let rows = scan_dir(&remote);
     home.probe_ready(remote.clone(), rows, false);
     home.rebuild(&[]);
 
@@ -1398,7 +1403,7 @@ fn test_a_recent_adopts_the_classification_its_root_probe_found() {
 
     // After it, and after something looks into the rows it returned: whatever that
     // found. A probe lists a remote directory; it does not read every subdirectory in it.
-    home.probe_ready(root.clone(), discover::scan_dir(&root), false);
+    home.probe_ready(root.clone(), scan_dir(&root), false);
     home.rebuild(std::slice::from_ref(&dataset));
     home.classify_now(10);
 
@@ -1444,7 +1449,7 @@ fn test_a_fifo_named_like_a_dataset_is_not_offered() {
     assert!(fs::metadata(&fifo).unwrap().file_type().is_fifo());
     touch(tmp.path(), "real.parquet");
 
-    let names = discover::scan_dir(tmp.path())
+    let names = scan_dir(tmp.path())
         .into_iter()
         .map(|e| e.name)
         .collect::<Vec<_>>();
@@ -3049,7 +3054,7 @@ fn test_a_huge_directory_is_listed_as_a_bounded_prefix() {
         std::fs::write(tmp.path().join(format!("f{i:05}.parquet")), b"").unwrap();
     }
 
-    let scan = discover::scan_dir_bounded(tmp.path());
+    let scan = discover::scan_dir_progressive(tmp.path(), |_| {});
     assert!(scan.truncated, "a directory past the cap should say so");
     assert!(
         scan.entries.len() <= 5_000,
@@ -3075,7 +3080,7 @@ fn test_a_label_does_not_depend_on_where_the_row_sits() {
     let tmp = TempDir::new().unwrap();
     hive_partitions(tmp.path(), 200);
 
-    let entries = discover::scan_dir(tmp.path());
+    let entries = scan_dir(tmp.path());
     assert_eq!(entries.len(), 200, "every subdirectory is still listed");
 
     let first = entries[0].kind;
@@ -3102,11 +3107,11 @@ fn test_a_small_listing_is_no_more_looked_into_than_a_large_one() {
     // neighbours each directory happened to have. No listing looks into anything.
     let tmp = TempDir::new().unwrap();
     hive_partitions(tmp.path(), 4);
-    let small = discover::scan_dir(tmp.path());
+    let small = scan_dir(tmp.path());
 
     let big_dir = TempDir::new().unwrap();
     hive_partitions(big_dir.path(), 200);
-    let big = discover::scan_dir(big_dir.path());
+    let big = scan_dir(big_dir.path());
 
     assert_eq!(small.len(), 4);
     assert_eq!(big.len(), 200);
@@ -3155,7 +3160,7 @@ fn test_scrolling_classifies_the_rows_that_are_there() {
     // order always went.
     let tmp = TempDir::new().unwrap();
     hive_partitions(tmp.path(), 200);
-    let mut home = home_with_rows(discover::scan_dir(tmp.path()));
+    let mut home = home_with_rows(scan_dir(tmp.path()));
 
     looking_at(&mut home, 167, 20);
     assert_eq!(home.scroll, 150, "the frame starts here");
@@ -3184,7 +3189,7 @@ fn test_a_kind_that_arrives_late_does_not_move_the_row() {
     for name in ["a.parquet", "z.parquet"] {
         touch(tmp.path(), name);
     }
-    let mut home = home_with_rows(discover::scan_dir(tmp.path()));
+    let mut home = home_with_rows(scan_dir(tmp.path()));
 
     let before = visible_kinds(&home);
     looking_at(&mut home, 117, 20);
@@ -3219,7 +3224,7 @@ fn test_what_is_looked_into_is_the_viewport_and_a_screen_either_side() {
     // otherwise spend ten seconds on rows nobody asked about.
     let tmp = TempDir::new().unwrap();
     hive_partitions(tmp.path(), 200);
-    let mut home = home_with_rows(discover::scan_dir(tmp.path()));
+    let mut home = home_with_rows(scan_dir(tmp.path()));
 
     looking_at(&mut home, 107, 10);
     let wanted: Vec<String> = home
@@ -3258,7 +3263,7 @@ fn test_directories_nobody_has_looked_into_are_not_counted_as_datasets() {
     // is the right answer to "may this be opened" and the wrong one to count.
     let tmp = TempDir::new().unwrap();
     hive_partitions(tmp.path(), 200);
-    let mut home = home_with_rows(discover::scan_dir(tmp.path()));
+    let mut home = home_with_rows(scan_dir(tmp.path()));
 
     let counted = |h: &HomeState| {
         h.visible()
@@ -3295,7 +3300,7 @@ fn test_a_new_listing_moves_the_viewport_with_the_cursor() {
     // rows nobody is looking at.
     let tmp = TempDir::new().unwrap();
     hive_partitions(tmp.path(), 200);
-    let mut home = home_with_rows(discover::scan_dir(tmp.path()));
+    let mut home = home_with_rows(scan_dir(tmp.path()));
     looking_at(&mut home, 187, 10);
     assert_eq!(home.scroll, 180);
 
@@ -3304,10 +3309,7 @@ fn test_a_new_listing_moves_the_viewport_with_the_cursor() {
     hive_partitions(next.path(), 200);
     home.apply_listing(datui::home::Listing {
         missing: Default::default(),
-        sections: vec![datui::home::Section::titled(
-            "NEXT",
-            discover::scan_dir(next.path()),
-        )],
+        sections: vec![datui::home::Section::titled("NEXT", scan_dir(next.path()))],
     });
 
     assert_eq!(home.selected, 1, "the cursor lands on the first row");
@@ -3336,7 +3338,7 @@ fn test_paging_past_rows_does_not_leave_them_queued() {
     // rather than about every row it went by.
     let tmp = TempDir::new().unwrap();
     hive_partitions(tmp.path(), 200);
-    let mut home = home_with_rows(discover::scan_dir(tmp.path()));
+    let mut home = home_with_rows(scan_dir(tmp.path()));
     looking_at(&mut home, 17, 10);
     let first: Vec<String> = home
         .unclassified_visible(4)
@@ -7282,7 +7284,7 @@ fn a_file_a_spec_names_is_listed_under_the_spec() {
     )
     .unwrap();
     let registry = datui::formats::Registry::of(vec![spec]);
-    let mut rows = discover::scan_dir(tmp.path());
+    let mut rows = scan_dir(tmp.path());
     datui::home::name_by_spec(&registry, &mut rows);
     let day = rows.iter().find(|r| r.name == "day.l2").unwrap();
     assert_eq!(day.kind, EntryKind::File);
@@ -7310,7 +7312,7 @@ fn a_csv_a_delimited_spec_names_is_listed_under_the_spec() {
     )
     .unwrap();
     let registry = datui::formats::Registry::of(vec![binary, delimited]);
-    let mut rows = discover::scan_dir(tmp.path());
+    let mut rows = scan_dir(tmp.path());
     datui::home::name_by_spec(&registry, &mut rows);
     let log = rows.iter().find(|r| r.name == "log_001.csv").unwrap();
     assert_eq!(log.kind, EntryKind::File);
@@ -8765,7 +8767,7 @@ mod frecency {
         for path in [&a, &b, &a] {
             cache.push_recent(path);
         }
-        let visits = cache.load_visits();
+        let visits = cache.load_recents_with_visits().1;
         let a = datui::canonical::canonicalize(&a).unwrap();
         let b = datui::canonical::canonicalize(&b).unwrap();
         assert_eq!(visits[&a].count, 2);
@@ -8775,7 +8777,7 @@ mod frecency {
         cache.forget_recent(&b);
         cache.push_recent(&a);
         assert!(
-            !cache.load_visits().contains_key(&b),
+            !cache.load_recents_with_visits().1.contains_key(&b),
             "forgotten, then pruned"
         );
     }

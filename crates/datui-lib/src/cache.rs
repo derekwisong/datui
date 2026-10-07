@@ -422,11 +422,6 @@ impl CacheManager {
         .inspect_err(|e| log::warn!(target: "datui", "record a recent: {e:#}"))
         .unwrap_or(HistoryUpdate::SkippedBusy)
     }
-
-    /// How often and how lately each recent was opened, by its path as recorded.
-    pub fn load_visits(&self) -> std::collections::HashMap<PathBuf, Visits> {
-        self.load_recents_with_visits().1
-    }
 }
 
 /// One recents line: `path<TAB>opens<TAB>last opened`, visits kept with the path so
@@ -966,14 +961,6 @@ impl CacheManager {
     /// The last listing of cloud source `id`, if it was taken at `fingerprint`.
     pub fn cloud_listing(&self, id: &str, fingerprint: &str) -> Option<CloudListing> {
         Store::<CloudListings>::new(self).get(id, fingerprint)
-    }
-
-    /// Every source's last listing, by source ID.
-    pub fn load_cloud_listings(&self) -> std::collections::HashMap<String, CloudListing> {
-        Store::<CloudListings>::new(self)
-            .scan()
-            .into_iter()
-            .collect()
     }
 
     /// Record one source's listing, keeping the others.

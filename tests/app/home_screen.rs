@@ -1789,7 +1789,7 @@ fn test_right_goes_inside_a_row_nothing_has_looked_into() {
 /// Each route's directories are classified in that route's vocabulary.
 ///
 /// The door used to ask the cloud classifier about a local directory, which got two
-/// answers wrong in opposite directions. `scan_dir` drops dotted names, so `.hoodie`
+/// answers wrong in opposite directions. the listing drops dotted names, so `.hoodie`
 /// never reached it and a local Hudi table came back `MultiFile` — the door then read
 /// its tombstones, two keystrokes after the row above said datui does not read Hudi
 /// tables yet. And the cloud Iceberg rule is the looser of the two on purpose, names

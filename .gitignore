@@ -12,6 +12,8 @@ __pycache__/
 # Generated test data (keep README.md)
 /tests/sample-data/*
 !/tests/sample-data/README.md
+# The generator's scratch directory and the lock tests take to generate
+/tests/.sample-data.*
 
 # Personal notes
 /notes

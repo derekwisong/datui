@@ -25,11 +25,12 @@ This script generates various CSV, Parquet, IPC/Arrow, Avro, and Excel files:
 Uses Polars for most formats; fastavro for Avro; openpyxl for Excel.
 """
 
+import argparse
+import hashlib
 import os
+import shutil
 import sys
 from pathlib import Path
-import polars as pl
-import numpy as np
 from datetime import date, datetime, timedelta
 import random
 import gzip
@@ -39,19 +40,50 @@ import sqlite3
 import struct
 import wave
 
-# Optional deps for extra formats (fail gracefully if missing)
+# Every format is required: a partial set fails tests far from the cause.
 try:
     import fastavro
-except ImportError:
-    fastavro = None
-try:
+    import numpy as np
     import openpyxl
-except ImportError:
-    openpyxl = None
+    import polars as pl
+except ImportError as e:
+    sys.exit(
+        f"generate_sample_data.py: {e.name} is not installed.\n"
+        "Run ./scripts/dev/setup-test-data.sh to set up .venv with every fixture dependency."
+    )
 
-# Output directory
-OUTPUT_DIR = Path(__file__).parent.parent / "tests" / "sample-data"
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_OUTPUT_DIR = REPO_ROOT / "tests" / "sample-data"
+# The fixtures are a function of these files alone. The test harness
+# (crates/datui-lib/src/tests/shared.rs) hashes the same files, in the same order,
+# and regenerates when the stamp holds another digest.
+INPUTS = [Path(__file__).resolve(), REPO_ROOT / "scripts" / "requirements-fixtures.txt"]
+STAMP = ".generated"
+
+# Where the generators write; main() points it at a scratch directory.
+OUTPUT_DIR = DEFAULT_OUTPUT_DIR
+
+
+def inputs_digest():
+    """SHA-256 over the generator inputs' bytes, as lowercase hex."""
+    digest = hashlib.sha256()
+    for path in INPUTS:
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def install(scratch, out):
+    """Move every generated file into `out`, each by an atomic rename. A test process
+    that has the old file mapped keeps its inode; rewriting in place would SIGBUS it.
+    The stamp goes last, so a stamped directory is complete."""
+    for path in sorted(scratch.rglob("*")):
+        if path.is_dir():
+            continue
+        target = out / path.relative_to(scratch)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(path, target)
+    (out / STAMP).write_text(inputs_digest() + "\n")
+
 
 def generate_people_data():
     """Generate a people database with cities, states, etc. for grouping."""
@@ -791,9 +823,6 @@ def _polars_dtype_to_avro(dtype):
 
 def save_avro(df, filename):
     """Save DataFrame as Avro (requires fastavro)."""
-    if fastavro is None:
-        print("Skipping Avro (fastavro not installed):", filename)
-        return
     filepath = OUTPUT_DIR / filename
     fields = []
     for name in df.columns:
@@ -831,9 +860,6 @@ def save_avro(df, filename):
 def save_workbook_of_sheets(filename):
     """A workbook of several sheets: one named like an index, one hidden, one of
     different size, for the sheet listing and the Excel tab."""
-    if openpyxl is None:
-        print("Skipping Excel (openpyxl not installed):", filename)
-        return
     filepath = OUTPUT_DIR / filename
     wb = openpyxl.Workbook()
     first = wb.active
@@ -855,9 +881,6 @@ def save_workbook_of_sheets(filename):
 
 def save_excel(df, filename):
     """Save DataFrame as Excel .xlsx (requires openpyxl)."""
-    if openpyxl is None:
-        print("Skipping Excel (openpyxl not installed):", filename)
-        return
     filepath = OUTPUT_DIR / filename
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -1812,8 +1835,33 @@ def generate_midi_files():
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__.strip().splitlines()[0])
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=DEFAULT_OUTPUT_DIR,
+        help="directory to write (default: tests/sample-data)",
+    )
+    args = parser.parse_args()
+
+    global OUTPUT_DIR
+    out = args.out.resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    # A sibling, so the renames into `out` stay on one filesystem.
+    scratch = out.parent / f".{out.name}.tmp-{os.getpid()}"
+    shutil.rmtree(scratch, ignore_errors=True)
+    scratch.mkdir()
+    OUTPUT_DIR = scratch
+    try:
+        generate_all()
+        install(scratch, out)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    print(f"\nSample data generation complete: {out}")
+
+
+def generate_all():
     print("Generating sample data files...")
-    print(f"Output directory: {OUTPUT_DIR}")
 
     # People data for grouping
     print("\n1. Generating people data...")
@@ -1958,8 +2006,6 @@ def main():
 
     print("\n22. Generating CAN logs...")
     generate_can()
-
-    print("\nSample data generation complete!")
 
 if __name__ == "__main__":
     main()

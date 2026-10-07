@@ -793,14 +793,14 @@ fn data_quality_reads_as_a_report() {
     let screen = common::buffer_text(&buffer);
     assert!(screen.contains("whole dataset") && screen.contains("in chunks of"));
     assert!(bar_now(&mut app).contains("Choose"));
-    // Choosing stages the edit; the report keeps the plan it was measured with, and
-    // nothing runs.
+    // Choosing (Space, as in every picker) stages the edit; the report keeps the plan
+    // it was measured with, and nothing runs.
     app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Down,
         KeyModifiers::NONE,
     )));
     app.event(AppEvent::Key(KeyEvent::new(
-        KeyCode::Enter,
+        KeyCode::Char(' '),
         KeyModifiers::NONE,
     )));
     assert!(app.analysis_modal.quality.picker.is_none());
@@ -1902,15 +1902,15 @@ fn data_quality_setup_names_every_count_pass_on_one_parquet_file() {
         app.render(area, &mut buffer);
         common::buffer_text(&buffer)
     };
-    let sorted = || AppEvent::Sort(vec!["id".into()], vec![true]);
+    let sorted = || AppEvent::Applied(datui::Applied::Sort(vec!["id".into()], vec![true]));
     let filtered = || {
-        AppEvent::Filter(vec![FilterStatement {
+        AppEvent::Applied(datui::Applied::Filter(vec![FilterStatement {
             columns: Vec::new(),
             column: "id".into(),
             operator: FilterOperator::Gt,
             value: "10".into(),
             logical_op: LogicalOperator::And,
-        }])
+        }]))
     };
     for (name, view, scope, blocks) in [
         ("as loaded", None, QualityScope::CurrentView, true),

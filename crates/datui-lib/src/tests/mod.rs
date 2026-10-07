@@ -3080,11 +3080,17 @@ fn a_capped_table_copy_asks_only_past_what_the_cap_could_hold() {
     // 12 MiB of base64 against the terminal's 100 KB: read to the cap, no question.
     let (app, next) = copy(Some(3 * 1024 * 1024), 100 * 1024);
     assert!(!app.confirmation_modal.active);
-    assert!(matches!(next, Some(AppEvent::CopyTable { .. })));
+    assert!(matches!(
+        next,
+        Some(AppEvent::Applied(crate::Applied::CopyTable { .. }))
+    ));
     // Unmeasured blobs: the cap bounds the read all the same.
     let (app, next) = copy(None, 100 * 1024);
     assert!(!app.confirmation_modal.active);
-    assert!(matches!(next, Some(AppEvent::CopyTable { .. })));
+    assert!(matches!(
+        next,
+        Some(AppEvent::Applied(crate::Applied::CopyTable { .. }))
+    ));
     // A cap raised past 10 MB asks, as an uncapped copy does.
     let (app, next) = copy(Some(3 * 1024 * 1024), 64 * 1024 * 1024);
     assert!(app.confirmation_modal.active && next.is_none());
@@ -3183,7 +3189,10 @@ fn a_table_copy_counts_binary_at_its_base64_size() {
 
     let (app, next) = copy(Some(100));
     assert!(!app.confirmation_modal.active, "small blobs copy");
-    assert!(matches!(next, Some(AppEvent::CopyTable { .. })));
+    assert!(matches!(
+        next,
+        Some(AppEvent::Applied(crate::Applied::CopyTable { .. }))
+    ));
 
     let (app, next) = copy(None);
     assert!(app.confirmation_modal.active, "unmeasured blobs ask");
@@ -3242,7 +3251,10 @@ fn a_local_directorys_footers_size_its_binary_columns() {
 
     let (app, next) = copy(100);
     assert!(!app.confirmation_modal.active, "small blobs copy");
-    assert!(matches!(next, Some(AppEvent::CopyTable { .. })));
+    assert!(matches!(
+        next,
+        Some(AppEvent::Applied(crate::Applied::CopyTable { .. }))
+    ));
 }
 
 /// A confirmation names its keys in its own footer; the status footer adds no mode

@@ -132,7 +132,9 @@ fn a_chart_export_deferred_past_the_chart_view_releases_busy() {
     let (tx, _rx) = mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
     let next = app
-        .event(AppEvent::ChartExport(chart_request("/tmp/x.png")))
+        .event(AppEvent::Applied(crate::Applied::ChartExport(
+            chart_request("/tmp/x.png"),
+        )))
         .expect("ChartExport defers to DoChartExport");
     assert!(app.is_busy());
 
@@ -564,7 +566,10 @@ fn a_sort_or_filter_keeps_the_chart_columns() {
     key(&mut app, KeyCode::Esc);
     assert!(app.at_table());
 
-    app.event(AppEvent::Sort(vec!["y".to_string()], vec![true]));
+    app.event(AppEvent::Applied(crate::Applied::Sort(
+        vec!["y".to_string()],
+        vec![true],
+    )));
     pump(&mut app, &rx, &tx, |a| !a.is_busy());
     key(&mut app, KeyCode::Char('c'));
     assert_eq!(app.overlay, Overlay::Chart);
@@ -589,13 +594,15 @@ fn a_sort_or_filter_keeps_the_chart_columns() {
     key(&mut app, KeyCode::Esc);
 
     use crate::app::modals::filter_modal::{FilterOperator, LogicalOperator};
-    app.event(AppEvent::Filter(vec![FilterStatement {
-        columns: Vec::new(),
-        column: "x".to_string(),
-        operator: FilterOperator::Lt,
-        value: "3".to_string(),
-        logical_op: LogicalOperator::And,
-    }]));
+    app.event(AppEvent::Applied(crate::Applied::Filter(vec![
+        FilterStatement {
+            columns: Vec::new(),
+            column: "x".to_string(),
+            operator: FilterOperator::Lt,
+            value: "3".to_string(),
+            logical_op: LogicalOperator::And,
+        },
+    ])));
     pump(&mut app, &rx, &tx, |a| !a.is_busy());
     key(&mut app, KeyCode::Char('c'));
     assert_eq!(app.chart.modal.x().map(String::as_str), Some("x"));
@@ -694,9 +701,9 @@ fn a_bar_chart_draws_a_grouped_string_column() {
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx.clone(), crate::tests::test_runtime());
     open(&mut app, &rx, &tx, path);
-    if let Some(next) = app.event(AppEvent::QQuery(
+    if let Some(next) = app.event(AppEvent::Applied(crate::Applied::QQuery(
         "select delay: avg arr_delay by carrier".to_string(),
-    )) {
+    ))) {
         let _ = tx.send(next);
     }
     pump(&mut app, &rx, &tx, |a| {

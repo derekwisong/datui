@@ -2,6 +2,7 @@
 //! overlay and the dialogs it opens, and the keys of the screens without a directory of
 //! their own.
 
+pub mod applied;
 pub(crate) mod background;
 pub mod context_menu;
 pub mod event_pump;

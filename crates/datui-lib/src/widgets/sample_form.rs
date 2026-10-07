@@ -7,12 +7,11 @@
 
 use crate::analysis::sample_modal::{SampleField, SampleForm};
 use crate::render::context::RenderContext;
-use crate::widgets::ui::{FormRow, FormValue, Surface};
+use crate::widgets::ui::{FormLine, FormValue, FormView};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Widget, Wrap};
 
 /// How many source files the list under the Files row shows at once.
 pub const FILES_SHOWN: usize = 6;
@@ -27,13 +26,19 @@ pub fn render(form: &SampleForm, focused: bool, area: Rect, buf: &mut Buffer, ct
     let g = crate::glyphs::get();
     // The form, top to bottom: a row per setting, and the context lines a setting
     // brings with it, directly under it.
-    enum Item {
-        Row(SampleField),
-        Context(Line<'static>),
-    }
+    let choices: Vec<(SampleField, String)> = form
+        .fields()
+        .into_iter()
+        .map(|field| (field, form.choice(field)))
+        .collect();
     let mut items = Vec::new();
-    for field in form.fields() {
-        items.push(Item::Row(field));
+    for (field, choice) in &choices {
+        let field = *field;
+        let value = match form.input(field) {
+            Some(input) => FormValue::Input(input),
+            None => FormValue::Choice(choice),
+        };
+        items.push(FormLine::Field(field, field.label(), value));
         match field {
             SampleField::PartitionValues => {
                 let known = form.partition_values_known();
@@ -49,7 +54,7 @@ pub fn render(form: &SampleForm, focused: bool, area: Rect, buf: &mut Buffer, ct
                     } else {
                         known.join(", ")
                     };
-                    items.push(Item::Context(Line::styled(
+                    items.push(FormLine::Note(Line::styled(
                         format!("Holds {shown}"),
                         dimmed,
                     )));
@@ -61,7 +66,7 @@ pub fn render(form: &SampleForm, focused: bool, area: Rect, buf: &mut Buffer, ct
                     }
                     _ => ("2019,2021".to_string(), "2020..2022".to_string()),
                 };
-                items.push(Item::Context(Line::styled(
+                items.push(FormLine::Note(Line::styled(
                     format!("One, a list {list}, or a range {range}"),
                     dimmed,
                 )));
@@ -80,14 +85,14 @@ pub fn render(form: &SampleForm, focused: bool, area: Rect, buf: &mut Buffer, ct
                     } else {
                         g.checkbox_off
                     };
-                    items.push(Item::Context(Line::from(vec![
+                    items.push(FormLine::Note(Line::from(vec![
                         Span::styled(format!("{mark} {:>3}  ", index + 1), dimmed),
                         Span::styled(short_path(name), Style::default().fg(ctx.text_primary)),
                     ])));
                 }
                 let rest = files.len().saturating_sub(form.file_offset + FILES_SHOWN);
                 if rest > 0 {
-                    items.push(Item::Context(Line::styled(
+                    items.push(FormLine::Note(Line::styled(
                         format!("{rest} more {}", g.ellipsis),
                         dimmed,
                     )));
@@ -95,14 +100,14 @@ pub fn render(form: &SampleForm, focused: bool, area: Rect, buf: &mut Buffer, ct
             }
             SampleField::RangeTo => {
                 if let Some(rows) = form.context.view_rows {
-                    items.push(Item::Context(Line::styled(
+                    items.push(FormLine::Note(Line::styled(
                         format!("Table: {} rows", crate::numfmt::group_chrome(rows)),
                         dimmed,
                     )));
                 }
             }
             SampleField::TimeBefore => {
-                items.push(Item::Context(Line::styled(
+                items.push(FormLine::Note(Line::styled(
                     format!("Dates as 2024-01-31 {} Before excluded", g.middot),
                     dimmed,
                 )));
@@ -127,74 +132,31 @@ pub fn render(form: &SampleForm, focused: bool, area: Rect, buf: &mut Buffer, ct
                     ),
                     _ => format!("{per}, like 50000, 50k or 2m"),
                 };
-                items.push(Item::Context(Line::styled(said, dimmed)));
+                items.push(FormLine::Note(Line::styled(said, dimmed)));
             }
             _ => {}
         }
     }
 
+    // The error under a blank, in up to two lines.
     let error_height = u16::from(form.error.is_some()) * 3;
     let height = items.len() as u16 + error_height + 2;
     let width = area.width.saturating_sub(4).clamp(40, 72).min(area.width);
     let frame = crate::render::layout::centered_rect(area, width, height);
-    let inner = Surface::new("Sample").render(frame, buf, ctx);
-    let bottom = inner.y + inner.height;
-    let mut y = inner.y;
-    for item in &items {
-        if y >= bottom {
-            return;
-        }
-        let line = Rect {
-            y,
-            height: 1,
-            ..inner
-        };
-        match item {
-            Item::Row(field) => {
-                let choice = form.choice(*field);
-                let value = match form.input(*field) {
-                    Some(input) => FormValue::Input(input),
-                    None => FormValue::Choice(&choice),
-                };
-                FormRow {
-                    label: field.label(),
-                    value,
-                    focused: focused && form.field == *field,
-                    label_width: LABEL_WIDTH,
-                }
-                .render(line, buf, ctx);
-                crate::app::pointer::record_field::<SampleForm>(line, *field);
-            }
-            Item::Context(text) => {
-                // Under the value column, so it reads as belonging to the row above.
-                let indent = LABEL_WIDTH + 1;
-                Paragraph::new(text.clone()).render(
-                    Rect {
-                        x: line.x + indent,
-                        width: line.width.saturating_sub(indent),
-                        ..line
-                    },
-                    buf,
-                );
-            }
-        }
-        y += 1;
+    FormView {
+        title: "Sample",
+        screen: datui_cli::keys::Context::Sample,
+        footer: None,
+        label_width: LABEL_WIDTH,
+        rows: items,
+        focused: focused.then_some(form.field),
+        picker: None,
+        status: form
+            .error
+            .clone()
+            .map(|error| (error, Style::default().fg(ctx.warning))),
     }
-    if let Some(error) = &form.error
-        && y + 1 < bottom
-    {
-        Paragraph::new(error.as_str())
-            .wrap(Wrap { trim: true })
-            .style(Style::default().fg(ctx.warning))
-            .render(
-                Rect {
-                    y: y + 1,
-                    height: bottom - y - 1,
-                    ..inner
-                },
-                buf,
-            );
-    }
+    .render::<SampleForm>(frame, buf, ctx);
 }
 
 /// A file's path from its last two parts: a hive file is told apart by its

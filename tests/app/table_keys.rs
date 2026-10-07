@@ -408,7 +408,12 @@ fn wide_table_pages_beside_frozen_and_hidden_columns() {
     order.retain(|c| c != "price_005" && c != "label_006");
     let moved = order.pop().unwrap();
     order.insert(0, moved.clone());
-    run_and_settle(&mut app, AppEvent::ColumnOrder(order.clone(), 2), &rx, &tx);
+    run_and_settle(
+        &mut app,
+        AppEvent::Applied(datui::Applied::ColumnOrder(order.clone(), 2)),
+        &rx,
+        &tx,
+    );
     let screen = draw_sized(&mut app, size);
     assert!(
         header_line(&screen).starts_with(&format!(" {moved}")),
@@ -447,7 +452,7 @@ fn wide_table_pages_beside_frozen_and_hidden_columns() {
     // Every column frozen: nothing scrolls, and the keys do nothing.
     run_and_settle(
         &mut app,
-        AppEvent::ColumnOrder(order[..3].to_vec(), 3),
+        AppEvent::Applied(datui::Applied::ColumnOrder(order[..3].to_vec(), 3)),
         &rx,
         &tx,
     );

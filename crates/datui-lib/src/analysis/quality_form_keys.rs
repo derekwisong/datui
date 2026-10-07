@@ -97,11 +97,11 @@ impl App {
                         );
                     } else {
                         // The dialog stays up while writing: a failure shows on its status line.
-                        return Some(AppEvent::QualityReportExport(
+                        return Some(AppEvent::Applied(crate::Applied::QualityReportExport(
                             path,
                             format,
                             Overwrite::Forbid,
-                        ));
+                        )));
                     }
                 }
             },

@@ -45,10 +45,10 @@ fn r_reverses_in_the_background() {
 #[test]
 fn a_column_order_is_read_in_the_background() {
     let (mut app, rx, tx, _dir) = app();
-    app.event(AppEvent::ColumnOrder(
+    app.event(AppEvent::Applied(crate::Applied::ColumnOrder(
         vec!["b".to_string(), "a".to_string()],
         1,
-    ));
+    )));
     let state = app.data_table_state.as_ref().unwrap();
     assert!(
         !state.snapshot().has_rows(),
@@ -68,11 +68,14 @@ fn a_column_order_is_read_in_the_background() {
 #[test]
 fn a_column_order_does_not_wait_on_a_read_of_other_columns() {
     let (mut app, rx, tx, _dir) = app();
-    app.event(AppEvent::ColumnOrder(vec!["a".to_string()], 0));
-    app.event(AppEvent::ColumnOrder(
+    app.event(AppEvent::Applied(crate::Applied::ColumnOrder(
+        vec!["a".to_string()],
+        0,
+    )));
+    app.event(AppEvent::Applied(crate::Applied::ColumnOrder(
         vec!["b".to_string(), "a".to_string()],
         0,
-    ));
+    )));
     super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !crate::tests::work_pending(a));
     let state = app.data_table_state.as_ref().unwrap();
     let shown: Vec<String> = state
@@ -143,13 +146,13 @@ fn a_sidebar_apply_says_what_it_does() {
         (vec![filter], vec!["b".to_string()], "Sorting..."),
     ] {
         let descending = vec![false; sort.len()];
-        app.event(AppEvent::ApplyView(
+        app.event(AppEvent::Applied(crate::Applied::ApplyView(
             order.clone(),
             0,
             filters,
             sort,
             descending,
-        ));
+        )));
         assert_eq!(app.status_message.as_deref(), Some(says));
         super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !crate::tests::work_pending(a));
     }

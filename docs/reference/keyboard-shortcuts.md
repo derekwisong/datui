@@ -782,7 +782,7 @@ Data Quality in the Analysis sidebar.
 |---|---|
 | `(type)` | Narrow to the names that contain it |
 | `↑ / ↓` | Move |
-| `Enter` | Read the file again with the spec chosen. The query, filters and sort are cleared |
+| `Enter / Space` | Read the file again with the spec chosen. The query, filters and sort are cleared |
 | `Backspace` | Delete a character (Ctrl+W a word, Ctrl+U all) |
 | `Esc` | Close and keep the format |
 

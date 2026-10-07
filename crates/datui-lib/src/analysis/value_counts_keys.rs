@@ -277,7 +277,7 @@ impl App {
             .columns()
             .iter()
             .any(|c| crate::export::avro_types::renames(c.name(), c.dtype()));
-        self.export_counts = Some(table);
+        self.export_modal.counts = Some(table);
         self.open_over(|returns_to| Overlay::Export { returns_to });
     }
 }

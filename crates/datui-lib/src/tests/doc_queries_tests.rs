@@ -188,8 +188,8 @@ fn run_query(path: &Path, lang: &str, query: &str, rows: Option<&str>) -> Result
         return Err(format!("{} did not open: {e}", path.display()));
     }
     let event = match lang {
-        "sql" => AppEvent::SqlQuery(query.to_string()),
-        _ => AppEvent::QQuery(query.to_string()),
+        "sql" => AppEvent::Applied(crate::Applied::SqlQuery(query.to_string())),
+        _ => AppEvent::Applied(crate::Applied::QQuery(query.to_string())),
     };
     if let Some(next) = app.event(event) {
         let _ = tx.send(next);

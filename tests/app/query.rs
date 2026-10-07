@@ -908,15 +908,15 @@ fn test_sidebar_filter_applies_on_top_of_query() {
     use datui::app::modals::filter_modal::FilterOperator;
     let (mut app, rx, tx) = open_query_filter_fixture("query_then_filter.csv");
 
-    app.event(AppEvent::QQuery("select where a < 50".to_string()));
+    app.event(AppEvent::Applied(datui::Applied::QQuery(
+        "select where a < 50".to_string(),
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 50);
 
-    app.event(AppEvent::Filter(vec![filter_stmt(
-        "c",
-        FilterOperator::Eq,
-        "1",
-    )]));
+    app.event(AppEvent::Applied(datui::Applied::Filter(vec![
+        filter_stmt("c", FilterOperator::Eq, "1"),
+    ])));
     pump_until_idle(&mut app, &rx, &tx);
     // a in 0..50 with a % 3 == 1: 1, 4, ..., 49
     assert_eq!(
@@ -928,7 +928,7 @@ fn test_sidebar_filter_applies_on_top_of_query() {
     assert_eq!(state.get_active_query(), "select where a < 50");
     assert_eq!(state.get_filters().len(), 1);
 
-    app.event(AppEvent::Filter(vec![]));
+    app.event(AppEvent::Applied(datui::Applied::Filter(vec![])));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(
         current_rows(&app),
@@ -954,21 +954,23 @@ fn test_sidebar_filter_applies_on_top_of_query() {
 fn test_q_style_distinct_like_mod_and_xbar() {
     let (mut app, rx, tx) = open_query_filter_fixture("query_q_style_additions.csv");
 
-    app.event(AppEvent::QQuery("select distinct c".to_string()));
+    app.event(AppEvent::Applied(datui::Applied::QQuery(
+        "select distinct c".to_string(),
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     assert!(app.data_table_state.as_ref().unwrap().error().is_none());
     assert_eq!(current_rows(&app), 3);
 
     // alpha_0 .. alpha_8, then 0 = (a mod 4) keeps 0, 4 and 8.
-    app.event(AppEvent::QQuery(
+    app.event(AppEvent::Applied(datui::Applied::QQuery(
         "select where name like \"alpha_?\", 0 = a mod 4".to_string(),
-    ));
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 3);
 
-    app.event(AppEvent::QQuery(
+    app.event(AppEvent::Applied(datui::Applied::QQuery(
         "select n: count a by b: 10 xbar a".to_string(),
-    ));
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
     let df = state.lf().clone().collect().unwrap();
@@ -987,22 +989,20 @@ fn test_sidebar_filter_keeps_sql_query() {
     use datui::app::modals::filter_modal::FilterOperator;
     let (mut app, rx, tx) = open_query_filter_fixture("sql_then_filter.csv");
 
-    app.event(AppEvent::SqlQuery(
+    app.event(AppEvent::Applied(datui::Applied::SqlQuery(
         "SELECT * FROM df WHERE a < 30".to_string(),
-    ));
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 30);
 
-    app.event(AppEvent::Filter(vec![filter_stmt(
-        "c",
-        FilterOperator::Eq,
-        "0",
-    )]));
+    app.event(AppEvent::Applied(datui::Applied::Filter(vec![
+        filter_stmt("c", FilterOperator::Eq, "0"),
+    ])));
     pump_until_idle(&mut app, &rx, &tx);
     // a in 0..30 with a % 3 == 0: 0, 3, ..., 27
     assert_eq!(current_rows(&app), 10);
 
-    app.event(AppEvent::Filter(vec![]));
+    app.event(AppEvent::Applied(datui::Applied::Filter(vec![])));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 30);
 }
@@ -1024,7 +1024,10 @@ fn test_skip_tail_rows_survives_a_sidebar_sort() {
     let (mut app, rx, tx) = open_csv_with("skip_tail_then_sort.csv", &csv, options);
     assert_eq!(current_rows(&app), 100);
 
-    app.event(AppEvent::Sort(vec!["b".to_string()], vec![true]));
+    app.event(AppEvent::Applied(datui::Applied::Sort(
+        vec!["b".to_string()],
+        vec![true],
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     let df = app
         .data_table_state
@@ -1064,11 +1067,9 @@ fn test_parse_strings_survives_a_sidebar_filter() {
         );
     }
 
-    app.event(AppEvent::Filter(vec![filter_stmt(
-        "amount",
-        FilterOperator::Gt,
-        "150",
-    )]));
+    app.event(AppEvent::Applied(datui::Applied::Filter(vec![
+        filter_stmt("amount", FilterOperator::Gt, "150"),
+    ])));
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.error().is_none(), "{:?}", state.error());
@@ -1088,12 +1089,12 @@ fn test_sql_after_pivot_sees_the_pivoted_columns() {
     }
     let (mut app, rx, tx) = open_csv_with("pivot_then_sql.csv", &csv, OpenOptions::default());
 
-    app.event(AppEvent::Pivot(PivotSpec {
+    app.event(AppEvent::Applied(datui::Applied::Pivot(PivotSpec {
         index: vec!["id".to_string()],
         pivot_column: "key".to_string(),
         value_column: "val".to_string(),
         aggregation: PivotAggregation::First,
-    }));
+    })));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 10);
     assert!(
@@ -1104,9 +1105,9 @@ fn test_sql_after_pivot_sees_the_pivoted_columns() {
             .contains("k1")
     );
 
-    app.event(AppEvent::SqlQuery(
+    app.event(AppEvent::Applied(datui::Applied::SqlQuery(
         "SELECT id, k2 FROM df WHERE k1 > 4".to_string(),
-    ));
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.error().is_none(), "{:?}", state.error());
@@ -1123,7 +1124,9 @@ fn test_sidebar_filter_and_sort_stay_inside_a_drill_down() {
     use datui::app::modals::filter_modal::FilterOperator;
     let (mut app, rx, tx) = open_query_filter_fixture("drill_down_filter.csv");
 
-    app.event(AppEvent::QQuery("select by c".to_string()));
+    app.event(AppEvent::Applied(datui::Applied::QQuery(
+        "select by c".to_string(),
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 3, "one row per group");
 
@@ -1136,11 +1139,9 @@ fn test_sidebar_filter_and_sort_stay_inside_a_drill_down() {
     assert!(app.data_table_state.as_ref().unwrap().is_drilled_down());
     assert_eq!(current_rows(&app), 34, "c == 0: 0, 3, ..., 99");
 
-    app.event(AppEvent::Filter(vec![filter_stmt(
-        "a",
-        FilterOperator::Lt,
-        "30",
-    )]));
+    app.event(AppEvent::Applied(datui::Applied::Filter(vec![
+        filter_stmt("a", FilterOperator::Lt, "30"),
+    ])));
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.error().is_none(), "{:?}", state.error());
@@ -1150,7 +1151,10 @@ fn test_sidebar_filter_and_sort_stay_inside_a_drill_down() {
     );
     assert_eq!(current_rows(&app), 10);
 
-    app.event(AppEvent::Sort(vec!["a".to_string()], vec![true]));
+    app.event(AppEvent::Applied(datui::Applied::Sort(
+        vec!["a".to_string()],
+        vec![true],
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.is_drilled_down());
@@ -1181,12 +1185,12 @@ fn test_query_after_pivot_drops_the_reshape_for_sql() {
     }
     let (mut app, rx, tx) = open_csv_with("pivot_query_sql.csv", &csv, OpenOptions::default());
 
-    app.event(AppEvent::Pivot(PivotSpec {
+    app.event(AppEvent::Applied(datui::Applied::Pivot(PivotSpec {
         index: vec!["id".to_string()],
         pivot_column: "key".to_string(),
         value_column: "val".to_string(),
         aggregation: PivotAggregation::First,
-    }));
+    })));
     pump_until_idle(&mut app, &rx, &tx);
     assert!(
         app.data_table_state
@@ -1196,7 +1200,9 @@ fn test_query_after_pivot_drops_the_reshape_for_sql() {
             .contains("k1")
     );
 
-    app.event(AppEvent::QQuery("select id, key".to_string()));
+    app.event(AppEvent::Applied(datui::Applied::QQuery(
+        "select id, key".to_string(),
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 20);
     assert!(
@@ -1207,7 +1213,9 @@ fn test_query_after_pivot_drops_the_reshape_for_sql() {
             .is_none()
     );
 
-    app.event(AppEvent::SqlQuery("SELECT * FROM df".to_string()));
+    app.event(AppEvent::Applied(datui::Applied::SqlQuery(
+        "SELECT * FROM df".to_string(),
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.error().is_none(), "{:?}", state.error());
@@ -1224,12 +1232,19 @@ fn test_drill_down_resyncs_the_sort_filter_sidebar() {
     use datui::app::modals::filter_modal::FilterOperator;
     let (mut app, rx, tx) = open_query_filter_fixture("drill_sidebar.csv");
 
-    app.event(AppEvent::QQuery("select by c".to_string()));
+    app.event(AppEvent::Applied(datui::Applied::QQuery(
+        "select by c".to_string(),
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     let statement = filter_stmt("c", FilterOperator::Gt, "0");
-    app.event(AppEvent::Filter(vec![statement.clone()]));
+    app.event(AppEvent::Applied(datui::Applied::Filter(vec![
+        statement.clone(),
+    ])));
     pump_until_idle(&mut app, &rx, &tx);
-    app.event(AppEvent::Sort(vec!["c".to_string()], vec![true]));
+    app.event(AppEvent::Applied(datui::Applied::Sort(
+        vec!["c".to_string()],
+        vec![true],
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 2, "groups c = 1 and c = 2");
     // What Apply would have left in the sidebar.
@@ -1311,7 +1326,9 @@ fn test_esc_from_a_drill_down_shows_the_grouped_rows() {
     let area = Rect::new(0, 0, 100, 30);
     painted(&mut app, &rx, &tx, area);
 
-    app.event(AppEvent::QQuery("select a by c".to_string()));
+    app.event(AppEvent::Applied(datui::Applied::QQuery(
+        "select a by c".to_string(),
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     painted(&mut app, &rx, &tx, area);
     assert_eq!(on_screen(&app, "c"), ["0", "1", "2"]);
@@ -1352,7 +1369,9 @@ fn test_esc_from_a_drill_down_shows_the_grouped_rows() {
 fn test_drill_into_a_small_group_shows_its_rows() {
     let (mut app, rx, tx) = open_query_filter_fixture("drill_small_group.csv");
     let area = Rect::new(0, 0, 100, 30);
-    app.event(AppEvent::QQuery("select name by a".to_string()));
+    app.event(AppEvent::Applied(datui::Applied::QQuery(
+        "select name by a".to_string(),
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     painted(&mut app, &rx, &tx, area);
     assert_eq!(on_screen(&app, "a").len(), 26, "a screen of the 100 groups");
@@ -1372,9 +1391,9 @@ fn test_enter_drills_from_an_aggregated_result() {
     let (mut app, rx, tx) = open_query_filter_fixture("drill_aggregate.csv");
     let area = Rect::new(0, 0, 100, 30);
 
-    app.event(AppEvent::QQuery(
+    app.event(AppEvent::Applied(datui::Applied::QQuery(
         "select n: count a, total: sum a by c where a < 30".to_string(),
-    ));
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     painted(&mut app, &rx, &tx, area);
     assert_eq!(on_screen(&app, "n"), ["10", "10", "10"]);
@@ -1416,7 +1435,9 @@ fn test_drill_from_an_aggregate_by_a_computed_key_and_a_null_key() {
     let csv = "k,v\nx,1\n,2\ny,3\n,4\nx,5\n,6\n";
     let (mut app, rx, tx) = open_csv_with("drill_null_key.csv", csv, OpenOptions::default());
 
-    app.event(AppEvent::QQuery("select n: count v by key: k".to_string()));
+    app.event(AppEvent::Applied(datui::Applied::QQuery(
+        "select n: count v by key: k".to_string(),
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     // Nulls sort last.
     let state = app.data_table_state.as_mut().unwrap();
@@ -1427,9 +1448,9 @@ fn test_drill_from_an_aggregate_by_a_computed_key_and_a_null_key() {
     assert_eq!(df.column("v").unwrap().i64().unwrap().sum(), Some(12));
     state.drill_up().unwrap();
 
-    app.event(AppEvent::QQuery(
+    app.event(AppEvent::Applied(datui::Applied::QQuery(
         "select n: count v by big: v > 3".to_string(),
-    ));
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_mut().unwrap();
     state.drill_down_into_group(1).unwrap();
@@ -1487,7 +1508,9 @@ fn test_drill_from_an_aggregate_by_typed_keys() {
     ));
 
     for key in ["f", "d", "t", "s", "f, s", "day: d, late: t > 5"] {
-        app.event(AppEvent::QQuery(format!("select n: count v by {key}")));
+        app.event(AppEvent::Applied(datui::Applied::QQuery(format!(
+            "select n: count v by {key}"
+        ))));
         pump_until_idle(&mut app, &rx, &tx);
         let state = app.data_table_state.as_mut().unwrap();
         assert!(state.error().is_none(), "{key}: {:?}", state.error());
@@ -1518,9 +1541,9 @@ fn test_drill_from_an_aggregate_by_typed_keys() {
 fn test_enter_on_an_aggregate_drills_from_the_buffer_or_reads_the_row() {
     let (mut app, rx, tx) = open_query_filter_fixture("drill_from_buffer.csv");
     let area = Rect::new(0, 0, 100, 30);
-    app.event(AppEvent::QQuery(
+    app.event(AppEvent::Applied(datui::Applied::QQuery(
         "select n: count a, total: sum a by c".to_string(),
-    ));
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     painted(&mut app, &rx, &tx, area);
 
@@ -1565,9 +1588,14 @@ fn test_enter_on_an_aggregate_drills_from_the_buffer_or_reads_the_row() {
 fn test_drill_from_a_sorted_aggregate_takes_the_row_on_screen() {
     let (mut app, rx, tx) = open_query_filter_fixture("drill_sorted_aggregate.csv");
     let area = Rect::new(0, 0, 100, 30);
-    app.event(AppEvent::QQuery("select n: count a by c".to_string()));
+    app.event(AppEvent::Applied(datui::Applied::QQuery(
+        "select n: count a by c".to_string(),
+    )));
     pump_until_idle(&mut app, &rx, &tx);
-    app.event(AppEvent::Sort(vec!["c".to_string()], vec![true]));
+    app.event(AppEvent::Applied(datui::Applied::Sort(
+        vec!["c".to_string()],
+        vec![true],
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     painted(&mut app, &rx, &tx, area);
     assert_eq!(on_screen(&app, "c"), ["2", "1", "0"]);
@@ -1589,9 +1617,9 @@ fn test_drill_from_a_sorted_aggregate_takes_the_row_on_screen() {
 fn test_esc_restores_the_grouped_columns_changed_inside_the_drill() {
     let (mut app, rx, tx) = open_query_filter_fixture("drill_columns_restored.csv");
     let area = Rect::new(0, 0, 100, 30);
-    app.event(AppEvent::QQuery(
+    app.event(AppEvent::Applied(datui::Applied::QQuery(
         "select n: count a, total: sum a by c".to_string(),
-    ));
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     painted(&mut app, &rx, &tx, area);
     press_and_send(&mut app, &tx, KeyCode::Enter);
@@ -1615,7 +1643,9 @@ fn test_esc_restores_the_grouped_columns_changed_inside_the_drill() {
 fn test_drill_from_lists_keeps_a_null_key_and_names_only_keys() {
     let csv = "k,v\nx,1\n,2\ny,3\n,4\n";
     let (mut app, rx, tx) = open_csv_with("drill_list_null_key.csv", csv, OpenOptions::default());
-    app.event(AppEvent::QQuery("select v, n: count v by k".to_string()));
+    app.event(AppEvent::Applied(datui::Applied::QQuery(
+        "select v, n: count v by k".to_string(),
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_mut().unwrap();
     assert!(state.is_grouped());
@@ -1649,7 +1679,9 @@ fn test_enter_inspects_where_there_is_nothing_to_drill_into() {
     assert!(app.at_table());
     assert_ne!(app.overlay, Overlay::Inspect);
 
-    app.event(AppEvent::QQuery("select n: count a by c".to_string()));
+    app.event(AppEvent::Applied(datui::Applied::QQuery(
+        "select n: count a by c".to_string(),
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     let grouped = painted(&mut app, &rx, &tx, area);
     assert!(
@@ -1980,7 +2012,9 @@ fn test_sql_group_by_without_order_by_is_sorted_by_its_keys() {
 fn test_sql_inside_a_drill_down_stays_in_the_group() {
     let (mut app, rx, tx) = open_query_filter_fixture("drill_sql.csv");
 
-    app.event(AppEvent::QQuery("select by c".to_string()));
+    app.event(AppEvent::Applied(datui::Applied::QQuery(
+        "select by c".to_string(),
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     app.data_table_state
         .as_mut()
@@ -1990,9 +2024,9 @@ fn test_sql_inside_a_drill_down_stays_in_the_group() {
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 34);
 
-    app.event(AppEvent::SqlQuery(
+    app.event(AppEvent::Applied(datui::Applied::SqlQuery(
         "SELECT * FROM df WHERE a < 30".to_string(),
-    ));
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.error().is_none(), "{:?}", state.error());
@@ -2244,7 +2278,10 @@ fn test_sort_filter_reopen_reflects_applied_state() {
     assert_eq!(state.headers(), vec!["c".to_string(), "name".to_string()]);
 
     // Sort by "c", applied through the event the modal would send.
-    app.event(AppEvent::Sort(vec!["c".to_string()], vec![false]));
+    app.event(AppEvent::Applied(datui::Applied::Sort(
+        vec!["c".to_string()],
+        vec![false],
+    )));
     pump_until_idle(&mut app, &rx, &tx);
 
     press(&mut app, KeyCode::Char('s'));
@@ -2915,10 +2952,10 @@ fn enter_on_an_incomplete_form_stays_and_says_why() {
 fn sort_and_filter_edits_what_is_in_effect() {
     use datui::app::modals::sort_filter_modal::SortFilterField;
     let (mut app, rx, tx) = open_query_filter_fixture("forms_in_effect.csv");
-    app.event(AppEvent::Sort(
+    app.event(AppEvent::Applied(datui::Applied::Sort(
         vec!["a".to_string(), "c".to_string()],
         vec![false, false],
-    ));
+    )));
     pump_until_idle(&mut app, &rx, &tx);
 
     press(&mut app, KeyCode::Char('s'));
@@ -3036,7 +3073,7 @@ fn reopening_the_prompt_selects_the_active_query_mode() {
 
     run_and_settle(
         &mut app,
-        AppEvent::QQuery("select a where a > 10".to_string()),
+        AppEvent::Applied(datui::Applied::QQuery("select a where a > 10".to_string())),
         &rx,
         &tx,
     );
@@ -3049,7 +3086,9 @@ fn reopening_the_prompt_selects_the_active_query_mode() {
     {
         run_and_settle(
             &mut app,
-            AppEvent::SqlQuery("SELECT a FROM df WHERE a > 90".to_string()),
+            AppEvent::Applied(datui::Applied::SqlQuery(
+                "SELECT a FROM df WHERE a > 90".to_string(),
+            )),
             &rx,
             &tx,
         );
@@ -3059,7 +3098,12 @@ fn reopening_the_prompt_selects_the_active_query_mode() {
     }
 
     // Clearing the query returns `/` to the default.
-    run_and_settle(&mut app, AppEvent::QQuery(String::new()), &rx, &tx);
+    run_and_settle(
+        &mut app,
+        AppEvent::Applied(datui::Applied::QQuery(String::new())),
+        &rx,
+        &tx,
+    );
     press_key(&mut app, KeyCode::Char(':'), KeyModifiers::NONE);
     assert_eq!(
         app.query_prompt_mode(),
@@ -3271,7 +3315,7 @@ fn a_query_that_fails_when_collected_is_not_installed() {
     // A sort works on the data as it was.
     run_and_settle(
         &mut app,
-        AppEvent::Sort(vec!["v".to_string()], vec![false]),
+        AppEvent::Applied(datui::Applied::Sort(vec!["v".to_string()], vec![false])),
         &rx,
         &tx,
     );
@@ -3496,7 +3540,9 @@ fn wide_table_paging_after_a_query_with_one_and_no_columns() {
     let (mut app, rx, tx) = open_wide_table("wide_nav_query.parquet", 40, size);
     press_and_draw(&mut app, KeyCode::Char('}'), size);
     assert_eq!(columns_shown(&app).unwrap().last, 40);
-    app.event(AppEvent::QQuery("select id_000, price_001".to_string()));
+    app.event(AppEvent::Applied(datui::Applied::QQuery(
+        "select id_000, price_001".to_string(),
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     draw_sized(&mut app, size);
     let state = app.data_table_state.as_ref().unwrap();
@@ -3504,7 +3550,9 @@ fn wide_table_paging_after_a_query_with_one_and_no_columns() {
     assert_eq!(state.termcol_index, 0, "the new schema starts at the left");
     assert_eq!(range_shown(&app), Some((1, 2)), "both on screen");
 
-    app.event(AppEvent::QQuery("select id_000".to_string()));
+    app.event(AppEvent::Applied(datui::Applied::QQuery(
+        "select id_000".to_string(),
+    )));
     pump_until_idle(&mut app, &rx, &tx);
     for key in ['{', '}', 'l', 'h'] {
         let screen = press_and_draw(&mut app, KeyCode::Char(key), size);
@@ -3521,7 +3569,12 @@ fn wide_table_paging_after_a_query_with_one_and_no_columns() {
     }
 
     // No column shown at all: the keys do nothing, and the picker has nothing to offer.
-    run_and_settle(&mut app, AppEvent::ColumnOrder(Vec::new(), 0), &rx, &tx);
+    run_and_settle(
+        &mut app,
+        AppEvent::Applied(datui::Applied::ColumnOrder(Vec::new(), 0)),
+        &rx,
+        &tx,
+    );
     for arrow in [KeyCode::Left, KeyCode::Right] {
         page_and_draw(&mut app, arrow, size);
         assert_eq!(app.data_table_state.as_ref().unwrap().termcol_index, 0);
@@ -3796,7 +3849,7 @@ fn h_and_l_move_the_cursors_column() {
     // Frozen: `name` alone; it cannot leave the frozen block, nor `n` enter it.
     run_and_settle(
         &mut app,
-        AppEvent::ColumnOrder(original.clone(), 1),
+        AppEvent::Applied(datui::Applied::ColumnOrder(original.clone(), 1)),
         &rx,
         &tx,
     );

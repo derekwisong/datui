@@ -129,9 +129,9 @@ fn a_query_runs_over_the_new_rows() {
     let (mut app, rx) = app();
     pump_open_until_loaded(&mut app, &rx, vec![path.clone()], following());
     screen(&mut app);
-    let mut next = Some(AppEvent::QQuery(
+    let mut next = Some(AppEvent::Applied(datui::Applied::QQuery(
         "select where level = \"error\"".to_string(),
-    ));
+    )));
     while let Some(event) = next {
         next = app.event(event);
     }
@@ -157,13 +157,15 @@ fn a_filter_counts_and_reads_the_new_rows() {
     let (mut app, rx) = app();
     pump_open_until_loaded(&mut app, &rx, vec![path.clone()], following());
     screen(&mut app);
-    app.event(AppEvent::Filter(vec![FilterStatement {
-        columns: Vec::new(),
-        column: "n".into(),
-        operator: FilterOperator::Eq,
-        value: "3".into(),
-        logical_op: LogicalOperator::And,
-    }]));
+    app.event(AppEvent::Applied(datui::Applied::Filter(vec![
+        FilterStatement {
+            columns: Vec::new(),
+            column: "n".into(),
+            operator: FilterOperator::Eq,
+            value: "3".into(),
+            logical_op: LogicalOperator::And,
+        },
+    ])));
     let matches = |n: i64| (0..n).filter(|i| i % 7 == 3).count();
     until(&mut app, &rx, |app| {
         let state = app.data_table_state.as_ref().unwrap();

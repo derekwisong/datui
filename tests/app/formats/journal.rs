@@ -123,9 +123,9 @@ fn a_journal_has_time_level_and_readable_messages_first() {
 #[test]
 fn level_filters_and_sorts_by_severity() {
     let (mut app, rx) = open(vec![PathBuf::from(FIXTURE)], OpenOptions::default());
-    let mut next = Some(AppEvent::QQuery(
+    let mut next = Some(AppEvent::Applied(datui::Applied::QQuery(
         "select level, MESSAGE where level <= \"err\"".to_string(),
-    ));
+    )));
     while let Some(event) = next {
         next = app.event(event);
     }
@@ -551,7 +551,9 @@ fn new_fields_wait_for_a_query_to_be_cleared() {
         OpenOptions::default(),
     );
     drain_events(&mut app, &rx);
-    let mut next = Some(AppEvent::QQuery("select id where id < 10".to_string()));
+    let mut next = Some(AppEvent::Applied(datui::Applied::QQuery(
+        "select id where id < 10".to_string(),
+    )));
     while let Some(event) = next {
         next = app.event(event);
     }
@@ -569,7 +571,7 @@ fn new_fields_wait_for_a_query_to_be_cleared() {
             .contains("extra")
     };
     assert!(!has_extra(&app), "held under the query");
-    let mut next = Some(AppEvent::QQuery(String::new()));
+    let mut next = Some(AppEvent::Applied(datui::Applied::QQuery(String::new())));
     while let Some(event) = next {
         next = app.event(event);
     }
@@ -586,7 +588,9 @@ fn a_query_reads_ndjson_with_short_lines() {
     let text = "{\"a\":1}\n\n   \n{\"a\":2}\ngarbage\n{\"a\":3}\n";
     let (mut app, rx) = piped(text.as_bytes().to_vec(), OpenOptions::default());
     follow_until(&mut app, &rx, ended);
-    let mut next = Some(AppEvent::QQuery("select a where a > 0".to_string()));
+    let mut next = Some(AppEvent::Applied(datui::Applied::QQuery(
+        "select a where a > 0".to_string(),
+    )));
     while let Some(event) = next {
         next = app.event(event);
     }

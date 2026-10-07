@@ -777,12 +777,12 @@ fn export_as(
         json_compression: None,
         ndjson_compression: None,
     };
-    let start = AppEvent::Export(datui::ExportRequest {
+    let start = AppEvent::Applied(datui::Applied::Export(datui::ExportRequest {
         path: path.to_path_buf(),
         format,
         options,
         overwrite: datui::export::output_file::Overwrite::Forbid,
-    });
+    }));
     run_to_idle(app, rx, tx, start);
     assert_eq!(app.error_message(), None, "the export to {path:?} failed");
     assert_eq!(
@@ -1287,7 +1287,7 @@ fn open_salary_fixture(name: &str) -> (App, mpsc::Receiver<AppEvent>, mpsc::Send
 /// Run `sql` as the SQL prompt would and wait for its rows.
 #[cfg(feature = "sql")]
 fn run_sql(app: &mut App, rx: &mpsc::Receiver<AppEvent>, tx: &mpsc::Sender<AppEvent>, sql: &str) {
-    app.event(AppEvent::SqlQuery(sql.to_string()));
+    app.event(AppEvent::Applied(datui::Applied::SqlQuery(sql.to_string())));
     pump_until_idle(app, rx, tx);
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.error().is_none(), "{sql}: {:?}", state.error());
@@ -2172,7 +2172,7 @@ fn run_query(
     tx: &mpsc::Sender<AppEvent>,
     query: &str,
 ) {
-    app.event(AppEvent::QQuery(query.to_string()));
+    app.event(AppEvent::Applied(datui::Applied::QQuery(query.to_string())));
     pump_until_idle(app, rx, tx);
     assert_eq!(app.error_message(), None, "{query}");
     let state = app.data_table_state.as_ref().unwrap();

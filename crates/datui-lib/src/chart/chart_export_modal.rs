@@ -358,6 +358,21 @@ impl ChartExportModal {
     }
 
     /// A text field's input; `None` for a choice.
+    pub fn input(&self, field: ChartExportFocus) -> Option<&TextInput> {
+        Some(match field {
+            ChartExportFocus::PathInput => &self.path_input,
+            ChartExportFocus::WidthInput => &self.width_input,
+            ChartExportFocus::HeightInput => &self.height_input,
+            ChartExportFocus::TitleInput => &self.title_input,
+            ChartExportFocus::DescriptionInput => &self.description_input,
+            ChartExportFocus::NotesInput => &self.notes_input,
+            ChartExportFocus::SourceInput => &self.source_input,
+            ChartExportFocus::BylineInput => &self.byline_input,
+            _ => return None,
+        })
+    }
+
+    /// [`Self::input`], to edit.
     pub fn input_mut(&mut self, field: ChartExportFocus) -> Option<&mut TextInput> {
         Some(match field {
             ChartExportFocus::PathInput => &mut self.path_input,

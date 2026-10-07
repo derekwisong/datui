@@ -113,7 +113,9 @@ fn yes_carries_on_with_what_was_asked() {
     let mut app = new_app();
     app.confirmation_modal
         .show("?".into(), Confirm::OpenLink("https://x.org".into()));
-    assert!(matches!(yes(&mut app), Some(AppEvent::OpenLink(url)) if url == "https://x.org"));
+    assert!(
+        matches!(yes(&mut app), Some(AppEvent::Applied(crate::Applied::OpenLink(url))) if url == "https://x.org")
+    );
 
     app.confirmation_modal.show(
         "?".into(),
@@ -121,28 +123,35 @@ fn yes_carries_on_with_what_was_asked() {
     );
     assert!(matches!(
         yes(&mut app),
-        Some(AppEvent::QualityReportExport(_, _, Overwrite::Replace))
+        Some(AppEvent::Applied(crate::Applied::QualityReportExport(
+            _,
+            _,
+            Overwrite::Replace
+        )))
     ));
 
     app.confirmation_modal
         .show("?".into(), Confirm::ChartExport(Box::new(chart_request())));
     assert!(matches!(
         yes(&mut app),
-        Some(AppEvent::ChartExport(r)) if r.overwrite == Overwrite::Replace
+        Some(AppEvent::Applied(crate::Applied::ChartExport(r))) if r.overwrite == Overwrite::Replace
     ));
 
     app.confirmation_modal
         .show("?".into(), Confirm::Export(Box::new(export_request())));
     assert!(matches!(
         yes(&mut app),
-        Some(AppEvent::Export(r)) if r.overwrite == Overwrite::Replace
+        Some(AppEvent::Applied(crate::Applied::Export(r))) if r.overwrite == Overwrite::Replace
     ));
 
     app.confirmation_modal
         .show("?".into(), Confirm::Copy(Default::default(), false));
     assert!(matches!(
         yes(&mut app),
-        Some(AppEvent::CopyTable { header: false, .. })
+        Some(AppEvent::Applied(crate::Applied::CopyTable {
+            header: false,
+            ..
+        }))
     ));
     assert!(!app.confirmation_modal.active);
 }

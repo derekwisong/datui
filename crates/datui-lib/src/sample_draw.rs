@@ -10,8 +10,7 @@
 use crate::jobs::{Answer, Job, SampleDraw};
 use crate::table::DataTableState;
 use crate::table_sample::{Limit, MemoryCheck, MemoryProbe};
-use crate::{App, AppEvent, sampling};
-use crate::{analysis_modal, data_quality};
+use crate::{App, AppEvent, analysis_modal, data_quality, sampling};
 use std::sync::Arc;
 
 /// What the status line says while a sample is drawn.

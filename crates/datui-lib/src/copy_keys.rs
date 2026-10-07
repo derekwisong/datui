@@ -3,8 +3,13 @@
 
 use crate::copy_modal::CopyFocus;
 use crate::form::{FormKey, PickerKey};
-use crate::{App, AppEvent, InputMode};
+use crate::jobs::{Answer, Job};
+use crate::open_options::OpenOptions;
+use crate::table::DataTableState;
+use crate::{App, AppEvent, InputMode, clipboard, copy_modal, python_script, source};
+use color_eyre::Result;
 use crossterm::event::{KeyCode, KeyEvent};
+use std::path::Path;
 
 impl App {
     /// Keys in the copy modal.
@@ -52,5 +57,291 @@ impl App {
             _ => {}
         }
         None
+    }
+
+    /// Enter in the copy dialog: the synchronous scopes copy from the buffer
+    /// and flash; the table scope guards on size, then collects off-thread.
+    pub(crate) fn perform_copy(&mut self) -> Option<AppEvent> {
+        use copy_modal::{CopyScope, thousands};
+        /// What Enter decided, worked out under the table borrow and acted on
+        /// after it: writing to the clipboard needs the whole app back.
+        enum Planned {
+            Copy(clipboard::Payload, String),
+            Collect,
+            /// None: the size is not known (the row count is still coming, or a
+            /// binary column's width is known to no footer).
+            Confirm(Option<usize>),
+        }
+        let format = self.copy_modal.format;
+        let header = self.copy_modal.header();
+        let scope = self.copy_modal.scope;
+        // What the destination takes decides what is built: no HTML flavor for one
+        // that cannot offer it, and no copy past its cap.
+        let accepts = match self.copy_destination() {
+            Ok(destination) => destination.accepts(),
+            Err(e) => {
+                self.copy_modal.close();
+                self.input_mode = InputMode::Normal;
+                self.error_modal.show(e);
+                return None;
+            }
+        };
+        let planned: Result<Planned, String> = match self.data_table_state.as_ref() {
+            None => Err("Nothing to copy: no table is open".to_string()),
+            Some(state) => match scope {
+                CopyScope::Cell => {
+                    let column = self.copy_modal.column.clone().unwrap_or_default();
+                    match state.copy_cell_value(&column) {
+                        Some(value) => {
+                            let row = state.selected_display_row().unwrap_or(0);
+                            Ok(Planned::Copy(
+                                clipboard::Payload::text(value),
+                                format!("Copied cell {column} of row {}", thousands(row)),
+                            ))
+                        }
+                        None => Err("Nothing to copy: the current row is not buffered".to_string()),
+                    }
+                }
+                CopyScope::Row => match state.copy_row_df() {
+                    Some(df) => clipboard::tabular_payload(&df, format, header, accepts.html).map(
+                        |payload| {
+                            let row = state.selected_display_row().unwrap_or(0);
+                            Planned::Copy(
+                                payload,
+                                format!("Copied row {} as {}", thousands(row), format.as_str()),
+                            )
+                        },
+                    ),
+                    None => Err("Nothing to copy: the current row is not buffered".to_string()),
+                },
+                CopyScope::View => match state.copy_view_df() {
+                    Some(df) => clipboard::tabular_payload(&df, format, header, accepts.html).map(
+                        |payload| {
+                            Planned::Copy(
+                                payload,
+                                format!(
+                                    "Copied {} rows as {}",
+                                    thousands(df.height()),
+                                    format.as_str()
+                                ),
+                            )
+                        },
+                    ),
+                    None => Err("Nothing to copy: no rows are on screen".to_string()),
+                },
+                CopyScope::Python => Ok(Planned::Copy(
+                    clipboard::Payload::text(self.python_script(state)),
+                    "Copied the view as Python".to_string(),
+                )),
+                CopyScope::Table => {
+                    // A capped destination's copy is read only as far as its cap, so
+                    // what could be held is the smaller of the two.
+                    let cap = accepts
+                        .base64_limit
+                        .map_or(usize::MAX, |limit| limit / 4 * 3);
+                    match state.estimated_copy_bytes() {
+                        Some(bytes) if bytes > Self::COPY_REFUSE_BYTES => Err(format!(
+                            "The table is about {} — too much to hold on a clipboard. \
+                             Export it to a file instead (e).",
+                            Self::format_bytes(bytes as u64)
+                        )),
+                        Some(bytes) if bytes.min(cap) > Self::COPY_CONFIRM_BYTES => {
+                            Ok(Planned::Confirm(Some(bytes)))
+                        }
+                        Some(_) => Ok(Planned::Collect),
+                        None if cap <= Self::COPY_CONFIRM_BYTES => Ok(Planned::Collect),
+                        // The row count has not landed yet, or a binary column's width
+                        // is unknown, so the size is anyone's guess: ask before
+                        // collecting an unknown amount.
+                        None => Ok(Planned::Confirm(None)),
+                    }
+                }
+            },
+        };
+        self.copy_modal.close();
+        self.input_mode = InputMode::Normal;
+        match planned {
+            Ok(Planned::Copy(payload, message)) => {
+                self.finish_copy(payload, message);
+                None
+            }
+            Ok(Planned::Collect) => Some(AppEvent::CopyTable { format, header }),
+            Ok(Planned::Confirm(bytes)) => {
+                self.pending_copy = Some((format, header));
+                let counting = self
+                    .data_table_state
+                    .as_ref()
+                    .is_some_and(|state| state.num_rows_if_valid().is_none());
+                self.confirmation_modal.show(match bytes {
+                    Some(bytes) => format!(
+                        "This copies about {} to the clipboard.\n\nCopy the whole table?",
+                        Self::format_bytes(bytes as u64)
+                    ),
+                    None if counting => "The table's size is not known yet — the row count \
+                                         is still being read.\n\nCopy the whole table anyway?"
+                        .to_string(),
+                    None => "The size of the table's binary columns is not known.\n\n\
+                             Copy the whole table anyway?"
+                        .to_string(),
+                });
+                None
+            }
+            Err(message) => {
+                self.error_modal.show(message);
+                None
+            }
+        }
+    }
+
+    /// The view on screen as a Python Polars script: the open's reader, then every
+    /// step that made the view. See [`python_script`].
+    pub fn python_script(&self, state: &DataTableState) -> String {
+        let (paths, options) = match &self.opened {
+            Some((paths, options)) => (Some(paths.as_slice()), options.clone()),
+            None => (None, OpenOptions::default()),
+        };
+        let cloud = options.effective_cloud(&self.app_config.cloud);
+        let mut options = options;
+        if options.read_python.is_empty() {
+            // A decompressed file is read into its dataset directly, not through a scan.
+            options.read_python = state.read_python().to_vec();
+        }
+        // The source an `s3://<id>@bucket` URL names has its own endpoint and region.
+        let remote = paths
+            .and_then(|paths| paths.first())
+            .map(|p| p.to_string_lossy().into_owned())
+            .filter(|p| source::is_remote_url(Path::new(p)));
+        let source_of = remote
+            .as_deref()
+            .and_then(|url| source::split_source_id(url).0)
+            .and_then(|id| cloud.connections.iter().find(|c| c.name == id));
+        // What this session learned of the place: read unsigned, it is public.
+        #[cfg(feature = "cloud")]
+        let unsigned = remote
+            .as_deref()
+            .and_then(crate::cloud_sources::known_access)
+            .unwrap_or(false);
+        #[cfg(not(feature = "cloud"))]
+        let unsigned = false;
+        let record = python_script::OpenRecord {
+            paths,
+            options: &options,
+            format: state.read_as().or(options.format),
+            read_mode: state.read_mode(),
+            schema: state.source_schema(),
+            remote_objects: state
+                .remote_objects()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|object| object.url)
+                .collect(),
+            s3_endpoint: source_of
+                .and_then(|c| c.endpoint_url.clone())
+                .or(cloud.s3_endpoint_url.clone())
+                .filter(|s| !s.trim().is_empty()),
+            s3_region: source_of
+                .and_then(|c| c.region.clone())
+                .or(cloud.s3_region.clone())
+                .filter(|s| !s.trim().is_empty()),
+            unsigned,
+            read_as_text: state.read_as_text().iter().map(|c| c.to_string()).collect(),
+            spec: state.format_read().map(|read| read.spec.name.clone()),
+        };
+        python_script::Script {
+            source: python_script::source(&record),
+            steps: state.python_steps(),
+        }
+        .render()
+    }
+
+    /// Hand a payload to the clipboard destination, building the destination
+    /// at the first copy, and flash or raise the error modal — a copy that
+    /// silently did nothing would be worse than one that failed out loud.
+    pub(crate) fn finish_copy(&mut self, payload: clipboard::Payload, message: String) {
+        let written = self
+            .copy_destination()
+            .and_then(|destination| destination.write(payload));
+        match written {
+            Ok(()) => self.flash_note(message),
+            Err(e) => self.error_modal.show(e),
+        }
+    }
+
+    /// The clipboard destination, built at the first copy.
+    pub(crate) fn copy_destination(&mut self) -> Result<&mut dyn clipboard::Destination, String> {
+        if self.clipboard.is_none() {
+            let choice = clipboard::BackendChoice::parse(&self.app_config.clipboard.backend)
+                .unwrap_or_default();
+            let limit = usize::try_from(self.app_config.clipboard.osc52_limit.bytes())
+                .unwrap_or(usize::MAX);
+            self.clipboard = Some(clipboard::destination(choice, limit)?);
+        }
+        Ok(self
+            .clipboard
+            .as_deref_mut()
+            .expect("destination just built"))
+    }
+
+    /// Copy `text`, refused when it is over a capped destination's limit.
+    pub(crate) fn copy_string(&mut self, text: String, message: String) {
+        let limit = match self.copy_destination() {
+            Ok(destination) => destination.accepts().base64_limit,
+            Err(e) => {
+                self.error_modal.show(e);
+                return;
+            }
+        };
+        if let Some(limit) = limit
+            && text.len() > limit / 4 * 3
+        {
+            self.error_modal
+                .show(clipboard::over_osc52_limit(None, limit));
+            return;
+        }
+        self.finish_copy(clipboard::Payload::text(text), message);
+    }
+
+    /// Copy the one value of `column`, exact, and flash `message`.
+    pub(crate) fn copy_value(&mut self, column: polars::prelude::Column, message: String) {
+        // Destination first, as the copy dialog's: a value over the terminal's cap
+        // is refused before it is formatted, here or on a worker.
+        let limit = match self.copy_destination() {
+            Ok(destination) => destination.accepts().base64_limit,
+            Err(e) => {
+                self.error_modal.show(e);
+                return;
+            }
+        };
+        if let Some(limit) = limit {
+            let fits = limit / 4 * 3;
+            let over = column
+                .get(0)
+                .is_ok_and(|value| crate::exact::copy_len_floor(&value, fits) > fits);
+            if over {
+                self.error_modal
+                    .show(clipboard::over_osc52_limit(None, limit));
+                return;
+            }
+        }
+        if column.as_materialized_series().estimated_size() <= Self::FIELD_COPY_INLINE_BYTES {
+            match crate::exact::copy_text(&column) {
+                Ok(text) => self.finish_copy(clipboard::Payload::text(text), message),
+                Err(e) => self.error_modal.show(format!("Copy failed: {e}")),
+            }
+            return;
+        }
+        self.spawn_job(Job::Copy, Some("Copying..."), move |_| {
+            let text = crate::exact::copy_text(&column).map_err(|e| format!("Copy failed: {e}"))?;
+            Ok(Answer::Copied {
+                payload: clipboard::Payload::text(text),
+                message,
+            })
+        });
+    }
+
+    /// Replace the clipboard destination, so tests can watch what a copy sends
+    /// without a display server or a terminal in the loop.
+    pub fn set_clipboard_destination(&mut self, destination: Box<dyn clipboard::Destination>) {
+        self.clipboard = Some(destination);
     }
 }

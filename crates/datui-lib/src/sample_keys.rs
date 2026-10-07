@@ -6,8 +6,10 @@ use crate::jobs::Job;
 use crate::sample_modal::SampleForm;
 use crate::table::DataTableState;
 use crate::table_sample::{Limit, MemoryCheck};
-use crate::{App, AppEvent, InputMode, form, sampling};
-use crate::{analysis_modal, data_quality, sample_keys, sample_modal};
+use crate::{
+    App, AppEvent, InputMode, analysis_modal, data_quality, form, sample_keys, sample_modal,
+    sampling,
+};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use polars::datatypes::DataType;
 use std::sync::Arc;

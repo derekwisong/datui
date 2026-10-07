@@ -22,7 +22,7 @@ use color_eyre::eyre::eyre;
 use crate::error_display::FileError;
 use polars::prelude::*;
 
-use crate::columns::{Builder, Cell, Kind};
+use crate::columns::{Cell, Kind};
 use crate::dbc::{Dbc, Message, Mux, Signal};
 use crate::fixed_records::{Bytes, ColumnLayout, Logical, Physical};
 use crate::indexed::Offsets;
@@ -353,36 +353,191 @@ fn ts_cell(absolute: bool, ts: Option<i64>) -> Cell {
     }
 }
 
-/// The rows a decode last asked for, and the frame read for them. Polars decodes a
-/// window a column at a time; with this, every column of a window comes from one parse
-/// of each of its lines.
-#[derive(Default)]
-struct LastRows(Mutex<Option<(Vec<usize>, DataFrame)>>);
+/// A window's frames, each line parsed once, holding nothing of the file: the columns
+/// are built from it one at a time, as Polars asks for them.
+#[derive(Debug, Default)]
+struct Lines {
+    frames: Vec<Option<Parsed>>,
+    /// The interfaces the window names; a frame holds its place here.
+    ifaces: Vec<String>,
+    /// Every frame's data end to end; a frame holds its range.
+    data: Vec<u8>,
+}
 
-impl LastRows {
-    /// Column `column` of the rows `index` names, of `height`, from the frame `read`
-    /// makes of them or the one it made last for the same rows.
-    fn column(
-        &self,
-        column: usize,
-        index: &IdxCa,
-        height: usize,
-        read: impl FnOnce(&[usize]) -> PolarsResult<DataFrame>,
-    ) -> PolarsResult<Column> {
-        let rows: Vec<usize> = crate::row_index::checked(index, height)?
+/// One parsed frame of a [`Lines`].
+#[derive(Debug)]
+struct Parsed {
+    ts: Option<i64>,
+    iface: u32,
+    id: u32,
+    extended: bool,
+    fd: bool,
+    flags: Option<u8>,
+    remote: bool,
+    error: bool,
+    dlc: u8,
+    data: std::ops::Range<usize>,
+}
+
+impl Lines {
+    /// The frames whose lines start at `starts` in `bytes`.
+    fn parse(bytes: &[u8], starts: impl ExactSizeIterator<Item = usize>) -> Self {
+        let mut lines = Lines {
+            frames: Vec::with_capacity(starts.len()),
+            ..Default::default()
+        };
+        for at in starts {
+            let parsed = parse_line(line_of(bytes, at)).map(|f| {
+                let iface = match lines.ifaces.iter().position(|i| i == f.iface) {
+                    Some(i) => i,
+                    None => {
+                        lines.ifaces.push(f.iface.to_string());
+                        lines.ifaces.len() - 1
+                    }
+                } as u32;
+                let start = lines.data.len();
+                lines.data.extend_from_slice(&f.data);
+                Parsed {
+                    ts: f.ts,
+                    iface,
+                    id: f.id,
+                    extended: f.extended,
+                    fd: f.fd,
+                    flags: f.flags,
+                    remote: f.remote,
+                    error: f.error,
+                    dlc: f.dlc,
+                    data: start..lines.data.len(),
+                }
+            });
+            lines.frames.push(parsed);
+        }
+        lines
+    }
+
+    fn data(&self, frame: &Parsed) -> &[u8] {
+        &self.data[frame.data.clone()]
+    }
+}
+
+/// Which rows a decode asked for: a run exactly, any other set by a hash of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowKey {
+    Run {
+        first: IdxSize,
+        len: usize,
+    },
+    Rows {
+        first: IdxSize,
+        len: usize,
+        hash: u64,
+    },
+}
+
+impl WindowKey {
+    fn of(rows: &[IdxSize]) -> Self {
+        let first = rows.first().copied().unwrap_or(0);
+        let run = rows
             .iter()
-            .map(|&r| r as usize)
-            .collect();
-        let mut last = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let df = match last.as_ref() {
-            Some((seen, df)) if *seen == rows => df.clone(),
-            _ => {
-                let df = read(&rows)?;
-                *last = Some((rows, df.clone()));
-                df
+            .enumerate()
+            .all(|(i, &r)| r as usize == first as usize + i);
+        if run {
+            return Self::Run {
+                first,
+                len: rows.len(),
+            };
+        }
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        rows.hash(&mut hasher);
+        Self::Rows {
+            first,
+            len: rows.len(),
+            hash: hasher.finish(),
+        }
+    }
+}
+
+/// Rows of windows kept at once: a window this long or a few streaming morsels.
+const KEPT_ROWS: usize = 1 << 20;
+
+/// The windows decoded lately, parsed, so that the columns Polars decodes one at a
+/// time share one parse of each line. The lock covers only the lookup: a parse runs
+/// outside it, so windows decode in parallel, and a caller wanting a window being
+/// parsed waits for that window alone. A window leaves once every column has taken
+/// it, or when newer windows pass the slots or [`KEPT_ROWS`].
+struct Windows<T> {
+    /// Columns a window serves before it leaves.
+    width: usize,
+    slots: usize,
+    kept: Mutex<std::collections::VecDeque<Slot<T>>>,
+    #[cfg(test)]
+    parses: std::sync::atomic::AtomicUsize,
+}
+
+struct Slot<T> {
+    key: WindowKey,
+    rows: usize,
+    taken: usize,
+    parsed: Arc<std::sync::OnceLock<T>>,
+}
+
+impl<T> Windows<T> {
+    fn new(width: usize) -> Self {
+        let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+        Self {
+            width,
+            slots: (2 * threads).max(4),
+            kept: Default::default(),
+            #[cfg(test)]
+            parses: Default::default(),
+        }
+    }
+
+    /// `then` of the window of `rows`, parsed by `parse` unless a column parsed it.
+    fn with<R>(
+        &self,
+        rows: &[IdxSize],
+        parse: impl FnOnce(&[IdxSize]) -> T,
+        then: impl FnOnce(&T) -> R,
+    ) -> R {
+        let key = WindowKey::of(rows);
+        let parsed = {
+            let mut kept = self.kept.lock().unwrap_or_else(|e| e.into_inner());
+            match kept.iter().position(|s| s.key == key) {
+                Some(at) => {
+                    let slot = &mut kept[at];
+                    slot.taken += 1;
+                    let parsed = slot.parsed.clone();
+                    if slot.taken >= self.width {
+                        kept.remove(at);
+                    }
+                    parsed
+                }
+                None => {
+                    let parsed = Arc::new(std::sync::OnceLock::new());
+                    if self.width > 1 {
+                        kept.push_back(Slot {
+                            key,
+                            rows: rows.len(),
+                            taken: 1,
+                            parsed: parsed.clone(),
+                        });
+                        let mut total: usize = kept.iter().map(|s| s.rows).sum();
+                        while kept.len() > 1 && (kept.len() > self.slots || total > KEPT_ROWS) {
+                            total -= kept.pop_front().map_or(0, |s| s.rows);
+                        }
+                    }
+                    parsed
+                }
             }
         };
-        Ok(df.columns()[column].clone())
+        then(parsed.get_or_init(|| {
+            #[cfg(test)]
+            self.parses
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            parse(rows)
+        }))
     }
 }
 
@@ -407,7 +562,7 @@ pub struct RawFrames {
     offsets: Arc<Offsets>,
     absolute: bool,
     schema: SchemaRef,
-    last: LastRows,
+    windows: Windows<Lines>,
 }
 
 impl RawFrames {
@@ -420,8 +575,8 @@ impl RawFrames {
             bytes,
             offsets: index.offsets.clone(),
             absolute: index.absolute,
+            windows: Windows::new(schema.len()),
             schema: Arc::new(schema),
-            last: LastRows::default(),
         }
     }
 
@@ -429,47 +584,53 @@ impl RawFrames {
         self.offsets.len().min(crate::row_index::MAX_ROWS)
     }
 
-    /// The frames of `rows`, each line parsed once.
-    fn read(&self, rows: &[usize]) -> PolarsResult<DataFrame> {
-        self.bytes.still_whole()?;
-        let bytes = self.bytes.as_slice();
-        let mut out = Builder::new(&raw_columns(self.absolute));
-        for &r in rows {
-            let Some(f) = parse_line(line_of(bytes, self.offsets.get(r))) else {
-                out.push([]);
-                continue;
-            };
-            let id = if f.extended {
-                format!("{:08X}", f.id)
-            } else {
-                format!("{:03X}", f.id)
-            };
-            let kind = if f.error {
-                "error"
-            } else if f.remote {
-                "remote"
-            } else {
-                "data"
-            };
-            out.push([
-                ts_cell(self.absolute, f.ts),
-                Cell::Str(Some(f.iface.to_string())),
-                Cell::Str(Some(id)),
-                Cell::Bool(Some(f.extended)),
-                Cell::U8(Some(f.dlc)),
-                Cell::Binary(Some(f.data)),
-                Cell::Bool(Some(f.fd)),
-                Cell::U8(f.flags),
-                Cell::Label(Some(kind)),
-            ]);
-        }
-        out.take()
+    fn lines(&self, rows: impl ExactSizeIterator<Item = usize>) -> Lines {
+        Lines::parse(self.bytes.as_slice(), rows.map(|r| self.offsets.get(r)))
+    }
+
+    /// Column `column` of the frames `lines` holds.
+    fn column(&self, column: usize, lines: &Lines) -> PolarsResult<Column> {
+        let (name, kind) = raw_columns(self.absolute)[column];
+        let cells = lines.frames.iter().map(|f| {
+            let f = f.as_ref();
+            match column {
+                0 => ts_cell(self.absolute, f.and_then(|f| f.ts)),
+                1 => Cell::Str(f.map(|f| lines.ifaces[f.iface as usize].clone())),
+                2 => Cell::Str(f.map(|f| {
+                    if f.extended {
+                        format!("{:08X}", f.id)
+                    } else {
+                        format!("{:03X}", f.id)
+                    }
+                })),
+                3 => Cell::Bool(f.map(|f| f.extended)),
+                4 => Cell::U8(f.map(|f| f.dlc)),
+                5 => Cell::Binary(f.map(|f| lines.data(f).to_vec())),
+                6 => Cell::Bool(f.map(|f| f.fd)),
+                7 => Cell::U8(f.and_then(|f| f.flags)),
+                _ => Cell::Label(f.map(|f| {
+                    if f.error {
+                        "error"
+                    } else if f.remote {
+                        "remote"
+                    } else {
+                        "data"
+                    }
+                })),
+            }
+        });
+        Ok(crate::columns::series(name, kind, cells)?.into_column())
     }
 
     pub fn collect_window(&self, start: usize, len: usize) -> PolarsResult<DataFrame> {
+        self.bytes.still_whole()?;
         let start = start.min(self.rows());
         let len = len.min(self.rows() - start);
-        self.read(&(start..start + len).collect::<Vec<_>>())
+        let lines = self.lines(start..start + len);
+        let columns = (0..self.schema.len())
+            .map(|c| self.column(c, &lines))
+            .collect::<PolarsResult<_>>()?;
+        DataFrame::new(len, columns)
     }
 }
 
@@ -483,8 +644,13 @@ impl crate::row_index::RowSource for RawFrames {
     }
 
     fn decode(&self, column: usize, index: &IdxCa) -> PolarsResult<Column> {
-        self.last
-            .column(column, index, self.rows(), |rows| self.read(rows))
+        let rows = crate::row_index::checked(index, self.rows())?;
+        self.bytes.still_whole()?;
+        self.windows.with(
+            &rows,
+            |rows| self.lines(rows.iter().map(|&r| r as usize)),
+            |lines| self.column(column, lines),
+        )
     }
 }
 
@@ -501,11 +667,13 @@ pub struct Decoded {
     /// The raw rows of this message's frames.
     rows: Arc<Vec<u32>>,
     message: Arc<Message>,
+    /// The message's multiplexer signal, if it has one.
+    multiplexer: Option<usize>,
     absolute: bool,
     /// Value names as text, or every value as a number (for the long table).
     named: bool,
     schema: SchemaRef,
-    last: LastRows,
+    windows: Windows<Lines>,
 }
 
 /// How a signal's values are typed: an integer when factor and offset keep it one, a
@@ -559,11 +727,15 @@ impl Decoded {
             bytes,
             offsets: index.offsets.clone(),
             rows,
+            multiplexer: message
+                .signals
+                .iter()
+                .position(|s| s.mux == Mux::Multiplexer),
             message,
             absolute: index.absolute,
             named,
+            windows: Windows::new(schema.len()),
             schema: Arc::new(schema),
-            last: LastRows::default(),
         })
     }
 
@@ -571,63 +743,58 @@ impl Decoded {
         self.rows.len().min(crate::row_index::MAX_ROWS)
     }
 
-    /// The frames of `rows` decoded, each line parsed once.
-    fn read(&self, rows: &[usize]) -> PolarsResult<DataFrame> {
-        self.bytes.still_whole()?;
-        let bytes = self.bytes.as_slice();
-        let frames: Vec<Option<Frame<'_>>> = rows
-            .iter()
-            .map(|&r| parse_line(line_of(bytes, self.offsets.get(self.rows[r] as usize))))
-            .collect();
-        let names = self.schema.iter_names().cloned();
-        let mut columns = Vec::with_capacity(self.schema.len());
-        let ts = frames
-            .iter()
-            .map(|f| ts_cell(self.absolute, f.as_ref().and_then(|f| f.ts)));
-        columns.push(crate::columns::series("ts", ts_kind(self.absolute), ts)?);
-        let multiplexer = self
-            .message
-            .signals
-            .iter()
-            .find(|s| s.mux == Mux::Multiplexer);
-        for signal in &self.message.signals {
-            let present = |f: &Frame<'_>| {
-                let mux = multiplexer.and_then(|m| crate::dbc::raw(m, &f.data));
-                crate::dbc::present(signal, mux)
-            };
-            let series = if signal.float != 0 {
-                frames
-                    .iter()
-                    .map(|f| {
-                        let f = f.as_ref()?;
-                        present(f).then(|| crate::dbc::physical(signal, &f.data))?
-                    })
-                    .collect::<Float64Chunked>()
-                    .into_series()
-            } else {
-                let ints: Vec<Option<i128>> = frames
-                    .iter()
-                    .map(|f| {
-                        let f = f.as_ref()?;
-                        present(f).then(|| crate::dbc::integer(signal, &f.data))?
-                    })
-                    .collect();
-                crate::fixed_records::integers(&signal_layout(signal, self.named), ints)?
-            };
-            columns.push(series);
-        }
-        let columns = columns
-            .into_iter()
-            .zip(names)
-            .map(|(s, name)| s.with_name(name).into_column())
-            .collect();
-        DataFrame::new(rows.len(), columns)
+    fn lines(&self, rows: impl ExactSizeIterator<Item = usize>) -> Lines {
+        Lines::parse(
+            self.bytes.as_slice(),
+            rows.map(|r| self.offsets.get(self.rows[r] as usize)),
+        )
+    }
+
+    /// Column `column` of the frames `lines` holds: `ts`, then a signal's values.
+    fn column(&self, column: usize, lines: &Lines) -> PolarsResult<Column> {
+        let name = self.schema.get_at_index(column).map(|(n, _)| n.clone());
+        let name = name.unwrap_or_default();
+        let Some(signal) = column.checked_sub(1).map(|s| &self.message.signals[s]) else {
+            let ts = lines
+                .frames
+                .iter()
+                .map(|f| ts_cell(self.absolute, f.as_ref().and_then(|f| f.ts)));
+            let ts = crate::columns::series(&name, ts_kind(self.absolute), ts)?;
+            return Ok(ts.into_column());
+        };
+        let multiplexer = self.multiplexer.map(|m| &self.message.signals[m]);
+        let data = |f: &Option<Parsed>| {
+            let data = lines.data(f.as_ref()?);
+            let mux = multiplexer.and_then(|m| crate::dbc::raw(m, data));
+            crate::dbc::present(signal, mux).then_some(data)
+        };
+        let series = if signal.float != 0 {
+            lines
+                .frames
+                .iter()
+                .map(|f| crate::dbc::physical(signal, data(f)?))
+                .collect::<Float64Chunked>()
+                .into_series()
+        } else {
+            let ints: Vec<Option<i128>> = lines
+                .frames
+                .iter()
+                .map(|f| crate::dbc::integer(signal, data(f)?))
+                .collect();
+            crate::fixed_records::integers(&signal_layout(signal, self.named), ints)?
+        };
+        Ok(series.with_name(name).into_column())
     }
 
     pub fn collect_window(&self, start: usize, len: usize) -> PolarsResult<DataFrame> {
+        self.bytes.still_whole()?;
         let start = start.min(self.height());
         let len = len.min(self.height() - start);
-        self.read(&(start..start + len).collect::<Vec<_>>())
+        let lines = self.lines(start..start + len);
+        let columns = (0..self.schema.len())
+            .map(|c| self.column(c, &lines))
+            .collect::<PolarsResult<_>>()?;
+        DataFrame::new(len, columns)
     }
 }
 
@@ -641,8 +808,13 @@ impl crate::row_index::RowSource for Decoded {
     }
 
     fn decode(&self, column: usize, index: &IdxCa) -> PolarsResult<Column> {
-        self.last
-            .column(column, index, self.height(), |rows| self.read(rows))
+        let rows = crate::row_index::checked(index, self.height())?;
+        self.bytes.still_whole()?;
+        self.windows.with(
+            &rows,
+            |rows| self.lines(rows.iter().map(|&r| r as usize)),
+            |lines| self.column(column, lines),
+        )
     }
 }
 
@@ -994,25 +1166,73 @@ fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
 pub(crate) mod tests {
     use super::*;
 
-    /// Every column of one window comes from one read of its rows; other rows read again.
+    /// Every column of one window comes from one parse of its rows; other rows parse
+    /// again, and a window every column has taken is let go.
     #[test]
-    fn a_window_is_read_once_for_all_its_columns() {
-        let last = LastRows::default();
-        let reads = std::cell::Cell::new(0);
-        let read = |rows: &[usize]| {
-            reads.set(reads.get() + 1);
-            let a: Vec<u32> = rows.iter().map(|&r| r as u32).collect();
-            df!("a" => a.clone(), "b" => a)
-        };
-        let rows = IdxCa::from_vec("".into(), vec![1, 2]);
-        let a = last.column(0, &rows, 4, read).unwrap();
-        let b = last.column(1, &rows, 4, read).unwrap();
-        assert_eq!(reads.get(), 1);
-        assert_eq!(a.name().as_str(), "a");
-        assert_eq!(b.u32().unwrap().get(1), Some(2));
-        last.column(0, &IdxCa::from_vec("".into(), vec![3]), 4, read)
-            .unwrap();
-        assert_eq!(reads.get(), 2);
+    fn a_window_is_parsed_once_for_all_its_columns() {
+        let windows = Windows::new(2);
+        let parse = |rows: &[IdxSize]| rows.to_vec();
+        let parses = || windows.parses.load(std::sync::atomic::Ordering::Relaxed);
+        let first = windows.with(&[1, 2], parse, |rows| rows.clone());
+        let second = windows.with(&[1, 2], parse, |rows| rows.clone());
+        assert_eq!((first, second, parses()), (vec![1, 2], vec![1, 2], 1));
+        assert!(windows.kept.lock().unwrap().is_empty());
+        windows.with(&[1, 3], parse, |_| ());
+        windows.with(&[3], parse, |_| ());
+        windows.with(&[1, 3], parse, |_| ());
+        assert_eq!(parses(), 3);
+    }
+
+    /// One window's parse does not hold up another's.
+    #[test]
+    fn windows_parse_in_parallel() {
+        let windows = &Windows::new(9);
+        let (parsed_b, b_done) = std::sync::mpsc::channel();
+        std::thread::scope(|s| {
+            s.spawn(move || {
+                windows.with(
+                    &[0, 1],
+                    |_| {
+                        b_done
+                            .recv_timeout(std::time::Duration::from_secs(10))
+                            .expect("the second window waited on the first");
+                    },
+                    |_| (),
+                );
+            });
+            s.spawn(move || {
+                // Let the first parse begin, then parse another window while it runs.
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                windows.with(&[5, 6], |_| (), |_| ());
+                parsed_b.send(()).unwrap();
+            });
+        });
+    }
+
+    /// The raw table and a message table build each column of a window from one
+    /// parse of its lines.
+    #[test]
+    fn a_decoded_window_parses_each_line_once() {
+        use crate::row_index::RowSource;
+        let log = b"(1.000001) can0 123#0102\n(1.000002) can1 1FFFFFFF#R\nnot a frame\n(1.000003) can0 456#03\n";
+        let index = index(log).unwrap();
+        let raw = RawFrames::new(Arc::new(Bytes::Owned(log.to_vec())), &index);
+        let rows = IdxCa::from_vec("".into(), vec![0, 2]);
+        let columns: Vec<Column> = (0..9).map(|c| raw.decode(c, &rows).unwrap()).collect();
+        assert_eq!(
+            raw.windows
+                .parses
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        let df = DataFrame::new(2, columns).unwrap();
+        let window = raw.collect_window(0, 3).unwrap();
+        let picked = window.take(&rows).unwrap();
+        assert!(df.equals_missing(&picked), "{df}\n{picked}");
+        assert_eq!(
+            df.column("iface").unwrap().str().unwrap().get(1),
+            Some("can0")
+        );
     }
 
     /// A log of no frames names itself; a table that wants a DBC file says the flag

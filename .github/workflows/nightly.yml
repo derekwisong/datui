@@ -717,3 +717,34 @@ jobs:
         run: |
           .venv/bin/python scripts/docs/doc_examples.py --fetch-datasets "$RUNNER_TEMP/doc-data"
           DATUI_DOC_DATA="$RUNNER_TEMP/doc-data" cargo test -p datui-lib --lib --locked doc_queries -- --ignored
+
+  # A scheduled failure opens an issue, or comments on the open one, so a red
+  # Nightly is noticed instead of becoming background. Runs by hand report in the
+  # run itself.
+  report:
+    needs: [linux, startup-guard, windows, windows-tests, macos, macos-tests, fuzz, features, docs-network]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          title="Nightly failed"
+          failed=$(jq -r 'to_entries[] | select(.value.result == "failure") | .key' <<<"$NEEDS" | paste -sd, - | sed 's/,/, /g')
+          existing=$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "Failed again ($failed): $RUN_URL"
+          else
+            gh issue create --title "$title" --body "The scheduled Nightly run failed in: $failed.
+
+          $RUN_URL
+
+          Close this issue once Nightly passes again; the next failure opens a new one."
+          fi

@@ -10,10 +10,9 @@ use crossterm::event::{KeyCode, KeyEvent};
 /// What the Info panel shows of the dataset beyond its schema: file facts, codebook, catalog
 /// entry and documentation.
 pub struct InfoState {
-    /// What the Info panel's read found about the open file, and the
-    /// `dataset_generation` it belongs to. Asked for when the panel opens, read on a
-    /// worker ([`Job::FileFacts`], whose record says it is reading), and kept for the
-    /// dataset however the read ended, so neither drawing nor reopening reads again.
+    /// What Info's read found about the open file, with its `dataset_generation`.
+    /// Read on a worker ([`Job::FileFacts`]) when the panel opens and kept however it
+    /// ended, so drawing or reopening never reads again.
     pub(crate) file_facts: Option<(u64, FileFacts)>,
     /// What the dataset's columns mean, when a catalog that lists it says.
     pub codebook: Option<std::sync::Arc<crate::codebook::Codebook>>,
@@ -24,8 +23,8 @@ pub struct InfoState {
     pub documentation: crate::widgets::documentation::DocState,
     /// The same page for the open dataset, on Info's Documentation tab.
     pub info_documentation: crate::widgets::documentation::DocState,
-    /// Send a HEAD for the HTTP(S) file under the cursor on home, to show its size.
-    /// Off under `cargo test`, which never reaches the network unless a test asks.
+    /// HEAD an HTTP(S) file under the cursor on home to show its size. Off under
+    /// `cargo test` unless a test asks.
     pub head_web_rows: bool,
 }
 
@@ -41,8 +40,8 @@ impl App {
             self.info_modal.active_tab,
             InfoTab::Metadata | InfoTab::Format
         );
-        // Excel's and SQLite's tabs list the file's tables, with a cursor: Enter opens
-        // the one under it. How many are listed.
+        // Excel's and SQLite's tabs list the file's tables with a cursor (Enter opens one):
+        // how many.
         let tables: Option<usize> = detail_tab
             .then(|| self.data_table_state.as_ref()?.format_detail())
             .flatten()
@@ -60,9 +59,9 @@ impl App {
             .unwrap_or(0);
         let visible = self.info_modal.schema_visible_height;
 
-        // Each tab's list moves its own cursor: the schema's and the notes' a row at a
-        // time, the documentation's and the file's tables' by rows and pages too, a
-        // detail list scrolled (the render keeps it in range).
+        // Each tab's list moves its own cursor: schema and notes a row at a time,
+        // documentation and tables by rows and pages, a detail list scrolled (the render
+        // clamps).
         if let Some(step) = ListMove::from_key(event) {
             let one = matches!(step, ListMove::Up | ListMove::Down);
             let modal = &mut self.info_modal;
@@ -105,17 +104,16 @@ impl App {
                     self.open_hex(path, crate::hex_view::Origin::Info, false, None);
                 }
             }
-            // Delimited text: read the first row as data, or as names again. The read
-            // takes the screen, so the panel closes for it.
+            // Delimited text: read the first row as data, or as names again; the panel closes
+            // for the read.
             KeyCode::Char('H') if event.is_press() && schema_tab => {
                 if self.header_toggle_offered() {
                     self.close_overlay();
                     return self.toggle_header();
                 }
             }
-            // The tabs switch from anywhere in the panel, which is a viewer, not a
-            // form: its body always has the keys, so Tab and the arrows across have
-            // no field to move between and step the tabs instead.
+            // Tabs switch from anywhere: the panel is a viewer, not a form, so Tab and ←→ step
+            // tabs.
             KeyCode::Left | KeyCode::Char('h') | KeyCode::BackTab if event.is_press() => {
                 let offered = self.info_tabs_on_offer();
                 self.info_modal.switch_tab_prev(offered);
@@ -159,8 +157,8 @@ impl App {
         None
     }
 
-    /// Enter on the Excel or SQLite tab: the worksheet or table under the cursor
-    /// opened in place of this one, as `T` opens it.
+    /// Enter on the Excel or SQLite tab: open the worksheet or table under the cursor
+    /// in place of this one, as `T` does.
     fn open_table_from_info(&mut self) -> Option<AppEvent> {
         let detail = self.data_table_state.as_ref()?.format_detail()?;
         let (name, _) = detail.list.get(self.info_modal.detail_selected)?;
@@ -177,12 +175,9 @@ impl App {
         self.switch_table(Some(name))
     }
 
-    /// Take the offer on the note the cursor is on: read its column as text.
-    ///
-    /// Only a note that carries the offer has one, and the offer is taken off a note
-    /// datui could not act on, so the `Ok(false)` arms here are for a note that has
-    /// gone stale under the cursor rather than for anything to tell the user about. A
-    /// failure is the scan's, and is shown the way any other failed read is.
+    /// Take the offer on the selected note: read its column as text. `Ok(false)` means
+    /// the note went stale under the cursor; a failure is the scan's, shown as any
+    /// failed read.
     fn read_the_selected_note_s_column_as_text(&mut self) {
         let Some(state) = self.data_table_state.as_mut() else {
             return;
@@ -196,10 +191,8 @@ impl App {
         };
         // Rebuilt here, read off the UI thread. A failure is left showing on the state.
         if let Ok(true) = state.deferred(|s| s.read_column_as_text(&column)) {
-            // The note that offered this is gone and the list is shorter, so the
-            // cursor would otherwise sit past the end. Kept as near to where the
-            // user left it as the shorter list allows, rather than thrown to the
-            // top: one or two notes went, not all of them.
+            // The note is gone and the list shorter: keep the cursor as near as the list
+            // allows rather than jumping to the top.
             let notes = state.notes().len();
             self.info_modal.notes_selected_index = self
                 .info_modal
@@ -231,16 +224,15 @@ impl App {
             .or_else(|| self.path.as_deref().and_then(FileFormat::from_path))
     }
 
-    /// The format's tab of the Info panel that the file facts fill: for one local file,
-    /// not a hive directory, whose reader has a facts read. See
-    /// [`crate::widgets::info::InfoContext::facts_tab`].
+    /// The Info tab the file facts fill: one local file (not a hive directory) whose
+    /// reader has a facts read. See [`crate::widgets::info::InfoContext::facts_tab`].
     pub(crate) fn info_facts_tab(&self) -> Option<&'static str> {
         self.info_facts()
             .and_then(|(format, _)| format.summary_tab())
     }
 
-    /// The format whose facts read the Info panel's worker makes for the dataset on
-    /// screen, and that read, once the panel has asked for the file's facts.
+    /// The format and facts read the Info worker made for the dataset on screen, once
+    /// asked.
     pub(crate) fn info_facts(&self) -> Option<(FileFormat, crate::readers::Facts)> {
         match self.file_facts()? {
             // A directory, which has no footer of its own.

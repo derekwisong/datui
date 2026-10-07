@@ -8,15 +8,14 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 impl App {
     /// Keys while the analysis modal is open.
     pub(crate) fn analysis_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
-        // A run in flight, whichever tool: Esc stops waiting for it. It acts at once
-        // (see `hard_escape_while_busy`) rather than queueing behind the run it is
-        // meant to cancel.
+        // Esc stops waiting for a run in flight, acting at once (see
+        // `hard_escape_while_busy`) rather than queueing behind it.
         if event.code == KeyCode::Esc && self.analysis_modal.computing.is_some() {
             self.cancel_analysis();
             return None;
         }
-        // The Sample form owns the keys while it has the cursor: always when it
-        // floats over a result, and in a tool's empty pane once Tab moves in.
+        // The Sample form owns the keys while it has the cursor: floating over a result,
+        // or in an empty pane once Tab moves in.
         if self
             .analysis_modal
             .sample_form
@@ -38,8 +37,7 @@ impl App {
             }
             return None;
         }
-        // The rows of the sample in use: on a report, not over a draft that may
-        // name other rows.
+        // The sample in use's rows: on a report, not over a draft naming other rows.
         if event.code == KeyCode::Char('v')
             && self.analysis_modal.sample_key_opens_form()
             && !(quality && self.analysis_modal.quality.page.is_setup())
@@ -64,8 +62,8 @@ impl App {
                     } else if self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main
                         && self.analysis_modal.selected_tool.is_some()
                     {
-                        // One level at a time: the pane hands the cursor back to the
-                        // tools, and Esc there closes.
+                        // One level at a time: the pane hands the cursor back to the tools; Esc there
+                        // closes.
                         self.analysis_modal.focus = analysis_modal::AnalysisFocus::Sidebar;
                         self.sync_sample_form_focus();
                     } else {
@@ -85,9 +83,8 @@ impl App {
                     self.analysis_modal.correlation_method =
                         self.analysis_modal.correlation_method.toggled();
                 }
-                // Another sample, or every row. Both only where the results are a
-                // sample, and only on the main view: inside a detail an undocumented
-                // `r` cleared the results out from under it.
+                // Another sample, or every row: only where results are a sample, and only on the
+                // main view, not inside a detail.
                 KeyCode::Char('r') if self.analysis_results_are_sampled() => {
                     let sample = sampling::Sample {
                         seed: sample_modal::new_seed(),
@@ -95,8 +92,7 @@ impl App {
                     };
                     return self.apply_sample(sample);
                 }
-                // The results keep the rows they were read of; `t` reads the new ones
-                // too, with the same sample.
+                // Results keep their rows; `t` reads the new ones with the same sample.
                 KeyCode::Char('t')
                     if self.follow_rows_waiting()
                         && self.analysis_modal.current_results().is_some() =>
@@ -104,8 +100,8 @@ impl App {
                     self.take_follow_rows(false);
                     return self.apply_sample(self.analysis_modal.sample.clone());
                 }
-                // Refused while a cancelled run is still reading: Polars cannot stop it,
-                // and a second full read beside it is how memory runs out.
+                // Refused while a cancelled run still reads: Polars cannot stop it, and a second
+                // full read beside it can run memory out.
                 KeyCode::Char('a')
                     if self.analysis_results_are_sampled() && self.cancelled_work_running() =>
                 {
@@ -128,8 +124,7 @@ impl App {
                     self.confirmation_modal.yes_label = "Read all";
                 }
                 KeyCode::Tab | KeyCode::BackTab => {
-                    // One rule for the whole screen: Tab moves sidebar <-> result.
-                    // The detail views have a single focusable thing, so it stays.
+                    // Tab moves sidebar <-> result; detail views have one focusable thing.
                     if self.analysis_modal.view == analysis_modal::AnalysisView::Main {
                         self.analysis_modal.switch_focus();
                         self.sync_sample_form_focus();
@@ -139,9 +134,8 @@ impl App {
                     if self.analysis_modal.view == analysis_modal::AnalysisView::Main =>
                 {
                     if self.analysis_modal.focus == analysis_modal::AnalysisFocus::Sidebar {
-                        // Enter again on the tool whose Sample form is showing runs it
-                        // with the form as it stands: two Enters from the list take the
-                        // defaults, and the cursor never leaves it.
+                        // Enter again on the tool showing its Sample form runs it as the form stands: two
+                        // Enters from the list take the defaults.
                         if self.analysis_modal.sample_form.as_ref().is_some_and(|f| f.inline)
                             && self.analysis_modal.highlighted_tool()
                                 == self.analysis_modal.selected_tool
@@ -149,14 +143,12 @@ impl App {
                             self.analysis_modal.focus = analysis_modal::AnalysisFocus::Main;
                             return self.run_sample_form();
                         }
-                        // Enter on a tool always enters its pane: its result, its
-                        // Sample form, or the run it starts.
+                        // Enter on a tool enters its pane: its result, its Sample form, or its run.
                         self.analysis_modal.select_tool();
                         self.analysis_modal.focus = analysis_modal::AnalysisFocus::Main;
                         self.analysis_modal.sample_form = None;
-                        // A tool with a result shows it. One without shows the Sample
-                        // form in its pane, so the first run reads the rows asked for;
-                        // Enter runs it with the defaults as they stand.
+                        // A tool with a result shows it; one without shows the Sample form so the first
+                        // run reads the rows asked for.
                         let has_result = match self.analysis_modal.selected_tool {
                             Some(analysis_modal::AnalysisTool::Describe) => {
                                 self.analysis_modal.describe_results.is_some()
@@ -169,9 +161,7 @@ impl App {
                             }
                             Some(analysis_modal::AnalysisTool::DataQuality) => {
                                 self.restore_recent_quality_plan();
-                                // The plan's rows are the shared sample's, whatever
-                                // the last plan here read.
-                                // A draft staged in Setup stays as it is.
+                                // The plan's rows are the shared sample's; a draft staged in Setup stays.
                                 let draft = self.analysis_modal.quality.setup_before.is_some();
                                 if !draft {
                                     self.sync_quality_plan();
@@ -181,8 +171,7 @@ impl App {
                             }
                             None => true,
                         };
-                        // Data Quality never runs from the list: its Setup is the pane,
-                        // and only its Run reads, whatever another tool already sampled.
+                        // Data Quality never runs from the list: Setup is its pane, and only Run reads.
                         if !has_result
                             && self.analysis_modal.selected_tool
                                 == Some(analysis_modal::AnalysisTool::DataQuality)
@@ -190,17 +179,15 @@ impl App {
                             self.open_quality_setup();
                             return None;
                         }
-                        // Once a sample has been run on this dataset, every tool reads
-                        // it: a tool with no result runs at once, and s changes the
-                        // sample for all of them.
+                        // Once a sample has run on this dataset every tool reads it: a tool without a
+                        // result runs at once, and s changes the sample for all.
                         let sample_run = self.analysis_modal.sample_run_for
                             == Some(self.dataset_generation);
                         if !has_result && sample_run {
                             return self.start_analysis_run();
                         }
-                        // Before the first, the form is what the pane is for: Enter
-                        // runs, the arrows change a setting, Esc hands the cursor back
-                        // to the list.
+                        // Before the first run the form is the pane: Enter runs, arrows change a setting,
+                        // Esc returns to the list.
                         if !has_result {
                             self.open_first_run_form();
                         }

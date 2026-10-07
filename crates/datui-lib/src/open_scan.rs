@@ -30,43 +30,33 @@ use std::sync::{Arc, Mutex};
 pub struct OpenedSource {
     pub(crate) original_file_format: Option<crate::export_modal::ExportFormat>,
     pub(crate) original_file_delimiter: Option<u8>,
-    /// The paths the dataset on screen was opened from, with the options it installed
-    /// with: what `H` opens again with its header turned the other way.
+    /// The paths and options the dataset on screen was opened with: what `H` reopens.
     pub(crate) opened: Option<(Vec<PathBuf>, OpenOptions)>,
-    /// Whether the open dataset was reached through the home screen. `q` pops
-    /// the context: opened from home it returns there, launched straight onto
-    /// a file it quits — the user's mental stack, not a mode.
+    /// Whether the dataset was reached through home: `q` returns there, else quits.
     pub(crate) opened_from_home: bool,
-    /// `--view NAME`, waiting for the dataset from the command line to land.
-    /// Taken on the first install, so datasets opened later are not re-dressed.
+    /// `--view NAME`, taken by the first install so later opens are not re-dressed.
     pub(crate) startup_view: Option<String>,
     /// The dataset whose downloaded shape is kept already. See
     /// [`Self::remember_a_downloads_shape`].
     pub(crate) shape_remembered: Option<u64>,
 }
 
-/// What a cloud open was pointed at: the URL as the user gave it, the prefix to list,
-/// and the glob to keep, where they named one.
-///
-/// Together because they are one thought — where to look — and apart they put this
-/// function's signature past the point where a reader can hold it.
+/// What a cloud open was pointed at: the URL as given, the prefix to list, and the
+/// glob to keep.
 #[cfg(feature = "cloud")]
 struct CloudTarget<'a> {
     /// The URL as typed, which is where the bucket and scheme come from.
     full: &'a str,
     /// The literal prefix to list: the whole key, or the part of a glob before its star.
     key: String,
-    /// The glob the user named, where they named one. The listing keeps only the keys
-    /// it matches, so everything downstream sees a plain list of files.
+    /// The glob the user named, if any. The listing keeps only matching keys, so
+    /// downstream sees plain files.
     pattern: Option<&'a globset::GlobMatcher>,
 }
 
-/// Put hive partition columns first, ahead of the file's own columns. `drifts` keeps
-/// the scan's hidden drift column, which the select would otherwise drop.
-///
-/// A free function rather than a method: rebuilding the scan to read a column as text
-/// has to put the columns back the same way, and it happens on the table's state
-/// rather than on the app.
+/// Put hive partition columns first. `drifts` keeps the scan's hidden drift column,
+/// which the select would drop. Free so the table's state can reuse it when
+/// rebuilding a scan.
 pub(crate) fn hoist_partition_columns(
     lf: LazyFrame,
     schema: &Schema,
@@ -94,15 +84,13 @@ pub(crate) fn hoist_partition_columns(
 }
 
 impl App {
-    /// Whether an open is on its way and its dataset not installed yet: whatever table
-    /// `data_table_state` holds meanwhile belongs to the dataset being replaced, so the
-    /// main view shows the open's progress instead of it.
+    /// Whether an open is on its way and not installed: `data_table_state` still holds
+    /// the outgoing dataset, so the main view shows the open's progress.
     pub(crate) fn awaiting_dataset(&self) -> bool {
         self.loading.awaiting_dataset()
     }
 
-    /// What the loading screen and the footer say about the open in flight: its
-    /// phase, the flat percentage beside it, the path it names and that path's size.
+    /// The open's phase, percentage, path and size, for the loading screen and footer.
     pub(crate) fn load_shown(&self) -> Option<(&str, u16, Option<&Path>, u64)> {
         self.loading.current().map(|load| {
             let (phase, percent) = load.phase().label();
@@ -110,12 +98,8 @@ impl App {
         })
     }
 
-    /// What the load is doing, for whichever part of the screen is saying so.
-    ///
-    /// The footer count stands in for the phase while a pass is running: it says the
-    /// same thing and says how far along it is. Both callers read it from
-    /// [`Self::footers_this_frame`], one number taken once a frame, so they cannot say
-    /// two different things about one wait.
+    /// What the load is doing. While a footer pass runs its count stands in for the
+    /// phase, read once a frame from [`Self::footers_this_frame`] so callers agree.
     pub(crate) fn loading_phase<'a>(&self, phase: &'a str) -> std::borrow::Cow<'a, str> {
         match self.counting.footers_this_frame {
             Some((read, total)) => std::borrow::Cow::Owned(format!(
@@ -134,16 +118,14 @@ impl App {
         }
     }
 
-    /// An open is on its way: the loading screen takes over now, saying `phase`, and keys
-    /// wait for it. Called before the event that carries the open out — by `run` before
-    /// the first frame, and by a key before the `Open` it returns — because a frame is
-    /// drawn between the two and would otherwise show the outgoing dataset.
+    /// An open is on its way: the loading screen shows `phase` and keys wait. Called
+    /// before the event that carries the open out (by `run`, or a key before its
+    /// `Open`), since a frame drawn between would show the outgoing dataset.
     pub fn set_loading_phase(&mut self, phase: impl Into<String>, progress_percent: u16) {
         self.announce_open(false, phase.into(), progress_percent);
     }
 
-    /// As [`Self::set_loading_phase`], for an open chosen on the home screen when
-    /// `from_home`: that is where its failure is reported.
+    /// As [`Self::set_loading_phase`]; `from_home` reports a failure on home.
     pub(crate) fn announce_open(&mut self, from_home: bool, phase: String, percent: u16) {
         self.put_down_load_in_flight();
         self.loading.announce(from_home, phase, percent);
@@ -154,36 +136,29 @@ impl App {
         self.loading.name(path);
     }
 
-    /// Put down the load in flight, unless it has not started any work (the look or the
-    /// frame that leads to this open): what an open still choosing its path needs, and
-    /// the first step of [`Self::begin_new_dataset`].
+    /// Put down the load in flight unless it has started no work (the look or frame
+    /// leading to this open).
     pub(crate) fn put_down_load_in_flight(&mut self) {
         if let Some(retired) = self.loading.make_way() {
             self.put_down_load(retired);
         }
     }
 
-    /// The entry point of an open that has its request: the load in flight goes, and
-    /// so does what the dataset on screen was still reading for itself.
+    /// Start an open with its request: the load in flight goes, and so does the
+    /// screen's dataset's own reading.
     pub(crate) fn begin_new_dataset(&mut self) {
         self.put_down_load_in_flight();
-        // A preview's dataset this open did not take is a page nobody is opening.
+        // A preview's dataset this open did not take is unwanted.
         self.home_app.previews.drop_prepared();
         self.reset_chart_state();
         self.jobs.advance();
-        // The dataset's footer pass is no longer wanted, and unread, unpaid-for is better
-        // than read and dropped. The open counts its own footers on a counter of its
-        // own, which the dataset takes over if it installs.
-        //
-        // The meter needs no equivalent: it belongs to the dataset rather than to the
-        // app, so a load that never reaches the screen never has one installed. See
-        // `DataTableState::measurements`.
+        // Stop the dataset's footer pass: unread beats read and dropped. The open counts
+        // footers on its own counter, which the dataset takes over on install.
         self.counting.footer_progress.cancel();
     }
 
-    /// Put down what the app keeps for a load the loader has retired: its jobs, whose
-    /// answers are for a screen nobody is on, their lines on the footer, and the
-    /// question about its download.
+    /// Put down what the app keeps for a retired load: its jobs, their footer lines,
+    /// and the question about its download.
     pub(crate) fn put_down_load(&mut self, retired: loading::Retired) {
         let id = retired.id;
         let lines = self.jobs.quiet(|job| job.load() == Some(id));
@@ -220,8 +195,7 @@ impl App {
                 None
             }
             Step::Install(loaded) => {
-                // The view an open applies reads its own first rows, so the dataset's are
-                // not read.
+                // A view the open applies reads its own first rows.
                 if self.install_dataset(*loaded) {
                     return None;
                 }
@@ -240,9 +214,8 @@ impl App {
             }
             #[cfg(any(feature = "http", feature = "cloud"))]
             Step::Ask(pending) => {
-                // Nothing runs while the question is up: datui waits on a key, and a
-                // spinner would read as progress. The loader holds the generation
-                // meanwhile.
+                // Nothing runs while the question is up (a spinner would read as progress); the
+                // loader holds the generation.
                 self.confirmation_modal.show(
                     Self::download_confirmation_message(&pending, self.loading.download_note()),
                     Confirm::Download,
@@ -266,9 +239,9 @@ impl App {
         }
     }
 
-    /// Keep the shape of a downloaded dataset under the URL it was opened from, once its
-    /// rows are counted: nothing lists a web file, so this is the only way its recent,
-    /// and its catalog row, can say `344 × 9` (#547 D12). Once per dataset.
+    /// Keep a downloaded dataset's shape under its URL once counted: nothing lists a
+    /// web file, so this is how its recent and catalog row show `344 × 9`. Once per
+    /// dataset.
     pub(crate) fn remember_a_downloads_shape(&mut self) {
         if self.source.shape_remembered == Some(self.dataset_generation) {
             return;
@@ -309,12 +282,9 @@ impl App {
             .spawn(move || cache.record_dataset_facts(&[(url, facts)]));
     }
 
-    /// Install the dataset an open read, and apply the view it opens with, if any.
-    /// Returns whether that view is reading the first rows, which the caller then leaves
-    /// to it.
-    ///
-    /// Only the loader hands one over, and only for the open in flight: an abandoned or
-    /// replaced open's answer never gets this far.
+    /// Install the dataset an open read and apply its view, if any. Returns whether
+    /// that view reads the first rows. Only the loader calls this, for the open in
+    /// flight.
     pub(crate) fn install_dataset(&mut self, loaded: loading::Loaded) -> bool {
         let loading::Loaded {
             state,
@@ -328,32 +298,28 @@ impl App {
         } = loaded;
         let options = &options;
         self.counting.reset_for_dataset();
-        // One per dataset that reaches the screen, rather than one per open started:
-        // an open that fails leaves the last dataset up, and the pass still reading its
-        // footers has to be able to finish into it.
+        // One per dataset reaching the screen, not per open: a failed open leaves the last
+        // dataset up, and its footer pass must still finish into it.
         self.dataset_generation = self.dataset_generation.wrapping_add(1);
         self.quality.reset_for_dataset();
         // The findings narrowed to the last dataset's columns would hide this one's.
         self.analysis_modal.quality.findings = quality_report::FindingsView::default();
         self.analysis_modal.quality.evidence_read = None;
-        // A query still running was over the dataset being replaced; its rollback
-        // is that dataset's view. So was a view waiting on its pivot.
+        // A running query or a view waiting on its pivot was over the replaced dataset.
         self.prompt.query_running = None;
         self.jobs.supersede(|job| matches!(job, Job::ViewPivot(_)));
-        // A sample being drawn was the last dataset's, and so were its paths.
+        // The sample being drawn and its paths were the last dataset's.
         self.put_down_sample_draw();
         self.sample.paths.clear();
-        // Whatever chart state survived belongs to the dataset being replaced.
         self.reset_chart_state();
         self.debug.schema_load = debug_label;
-        // Home is now in the stack, so q pops back to it; never unset, since a
-        // reread from the table (H) is not a new place.
+        // Home is now in the stack, so q pops back to it; never unset, since a reread (H)
+        // is not a new place.
         if from_home {
             self.source.opened_from_home = true;
         }
-        // A frame handed over has no path to go back to.
-        // Without the spec read: it holds the file's map, and a decompressed copy's map
-        // keeps its disk space until the map goes, so it goes with the dataset.
+        // A frame handed over has no path. The spec read is dropped: it holds the file's
+        // map, and a decompressed copy keeps its disk space while mapped.
         self.source.opened = paths.map(|paths| {
             let options = OpenOptions {
                 format_read: None,
@@ -365,12 +331,10 @@ impl App {
             };
             (paths, options)
         });
-        // Recorded once the dataset is installed: a file that fails to load is not one
-        // anybody wants to get back to.
+        // Recorded only once installed: a file that fails to load is not worth returning to.
         if let Some(path) = recent {
-            // Off the opening path. It takes a lock several instances may be contending
-            // for -- opening a dataset must not queue behind another instance's
-            // bookkeeping. Only the next home listing waits on it, on its worker.
+            // Off the opening path: the cache lock may be held by other instances. Only the
+            // next home listing waits on it.
             let cache = self.cache.clone();
             self.cache_writes.spawn(move || {
                 cache.push_recent(&path);
@@ -383,8 +347,8 @@ impl App {
         self.info.catalog_entry = path
             .as_deref()
             .and_then(|p| home::catalog_entry_for(&shown, p));
-        // The footers it still has to read are counted on the open's counter, which is
-        // the dataset's now; the last dataset's pass, if any is left, stops.
+        // Remaining footers count on the open's counter, now the dataset's; the last
+        // dataset's pass stops.
         self.counting.footer_progress.cancel();
         self.counting.footer_progress = footers;
         self.data_table_state = Some(state);
@@ -405,17 +369,17 @@ impl App {
                     } else {
                         follow
                     });
-                    // Counted already, as the scan reads them: no count of its own.
+                    // Already counted by the scan.
                     state.follow_to(tail.rows(), false);
                 }
-                // A recording of something that cannot be read as it grows.
+                // A recording of a format that cannot be read as it grows.
                 None => self.flash_note(
                     "Only text and Arrow streams are followed: this shows what had arrived, and recording goes on"
                         .to_string(),
                 ),
             }
         }
-        // A count still waiting for the last dataset's rows to paint is not owed now.
+        // A count waiting on the last dataset's paint is no longer owed.
         self.retire_a_count_the_rows_answered();
         self.path = path.clone();
         // Named for this file, so after its path is set.
@@ -427,9 +391,8 @@ impl App {
                 .and_then(DataTableState::read_as);
             self.source.original_file_format =
                 Self::export_format_for(p, read_as.or(options.format));
-            // CSV's delimiter: a comma unless the user named a separator. A `.tsv`
-            // exports as TSV, whose preset is the tab; a tab in a `.csv` would reopen
-            // as one column.
+            // CSV's delimiter: a comma unless the user named one. A `.tsv` exports as TSV
+            // (tab preset); a tab in a `.csv` would reopen as one column.
             self.source.original_file_delimiter = Some(options.separator_or(b','));
         } else {
             self.source.original_file_format = None;
@@ -440,8 +403,7 @@ impl App {
             self.read_file_facts();
             self.count_unfit();
         }
-        // The dataset is on screen now; whatever it still has to learn about itself is
-        // read behind it.
+        // What the dataset still has to learn about itself is read behind it.
         self.start_pending_footers();
         self.start_indexing();
         // `#` for text and logs, unless the flag or the config said.
@@ -455,11 +417,9 @@ impl App {
         self.pivot_melt_modal = PivotMeltModal::new();
         self.status_message = Some(Self::LOADING_BUFFER.to_string());
 
-        // The dataset is installed and its schema known, so this is where a view
-        // meets it. `--view` names one and applies to this first open alone;
-        // `[views] auto_apply` dresses every open that has a matching view.
-        // A fresh dataset starts with no view applied: the previous file's view
-        // must not wear the check mark here, nor count as applied when edited.
+        // Where a view meets the dataset: `--view` names one for this first open only;
+        // `[views] auto_apply` dresses every open with a matching view. A fresh dataset
+        // starts with none applied, so the last file's view is not checked here.
         self.views.active_id = None;
         let (view, reason) = match self.source.startup_view.take() {
             Some(name) => match self.views.manager.get_view_by_name(&name).cloned() {
@@ -499,40 +459,28 @@ impl App {
         }
     }
 
-    /// Enter the home screen, rebuilding it, abandoning any in-flight load.
-    ///
-    /// Returning home puts the cursor on whatever you currently have open, so the
-    /// round trip out and back lands where you left rather than at the top.
-    ///
-    /// Abandoning puts the open in flight down at once ([`loading::Loader::retire`]):
-    /// its jobs are superseded, so their answers are dropped on arrival and none can
-    /// install a dataset or take the user off the screen they went to; its stop flag
-    /// is raised, so a download stops and an in-flight cloud pass stops issuing paid
-    /// reads within a wave. Work that is not the open's — an export, an analysis, the
-    /// footer pass of the dataset already on screen — is deliberately left alone, so
-    /// its progress indicator and its completion modal must survive this.
+    /// Enter the home screen, rebuilt, with the cursor on what is open, abandoning any
+    /// load. [`loading::Loader::retire`] supersedes the open's jobs (their answers are
+    /// dropped) and raises its stop flag, so downloads and cloud passes stop within a
+    /// wave. Work not the open's (an export, an analysis, the screen's footer pass) is
+    /// left running, with its progress and completion modal.
     pub fn abandon_load(&mut self) {
         let retired = self.loading.retire();
         if let Some(retired) = retired {
             self.put_down_load(retired);
         }
-        // A chart being prepared for the dataset we are leaving would otherwise keep
-        // the throbber up on the home screen, and its result could later land in a
-        // different dataset with the same column names.
+        // A chart being prepared would keep the throbber up at home, and could land later
+        // in another dataset with the same column names.
         self.reset_chart_state();
-        // A look that is out belongs to the home screen being left, and the thread it is
-        // on may never come back — a share that has gone away is the case it exists for.
-        // Superseded, its answer touches nothing, and the keyboard does not wait for it.
+        // A look in flight may never return (a gone share): supersede it so nothing waits.
         if self.jobs.supersede(|job| matches!(job, Job::Classify(_))) {
             self.home.status = None;
         }
-        // And a collect that was waiting behind this load goes with it. Left standing,
-        // it runs the moment the generation is free — reading the dataset the user
-        // walked away from, at the home screen, with every key held.
+        // A collect owed behind this load goes too; it would read the abandoned dataset
+        // at home with every key held.
         self.jobs.take_owed(Self::owed_rows);
-        // Only an open's own wait is put down. An export holds keys too, and it keeps
-        // running. The rows the open's last step is reading still land; nobody waits on
-        // them.
+        // Only the open's wait is put down: an export holds keys too and keeps running.
+        // Rows the open's last step reads still land, unwaited.
         if retired.is_some() {
             self.busy = false;
             let quieted = self.jobs.quiet(Self::reading_rows);
@@ -544,35 +492,24 @@ impl App {
                 self.status_message = None;
             }
         }
-        // Keys typed at the frozen screen were meant for the load, not for home:
-        // replayed there they could open a dataset nobody asked for.
+        // Keys typed at the frozen screen were meant for the load; replayed at home they
+        // could open something unasked.
         self.screen_generation = self.screen_generation.wrapping_add(1);
     }
 
-    /// Whether finding out what a path is could sit on a mount that never answers.
-    ///
-    /// Two halves. An object-store or HTTP URL names something no mount is responsible
-    /// for — what is behind it is the scan's business, and stat'ing it only ever asks the
-    /// working directory about a file called `s3:` — and an ordinary local path answers at
-    /// once, so making the user wait a round trip for it would be a delay bought with
-    /// nothing.
-    ///
-    /// What is left is a path on a mount the home screen calls a network one, which is
-    /// the case `is_remote_path` exists to name and the only one worth a worker.
+    /// Whether finding out what a path is could hang on an unresponsive mount: only a
+    /// local path on what home calls a network mount. URLs are the scan's business,
+    /// and plain local paths answer at once.
     pub(crate) fn looking_could_block(&self, path: &Path) -> bool {
-        // `cloud://<id>` is a place, not a path: `input_source` calls the unknown scheme
-        // local and `is_remote_path` calls it remote, so without this a worker would be
-        // sent to stat it and come back with "No such path".
+        // `cloud://<id>` is a place: `input_source` calls it local, `is_remote_path`
+        // remote, and a worker stat would report "No such path".
         !home::is_cloud_place(path)
             && matches!(source::input_source(path), source::InputSource::Local(_))
             && (self.home.network_check)(path)
     }
 
-    /// Do with a path whatever its kind calls for: browse into it, say it is a lake
-    /// table, or open it.
-    ///
-    /// `jump` is a path typed at `~` rather than a row already listed, which starts a new
-    /// browse so Esc comes back from there to the listing.
+    /// Browse into a path, report it as a lake table, or open it, as its kind calls for.
+    /// `jump` (a path typed at `~`) starts a new browse so Esc returns to the listing.
     pub(crate) fn open_what_it_is(
         &mut self,
         path: PathBuf,
@@ -590,18 +527,16 @@ impl App {
             go_inside(self, path);
             return None;
         }
-        // No reader: a local file's bytes, in the hex view. A remote one is dimmed and
-        // its details pane says why.
+        // No reader: a local file opens in the hex view; a remote one is dimmed and its
+        // details pane says why.
         if kind == discover::EntryKind::Other {
             if matches!(source::input_source(&path), source::InputSource::Local(_)) {
                 self.open_hex(path, crate::hex_view::Origin::Home, true, None);
             }
             return None;
         }
-        // A lake table's files are not its rows: the ones a delete or an update
-        // tombstoned are still on disk, every rewritten version is here together, and
-        // compaction leaves both sides in place. Going inside is what datui can honestly
-        // do with one, and saying so is better than a silent wrong answer.
+        // A lake table's files are not its rows (tombstoned and rewritten files stay on
+        // disk), so datui goes inside rather than give a wrong answer.
         if let Some(format) = kind.lake_name() {
             self.home.lake_here = Some((path.clone(), format));
             go_inside(self, path);
@@ -611,27 +546,23 @@ impl App {
             kind,
             discover::EntryKind::Hive | discover::EntryKind::MultiFile
         );
-        // A directory typed at `~` is a place to go, as → makes it, whatever it holds:
-        // its door is one row in, and naming a directory never starts a read of all of it.
+        // A directory typed at `~` is a place to go, as →: naming one never reads all of it.
         if directory && jump {
             go_inside(self, path);
             return None;
         }
-        // A cloud directory that is a dataset opens as one: its URL as a prefix, which is
-        // what makes the open a scan of every file under it.
+        // A cloud directory that is a dataset opens as a prefix, scanning every file under
+        // it.
         if directory && home::is_object_store_url(&path) {
-            // A prefix, not a directory: the scan is what walks it.
             return Some(self.home_open_path(home::directory_dataset_url(&path), false));
         }
-        // Said here, where the file was named, rather than after a download and a load
-        // that could only end the same way. A row would be dimmed; a typed path has no
-        // row, so the line says it.
-        // A format spec may read it: by its glob, or by magic the open looks for.
+        // Said here, where the file was named, rather than after a download and load that
+        // could only fail; a typed path has no dimmed row to say it. A format spec may
+        // read it by glob or by magic.
         let a_spec_may_read = !self.formats.by_glob(&path, false).is_empty()
             || self.formats.specs.iter().any(|f| !f.spec.magic.is_empty());
-        // A table inside a file of tables (`flight.ulg/sensor_accel.1`) has the file's
-        // name in front, and a log found by its first bytes (`00000042.BIN`) a name
-        // that says nothing.
+        // A table inside a file of tables (`flight.ulg/sensor_accel.1`) or a log found by
+        // magic (`00000042.BIN`) has a name that says nothing.
         if kind == discover::EntryKind::File
             && discover::unreadable_by_name(&path)
             && !a_spec_may_read
@@ -643,13 +574,13 @@ impl App {
             self.home.status = Some(discover::NO_READER.to_string());
             return None;
         }
-        // The preview read this file's first page through the open's own steps: the
-        // open installs that dataset rather than reading it again.
+        // The preview read this file's first page through the open's own steps: install
+        // that rather than read again.
         let prepared = (!directory)
             .then(|| self.home_app.previews.take_prepared(&path))
             .flatten();
-        // A small file of the built-in catalog is fetched without a question: the row
-        // already said what it is and what it weighs. A URL the user typed still asks.
+        // A small built-in catalog file is fetched unasked (its row gave its size); a typed
+        // URL still asks.
         let unasked = self
             .home
             .catalogs
@@ -674,22 +605,17 @@ impl App {
         }
     }
 
-    /// What `datui <path>` does with a directory: the same rule as `Enter` on its row,
-    /// so the highlighted row, the `~` prompt and the command line agree. A hive root or
-    /// a directory whose files are one table opens as one table; any other directory
-    /// opens the home screen browsed into it. The directory is looked into with
-    /// [`home::look_into`], the home screen's own call. `--hive` still forces partition
-    /// columns.
-    ///
-    /// Asks the filesystem whether a local path is a directory, so `run` calls it on a
-    /// worker ([`AppEvent::OpenNamed`]). Returns the event that carries the open on:
-    /// `LookThenOpenDirectory` or `Open`.
+    /// What `datui <path>` does with a directory, by the same rule as `Enter` on its
+    /// row ([`home::look_into`]): a hive root or a one-table directory opens as one
+    /// table, any other opens home browsed into it. `--hive` still forces partition
+    /// columns. Stats the path, so `run` calls it on a worker
+    /// ([`AppEvent::OpenNamed`]); returns `LookThenOpenDirectory` or `Open`.
     pub fn route_named_paths(paths: Vec<PathBuf>, options: OpenOptions) -> AppEvent {
         Self::route_named_paths_with(paths, options, &crate::formats::Registry::default())
     }
 
-    /// [`Self::route_named_paths`], with the format specs on the search path: a
-    /// directory a spec reads as column files is opened, not looked at.
+    /// [`Self::route_named_paths`] with the format specs: a directory a spec reads as
+    /// column files opens rather than being looked at.
     pub fn route_named_paths_with(
         paths: Vec<PathBuf>,
         options: OpenOptions,
@@ -698,8 +624,8 @@ impl App {
         if let Some(event) = Self::route_named_without_looking(&paths, &options) {
             return event;
         }
-        // Several paths are a list of files to read together, and `--hive` is an answer
-        // already given. Neither is a question about what one directory is.
+        // Several paths are files read together, and `--hive` already answers; neither asks
+        // what one directory is.
         let single = (paths.len() == 1 && !options.hive).then(|| paths[0].clone());
         let Some(dir) = single.filter(|p| p.is_dir()) else {
             return AppEvent::Open(paths, options);
@@ -711,18 +637,14 @@ impl App {
         {
             return AppEvent::Open(paths, options);
         }
-        // Looking at a directory reads its footers, or the front of a spread of its
-        // files. For a directory of large Parquet that is seconds — 4.6 of them on a real
-        // one — so it goes to a worker, and the answer comes back as an event like every
-        // other read.
+        // Looking reads footers or the front of a spread of files: seconds for large
+        // Parquet, so a worker does it.
         AppEvent::LookThenOpenDirectory(dir, options)
     }
 
-    /// The part of [`Self::route_named_paths`] that needs no filesystem: a cloud
-    /// directory is looked at too, by one page of its listing — what is in it picks the
-    /// reader, as it does for the `(all files)` row. Scanned blind, it was read as
-    /// Parquet whatever it held. A glob, a file name or `--format` already says what to
-    /// read.
+    /// The part of [`Self::route_named_paths`] that needs no filesystem. A cloud
+    /// directory is looked at by one listing page, whose contents pick the reader as
+    /// for `(all files)`. A glob, a file name or `--format` already says what to read.
     pub(crate) fn route_named_without_looking(
         paths: &[PathBuf],
         options: &OpenOptions,
@@ -744,8 +666,8 @@ impl App {
         None
     }
 
-    /// The first named local path that is not there. A URL or a glob is left to the
-    /// open, which says what it found, and standard input is no path.
+    /// The first named local path that is not there. URLs and globs are left to the
+    /// open; stdin is no path.
     pub fn missing_named_path(
         paths: &[PathBuf],
         formats: &crate::formats::Registry,
@@ -763,10 +685,8 @@ impl App {
             .cloned()
     }
 
-    /// Act on what the look at a directory named on the command line found.
-    ///
-    /// The other half of [`Self::route_named_paths`], which is
-    /// where the reasoning for the rule itself is.
+    /// Act on what the look at a directory named on the command line found; the rule is
+    /// at [`Self::route_named_paths`].
     pub(crate) fn open_the_directory_looked_at(
         &mut self,
         dir: PathBuf,
@@ -779,23 +699,17 @@ impl App {
             return self.open_the_cloud_directory_looked_at(dir, kind, holds, options);
         }
         let _ = holds;
-        // No override for the user's reader settings here, and none needed: the look
-        // read every file the way this open will, so `--no-header` and the skips have
-        // already been accounted for by the rule rather than around it. Overriding
-        // instead took three goes to get wrong in three different ways — it fired on
-        // config values, it fired on directories with nothing readable in them, and it
-        // fired on Parquet, which no CSV setting can affect.
-        //
-        // A lake table's files are not its rows, so the home screen is opened on it and
-        // says why — the same sentence the row gives, because it is the same refusal.
+        // No override of the reader settings: the look read every file as this open will,
+        // so `--no-header` and skips are already accounted for. A lake table opens home
+        // with the same refusal its row gives.
         if let Some(format) = kind.lake_name() {
             self.enter_home();
             self.home.lake_here = Some((dir.clone(), format));
             self.home_jump_into(dir);
             return None;
         }
-        // One table: read it. `hive` is what puts the open on the directory route, where
-        // what the directory holds picks the reader.
+        // One table: read it. `hive` puts the open on the directory route, where the
+        // contents pick the reader.
         if matches!(
             kind,
             discover::EntryKind::Hive | discover::EntryKind::MultiFile
@@ -805,17 +719,15 @@ impl App {
             self.name_what_is_loading(dir.clone());
             return Some(AppEvent::Open(vec![dir], options));
         }
-        // A place to look inside. `datui .` is this, and so is a directory of separate
-        // tables — where the `(all files)` row inside is the one keystroke that unions
-        // them anyway.
+        // A place to look inside: `datui .`, or a directory of separate tables (whose
+        // `(all files)` row unions them).
         self.enter_home();
         self.home_jump_into(dir);
         None
     }
 
-    /// As [`Self::open_the_directory_looked_at`], for a cloud directory: what `Enter`
-    /// on its `(all files)` row does, or a browse into it when there is no data
-    /// directly inside to read.
+    /// As [`Self::open_the_directory_looked_at`] for a cloud directory: its `(all files)`
+    /// row's open, or a browse when nothing directly inside is readable.
     #[cfg(feature = "cloud")]
     fn open_the_cloud_directory_looked_at(
         &mut self,
@@ -829,8 +741,7 @@ impl App {
             app.name_what_is_loading(path.clone());
             Some(AppEvent::Open(vec![path], options))
         };
-        // The listing was refused. The open says why, in the words of whatever
-        // refused it, which is what happened before anything looked.
+        // The listing was refused: the open says why in the refuser's words.
         let Some(holds) = holds else {
             return open(self, dir, options);
         };
@@ -860,16 +771,15 @@ impl App {
             };
             return open(self, directory, options);
         }
-        // Only directories, or nothing datui reads: somewhere to look inside, with
-        // the reason when there is one.
+        // Only directories, or nothing readable: browse inside, with the reason if any.
         self.enter_home();
         self.home_jump_into(dir);
         self.home.status = Self::why_a_cloud_prefix_cannot_be_read(holds);
         None
     }
 
-    /// What an open the home screen starts reads with: the config's read and CSV
-    /// settings, as an open named on the command line has them under its flags.
+    /// The options a home-started open reads with: the config's read and CSV settings,
+    /// as the command line would give them.
     pub(crate) fn open_defaults(&self) -> OpenOptions {
         match crate::cli::parse_args(["datui"]) {
             Ok(args) => OpenOptions::from_args_and_config(&args, &self.app_config),
@@ -877,9 +787,9 @@ impl App {
         }
     }
 
-    /// `options` for the compressed delimited file `file`, in the dialect of the
-    /// delimited spec it matches, or as they are when it matches none. The loader sends
-    /// such a file straight to be decompressed, past the scan that matches the others.
+    /// `options` for the compressed delimited `file` in the dialect of the delimited
+    /// spec it matches, if any. Such files skip the scan that matches the others and
+    /// go straight to decompression.
     fn with_delimited_spec(
         file: &Path,
         mut options: OpenOptions,
@@ -911,12 +821,9 @@ impl App {
         Ok(options)
     }
 
-    /// Read a compressed CSV, TSV or PSV into a table state, split on its format's
-    /// separator.
-    ///
-    /// This is the one input datui cannot scan lazily: the file has to be
-    /// decompressed and parsed before anything can be shown, which for a large export
-    /// is minutes. It takes no `&self` so it can run on a background thread.
+    /// Read a compressed CSV, TSV or PSV into a table state, split on its separator.
+    /// The one input that cannot be scanned lazily (minutes for a large export), so it
+    /// takes no `&self` and runs on a worker.
     fn decompressed_delimited_state(
         path: &Path,
         options: &OpenOptions,
@@ -977,10 +884,9 @@ impl App {
             })
     }
 
-    /// The store Polars itself will scan `url` through, from its cache keyed on the
-    /// bucket and `options`, so the footer read, the size probe and a download share
-    /// one credential chain, TLS client and connection pool with the scan instead of
-    /// each building a store of their own.
+    /// The store Polars will scan `url` through, from its cache keyed on bucket and
+    /// `options`, so footer reads, size probes and downloads share its credentials,
+    /// TLS client and connection pool.
     #[cfg(feature = "cloud")]
     fn polars_object_store(
         url: &str,
@@ -1002,18 +908,9 @@ impl App {
         .map_err(|e| color_eyre::eyre::eyre!("Object store config failed: {}", e))
     }
 
-    /// Build an HTTP agent with a total time budget.
-    ///
-    /// ureq 3 moved timeouts off the request and onto agent configuration, so
-    /// every request has to come from an agent to be bounded at all. Leaving a
-    /// request unbounded would mean a remote that accepts a connection and then
-    /// dribbles bytes forever hangs the whole TUI, and the user's only way out
-    /// is to kill the process.
-    ///
-    /// `timeout_global` covers the entire exchange rather than individual
-    /// socket operations, which is the property that matters here: a server
-    /// that sends one byte every 29 seconds defeats a per-read timeout but not
-    /// this one.
+    /// An HTTP agent with a total time budget. ureq 3 bounds only through agent
+    /// config, and `timeout_global` covers the whole exchange, so a server dribbling a
+    /// byte every 29 seconds cannot hang the TUI.
     #[cfg(feature = "http")]
     fn http_agent(total: std::time::Duration) -> ureq::Agent {
         crate::user_agent::ureq_config()
@@ -1022,17 +919,15 @@ impl App {
             .into()
     }
 
-    /// What a HEAD says an HTTP(S) file weighs: `None` when it does not say. An error
-    /// only when the answer settles that the file cannot be had (a 404, no server); a
-    /// server that refuses HEAD may still send the file.
+    /// What a HEAD says an HTTP(S) file weighs; `None` if unsaid. An error only when
+    /// the file cannot be had (404, no server); one refusing HEAD may still send it.
     #[cfg(feature = "http")]
     pub(crate) fn fetch_remote_size_http(
         url: &str,
     ) -> std::result::Result<Option<u64>, crate::error_display::HttpGone> {
         let agent = Self::http_agent(std::time::Duration::from_secs(15));
-        // ureq asks for gzip by default and strips Content-Length from a compressed
-        // answer, so a server that compresses (GitHub Pages does) reports no size.
-        // Identity asks for the file's own length, which is what lands on disk.
+        // ureq asks for gzip and drops Content-Length from compressed answers (GitHub
+        // Pages compresses); identity gets the on-disk length.
         match agent.head(url).header("Accept-Encoding", "identity").call() {
             Ok(r) => Ok(r
                 .headers()
@@ -1062,11 +957,10 @@ impl App {
         Ok(head.and_then(|r| r.ok()).map(|meta| meta.size))
     }
 
-    /// Download `url` to a temporary file. `stop` ends it early, while the server is
-    /// sending or while it is silent, and any failure removes the file; see
-    /// [`crate::download::read_to_temp`].
-    ///
-    /// Past `limit` bytes it stops with a [`crate::download::PastLimit`] error.
+    /// Download `url` to a temp file; `stop` ends it early, even while the server is
+    /// silent, and any failure removes the file (see
+    /// [`crate::download::read_to_temp`]). Past `limit` bytes it fails with
+    /// [`crate::download::PastLimit`].
     #[cfg(feature = "http")]
     fn download_http_to_temp(
         url: &str,
@@ -1085,8 +979,7 @@ impl App {
                 .get(&url)
                 .call()
                 .map_err(|e| crate::error_display::http_message(&url, &e))?;
-            // No length: ureq hands back a compressed answer decompressed, and the
-            // Content-Length it came with is the wire's, not the file's.
+            // No length: ureq decompresses, and the Content-Length was the wire's.
             Ok((response.into_body().into_reader(), None))
         };
         crate::download::read_to_temp(temp_dir, extension, open, writer, limit).map_err(|error| {
@@ -1104,10 +997,9 @@ impl App {
         })
     }
 
-    /// Stream one S3, GCS or Azure object to a temporary file, named for the user by
-    /// its scheme in any error. A few chunks are in memory at a time; see
-    /// [`crate::download`]. `writer`'s open stopping ends it early, and any failure
-    /// removes the file.
+    /// Stream one S3, GCS or Azure object to a temp file, a few chunks in memory at a
+    /// time ([`crate::download`]). Errors name its scheme; `writer`'s open stopping ends
+    /// it, and any failure removes the file.
     #[cfg(feature = "cloud")]
     fn download_cloud_to_temp(
         url: &str,
@@ -1168,16 +1060,9 @@ impl App {
         })
     }
 
-    /// Run the worker of an open's phase, as `load`'s job: its answer goes to the loader.
-    ///
-    /// Every phase runs off the event thread. The size probe is a HEAD request: fifteen
-    /// seconds of timeout for HTTP, unbounded for S3 and GCS, and inline it froze the UI
-    /// precisely where the user is most likely to want out. Scanning is where the
-    /// wall-clock time goes — CSV schema inference, and hive directories with many files
-    /// — and the schema read of a directory reads a footer from each file.
-    /// The open's scan of `paths`, named `path`: what the frame is, or what has to
-    /// happen before there is one. Run by the open's `Scan` phase, and by the home
-    /// screen's preview, which hands what it builds to the open.
+    /// The open's scan of `paths`, named `path`: the frame, or what must happen before
+    /// there is one. Run by the open's `Scan` phase and by the home preview, which hands
+    /// its result to the open.
     pub(crate) fn scan_for_open(
         cloud: &crate::config::CloudConfig,
         formats: &crate::formats::Registry,
@@ -1193,13 +1078,10 @@ impl App {
                 .map(|m| m.len())
                 .sum()
         };
-        // What the read passed over rides back with the options it was asked
-        // for, so the dataset can say what it left out. Seeded with what the
-        // caller already knows and overwritten by what the read finds: a
-        // directory on disk is the read's own answer, because it is the pass
-        // that decides, while for a prefix in an object store Polars does the
-        // listing and never sees the other formats — there the home screen's
-        // listing is the only witness.
+        // What the read passed over rides back with the options, so the dataset can say
+        // what it left out. Seeded with the caller's knowledge and overwritten by the read:
+        // on disk the read decides, but for an object-store prefix Polars lists and never
+        // sees other formats, so home's listing is the only witness.
         let mut report = ReadReport {
             left_out: options.left_out.clone(),
             files_disagree: options.files_disagree,
@@ -1215,8 +1097,8 @@ impl App {
             read_notes: Vec::new(),
             typing: Default::default(),
         };
-        // A followed file reads every row it can and counts the rest: a row
-        // that does not fit the schema never stops the follow.
+        // A followed file reads what it can and counts the rest: a misfit row never stops
+        // the follow.
         let options = OpenOptions {
             ignore_errors: options.ignore_errors || options.follow,
             ..options
@@ -1224,8 +1106,8 @@ impl App {
         let named = |e: color_eyre::Report| {
             crate::error_display::user_message_from_report(&e, path.as_deref())
         };
-        // An Arrow IPC stream followed is read by a scan of its own, not converted;
-        // NDJSON followed is scanned rather than read whole, by its reader.
+        // A followed Arrow IPC stream gets its own scan, not a conversion; followed NDJSON
+        // is scanned rather than read whole.
         let followed_stream = options.follow
             && crate::follow::followed_stream(
                 &paths[0],
@@ -1242,8 +1124,8 @@ impl App {
         // Named as the dataset is: a download by its URL, not its temp file.
         .map_err(named)?;
         let format = scan.format(report.format.or(options.format));
-        // Bounded to the complete records, and counted for the watcher. A
-        // recording that cannot be followed is read as it stands, and goes on.
+        // Bounded to complete records and counted for the watcher. A recording that cannot
+        // be followed is read as it stands.
         let recording = options
             .spool
             .as_ref()
@@ -1289,8 +1171,8 @@ impl App {
             typing: report.typing,
             ..options
         };
-        // The spec's dialect stays with the dataset, so a read again (`H`,
-        // a decompressed copy) reads as this one did.
+        // The spec's dialect stays with the dataset, so a re-read (`H`, a decompressed
+        // copy) reads the same.
         if let Some(read) = report.delimited {
             read.delimited().apply(&mut options);
             options.delimited = Some(read);
@@ -1345,9 +1227,8 @@ impl App {
         })
     }
 
-    /// The open's schema read of the scan's frame: the dataset, built with everything
-    /// the open `made`. Run by the open's `ReadSchema` phase, and by the home screen's
-    /// preview.
+    /// The open's schema read of the scan's frame, building the dataset with everything
+    /// the open `made`. Run by the `ReadSchema` phase and by the home preview.
     pub(crate) fn read_schema_for_open(
         lf: LazyFrame,
         path: Option<PathBuf>,
@@ -1390,6 +1271,9 @@ impl App {
         })
     }
 
+    /// Run the worker of an open's phase as `load`'s job; its answer goes to the
+    /// loader. Every phase runs off the event thread: HEAD probes can stall for
+    /// seconds, scans infer schemas, and directory schema reads touch every footer.
     fn spawn_load_phase(&mut self, load: loading::LoadId, step: loading::Step) {
         use loading::{LoadAnswer, Step};
         let job = Job::Load(load);
@@ -1450,8 +1334,7 @@ impl App {
             #[cfg(any(feature = "http", feature = "cloud"))]
             Step::Probe(pending) => {
                 self.spawn_job(job, Some("Checking size..."), move |_| {
-                    // Arrow in a store: its listing says which objects, and which of
-                    // them are streams to download.
+                    // Arrow in a store: its listing says which objects are streams to download.
                     #[cfg(feature = "cloud")]
                     if let loading::PendingDownload::Arrow { url, .. } = &pending {
                         let (_, _, options) = pending.parts();
@@ -1472,9 +1355,8 @@ impl App {
                     let size = match &pending {
                         #[cfg(feature = "http")]
                         loading::PendingDownload::Http { url, .. } => {
-                            // A file that is not there, or a host that does not
-                            // answer, ends the open here, not after a question
-                            // about downloading it.
+                            // A missing file or silent host ends the open here, before asking about a
+                            // download.
                             Self::fetch_remote_size_http(url).map_err(|gone| gone.message)?
                         }
                         #[cfg(feature = "cloud")]
@@ -1493,10 +1375,8 @@ impl App {
             }
             #[cfg(any(feature = "http", feature = "cloud"))]
             Step::Download { pending, writer } => {
-                // The load's stop flag is raised when it is abandoned or another open
-                // replaces it, and when the app drops: the download stops at the next
-                // chunk, or while the source is silent, and removes its file. Quitting
-                // removes it even if the process ends first (`ExitSweep`).
+                // The load's stop flag (abandon, replacement, app drop) stops the download at the
+                // next chunk or during silence and removes its file; `ExitSweep` covers quitting.
                 let status = match &pending {
                     #[cfg(feature = "http")]
                     loading::PendingDownload::Http { .. } => "Downloading...",
@@ -1515,8 +1395,7 @@ impl App {
                         }
                     }
                 };
-                // How much, when the server said: a download nobody was asked about
-                // says what it is fetching.
+                // An unasked download says how much it fetches, when the server said.
                 let sized = pending
                     .parts()
                     .1
@@ -1529,9 +1408,8 @@ impl App {
                         #[cfg(feature = "http")]
                         loading::PendingDownload::Http { .. } => {
                             let ext = source::download_suffix(url);
-                            // A download nobody was asked about stops at its limit, when
-                            // the server did not say its size: a size it said bounds the
-                            // transfer, and the bytes counted here are decompressed.
+                            // An unasked download of unstated size stops at its limit; a stated size bounds the
+                            // transfer itself, and the bytes counted here are decompressed.
                             let limit = options
                                 .download_unasked
                                 .filter(|_| pending.parts().1.is_none())
@@ -1588,17 +1466,16 @@ impl App {
                 writer,
                 read,
             } => {
-                // The read is a thread of its own, so a producer gone quiet does not hold
-                // up the stop: Ctrl+O and quitting remove the partial file at once.
+                // The read is its own thread, so a quiet producer does not hold up the stop:
+                // Ctrl+O and quitting remove the partial file at once.
                 let piped = self.pipes.stdin_reader.take();
                 let stdout = self.pipes.stdout_pass.take();
                 self.spawn_job(job, Some("Reading stdin..."), move |_| {
                     let open = move || -> crate::download::Opened<Box<dyn std::io::Read + Send>> {
                         Ok((piped.unwrap_or_else(|| Box::new(std::io::stdin())), None))
                     };
-                    // Followed, the copy goes on behind the first rows; recorded, it
-                    // goes to the file the user named.
-                    // And read as it arrives when what it holds can be.
+                    // Followed, the copy goes on behind the first rows; recorded, it goes to the
+                    // named file; and it is read as it arrives when its format allows.
                     let (download, options) = if options.follow
                         || options.tee.is_some()
                         || crate::stdin::may_read_as_it_arrives(&options)
@@ -1734,8 +1611,7 @@ impl App {
                 writer,
                 download,
             } => {
-                // Only delimited text and lines come this way, the format said by the
-                // loader or the scan.
+                // Only delimited text and lines come here, the format said by the loader or scan.
                 let options = OpenOptions {
                     format: options.format.or(Some(FileFormat::TEXT)),
                     ..options
@@ -1797,9 +1673,8 @@ impl App {
                 writer,
                 read,
             } => {
-                // The load's stop flag ends it at the next record batch or chunk,
-                // removing its files; quitting removes them even if the process ends
-                // first.
+                // The load's stop flag ends it at the next batch or chunk, removing its files;
+                // quitting removes them even if the process ends first.
                 let formats = self.formats.clone();
                 self.spawn_job(job, Some(what.status()), move |_| {
                     let named = |e: color_eyre::Report| {
@@ -1855,8 +1730,7 @@ impl App {
                 status,
             } => {
                 let formats = self.formats.clone();
-                // A download is scanned from a temp path the user never typed and would not
-                // recognise; the URL they did type is what names the dataset.
+                // A download is scanned from a temp path; the URL the user typed names the dataset.
                 let path = display.or_else(|| paths.first().cloned());
                 self.home_app.reads.scans += 1;
                 self.spawn_job(job, Some(status), move |_| {
@@ -1897,8 +1771,8 @@ impl App {
         }
     }
 
-    /// What the user is asked before files past `[read] memory_warning` are
-    /// read whole into memory: `big.json: JSON reads 2.0 GiB into memory`.
+    /// The question before files past `[read] memory_warning` are read whole:
+    /// `big.json: JSON reads 2.0 GiB into memory`.
     fn in_memory_confirmation_message(read: &loading::InMemory) -> String {
         let what = match read.files {
             1 => format!(
@@ -1917,7 +1791,7 @@ impl App {
         )
     }
 
-    /// What the user is being asked to agree to before a remote file is downloaded.
+    /// The question asked before a remote file is downloaded.
     #[cfg(any(feature = "http", feature = "cloud"))]
     fn download_confirmation_message(
         pending: &loading::PendingDownload,
@@ -1969,17 +1843,11 @@ impl App {
         hoist_partition_columns(lf, schema, partition_columns, drifts)
     }
 
-    /// Schema for a local directory of Parquet files: every column any of them has, from
-    /// their footers, instead of `collect_schema()` over the whole set or one file's
-    /// columns standing in for all.
-    ///
-    /// As a cloud prefix opens: past one wave of footers the two ends open the dataset
-    /// and the rest are read behind it, joining when they land, and a directory whose
-    /// listing has not changed since its footers were last all read opens from what
-    /// they said then. On a network mount each footer is round trips, and a Hive tree
-    /// is thousands of footers. `None` when the path is not that shape, or when nothing
-    /// could be read — either way the caller falls back to the general scan, which
-    /// reports the error properly if there is one.
+    /// Schema for a local directory of Parquet: the union of every footer's columns,
+    /// not `collect_schema()` or one file's. Like a cloud prefix, past one wave of
+    /// footers the dataset opens and the rest join behind it; an unchanged listing
+    /// reopens from its cached footers. `None` when not that shape or nothing could
+    /// be read: the caller falls back to the general scan, which reports any error.
     pub(crate) fn schema_state_from_local_hive(
         path: Option<&Path>,
         options: &OpenOptions,
@@ -1992,8 +1860,7 @@ impl App {
         dataset_files::open(Arc::new(dataset_files::LocalFiles::new(p)), options, report)
     }
 
-    /// The same one-file trick against an object store. This is the route that used to
-    /// block the UI thread on a network round trip.
+    /// The same for an object store, off the UI thread.
     #[cfg(feature = "cloud")]
     fn schema_state_from_cloud_hive(
         path: Option<&Path>,
@@ -2006,8 +1873,8 @@ impl App {
         if !options.single_spine_schema || options.format == Some(FileFormat::Arrow) {
             return None;
         }
-        // Unlike the local path this does not require --hive: a directory or glob URL
-        // is already a hive scan by shape.
+        // Unlike the local path this needs no --hive: a directory or glob URL is a hive
+        // scan by shape.
         let p = path.filter(|p| {
             let s = p.as_os_str().to_string_lossy();
             home::is_object_store_url(p) && (options.hive || source::is_prefix_or_glob(&s))
@@ -2020,11 +1887,8 @@ impl App {
         )
     }
 
-    /// The same, against a store already built.
-    ///
-    /// Split out so a test can hand it an in-memory store and cover the choice between
-    /// the two routes below — including that each is given the counter it was called
-    /// with, rather than one of its own.
+    /// The same against a built store; a test hands it an in-memory one to cover the
+    /// route choice and that each route gets the caller's counter.
     #[cfg(feature = "cloud")]
     pub(crate) fn schema_state_from_cloud_hive_with(
         full: String,
@@ -2035,17 +1899,10 @@ impl App {
         runtime: &tokio::runtime::Handle,
         report: &crate::measurements::OpenReport,
     ) -> Option<(DataTableState, OpenFacts)> {
-        // Every file listed once, and the scan, the schema and the count all work from
-        // that list — for a glob as much as for a prefix. datui expands the glob
-        // itself: it lists the literal part of the key and matches the rest, so a glob
-        // is an ordinary list of files by the time anything else sees it, and gets the
-        // schema union, the row count, the notes and the measurements that a prefix
-        // gets.
-        //
-        // The star cannot be handed to the object store. A listing prefix is a literal
-        // string, so `data/*.parquet` matches nothing and the open falls through to a
-        // whole-dataset scan with none of the above — which is what used to happen, for
-        // every glob, silently (#228).
+        // List every file once; scan, schema and count work from that list. A listing
+        // prefix is literal, so datui expands a glob itself: it lists the literal part
+        // and matches the rest, and the glob gets the schema union, count, notes and
+        // measurements a prefix gets.
         let pattern = full.contains('*').then(|| {
             globset::GlobBuilder::new(&key)
                 .literal_separator(true)
@@ -2073,12 +1930,10 @@ impl App {
         )
     }
 
-    /// A cloud prefix of Parquet files as one dataset, from a single listing of it.
-    ///
-    /// The files are scanned by name, so Polars does not list the prefix again, and
-    /// leniently (see `cloud_hive::lenient_scan`), since files written years apart
-    /// differ. The state keeps the list, so the count reads footers rather than data
-    /// and a buffer reads only the files holding its rows (see `RemoteFiles`).
+    /// A cloud prefix of Parquet files as one dataset from a single listing. Files are
+    /// scanned by name (no second listing) and leniently (`cloud_hive::lenient_scan`),
+    /// since files written years apart differ. The state keeps the list so counts read
+    /// footers and buffers read only the files holding their rows (`RemoteFiles`).
     #[cfg(feature = "cloud")]
     fn schema_state_from_cloud_files(
         target: CloudTarget<'_>,
@@ -2103,12 +1958,10 @@ impl App {
         )
     }
 
-    /// What the home screen can say about one object opened from a bucket: its rows
-    /// and columns from the footer the open read, under the URL it resolved to. The
-    /// object's size is not known here — the footer is read from the tail — so the
-    /// record carries none, and the row shows none. Its `mtime` is the time of the
-    /// open: a remote record is never fingerprinted by it, and the index evicts its
-    /// oldest `mtime` first, so a zero would make these the first to go.
+    /// Record one object opened from a bucket for home: rows and columns from its
+    /// footer under the resolved URL. No size (the footer is read from the tail).
+    /// `mtime` is the open time: remote records are not fingerprinted by it, and the
+    /// index evicts oldest `mtime` first, so zero would evict these first.
     #[cfg(feature = "cloud")]
     pub(crate) fn record_cloud_object_facts(
         cache: Option<&crate::cache::CacheManager>,
@@ -2146,8 +1999,8 @@ impl App {
         )]);
     }
 
-    /// General schema route: ask the frame itself. Slow for a wide hive dataset, which
-    /// is the reason this whole phase belongs on a background thread.
+    /// General schema route: ask the frame. Slow for a wide hive dataset, hence off the
+    /// UI thread.
     fn schema_state_from_full_scan(
         mut lf: LazyFrame,
         path: Option<&Path>,
@@ -2169,10 +2022,8 @@ impl App {
         DataTableState::from_schema_and_lazyframe(schema, lf, options, part_cols)
     }
 
-    /// Build the table state for a loaded frame, by the cheapest route that applies.
-    ///
-    /// Returns the state and a label naming the route it came from, for the debug
-    /// overlay. Takes its config by value so all of it can run off the UI thread.
+    /// Build the table state by the cheapest route that applies, with a label naming
+    /// the route for the debug overlay. Takes config by value so it runs off-thread.
     fn build_schema_state(
         lf: LazyFrame,
         path: Option<&Path>,
@@ -2181,18 +2032,14 @@ impl App {
         runtime: &tokio::runtime::Handle,
         report: &crate::measurements::OpenReport,
     ) -> Result<(DataTableState, OpenFacts, String)> {
-        // The facts carry the meter of the route that actually built the dataset, so it
-        // is installed with the dataset and nothing else can reach it. An open that
-        // fails never gets here, which is what keeps the dataset still on screen
-        // showing its own figures.
+        // The facts carry the meter of the route that built the dataset, installed with it.
+        // A failed open never gets here, so the dataset on screen keeps its own figures.
         let (state, mut facts, label) =
             Self::schema_state_by_route(lf, path, options, cloud, runtime, report)?;
-        // What the open did, as against what it found. The one place both are known:
-        // the scan has reported what it passed over, the caller has said whether this
-        // is a lake table's plain files, and the state that will carry the notes is in
-        // hand. See `DataTableState::open_notes` for why they are not the other notes.
-        // A delimited file read with a header whose names are all numbers: its first
-        // row of data, most likely, which `H` reads as data instead.
+        // What the open did, beside what it found: the one place the scan's report, the
+        // lake-table flag and the state are all known (see
+        // `DataTableState::open_notes`). A delimited header whose names are all numbers
+        // is likely a data row, which `H` reads as data.
         let names_look_like_data = options.format.and_then(FileFormat::separator).is_some()
             && options.has_header != Some(false)
             && !crate::schema_union::names_are_names(
@@ -2208,8 +2055,8 @@ impl App {
             options.files_disagree,
             names_look_like_data,
         );
-        // And the half of it that cannot be missed: the row count on screen is a true
-        // count of the files and a wrong one of the table.
+        // The row count on screen is a true count of the files and a wrong one of the
+        // table.
         facts.not_the_table = options.read_as_plain_files_of;
         if let Some(splits) = &options.splits {
             facts.other_tables = splits.others.clone();
@@ -2243,21 +2090,18 @@ impl App {
         facts.typing = options.typing.clone();
         facts.read_mode = options.read_mode;
         facts.read_as = options.format;
-        // The display path of a downloaded object is its URL too; only a scan that
-        // really reads the object store in place buffers like one.
-        // Arrow in a store reads its IPC files in place, and its streams from their
-        // download (`cloud_arrow`).
+        // A downloaded object's display path is its URL too; only a scan reading the store
+        // in place buffers like one. Arrow in a store reads IPC files in place and streams
+        // from their download (`cloud_arrow`).
         facts.remote_source = match &options.arrow_parts {
             Some(parts) => parts.iter().any(|part| {
                 matches!(part, crate::ipc_stream::Part::InPlace(p) if source::is_remote_url(p))
             }),
             None => path.is_some_and(source::scans_in_place),
         };
-        // The cheap footer-sum row count, for a local Parquet hive directory. Asked
-        // here because a stat on a mount that has stopped answering hangs its thread.
-        // A directory read as another format counts its rows by a scan: its footers
-        // are not Parquet's.
-        // Not for one read by file: its counter reads only the footers the open did not.
+        // The footer-sum row count for a local Parquet hive directory, asked here because a
+        // stat on a dead mount hangs its thread. A directory of another format counts by
+        // a scan; one read by file has a counter for the footers the open did not read.
         if options.hive
             && facts.remote_files.is_none()
             && options.format.is_none_or(|f| f == FileFormat::Parquet)
@@ -2268,20 +2112,10 @@ impl App {
         Ok((state, facts, label))
     }
 
-    /// Scan a prefix in an object store with the reader its format calls for.
-    ///
-    /// Every cloud path went to `scan_parquet` whatever was under it, so a prefix of
-    /// CSV came back "Could not read from S3. Check credentials and URL" — a false
-    /// statement about the user's login, made about a directory datui could see the
-    /// contents of. Polars' other scans take the same `CloudOptions` and do their own
-    /// listing; nothing was passing them.
-    ///
-    /// Parquet keeps its own branch at each call site: it is the only one with hive
-    /// partitioning, which is a Parquet-only capability in this reader, and it is the
-    /// path every cloud dataset took before this existed.
-    ///
-    /// `None` when the format is not one of these, which sends the caller back to the
-    /// Parquet scan it always made.
+    /// Scan an object-store prefix with the reader its format calls for; Polars'
+    /// other scans take the same `CloudOptions`. Parquet keeps its own branch at each
+    /// call site (the only format with hive partitioning here). `None` for other
+    /// formats, sending the caller to its Parquet scan.
     #[cfg(feature = "cloud")]
     pub(crate) fn scan_cloud_prefix(
         url: &str,
@@ -2291,13 +2125,12 @@ impl App {
         options: &OpenOptions,
     ) -> Option<Result<LazyFrame>> {
         // The formats the docs say a prefix reads in place. Parquet takes the caller's
-        // own scan, and a prefix of model files is read by its headers before this.
+        // scan; model files are read by their headers before this.
         if !format.reads_bucket_prefix() {
             return None;
         }
-        // A plain prefix is narrowed to the keys with an extension. A console's folder
-        // marker comes back from the listing as `data` for `data/`, which Polars reads
-        // as a file of a different kind from the rest and refuses the whole prefix.
+        // Narrow a plain prefix to keys with an extension: a console's folder marker lists
+        // as `data` for `data/`, and Polars refuses the whole prefix over it.
         let pl_path = if url.ends_with('/') && !url.contains('*') {
             PlRefPath::new(format!("{url}**/*.*").as_str())
         } else {
@@ -2314,8 +2147,8 @@ impl App {
         }))
     }
 
-    /// The format a prefix or glob in a store is read as, other than Parquet: what
-    /// the listing said, else what a glob's names end in (`*.arrow`).
+    /// The non-Parquet format a store prefix or glob reads as: the listing's, else a
+    /// glob's extension (`*.arrow`).
     #[cfg(feature = "cloud")]
     fn cloud_glob_format(url: &str, options: &OpenOptions) -> Option<FileFormat> {
         options
@@ -2353,8 +2186,7 @@ impl App {
                     .with_gcp([(GoogleConfigKey::SkipSignature, "true".into()), gcs_agent])
             }
             crate::source::ProviderKind::Gcs => match &resolved.gcloud {
-                // The token comes from `gcloud` whenever Polars asks, so a long scan
-                // outlives the one fetched here.
+                // The token comes from `gcloud` whenever Polars asks, so long scans outlive it.
                 Some((configuration, _)) => CloudOptions::default()
                     .with_gcp([gcs_agent])
                     .with_credential_provider(Some(crate::gcloud::polars_provider(configuration))),
@@ -2384,7 +2216,7 @@ impl App {
     }
 
     /// The URL, Polars options and store for one object-store path. `cloud` is the
-    /// effective config the `App` keeps (see `OpenOptions::effective_cloud`).
+    /// effective config (see `OpenOptions::effective_cloud`).
     #[cfg(feature = "cloud")]
     pub(crate) fn cloud_store_for(
         path: &Path,
@@ -2396,17 +2228,10 @@ impl App {
         Ok((full, cloud_opts, store))
     }
 
-    /// One Parquet object read in place: schema and row count from its footer, in one
-    /// tail read through one store.
-    ///
-    /// Asking the frame for its schema fetched the footer through Polars, and Polars
-    /// answers `len()` on a cloud scan by reading the first row group rather than the
-    /// footer, so the background count that followed an open downloaded row group 0 a
-    /// second time, alongside the buffer that was showing it. The footer has both
-    /// answers for one 256 KiB range request; the schema is handed to the scan so
-    /// Polars does not fetch it again, and the count is known before the first frame.
-    /// A failure is returned, not swallowed: the caller falls back to asking the frame
-    /// and puts the reason in the debug label.
+    /// One Parquet object read in place: schema and row count from its footer in one
+    /// 256 KiB tail read. Polars answers a cloud `len()` by reading row group 0, so the
+    /// schema is handed to the scan and the count known before the first frame. A
+    /// failure is returned: the caller falls back to asking the frame and labels why.
     #[cfg(feature = "cloud")]
     fn schema_state_from_cloud_object(
         path: &Path,
@@ -2435,8 +2260,7 @@ impl App {
         let lf = LazyFrame::scan_parquet(PlRefPath::new(full.as_str()), args)?;
         let state =
             DataTableState::from_schema_and_lazyframe(footer.schema.clone(), lf, options, None)?;
-        // The commonest cloud open, and the one the dataset index never heard about:
-        // the prefix route records what it read, and this one read a footer too.
+        // Record it in the dataset index, as the prefix route does.
         Self::record_cloud_object_facts(report.remembered.as_ref(), &full, &footer);
         let column_bytes = crate::schema_union::column_bytes_per_row(&[Some(footer.clone())]);
         let facts = OpenFacts {
@@ -2465,20 +2289,11 @@ impl App {
         #[cfg(not(feature = "cloud"))]
         let _ = (cloud, runtime);
 
-        // A meter per attempt, and the winner's is the open's. The routes are tried in
-        // order and the earlier ones measure before they discover they cannot finish —
-        // the local hive route times its walk and its footer pass, then bails five
-        // different ways. Sharing one meter would leave those figures on a dataset some
-        // later route built, which is a row saying no files on a dataset that has them.
-        //
-        // Two guards, and the test holds them together rather than either alone: the
-        // attempts take separate meters, and both full-scan arms hand back an empty
-        // one. A directory whose only Parquet is a writer's own bookkeeping — a
-        // `_delta_log` checkpoint — reaches the screen through the second of those, so
-        // `test_a_route_that_gave_up_leaves_no_figures_on_the_dataset_that_opened`
-        // fails when both are reverted and passes when either still stands. The
-        // per-attempt meter alone is defensive: the route guards are mutually
-        // exclusive enough that nothing reaches a later route through the first.
+        // A meter per attempt; the winner's becomes the open's. Earlier routes measure
+        // before finding they cannot finish, and a shared meter would leave their figures
+        // on a dataset a later route built. Both full-scan arms also return an empty one;
+        // `test_a_route_that_gave_up_leaves_no_figures_on_the_dataset_that_opened` holds
+        // the two guards together.
         let attempt = |report: &crate::measurements::OpenReport| crate::measurements::OpenReport {
             progress: report.progress.clone(),
             meter: Arc::new(crate::measurements::Meter::default()),
@@ -2525,12 +2340,10 @@ impl App {
                     };
                     return Ok((state, facts, "footer (cloud)".to_string()));
                 }
-                // Visible in the debug overlay, because the fallback costs a row group
-                // for the count and that should not pass for the intended path.
+                // Shown in the debug overlay: the fallback costs a row group for the count.
                 Err(e) => {
-                    // A fresh meter, not the failed footer read's: the full scan
-                    // measures nothing, and showing the attempt that did not work
-                    // would describe a route the dataset did not come by.
+                    // A fresh meter: the full scan measures nothing, and the failed attempt's figures
+                    // would describe a route not taken.
                     return Self::schema_state_from_full_scan(lf, path, options).map(|state| {
                         (
                             state,
@@ -2545,9 +2358,9 @@ impl App {
             .map(|state| (state, OpenFacts::default(), "full scan".to_string()))
     }
 
-    /// The files of one split, when `dir` is a Hugging Face `datasets` cache: its
-    /// `dataset_info.json` or `state.json` beside Arrow files. What was chosen and left
-    /// out goes in `report`. Any other directory reads every file.
+    /// The files of one split when `dir` is a Hugging Face `datasets` cache (its
+    /// `dataset_info.json` or `state.json` beside Arrow files); choices go in `report`.
+    /// Any other directory reads every file.
     fn hugging_face_split(
         dir: &Path,
         format: FileFormat,
@@ -2595,10 +2408,9 @@ impl App {
         crate::error_display::FileError::new(Path::new(url), what).into()
     }
 
-    /// The inputs of an Arrow read as one table, in order: each IPC file scanned where
-    /// it is, in a bucket or on disk, and each run of streams as its rows of
-    /// `converted`, the IPC file they were converted to. Stacked as the files of a
-    /// directory are ([`crate::readers::polars::union_of_files`]).
+    /// The inputs of an Arrow read as one table, in order: IPC files scanned in place,
+    /// and each run of streams as its rows of the `converted` IPC file. Stacked as a
+    /// directory's files are ([`crate::readers::polars::union_of_files`]).
     fn scan_arrow_parts(
         cloud: &crate::config::CloudConfig,
         converted: Option<&PathBuf>,
@@ -2621,8 +2433,8 @@ impl App {
                     args,
                 )?);
             }
-            // A converted stream sits in a temp directory the user names, `[` and all,
-            // and a file read in place may be called `d[1].arrow` (#632).
+            // Converted streams sit in a user-named temp directory (`[` and all), and a file
+            // read in place may be called `d[1].arrow`.
             let args = polars::prelude::UnifiedScanArgs {
                 glob: source::expands_as_glob(path),
                 ..Default::default()
@@ -2683,9 +2495,9 @@ impl App {
         }
     }
 
-    /// One split of a `save_to_disk` DatasetDict, `dir`, whose `dataset_dict.json` names
-    /// `splits`: the subdirectory `--table` names, else the first offered, read as any
-    /// directory is. The others are listed, as a cache directory's are.
+    /// One split of a `save_to_disk` DatasetDict whose `dataset_dict.json` names
+    /// `splits`: the one `--table` names, else the first, read as any directory. The
+    /// others are listed.
     fn dataset_dict_split(
         dir: &Path,
         splits: &[String],
@@ -2709,51 +2521,32 @@ impl App {
         Ok(scan)
     }
 
-    /// Build the LazyFrame for `paths`.
-    ///
-    /// Takes the cloud config by reference rather than reading `self`, so the same
-    /// code can run on a background thread — scanning is where the wall-clock time
-    /// goes for CSV (schema inference) and for hive directories with many files.
-    /// Whether the files about to be read as one table do not all carry the same
-    /// columns, for the note that says so.
-    ///
-    /// Only for the formats with no footer. A Parquet dataset's footers are read anyway
-    /// and produce the exact version of this — which columns, in how many files, and
-    /// where — so a second, vaguer note above those would be noise.
-    ///
-    /// A spread of the files rather than all of them, the same three
-    /// [`crate::schema_union::sample_files`] reads for the label, and for the same
-    /// reason: this runs on the way into a read the user is waiting for.
+    /// Whether the files about to be read as one table differ in columns, for a note.
+    /// Only footerless formats (Parquet's footers give the exact version), and only
+    /// the [`crate::schema_union::sample_files`] spread, since the user is waiting.
     fn files_disagree(
         files: &[PathBuf],
         options: &OpenOptions,
         found: FileFormat,
     ) -> crate::schema_union::Disagreement {
-        // The format the read will use, not the one the names suggested: an explicit
-        // `--format` outranks both, and judging a directory with a reader the open will
-        // not use is a note about a read that never happened.
+        // The format the read will use: `--format` outranks the names, and judging with
+        // another reader would describe a read that never happened.
         let format = options.format.unwrap_or(found);
         if format == FileFormat::Parquet {
             return Default::default();
         }
-        // Null values are the one setting the sample cannot mirror: `--null`
-        // takes `COL=VAL` forms the reader resolves against the file it is opening, and
-        // a sample that guessed would report a widening the table never did. They are
-        // unset unless the user names them, so this stands down where it must and runs
-        // everywhere else.
+        // `--null` takes `COL=VAL` forms resolved per file, which a sample cannot mirror;
+        // guessing would report a widening the table never did.
         if options.null_values.is_some() {
             return Default::default();
         }
         crate::schema_union::sample_files(files, format, &Self::read_as(options)).disagreement()
     }
 
-    /// The reader settings a sample has to copy to describe what the open will do.
-    ///
-    /// Taken from the options the open is actually being made with, not guessed at and
-    /// then bailed out of: `from_args_and_config` fills in `infer_schema_length` and
-    /// `parse_strings` on every run with no flags at all, so a predicate over "did the
-    /// user set anything" is true every time. That shipped once, and the notes about
-    /// how a directory had been stacked never appeared outside the tests.
+    /// The reader settings a sample copies to describe what the open will do, from the
+    /// open's actual options (`from_args_and_config` always fills
+    /// `infer_schema_length` and `parse_strings`, so "did the user set anything" is
+    /// always true).
     pub(crate) fn read_as(options: &OpenOptions) -> crate::schema_union::ReadAs {
         crate::schema_union::ReadAs {
             delimiter: options.delimiter,
@@ -2769,9 +2562,9 @@ impl App {
         }
     }
 
-    /// A format spec reads a local file, or the downloaded copy of one remote object
-    /// (`loading::remote_download`). What reaches here remote is a prefix or a glob,
-    /// which would otherwise be scanned in place without the spec and say nothing.
+    /// A format spec reads a local file or one downloaded remote object
+    /// (`loading::remote_download`); a remote prefix or glob here would be scanned in
+    /// place without the spec.
     pub(crate) fn refuse_spec_in_place(path: &Path, options: &OpenOptions) -> Result<()> {
         if source::is_remote_url(path)
             && (options.spec_file.is_some() || options.spec_name.is_some())
@@ -2785,11 +2578,10 @@ impl App {
         Ok(())
     }
 
-    /// `found` is what the read has to say about itself, for the caller to put in the
-    /// dataset's notes: which data files it passed over, and whether the files it did
-    /// read carry the same columns. Written here rather than worked out by the caller
-    /// because this is the pass that decides, and a second opinion formed from a second
-    /// directory read is a second answer waiting to disagree.
+    /// Build the LazyFrame for `paths`. Takes the cloud config by reference so it runs
+    /// on a worker. `found` collects what the read says of itself for the notes (data
+    /// files passed over, whether columns differ): this pass decides, so a second
+    /// directory read cannot disagree.
     pub(crate) fn build_lazyframe_from_paths_with(
         cloud: &crate::config::CloudConfig,
         paths: &[PathBuf],
@@ -2797,8 +2589,8 @@ impl App {
         report: &mut ReadReport,
         formats: &crate::formats::Registry,
     ) -> Result<Scan> {
-        // Arrow streams converted, or a bucket's Arrow listed: the load says where
-        // each input's rows are.
+        // Arrow streams converted or a bucket's Arrow listed: the load says where each
+        // input's rows are.
         if let Some(parts) = &options.arrow_parts {
             if options.table.is_some() && options.splits.is_none() {
                 // Named by an input the user knows, never the converted copy.
@@ -2836,8 +2628,8 @@ impl App {
                     let (full, cloud_opts) =
                         Self::resolve_cloud_url(Path::new(&format!("s3://{url}")), cloud)?;
                     let is_glob = source::is_prefix_or_glob(&full);
-                    // The reader the prefix's own format calls for, when the listing
-                    // said what that is. Only Parquet falls through to the scan below.
+                    // The reader the prefix's own format calls for, if the listing said; only Parquet
+                    // falls through.
                     if let Some(format) = Self::cloud_glob_format(&full, options)
                         && let Some(lf) = Self::scan_cloud_prefix(
                             &full,
@@ -2863,9 +2655,8 @@ impl App {
                     };
                     let lf = LazyFrame::scan_parquet(pl_path, args)
                         .map_err(|e| Self::cloud_scan_failed(&full, &e))?;
-                    // The frame alone. Building a state here would ask Polars for the
-                    // schema, which lists every file under a prefix, and the schema
-                    // phase that follows lists them once more for itself.
+                    // The frame alone: a state would make Polars list every file under the prefix,
+                    // and the schema phase lists them again.
                     return Ok(lf.into());
                 }
                 #[cfg(not(feature = "cloud"))]
@@ -2882,8 +2673,8 @@ impl App {
                     let (full, cloud_opts) =
                         Self::resolve_cloud_url(Path::new(&format!("gs://{url}")), cloud)?;
                     let is_glob = source::is_prefix_or_glob(&full);
-                    // The reader the prefix's own format calls for, when the listing
-                    // said what that is. Only Parquet falls through to the scan below.
+                    // The reader the prefix's own format calls for, if the listing said; only Parquet
+                    // falls through.
                     if let Some(format) = Self::cloud_glob_format(&full, options)
                         && let Some(lf) = Self::scan_cloud_prefix(
                             &full,
@@ -2924,8 +2715,8 @@ impl App {
                 {
                     let (full, cloud_opts) = Self::resolve_cloud_url(Path::new(&url), cloud)?;
                     let is_glob = source::is_prefix_or_glob(&full);
-                    // The reader the prefix's own format calls for, when the listing
-                    // said what that is. Only Parquet falls through to the scan below.
+                    // The reader the prefix's own format calls for, if the listing said; only Parquet
+                    // falls through.
                     if let Some(format) = Self::cloud_glob_format(&full, options)
                         && let Some(lf) = Self::scan_cloud_prefix(
                             &full,
@@ -2964,8 +2755,8 @@ impl App {
         Self::build_local_lazyframe(paths, options, report, formats)
     }
 
-    /// The files a directory holds, read as `found`: through the delimited spec the
-    /// first of them matches, when one does, else as the format says.
+    /// A directory's files read as `found`, through the delimited spec the first
+    /// matches, if any.
     fn read_directory_files(
         files: &[PathBuf],
         options: &OpenOptions,
@@ -2987,7 +2778,7 @@ impl App {
             };
             return Self::read_with_delimited_spec(files, &nested, report, formats, choice);
         }
-        // A spec's read says how its files differ itself, from their own header lines.
+        // A spec's read reports differing files itself, from their header lines.
         report.files_disagree = Self::files_disagree(files, options, found);
         let nested = OpenOptions {
             hive: false,
@@ -3017,8 +2808,7 @@ impl App {
         }
     }
 
-    /// `paths` read with the CSV reader in the dialect of the delimited spec `choice`
-    /// holds.
+    /// `paths` read with the CSV reader in the dialect of `choice`'s delimited spec.
     fn read_with_delimited_spec(
         paths: &[PathBuf],
         options: &OpenOptions,
@@ -3042,8 +2832,8 @@ impl App {
         Self::build_local_lazyframe(paths, &nested, report, formats)
     }
 
-    /// The local half of `build_lazyframe_from_paths_with`. A directory resolves to
-    /// local files, so the recursion stays here and needs no cloud settings.
+    /// The local half of `build_lazyframe_from_paths_with`: directories resolve to local
+    /// files, so no cloud settings.
     pub(crate) fn build_local_lazyframe(
         paths: &[PathBuf],
         options: &OpenOptions,
@@ -3063,9 +2853,8 @@ impl App {
             });
         }
 
-        // A glob of local files the first of which a delimited spec reads: read through
-        // the spec, file by file, as a directory of them is. Polars' own scan of the
-        // glob would read the spec's header lines as data.
+        // A local glob whose first file a delimited spec reads goes through the spec file
+        // by file; Polars' scan would read the spec's header lines as data.
         if let [pattern] = paths
             && !options.hive
             && options.delimited.is_none()
@@ -3085,10 +2874,9 @@ impl App {
             }
         }
 
-        // A format spec: one asked for, or one whose glob or magic the path matches. A
-        // path whose name or bytes already say what it is opens as it always has, but
-        // for a delimited spec's text. Several files are matched by the first, and
-        // only to a delimited spec.
+        // A format spec, asked for or matched by glob or magic. A path whose name or bytes
+        // already say its format opens as such, except for delimited specs' text. Several
+        // files match by the first, and only to a delimited spec.
         if !options.hive && options.delimited.is_none() {
             let asked = crate::formats::Asked {
                 spec_file: options.spec_file.clone(),
@@ -3134,20 +2922,13 @@ impl App {
             )?));
         }
 
-        // One path that is a directory, whether or not `--hive` said so: naming a
-        // directory is the request to read it, and the dispatch below is what picks the
-        // reader for what it holds. Behind `options.hive` alone, every route that
-        // reached here with a directory and without the flag fell through to the
-        // Parquet scan and answered `Unsupported file type`.
+        // One directory path, with or without `--hive`: naming a directory asks to read
+        // it, and the dispatch below picks the reader for its contents.
         if paths.len() == 1 && (options.hive || path.is_dir()) {
             // A file is a file whatever its name holds: `a*b.parquet` is not a glob.
             let is_single_file = path.is_file();
             if !is_single_file {
-                // What the directory holds picks the reader. A directory used to go
-                // straight to the Parquet scan whatever was in it, so a directory of
-                // `.json.gz` was opened by seeking each file's last four bytes for a
-                // `PAR1` that was never going to be there — the files were fine, the
-                // reader was never asked to be the right one.
+                // The directory's contents pick the reader.
                 if path.is_dir()
                     && let Some(splits) = crate::hf_splits::dataset_dict(path)
                 {
@@ -3157,20 +2938,15 @@ impl App {
                     match crate::discover::directory_format(path) {
                         // Flat and Parquet: the scan below is already right for it.
                         crate::discover::DirectoryFormat::One(FileFormat::Parquet, _) => {}
-                        // Partitions, or an empty directory. The files are a level down
-                        // under `key=value` and only the hive scan walks a tree — but
-                        // hive partitioning is a Parquet-only capability in the reader
-                        // datui uses (`HiveOptions::new_disabled()` is hard-coded for
-                        // CSV and NDJSON), so partitions of anything else cannot be
-                        // read as one table here. Saying which files they are beats
-                        // Parquet's complaint that they do not end with `PAR1`.
+                        // Partitions, or empty. Only the hive scan walks `key=value` trees, and hive
+                        // partitioning is Parquet-only here (`HiveOptions::new_disabled()` for CSV and
+                        // NDJSON), so other formats in partitions are refused with their file names.
                         crate::discover::DirectoryFormat::Deeper => {
                             if let crate::discover::DirectoryFormat::One(found, files) =
                                 crate::discover::hive_leaf_format(path)
                                 && found != FileFormat::Parquet
                             {
-                                // The extension rather than the format's own name: it
-                                // is what is on the files the user can see.
+                                // The extension, as the user sees it on the files, not the format's name.
                                 let named = files
                                     .first()
                                     .and_then(|f| crate::discover::data_extension(f))
@@ -3185,10 +2961,8 @@ impl App {
                             }
                         }
                         crate::discover::DirectoryFormat::One(found, files) => {
-                            // Read as the files themselves, through the same readers a
-                            // list of files typed on the command line goes through. An
-                            // explicit `--format` is the user's own answer and outranks
-                            // what the names say.
+                            // Read as a list of files typed on the command line would be; `--format`
+                            // outranks the names.
                             let format = options.format.unwrap_or(found);
                             let files =
                                 Self::hugging_face_split(path, format, files, options, report)?;
@@ -3201,22 +2975,16 @@ impl App {
                             files,
                             passed_over,
                         } => {
-                            // The commonest format is the table. A directory of a
-                            // thousand CSVs and one stray JSON is a directory of CSVs,
-                            // and refusing the whole of it over the stray was datui
-                            // deciding that a directory it could read was not worth
-                            // reading.
+                            // The commonest format is the table: a thousand CSVs and one stray JSON are a
+                            // directory of CSVs.
                             let format = options.format.unwrap_or(found);
                             let files =
                                 Self::hugging_face_split(path, format, files, options, report)?;
                             let lf = Self::read_directory_files(
                                 &files, options, found, report, formats,
                             )?;
-                            // After the call, which reads a flat directory of one format
-                            // and leaves nothing out of its own. A model's config and
-                            // tokenizer JSON are not data the read passed over, and the
-                            // weights are not the commonest format there, so neither is
-                            // said.
+                            // A model's config and tokenizer JSON are not data passed over, so a model
+                            // directory reports nothing left out.
                             if !matches!(found, FileFormat::Safetensors | FileFormat::Gguf) {
                                 report.left_out = passed_over;
                             }
@@ -3227,8 +2995,7 @@ impl App {
                 let use_parquet_hive =
                     path.is_dir() || path.as_os_str().to_string_lossy().contains(".parquet");
                 if use_parquet_hive {
-                    // Only build the LazyFrame here; schema and partition discovery are the
-                    // schema phase's ("Reading schema").
+                    // Only the LazyFrame here; schema and partition discovery are the schema phase's.
                     return crate::readers::hive::scan_parquet_hive(path).map(Scan::from);
                 }
                 return Err(color_eyre::eyre::eyre!(
@@ -3237,10 +3004,9 @@ impl App {
             }
         }
 
-        // A file with no extension may still be Parquet: a part file in a directory named
-        // `.parquet`. A regular file is only read when nothing else settled it. A name
-        // that says text (`.log`, `.txt`) is read as lines unless its bytes say a format:
-        // candump writes `.log`.
+        // A file with no extension may still be Parquet (a part file in a `.parquet`
+        // directory). A text name (`.log`, `.txt`) reads as lines unless its bytes say a
+        // format: candump writes `.log`.
         let compressed = options
             .compression
             .or_else(|| CompressionFormat::from_extension(path))
@@ -3255,8 +3021,7 @@ impl App {
         });
         let mut effective_format = options
             .format
-            // A name that says a format another refines is asked its bytes for it:
-            // journal JSON in a `.json` file.
+            // A format another refines asks the bytes: journal JSON in a `.json` file.
             .or_else(|| {
                 named.filter(|f| !f.is_lines()).map(|f| {
                     (!compressed)
@@ -3270,12 +3035,11 @@ impl App {
                     && crate::discover::is_parquet_key(&path.to_string_lossy()))
                 .then_some(FileFormat::Parquet)
             })
-            // Any other file whose name says no format, by its first bytes: each
-            // format's signature says where it is believed (`crate::readers`).
+            // Any other unnamed format, by its first bytes (see `crate::readers`).
             .or_else(|| crate::readers::sniff_open(path, options.compression))
             .or(named);
-        // Text no signature claims: JSON, CSV or TSV on evidence, lines otherwise. Bytes
-        // that are not text are shown as they are.
+        // Text no signature claims: JSON, CSV or TSV on evidence, lines otherwise; non-text
+        // bytes are shown raw.
         if effective_format.is_none()
             && let [file] = paths
             && file.is_file()
@@ -3286,8 +3050,8 @@ impl App {
         }
         report.format = effective_format;
 
-        // Refused rather than ignored: a file of one table opened with `--table` would
-        // otherwise look like the table asked for.
+        // Refused, not ignored: a one-table file with `--table` would pass for the table
+        // asked for.
         if options.table.is_some()
             && !effective_format.is_some_and(FileFormat::takes_table)
             && options.splits.is_none()
@@ -3295,10 +3059,9 @@ impl App {
             return Err(Self::one_table(Some(path), effective_format));
         }
 
-        // One compressed CSV, TSV, PSV or text file, as a directory of one resolves to:
-        // the load decompresses it (`Step::Decompress`) into a copy the dataset holds.
-        // Read here, the copy went with the state dropped below and the frame scanned
-        // nothing.
+        // One compressed CSV, TSV, PSV or text file: the load decompresses it
+        // (`Step::Decompress`) into a copy the dataset holds; a copy made here would be
+        // dropped with the state below.
         if let [file] = paths
             && compressed
             && let Some(format) = effective_format.filter(|f| f.decompressed_once())
@@ -3329,8 +3092,8 @@ impl App {
                 _ => crate::readers::many_files_refused(),
             }));
         };
-        // The home screen asks `reads_many_files` before it offers a directory as one
-        // dataset, and this is the same question, so it cannot offer one this refuses.
+        // The same question home asks (`reads_many_files`) before offering a directory, so
+        // it never offers one this refuses.
         if paths.len() > 1 && !format.reads_many_files() {
             if !path.exists() {
                 return Err(std::io::Error::new(

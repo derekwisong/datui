@@ -41,18 +41,15 @@ impl App {
                 }
             }
             KeyCode::Char('s') if !form => {
-                // A view saved from an untouched table would carry
-                // nothing, and — matching by schema — it would shadow
-                // real views in the V/auto-apply gate as a well-used
-                // no-op. Refuse at the door, not after the form.
+                // A view of an untouched table carries nothing and, matching by schema, would
+                // shadow real views in the V/auto-apply gate: refuse at the door.
                 if self
                     .data_table_state
                     .as_ref()
                     .is_some_and(|state| state.is_at_defaults())
                     && self.saved_chart().is_none()
                 {
-                    // A refusal is validation, not a failure: it is said on
-                    // the surface's own status line, not in a modal.
+                    // A refusal is validation: said on the surface's status line, not in a modal.
                     self.view_modal.status = Some(
                             "Nothing to save yet: set a sample, query, filter, sort, column layout, chart, or pivot/melt first."
                                 .to_string(),
@@ -67,8 +64,7 @@ impl App {
                         .enter_edit_mode(&view, self.display.history_limit, &self.theme);
                 }
             }
-            // Asked with the one confirmation, on No: a reflexive second key
-            // declines.
+            // Asked with focus on No: a reflexive second key declines.
             KeyCode::Char('d') if !form => {
                 if let Some(view) = self.view_modal.selected_view() {
                     let message = format!("Delete \"{}\"? This cannot be undone.", view.name);
@@ -117,8 +113,7 @@ impl App {
                     // The error clears as soon as the name changes.
                     self.view_modal.name_error = None;
                 }
-                // The event goes through whole: text fields keep their readline
-                // bindings, so Ctrl+W must arrive as Ctrl+W.
+                // The whole event goes through so text fields keep readline bindings (Ctrl+W).
                 if let Some(input) = self.view_modal.focused_input_mut() {
                     input.handle_key(event, None);
                 }

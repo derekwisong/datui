@@ -19,16 +19,15 @@ impl App {
             return None;
         }
 
-        // Whatever this key does, the form is being edited again: the re-accented
-        // gap line goes back to plain (Enter below re-arms it).
+        // Any key means the form is being edited again: the accented gap line returns to
+        // plain (Enter re-arms it).
         self.copy_modal.attention = false;
 
         match crate::form::key(&mut self.copy_modal, event) {
             FormKey::Cancel => {
                 self.close_overlay();
             }
-            // Enter copies from anywhere in the form; what it will do has been
-            // echoed on the spec line all along.
+            // Enter copies from anywhere; the spec line has echoed what it will do.
             FormKey::Submit => {
                 if self.copy_modal.validation_error().is_some() {
                     self.copy_modal.attention = true;
@@ -47,24 +46,24 @@ impl App {
         None
     }
 
-    /// Enter in the copy dialog: the synchronous scopes copy from the buffer
-    /// and flash; the table scope guards on size, then collects off-thread.
+    /// Enter in the copy dialog: buffer scopes copy and flash; the table scope checks
+    /// size, then collects off-thread.
     pub(crate) fn perform_copy(&mut self) -> Option<AppEvent> {
         use copy_modal::{CopyScope, thousands};
-        /// What Enter decided, worked out under the table borrow and acted on
-        /// after it: writing to the clipboard needs the whole app back.
+        /// What Enter decided under the table borrow, acted on after: the clipboard needs
+        /// the whole app.
         enum Planned {
             Copy(clipboard::Payload, String),
             Collect,
-            /// None: the size is not known (the row count is still coming, or a
-            /// binary column's width is known to no footer).
+            /// The size, if known (not while the count is coming or a binary column's width is
+            /// unknown).
             Confirm(Option<usize>),
         }
         let format = self.copy_modal.format;
         let header = self.copy_modal.header();
         let scope = self.copy_modal.scope;
-        // What the destination takes decides what is built: no HTML flavor for one
-        // that cannot offer it, and no copy past its cap.
+        // The destination decides what is built: no HTML for one that cannot take it, and
+        // nothing past its cap.
         let accepts = match self.copy_destination() {
             Ok(destination) => destination.accepts(),
             Err(e) => {
@@ -121,8 +120,7 @@ impl App {
                     "Copied the view as Python".to_string(),
                 )),
                 CopyScope::Table => {
-                    // A capped destination's copy is read only as far as its cap, so
-                    // what could be held is the smaller of the two.
+                    // A capped destination's copy reads only to its cap: the smaller of the two.
                     let cap = accepts
                         .base64_limit
                         .map_or(usize::MAX, |limit| limit / 4 * 3);
@@ -137,9 +135,7 @@ impl App {
                         }
                         Some(_) => Ok(Planned::Collect),
                         None if cap <= Self::COPY_CONFIRM_BYTES => Ok(Planned::Collect),
-                        // The row count has not landed yet, or a binary column's width
-                        // is unknown, so the size is anyone's guess: ask before
-                        // collecting an unknown amount.
+                        // Size unknown (count still coming, binary width unknown): ask before collecting.
                         None => Ok(Planned::Confirm(None)),
                     }
                 }
@@ -241,9 +237,8 @@ impl App {
         .render()
     }
 
-    /// Hand a payload to the clipboard destination, building the destination
-    /// at the first copy, and flash or raise the error modal — a copy that
-    /// silently did nothing would be worse than one that failed out loud.
+    /// Hand a payload to the clipboard (built at the first copy), then flash or show
+    /// the error: a silent no-op copy is worse than a loud failure.
     pub(crate) fn finish_copy(&mut self, payload: clipboard::Payload, message: String) {
         let written = self
             .copy_destination()
@@ -291,8 +286,7 @@ impl App {
 
     /// Copy the one value of `column`, exact, and flash `message`.
     pub(crate) fn copy_value(&mut self, column: polars::prelude::Column, message: String) {
-        // Destination first, as the copy dialog's: a value over the terminal's cap
-        // is refused before it is formatted, here or on a worker.
+        // Destination first: a value over the terminal's cap is refused before formatting.
         let limit = match self.copy_destination() {
             Ok(destination) => destination.accepts().base64_limit,
             Err(e) => {
@@ -327,8 +321,8 @@ impl App {
         });
     }
 
-    /// Replace the clipboard destination, so tests can watch what a copy sends
-    /// without a display server or a terminal in the loop.
+    /// Replace the clipboard destination, so tests can watch copies without a display
+    /// or terminal.
     pub fn set_clipboard_destination(&mut self, destination: Box<dyn clipboard::Destination>) {
         self.external.clipboard = Some(destination);
     }

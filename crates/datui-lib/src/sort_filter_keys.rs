@@ -16,8 +16,7 @@ impl App {
         // The status line is about the last key; this one replaces it.
         self.sort_filter_modal.sort.status = None;
 
-        // Ctrl+J is the apply chord beside Ctrl+Enter: it works on every
-        // terminal, and some send Ctrl+Enter as Ctrl+J.
+        // Ctrl+J beside Ctrl+Enter: some terminals send Ctrl+Enter as Ctrl+J.
         let apply_chord = ctrl && matches!(event.code, KeyCode::Enter | KeyCode::Char('j'));
 
         if self.sort_filter_modal.filter.editor.is_some() {
@@ -40,8 +39,8 @@ impl App {
         }
 
         let modal = &mut self.sort_filter_modal;
-        // The Columns list is a list: it pages, has ends, and ↓ stops at its last
-        // column rather than wrapping round the form.
+        // The Columns list pages, has ends, and ↓ stops at its last column instead of
+        // wrapping.
         if let SortFilterField::Column(i) = modal.focus {
             let last = modal.sort.filtered_columns().len().saturating_sub(1);
             let page = modal.sort.page_rows.max(1);
@@ -61,8 +60,8 @@ impl App {
         let from = modal.focus;
         let list_cursor = modal.sort.table_state.selected();
         match crate::form::key(modal, event) {
-            // Into the list from find, focus lands where the list's cursor is (the
-            // table's column cursor on open), not on its first row.
+            // From find into the list, focus lands on the list's cursor (the table's column
+            // cursor on open).
             FormKey::Moved
                 if from == SortFilterField::Find
                     && modal.focus == SortFilterField::Column(0)
@@ -115,8 +114,8 @@ impl App {
         None
     }
 
-    /// The keys an entry of the list takes beyond the form's: reorder, remove,
-    /// clear, and on the Columns tab every per-column property.
+    /// List entry keys beyond the form's: reorder, remove, clear, and the Columns tab's
+    /// per-column properties.
     fn sort_filter_list_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         let modal = &mut self.sort_filter_modal;
         let focus = modal.focus;
@@ -178,8 +177,7 @@ impl App {
         None
     }
 
-    /// The inline filter editor owns the keys while it is up: a small form within
-    /// the form. Esc ends the edit and only the edit.
+    /// The inline filter editor owns the keys while up; Esc ends only the edit.
     fn filter_editor_key(&mut self, event: &KeyEvent) {
         let m = &mut self.sort_filter_modal.filter;
         let Some(editor) = m.editor.as_mut() else {
@@ -188,10 +186,9 @@ impl App {
         let mut committed = false;
         match event.code {
             KeyCode::Esc => m.cancel_editor(),
-            // Enter chooses the step's pick; from the value it commits the row.
-            // Space chooses too: a space typed into the narrowing filter matches
-            // nothing and blanks the list. (The value field below keeps Space for
-            // typing.)
+            // Enter and Space choose the step's pick (a space typed into the narrowing filter
+            // would blank the list); from the value, Enter commits the row, and the value
+            // field keeps Space for typing.
             KeyCode::Enter | KeyCode::Tab | KeyCode::Right | KeyCode::Char(' ')
                 if editor.step != FilterEditStep::Value =>
             {
@@ -213,8 +210,7 @@ impl App {
                     }
                     FilterEditStep::Operator => {
                         editor.step = FilterEditStep::Value;
-                        // Pre-filled from the statement under edit; typing
-                        // replaces it, arrows keep it editable.
+                        // Pre-filled from the statement being edited: typing replaces it.
                         editor.value.select_all();
                     }
                     FilterEditStep::Value => {}

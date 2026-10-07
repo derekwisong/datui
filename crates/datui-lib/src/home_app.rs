@@ -20,78 +20,69 @@ use std::sync::{Arc, Mutex};
 /// The home screen's work in flight and what it keeps for the session: probes, listings,
 /// search, previews and schemas.
 pub struct HomeApp {
-    /// Network roots currently being listed off-thread, so a probe is not started
-    /// twice. Entries are never removed for a root that never answers — that thread
-    /// is unreclaimable, and retrying it would only block another one.
+    /// Network roots being listed off-thread, so a probe is not started twice. Never
+    /// removed for a root that does not answer: its thread is lost, and a retry would
+    /// lose another.
     pub(crate) probes_inflight: Vec<PathBuf>,
-    /// The stop flag of each cloud listing out, by place: leaving the place sets it, and
-    /// the listing ends before its next page.
+    /// Each cloud listing's stop flag, by place: leaving the place stops it before its
+    /// next page.
     pub(crate) listing_cancels: HashMap<PathBuf, Arc<std::sync::atomic::AtomicBool>>,
-    /// The listing out for the names a filter asked of a cut-short cloud directory:
-    /// where, the name prefix, and its stop flag.
+    /// The listing a filter asked of a cut-short cloud directory: where, the name
+    /// prefix, and its stop flag.
     pub(crate) narrowing: Option<(PathBuf, String, Arc<std::sync::atomic::AtomicBool>)>,
-    /// True once cloud discovery has been started. Enumeration costs a request per
-    /// provider, so it happens once and its result is kept for the session.
+    /// Cloud discovery has started. It costs a request per provider, so it runs once
+    /// per session.
     #[cfg(feature = "cloud")]
     pub(crate) cloud_discovery_started: bool,
-    /// True while a recursive search below the working directory is out. One at a
-    /// time: the walk is bounded, and a second one would only compete for the disk.
+    /// A recursive search below the working directory is out. One at a time: a second
+    /// would only compete for the disk.
     pub(crate) search_inflight: bool,
-    /// The home generation the walk out was started in. Its batches and its end are its
-    /// own, whatever refreshes the listing meanwhile; the root decides whether they
-    /// still describe where the user is.
+    /// The home generation the walk started in. Its batches stay its own across
+    /// refreshes; the root decides whether they still apply.
     pub(crate) search_generation: u64,
-    /// Why the last open failed, shown on the home screen when the error is dismissed
-    /// and there is nothing to fall back to.
+    /// Why the last open failed, shown at home when the error is dismissed with nothing
+    /// to fall back to.
     pub(crate) last_load_error: Option<String>,
     /// Schema reads currently out, so the same one is not requested every frame.
     pub(crate) schema_inflight: Vec<PathBuf>,
     /// Invalidates listings and measurements from a request the user has moved past.
     pub(crate) generation: u64,
-    /// Rows came in for a listing still being read; it is listed again before the
-    /// next frame.
+    /// Rows arrived for a listing still being read; it is listed again before the next
+    /// frame.
     pub(crate) refresh_owed: bool,
-    /// Schema previews, memoised for the session only. Persisting these would be a
-    /// catalogue by another name, and it would go stale.
+    /// Schema previews, memoized for the session only (persisted, they would go stale).
     pub(crate) schema_cache: HashMap<PathBuf, Option<discover::SchemaPreview>>,
     /// The home screen's `ROWS` previews, and the dataset the newest one built.
     pub previews: crate::home_preview::Previews,
-    /// The directories Ctrl+D kept in the cache before 0.4.0 have been moved into
-    /// `catalog.toml`, or there were none.
+    /// The pre-0.4.0 Ctrl+D directories in the cache have been moved to `catalog.toml`.
     pub(crate) remembered_moved: bool,
-    /// Which home screen workers panic before their work starts, for tests of what a
-    /// dying worker leaves behind. The jobs' own is [`Jobs::worker_dies`].
+    /// Which home workers panic before starting, for tests. The jobs' own is
+    /// [`Jobs::worker_dies`].
     #[cfg(test)]
     pub(crate) worker_dies: Option<crate::HomeWorkerDies>,
-    /// Whether a browser opened here opens in front of the user: `o` on a
-    /// documentation link is offered only then (`link_open::local_desktop`).
+    /// Whether a browser opened here appears in front of the user: `o` on a doc link
+    /// is offered only then (`link_open::local_desktop`).
     pub local_desktop: bool,
     /// The reads of data started this session, by kind.
     pub reads: crate::home_preview::ReadCounts,
 }
 
-/// Rows measured per background pass. Small enough that a slow filesystem shows
-/// progress rather than a long silence.
+/// Rows measured per background pass: small, so a slow filesystem shows progress.
 const MEASURE_BATCH: usize = 12;
 
 /// Rows a probe measures while it is already reading a remote directory.
 const PROBE_MEASURE_LIMIT: usize = 24;
 
-/// Rows one classification pass looks into.
-///
-/// A cap on work in flight rather than a budget spent per directory: what gets looked
-/// into is what is on screen, and the next pass is chosen from the viewport as it is
-/// when the previous one lands. Sized like [`MEASURE_BATCH`], for the same reason —
-/// on a share that answers in milliseconds per row, a screenful arriving in pieces
-/// reads as filling in, and one long silence reads as broken.
+/// Rows one classification pass looks into: a cap on work in flight, the next pass
+/// chosen from the viewport when this one lands. Small like [`MEASURE_BATCH`], so a
+/// screen fills in rather than going silent.
 pub(crate) const CLASSIFY_BATCH: usize = 16;
 
-/// Probes allowed at once. A probe of a share that has gone away holds its thread
-/// until the process exits, so the number of them has to be bounded.
+/// Probes allowed at once: a probe of a gone share holds its thread until exit.
 pub(crate) const MAX_CONCURRENT_PROBES: usize = 4;
 
-/// A number for each walk the home search starts, so scorings of one are never taken
-/// for another's, even when the two walked the same place.
+/// A number per home search walk, so one walk's scorings are never taken for
+/// another's over the same place.
 fn next_search_epoch() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -142,9 +133,8 @@ pub(crate) fn home_cloud_source(
             "not configured"
         }
     });
-    // A source that cannot list says what to do about it where the row has room: the
-    // count already carries the short problem, and the login it would use is moot
-    // (#547 D5).
+    // A source that cannot list says what to do where the row has room; the count
+    // carries the short problem.
     let note = match (&source.problem, short) {
         (Some(problem), Some(short)) => problem
             .strip_prefix(short)
@@ -237,20 +227,18 @@ fn summarize_cloud_failure(error: &str) -> (String, String) {
 }
 
 impl App {
-    /// Schema for a home-screen entry, read from Parquet metadata and memoised for
-    /// the session. `None` means "not knowable without a scan", which the UI reports
-    /// rather than papering over.
+    /// Schema for a home entry, from Parquet metadata, memoized for the session. `None`
+    /// means not knowable without a scan, and the UI says so.
     pub fn home_schema(&mut self, entry: &discover::Entry) -> Option<discover::SchemaPreview> {
-        // A schema preview reads a local file. Nothing in an object store is read before
-        // it is opened: asking would only come back empty, again on every rebuild.
+        // Previews read local files only: nothing in an object store is read before it is
+        // opened.
         if home::is_cloud_place(&entry.path) || home::is_object_store_url(&entry.path) {
             return None;
         }
         if let Some(cached) = self.home_app.schema_cache.get(&entry.path) {
             return cached.clone();
         }
-        // Reading a schema opens a file, so it is requested rather than done here.
-        // Until it arrives the preview says so; it never blocks the frame.
+        // Opening a file, so requested from a worker; the frame never waits.
         self.request_home_schema(entry.clone());
         None
     }
@@ -269,9 +257,8 @@ impl App {
         }
     }
 
-    /// List the directory the `~` prompt is typing, when it is not the one listed. A
-    /// URL is listed from what the screen already knows; a local directory is read on
-    /// a worker.
+    /// List the directory the `~` prompt is typing, if not already listed: a URL from
+    /// what the screen knows, a local directory on a worker.
     pub(crate) fn list_the_typed_directory(&mut self) {
         if !self.home.path_input_active {
             return;
@@ -289,7 +276,7 @@ impl App {
             self.home.path_listing = Some(home::names_under(&dir, self.home.known_urls()));
             return;
         }
-        // Read off the UI thread: a typed path is where a dead mount gets named.
+        // Off the UI thread: a typed path may name a dead mount.
         let tx = self.events.clone();
         let owed = self.owed_answer(AppEvent::HomePathListed {
             listing: Box::new(home::PathListing {
@@ -327,9 +314,9 @@ impl App {
         });
     }
 
-    /// The first rows of a home-screen file for its `ROWS` preview, read on a worker
-    /// the way its open reads them. `None` until they land, and for a row that is not
-    /// previewed. `screen_height` sizes the page to the one the table will ask for.
+    /// A home file's first rows for its `ROWS` preview, read on a worker as its open
+    /// reads them. `None` until they land or when not previewed. `screen_height` sizes
+    /// the page to the table's.
     pub fn home_preview_rows(
         &mut self,
         entry: &discover::Entry,
@@ -354,8 +341,8 @@ impl App {
         self.home_app.previews.reading(path)
     }
 
-    /// Read a file's first page on a worker, through the open's own scan and schema
-    /// read, so the open can install what it built.
+    /// Read a file's first page on a worker through the open's own scan and schema read,
+    /// so the open can install the result.
     fn request_home_preview(
         &mut self,
         path: PathBuf,
@@ -407,10 +394,9 @@ impl App {
         });
     }
 
-    /// What the open of `path` from the home screen reads first: its scan, its schema
-    /// and the page the table asks for when `visible` rows show. Built by the open's
-    /// own steps with the options the home screen opens a file with, so the dataset is
-    /// the one the open would build.
+    /// What opening `path` from home reads first: scan, schema and the page for
+    /// `visible` rows, built by the open's own steps and options so the dataset is the
+    /// one the open would build.
     fn read_home_preview(
         path: &Path,
         cloud: &crate::config::CloudConfig,
@@ -495,7 +481,7 @@ impl App {
 
         let generation = self.home_app.generation;
         let tx = self.events.clone();
-        // Remembered as having none, so the preview is not asked for again.
+        // Remembered as none on failure, so it is not asked again.
         let owed = self.owed_answer(AppEvent::HomeSchemaReady {
             generation,
             path: entry.path.clone(),
@@ -513,31 +499,22 @@ impl App {
         });
     }
 
-    /// Start listing any network roots that have not answered yet.
-    ///
-    /// Nothing here waits on the result. A share that has gone away leaves its thread
-    /// blocked in the kernel — on a `hard` NFS mount that is uninterruptible and the
-    /// thread never returns — so the task is abandoned rather than joined, exactly as
-    /// an abandoned dataset load is.
+    /// Start listing network roots that have not answered yet. Never waits: a gone
+    /// share (a `hard` NFS mount) blocks its thread uninterruptibly, so the task is
+    /// abandoned, not joined.
     pub(crate) fn spawn_home_probes(&mut self) {
         self.stop_listings_left_behind();
         for root in self.home.pending_probes() {
             if self.home_app.probes_inflight.contains(&root) {
-                // Left and come back to before its next page: it goes on.
+                // Left and returned to before its next page: it goes on.
                 if let Some(cancelled) = self.home_app.listing_cancels.get(&root) {
                     cancelled.store(false, std::sync::atomic::Ordering::Relaxed);
                 }
                 continue;
             }
-            // Each probe of an unreachable share costs a thread that will never come
-            // back. A handful is a rounding error; an unbounded number, on a machine
-            // with a page of dead mounts, is not.
-            //
-            // Except the directory browsed into, which is the whole screen and has
-            // nothing else to show. Held behind the cap, it waited on roots the user
-            // had left — a few slow bucket listings kept a share's directory on a
-            // spinner long after it could have been read. One more thread per
-            // directory the user opens is bounded by the user.
+            // Each probe of an unreachable share costs a thread forever, so they are capped.
+            // The browsed directory is exempt: it is the whole screen, and the user bounds how
+            // many they open.
             let browsed = self.home.browsing.as_ref() == Some(&root);
             if !browsed && self.home_app.probes_inflight.len() >= MAX_CONCURRENT_PROBES {
                 continue;
@@ -561,23 +538,13 @@ impl App {
                     .insert(root.clone(), flag.clone());
                 flag
             };
-            // A detached OS thread, not the runtime's blocking pool. A thread wedged
-            // on an unreachable `hard` mount never returns, and the pool is shared with
-            // the work that actually loads data — a few dead shares must not eat into
-            // the capacity that opening a dataset depends on.
+            // A detached thread, not the runtime's blocking pool: a thread wedged on a dead
+            // mount never returns, and must not eat the pool that loads data.
             std::thread::spawn(move || {
                 owed.run(|| {
-                    // A bucket or a prefix inside one. It looks like a network root to
-                    // everything above, and it is, but it is read with an object-store
-                    // listing rather than `read_dir` — which on a `gs://` path fails, which
-                    // is why descending into a bucket used to show nothing at all.
-                    //
-                    // Deliberately metadata-only. A delimited listing returns names, sizes
-                    // and modification times for one level, and nothing here reads an
-                    // object's contents: no footers, no schemas, no row counts. Those are
-                    // what a local listing fills in for free from bytes already on the
-                    // machine, and what would cost a ranged read per row against an object
-                    // store somebody pays egress on.
+                    // A bucket or prefix: listed with an object-store listing, not `read_dir` (which
+                    // fails on `gs://`). Metadata only: names, sizes and times for one level; no
+                    // footers, schemas or counts, which would cost a paid ranged read per row.
                     #[cfg(feature = "cloud")]
                     if let Some((id, account)) = home::cloud_account(&root) {
                         let listed = wait_on_runtime(&runtime, async move {
@@ -614,8 +581,7 @@ impl App {
                         || source::azure_parts(&root.to_string_lossy()).is_some()
                     {
                         let url = root.to_string_lossy().into_owned();
-                        // Each page's rows are drawn as they come, and leaving the place
-                        // stops the listing before its next page.
+                        // Each page's rows are drawn as they come; leaving the place stops the listing.
                         let watch = crate::cloud_browse::Watch {
                             progress: Some(std::sync::Arc::new({
                                 let (tx, root) = (tx.clone(), root.clone());
@@ -632,8 +598,8 @@ impl App {
                         let listed = wait_on_runtime(&runtime, async move {
                             crate::cloud_browse::list_objects_watched(&url, &cloud, &watch).await
                         });
-                        // A refused listing says why, rather than reading as a place that
-                        // stopped answering.
+                        // A refused listing says why, rather than reading as a place that stopped
+                        // answering.
                         match listed {
                             Some(Err(message)) => {
                                 log::warn!(
@@ -660,8 +626,7 @@ impl App {
                         }
                         return;
                     }
-                    // Nothing to list a bucket with, and `read_dir` on its URL would
-                    // only call it unavailable.
+                    // No cloud feature: `read_dir` on a bucket URL would only say unavailable.
                     #[cfg(not(feature = "cloud"))]
                     if source::is_remote_url(&root) {
                         let message = "cloud support not in this build".to_string();
@@ -670,8 +635,7 @@ impl App {
                     }
                     let mut cut_short = false;
                     let rows = if std::fs::read_dir(&root).is_ok() {
-                        // What has been read shows while the rest is read: a share can take
-                        // seconds over a directory of thousands.
+                        // What has been read shows while the rest is read (seconds for thousands of files).
                         let scan = crate::discover::scan_dir_progressive(&root, |read| {
                             let _ = tx.send(AppEvent::HomeProbeProgress {
                                 root: root.clone(),
@@ -680,15 +644,12 @@ impl App {
                         });
                         cut_short = scan.truncated;
                         let mut rows = scan.entries;
-                        // Measuring happens here too: it is the same remote filesystem,
-                        // and this thread is already the one allowed to block on it.
+                        // Measured here too: this thread is already the one allowed to block on the share.
                         for row in rows.iter_mut().take(PROBE_MEASURE_LIMIT) {
                             crate::discover::enrich(row);
                         }
-                        // Remote datasets are measured nowhere else, so this is the only
-                        // chance to remember them. Without it a remote row is blank on
-                        // every run, which is exactly backwards: the hardest things to
-                        // reach are the ones most worth remembering.
+                        // Remote datasets are measured nowhere else, so remember them here; otherwise a
+                        // remote row is blank on every run.
                         let mounts = crate::locality::Mounts::current();
                         for row in rows.iter_mut() {
                             row.cost.source = Some(mounts.describe(&row.path).fstype);
@@ -709,8 +670,8 @@ impl App {
         }
     }
 
-    /// Stop the cloud listings of places no longer on screen: the one browsed, or the
-    /// roots of the home listing. One left and come back to is listed again.
+    /// Stop cloud listings of places no longer on screen (the browsed one, or home's
+    /// roots). A place left and revisited is listed again.
     fn stop_listings_left_behind(&mut self) {
         let home = &self.home;
         for (root, cancelled) in &self.home_app.listing_cancels {
@@ -741,9 +702,9 @@ impl App {
         }
     }
 
-    /// In a cloud directory cut short at the cap, ask the server for the names the
-    /// filter starts, so a name past the first few thousand can still be found. Nothing
-    /// asked when the filter is empty or what is held already answers it.
+    /// In a cloud directory cut short at the cap, ask the server for names starting with
+    /// the filter, so names past the cap can be found. Nothing when the filter is empty
+    /// or what is held answers it.
     #[cfg(feature = "cloud")]
     pub(crate) fn narrow_cloud_listing(&mut self) {
         let dir = self.home.browsing.clone();
@@ -825,8 +786,7 @@ impl App {
         self.list_cloud_sources(None, list);
     }
 
-    /// List the source being browsed, when it has not been asked this session.
-    /// Entering a source is the request to list it.
+    /// List the browsed source if not asked this session; entering a source asks.
     #[cfg(feature = "cloud")]
     fn list_browsed_cloud_source(&mut self) {
         let Some(id) = self
@@ -847,17 +807,10 @@ impl App {
         self.list_cloud_sources(Some(id), true);
     }
 
-    /// Send the rows of every source, or list the buckets of the one named.
-    ///
-    /// The rows go out first, filled from the last run's listing when the source still
-    /// points at the same place, so the home screen has its counts before any request
-    /// is made. With `list`, the sources are then listed side by side, a few at a
-    /// time, and each result is sent the moment it arrives. Without it nothing leaves
-    /// the machine: no request, and no credential command.
-    ///
-    /// Runs on the runtime rather than a detached thread. Unlike a probe of a dead
-    /// `hard` mount, an HTTP request cannot wedge forever: every call here is bounded
-    /// by a global timeout, so the task is guaranteed to end.
+    /// Send every source's rows, or list the named one's buckets. Rows go first, filled
+    /// from the last run's listing when still valid. With `list`, sources are listed a
+    /// few at a time and each result sent on arrival; without, nothing leaves the
+    /// machine. On the runtime, not a detached thread: every call has a global timeout.
     #[cfg(feature = "cloud")]
     fn list_cloud_sources(&mut self, only: Option<String>, list: bool) {
         let tx = self.events.clone();
@@ -871,10 +824,9 @@ impl App {
             };
             // Looked for again, and kept for the opens and listings that follow.
             let found = crate::cloud_sources::rediscover(&cloud).to_vec();
-            // Shown or not: a bucket under Recent opens with the login that listed it
-            // whatever `discover` says. Not a hidden source, which may be hidden for a
-            // login that no longer works; the default login opens its buckets instead.
-            // Only with the rows, so an old listing never overrides one made since.
+            // A bucket under Recent opens with the login that listed it, shown or not, unless
+            // its source is hidden (perhaps for a dead login; the default opens it then).
+            // Only with the rows, so an old listing never overrides a newer one.
             if only.is_none() {
                 for source in found.iter().filter(|s| !hidden.contains(&s.id)) {
                     if let Some(cached) = cached_for(source) {
@@ -896,8 +848,8 @@ impl App {
                         .collect();
                     let _ = tx.send(AppEvent::HomeCloudSources { sources: rows });
                 }
-                // Gone since its row was drawn: a profile removed, a source hidden
-                // elsewhere. Said, so the row does not wait on an answer never coming.
+                // Gone since its row was drawn (a profile removed, a source hidden): said, so the
+                // row does not wait forever.
                 Some(id) if !sources.iter().any(|s| &s.id == id) => {
                     let _ = tx.send(AppEvent::HomeCloudListed {
                         id: id.clone(),
@@ -917,8 +869,7 @@ impl App {
                 return;
             }
 
-            // Enough to keep one slow endpoint from delaying the rest, few enough that a
-            // long list of sources does not open a connection storm.
+            // One slow endpoint does not delay the rest, and many sources do not storm.
             const LISTING_AT_ONCE: usize = 4;
             let permits = std::sync::Arc::new(tokio::sync::Semaphore::new(LISTING_AT_ONCE));
             let mut listings = tokio::task::JoinSet::new();
@@ -938,8 +889,7 @@ impl App {
                     continue;
                 };
                 let listed_at = std::time::SystemTime::now();
-                // Buckets named in the config are shown whether or not the login can
-                // list them; that is what naming them is for.
+                // Buckets named in the config show whether or not the login can list them.
                 let mut names = source.buckets.clone();
                 let mut details = Vec::new();
                 let failure = match result {
@@ -986,9 +936,8 @@ impl App {
         });
     }
 
-    /// Ask again for what is on screen, ignoring what is cached: the buckets of the
-    /// source being browsed, the contents of the bucket or directory being browsed, or
-    /// every source's buckets from the home listing.
+    /// Ask again for what is on screen, bypassing the cache: the browsed source's
+    /// buckets, the browsed bucket or directory, or every source's buckets.
     pub(crate) fn home_reload(&mut self) {
         #[cfg(feature = "cloud")]
         {
@@ -1015,8 +964,7 @@ impl App {
                 self.home.probes.forget(&dir);
             }
         }
-        // A peek that failed is asked again: Ctrl+R is the request to try. So is a web
-        // file that was not there.
+        // Ctrl+R retries failed peeks and missing web files too.
         self.home.peek_failed.clear();
         for path in std::mem::take(&mut self.home.web_gone).into_keys() {
             self.home.sized.remove(&path);
@@ -1025,12 +973,9 @@ impl App {
         self.home_refresh();
     }
 
-    /// Start the recursive search below the working directory, if it is wanted and
-    /// not already running.
-    ///
-    /// Triggered by typing rather than by opening the home screen: typing is the
-    /// signal that someone is looking for something. Launching datui, pressing Enter
-    /// on a recent dataset and leaving costs no walk at all.
+    /// Start the recursive search below the working directory, if wanted and not
+    /// running. Triggered by typing, not by opening home, so opening a recent costs no
+    /// walk.
     pub(crate) fn spawn_home_search(&mut self) {
         if self.home_app.search_inflight || self.home.search.done {
             return;
@@ -1063,9 +1008,7 @@ impl App {
             scanned: 0,
             limited: Some(crate::glyphs::dotted("partial · failed")),
         });
-        // A detached thread for the same reason the probes use one: the walk touches
-        // a filesystem, and nothing that touches a filesystem may run where a stall
-        // would stop the screen from drawing.
+        // A detached thread, as for probes: a filesystem stall must not stop drawing.
         std::thread::spawn(move || {
             owed.run(|| {
                 let walk_root = root.clone();
@@ -1077,8 +1020,8 @@ impl App {
                     &config,
                     &formats,
                     move |found, outcome| {
-                        // Sent even when empty: it carries the progress count, and it is the
-                        // only place the walk learns that nobody is listening any more.
+                        // Sent even when empty: it carries progress, and a failed send tells the walk
+                        // nobody listens.
                         batch_tx
                             .send(AppEvent::HomeSearchBatch {
                                 generation: batch_gen,
@@ -1100,11 +1043,9 @@ impl App {
         });
     }
 
-    /// Score the filter against the search's files on a worker, when a scoring is owed.
-    ///
-    /// Asked after every event. Over a tree of tens of thousands of files the scoring
-    /// is what held each keystroke's echo back, so it runs where a stall cannot hold
-    /// the screen, one at a time; each answer asks for the next if the filter moved on.
+    /// Score the filter against the search's files on a worker, when owed. Asked after
+    /// every event; over tens of thousands of files scoring held back keystroke echo.
+    /// One at a time; each answer asks for the next if the filter moved.
     pub(crate) fn home_score_search(&mut self) {
         if self.input_mode != InputMode::Home {
             return;
@@ -1134,26 +1075,26 @@ impl App {
     /// Rebuild the home listing from the filesystem.
     pub(crate) fn home_refresh(&mut self) {
         self.home_app.refresh_owed = false;
-        // Every way into a source comes through here: Enter, Backspace up from a
-        // bucket, a jump, and rows arriving while the source is already open.
+        // Every way into a source comes through here: Enter, Backspace up from a bucket,
+        // a jump, and rows arriving while it is open.
         #[cfg(feature = "cloud")]
         self.list_browsed_cloud_source();
-        // Somewhere else now, a listing of where the user was is pages for nobody.
+        // Listings of where the user was are pages for nobody.
         self.stop_listings_left_behind();
         self.home_app.generation = self.home_app.generation.wrapping_add(1);
         let generation = self.home_app.generation;
 
         self.move_remembered_places();
         let mut catalogs = home::catalogs(&self.app_config);
-        // Hidden with Delete on its heading: the catalog that comes with datui only,
-        // never a user's own `examples.toml`.
+        // Hidden with Delete on its heading: only the bundled catalog, never a user's
+        // `examples.toml`.
         if self.cache.examples_hidden() {
             catalogs.retain(|c| c.origin != crate::catalog::Origin::Bundled);
         }
         self.home.set_catalogs(catalogs);
         let mut request = home::ListingRequest {
-            // Filled in on the worker, from the cache and the desktop's recents: files
-            // all the same, and the first frame does not wait on a file.
+            // Filled on the worker from the cache and the desktop's recents, so the first frame
+            // waits on no file.
             recents: Vec::new(),
             desktop_dirs: Vec::new(),
             browsing: self.home.browsing.clone(),
@@ -1177,8 +1118,7 @@ impl App {
             owed.run(move || {
                 // After the dataset just left is in the recents with its shape.
                 writes.settle();
-                // Ranked by frecency; the newest is where the cursor lands, so the
-                // last file is still one Enter away.
+                // Ranked by frecency; the cursor lands on the newest, one Enter from the last file.
                 let (recents, visits) = cache.load_recents_with_visits();
                 let newest = recents.first().cloned();
                 request.recents = crate::cache::by_frecency(recents, &visits);
@@ -1210,11 +1150,9 @@ impl App {
         });
     }
 
-    /// Ask the worker to measure rows that are on screen and not yet known.
-    ///
-    /// Reading a Parquet footer opens a file. That is the call that blocks on a FIFO,
-    /// a device node, a wedged mount or a failing disk, so it never happens on the
-    /// thread that draws.
+    /// Ask the worker to measure on-screen rows not yet known. Opening a footer can
+    /// block (a FIFO, a device, a wedged mount, a failing disk), so never on the draw
+    /// thread.
     pub(crate) fn request_home_measurements(&mut self) {
         if self.home.measure_in_flight {
             return;
@@ -1241,9 +1179,9 @@ impl App {
         });
     }
 
-    /// Ask an HTTP(S) server what the file under the cursor weighs, once a session, when
-    /// nothing has measured it: its row shows a catalog's `~33 MB` until the answer
-    /// lands, and the answer is kept with what datui measured, for the next listing.
+    /// Ask an HTTP(S) server the size of the file under the cursor, once a session,
+    /// when unmeasured. The row shows the catalog's `~33 MB` until then; the answer is
+    /// kept for the next listing.
     #[cfg(feature = "http")]
     pub(crate) fn size_selected_web_file(&mut self) {
         if !self.info.head_web_rows {
@@ -1296,19 +1234,11 @@ impl App {
         });
     }
 
-    /// Ask a worker what the rows on screen are.
-    ///
-    /// Classifying a row reads the directory it names, which on a share is a round
-    /// trip and on a wedged mount never returns, so it happens here for the rows on
-    /// screen rather than while the listing is built.
-    ///
-    /// A detached thread, not the runtime's blocking pool, for the reason the probes
-    /// give: a thread stuck on an unreachable `hard` mount never comes back. One at a
-    /// time, so a share that has stopped answering costs one thread.
-    ///
-    /// This also measures remote rows, which [`HomeState::unmeasured_visible`] leaves
-    /// alone: every row a probe returns is `Unknown`, so this pass is the only one that
-    /// can, and it does so on the thread already reading that filesystem.
+    /// Ask a worker what the rows on screen are. Classifying reads the named directory
+    /// (a round trip on a share, forever on a wedged mount), so only on-screen rows,
+    /// on a detached thread, one pass at a time. It also measures remote rows, which
+    /// [`HomeState::unmeasured_visible`] leaves alone since probes return them
+    /// `Unknown`.
     pub(crate) fn request_home_classifications(&mut self) {
         if self.home.classify_in_flight {
             return;
@@ -1351,8 +1281,8 @@ impl App {
             state.stop_following();
         }
         self.home.status = None;
-        // The search that found the dataset comes back, selected: the next character
-        // typed starts a new one, and `~` opens the path prompt.
+        // The search that found the dataset comes back selected: the next character starts
+        // a new one, and `~` opens the path prompt.
         self.home.filter_selected = !self.home.filter.is_empty();
         self.home.folds_owed = true;
         self.home_refresh();
@@ -1365,9 +1295,8 @@ impl App {
                         .unwrap_or_else(|_| entry.path.clone())
                         == target
                 }
-                // Not the door: its path is the directory's, so an open file whose
-                // directory is being browsed would put the cursor on the row that
-                // opens the whole directory rather than on the file itself.
+                // Not the door: its path is the directory's, and would take the cursor from the
+                // file to the whole-directory row.
                 home::Row::Header { .. }
                 | home::Row::Place { .. }
                 | home::Row::More { .. }
@@ -1381,10 +1310,8 @@ impl App {
         self.input_mode = InputMode::Home;
     }
 
-    /// Esc backs out one layer of context at a time: the filter, then the directory
-    /// descended into, then back to the data that was open. At the top level it does
-    /// nothing. It used to quit there, which made a reflexive Esc close the program
-    /// while the same key one level down merely went up; Ctrl+C quits, from anywhere.
+    /// Esc backs out one layer: the filter, the directory descended into, then back to
+    /// the open data. Nothing at the top level; Ctrl+C quits.
     pub(crate) fn home_escape(&mut self) -> Option<AppEvent> {
         if !self.home.filter.is_empty() {
             self.home.filter.clear();
@@ -1397,16 +1324,14 @@ impl App {
             if self.home.below_browse_start() {
                 self.home_ascend();
             } else {
-                // Climbing past where the browse began would take Esc somewhere the
-                // user never was; it returns to the listing they started from instead.
+                // Not past where the browse began: back to the listing it started from.
                 self.home_leave_browsing(None);
             }
             return None;
         }
         if self.data_table_state.is_some() {
             self.show_table();
-            // Said on arrival: Esc pressed once too often to clear the home screen lands
-            // here, and the keys typed next act on the table (#547 D14).
+            // Said on arrival: one Esc too many lands here, and the next keys act on the table.
             let name = self
                 .path
                 .as_deref()
@@ -1419,14 +1344,11 @@ impl App {
         None
     }
 
-    /// Drop the highlighted dataset from the recents list.
-    ///
-    /// Only from the Recent section: a row under a directory is a file on disk, and
-    /// forgetting it there would either do nothing or imply a deletion datui is not
-    /// going to perform.
+    /// Drop the highlighted dataset from the recents list. Only from Recent: elsewhere
+    /// a row is a file on disk, and forgetting it would imply a deletion.
     pub(crate) fn home_forget_selected(&mut self) {
-        // A catalog's heading: Delete hides the one that comes with datui, until the
-        // cache is cleared. A catalog of the user's is hidden by its id in the config.
+        // A catalog's heading: Delete hides the bundled one until the cache is cleared; a
+        // user's catalog is hidden by id in the config.
         if let Some(catalog) = self.home.selected_catalog() {
             if catalog.origin == crate::catalog::Origin::Bundled {
                 let message = format!(
@@ -1443,8 +1365,8 @@ impl App {
             }
             return;
         }
-        // A place row stands for every recent under it. Forgetting them all is one
-        // keystroke from forgetting one, so it asks first, the way Shift+Delete does.
+        // A place row stands for every recent under it, so forgetting them asks first, as
+        // Shift+Delete does.
         if let Some(home::Row::Place { path, held, .. }) = self.home.selected_row() {
             let message = format!(
                 "Forget {held} recently opened {} under {}?",
@@ -1455,8 +1377,8 @@ impl App {
                 .show(message, Confirm::ForgetPlace(path.clone()));
             return;
         }
-        // A row of catalog.toml's own section goes from the file, as Ctrl+D on it does.
-        // The same place under Recent is a recent, and Delete forgets only that.
+        // A row in catalog.toml's own section is removed from the file, as Ctrl+D does; the
+        // same place under Recent is only forgotten as a recent.
         let in_mine = self
             .home
             .selected_section()
@@ -1501,10 +1423,9 @@ impl App {
         self.home_refresh();
     }
 
-    /// The dataset or directory the highlighted row stands for, as Ctrl+D adds it: its
-    /// location, and the name its row shows. A heading stands for the directory its
-    /// section lists. A table inside a file, a cloud source and the rows that are not
-    /// places have none.
+    /// The location and shown name Ctrl+D adds for the highlighted row; a heading stands
+    /// for its section's directory. Tables inside files, cloud sources and non-place
+    /// rows have none.
     fn home_row_for_catalog(&self) -> Option<(PathBuf, String)> {
         match self.home.selected_row()? {
             home::Row::Place { path, .. } => {
@@ -1512,8 +1433,8 @@ impl App {
                 Some((path, name))
             }
             home::Row::Door { entry, .. } => {
-                // A local door's trailing slash goes; a URL keeps its `//`, which
-                // `components` would fold into a local path.
+                // A local door's trailing slash goes; a URL keeps its `//`, which `components`
+                // would fold.
                 let path: PathBuf = if matches!(
                     source::input_source(&entry.path),
                     source::InputSource::Local(_)
@@ -1579,8 +1500,8 @@ impl App {
         Ok(())
     }
 
-    /// What Ctrl+D writes for a row at `location` named `name`: a copy of what another
-    /// catalog says of it, or the place as it is.
+    /// What Ctrl+D writes for `location` named `name`: a copy of another catalog's
+    /// entry, or the place as is.
     fn new_catalog_dataset(&self, location: &Path, name: &str) -> catalog::NewDataset {
         if let Some((_, shown)) = self.home.catalog_dataset(location) {
             let entry = &shown.entry;
@@ -1612,8 +1533,8 @@ impl App {
             new.path = Some(home::display_path(&absolute));
             return new;
         }
-        // A store reached through a named source: the source becomes the connection
-        // when it is one of the config's, and the URL loses it.
+        // A store reached through a configured source: the source becomes the connection
+        // and leaves the URL.
         let text = location.to_string_lossy();
         let (id, plain) = source::split_source_id(&text);
         new.url = Some(plain.into_owned());
@@ -1638,8 +1559,8 @@ impl App {
             return;
         };
         let new = self.new_catalog_dataset(&location, &name);
-        // A source found on the machine, not one of the config's connections, cannot
-        // be named in a catalog: without it the URL would be read elsewhere.
+        // A source found on the machine but not configured cannot be named in a catalog:
+        // the URL would be read elsewhere.
         if let Some(connection) = &new.connection
             && !self
                 .app_config
@@ -1687,8 +1608,7 @@ impl App {
         }
     }
 
-    /// Before 0.4.0 Ctrl+D kept directories in the cache. Once, they move into
-    /// `catalog.toml`, where Ctrl+D keeps them now, and the cache's list goes.
+    /// Move pre-0.4.0 Ctrl+D directories from the cache into `catalog.toml`, once.
     fn move_remembered_places(&mut self) {
         if std::mem::replace(&mut self.home_app.remembered_moved, true) {
             return;
@@ -1700,8 +1620,8 @@ impl App {
         let Some(file) = self.mine_catalog_file() else {
             return;
         };
-        // The cache's list goes only once every place is in catalog.toml: a failure
-        // leaves it for the next run.
+        // The cache's list goes only once all are in catalog.toml; a failure retries next
+        // run.
         match catalog::move_places(&file, &places) {
             Ok(_) => self.cache.clear_remembered_places(),
             Err(e) => {
@@ -1714,8 +1634,7 @@ impl App {
         }
     }
 
-    /// Ctrl+E: the Documentation view of the row under the cursor: the catalog dataset
-    /// it is or is inside, and what the format spec that reads it says.
+    /// Ctrl+E: the Documentation view of the row under the cursor.
     pub(crate) fn home_open_documentation(&mut self) {
         let Some((path, doc)) = self.home_documented_row() else {
             self.home.status =
@@ -1737,9 +1656,8 @@ impl App {
         self.info.documentation.links_open = self.home_app.local_desktop;
     }
 
-    /// What Ctrl+E documents for the row under the cursor, with the row's path: the
-    /// catalog dataset it is, or is inside, and what the format spec that reads a file
-    /// says of it, when the spec documents anything.
+    /// What Ctrl+E documents for the row under the cursor, with its path: the catalog
+    /// dataset it is or is inside, and its format spec's docs, if any.
     pub(crate) fn home_documented_row(
         &self,
     ) -> Option<(PathBuf, widgets::documentation::Documented)> {
@@ -1781,16 +1699,15 @@ impl App {
         Some((path, doc))
     }
 
-    /// What Ctrl+D does on the row under the cursor, as the footer names it: add it to
-    /// `catalog.toml`, or forget it from there; `None` on a row it cannot add.
-    /// Whether Delete on the selected row hides a catalog: the heading of the one
-    /// that comes with datui.
+    /// Whether Delete on the selected row hides a catalog: the bundled one's heading.
     pub(crate) fn home_hides_catalog(&self) -> bool {
         self.home
             .selected_catalog()
             .is_some_and(|c| c.origin == crate::catalog::Origin::Bundled)
     }
 
+    /// What Ctrl+D does on the row under the cursor, as the footer names it: add to
+    /// `catalog.toml` or forget from it; `None` where it cannot add.
     pub(crate) fn home_catalog_action(&self) -> Option<&'static str> {
         let (location, _) = self.home_row_for_catalog()?;
         Some(if self.mine_entry_at(&location).is_some() {
@@ -1800,11 +1717,8 @@ impl App {
         })
     }
 
-    /// Collapse or expand the section the cursor is in.
-    ///
-    /// Collapsing moves the cursor to the header, so the section the user just folded
-    /// is what stays selected rather than whatever row happens to fall into place.
-    /// Fold or unfold the section whose header is highlighted.
+    /// Fold or unfold the section under the cursor; folding moves the cursor to its
+    /// header.
     pub(crate) fn home_toggle_fold(&mut self) {
         if let Some(section) = self.home.selected_section() {
             self.home.toggle_collapsed(section);
@@ -1814,16 +1728,16 @@ impl App {
     }
 
     pub(crate) fn home_collapse(&mut self, collapse: bool) {
-        // The listing browsed into is the whole screen. It never folds, and the fold
-        // must not be remembered for its path either — see `set_collapsed`.
+        // The browsed listing is the whole screen: it never folds, and no fold is
+        // remembered for its path (see `set_collapsed`).
         if self.home.browsing.is_some() {
             return;
         }
         let Some(section) = self.home.selected_section() else {
             return;
         };
-        // → on a section's more row shows it whole (a directory, or RECENT); ← on a
-        // row that its cut would hide cuts it back. Anywhere else they fold.
+        // → on a section's more row shows it whole; ← on a row its cut would hide cuts it
+        // back. Elsewhere they fold.
         if collapse && self.home.cut_again(section) {
             return;
         }
@@ -1859,18 +1773,16 @@ impl App {
 
     /// Move the browse up to `to`, or back to the root listing when `None`.
     fn home_leave_browsing(&mut self, to: Option<PathBuf>) {
-        // Whatever the last place said about itself, it said about that place. "these
-        // are the files under it" is wrong the moment "it" is somewhere else.
+        // What the last place said of itself no longer applies.
         self.home.status = None;
         let from = std::mem::replace(&mut self.home.browsing, to);
-        // Backspace can climb above where the browse began; the start follows, so a
-        // later Esc still has a place to stop.
+        // Backspace can climb above the browse start; the start follows so Esc has a place
+        // to stop.
         if !self.home.below_browse_start() {
             self.home.browse_start = self.home.browsing.clone();
         }
-        // The filter, search and row the user left here, if they were here; the
-        // listing lands later, and the cursor goes back to that row when it does.
-        // Somewhere new, a search of the old place no longer answers the question.
+        // The filter, search and row left here come back; the cursor returns to that row
+        // when the listing lands. A search of the old place no longer applies.
         self.home.come_back(from);
         self.home.sync_search_section();
         self.home.selected = 0;
@@ -1880,11 +1792,10 @@ impl App {
         }
     }
 
-    /// Whether a peek's answer changes anything a row draws: its kind, or anything in
-    /// `holds` (the details pane draws the whole line, and `truncated` alone turns a
-    /// cloud row's `dir` into `dir+`). Each kept answer rebuilds the listing on the UI
-    /// thread, so the rest are replaced by "a directory, nothing to say": the directory
-    /// still has to come back to leave `peeking`.
+    /// Whether a peek's answer changes what a row draws: its kind, or anything in
+    /// `holds` (`truncated` turns `dir` into `dir+`). Kept answers rebuild the listing
+    /// on the UI thread, so the rest become "a directory, nothing to say", still sent
+    /// to clear `peeking`.
     #[cfg(feature = "cloud")]
     pub(crate) fn peek_tells_a_row_something(
         answer: &(discover::EntryKind, discover::Holds),
@@ -1892,20 +1803,10 @@ impl App {
         answer.0 != discover::EntryKind::Directory || !answer.1.is_empty()
     }
 
-    /// Look inside the cloud directories the cursor is on or near, so the ones that are
-    /// datasets say `hive` or `multi` and open as one. One small listing request per
-    /// directory, and each directory is peeked at once per session.
-    ///
-    /// A directory the listing takes for `multi` costs a little more: up to three ranged
-    /// reads of a few kilobytes each, to ask the footers whether its files are really
-    /// one table. Nothing else reads an object, and nothing reads a whole one.
-    ///
-    /// Driven by the cursor rather than by the listing. It used to take the first
-    /// forty-eight directories of each listing, once: a bucket of two hundred prefixes
-    /// had forty-eight labelled and the rest reading `dir` for the session however long
-    /// you spent on them, and paging straight past those forty-eight spent the requests
-    /// on rows nobody saw. The budget is the same shape as the local classify pass now —
-    /// what is on screen, a batch at a time, the highlighted row first.
+    /// Peek inside cloud directories at or near the cursor so datasets show `hive` or
+    /// `multi` and open as one: one small listing per directory, once a session, plus
+    /// up to three few-KiB footer reads for a `multi` candidate. On-screen rows a batch
+    /// at a time, the highlighted first.
     #[cfg(feature = "cloud")]
     pub(crate) fn peek_cloud_directories(&mut self) {
         const PEEKS_AT_ONCE: usize = 4;
@@ -1913,9 +1814,8 @@ impl App {
         if directories.is_empty() {
             return;
         }
-        // Out, not answered. A second pass before these land must not ask again, and an
-        // answer written here instead would be a claim — `dir` on a row that has a
-        // count, and "never again this session" staked on a request that may fail.
+        // Marked out, not answered: a second pass must not ask again, and writing an
+        // answer now would claim one before the request is made.
         for directory in &directories {
             self.home.peeking.insert(directory.clone());
         }
@@ -1924,8 +1824,8 @@ impl App {
         self.runtime.spawn(async move {
             let permits = Arc::new(tokio::sync::Semaphore::new(PEEKS_AT_ONCE));
             let mut peeks = tokio::task::JoinSet::new();
-            // By task, so a peek that panics is still sent back, as failed, and does
-            // not stay in `peeking` spinning for good.
+            // By task, so a panicking peek is sent back as failed rather than spinning
+            // forever.
             let mut asked = std::collections::HashMap::new();
             for directory in directories {
                 let (permits, cloud) = (permits.clone(), cloud.clone());
@@ -1939,15 +1839,9 @@ impl App {
                 });
                 asked.insert(task.id(), directory);
             }
-            // Sent a few at a time: the labels fill in as they are found, without a
-            // rebuild per directory.
-            //
-            // Every directory asked about is sent back, including the ones whose peek
-            // decided nothing and the ones whose request failed. That is what takes
-            // them out of `peeking` and what holds the one-request-per-directory promise
-            // — and an answer of "a directory, and nothing to say about it" is a real
-            // answer once the request has been made, which is what it was not while it
-            // was being written before the request.
+            // Sent a few at a time so labels fill in without a rebuild per directory. Every
+            // directory asked is sent back, undecided and failed ones too: that clears
+            // `peeking` and keeps one request per directory.
             let mut found = Vec::new();
             let mut failed = Vec::new();
             while let Some(joined) = peeks.join_next_with_id().await {
@@ -1986,11 +1880,9 @@ impl App {
             self.home.browse_start = self.home.browsing.clone();
         }
         self.home.browsing = Some(path);
-        // "Below here" now means somewhere else. Whatever the last walk found
-        // describes a different place, and a fresh one starts on the next
-        // keystroke. The status line goes with them: "these are the files under it"
-        // is about wherever "it" was. A caller with something to say about the place
-        // it is going says it after this returns.
+        // What the last walk found and the status line describe a different place; a fresh
+        // walk starts on the next keystroke. A caller with news of the new place says it
+        // after this returns.
         self.home.status = None;
         self.home.search.reset();
         self.home.filter.clear();
@@ -1999,32 +1891,16 @@ impl App {
         self.home_refresh();
     }
 
-    /// Whether the highlighted row is the `(all files)` row: the one that opens the
-    /// directory being browsed, and so is already inside it.
-    ///
-    /// `Enter` on it opens the directory whatever the label says, and → on it would
-    /// descend into where it already is.
-    /// Asked of the row's variant rather than of a flag on the entry it carries: the
-    /// door is a `Row::Door` now, so this is one match instead of a clone.
+    /// Whether the highlighted row is the `(all files)` door, which opens the browsed
+    /// directory and so is already inside it.
     fn selection_opens_the_whole_directory(&self) -> bool {
         self.home.selection_is_the_door()
     }
 
-    /// The highlighted row, when → goes inside it.
-    ///
-    /// Every directory, whatever its label. A label describes what is directly inside; it
-    /// no longer decides what can be reached, so the exception list this used to carry —
-    /// hive, multi and the three lake markers — is gone, and with it the directories that
-    /// had no way in because datui did not recognize how they were stored. What is left
-    /// out is what is not a directory: a file, a section header, and the row that opens
-    /// the directory you are already in.
-    ///
-    /// Local or remote. The split this used to carry — remote only — was never about
-    /// where the directory was: a cloud prefix simply could not be descended into until
-    /// there was a listing to descend with.
+    /// The highlighted row when → goes inside it: any directory, local or remote,
+    /// whatever its label. Files, headers and the door are left out.
     pub(crate) fn selected_directory_to_enter(&self) -> Option<PathBuf> {
-        // A place under `RECENT` is a directory to go inside, and → is one of its two
-        // doors. It has no entry to ask about, so it is answered before one is looked for.
+        // A place under `RECENT` has no entry, so it is answered first.
         if let Some(home::Row::Place { path, .. }) = self.home.selected_row() {
             return home::place_is_browsable(&path).then_some(path);
         }
@@ -2043,19 +1919,9 @@ impl App {
         .then_some(entry.path.clone())
     }
 
-    /// Why a prefix in an object store cannot be read as one table, when it cannot.
-    ///
-    /// Every cloud path is scanned as Parquet — the directory-format dispatch is local
-    /// only — so a prefix of anything else comes back "Could not read from S3. Check
-    /// credentials and URL", which is a false statement about a login that is fine.
-    /// What the prefix holds is already counted and on screen, so saying so costs no
-    /// request. #275 phase 4 is where these read.
-    ///
-    /// `None` for a prefix that may yet be Parquet: one holding Parquet, and one
-    /// holding no data files at all, whose data may be a level down.
-    /// Why Enter on a bucket directory's `(all files)` row reads nothing, by the rule
-    /// Enter itself applies: a hive root or a directory of one table is read through
-    /// its files, and one with a reader for what it holds is read with that.
+    /// Why Enter on a bucket directory's `(all files)` row reads nothing, by Enter's
+    /// own rule: a hive root or one-table directory reads through its files, and one
+    /// with a reader for its contents reads with that.
     #[cfg(feature = "cloud")]
     pub(crate) fn why_a_door_reads_nothing(entry: &discover::Entry) -> Option<String> {
         if !home::is_object_store_url(&entry.path)
@@ -2070,6 +1936,9 @@ impl App {
         Self::why_a_cloud_prefix_cannot_be_read(&entry.holds)
     }
 
+    /// Why an object-store prefix cannot be read as one table, from its listed
+    /// contents (no request). `None` when it may yet be Parquet: it holds Parquet,
+    /// or no data files and perhaps data a level down.
     #[cfg(feature = "cloud")]
     pub(crate) fn why_a_cloud_prefix_cannot_be_read(holds: &discover::Holds) -> Option<String> {
         let reads_parquet =
@@ -2078,13 +1947,11 @@ impl App {
             return None;
         }
         match holds.formats.as_slice() {
-            // Data files, none of them Parquet. `label()` says `mixed` for more than
-            // one format, which is a word rather than a count, so the line is spelled
-            // out from the formats themselves.
+            // Data files, none Parquet. `label()` says `mixed` for several formats, so the
+            // line spells them out.
             [] => {
-                // Nothing datui has a reader for. Only a refusal when there is also
-                // nothing below: a prefix of sub-prefixes may hold Parquet a level
-                // down, and nothing here has looked.
+                // Nothing readable. A refusal only if nothing is below: sub-prefixes may hold
+                // Parquet a level down.
                 (holds.not_read > 0 && holds.directories == 0).then(|| {
                     "this prefix holds nothing datui can read — datui reads a directory in \
                      an object store as Parquet only."
@@ -2105,16 +1972,9 @@ impl App {
         }
     }
 
-    /// The reader a prefix in an object store calls for, from what its listing counted.
-    ///
-    /// The commonest format, which is the same rule a directory on disk follows — and
-    /// `rank_formats` is the same order, so a prefix and the directory it mirrors pick
-    /// the same reader. `None` when nothing there has a multi-file reader, which is where
-    /// the refusal that names what is there belongs.
-    ///
-    /// Parquet included and returned as itself: the cloud branches compare against it
-    /// and take their own path, which is the one every cloud dataset took before any of
-    /// this, and the only one with hive partitioning behind it.
+    /// The reader an object-store prefix calls for, from its listing's counts: the
+    /// commonest format, ranked by `rank_formats` as on disk, Parquet included. `None`
+    /// when nothing there has a multi-file reader, where the refusal belongs.
     #[cfg(feature = "cloud")]
     pub(crate) fn cloud_prefix_format(
         holds: &discover::Holds,
@@ -2123,19 +1983,18 @@ impl App {
         if holds.dataset_dict {
             return Some((FileFormat::Arrow, Vec::new()));
         }
-        // A model's weights beside its config and tokenizer JSON: the prefix is the
-        // model, as a directory on disk is, and the JSON is not data passed over.
+        // Model weights beside config and tokenizer JSON: the prefix is the model, and the
+        // JSON is not data passed over.
         if let Some((name, _)) = holds.model_weights() {
             return FileFormat::from_name(name).map(|format| (format, Vec::new()));
         }
         let (name, _) = holds.formats.first()?;
-        // A GPS log is read whole from disk; a bucket's logs are opened one at a time,
-        // as its text files are.
+        // A GPS log is read whole from disk; a bucket's logs open one at a time, as its
+        // text files do.
         let format = FileFormat::from_name(name)
             .filter(|f| f.reads_many_files() && !f.reads_into() && !f.is_lines())?;
-        // And what taking the commonest passes over. The local read reports its own —
-        // it is the pass that decides — but here Polars does the listing and never sees
-        // the other formats, so the note has to be written from the listing on screen.
+        // What taking the commonest passes over. Polars lists the prefix and never sees
+        // other formats, so the note comes from the listing on screen.
         let left_out = holds
             .formats
             .iter()
@@ -2145,12 +2004,10 @@ impl App {
         Some((format, left_out))
     }
 
-    /// Open the highlighted entry: toggle a section, descend into a directory, or
-    /// load a dataset.
+    /// Open the highlighted entry: toggle a section, descend, or load a dataset.
     pub(crate) fn home_open_selected(&mut self) -> Option<AppEvent> {
         match self.home.selected_row() {
-            // Into the directory or prefix the recents under it live in: the way back
-            // to a place found by hand, now that recents no longer make roots.
+            // Into the directory or prefix the recents under it live in.
             Some(home::Row::Place { path, .. }) => {
                 if home::place_is_browsable(&path) {
                     self.home_browse_into(path);
@@ -2181,8 +2038,7 @@ impl App {
                 }
                 return None;
             }
-            // What Ctrl+A shows. The cursor goes to the first of them, where the row
-            // that stood for them was.
+            // What Ctrl+A shows; the cursor goes to the first, where the hidden row stood.
             Some(home::Row::Hidden { .. }) => {
                 self.home.hide_unreadable = false;
                 if let Some(idx) = self.home.visible().iter().position(|row| {
@@ -2208,8 +2064,7 @@ impl App {
             ));
             return None;
         }
-        // A place a collection suggests is a starting point: Enter opens it as one
-        // table rather than stepping inside. → still goes in.
+        // A place a collection suggests opens as one table on Enter; → still goes in.
         if entry.kind != discover::EntryKind::File && self.home.bookmark(&entry.path).is_some() {
             #[cfg(feature = "cloud")]
             let reader = if home::is_object_store_url(&entry.path)
@@ -2226,32 +2081,18 @@ impl App {
             let directory = home::directory_dataset_url(&entry.path);
             return Some(self.home_open_directory_as(directory, true, None, reader));
         }
-        // The `(all files)` row opens the directory it names, whatever the directory is
-        // labelled. That is the whole of what it is for: the label describes, and this
-        // row is the promise that the description cannot lock you out. Sent straight to
-        // the open, because `open_what_it_is` would read the label back and send a
-        // `dir` row inside the directory it is already in.
+        // The `(all files)` row opens its directory whatever the label: no label can lock
+        // the user out. Sent straight to the open, since `open_what_it_is` would read the
+        // label and step inside again.
         if self.selection_opens_the_whole_directory() {
-            // A lake table is not a directory of Parquet files however much it looks like
-            // one: reading it as one counts tombstoned rows, every rewritten version
-            // and both sides of a compaction. So the read is labelled rather than
-            // refused. Refusing it left a directory the user could see and could not read
-            // at all — this row is the promise that no label locks you out, and a
-            // refusal here is that promise broken on the one directory that needed it.
-            // Until datui reads the log, its files are what there is, and what makes
-            // that honest is that nothing about it is silent: a note in the panel, a
-            // chip in the footer, and `Enter` on the row one level up still goes
-            // inside and says datui does not read the table itself yet.
+            // A lake table read as Parquet counts tombstoned rows and every rewritten version,
+            // so the read is labeled, not refused: a note in the panel and a footer chip say
+            // so, and Enter one level up explains datui does not read the table itself yet.
             let lake = entry.kind.lake_name();
-            // A prefix in an object store used to be scanned as Parquet whatever was
-            // in it — every cloud path returns before the directory-format dispatch is
-            // reached — so a prefix of CSV answered "Could not read from S3. Check
-            // credentials and URL", a false statement about the user's login. What the
-            // prefix holds was counted by the listing and is on screen, so the reader
-            // is picked from it, which costs no request. Only a prefix the listing
-            // already calls a dataset is left alone: a hive root is read through its
-            // partitions, and one stray `manifest.csv` beside them is not what it
-            // holds — but it is the only thing in `formats`.
+            // Pick an object-store prefix's reader from its listed contents (no request), so a
+            // CSV prefix is not scanned as Parquet and blamed on credentials. A prefix the
+            // listing already calls a dataset is left alone: a hive root reads through its
+            // partitions despite a stray `manifest.csv`.
             #[cfg(feature = "cloud")]
             let reader = if home::is_object_store_url(&entry.path)
                 && !matches!(
@@ -2259,8 +2100,8 @@ impl App {
                     discover::EntryKind::Hive | discover::EntryKind::MultiFile
                 ) {
                 let reader = Self::cloud_prefix_format(&entry.holds);
-                // Nothing here datui has a reader for. The listing is on screen, so the
-                // refusal names what is there rather than blaming the connection.
+                // Nothing readable: the refusal names what is there rather than blaming the
+                // connection.
                 if reader.is_none()
                     && let Some(what) = Self::why_a_cloud_prefix_cannot_be_read(&entry.holds)
                 {
@@ -2273,17 +2114,13 @@ impl App {
             };
             #[cfg(not(feature = "cloud"))]
             let reader = None;
-            // `hive: true` says read this as one, which is the whole of what the row
-            // promises — it is also what carries partition columns through, for a
-            // directory the dispatch sends down the hive route. The cloud route returns
-            // before the dispatch is reached.
+            // `hive: true` reads it as one and carries partition columns through the hive
+            // route. The cloud route returns before the dispatch.
             let directory = home::directory_dataset_url(&entry.path);
             return Some(self.home_open_directory_as(directory, true, lake, reader));
         }
-        // A row nothing has looked at is looked at before it is opened, rather than
-        // opened as whatever it turns out to be. `EntryKind::Unknown` is offered as
-        // openable, so without this a lake root reached this way is read as one table:
-        // #237 through the door #249 leaves open.
+        // A row nothing has looked at is looked at first: `Unknown` is offered as openable,
+        // and a lake root would otherwise read as one table.
         let mut entry = entry;
         if entry.kind == discover::EntryKind::Unknown {
             if self.looking_could_block(&entry.path) {
@@ -2296,8 +2133,8 @@ impl App {
                 entry.kind = discover::classify_directory(&entry.path);
             }
         }
-        // A database of several tables lists them rather than opening; one not yet
-        // measured is opened, and the open lands on its tables the same way.
+        // A database of several tables lists them; one not yet measured opens and lands on
+        // its tables the same way.
         if entry.enter_lists_tables() {
             self.home_browse_into(entry.path);
             return None;
@@ -2305,13 +2142,10 @@ impl App {
         self.open_what_it_is(entry.path, entry.kind, false)
     }
 
-    /// Browse into `path` as a jump, from wherever the user was.
-    ///
-    /// Unlike `home_browse_into`, the browse *starts* here: Esc comes back from here to
-    /// the listing rather than up through whatever the path happens to sit under.
+    /// Browse into `path` as a jump: the browse starts here, so Esc returns to the
+    /// listing rather than up through the path's parents.
     pub(crate) fn home_jump_into(&mut self, path: PathBuf) {
-        // A new browse: Esc comes back from here to the listing, so only the listing's
-        // mark is still a way back.
+        // Only the listing's mark is still a way back.
         self.home.trail.retain(|mark| mark.place.is_none());
         if self.home.browsing.is_none() {
             self.home.leave_mark();
@@ -2326,16 +2160,13 @@ impl App {
         self.home_refresh();
     }
 
-    /// Load a path from the home screen.
-    ///
-    /// The recent entry is recorded by the `Open` handler, which every open goes
-    /// through, so this does not record one itself.
+    /// Load a path from the home screen. The `Open` handler records the recent.
     pub(crate) fn home_open_path(&mut self, path: PathBuf, hive: bool) -> AppEvent {
         self.home_open_directory(path, hive, None)
     }
 
-    /// As [`Self::home_open_path`], and carrying whether the directory being read is a
-    /// lake table whose plain files this read is, so the dataset can say so.
+    /// As [`Self::home_open_path`], noting whether the directory is a lake table whose
+    /// plain files are read, so the dataset can say so.
     fn home_open_directory(
         &mut self,
         path: PathBuf,
@@ -2345,12 +2176,9 @@ impl App {
         self.home_open_directory_as(path, hive, lake, None)
     }
 
-    /// As [`Self::home_open_directory`], naming the reader to use.
-    ///
-    /// For a prefix in an object store, where nothing downstream reads the listing: the
-    /// cloud branches scan before the directory-format dispatch is reached, so the format
-    /// the listing counted has to travel with the open or the scan falls back to
-    /// Parquet, which is what it always did.
+    /// As [`Self::home_open_directory`], naming the reader. For an object-store prefix
+    /// the cloud scan runs before the format dispatch, so the listing's format travels
+    /// with the open or the scan falls back to Parquet.
     fn home_open_directory_as(
         &mut self,
         path: PathBuf,
@@ -2362,10 +2190,8 @@ impl App {
             Some((format, left_out)) => (Some(format), left_out),
             None => (None, Vec::new()),
         };
-        // A directory of partitions is only meaningful read as one hive dataset. Told
-        // rather than stat'ed: the caller already knows what this is, and on a share that
-        // has gone away a `stat` here would freeze the thread reading the keys — the same
-        // reason the size below is left to the `Open` handler.
+        // Told, not stat'ed: the caller knows, and a stat on a gone share would freeze the
+        // key thread (also why `Open` fills in the size).
         let options = OpenOptions {
             hive,
             read_as_plain_files_of: lake,
@@ -2376,10 +2202,8 @@ impl App {
         self.show_table();
         // Chosen here, so a failure is reported here.
         self.announce_open(true, "Scanning input".to_string(), 10);
-        // A frame is drawn between this keypress and the `Open` that carries it out,
-        // and it is the one the user is looking at when they press Enter — so it says
-        // which file, not just that something is happening. `Open` fills in the size a
-        // frame later; stat'ing here would put a possibly-dead mount on this thread.
+        // The frame drawn before `Open` runs says which file; `Open` fills in the size a
+        // frame later, off this thread.
         self.name_what_is_loading(path.clone());
         AppEvent::Open(vec![path], options)
     }
@@ -2395,29 +2219,25 @@ impl App {
                 newest,
                 folds,
             } => {
-                // Only the current listing's answer clears the flag: a stale one landing
-                // first said nothing was in flight while the listing for where the user
-                // is still ran. Every refresh asks again, so the newest always answers.
+                // Only the current listing's answer clears the flag; a stale one landing first
+                // would say nothing is in flight.
                 if generation == self.home_app.generation {
                     self.home.listing_in_flight = false;
                 }
-                // Read fresh from the cache, so true whichever listing carried them:
-                // the facts fill in rows the recursive search finds the same way, and
-                // only the first listing after entering home carries the folds.
+                // Read fresh from the cache, so true whichever listing carried them; only the
+                // first listing after entering home carries the folds.
                 self.home.known = known;
                 self.home.set_visits(visits);
                 self.home.newest_recent = newest;
                 if let Some(folds) = folds {
                     self.home.folds = folds;
                 }
-                // A listing from a superseded request describes somewhere the user has
-                // already left.
+                // A superseded listing describes somewhere the user has left.
                 if generation != self.home_app.generation {
                     return None;
                 }
                 self.home.apply_listing(*listing);
-                // Probes are chosen from the sections, so they can only be started
-                // once those exist — asking before the listing lands finds nothing.
+                // Probes are chosen from the sections, so only once they exist.
                 self.spawn_home_probes();
                 #[cfg(feature = "cloud")]
                 self.spawn_cloud_discovery();
@@ -2457,22 +2277,15 @@ impl App {
                 None
             }
             AppEvent::HomeClassified { measured, done } => {
-                // Kept even when the listing has been rebuilt since it was asked for. A
-                // probe or a cloud peek landing rebuilds it, and a Recent section full of
-                // buckets lands several in a row: dropping the answer each time left a
-                // share's rows unlabeled for as long as the cloud kept answering.
+                // Kept even if the listing was rebuilt since: probes and peeks rebuild it often,
+                // and dropping answers would leave rows unlabeled.
                 for (path, m) in measured {
                     self.home.enriched.insert(path.clone(), m.clone());
                 }
-                // Nothing re-sorts. `apply_measurements` writes the kind into the row
-                // where it already is, which is the whole reason a kind is allowed to
-                // arrive after the row was drawn: a listing that reshuffled itself
-                // under the cursor while it filled in would be worse than a late
-                // label.
+                // Nothing re-sorts: kinds are written into rows in place, so the listing never
+                // reshuffles under the cursor.
                 self.home.apply_measurements();
-                // The next batch is chosen from the viewport as it is now, so a page
-                // that scrolled past four hundred rows while this one was out asks
-                // about the forty it landed on, not the four hundred it left behind.
+                // The next batch comes from the viewport as it is now, not the rows scrolled past.
                 if done {
                     self.home.classify_in_flight = false;
                     self.request_home_classifications();
@@ -2480,8 +2293,7 @@ impl App {
                 None
             }
             AppEvent::HomePathListed { listing } => {
-                // Kept only for the directory still being typed: a listing for one the
-                // user has typed past would offer names from somewhere else.
+                // Kept only for the directory still being typed.
                 if self.home.path_input_active
                     && home::typed_dir(&self.home.path_input) == listing.dir
                 {
@@ -2498,8 +2310,7 @@ impl App {
                 completed,
                 candidates,
             } => {
-                // Discard if the user has typed since asking: completing onto a
-                // different string would scramble what they are in the middle of.
+                // Discard if the user typed since asking: completing would scramble their input.
                 if generation != self.home_app.generation || self.home.path_input != typed {
                     return None;
                 }
@@ -2568,18 +2379,16 @@ impl App {
                 found,
                 scanned,
             } => {
-                // Results from a walk that a later navigation superseded describe a
-                // place the user has left. The walk is abandoned, not cancelled, so
-                // late batches are expected rather than exceptional. A refresh of the
-                // same place supersedes nothing: its end dropped kept it running.
+                // Batches from a walk a later navigation superseded describe a place left behind;
+                // the walk is abandoned, not cancelled, so late batches are expected. A refresh of
+                // the same place supersedes nothing.
                 if generation == self.home_app.search_generation {
                     self.home.search_batch(&root, found, scanned);
                 }
                 None
             }
             AppEvent::HomeSearchScored { epoch, matches } => {
-                // A scoring that died is not asked again: the next would die the same
-                // way, and the matches already listed stand.
+                // A scoring that died is not retried (it would die again); listed matches stand.
                 if let Some(matches) = matches {
                     self.home.search_scored(epoch, *matches);
                 }
@@ -2621,8 +2430,7 @@ impl App {
                         source.place_details.insert(place.clone(), lines.clone());
                     }
                     match failure {
-                        // A refresh that failed keeps what the last one found: stale
-                        // buckets are more use than none, and the row says it failed.
+                        // A failed refresh keeps the last buckets, and the row says it failed.
                         Some((short, detail)) => {
                             for bucket in buckets {
                                 if !source.buckets.contains(&bucket) {
@@ -2646,8 +2454,7 @@ impl App {
                 prefix,
                 listed,
             } => {
-                // Only the request out now: one replaced by a later key may still
-                // answer, after the later one, and put back the shorter prefix.
+                // Only the current request: a replaced one may answer late with a shorter prefix.
                 let asked = self
                     .home_app
                     .narrowing
@@ -2689,8 +2496,7 @@ impl App {
                 None
             }
             AppEvent::HomeProbeProgress { root, rows } => {
-                // Only while that listing is still out: a late batch must not paint
-                // over the whole answer.
+                // Only while that listing is out: a late batch must not paint over the answer.
                 if self.home_app.probes_inflight.contains(&root) && !self.home.probes.settled(&root)
                 {
                     self.home.probes.read(&root, &rows);
@@ -2704,11 +2510,8 @@ impl App {
                 rows,
                 cut_short,
             } => {
-                // Give the slot back. The cap exists to bound threads wedged on a dead
-                // `hard` mount, which never send this event and so keep their slot for
-                // good — a probe that answered is not one of those. Without this the
-                // list only grows, and after MAX_CONCURRENT_PROBES roots no further
-                // root is ever probed for the rest of the session.
+                // Free the slot. The cap bounds threads wedged on dead mounts, which never send
+                // this; without freeing, probing stops after MAX_CONCURRENT_PROBES roots.
                 self.home_app.probes_inflight.retain(|p| p != &root);
                 self.home_app.listing_cancels.remove(&root);
                 let landed = rows.is_some();
@@ -2721,8 +2524,7 @@ impl App {
                 if cut_short && !self.home.filter.is_empty() {
                     self.narrow_cloud_listing();
                 }
-                // An account read with its keys because the sign-in has no data role
-                // says so beside the account.
+                // An account read with its keys (the sign-in has no data role) says so.
                 #[cfg(feature = "cloud")]
                 if let Some((account, _, _)) = source::azure_parts(&root.to_string_lossy())
                     && crate::azure::remembered_key(&account).is_some()
@@ -2741,17 +2543,11 @@ impl App {
                         }
                     }
                 }
-                // Rebuild so the listing picks the result up; the probe is the only
-                // thing that ever reads a remote root.
+                // Rebuild so the listing picks up the result.
                 self.home_refresh();
-                // And then ask about the rows it brought. After the rebuild, never
-                // before: the picker reads `visible()`, which is written by the
-                // rebuild, so a peek asked between `probe_ready` and here looks at the
-                // previous listing and finds nothing in it to ask about.
-                //
-                // Asked here at all because a listing that lands while the cursor is
-                // already where it will stay may draw no further frame, and the frame
-                // is what otherwise notices.
+                // Then peek at its rows: after the rebuild, which writes the `visible()` the picker
+                // reads. Here, because a listing landing under a still cursor may draw no frame to
+                // notice.
                 #[cfg(feature = "cloud")]
                 if landed {
                     self.peek_cloud_directories();
@@ -2772,9 +2568,8 @@ impl App {
                     .map(|(root, _)| root.clone())
                     .collect();
                 for (directory, kind) in kinds {
-                    // Answered: out of the in-flight set and into the one the rows are
-                    // labelled from. Every directory asked about comes back, so nothing
-                    // stays in `peeking` and nothing is asked twice.
+                    // Answered: out of `peeking` into the set rows are labeled from; every directory
+                    // comes back, so none is asked twice.
                     self.home.peeking.remove(&directory);
                     self.home
                         .cloud_kinds

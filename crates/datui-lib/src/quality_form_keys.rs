@@ -25,9 +25,9 @@ impl App {
         ));
     }
 
-    /// Keys while the intent form is open: Tab and ↑↓ walk its rows, Space and ←→
-    /// change a choice, text fields type, Enter stages the declaration in Setup's
-    /// draft and Esc drops the form's edits. Nothing here reads.
+    /// Keys in the intent form: Tab and ↑↓ walk rows, Space and ←→ change a choice, text
+    /// fields type, Enter stages the declaration in Setup's draft, Esc drops edits.
+    /// Reads nothing.
     pub(crate) fn intent_form_key(&mut self, event: &KeyEvent) {
         let modal = &mut self.analysis_modal;
         let Some(form) = modal.quality.intent_form.as_mut() else {
@@ -65,9 +65,8 @@ impl App {
             Some(crate::quality_export::ExportForm::new(&stem, &self.theme));
     }
 
-    /// Keys while the export dialog is open: Tab moves between the path and the
-    /// form, the arrows or Space change the form, Enter writes (asking first over a
-    /// file that exists), Esc closes it.
+    /// Keys in the export dialog: Tab between path and form, arrows or Space change the
+    /// form, Enter writes (asking over an existing file), Esc closes.
     pub(crate) fn quality_export_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         let form = self.analysis_modal.quality.export.as_mut()?;
         match event.code {
@@ -93,8 +92,7 @@ impl App {
                             Confirm::QualityExport(path, format),
                         );
                     } else {
-                        // The dialog stays up while the report is written: a failed
-                        // write says why on its status line, the path still there.
+                        // The dialog stays up while writing: a failure shows on its status line.
                         return Some(AppEvent::QualityReportExport(
                             path,
                             format,
@@ -154,8 +152,8 @@ impl App {
                 }
             }
             SetupRow::Expected => {
-                // Windows are what a gap is counted in; with no time-window grain
-                // there is nothing to expect yet.
+                // Gaps are counted in windows; without a time-window grain there is nothing to
+                // expect.
                 if matches!(
                     self.analysis_modal.quality.plan.grain,
                     data_quality::QualityGrain::TimeWindows { .. }
@@ -178,8 +176,8 @@ impl App {
     }
 
     /// Keys in the Expected editor: ↑↓ the row, ←→ the cadence, typing in From and
-    /// Before. Enter writes it into the draft, or says on its own line why it cannot;
-    /// Esc leaves the draft as it was. Either way back to Setup's Expected row.
+    /// Before. Enter writes the draft or says why not; Esc keeps it. Either way back to
+    /// Setup's Expected row.
     pub(crate) fn expected_form_key(&mut self, event: &KeyEvent) {
         let every = match &self.analysis_modal.quality.plan.grain {
             data_quality::QualityGrain::TimeWindows { every, .. } => every.clone(),
@@ -217,9 +215,9 @@ impl App {
         self.analysis_modal.quality.plan_field = analysis_modal::SetupRow::Expected.index();
     }
 
-    /// `w` on Trends: the next coarser grain, staged in Setup with the Grain row under
-    /// the cursor, for segments the sample reached too thinly. Nothing runs until
-    /// Enter, and Setup's Read says what that run reads; Esc puts the grain back.
+    /// `w` on Trends: stage the next coarser grain in Setup, cursor on Grain, for
+    /// thinly sampled segments. Nothing runs until Enter; Setup's Read says what it
+    /// reads; Esc reverts.
     pub(crate) fn stage_coarser_grain(&mut self) {
         let Some(coarser) = self.analysis_modal.quality_result_plan().coarser_grain() else {
             return;
@@ -231,8 +229,8 @@ impl App {
         self.analysis_modal.quality.plan_field = analysis_modal::SetupRow::Grain.index();
     }
 
-    /// Enter in a Setup row's list: take the choice, and after a text column, ask
-    /// for its format with the values on screen beside each one.
+    /// Enter in a Setup row's list: take the choice; after a text column, ask for its
+    /// format beside sample values.
     pub(crate) fn choose_setup_picker(&mut self) {
         self.analysis_modal.quality.setup_note = None;
         if let Some(column) = self.analysis_modal.choose_plan_picker() {

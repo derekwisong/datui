@@ -82,8 +82,7 @@ impl App {
         None
     }
 
-    /// A key on the table's Sample form, as the analysis form takes it: the field's
-    /// own keys, or what the form does next.
+    /// A key on the table's Sample form, as the analysis form takes it.
     fn sample_form_edit(
         &mut self,
         event: &KeyEvent,
@@ -120,9 +119,8 @@ impl App {
         key
     }
 
-    /// Enter on a form that edits the view's sample. A sample whose estimate is more
-    /// than the memory there is to hold it warns on the form, naming the setting; a
-    /// second Enter draws it anyway, once.
+    /// Enter on the view's sample form. An estimate past available memory warns on the
+    /// form, naming the setting; a second Enter draws it anyway, once.
     pub(crate) fn submit_view_sample(form: &mut SampleForm, memory: MemoryCheck) -> Submitted {
         if form.no_sample() {
             return Submitted::Clear;
@@ -151,8 +149,8 @@ impl App {
         }
     }
 
-    /// What a draw from `scope` of `source` is remembered by: the scope, and the
-    /// view's steps it reads through.
+    /// The key a draw from `scope` of `source` is remembered by: the scope and the view
+    /// steps it reads through.
     pub(crate) fn sample_path_key(
         source: &DataTableState,
         scope: &crate::data_quality::QualityScope,
@@ -170,10 +168,9 @@ impl App {
         format!("{}\n{steps}", scope.command())
     }
 
-    /// While a sample is drawn, the keys that read only the rows on hand act at
-    /// once: moving, finding, inspecting, and every key of the find line, the
-    /// inspector, the Info panel and the help. Anything that needs every row
-    /// (a sort, a query, Analysis, a chart, an export) waits for the sample.
+    /// While a sample is drawn, keys reading only rows on hand act at once (moving,
+    /// finding, inspecting, and every key of the find line, inspector, Info and help);
+    /// anything needing every row (sort, query, Analysis, chart, export) waits.
     pub(crate) fn key_acts_while_sampling(&self, key: &KeyEvent) -> bool {
         if self.busy
             || self.loading.waits()
@@ -210,16 +207,14 @@ impl App {
         }
     }
 
-    /// Open the Sample form on a copy of the shared sample. A per-partition sample
-    /// splits by a column; partition columns lead the choices, then the columns a
-    /// partition is usually made of (text, integers, dates), never floats.
+    /// Open the Sample form on a copy of the shared sample. A per-partition split
+    /// offers partition columns first, then text, integers and dates; never floats.
     pub(crate) fn open_sample_form(&mut self) {
         self.open_sample_form_as(false);
     }
 
-    /// A tool with nothing to show yet: the Sample form is its pane, as it stands.
-    /// Where the cursor goes is the caller's: into the form when the tool is picked,
-    /// back to the tool list when Esc leaves it.
+    /// A tool with nothing to show: the Sample form is its pane. The caller places the
+    /// cursor (into the form when picked, back to the list on Esc).
     pub(crate) fn open_first_run_form(&mut self) {
         self.open_sample_form_as(true);
         self.sync_sample_form_focus();
@@ -234,9 +229,8 @@ impl App {
         }
     }
 
-    /// Run the tool on screen with the Sample form's sample, or say on the form why
-    /// its scope does not parse. In Data Quality the sample is staged in Setup's
-    /// draft instead: the form applies, and Run reads.
+    /// Run the tool on screen with the form's sample, or say why its scope does not
+    /// parse. In Data Quality the sample is staged in Setup's draft; Run reads.
     pub(crate) fn run_sample_form(&mut self) -> Option<AppEvent> {
         let quality =
             self.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality);
@@ -294,8 +288,8 @@ impl App {
         self.open_sample_form_on(&sample, inline);
     }
 
-    /// `s` in Data Quality: the Sample form over Setup, on the draft's sample. Its
-    /// Enter stages the sample in the draft and returns to Setup; only Run reads.
+    /// `s` in Data Quality: the Sample form over Setup on the draft's sample; Enter
+    /// stages it and returns to Setup. Only Run reads.
     pub(crate) fn open_quality_sample_form(&mut self) {
         self.open_quality_setup();
         let sample = self.analysis_modal.quality.plan.sample();
@@ -306,8 +300,8 @@ impl App {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
         };
-        // A view with a sample: the form edits it, and the rows come from the view it
-        // was drawn from.
+        // A view with a sample: the form edits it; rows come from the view it was drawn
+        // from.
         let (sample, view) = match state.sampled() {
             Some(sampled) => (sampled.sample().clone(), true),
             None => (sample.clone(), false),
@@ -322,15 +316,14 @@ impl App {
         self.sync_sample_form_focus();
     }
 
-    /// What the Sample form offers for `state`'s rows: its partitions, files, time
-    /// columns and the columns an equal-per-value sample can split by.
+    /// What the Sample form offers for `state`: partitions, files, time columns, and
+    /// columns an equal-per-value sample can split by.
     pub(crate) fn sample_context(&self, state: &DataTableState) -> sample_modal::SampleContext {
         let mut partition_columns = state.partition_columns().unwrap_or_default().to_vec();
         let mut partition_values = Vec::new();
-        // A directory whose files agree opens as one scan and names no partition
-        // columns; its directory names still do. One branch of the tree is walked for
-        // the columns and one listing read for the first column's values: local,
-        // and small next to opening the dataset.
+        // A directory whose files agree opens as one scan with no partition columns, but
+        // its directory names still count: one branch is walked for the columns and one
+        // listing read for the first column's values (local and cheap).
         if let Some(dir) = self.path.as_ref().filter(|path| path.is_dir()) {
             if partition_columns.is_empty() {
                 partition_columns = crate::readers::hive::discover_hive_partition_columns(dir)
@@ -355,9 +348,8 @@ impl App {
                 }
             }
         }
-        // An equal-per-value sample splits by a column: partition columns first, then
-        // text, the usual stuff of a group (a ticker, a region), then dates and
-        // integers. Never floats.
+        // An equal-per-value split column: partition columns, then text (ticker, region),
+        // then dates and integers. Never floats.
         let mut value_columns = partition_columns.clone();
         for kind in 0..3 {
             for (name, dtype) in state.schema().iter() {
@@ -388,8 +380,8 @@ impl App {
         let file_count = form.context.files.len();
         let key = form::key(form, event);
         match key {
-            // In a tool's empty pane the form stays, as it was: Esc discards the
-            // edit and hands the cursor back to the tool list.
+            // In a tool's empty pane the form stays: Esc discards the edit and returns the
+            // cursor to the tool list.
             FormKey::Cancel if form.inline => {
                 self.analysis_modal.focus = analysis_modal::AnalysisFocus::Sidebar;
                 self.open_first_run_form();

@@ -17,14 +17,13 @@ use polars::prelude::LazyFrame;
 /// What datui hands to other programs: values to open, where they are written, and the
 /// clipboard.
 pub struct External {
-    /// A value the inspector wrote for another program, for the run loop to open:
-    /// it owns the terminal that a waiting program takes over.
+    /// A value the inspector wrote for another program, for the run loop to open (it
+    /// owns the terminal a waiting program takes).
     pub(crate) open: Option<crate::external_open::ExternalOpen>,
     /// Where those values are written; removed when the app is.
     pub(crate) open_dir: Option<tempfile::TempDir>,
-    /// Where copies go. Built at the first copy and kept for the run: on
-    /// Wayland and X11 the clipboard offer dies with the process that owns it,
-    /// so this handle must live as long as the copy should.
+    /// Where copies go, built at the first copy and kept: on Wayland and X11 the
+    /// clipboard offer dies with its owner.
     pub(crate) clipboard: Option<Box<dyn crate::clipboard::Destination>>,
 }
 
@@ -42,10 +41,9 @@ pub struct Pipes {
     pub(crate) recording_end_said: bool,
 }
 
-/// Restore the terminal, then turn how the loop ended into what `run_impl` returns.
-/// The reader stops first, so nothing typed after the screen is handed back is read
-/// here. The capture is taken after the screen is handed back, so a refused capture
-/// still leaves the terminal usable.
+/// Restore the terminal and turn how the loop ended into `run_impl`'s result. The
+/// reader stops first so nothing typed afterwards is read; the capture comes after,
+/// so a refused one still leaves the terminal usable.
 fn conclude(
     end: event_pump::Ended,
     app: &App,
@@ -67,27 +65,25 @@ fn conclude(
     }
 }
 
-/// The exit status the session's ending signal calls for, once one has ended it;
-/// 0 until then. Set once.
+/// The exit status the ending signal calls for, set once; 0 until then.
 static ENDED_BY_SIGNAL: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
-/// The exit status for the binary when a signal ended the session [`run`] returned
-/// from: `128 + n` for SIGTERM, SIGHUP or SIGINT, as if it had not been caught (the
-/// statuses of `datui_cli::exit`), and on
-/// Windows the status a console process closed by its window ends with.
+/// The exit status when a signal ended the session [`run`] returned from: `128 + n`
+/// for SIGTERM, SIGHUP or SIGINT (as `datui_cli::exit`), and on Windows a closed
+/// console's status.
 pub fn ended_by_signal() -> Option<i32> {
     let status = ENDED_BY_SIGNAL.load(std::sync::atomic::Ordering::SeqCst);
     (status != 0).then_some(status)
 }
 
-/// A signal that ends the session arrived: quit as `q` does, so the screen is handed
-/// back and an open's temp files are removed (#510). A second one, or a session still
-/// running a few seconds after the first, ends the process at once, as the signal
-/// would have: a stuck event loop cannot make datui unkillable. Called on the runtime.
+/// A session-ending signal: quit as `q` does, handing back the screen and removing
+/// temp files. A second signal, or a session still running after a few seconds,
+/// ends the process at once, so a stuck loop cannot make datui unkillable. Called on
+/// the runtime.
 fn end_session(status: i32, tx: &std::sync::mpsc::Sender<AppEvent>) {
     use std::sync::atomic::Ordering;
-    // Longer than the exit sweep's grace, which is part of a normal quit, and short
-    // of the five seconds Windows allows a console process it is closing.
+    // Longer than the exit sweep's grace, shorter than Windows' five seconds for closing
+    // a console.
     const STRAGGLE: std::time::Duration = std::time::Duration::from_secs(3);
     fn end_now(status: i32) -> ! {
         restore_terminal();
@@ -130,9 +126,8 @@ fn quit_on_signals(runtime: &tokio::runtime::Handle, tx: &std::sync::mpsc::Sende
     }
 }
 
-/// End the session when its console window is closed, or the user logs off or the
-/// machine shuts down. Tokio holds the control handler until the process exits, so
-/// the quit runs before Windows ends it.
+/// End the session when the console closes, the user logs off or the machine shuts
+/// down. Tokio holds the control handler until exit, so the quit runs first.
 #[cfg(windows)]
 fn quit_on_signals(runtime: &tokio::runtime::Handle, tx: &std::sync::mpsc::Sender<AppEvent>) {
     use tokio::signal::windows::{ctrl_close, ctrl_logoff, ctrl_shutdown};
@@ -158,15 +153,14 @@ fn quit_on_signals(runtime: &tokio::runtime::Handle, tx: &std::sync::mpsc::Sende
     quit_on!(ctrl_shutdown());
 }
 
-/// Run the TUI with either file paths or an existing LazyFrame. Single event loop
-/// used by the CLI and the Python binding.
+/// Run the TUI with file paths or an existing LazyFrame: the one event loop for the
+/// CLI and the Python binding.
 pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
     run_impl(input, config, false).map(|_| ())
 }
 
-/// As `run`, but a normal quit hands back the active table's final view for the
-/// caller to keep working with (the Python binding's `capture=True`). `None` when no
-/// dataset was open at quit. See `App::capture_view` for what is refused and why.
+/// As `run`, but a normal quit returns the active table's final view (the Python
+/// binding's `capture=True`); `None` with no dataset. See `App::capture_view`.
 pub fn run_captured(input: RunInput, config: Option<AppConfig>) -> Result<Option<LazyFrame>> {
     run_impl(input, config, true)
 }
@@ -179,16 +173,14 @@ fn run_impl(
     use event_pump::EventPump;
     use std::io::Write;
 
-    // First, so a missing file is named as the home directory has it.
+    // First, so a missing file is named with the home directory expanded.
     let input = startup::expand_home(input);
     use std::sync::{Mutex, Once, mpsc};
 
-    // The saved views are read on a worker from here; the first thing that needs them
-    // waits for the rest of the read, if any.
+    // Saved views are read on a worker; the first user waits for the rest.
     let views = Views::read_in_background();
 
-    // Install color_eyre at most once per process (e.g. first datui.view() in Python).
-    // Subsequent run() calls skip install and reuse the result; no error-message detection.
+    // Install color_eyre at most once per process (e.g. repeated datui.view() in Python).
     static COLOR_EYRE_INIT: Once = Once::new();
     static INSTALL_RESULT: Mutex<Option<Result<(), color_eyre::Report>>> = Mutex::new(None);
     COLOR_EYRE_INIT.call_once(|| {
@@ -207,12 +199,9 @@ fn run_impl(
         .build()
         .map_err(|e| color_eyre::eyre::eyre!("Failed to create tokio runtime: {}", e))?;
 
-    // Background work (e.g. the row-count `len()` over a huge or remote dataset) runs on
-    // the runtime's blocking pool. Dropping the runtime normally *joins* those threads, so
-    // quitting would hang until an in-flight count finished — minutes for a 474 GB hive
-    // set. Shut the runtime down in the background instead: exit is immediate and the
-    // abandoned read-only task dies with the process. This guard covers every return path
-    // (Exit, Crash, `?`-propagated errors, channel disconnect).
+    // Dropping the runtime joins its blocking pool, so quit would wait on an in-flight
+    // count (minutes over a huge hive). Shut it down in the background instead; the
+    // read-only tasks die with the process. Covers every return path.
     struct RtGuard(Option<tokio::runtime::Runtime>);
     impl Drop for RtGuard {
         fn drop(&mut self) {
@@ -229,8 +218,8 @@ fn run_impl(
         .handle()
         .clone();
 
-    // `--tee -` passes the stream on to standard output, so the screen is drawn on the
-    // terminal itself; standard output as it was is kept for the copy.
+    // `--tee -` passes the stream to stdout, so the screen is drawn on the terminal;
+    // the original stdout is kept for the copy.
     let passed = match &input {
         RunInput::Cli(args) if args.tee.as_deref().is_some_and(crate::stdin::is_stdin) => {
             Some(crate::tee::pass_stdout_on().map_err(|e| color_eyre::eyre::eyre!(e))?)
@@ -240,13 +229,11 @@ fn run_impl(
     let mut terminal = match ratatui::try_init() {
         Ok(terminal) => QuietTerminal(Some(terminal)),
         Err(e) => {
-            // No screen to keep up, so nothing to wait behind: a configuration that
-            // cannot be used, or a named file that is not there, is the more useful
-            // thing to say, as each always came first.
+            // No screen to keep up: an unusable config or a missing named file is said first.
             if config.is_none() {
                 startup::load_config(&input)?;
             }
-            // Without a screen nothing is opened, so the specs are not loaded to look.
+            // Without a screen nothing is opened, so no specs are loaded to look.
             if let Some(missing) =
                 App::missing_named_path(startup::named_paths(&input), &Default::default())
             {
@@ -264,15 +251,13 @@ fn run_impl(
             ));
         }
     };
-    // Handed back on every way out of this function, after the reader below has let go.
+    // Handed back on every way out, after the reader below lets go.
     let mut screen = TakenTerminal { restored: false };
-    // Anything written to stderr from here on would be drawn over the screen; it goes
-    // to the log until this drops, on every way out of this function.
+    // stderr goes to the log until this drops, so nothing draws over the screen.
     let session = logging::TuiSession::begin(restore_terminal);
     push_keyboard_flags();
-    // Asked before the settings are read, so the answer is usually in by the time they
-    // are; under an explicit `theme.mode` it is read and dropped. The reader takes it
-    // off the input stream, so nothing waits here.
+    // Asked before reading settings, so the answer is usually in by then; dropped under
+    // an explicit `theme.mode`. The reader takes it off the input stream.
     let asked = terminal_color::supported()
         && config.as_ref().is_none_or(|c| c.theme.follow)
         && terminal_color::ask(&mut std::io::stdout());
@@ -285,15 +270,15 @@ fn run_impl(
         });
     }
     let mut reader = terminal_input::TerminalInput::start(tx.clone())?;
-    // Only for the datui binary: the handlers stay for the life of the process, and a
-    // host such as Python keeps its own.
+    // Only for the datui binary: handlers last the process, and hosts like Python keep
+    // their own.
     #[cfg(any(unix, windows))]
     if matches!(input, RunInput::Cli(_)) {
         quit_on_signals(&rt_handle, &tx);
     }
 
-    // The settings are files, so they are read on a worker while the keys are already
-    // being read: a slow mount shows a screen saying so, and Ctrl+C or Ctrl+Q leave it.
+    // Settings are files, read on a worker while keys are read: a slow mount shows a
+    // screen, and Ctrl+C or Ctrl+Q leave it.
     let waiting_on = startup::named(&input);
     {
         let tx = tx.clone();
@@ -374,10 +359,9 @@ fn run_impl(
         }
     };
 
-    // Polars sizes its thread pool from the environment the first time it computes,
-    // which is after this: the settings were read without it. Only the binary's own
-    // process: a host (Python) has threads that read the environment outside std's
-    // lock, and its environment is not datui's to change.
+    // Polars sizes its pool from the environment at its first compute, after this.
+    // Only in the binary's own process: a host's threads may read the environment
+    // outside std's lock, and it is not datui's to change.
     let asked_threads = std::env::var_os("POLARS_MAX_THREADS");
     if matches!(input, RunInput::Cli(_))
         && let Some(threads) =
@@ -389,8 +373,8 @@ fn run_impl(
         unsafe { std::env::set_var("POLARS_MAX_THREADS", threads) };
     }
 
-    // The first frame is not held for the terminal's answer: one that is already in
-    // is used, else this terminal's last one (see `App::settle_first_palette`).
+    // The first frame does not wait for the terminal's answer: one already in, else
+    // this terminal's last one (see `App::settle_first_palette`).
     let background = (asked && config.theme.follow)
         .then(|| startup::take_answer(&rx, background, &mut backlog))
         .flatten();
@@ -398,9 +382,8 @@ fn run_impl(
         follow_focus(&mut std::io::stdout());
     }
 
-    // Choose the glyph alphabet before the first frame: on a terminal that is not
-    // doing UTF-8, box-drawing characters render as replacement boxes and make the
-    // UI harder to read rather than prettier.
+    // Choose glyphs before the first frame: without UTF-8, box drawing renders as
+    // replacement boxes.
     glyphs::init_with_overrides(config.display.unicode, &config.glyphs.overrides);
     crate::limits::set(config.limits);
 
@@ -427,8 +410,8 @@ fn run_impl(
             None
         }
         RunInput::Paths(paths, opts) => {
-            // Whether each path is there, and whether a directory was named, is asked
-            // after this frame, on a worker; the frame says what is being opened.
+            // Whether each path exists, and is a directory, is asked on a worker after this
+            // frame, which names what is being opened.
             app.set_loading_phase("Scanning input", 10);
             if let [path] = paths.as_slice() {
                 app.name_what_is_loading(path.clone());
@@ -443,15 +426,13 @@ fn run_impl(
             unreachable!("read_settings resolves the command line")
         }
     };
-    // Declared before the pump, so it drops after it: the app's own files go with the
-    // app, and this then removes what a worker was still writing.
+    // Declared before the pump so it drops after: the app's files go with it, then
+    // this removes what workers were still writing.
     let _sweep = app.exit_sweep();
     let input_tx = tx.clone();
     let mut pump = EventPump::new(app, tx, rx);
-    // The open goes out before the keys typed while the settings were read, so they
-    // meet it as they would any open in flight: Ctrl+O puts it down, `q` quits. Sent
-    // on the channel instead, it lost to a Ctrl+O offered ahead of the channel and
-    // opened behind the home screen, or behind whatever was opened from there.
+    // The open goes before keys typed during settings, so they meet it as an open in
+    // flight: Ctrl+O puts it down, `q` quits.
     pump.handle_first(backlog.into_iter().chain(open));
     let end = pump.run(|app| {
         if let Some(open) = app.take_external_open() {
@@ -477,8 +458,8 @@ fn run_impl(
     for note in notes {
         let _ = writeln!(std::io::stderr(), "datui: {note}");
     }
-    // Quit with the recording kept going: it goes on until its stream ends, with the
-    // terminal handed back. A signal now ends the process as it always would.
+    // Quit with the recording kept going: it continues to its stream's end with the
+    // terminal handed back.
     if let Some((tee, handle)) = pump.app.recording_after_exit() {
         let to = if tee.to_stdout() {
             format!("passing standard input on to {}", tee.name())
@@ -500,9 +481,9 @@ fn run_impl(
     result
 }
 
-/// Open a value the inspector wrote: a program that takes the terminal gets it
-/// (the key reader stopped, the screen and raw mode handed back) until it
-/// returns; an opener is only started. Says what went wrong, if anything.
+/// Open a value the inspector wrote: a terminal program gets the terminal (reader
+/// stopped, screen and raw mode handed back) until it returns; an opener is only
+/// started. Returns what went wrong, if anything.
 fn open_externally(
     open: &external_open::ExternalOpen,
     reader: &mut terminal_input::TerminalInput,

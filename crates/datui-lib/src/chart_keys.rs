@@ -37,10 +37,9 @@ impl App {
             return None;
         }
 
-        // The plot has the keys: ←→ step the crosshair, Home and End go to the ends,
-        // and x, Tab, Shift+Tab or Esc hand the keys back to the panel. The keys that
-        // act from anywhere still do; the rest would edit a row with no rail on it, so
-        // they do nothing.
+        // The plot has the keys: ←→ step the crosshair, Home/End go to the ends, and x,
+        // Tab, Shift+Tab or Esc return them to the panel. Global keys still act; the rest
+        // do nothing (they would edit a row without a rail).
         if self.chart.modal.plot_focus {
             let to = match event.code {
                 KeyCode::Left | KeyCode::Char('h') => Some(Move::Left),
@@ -70,8 +69,7 @@ impl App {
             return None;
         }
 
-        // The panel is a form, but one that applies as it changes: Enter acts on the
-        // focused row as Space does, since there is nothing left to submit.
+        // The panel applies as it changes, so Enter acts on the focused row like Space.
         match crate::form::key(&mut self.chart.modal, event) {
             FormKey::Cancel => {
                 self.close_overlay();
@@ -95,8 +93,8 @@ impl App {
                 self.chart.modal.plot_focus = true;
                 self.move_crosshair_to(None);
             }
-            // The type switches from anywhere: 1-7 name one in order, [ and ] step.
-            // Safe as plain keys: with the Picker closed, nothing on this screen types.
+            // The type switches from anywhere (1-7, [ and ]): with the Picker closed, nothing
+            // here types.
             KeyCode::Char(c @ '1'..='7') => {
                 let idx = c as usize - '1' as usize;
                 self.chart.modal.set_mark(Mark::ALL[idx]);
@@ -112,8 +110,7 @@ impl App {
                     self.open_chart_export();
                 }
             }
-            // The chart keeps the rows it was drawn from; `t` draws the new ones
-            // too.
+            // The chart keeps the rows it was drawn from; `t` draws the new ones too.
             KeyCode::Char('t') if self.follow_rows_waiting() => {
                 self.take_follow_rows(false);
                 self.chart.cache.clear();
@@ -127,9 +124,9 @@ impl App {
         None
     }
 
-    /// The Rows row's own keys: digits type a sample size (`50k`, `2m`), Backspace
-    /// edits it, Enter reads the row, and Esc puts a pending change back rather than
-    /// closing the chart. Returns whether the key was the row's.
+    /// The Rows row's keys: digits type a sample size (`50k`, `2m`), Backspace edits,
+    /// Enter reads, Esc reverts a pending change instead of closing. Returns whether
+    /// the key was the row's.
     fn chart_rows_key(&mut self, event: &KeyEvent) -> bool {
         let plain = !event
             .modifiers
@@ -171,8 +168,8 @@ impl App {
         }
     }
 
-    /// Open the export dialog, its words started from the chart: how it was made of
-    /// the rows, and where its data comes from. The figure names Y at its axis.
+    /// Open the export dialog, its text started from the chart: how it was made and
+    /// where its data comes from. The figure names Y at its axis.
     fn open_chart_export(&mut self) {
         let description = sentence_case(&self.chart.modal.how());
         self.chart.export_modal.open(
@@ -233,8 +230,8 @@ impl App {
         None
     }
 
-    /// Enter, from any field of the chart's export dialog: build the export from the
-    /// state every row already echoes. A blank path says so inline.
+    /// Enter from any field of the chart export dialog: build the export. A blank path
+    /// says so inline.
     fn submit_chart_export(&mut self) -> Option<AppEvent> {
         let modal = &self.chart.export_modal;
         let path_str = modal.path_input.value().trim();
@@ -245,12 +242,11 @@ impl App {
         }
         // `~` and `$VAR` expand as everywhere else a path is typed.
         let mut path = home::expand_user_path(path_str);
-        // A path that names a format takes it; one that names none takes the
-        // format's extension.
+        // A path naming a format takes it; one naming none gets the format's extension.
         let format = match ChartExportFormat::from_extension(&path) {
             Some(format) => format,
-            // Any other ending is part of the name (`chart.v2`): the format's
-            // extension goes after it, so the file says what it is.
+            // Any other ending is part of the name (`chart.v2`): the format's extension goes
+            // after it.
             None => {
                 let format = modal.format;
                 let mut name = path.into_os_string();
@@ -297,8 +293,7 @@ impl App {
             recipe,
         };
         if request.path.exists() {
-            // Suspended, not closed: declining returns to the filled form with the
-            // typed path intact.
+            // Suspended, not closed: declining returns to the filled form.
             self.step_back();
             self.confirmation_modal.show_destructive(
                 format!("File already exists:\n{path_display}\n\nOverwrite it?"),
@@ -336,8 +331,8 @@ impl App {
         }
     }
 
-    /// Put the crosshair on the point nearest `column`, or with none, back on the
-    /// point it stood on (the nearest one now), or in the middle of the plot.
+    /// Put the crosshair on the point nearest `column`; with none, on the point nearest
+    /// where it stood, or mid-plot.
     pub(crate) fn move_crosshair_to(&mut self, column: Option<u16>) {
         let (Some(place), Some(xs)) = (self.chart.modal.plot, self.chart_xs()) else {
             return;

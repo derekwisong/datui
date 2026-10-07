@@ -1,11 +1,8 @@
 //! The view's sample: the draw that fills it as the table shows it, and taking it
-//! away.
-//!
-//! The sample is a step of the view, between the source and the query
-//! ([`crate::table::Sampled`]). Its rows are drawn off the UI thread by a
-//! [`Job::SampleDraw`], which keeps them in memory a chunk at a time
-//! ([`crate::table_sample`]); each chunk is laid under the view's frames as it lands,
-//! as a followed pipe's rows are.
+//! away. The sample is a view step between source and query
+//! ([`crate::table::Sampled`]); a [`Job::SampleDraw`] draws it off the UI thread a
+//! chunk at a time ([`crate::table_sample`]), each chunk laid under the view's
+//! frames as it lands, like a followed pipe's rows.
 
 use crate::jobs::{Answer, Job, SampleDraw};
 use crate::table::DataTableState;
@@ -15,15 +12,13 @@ use std::sync::Arc;
 
 /// The sample form, and what the draws learned of memory and of the paths they took.
 pub struct SampleState {
-    /// The Sample form over the table (`S`): the view's sample, the step under its
-    /// query.
+    /// The Sample form over the table (`S`).
     pub form: Option<crate::sample_modal::SampleForm>,
-    /// Where the memory available now is read from, which a sample is checked
-    /// against. The system's, unless a test says otherwise.
+    /// Where available memory is read from for the sample's check: the system's,
+    /// unless a test sets it.
     pub(crate) memory_probe: crate::table_sample::MemoryProbe,
-    /// How each random sample of a stream was drawn on this dataset, by what it was
-    /// drawn from: drawn again, the same seed keeps the same rows whether or not the
-    /// count has come in since.
+    /// How each random sample of a stream was drawn on this dataset, by source: redrawn,
+    /// the same seed keeps the same rows whether or not the count has come in.
     pub(crate) paths: Vec<(String, crate::table_sample::DrawPath)>,
 }
 
@@ -48,17 +43,16 @@ impl App {
         }
     }
 
-    /// Read the memory available now from `probe` rather than from the system: for a
-    /// test that decides how much there is.
+    /// Read available memory from `probe` instead of the system (for tests).
     pub fn set_memory_probe(&mut self, probe: MemoryProbe) {
         self.sample.memory_probe = probe;
     }
 
-    /// Draw `sample` as the view's sample, in place of any it has. The table shows
-    /// the rows as they land, with `replay` (the query, filters, sort and columns of
-    /// a view being applied) laid over them; with none, the view's own steps go back
-    /// on, unless the sample was drawn through them. `anyway` draws with no running
-    /// memory check. `then_analyze` runs Analysis's tool once it is drawn.
+    /// Draw `sample` as the view's sample, replacing any. Rows show as they land, with
+    /// `replay` (an applied view's query, filters, sort and columns) laid over them;
+    /// without it the view's own steps go back on unless the sample was drawn through
+    /// them. `anyway` skips the running memory check; `then_analyze` runs Analysis's
+    /// tool once drawn.
     pub(crate) fn apply_table_sample(
         &mut self,
         sample: sampling::Sample,
@@ -69,8 +63,8 @@ impl App {
         self.draw_table_sample(sample, None, replay, anyway, then_analyze);
     }
 
-    /// [`Self::apply_table_sample`], drawing a random sample of a stream the way
-    /// `path` says, as a view says it was drawn: the same rows again.
+    /// [`Self::apply_table_sample`], drawing a stream's random sample the way `path`
+    /// says (as a saved view recorded), giving the same rows.
     pub(crate) fn draw_table_sample(
         &mut self,
         sample: sampling::Sample,
@@ -84,9 +78,8 @@ impl App {
             return;
         };
         let source = state.unsampled();
-        // A view scope reads the view as shown: what it shows other than the source
-        // is what the sample stands for, so it is not laid on again. Its order is
-        // part of which rows a row range reads.
+        // A view scope reads the view as shown, so its steps are part of the sample and not
+        // laid on again; its order decides which rows a row range reads.
         let reads_view = !sample.scope.uses_source();
         let ranged = matches!(
             sample.scope,
@@ -95,14 +88,14 @@ impl App {
         let sorted = !source.get_sort_columns().is_empty() || !source.get_sort_ascending();
         let through = reads_view
             && (source.changes_rows() || !source.column_changes().is_empty() || ranged && sorted);
-        // The steps to lay on the new sample: a view's being applied; those on the
-        // sample it replaces; or the view's own, unless the sample stands for them.
+        // Steps for the new sample: an applied view's, those on the replaced sample, or the
+        // view's own unless the sample stands for them.
         let replay = replay.or_else(|| match state.sampled() {
             Some(_) => Some(crate::view_settings_of(state)),
             None => (!through).then(|| crate::view_settings_of(source)),
         });
-        // A pivot is read whole once its rows are all there, which a sample being
-        // drawn is not: say so rather than leave it off.
+        // A pivot needs all its rows, which a sample being drawn lacks: say so rather than
+        // drop it.
         if replay
             .as_ref()
             .is_some_and(|settings| settings.pivot.is_some())
@@ -116,9 +109,8 @@ impl App {
         };
         let source = state.unsampled();
         let (cut, known_total) = Self::table_sample_source(source, &sample.scope);
-        // How a random sample of a stream is drawn is decided once for what it is
-        // drawn from: the view's word, the way it was drawn here before, or by
-        // whether the count is in. The same seed keeps the same rows either way.
+        // How a stream's random sample is drawn is decided once per source: the view's
+        // word, the earlier draw's, or whether the count is in. The seed keeps the rows.
         let path_key = Self::sample_path_key(source, &sample.scope);
         let path = (sample.method == sampling::SampleMethod::Spread).then(|| {
             path.or_else(|| {
@@ -180,9 +172,8 @@ impl App {
         });
     }
 
-    /// Where a view's sample is drawn from: the loaded source for a source scope,
-    /// otherwise the view as shown (in its order for a row range), with every column
-    /// the view has, whole: the sample is the view's rows, not an analysis's.
+    /// Where a view's sample is drawn from: the loaded source for a source scope, else
+    /// the view as shown (in order, for a row range) with every column whole.
     fn table_sample_source(
         state: &DataTableState,
         scope: &crate::data_quality::QualityScope,
@@ -207,17 +198,16 @@ impl App {
         )
     }
 
-    /// The view's sample goes: the view it was drawn from comes back, with the
-    /// query, filters and sort laid on the sample laid on it instead, unless the
-    /// sample was drawn through the view's own.
+    /// Remove the view's sample: the source view returns with the sample's query,
+    /// filters and sort laid on it, unless the sample was drawn through the view's own.
     pub(crate) fn clear_table_sample(&mut self) {
         let Some(sampled) = self.data_table_state.as_ref().and_then(|s| s.sampled()) else {
             return;
         };
         let through = sampled.through();
         let settings = self.data_table_state.as_ref().map(crate::view_settings_of);
-        // A pivot over the sample would have to read the whole source to move onto
-        // it: the sample stays, and the way out is said.
+        // Moving a pivot off the sample would read the whole source: the sample stays, and
+        // the way out is said.
         if !through && settings.as_ref().is_some_and(|s| s.pivot.is_some()) {
             self.error_modal.show(PIVOT_OFF_A_SAMPLE.to_string());
             return;
@@ -244,8 +234,8 @@ impl App {
         self.spawn_async_collect(Self::LOADING_BUFFER);
     }
 
-    /// The view's rows changed underneath every result read from them: Analysis's,
-    /// the chart's and the rows a page read held.
+    /// The view's rows changed under every result read from them: Analysis's, the
+    /// chart's, and in-flight pages.
     pub(crate) fn sample_changed(&mut self) {
         self.forget_the_rows_read();
         self.chart.cache.clear();
@@ -283,8 +273,8 @@ impl App {
         }
     }
 
-    /// Stop the draw in flight and drop whatever it still sends: another sample
-    /// replaces it, or the view it was for goes.
+    /// Stop the draw in flight and drop what it still sends: replaced by another
+    /// sample, or its view is gone.
     pub(crate) fn put_down_sample_draw(&mut self) {
         if let Some(draw) = self.sample_draw() {
             draw.watch.stop();
@@ -300,8 +290,8 @@ impl App {
             .is_some_and(|sampled| sampled.holds(&draw.rows))
     }
 
-    /// The draw has cut its rows to their scope: what their columns are is kept
-    /// for the view that takes its first rows.
+    /// The draw cut its rows to scope: keep their columns for the view taking its first
+    /// rows.
     pub(crate) fn sample_begun(&mut self, schema: &polars::prelude::SchemaRef) {
         if let Some(Job::SampleDraw(draw)) = self
             .jobs
@@ -311,10 +301,9 @@ impl App {
         }
     }
 
-    /// The view becomes the sample's, with the steps laid on it, in place of the
-    /// view it is drawn from or the sample it replaces. Only once rows have come:
-    /// a draw that fails or stops first leaves the view as it was. Returns whether
-    /// the view is the draw's.
+    /// The view becomes the sample's, steps laid on, replacing its source view or the
+    /// previous sample. Only once rows have come: a draw failing first leaves the view.
+    /// Returns whether the view is the draw's.
     fn take_on_sample(&mut self, draw: &SampleDraw) -> bool {
         if self.draw_fills_view(draw) {
             return true;
@@ -372,20 +361,19 @@ impl App {
             .data_table_state
             .as_mut()
             .and_then(DataTableState::sample_grew);
-        // Rows read through the frame before it grew are of fewer rows, in another
-        // order: nothing may land them now.
+        // Rows read before it grew are fewer and in another order: none may land now.
         if grew == Some(false) {
             self.forget_the_rows_read();
         }
-        // The page is read again when nothing else is reading it; the next chunk, or
-        // the end, reads it otherwise.
+        // Re-read the page when nothing else is reading it; else the next chunk or the end
+        // does.
         if grew.is_some() && self.rows_in_flight().is_none() && self.in_normal_table_view() {
             self.spawn_collect(None);
         }
     }
 
-    /// The draw ended: the rows go into source order, and a run Analysis waits for
-    /// starts. A draw memory stopped says why.
+    /// The draw ended: rows go into source order, and a waiting Analysis run starts. A
+    /// draw stopped by memory says why.
     pub(crate) fn sample_drawn(
         &mut self,
         job: Job,
@@ -417,8 +405,8 @@ impl App {
         None
     }
 
-    /// The draw failed, or was stopped before it kept a row. The view stays as it
-    /// was when no row had come; rows that had stay, as a sample cut short.
+    /// The draw failed or stopped before keeping a row: the view stays as it was. Rows
+    /// that came stay, as a sample cut short.
     pub(crate) fn sample_draw_failed(&mut self, job: &Job, current: bool, message: &str) {
         let Job::SampleDraw(draw) = job else {
             return;
@@ -447,9 +435,9 @@ impl App {
         }
     }
 
-    /// Apply `view`, whose rows are a sample: the view goes back to its source, the
-    /// view the sample was drawn through goes on, and the sample is drawn again from
-    /// its seed, the way it was. The view's own steps go on the sample as it arrives.
+    /// Apply `view`, whose rows are a sample: back to its source, its drawn-through
+    /// view goes on, and the sample is redrawn from its seed; the view's own steps go on
+    /// the sample as it arrives.
     pub(crate) fn apply_sampled_view(
         &mut self,
         view: &crate::view::SavedView,
@@ -496,9 +484,9 @@ impl App {
     }
 
     /// Where the value tools (Describe, Distribution, Correlation) read the shared
-    /// sample from, and what the table already knows of its size. Row ranges are
-    /// counted in the order the table shows; every other view scope reads without the
-    /// sort, which no statistic needs and which makes a sampled read read everything.
+    /// sample from, and its known size. Row ranges count in the table's order; other
+    /// view scopes skip the sort, which no statistic needs and which would make a
+    /// sampled read read everything.
     pub(crate) fn sample_source(
         &self,
         state: &DataTableState,
@@ -525,17 +513,15 @@ impl App {
         )
     }
 
-    /// Read the shared sample, as the tool on screen reads it, to show as a table.
-    ///
-    /// Data Quality's last sample is kept and cut when it is these rows; any other is
-    /// drawn again from its seed, which makes it the same rows the tool measured.
+    /// Read the shared sample, as the tool on screen does, to show as a table: Data
+    /// Quality's kept sample is cut when it matches, otherwise redrawn from its seed.
     pub(crate) fn read_sample_view(&mut self) -> Option<AppEvent> {
         let sample = self.analysis_modal.sample.clone();
         self.read_sample_rows(sample, None)
     }
 
-    /// Put the sample's rows in the table viewer in place of the table, as Data
-    /// Quality's drill-in does; Esc brings the table and Analysis back.
+    /// Show the sample's rows in place of the table, as Data Quality's drill-in does;
+    /// Esc brings back the table and Analysis.
     pub(crate) fn show_sample_view(&mut self, df: polars::prelude::DataFrame, label: String) {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
@@ -557,9 +543,8 @@ impl App {
         }
     }
 
-    /// Adopt a new shared sample: every tool's results were of the old one, so all of
-    /// them go, and the tool on screen runs again. Data Quality only takes it into
-    /// its plan: nothing reads until its Run.
+    /// Adopt a new shared sample: every tool's old results go and the tool on screen
+    /// reruns. Data Quality only takes it into its plan until Run.
     pub(crate) fn apply_sample(&mut self, sample: sampling::Sample) -> Option<AppEvent> {
         // A run it would start waits for a cancelled one, with every result kept.
         if self.analysis_modal.selected_tool != Some(analysis_modal::AnalysisTool::DataQuality)

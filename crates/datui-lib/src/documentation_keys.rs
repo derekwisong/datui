@@ -7,8 +7,8 @@ use crossterm::event::{KeyCode, KeyEvent};
 use std::path::Path;
 
 impl App {
-    /// Info's Documentation tab for the open dataset: the catalog entry it is, or is
-    /// inside, with what the format spec that read it says; closed when neither says.
+    /// Info's Documentation tab for the open dataset: its catalog entry (or the one it
+    /// is inside) and its format spec's docs; closed when neither has any.
     pub(crate) fn open_info_documentation(&mut self) {
         self.info.info_documentation.close();
         let spec = self.data_table_state.as_ref().and_then(|state| {
@@ -70,9 +70,9 @@ impl App {
         }
     }
 
-    /// `o` on a Documentation page: ask, with the whole URL, before the browser
-    /// opens it. Nothing on a line without a link; a status line where no local
-    /// browser would show it, or the link is not http or https.
+    /// `o` on a Documentation page: ask, showing the whole URL, before opening a
+    /// browser. Nothing without a link; a status line where no local browser would
+    /// show it or the link is not http(s).
     pub(crate) fn ask_to_open_link(&mut self, link: Option<String>) {
         let Some(link) = link else {
             return;

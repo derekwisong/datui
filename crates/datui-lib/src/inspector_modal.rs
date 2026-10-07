@@ -1,11 +1,7 @@
-//! Row inspector state: which field is focused and which are listed, where the
-//! focus is (the list or the value), the find text, the value's view and where
-//! it is read to, the row compared with, and the fields read for this row that
-//! the table's rows do not hold.
-//!
-//! The values themselves are not kept here. The inspector shows the table's
-//! selected row from the buffer the table already holds, every frame, so moving
-//! the row is moving the table's cursor and nothing is copied out of the buffer.
+//! Row inspector state: the focused and listed fields, list or value focus, the
+//! find text, the value's view and read position, the compared row, and fields read
+//! for this row that the buffer lacks. Values are not kept here: the inspector
+//! draws the table's selected row from its buffer every frame.
 
 use crate::inspector_drill::{Drill, JsonWait, Level, Node};
 use crate::inspector_reader::{Reader, Wrap};

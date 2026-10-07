@@ -306,6 +306,7 @@ pub const SETTINGS: &[Setting] = &[
     s("chart.export_recipe", Bool, Value("true"), "Embed how an exported chart was made (source path, query, chart, sample) in its PNG, SVG or PDF. The export dialog's Recipe row starts from it."),
     // [home]
     s("home.desktop_recents", Bool, Value("true"), "Also list directories from the desktop's recently-used files; never the file names."),
+    s("home.wordmark", Bool, Value("true"), "Show the datui wordmark at the top of the home screen; off, the one-line title bar."),
     s("home.show_unreadable", Bool, Value("false"), "List files datui cannot read, dimmed (Ctrl+A toggles)."),
     s("home.hide", List, Value("[]"), "Catalogs not shown, by id: mine (catalog.toml), examples, or a listed file's name; one entry as catalog/id, such as examples/nyc-taxis. Adds up across imports."),
     s("home.preview_max", Size, Value("\"64MiB\""), "Largest local file whose first rows the home screen previews; 0 turns the preview off."),

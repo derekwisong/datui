@@ -1328,6 +1328,8 @@ pub struct HomeConfig {
     pub desktop_recents: bool,
     /// List unreadable files, dimmed, from the start; `Ctrl+A` flips it per session.
     pub show_unreadable: bool,
+    /// The wordmark atop home; off, the one-line title bar small terminals get.
+    pub wordmark: bool,
     /// Catalogs never shown on the home screen, by id: `mine`, `public`, or a listed
     /// file's name.
     pub hide: Vec<String>,
@@ -1415,6 +1417,7 @@ impl Default for HomeConfig {
             // On by default: it only adds places, giving a fresh install somewhere to point.
             desktop_recents: true,
             show_unreadable: false,
+            wordmark: true,
             hide: Vec::new(),
             preview_max: ByteSize::mib(64),
             search: SearchConfig::default(),

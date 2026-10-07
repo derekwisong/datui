@@ -499,6 +499,8 @@ datui cache clear --recents
 | Wide | The list stops at 84 columns; the pane takes the rest |
 | Below 28 rows | The wordmark becomes a one-line title |
 
+`[home] wordmark = false` keeps the one-line title at any size.
+
 Without UTF-8, markers and borders are ASCII;
 [`display.unicode`](configuration.md#glyphs-or-ascii) overrides the guess.
 

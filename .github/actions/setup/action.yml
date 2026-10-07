@@ -1,0 +1,41 @@
+name: Set up the build
+description: Install the Rust toolchain rust-toolchain.toml pins, or the one named.
+
+inputs:
+  toolchain:
+    description: >-
+      A toolchain to install instead of the pinned one. rust-toolchain.toml
+      still outranks it in the checkout: set RUSTUP_TOOLCHAIN where it builds.
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Read the pinned toolchain
+      id: pin
+      shell: bash
+      env:
+        OVERRIDE: ${{ inputs.toolchain }}
+      run: |
+        file="$GITHUB_WORKSPACE/rust-toolchain.toml"
+        if [ -n "$OVERRIDE" ]; then
+          echo "channel=$OVERRIDE" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        channel=$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' "$file")
+        components=$(sed -n 's/^components *= *\[\(.*\)\].*/\1/p' "$file" | tr -d '" ')
+        [ -n "$channel" ] || { echo "::error::No channel in rust-toolchain.toml"; exit 1; }
+        echo "channel=$channel" >> "$GITHUB_OUTPUT"
+        echo "components=$components" >> "$GITHUB_OUTPUT"
+
+    # dtolnay regenerates the stable branch from master, so an old pin drops
+    # out of branch history and zizmor flags it as an impostor commit. To
+    # refresh: take `gh api repos/dtolnay/rust-toolchain/branches/stable`,
+    # check `compare/master...<sha>` adds only the default-toolchain commit,
+    # and pin that SHA here and in publish-packages.yml.
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      with:
+        toolchain: ${{ steps.pin.outputs.channel }}
+        components: ${{ steps.pin.outputs.components }}

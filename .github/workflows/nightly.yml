@@ -39,9 +39,7 @@ jobs:
           swap-storage: true
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-        with:
-          toolchain: stable
+        uses: ./.github/actions/setup
 
       - name: Install system dependencies
         timeout-minutes: 5
@@ -242,9 +240,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-        with:
-          toolchain: stable
+        uses: ./.github/actions/setup
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -329,9 +325,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-        with:
-          toolchain: stable
+        uses: ./.github/actions/setup
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -412,9 +406,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-        with:
-          toolchain: stable
+        uses: ./.github/actions/setup
 
       - name: Add Rust target
         run: rustup target add ${{ matrix.target }}
@@ -502,9 +494,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-        with:
-          toolchain: stable
+        uses: ./.github/actions/setup
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -634,9 +624,7 @@ jobs:
           swap-storage: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-        with:
-          toolchain: stable
+        uses: ./.github/actions/setup
 
       - name: Install system dependencies
         timeout-minutes: 5
@@ -762,9 +750,7 @@ jobs:
           swap-storage: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-        with:
-          toolchain: stable
+        uses: ./.github/actions/setup
 
       - name: Install system dependencies
         timeout-minutes: 5
@@ -854,9 +840,7 @@ jobs:
           .venv/bin/python scripts/docs/doc_examples.py --python --network
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-        with:
-          toolchain: stable
+        uses: ./.github/actions/setup
 
       - name: Install system dependencies
         timeout-minutes: 5

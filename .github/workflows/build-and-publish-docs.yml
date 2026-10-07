@@ -63,9 +63,7 @@ jobs:
           sudo apt-get install -y mandoc
 
       - name: Install Rust (for mdbook when not cached)
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-        with:
-          toolchain: stable
+        uses: ./.github/actions/setup
       - name: Cache mdbook
         id: cache-mdbook
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

@@ -59,15 +59,8 @@ jobs:
             echo "is_dev_version=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # dtolnay regenerates the stable branch from master, so an old pin drops
-      # out of branch history and zizmor flags it as an impostor commit. To
-      # refresh: take `gh api repos/dtolnay/rust-toolchain/branches/stable`,
-      # check `compare/master...<sha>` adds only the default-toolchain commit,
-      # and pin that SHA in every workflow.
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-        with:
-          toolchain: stable
+        uses: ./.github/actions/setup
       - name: Install system dependencies
         timeout-minutes: 5
         run: |
@@ -108,9 +101,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-        with:
-          toolchain: stable
+        uses: ./.github/actions/setup
 
       - name: Install system dependencies
         timeout-minutes: 5
@@ -141,9 +132,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-        with:
-          toolchain: stable
+        uses: ./.github/actions/setup
 
       - name: Install system dependencies
         timeout-minutes: 5
@@ -164,8 +153,8 @@ jobs:
         run: cargo check --manifest-path fuzz/Cargo.toml --locked
 
   # Build with the oldest Rust the manifests declare, so a newer language feature or
-  # std API cannot creep in unnoticed. A check is enough: stable runs clippy and the
-  # tests above; this job only proves the tree still compiles at the floor.
+  # std API cannot creep in unnoticed. A check is enough: the pinned toolchain runs
+  # clippy and the tests above; this job only proves the tree still compiles at the floor.
   msrv:
     name: MSRV
     runs-on: ubuntu-latest
@@ -182,7 +171,7 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        uses: ./.github/actions/setup
         with:
           toolchain: ${{ steps.msrv.outputs.version }}
 
@@ -194,13 +183,19 @@ jobs:
           sudo apt-get install -y pkg-config
 
       # Its own cache key: artifacts from a different compiler are not shareable.
+      # RUSTUP_TOOLCHAIN here and below: rust-toolchain.toml outranks `rustup default`,
+      # and rust-cache keys the entry on the rustc it finds.
       - name: Cache cargo dependencies
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        env:
+          RUSTUP_TOOLCHAIN: ${{ steps.msrv.outputs.version }}
         with:
           shared-key: msrv
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Check
+        env:
+          RUSTUP_TOOLCHAIN: ${{ steps.msrv.outputs.version }}
         run: cargo check --workspace --locked
 
   # No `needs: [check]`: nothing passes between the two, so waiting on clippy only
@@ -220,9 +215,7 @@ jobs:
         run: df -h
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-        with:
-          toolchain: stable
+        uses: ./.github/actions/setup
 
       - name: Install system dependencies
         timeout-minutes: 5
@@ -338,9 +331,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-        with:
-          toolchain: stable
+        uses: ./.github/actions/setup
 
       - name: Install system dependencies
         timeout-minutes: 5
@@ -430,9 +421,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-        with:
-          toolchain: stable
+        uses: ./.github/actions/setup
 
       # Its own key rather than Nightly's `tests`: that job builds every test
       # executable, more than this one needs, and has run past its timeout without
@@ -537,9 +526,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-        with:
-          toolchain: stable
+        uses: ./.github/actions/setup
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -609,9 +596,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-        with:
-          toolchain: stable
+        uses: ./.github/actions/setup
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0

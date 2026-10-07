@@ -1,26 +1,20 @@
-//! The home screen: datui's answer to "I want to look at my data", before you have
-//! had to answer "where is it, exactly".
+//! The home screen: pick a dataset without first knowing where it is.
 //!
-//! # Roots
+//! It lists *roots* (places to look) and *catalogs* (named datasets and
+//! directories):
 //!
-//! Code lives in your working directory; the interesting datasets usually do not.
-//! They are on a mount, a NAS, a scratch volume. So the home screen is built around
-//! *roots* — places to look — and *catalogs*, named datasets and directories:
-//!
-//! 1. **The working directory** — free, and right for local exports and fixtures.
-//! 2. **Catalogs** — `catalog.toml` (Ctrl+D adds to it), the files `catalogs` lists, and
+//! 1. **The working directory.**
+//! 2. **Catalogs**: `catalog.toml` (Ctrl+D adds to it), the files `catalogs` lists, and
 //!    the bundled `public` catalog. A directory in one is a row to step into.
 //!
-//! What bridges "code here, data there" with no configuration at all is `RECENT`:
-//! every dataset you have opened, grouped under the directory or prefix it lives in.
-//! Opening `/mnt/data/sales/` once puts `/mnt/data/` on the screen as a place row,
-//! and `Enter` on that row browses it. It is derived state, so it costs nothing to be
-//! wrong and nothing to throw away.
+//! `RECENT` lists every dataset opened, grouped under the directory or prefix it
+//! lives in; `Enter` on such a place row browses it. It is derived state, cheap to
+//! rebuild or discard.
 
 use crate::discover::{self, Entry, EntryKind};
 use std::path::{Path, PathBuf};
 
-/// Where a root came from. Shown subtly in the UI so the list is explicable.
+/// Where a root came from, shown subtly in the UI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RootOrigin {
     Cwd,
@@ -37,17 +31,10 @@ impl RootOrigin {
     }
 }
 
-/// Directories holding data files that the desktop has recorded you opening.
-///
-/// Reads `recently-used.xbel`, the freedesktop standard that file managers and GTK
-/// applications write. It is here to solve one problem: a fresh install has no
-/// recents of its own, so it has nowhere to point you.
-///
-/// **Only the directories are used, never the files.** That distinction is the whole
-/// design. The list contains whatever you last opened anywhere on the machine, which
-/// is frequently something you would not want appearing on a screen you demo — a
-/// bank export, a password vault dump. Surfacing `~/Downloads` as a place to look is
-/// useful; listing what is in it, unbidden, is not datui's business.
+/// Directories holding data files the desktop recorded you opening
+/// (`recently-used.xbel`), so a fresh install has places to suggest. Only the
+/// directories are used, never the files: the list holds whatever was opened
+/// anywhere, which may be private.
 pub fn desktop_recent_dirs() -> Vec<PathBuf> {
     let Some(data_dir) = dirs::data_dir() else {
         return Vec::new();
@@ -59,11 +46,8 @@ pub fn desktop_recent_dirs() -> Vec<PathBuf> {
     dirs_from_xbel(&contents)
 }
 
-/// Extract directories of data files from XBEL content.
-///
-/// Split out from the filesystem read so it can be tested directly. Scans for
-/// `href="file://…"` rather than parsing XML: the attribute is all that is needed,
-/// and a hand-rolled scan avoids taking an XML dependency for one file.
+/// Extract directories of data files from XBEL content. Scans for
+/// `href="file://…"` rather than parsing XML, to avoid an XML dependency.
 pub fn dirs_from_xbel(contents: &str) -> Vec<PathBuf> {
     const PREFIX: &str = "href=\"file://";
     let mut dirs: Vec<PathBuf> = Vec::new();
@@ -72,7 +56,7 @@ pub fn dirs_from_xbel(contents: &str) -> Vec<PathBuf> {
         let Some(end) = chunk.find('"') else { continue };
         let decoded = percent_decode(&chunk[..end]);
         let file = PathBuf::from(decoded);
-        // Only files datui could actually open, and only ones still present.
+        // Only files datui can open that still exist.
         if !crate::discover::is_data_file(&file) || !file.is_file() {
             continue;
         }
@@ -111,16 +95,9 @@ fn percent_decode(raw: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// What to call the top of a place in an object store: a source, an account, a bucket
-/// or a container.
-///
-/// `None` for anything else, including a directory inside a bucket: that is labelled by
-/// what it holds, like a local one, and a spinner stands in until it has been looked
-/// into. `prefix` said nothing a user could act on.
-///
-/// Worth the few lines. A bucket labelled `dir` is not wrong so much as unhelpful: the
-/// word that tells you what you are looking at is the one the service uses for it, and
-/// it is exactly what decides whether stepping out of it leaves the store.
+/// The service's word for the top of an object-store place: a source, account,
+/// bucket or container. `None` otherwise, including directories inside a bucket,
+/// which are labeled by their contents like local ones.
 pub fn object_place_label(path: &Path) -> Option<&'static str> {
     if cloud_source_id(path).is_some() {
         return Some("source");
@@ -169,9 +146,9 @@ pub struct RowLabel {
     pub missing_source: bool,
 }
 
-/// What `entry` is called. `look` is where a bucket directory is in being looked into,
-/// drawn on the row at spinner `frame`; `known_sources`, the sources a URL can name, or
-/// `None` where the trail already names it.
+/// What `entry` is called. `look` is a bucket directory's look-up state, drawn at
+/// spinner `frame`; `known_sources` are the sources a URL can name, `None` where
+/// the trail already names it.
 pub fn describe(
     entry: &Entry,
     place_kind: Option<&'static str>,
@@ -179,16 +156,14 @@ pub fn describe(
     frame: usize,
     known_sources: Option<&[crate::config::CloudConnectionConfig]>,
 ) -> RowLabel {
-    // The door into a directory is an action, not a thing: a label, a curated word or a
-    // source id is about the directory, and `bigquery (all files)  dataset` would say
-    // the door is the dataset.
+    // The door is an action: labels, curated words and source ids describe the
+    // directory, not the door.
     if entry.opens_whole_directory {
         return RowLabel::default();
     }
     let g = crate::glyphs::get();
-    // What a source calls a place it names (`dataset`, `project`), and a catalog's
-    // local dataset that is not there (`missing`): before any count, so the curated
-    // row stays marked as one.
+    // A source's word for a place it names (`dataset`, `project`), or `missing` for an
+    // absent catalog dataset, ahead of any count so the row stays marked curated.
     let curated =
         place_kind.filter(|_| matches!(entry.kind, EntryKind::Directory | EntryKind::Unknown));
     let look_glyph = look.map(|look| match look {
@@ -198,8 +173,7 @@ pub fn describe(
     });
     let short = match curated {
         Some(word) => word.to_string(),
-        // A directory not yet counted: a bucket's own word, else that it is being
-        // looked into, rather than a word for the kind of place it is.
+        // An uncounted directory: a bucket's own word, else that it is being looked into.
         None if entry.kind == EntryKind::Directory && entry.holds.formats.is_empty() => {
             object_place_label(&entry.path)
                 .or(look_glyph)
@@ -208,9 +182,8 @@ pub fn describe(
         }
         None => entry.label().into_owned(),
     };
-    // Two stores can hold the same bucket and key, so a row from one named in its URL
-    // says which where a label would otherwise go, or that the source has since left
-    // the config rather than failing only when it is opened.
+    // Two stores can hold the same bucket and key, so a row named by source says
+    // which, or that the source has left the config.
     let path_text = entry.path.to_string_lossy();
     let named = crate::source::split_source_id(&path_text).0;
     let missing_source = named
@@ -220,8 +193,7 @@ pub fn describe(
             (format!("source not found: {id}"), true)
         }
         (Some(id), Some(_)) if short.is_empty() => (id.to_string(), true),
-        // Nothing has looked into it and it has nothing else to say: an ellipsis claims
-        // nothing, where `dir` was a claim and a blank reads as a file's empty label.
+        // Nothing known yet: an ellipsis claims nothing.
         _ if short.is_empty() && entry.kind == EntryKind::Unknown => {
             (g.ellipsis.to_string(), false)
         }
@@ -256,7 +228,7 @@ pub fn describe(
         }
         (None, EntryKind::Directory) => match look {
             Some(CloudLook::Failed) => format!("? {} listing failed, Ctrl+R retries", g.middot),
-            // Nothing to say yet; the row's spinner says it is being found out.
+            // Nothing to say yet; the row's spinner shows it is being looked into.
             Some(_) => String::new(),
             None => object_place_label(&entry.path)
                 .unwrap_or("directory")
@@ -273,20 +245,16 @@ pub fn describe(
     }
 }
 
-/// How a cloud source is addressed on the home screen: `cloud://<id>`. Not a URL any
-/// library reads; it names the level above a source's buckets, which no real URL can.
+/// How a cloud source is addressed on home: `cloud://<id>`, naming the level above
+/// its buckets, which no real URL can.
 pub const CLOUD_PLACE: &str = "cloud://";
 
 /// Lines kept between the cursor and the edge of the list while it can scroll.
 const SCROLL_MARGIN: usize = 2;
 
-/// The first line of a list `height` lines tall that keeps line `selected` on
-/// screen, given the list started at `top`.
-///
-/// The view stays put while the cursor moves inside it, and scrolls only as far as
-/// keeps the cursor [`SCROLL_MARGIN`] lines from an edge. It never starts so low
-/// that the last line rises above the bottom: folding, filtering or a taller
-/// terminal shows more rows rather than empty space.
+/// The first line of a `height`-line list that keeps `selected` on screen, given it
+/// started at `top`. Scrolls only enough to keep the cursor [`SCROLL_MARGIN`] lines
+/// from an edge, and never leaves empty space below the last line.
 pub(crate) fn settle_top(top: usize, selected: usize, height: usize, total: usize) -> usize {
     if height == 0 {
         return top.min(selected);
@@ -338,14 +306,13 @@ fn within(url: &str, root: &str) -> bool {
     }
 }
 
-/// Whether two locations are one place, however a trailing slash or an Azure URL is
+/// Whether two locations are one place, however a trailing slash or Azure URL is
 /// spelled.
 fn same_place(a: &Path, b: &Path) -> bool {
     place_key(a) == place_key(b)
 }
 
-/// A location as [`same_place`] compares it: two places are one when their keys are
-/// equal.
+/// A location as [`same_place`] compares it.
 fn place_key(path: &Path) -> String {
     let text = path.to_string_lossy();
     #[cfg(feature = "cloud")]
@@ -358,15 +325,14 @@ fn place_key(path: &Path) -> String {
     }
 }
 
-/// The catalogs' datasets and bookmarks by place, for the lookups every drawn row
-/// makes.
+/// The catalogs' datasets and bookmarks indexed by place, for per-row lookups.
 #[derive(Debug, Default)]
 pub struct CatalogPlaces {
     /// Catalog and dataset, by [`place_key`]: the first listed of two at one place.
     datasets: std::collections::HashMap<String, (usize, usize)>,
     /// Catalog, dataset and bookmark, by [`place_key`].
     bookmarks: std::collections::HashMap<String, (usize, usize, usize)>,
-    /// How many datasets and bookmarks the catalogs held. Catalogs set other than by
+    /// How many datasets and bookmarks the catalogs held; catalogs set other than by
     /// [`HomeState::set_catalogs`] are scanned instead.
     counted: (usize, usize),
 }
@@ -431,8 +397,8 @@ pub fn is_object_store_url(path: &Path) -> bool {
         || crate::source::azure_parts(&text).is_some()
 }
 
-/// The URL that opens a cloud directory as one dataset: with its trailing slash, which is
-/// what makes it a prefix to scan rather than an object to fetch.
+/// The URL that opens a cloud directory as one dataset: with a trailing slash, so
+/// it is scanned as a prefix rather than fetched as an object.
 pub fn directory_dataset_url(path: &Path) -> PathBuf {
     let text = path.to_string_lossy();
     if text.ends_with('/') {
@@ -442,24 +408,12 @@ pub fn directory_dataset_url(path: &Path) -> PathBuf {
     }
 }
 
-/// A row that opens the directory being browsed as one table, whatever its label says.
-///
-/// The second of the two doors. A label describes what is directly inside a directory; it
-/// does not decide what the directory can give you, so every directory carries this row
-/// and the worst a wrong label can cost is one keystroke. It used to be offered in a
-/// bucket only, and there only for the two kinds the listing had already called a dataset
-/// — which is the same judgement twice, and left a local directory of separate tables
-/// with no way to read them together at all.
-///
-/// Built from the listing already on screen, so it costs nothing to look at.
-///
-/// Not behind `feature = "cloud"`, though it was while the row belonged to a bucket.
-/// Since it is offered in every directory, the gate left a `--no-default-features` build
-/// with no second door at all, local directories included, while the help text and three
-/// doc pages described it unconditionally. Only the remote classifier needs the gate.
+/// The `(all files)` row: opens the browsed directory as one table whatever its
+/// label, so a wrong label costs at most a keystroke. Offered in every directory,
+/// local or remote, and built from the listing on screen.
 fn whole_directory_row(dir: &Path, rows: &[Entry], remote: bool) -> Option<Entry> {
-    // Not a directory: a `cloud://<id>/<account>` place stands for an Azure storage
-    // account, whose children are containers and which has no URL to open.
+    // A `cloud://<id>/<account>` place is an Azure account: its children are
+    // containers, with no URL to open.
     if cloud_account(dir).is_some() {
         return None;
     }
@@ -473,29 +427,18 @@ fn whole_directory_row(dir: &Path, rows: &[Entry], remote: bool) -> Option<Entry
         .filter(|r| matches!(r.kind, EntryKind::File | EntryKind::Other))
         .map(|r| (r.path.to_string_lossy().into_owned(), r.size.unwrap_or(1)))
         .collect();
-    // Each route asked in its own vocabulary. Feeding a local listing to the cloud
-    // classifier got two answers wrong in opposite directions: `scan_dir` drops dotted
-    // names, so `.hoodie` never reached it and a local Hudi table came back
-    // `MultiFile` — the door then read its tombstones, two keystrokes after the row
-    // above said datui does not read Hudi tables. And the cloud Iceberg rule is the
-    // looser of the two on purpose, name-shape only, so a plain directory holding `data/`
-    // beside `metadata/` was refused as a lake table it is not.
-    // Nothing remote is read here, which is the rule this whole branch is built on:
-    // the call that freezes the interface is a listing of a share that has stopped
-    // answering, and `look_at_directory` is a `read_dir` plus a `metadata` per entry.
-    // An object store was never going to be read anyway — `read_dir` on an `s3://`
-    // URL asks the working directory about a file called `s3:` — and a mount is not
-    // read because the rows in hand came from the probe that already paid for it.
+    // Each route classifies in its own terms: `scan_dir` drops dotted names (so a
+    // local `.hoodie` would be missed by the cloud classifier), and the cloud Iceberg
+    // rule is looser by design. Nothing remote is read here: a listing of a dead share
+    // freezes the UI, so local classification uses rows the probe already read.
     let (kind, holds) = if remote || is_object_store_url(dir) {
         #[cfg(feature = "cloud")]
         {
             crate::cloud_browse::look_at_listing(&dir.to_string_lossy(), &directories, &objects)
         }
-        // Without the cloud feature there is no remote classifier to ask, and reading
-        // the share here is the one thing this branch exists to avoid. The door is
-        // still offered — that is the whole of what it promises — and carries no kind,
-        // which costs it the lake check and nothing else: its label is suppressed
-        // either way, because the row is about the directory rather than in it.
+        // Without the cloud feature there is no remote classifier, and reading the share
+        // is what this avoids: the door is offered without a kind (losing only the lake
+        // check; its label is suppressed anyway).
         #[cfg(not(feature = "cloud"))]
         {
             let _ = (&directories, &objects);
@@ -504,42 +447,27 @@ fn whole_directory_row(dir: &Path, rows: &[Entry], remote: bool) -> Option<Entry
     } else {
         crate::discover::look_at_directory(dir)
     };
-    // Nothing in it to open. An empty directory is the one place a second door leads
-    // nowhere, and a row promising to read nothing is worse than no row. A directory
-    // holding only a `_SUCCESS` is that directory too.
-    //
-    // Asked of what the directory holds and not only of what the listing showed, because
-    // the two differ on the directory that most needs the door: Spark and GBIF write part
-    // files with no extension, no name in there says data, so nothing is listed — and a
-    // guard on the rows alone made that directory a dead end, nothing listed and no way
-    // to read it, though the open reads it by its bytes perfectly well. Files with no
-    // extension count here for that reason, and so do subdirectories, whose data is a
-    // level down. A file whose extension no reader takes does not: a directory of notes
-    // has nothing for the door to read.
+    // No door into a directory with nothing to open (empty, or only `_SUCCESS`).
+    // Judged by what the directory holds, not only the listed rows: Spark and GBIF
+    // part files have no extension and list nothing, yet open by their bytes.
+    // Extensionless files and subdirectories count; files no reader takes do not.
     let openable_row = rows.iter().any(|r| r.kind != EntryKind::Other);
     if !openable_row && holds_nothing_to_open(&holds) {
         return None;
     }
     let mut entry = Entry::directory(&directory_dataset_url(dir));
     entry.kind = kind;
-    // What the listing you are looking at holds. Not the same tally as the directory's
-    // own row upstairs: that one was counted from one page of a peek and may say `100+`,
-    // and this one is counted from rows a listing has already dropped its markers from,
-    // so it reports fewer skipped. Two views of one directory, each true of what it saw.
+    // This listing's tally; it may differ from the directory's own row upstairs,
+    // counted from one peek page.
     entry.holds = holds;
     entry.opens_whole_directory = true;
     entry.name = door_name(&entry, rows);
     Some(entry)
 }
 
-/// The directory a door opens, named the way the section title above it names the
-/// same place, or the two disagree about the directory you are standing in. A source id
-/// is not part of the name — `s3://lab@bucket` is titled `bucket` — and an Azure
-/// container is named by container, not by the long URL its last component happens to be.
-///
-/// `file_name` rather than splitting on `/` for the rest: at the filesystem root there
-/// is no last component and the row was named `" (all files)"`, and on Windows the
-/// separator is not the one a split would look for.
+/// The directory a door opens, named as the section title names it: no source id
+/// (`s3://lab@bucket` is `bucket`), and an Azure container by its name.
+/// `file_name` rather than splitting on `/`, for the filesystem root and Windows.
 fn door_base_name(dir: &Path) -> String {
     let text = dir.to_string_lossy();
     if let Some((_, container, key)) = crate::source::azure_parts(&text) {
@@ -577,11 +505,9 @@ pub enum DoorKind {
     Unknown,
 }
 
-/// Which [`DoorKind`] a door is.
-///
-/// A directory the footers or headers turned down as one table is `Directory` with one
-/// format left in its tally, and that is the only route to one: the listing alone calls
-/// such a directory `MultiFile`.
+/// Which [`DoorKind`] a door is. A directory the footers or headers turned down as
+/// one table is `Directory` with one format in its tally; the listing alone calls
+/// it `MultiFile`.
 pub fn door_kind(door: &Entry) -> DoorKind {
     let holds = &door.holds;
     match door.kind {
@@ -613,9 +539,8 @@ pub fn door_kind(door: &Entry) -> DoorKind {
 }
 
 /// Whether stepping into a directory puts the cursor on its door: only when the door
-/// opens the directory as the one dataset its name says, which is what `Enter` on the
-/// directory's own row one level up opens too. Anywhere else the first `Enter` would
-/// start a combined read nobody asked for.
+/// opens the one dataset the directory's own `Enter` opens; elsewhere it would start
+/// an unasked combined read.
 pub fn door_lands(door: &Entry) -> bool {
     matches!(door_kind(door), DoorKind::Hive | DoorKind::OneSchema)
 }
@@ -626,9 +551,8 @@ fn format_title(name: &str) -> String {
         .map_or_else(|| name.to_ascii_uppercase(), |f| f.title().to_string())
 }
 
-/// The partition keys a hive door names: the layout the footers pass found, else the
-/// `key=value` names in the listing on screen, which in a bucket are the levels seen so
-/// far.
+/// The partition keys a hive door names: from the footer pass's layout, else the
+/// `key=value` names listed (in a bucket, the levels seen so far).
 fn door_keys(door: &Entry, rows: &[Entry]) -> Vec<String> {
     if let Some(layout) = door.cost.partitions.as_ref()
         && !layout.keys.is_empty()
@@ -691,11 +615,10 @@ pub fn door_name(door: &Entry, rows: &[Entry]) -> String {
     format!("{name} ({what})")
 }
 
-/// What `Enter` on a door that is not one table reads, and what it leaves out, for the
-/// details pane. The local open reads the commonest format's files directly inside; a
-/// directory of Parquet with subdirectories, or with no files of its own, is scanned
-/// whole for Parquet instead. A prefix in an object store is scanned whole in its
-/// commonest format.
+/// What `Enter` on a door that is not one table reads and leaves out, for the
+/// details pane. Locally: the commonest format's files directly inside, or a whole
+/// Parquet scan when there are subdirectories or no own files. In an object store:
+/// the prefix scanned whole in its commonest format.
 pub fn door_reads(door: &Entry) -> Option<(String, Option<String>)> {
     if !matches!(door_kind(door), DoorKind::Mixed | DoorKind::Single) {
         return None;
@@ -733,9 +656,8 @@ pub fn door_reads(door: &Entry) -> Option<(String, Option<String>)> {
     Some((reads, (!skips.is_empty()).then(|| skips.join(", "))))
 }
 
-/// List a file a format spec's glob names as data, under the spec's name. Its name is
-/// all that is asked: the listing reads nothing more for it. A file a spec's magic
-/// names was named by the scan, from the bytes it read to sniff it.
+/// Name files a format spec's glob matches as data, under the spec's name, from the
+/// name alone. Files a spec's magic matches were named by the scan's sniff.
 pub fn name_by_spec(formats: &crate::formats::Registry, rows: &mut [Entry]) {
     if formats.is_empty() {
         return;
@@ -770,12 +692,8 @@ pub fn name_by_spec(formats: &crate::formats::Registry, rows: &mut [Entry]) {
     }
 }
 
-/// Whether a directory holds nothing a `(all files)` row could read.
-///
-/// The door's own test, named so the details pane can ask it too: the pane tells the user
-/// where the whole of a directory can be read, and on a directory with no door that is a
-/// promise nothing keeps. One function, or the two drift and the sentence outlives the
-/// row it points at.
+/// Whether a directory holds nothing a `(all files)` row could read. Shared by the
+/// door and the details pane so they agree.
 pub fn holds_nothing_to_open(holds: &discover::Holds) -> bool {
     holds.formats.is_empty() && holds.directories == 0 && holds.unnamed == 0
 }
@@ -801,9 +719,8 @@ fn is_bucket_root(path: &Path) -> bool {
     }
 }
 
-/// The location one level up from `path`, or `None` at the top.
-///
-/// A URL's top is its bucket or host: `Path::parent` would turn `gs://bucket` into `gs:`.
+/// The location one level up from `path`, or `None` at the top. A URL's top is its
+/// bucket or host (`Path::parent` would make `gs://bucket` into `gs:`).
 pub fn parent_location(path: &Path) -> Option<PathBuf> {
     if !matches!(
         crate::source::input_source(path),
@@ -819,12 +736,9 @@ pub fn parent_location(path: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-/// Whether `path` is somewhere reading it could block: an object-store or HTTP URL,
-/// or a directory on a network filesystem.
-///
-/// This is the predicate the home screen uses to decide what it may touch on the
-/// interface thread. It answers from the string and the mount table alone, never by
-/// reaching for the thing itself.
+/// Whether reading `path` could block: an object-store or HTTP URL, or a network
+/// filesystem. Decides what home may touch on the UI thread; answered from the
+/// string and mount table alone.
 pub fn is_remote_path(path: &Path) -> bool {
     is_cloud_place(path)
         || !matches!(
@@ -834,24 +748,15 @@ pub fn is_remote_path(path: &Path) -> bool {
         || is_network_path(path)
 }
 
-/// Whether `path` sits on a network filesystem, according to the mount table.
-///
-/// Takes the longest mount point that is a prefix of the path. Returns false wherever
-/// the mount table is unavailable or unparseable, so this is a hint and never a gate.
-///
-/// The table comes from [`crate::locality::Mounts::cached`] rather than from a fresh
-/// read, because this is asked per row: once by `annotate` for every row of a
-/// listing, and again by `unmeasured_visible` for every row on every frame that draws
-/// one. Five thousand rows on a network share meant five thousand reads of
-/// `/proc/self/mountinfo` per frame — a hundred milliseconds on the thread that
-/// draws, which is the whole of why browsing a large remote directory crawled.
+/// Whether `path` is on a network filesystem by the mount table (longest matching
+/// mount point). False where the table is unavailable: a hint, never a gate. Uses
+/// [`crate::locality::Mounts::cached`], since this is asked per row per frame.
 pub fn is_network_path(path: &Path) -> bool {
     crate::locality::Mounts::cached().is_network(path)
 }
 
-/// The mount-table logic, separated from reading `/proc` so it can be tested against
-/// a fixture — the interesting cases (an NFS share shadowing an autofs entry at the
-/// same path) are awkward to arrange on a real machine.
+/// The mount-table logic against a fixture, for tests (e.g. an NFS share shadowing
+/// an autofs entry at the same path).
 #[doc(hidden)]
 pub fn network_fs_for_test(mountinfo: &str, path: &Path) -> bool {
     crate::locality::Mounts::parse(mountinfo).is_network(path)
@@ -864,8 +769,8 @@ pub struct Root {
     pub origin: RootOrigin,
     /// True when the root is on a network filesystem.
     pub network: bool,
-    /// False when the directory cannot be read — an unmounted NAS, a deleted
-    /// scratch dir. Shown rather than hidden: "the mount is down" is information.
+    /// False when the directory cannot be read (an unmounted NAS, a deleted scratch
+    /// dir); shown, not hidden.
     pub available: bool,
 }
 
@@ -873,57 +778,38 @@ pub struct Root {
 #[derive(Debug, Clone, Default)]
 pub struct Section {
     pub title: String,
-    /// How the section is doing, at the far end of the rule: the filesystem it is on,
-    /// `first 5000` for a listing cut short, what a search covered. Never why the
-    /// section exists; that is `origin`.
+    /// The section's state at the far end of the rule: its filesystem, `first 5000` for
+    /// a cut listing, what a search covered. Why it exists is `origin`.
     pub subtitle: Option<String>,
-    /// Why a path-titled section is here — `current directory`, `configured` — as a
-    /// chip beside the count, where the eye is. It used to share the note slot at the
-    /// far right with the state, and a directory derived from a recent was drawn
-    /// exactly like a configured one with only that word to tell them apart.
+    /// Why a path-titled section is here (`current directory`, `configured`), as a chip
+    /// beside the count.
     pub origin: Option<&'static str>,
-    /// The directory a path-titled section lists: a root, or the directory browsed.
-    /// The title is abbreviated for display and cannot be turned back into a path.
+    /// The directory a path-titled section lists (a root, or the browsed directory);
+    /// the title is abbreviated and cannot be turned back into a path.
     pub root: Option<PathBuf>,
     pub rows: Vec<Entry>,
-    /// The row that opens the directory this section lists, as one table. Its own row,
-    /// not one of `rows`.
-    ///
-    /// Kept apart because its path *is* the directory's — with a trailing slash, which
-    /// `PathBuf` compares and hashes away — so as a row among the others it was the same
-    /// key as the directory's row one level up in every path-keyed map. That cost a real
-    /// bug once: measuring the door wrote a kind-less measurement into the directory's
-    /// slot, the directory upstairs was then taken for already looked into, and it kept
-    /// `Unknown` — no label, no `holds` line, no place in the count — for the rest of the
-    /// session. A guard per walker would have to be added again by every walker written
-    /// after it, so the collision is gone instead: nothing that walks `rows` or matches
-    /// [`Row::Entry`] can reach the door.
+    /// The row opening this section's directory as one table, kept out of `rows`: its
+    /// path is the directory's own, so among the rows it would collide in every
+    /// path-keyed map with the directory's row one level up. Nothing that walks `rows`
+    /// or matches [`Row::Entry`] can reach it.
     pub door: Option<Entry>,
     /// Set when a root could not be read, so the UI can say why it is empty.
     pub unavailable: bool,
-    /// What to say instead of the bare word "unavailable".
-    ///
-    /// A share that has stopped answering has nothing to add: "unavailable" is the
-    /// whole story. A bucket listing that was refused does — "403, no
-    /// storage.buckets.list access" tells the user what to change, and an empty section
-    /// that does not say why tells them nothing.
+    /// What to say instead of "unavailable", when there is more to say (a refused bucket
+    /// listing's reason and fix).
     pub unavailable_note: Option<String>,
-    /// Starts folded unless the user has opened it. For the places that are context
-    /// rather than the reason you came: directories promoted from recents, and the
-    /// desktop's list of where you have been.
+    /// Starts folded unless opened: places that are context rather than the reason you
+    /// came (directories promoted from recents, the desktop's list).
     pub folded_by_default: bool,
     /// The remote root whose background probe fills this section in.
     pub remote_root: Option<PathBuf>,
-    /// The probe had not answered when this listing was built, so the rows are not in
-    /// yet. Shown, not hidden: an empty section here means "wait", not "nothing".
+    /// The probe had not answered when this listing was built: empty means "wait".
     pub waiting: bool,
-    /// Rows are shown under the place each lives in, with a row for the place itself.
-    /// Set on `RECENT`, whose rows come from anywhere; a directory's rows all live in
-    /// the directory the title names.
+    /// Rows are grouped under the place each lives in, with a place row. Set on
+    /// `RECENT`, whose rows come from anywhere.
     pub grouped_by_place: bool,
-    /// What the dataset index remembers each place to be, for the place rows of a
-    /// grouped section. Filled from the cache when the listing is built, never by
-    /// reading a place.
+    /// What the dataset index remembers each place to be, for a grouped section's place
+    /// rows; from the cache, never a read.
     pub place_labels: std::collections::HashMap<PathBuf, String>,
 }
 
@@ -944,22 +830,19 @@ pub enum CloudStatus {
     /// Asked, and no answer yet.
     #[default]
     Listing,
-    /// Not asked, and not listed on an earlier run. Its rows, if any, are the buckets
-    /// named in the config. Entering the source or Ctrl+R lists it.
+    /// Not asked and not listed before; its rows, if any, are the config's named
+    /// buckets. Entering it or Ctrl+R lists it.
     Unlisted,
     /// Listed, now or on an earlier run.
     Listed,
-    /// The listing was refused or never answered. `short` goes on the row; `detail`
-    /// says what happened and how to fix it, in the details pane.
+    /// The listing was refused or never answered: `short` for the row, `detail` (what
+    /// happened, how to fix) for the details pane.
     Failed { short: String, detail: String },
 }
 
-/// One cloud source as the home screen shows it: a row under `CLOUD`, and the list of
-/// buckets inside it.
-///
-/// Held apart from [`Section`] because it survives a rebuild. A listing is rebuilt
-/// whenever a probe answers or a measurement lands, and re-enumerating buckets each time
-/// would be a billed network round trip per keystroke.
+/// One cloud source on home: a row under `CLOUD` and its bucket list. Kept apart
+/// from [`Section`] to survive rebuilds: re-listing buckets would be a billed round
+/// trip per keystroke.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CloudSource {
     /// The source ID, as in `[[cloud.connections]]` and `s3://<id>@bucket`.
@@ -1163,12 +1046,9 @@ pub fn login_of(dataset: &crate::catalog::Dataset) -> String {
     }
 }
 
-/// The catalogs the home screen shows, in order.
-///
-/// The bundled catalog keeps only what this build can open: every dataset in it is
-/// remote, and a build without `cloud` or `http` would list rows that only fail. A
-/// catalog of the user's is shown whole; they named those, and opening one says why it
-/// cannot be read. An empty catalog has no section.
+/// The catalogs home shows, in order. The bundled catalog keeps only what this
+/// build can open (all its datasets are remote); a user's catalog is shown whole.
+/// An empty catalog has no section.
 pub fn catalogs(config: &crate::config::AppConfig) -> Vec<ShownCatalog> {
     let mut out: Vec<ShownCatalog> = config
         .shown_catalogs()
@@ -1198,8 +1078,8 @@ pub fn catalogs(config: &crate::config::AppConfig) -> Vec<ShownCatalog> {
     out
 }
 
-/// The row for one dataset of a catalog. Nothing is read to make it but a local path's
-/// own directory entry; a remote dataset is named by its URL alone.
+/// The row for one catalog dataset. Reads nothing but a local path's directory
+/// entry; a remote dataset is named by its URL.
 fn catalog_entry(
     dataset: &ShownDataset,
     network_check: fn(&Path) -> bool,
@@ -1230,8 +1110,8 @@ fn catalog_entry(
     entry
 }
 
-/// The column notes of the catalog dataset `path` is, or is inside: the innermost when
-/// one dataset is inside another. Only datasets that carry notes are considered.
+/// The column notes of the catalog dataset `path` is or is inside (the innermost),
+/// among datasets with notes.
 pub fn codebook_for(
     catalogs: &[ShownCatalog],
     path: &Path,
@@ -1246,8 +1126,8 @@ pub fn codebook_for(
         .and_then(|d| d.codebook.clone())
 }
 
-/// The catalog entry `path` is, or is inside, with its catalog's label: the innermost
-/// when one is inside another, the first listed of two at one place.
+/// The catalog entry `path` is or is inside, with its catalog's label: the innermost,
+/// or the first listed of two at one place.
 pub fn catalog_entry_for(
     catalogs: &[ShownCatalog],
     path: &Path,
@@ -1308,8 +1188,8 @@ fn catalog_section(
     }
 }
 
-/// What measuring a dataset yielded: rows, columns, and total size, each absent when
-/// it cannot be known without reading the data.
+/// What measuring a dataset yielded; each part absent when unknowable without
+/// reading the data.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Measured {
     pub rows: Option<usize>,
@@ -1319,29 +1199,21 @@ pub struct Measured {
     pub size: Option<u64>,
     /// Column names, when the format gave them up for free.
     pub columns: Vec<String>,
-    /// What opening it costs: compression, layout, partitioning.
-    ///
-    /// Carried here for the same reason the row count is. Without it, everything a
-    /// footer said beyond `rows` and `cols` was read, recorded in the cache, and then
-    /// dropped on the way to the screen -- so a hive dataset measured the ordinary
-    /// way showed no partitions, and a compressed file no codec.
+    /// What opening it costs: compression, layout, partitioning, carried to the screen
+    /// with the row count.
     pub cost: crate::discover::Cost,
-    /// What the footers said it is, when that differs from what its filenames suggested:
-    /// a directory whose files turn out to be separate tables is a plain directory, not a
-    /// dataset. `None` when measuring did not change what it is, which is the ordinary
-    /// case. See [`crate::discover::enrich`].
+    /// What the footers said it is when that differs from its filenames (separate tables
+    /// make a plain directory); usually `None`. See [`crate::discover::enrich`].
     pub kind: Option<crate::discover::EntryKind>,
-    /// What one listing of it found, which is what the row's label says. Carried for
-    /// the same reason `cost` is: the classify pass is the only thing that counts a
-    /// local directory, and a count that stops here never reaches the screen.
+    /// What one listing found, which the row's label says; only the classify pass counts
+    /// a local directory.
     pub holds: crate::discover::Holds,
 }
 
 /// How rows are ordered within each section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum SortMode {
-    /// Recency under Recent, name under a directory — what each section is naturally
-    /// ordered by.
+    /// Each section's natural order: recency under Recent, name under a directory.
     #[default]
     Natural,
     /// Largest first: the question is "what is big in here".
@@ -1353,12 +1225,8 @@ pub enum SortMode {
 }
 
 impl SortMode {
-    /// What this mode is doing *here*.
-    ///
-    /// The default orders each section by whatever suits it — recency for a list of
-    /// things you opened, name for a directory you are reading. Labelling that
-    /// "natural" names the idea rather than the behaviour, and leaves the user to
-    /// guess which of the two they are looking at. So the label follows the cursor.
+    /// What this mode does in a section, since `Natural` means recency or name depending
+    /// on where the cursor is.
     pub fn label_in(self, section_is_recency_ordered: bool) -> &'static str {
         match self {
             SortMode::Natural if section_is_recency_ordered => "recent",
@@ -1379,14 +1247,9 @@ impl SortMode {
     }
 }
 
-/// One line of the home screen. Headers are selectable so a section can be
-/// collapsed and expanded from the keyboard.
-///
-/// A place and the `more` row are rows of the view, not entries. An [`Entry`]'s kind
-/// decides whether the probe passes look into it, whether it is measured and whether
-/// what was learned is cached, and none of those may ever happen to a place: it is
-/// drawn from what is already known and never causes a directory read. Being a
-/// variant here rather than an [`EntryKind`] keeps it outside all four by construction.
+/// One line of the home screen; headers are selectable to fold. Places and `more`
+/// rows are view rows, not entries: an [`Entry`]'s kind triggers probes,
+/// measurement and caching, none of which may happen to a place.
 #[derive(Debug, Clone)]
 pub enum Row<'a> {
     Header {
@@ -1407,20 +1270,16 @@ pub enum Row<'a> {
     Place {
         section: usize,
         path: PathBuf,
-        /// What the place itself was last found to be, from the dataset index: `hive`,
-        /// `12 parquet`. Only when the index has a record for it; never from a read.
+        /// What the place was last found to be (`hive`, `12 parquet`), from the dataset
+        /// index only, never a read.
         label: Option<String>,
         /// The filesystem it is on, or the object store's scheme.
         source: Option<String>,
         /// How many recents live there, whether or not the filter shows them.
         held: usize,
     },
-    /// The door that opens the directory being browsed as one table. See
-    /// [`Section::door`].
-    ///
-    /// Not an `Entry` row, deliberately: it carries the directory's own path, so anything
-    /// that keys a map by row path would write the door's answer into the directory's
-    /// slot.
+    /// The door opening the browsed directory as one table; see [`Section::door`]. Not
+    /// an `Entry` row, since it carries the directory's own path.
     Door { section: usize, entry: &'a Entry },
     /// What a cap is hiding: `RECENT`'s, `… 13 more in 5 places`, or a directory's
     /// at the root listing, `… 4,958 more` (`places` is 0).
@@ -1428,16 +1287,16 @@ pub enum Row<'a> {
         section: usize,
         hidden: usize,
         places: usize,
-        /// Sorted by rows, some of the rows hidden are still being measured, so the
-        /// first rows may yet change.
+        /// Sorted by rows with some hidden rows still being measured, so the order may
+        /// change.
         measuring: bool,
     },
-    /// The last row inside a browsed directory whose files datui cannot read are
-    /// hidden: `… 10 files with no reader`. Without it a directory of notes looks
-    /// empty, or broken. `Enter` shows them, as `Ctrl+A` does.
+    /// The last row of a browsed directory hiding unreadable files (`… 10 files with no
+    /// reader`), so a directory of notes does not look empty. `Enter` shows them, as
+    /// `Ctrl+A` does.
     Hidden { section: usize, count: usize },
-    /// The way up, first in a directory's section: `..`. Enter goes to the parent:
-    /// the directory above the one browsed, as Backspace does, or above a root.
+    /// The way up, first in a directory's section: `..`; Enter goes to the parent, as
+    /// Backspace does.
     Up { section: usize },
 }
 
@@ -1455,17 +1314,15 @@ impl Row<'_> {
     }
 }
 
-/// How a row answers the filter: its score, and the characters that matched, in its
-/// name or, for a row the filter found by a column, in that column's name.
-///
-/// Worked out once, when the rows are listed, so drawing them scores nothing.
+/// How a row answers the filter: its score and the matched characters, in its name
+/// or a matched column's name. Computed when rows are listed, not when drawn.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Hit {
     pub score: i32,
     /// Character positions to mark: in the name, or in the matched column's name.
     pub positions: std::sync::Arc<[usize]>,
-    /// Index into the entry's `columns` of the column that matched, when the name did
-    /// not.
+    /// Index into the entry's `columns` of the matching column, when the name did not
+    /// match.
     pub column: Option<usize>,
 }
 
@@ -1478,13 +1335,10 @@ impl Hit {
     }
 }
 
-/// [`HomeState::visible`]'s rows, kept until something they are built from changes.
-///
-/// Every pass over the list reads them: the frame, the passes that pick what on screen
-/// to look into, the cursor and the preview. Building them scores every row against
-/// the filter and sorts each section. [`HomeState`]'s own methods that change rows
-/// drop the rows built; the fields that code elsewhere sets directly (the filter, the
-/// sort, the folds) are compared on every read.
+/// [`HomeState::visible`]'s rows, cached until their inputs change: building scores
+/// every row and sorts each section, and every pass reads them. `HomeState`'s own
+/// row-changing methods drop it; fields set elsewhere (filter, sort, folds) are
+/// compared on every read.
 #[derive(Debug, Default)]
 pub struct RowsCache {
     built: std::cell::RefCell<Option<View>>,
@@ -1500,8 +1354,8 @@ struct View {
     has_dataset: bool,
 }
 
-/// The fields of [`HomeState`] the rows depend on that are not changed through its
-/// methods alone, and the shape of the sections, so a stale index can never be read.
+/// The rows' inputs not changed only through [`HomeState`]'s methods, plus the
+/// sections' shape, so a stale index is never read.
 #[derive(Debug, PartialEq)]
 struct ViewKey {
     filter: String,
@@ -1532,8 +1386,7 @@ impl ViewKey {
         }
     }
 
-    /// Whether `home` would make this key: [`Self::of`] compared without cloning,
-    /// as every read of the rows asks.
+    /// Whether `home` would make this key, compared without cloning.
     fn matches(&self, home: &HomeState) -> bool {
         self.filter == home.filter
             && self.sort == home.sort
@@ -1566,19 +1419,14 @@ enum Slot {
     },
 }
 
-/// The place a recent lives in: its directory, or its prefix in an object store.
-///
-/// A bare bucket or host, which has nothing above it, is its own place.
+/// The place a recent lives in: its directory or object-store prefix; a bare bucket
+/// or host is its own place.
 pub fn place_of(path: &Path) -> PathBuf {
     parent_location(path).unwrap_or_else(|| path.to_path_buf())
 }
 
-/// Whether a place can be listed: a directory, or a prefix in an object store.
-///
-/// An HTTP server has no listing to give — the only thing datui can do with a URL on
-/// one is fetch the file it names — so the place a URL recent lives in is a heading
-/// and not a door. Offering `Enter` on it led to "Listing https://…" and then
-/// `unreachable`, which is the probe reporting truthfully on a `read_dir` of a URL.
+/// Whether a place can be listed: a directory or an object-store prefix. An HTTP
+/// server has no listing, so a URL recent's place is a heading, not a door.
 pub fn place_is_browsable(path: &Path) -> bool {
     is_cloud_place(path)
         || is_object_store_url(path)
@@ -1588,20 +1436,15 @@ pub fn place_is_browsable(path: &Path) -> bool {
         )
 }
 
-/// What a row is, apart from where it sits: enough to find it again after the rows
-/// have been rebuilt or the cap has moved.
-///
-/// The cursor is an index into [`HomeState::visible`], and the rows behind that index
-/// change under it whenever a listing lands or the terminal changes height. Keeping the
-/// index kept the cursor on whatever row fell into its place, which for a place row —
-/// the thing a user arrows onto and then presses `Enter` — meant opening the dataset
-/// beneath it instead.
+/// A row's identity apart from its index, to find it again after a rebuild or a cap
+/// change: the cursor's index points at different rows whenever a listing lands or
+/// the terminal resizes, which would make `Enter` open the wrong row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RowKey {
     Header(String),
     Entry(PathBuf),
-    /// The door, by the directory it opens. Its own variant for the same reason the row
-    /// is: keyed as an `Entry` it would put the cursor on the directory's row instead.
+    /// The door, by the directory it opens; keyed as an `Entry` it would land on the
+    /// directory's row.
     Door(PathBuf),
     Place(PathBuf),
     More(String),
@@ -1615,29 +1458,25 @@ pub struct HomeState {
     pub sections: Vec<Section>,
     /// Fuzzy filter over every row in every section.
     pub filter: String,
-    /// The filter kept from before a dataset was opened, shown selected: the next
-    /// character typed replaces it, and `~` opens the path prompt, rather than both
-    /// adding to a search that is done. Any other key keeps it.
+    /// The filter kept from before a dataset opened, shown selected: the next character
+    /// replaces it and `~` opens the path prompt. Any other key keeps it.
     pub filter_selected: bool,
     /// The most search matches listed under `Found`: `[home.search] max_results`.
     pub search_limit: usize,
-    /// Leave out files datui has no reader for. `Ctrl+A` flips it; they are hidden by
-    /// default.
+    /// Hide files datui has no reader for (default); `Ctrl+A` flips it.
     pub hide_unreadable: bool,
-    /// The format specs on the search path: a file one of them names by its glob is
-    /// listed as data, under the spec's name.
+    /// The format specs on the search path: files one names by glob list as data under
+    /// its name.
     pub formats: std::sync::Arc<crate::formats::Registry>,
-    /// The lake table being browsed, and its format. Said on its heading for as long as
-    /// the browse lasts, since it is a fact about the directory rather than an event.
+    /// The lake table being browsed and its format, said on its heading for the whole
+    /// browse.
     pub lake_here: Option<(PathBuf, &'static str)>,
     /// Index into the flattened list of currently visible rows.
     pub selected: usize,
-    /// First row of the last frame drawn, as an index into [`HomeState::visible`].
-    ///
-    /// Written by the renderer, which is the only place that knows how tall the list
-    /// is, and read by [`HomeState::unclassified_visible`] so that what gets looked
-    /// into is what is being looked at. Zero until a frame has been drawn, which is
-    /// the list scrolled to the top and so a safe place to start.
+    /// First row of the last frame, as an index into [`HomeState::visible`]. Written by
+    /// the renderer (which knows the list's height) and read by
+    /// [`HomeState::unclassified_visible`], so what is looked into is what is on
+    /// screen. Zero until the first frame.
     pub scroll: usize,
     /// How many rows the last frame had room for. See [`HomeState::scroll`].
     pub view_height: usize,
@@ -1650,102 +1489,86 @@ pub struct HomeState {
     pub path_pick: Option<usize>,
     /// Directory the user has descended into, if any. `None` means the root listing.
     pub browsing: Option<PathBuf>,
-    /// Where the current browse began: the directory entered from the root listing or
-    /// jumped to by path. Esc climbs back to here and then to the listing, so it never
-    /// wanders above the place the user started from. `None` treats `browsing` itself
-    /// as the start.
+    /// Where the browse began (entered from the root listing or jumped to). Esc climbs
+    /// back to here, then to the listing, never above. `None`: `browsing` is the start.
     pub browse_start: Option<PathBuf>,
     /// Transient message (e.g. a path that does not exist).
     pub status: Option<String>,
-    /// How a path is judged to be network-backed. Swappable so the "never touch a
-    /// remote path on this thread" rule can be tested without a remote.
+    /// How a path is judged network-backed; swappable so the never-touch-remote rule is
+    /// testable without a remote.
     pub network_check: fn(&Path) -> bool,
-    /// How often and how lately each recent was opened: ranks matches (#547 M9). Set
-    /// with [`HomeState::set_visits`], which lists the rows again.
+    /// How often and how lately each recent was opened, ranking matches. Set with
+    /// [`HomeState::set_visits`], which relists.
     pub visits: std::collections::HashMap<PathBuf, crate::cache::Visits>,
-    /// The recent opened last. Recent is ranked by frecency, and the cursor lands here
-    /// so the last file is still one Enter away.
+    /// The recent opened last: the cursor lands here, one Enter from the last file.
     pub newest_recent: Option<PathBuf>,
     /// Where the listing of each network root and remote directory is.
     pub probes: Probes,
     /// The names a filter asked the server for, in a cloud directory cut short.
     pub narrowed: Option<Narrowed>,
-    /// What cloud directories turned out to hold when peeked into: `hive` or `multi`.
-    /// Kept for the session, so a directory is peeked at once however often it is listed.
+    /// What peeked cloud directories hold (`hive`, `multi`), kept for the session so each
+    /// is peeked once.
     pub cloud_kinds: std::collections::HashMap<PathBuf, (EntryKind, crate::discover::Holds)>,
     /// How rows are ordered inside each section.
     pub sort: SortMode,
-    /// True while a listing is being built on a worker. The previous listing stays on
-    /// screen meanwhile, so a refresh never blanks the view.
+    /// A listing is being built on a worker; the previous one stays on screen.
     pub listing_in_flight: bool,
     /// True while a measurement batch is out, so only one is in flight at a time.
     pub measure_in_flight: bool,
-    /// True while a classification batch is out. One at a time, and the next batch is
-    /// chosen from the viewport as it is then — which is what keeps paging quickly
-    /// from queueing a classification for every row it passed over.
+    /// A classification batch is out. One at a time, each chosen from the viewport then,
+    /// so fast paging does not queue every row it passed.
     pub classify_in_flight: bool,
-    /// Cloud directories with a peek out. Their own set rather than a claim written into
-    /// [`Self::cloud_kinds`]: a claim is an answer, and writing one before the request
-    /// comes back put `dir` on a row that had a count and staked "never again this
-    /// session" on a request that might fail.
+    /// Cloud directories with a peek out, kept apart from [`Self::cloud_kinds`] so no
+    /// answer is claimed before the request returns.
     pub peeking: std::collections::HashSet<PathBuf>,
-    /// Cloud directories whose peek failed: not asked again until Ctrl+R, and labelled
-    /// `?` rather than `dir`, which would claim there is no data inside.
+    /// Cloud directories whose peek failed: not asked again until Ctrl+R, labeled `?`
+    /// (not `dir`, which would claim no data inside).
     pub peek_failed: std::collections::HashSet<PathBuf>,
-    /// Row and column counts already read, keyed by path. Reading a Parquet footer
-    /// is cheap; reading several hundred of them is not, so results are kept for the
-    /// session and each dataset is measured once.
+    /// Row and column counts already read, by path, so each dataset is measured once a
+    /// session.
     pub enriched: std::collections::HashMap<PathBuf, Measured>,
-    /// Sections the user has folded or opened, by title, `true` meaning folded. A
-    /// section not listed here takes its own default. Keyed by title rather than
-    /// index so the state survives a rebuild, which reorders and renumbers sections,
-    /// and kept in the cache so it survives a restart. Use
-    /// [`HomeState::toggle_collapsed`] and [`HomeState::set_collapsed`] rather than
-    /// touching this directly.
+    /// Sections folded (`true`) or opened by the user, by title so it survives rebuilds
+    /// that renumber sections, and cached across restarts. Unlisted sections take their
+    /// default. Use [`HomeState::toggle_collapsed`] and [`HomeState::set_collapsed`].
     pub folds: std::collections::HashMap<String, bool>,
-    /// The saved folds are to be read again, with the next listing: entering the home
-    /// screen asks for them, and they arrive with the rows they fold.
+    /// The saved folds are to be read again with the next listing, arriving with the
+    /// rows they fold.
     pub folds_owed: bool,
     /// Datasets found by walking below the working directory.
     pub search: SearchState,
-    /// What datui measured on previous runs, keyed by path — the same index the
-    /// listing was annotated from, kept here so rows the recursive search finds
-    /// can be filled in the same way (columns are what the filter matches on).
+    /// What earlier runs measured, by path: the index the listing was annotated from,
+    /// kept so search results fill in the same way (the filter matches columns).
     pub known: std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
-    /// Cloud sources discovered on this machine or named in the config, with their
-    /// buckets. Empty on a machine with no cloud credentials, which is the common case
-    /// and not a failure.
+    /// Cloud sources found on this machine or in the config, with their buckets. Empty
+    /// without cloud credentials, which is normal.
     pub cloud: Vec<CloudSource>,
-    /// The catalogs shown, each a section of its own. Set with
-    /// [`HomeState::set_catalogs`], which indexes their places.
+    /// The catalogs shown, a section each. Set with [`HomeState::set_catalogs`], which
+    /// indexes their places.
     pub catalogs: Vec<ShownCatalog>,
     /// HTTP(S) catalog files whose size was asked for this session (a HEAD).
     pub sized: std::collections::HashSet<PathBuf>,
-    /// HTTP(S) catalog files that HEAD settled cannot be had: not there, or no server
-    /// answered. Asked again on Ctrl+R.
+    /// HTTP(S) catalog files a HEAD showed unavailable (missing, no server); retried on
+    /// Ctrl+R.
     pub web_gone: std::collections::HashMap<PathBuf, crate::error_display::HttpGone>,
     /// Local datasets of a catalog that the last listing found missing.
     pub missing: std::collections::HashSet<PathBuf>,
     /// When the current wait for a remote listing began, for the elapsed time on screen.
     pub waiting_since: Option<std::time::Instant>,
-    /// `RECENT` shows every place, however many rows that takes. Set by `Enter` on the
-    /// `… N more` row, for the session.
+    /// `RECENT` shows every place, for the session: `Enter` on its `… N more` row.
     pub recent_expanded: bool,
-    /// Directory sections shown whole rather than cut to their first rows, by the
-    /// directory they list, for the session. See [`HomeState::show_all`].
+    /// Directory sections shown whole rather than cut, by directory, for the session.
+    /// See [`HomeState::show_all`].
     pub shown_whole: std::collections::HashSet<PathBuf>,
-    /// The listings the user went inside from, outermost first: where to put the
-    /// cursor back on the way out. See [`HomeState::leave_mark`].
+    /// The listings entered from, outermost first, to restore the cursor on the way out.
+    /// See [`HomeState::leave_mark`].
     pub trail: Vec<Mark>,
-    /// The row the cursor goes back to once the listing being returned to lands.
-    /// Held across listings while rows are still arriving, since the row may not be in
-    /// the first one; dropped as soon as the user moves the cursor.
+    /// The row the cursor returns to once the returned-to listing lands; held across
+    /// listings while rows arrive, dropped when the user moves.
     pub returning: Option<RowKey>,
-    /// How far down the list the row being returned to was when the user left it, so
-    /// it comes back on the same line rather than wherever the scroll falls.
+    /// How far down the returned-to row was, so it comes back on the same line.
     pub returning_line: Option<usize>,
-    /// The cursor is where [`HomeState::select_first_entry`] put it, and the user has not
-    /// moved it since: a door the footers turn down afterwards takes it to the first row.
+    /// The cursor is where [`HomeState::select_first_entry`] put it and has not moved: a
+    /// door the footers later turn down sends it to the first row.
     pub landing: bool,
     /// The rows as last listed. See [`RowsCache`].
     pub rows_cache: RowsCache,
@@ -1753,10 +1576,8 @@ pub struct HomeState {
     pub catalog_places: CatalogPlaces,
 }
 
-/// Where the cursor was in a listing the user went inside from.
-///
-/// By row identity, not index: the listing returned to is rebuilt on a worker and
-/// lands later, and may have changed in the meantime.
+/// Where the cursor was in a listing the user went inside from, by row identity:
+/// the listing is rebuilt on a worker and may change.
 #[derive(Debug, Clone)]
 pub struct Mark {
     /// The listing left: the place browsed, or `None` for the root listing.
@@ -1764,34 +1585,28 @@ pub struct Mark {
     pub key: Option<RowKey>,
     /// The filter typed there, which entering cleared.
     pub filter: String,
-    /// The search below that place, when it had finished or not started. A walk still
-    /// running is dropped by its generation once the user leaves, so it is started
-    /// again rather than kept.
+    /// The search below that place, if finished or not started; a running walk is
+    /// dropped on leaving and restarted.
     pub search: Option<SearchState>,
     /// Rows between the top of the list and the cursor.
     pub line: usize,
 }
 
-/// The result of one recursive walk below the working directory.
-///
-/// Held apart from `sections` because it outlives them: a listing is rebuilt whenever
-/// a probe answers or a measurement lands, and re-walking the tree each time would be
-/// exactly the per-keystroke cost this feature exists to avoid.
+/// One recursive walk below the working directory. Kept apart from `sections`,
+/// which rebuild often: re-walking each time would cost per keystroke.
 #[derive(Debug, Clone, Default)]
 pub struct SearchState {
     /// Where the walk started. `None` means no search has been asked for yet.
     pub root: Option<PathBuf>,
-    /// Which walk this is, so a scoring of an earlier walk's files is never taken for
-    /// this one's.
+    /// Which walk this is, so an earlier walk's scoring is never taken for this one's.
     pub epoch: u64,
-    /// Every data file found so far, unfiltered, in the batches they arrived in. Shared
-    /// with the worker that scores the filter against them, so handing it over copies
-    /// nothing.
+    /// Every data file found so far, unfiltered, in arrival batches; shared with the
+    /// scoring worker without copying.
     pub results: Vec<std::sync::Arc<[Entry]>>,
     /// How many files `results` holds.
     pub indexed: usize,
-    /// What the filter matched, as last scored: possibly for an older filter, or for
-    /// fewer files than are in now, while a scoring is out.
+    /// The last scored matches, possibly for an older filter or fewer files while a
+    /// scoring is out.
     pub matches: Option<crate::search::Matches>,
     /// A scoring is out on a worker.
     pub scoring: bool,
@@ -1805,12 +1620,12 @@ pub struct SearchState {
     pub limited: Option<String>,
 }
 
-/// Below this many files to look at, the filter is scored where it is typed: it takes
-/// a millisecond or two, and the list answers in the same frame as the key.
+/// Below this many files the filter is scored inline: a millisecond or two, answered
+/// in the key's frame.
 const SCORE_INLINE_MAX: usize = 2_000;
 
-/// Match score a unit of frecency is worth, up to ten units: a file opened every day
-/// outranks one whose name matches a little better, never one that matches far better.
+/// Match score per unit of frecency, up to ten units: a daily file outranks a
+/// slightly better name match, never a far better one.
 const FRECENCY_LIFT: f64 = 3.0;
 
 /// What a worker needs to score the filter against a walk's files.
@@ -1914,8 +1729,8 @@ impl Default for HomeState {
     }
 }
 
-/// Everything [`build_listing`] needs, gathered on the interface thread from state it
-/// already has, so the worker never reaches back into the app.
+/// Everything [`build_listing`] needs, gathered on the UI thread so the worker never
+/// reaches into the app.
 #[derive(Debug, Clone)]
 pub struct ListingRequest {
     pub recents: Vec<PathBuf>,
@@ -1930,12 +1745,11 @@ pub struct ListingRequest {
     pub cloud: Vec<CloudSource>,
     /// The catalogs to list.
     pub catalogs: Vec<ShownCatalog>,
-    /// What datui measured on a previous run. A row whose size and modification time
-    /// still match is filled in from here, so the screen has counts and column names
-    /// before anything has been read this time.
+    /// What earlier runs measured: a row whose size and mtime still match is filled in
+    /// from here before anything is read.
     pub known: std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
     /// The format specs on the search path: a file one reads as several variants is a
-    /// place whose rows are its variants.
+    /// place listing its variants.
     pub formats: std::sync::Arc<crate::formats::Registry>,
 }
 
@@ -1948,13 +1762,11 @@ pub struct Listing {
 }
 
 impl Listing {
-    /// Adds each row's own path to `visits` where its canonical path has visits. The
-    /// recents store keys them canonically, and a catalog spells a file as written:
-    /// `/var/…` for `/private/var/…` on macOS, a short name or `/` on Windows. Looked
-    /// up as written, an often-opened row went unlifted.
-    ///
-    /// Canonicalizing touches the filesystem, so this runs on the listing's worker,
-    /// and only for a local row named like a visited file.
+    /// Add each row's own path to `visits` where its canonical path has visits: recents
+    /// are keyed canonically, catalogs spell paths as written (`/var/…` vs
+    /// `/private/var/…` on macOS, short names on Windows). Canonicalizing touches the
+    /// filesystem, so this runs on the listing worker, only for local rows named like a
+    /// visited file.
     pub fn alias_visits(
         &self,
         visits: &mut std::collections::HashMap<PathBuf, crate::cache::Visits>,
@@ -1984,21 +1796,15 @@ impl Listing {
     }
 }
 
-/// Find out what a row is, and then what is in it.
-///
-/// One pass, because the two questions are asked of the same filesystem and the
-/// thread that asks is already there. `classify_row` is the classification the
-/// listing did not make; `measure_row` measures, and does nothing for a row that
-/// turns out to be a plain directory.
+/// Find out what a row is, then what is in it, in one pass on the same filesystem.
+/// `measure_row` does nothing for a plain directory.
 pub fn look_into(entry: &Entry) -> Entry {
     look_into_as(entry, &crate::schema_union::ReadAs::default())
 }
 
-/// As [`look_into`], reading each file the way the open that follows will read it.
-///
-/// For the command line, which has the user's own reader settings in hand before it
-/// looks. The listing passes have none and take the defaults, which is what an open
-/// from the home screen is made with.
+/// As [`look_into`], reading files as the following open will: for the command line,
+/// which has the user's reader settings. Listing passes use the defaults, as a home
+/// open does.
 pub fn look_into_as(entry: &Entry, as_read: &crate::schema_union::ReadAs) -> Entry {
     let mut probe = classify_row(entry);
     measure_row(&mut probe, entry, as_read, None);
@@ -2016,8 +1822,8 @@ fn classify_row(entry: &Entry) -> Entry {
     probe
 }
 
-/// The second half of [`look_into`]: what is in it, from the files themselves, or from
-/// what an open kept of them in `remembered`.
+/// The second half of [`look_into`]: what is in it, from the files or from what an
+/// open kept in `remembered`.
 fn measure_row(
     probe: &mut Entry,
     entry: &Entry,
@@ -2029,16 +1835,10 @@ fn measure_row(
     probe.modified = probe.modified.or(entry.modified);
 }
 
-/// Look into a batch of rows, handing each answer to `each` as it arrives, and
-/// remember what was learned.
-///
-/// What both background passes do — the one that measures rows on screen and the one
-/// that classifies them — because the difference between them is which rows they pick,
-/// not what is done to one. Runs on a worker; see [`look_into`] for why never here.
-///
-/// Every row is classified before any is measured. A kind costs one directory read and
-/// a count can cost sixty-four footers, so a batch that did both a row at a time kept
-/// the last row's label waiting on every footer above it.
+/// Look into a batch of rows on a worker, passing each answer to `each` and caching
+/// what was learned. Shared by the measure and classify passes. Every row is
+/// classified before any is measured: a kind is one directory read, a count up to
+/// sixty-four footers.
 pub fn look_into_batch(
     rows: Vec<Entry>,
     cache: &crate::cache::CacheManager,
@@ -2062,9 +1862,8 @@ pub fn look_into_batch(
         facts.extend(facts_for(&probe));
         each(entry.path.clone(), measured_from(&probe, &entry));
     }
-    // Remember what was learned, so the next run has it before reading anything.
-    // Purely a cache: every record carries the size and mtime it came from and
-    // invalidates itself when those change.
+    // Cache what was learned; each record carries its size and mtime and invalidates
+    // itself when they change.
     cache.record_dataset_facts(&facts);
 }
 
@@ -2078,8 +1877,8 @@ pub fn measured_from(probe: &Entry, original: &Entry) -> Measured {
         columns: probe.columns.clone(),
         kind: (probe.kind != original.kind).then_some(probe.kind),
         holds: probe.holds.clone(),
-        // The source is resolved from the live mount table on every listing, so only
-        // what the file said about itself is carried forward.
+        // The source is resolved from the live mount table on every listing; only what the
+        // file said of itself carries forward.
         cost: crate::discover::Cost {
             source: None,
             ..probe.cost.clone()
@@ -2087,8 +1886,8 @@ pub fn measured_from(probe: &Entry, original: &Entry) -> Measured {
     }
 }
 
-/// Where the listing of one network root or remote directory is. Read off the
-/// interface thread; see [`HomeState::pending_probes`].
+/// Where the listing of one network root or remote directory stands; read off the UI
+/// thread (see [`HomeState::pending_probes`]).
 #[derive(Debug, Clone)]
 pub enum Probe {
     /// Still being read: the rows so far, in the order they came.
@@ -2157,9 +1956,8 @@ impl Probes {
         }
     }
 
-    /// What the place lists now: its answer, or the rows so far as the finished
-    /// listing will order them (a bucket's directories above its objects, a
-    /// directory's as [`discover::sort_entries`] does), or nothing yet.
+    /// What the place lists now: its answer, the rows so far in the finished order
+    /// (bucket directories above objects, or [`discover::sort_entries`]), or nothing.
     fn rows(&self, place: &Path) -> Vec<Entry> {
         match self.0.get(place) {
             Some(Probe::Listed { rows, .. }) => rows.to_vec(),
@@ -2227,8 +2025,8 @@ impl Probes {
     }
 }
 
-/// What a cloud directory cut short at the cap holds under one name prefix, asked of
-/// the server because a filter was typed there.
+/// What a cut-short cloud directory holds under one name prefix, asked of the server
+/// for a typed filter.
 #[derive(Debug, Clone)]
 pub struct Narrowed {
     pub dir: PathBuf,
@@ -2239,12 +2037,9 @@ pub struct Narrowed {
     pub truncated: bool,
 }
 
-/// Build the home listing.
-///
-/// A free function taking everything it needs, so it can run on a worker thread. It
-/// is the only place the home screen touches the filesystem, and it must never be
-/// called from the thread that draws — a directory on a wedged mount, a FIFO, a
-/// failing disk all block here, and none of them can be enumerated in advance.
+/// Build the home listing. A free function so it runs on a worker: it is home's only
+/// filesystem access, and a wedged mount, FIFO or failing disk blocks here, so never
+/// call it from the drawing thread.
 pub fn build_listing(request: &ListingRequest) -> Listing {
     let ListingRequest {
         recents,
@@ -2259,9 +2054,8 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         formats,
     } = request;
     let network_check = *network_check;
-    // One read of the mount table for the whole listing. It is a kernel-generated
-    // file, so consulting it cannot block on the filesystem it describes -- which is
-    // the entire reason it is safe to ask about a share that has stopped answering.
+    // One read of the mount table for the listing: a kernel-generated file, so it cannot
+    // block on a share that stopped answering.
     let mounts = crate::locality::Mounts::current();
     let mut sections: Vec<Section> = Vec::new();
 
@@ -2295,12 +2089,8 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
 
     // Descended into a directory: show only that.
     if let Some(dir) = browsing.clone() {
-        // A remote directory is never read here. Listing an object store or a share
-        // that has stopped answering is the call that freezes the interface, so the
-        // rows come from whatever the background probe returned and the section is
-        // empty until it does. This is the same rule the root listing below follows;
-        // it was missing here, which is why descending into a bucket showed nothing
-        // and kept showing nothing.
+        // A remote directory is never read here (that freezes the UI): rows come from the
+        // background probe, and the section is empty until it answers.
         let remote = network_check(&dir);
         // A remote listing still being read shows what it has, and says so.
         let so_far = remote && probes.so_far(&dir).is_some();
@@ -2323,8 +2113,8 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             rows.extend(scan.entries);
             (rows, scan.truncated)
         };
-        // A level cut short holds the names a filter asked the server for, beside the
-        // first of the rest.
+        // A cut-short level holds the names a filter asked the server for, beside the first
+        // of the rest.
         let narrowed = narrowed
             .as_ref()
             .filter(|n| remote && truncated && n.dir == dir);
@@ -2339,8 +2129,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
                     .cloned(),
             );
         }
-        // A directory cut off at the cap otherwise looks exactly like one that happens
-        // to hold that many things.
+        // Otherwise a directory cut at the cap looks like one holding exactly that many.
         let subtitle = if so_far {
             Some(format!(
                 "{} so far",
@@ -2364,14 +2153,14 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             None
         };
         let unavailable = remote && probes.unreachable(&dir);
-        // The first row inside any directory opens the whole of it, since `Enter` on the
-        // rows below opens one file. The other door.
+        // The first row inside any directory opens all of it, since `Enter` below opens one
+        // file: the other door.
         let mut door = (!database)
             .then(|| whole_directory_row(&dir, &rows, remote))
             .flatten();
-        // What an earlier run's footers made of this directory, as its row upstairs is
-        // given: without it a directory of separate tables is a dataset inside and a
-        // place to look into one level up. Its own mtime is the fingerprint, as there.
+        // What an earlier run's footers made of this directory, as for its row upstairs
+        // (fingerprinted by its mtime), so a directory of separate tables reads the same in
+        // both places.
         if !remote
             && let Some(door) = door.as_mut()
             && let Ok(meta) = std::fs::metadata(&dir)
@@ -2381,9 +2170,8 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             door.modified = None;
             door.name = door_name(door, &rows);
         }
-        // The URL without a source ID: the title bar's trail already says which
-        // source, and `s3://lab@data` is not a name anyone would write. An Azure
-        // account or container is titled by name, not by its long URL.
+        // The URL without a source id (the trail names the source); an Azure account or
+        // container by name, not its long URL.
         let title = {
             let text = dir.to_string_lossy();
             if let Some(dataset) = catalogs
@@ -2409,11 +2197,11 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             subtitle,
             root: Some(dir.clone()),
             unavailable,
-            // A browsed remote place that did not answer has nothing to add; one whose
-            // listing was refused says why.
+            // A browsed remote place that did not answer has nothing to add; a refused listing
+            // says why.
             unavailable_note: probes.error(&dir).map(str::to_string),
-            // Its wait is drawn in place of the whole list until rows arrive (see
-            // `awaiting_listing`), and on the heading once they do; no `remote_root`.
+            // Its wait replaces the whole list until rows arrive (`awaiting_listing`), then sits
+            // on the heading; no `remote_root`.
             waiting: so_far,
             door,
             ..Section::titled(title, rows)
@@ -2428,8 +2216,8 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
     // Recents that still exist, most recent first.
     let recent_rows: Vec<Entry> = recents
         .iter()
-        // `exists()` stats the path, so a remote entry is taken on trust and
-        // dropped later only if its probe says it is gone.
+        // `exists()` stats, so a remote entry is trusted and dropped only if its probe says
+        // it is gone.
         .filter(|p| {
             network_check(p)
                 || p.exists()
@@ -2437,13 +2225,10 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
                 || crate::members::split_variant(p, formats).is_some()
                 || crate::hf_splits::split_place(p).is_some()
         })
-        // No display cap. The store already bounds this, the header states the
-        // count, and the section folds — an invisible limit would just hide recents
-        // with nothing to say it had.
+        // No display cap: the store bounds it, the header counts it, and the section folds.
         .map(|p| {
-            // A probe of the containing root has already classified and measured
-            // this; reuse it, so the same dataset does not read as `hive` under
-            // its directory and `dir` under Recent.
+            // Reuse the containing root probe's classification, so a dataset reads the same
+            // under its directory and under Recent.
             if let Some(known) = probes.entry(p) {
                 return known;
             }
@@ -2459,8 +2244,8 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             if !network_check(p) {
                 discover::name_unlisted_file(&mut entry, formats);
             }
-            // A dataset opened from a catalog comes back under the catalog's name for
-            // it, not its URL's last segment (#547 D12).
+            // A dataset opened from a catalog keeps the catalog's name, not its URL's last
+            // segment.
             if let Some(dataset) = catalogs
                 .iter()
                 .flat_map(|c| &c.datasets)
@@ -2477,32 +2262,24 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
 
     let roots = HomeState::roots_with(desktop_dirs, network_check);
     let mut root_sections: Vec<(RootOrigin, Section)> = Vec::new();
-    // What the current-directory section is about to show, for the RECENT dedupe
-    // below: where it is, and the names it lists.
+    // Where the current-directory section is and the names it lists, for the RECENT
+    // dedupe below.
     let mut cwd_listing: Option<(PathBuf, std::collections::HashSet<std::ffi::OsString>)> = None;
     for root in roots {
-        // A place the desktop mentioned is listed as a directory to step into,
-        // never expanded. Its contents are whatever you last opened anywhere on
-        // the machine, which is regularly something you would not want appearing
-        // on a screen you are sharing. Naming the place is useful; showing what
-        // is in it, unasked, is not datui's business. Pressing Enter is the ask.
+        // A desktop place is a directory to step into, never expanded: its contents may be
+        // private (whatever was opened anywhere). Enter is the ask.
         if root.origin == RootOrigin::Desktop {
             if root.available {
                 let mut entry = Entry::directory(&root.path);
-                // Show the place, not just its leaf: "~/Downloads" says more
-                // than "Downloads" when the section has no path of its own.
+                // The full place ("~/Downloads"), since the section has no path of its own.
                 entry.name = display_path(&root.path);
                 elsewhere.push(entry);
             }
             continue;
         }
 
-        // A remote root is listed from whatever its background probe returned,
-        // and left empty until then. Scanning it here is the thing that freezes
-        // datui on a slow or absent network.
-        // A local root is listed here; a remote one only reports what its background
-        // probe already returned. Truncation is knowable for the local scan, which is
-        // where a directory big enough to hit the cap realistically lives.
+        // A local root is scanned here (truncation is known for it); a remote one shows
+        // only what its background probe returned, since scanning it can freeze datui.
         let mut truncated = false;
         let rows = if root.network {
             truncated = probes.cut_short(&root.path);
@@ -2515,9 +2292,8 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             Vec::new()
         };
         if root.origin == RootOrigin::Cwd {
-            // Compared canonically, because the recents store canonicalizes what it
-            // keeps. A network cwd is taken as spelled: canonicalizing it is the
-            // stat on a mount that may never answer, which nothing here may make.
+            // Compared canonically, as recents are stored; a network cwd as spelled, since
+            // canonicalizing would stat a mount that may not answer.
             let key = if root.network {
                 root.path.clone()
             } else {
@@ -2529,28 +2305,20 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
                 .collect();
             cwd_listing = Some((key, names));
         }
-        // A root that cannot be *read* stays: a network share that has stopped
-        // answering is the case the section heading exists to report, and silently
-        // dropping it is the worst answer.
+        // An unreadable root stays: a dead share is what the section heading reports.
         let unreachable = root.network && probes.unreachable(&root.path);
         let waiting = root.network && !unreachable && probes.listed(&root.path).is_none();
-        // A network root is worth flagging: it is the one that will be slow, and
-        // the one that can stop answering.
-        // Naming the filesystem rather than saying "network" costs one word and says
-        // considerably more: nfs4, cifs and fuse.sshfs fail in different ways, and
-        // none of them behaves like the tmpfs someone staged a dataset on.
-        // Name the filesystem when the mount table agrees this is remote. When it
-        // does not -- an unmounted automount, a path judged remote some other way --
-        // fall back to the plain word, because losing the warning to gain a more
-        // precise label is the wrong trade.
+        // Flag a network root, the one that will be slow or stop answering, by its
+        // filesystem (nfs4, cifs, fuse.sshfs fail differently) when the mount table agrees
+        // it is remote; otherwise just "network", rather than lose the warning.
         let described = mounts.describe(&root.path);
         let fstype = if described.network() {
             described.fstype
         } else {
             "network".to_string()
         };
-        // Say when the list is a prefix. A directory cut off at the cap otherwise
-        // looks exactly like one that happens to hold that many things.
+        // Say when the list is a prefix: a directory cut at the cap otherwise looks like one
+        // holding exactly that many.
         let mut state: Vec<String> = Vec::new();
         if truncated {
             state.push(format!(
@@ -2575,27 +2343,18 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         ));
     }
 
-    // The current directory's datasets are listed in a section of their own
-    // directly below RECENT, with facts scanned this pass — so a RECENT place for
-    // the same directory repeated those rows, and the first screen after opening a
-    // few local files said everything twice. A recent is dropped only when the
-    // current-directory section really lists it: decided by what the sections
-    // contain rather than by the place's path alone, so a recent the scan did not
-    // surface — a hidden file, a directory cut off at the scan cap — is on screen
-    // nowhere else and stays under RECENT, keeping its place row alive when it was
-    // all the place held. A deleted recent never gets this far: the `exists`
-    // filter above already dropped it. Recents in any other directory are
-    // untouched, and a browsed directory needs no twin of this because browsing
-    // returned above with only that directory's section and no RECENT at all.
+    // The current directory's section sits right below RECENT, so a recent it already
+    // lists is dropped from RECENT. Decided by what that section contains, not by path:
+    // a recent the scan did not surface (hidden, past the cap) stays under RECENT.
+    // Browsing returned above with no RECENT at all.
     let recent_rows: Vec<Entry> = match &cwd_listing {
         None => recent_rows,
         Some((cwd, names)) => recent_rows
             .into_iter()
             .filter(|row| {
                 let place = place_of(&row.path);
-                // A local place is resolved before comparing, as the store resolves
-                // what it keeps; a remote one is compared as written, because
-                // canonicalizing it would stat a mount that may never answer.
+                // A local place is resolved before comparing, as the store resolves; a remote one
+                // is compared as written, to avoid a stat.
                 let place = if network_check(&place) {
                     place
                 } else {
@@ -2608,27 +2367,20 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
     if !recent_rows.is_empty() {
         let place_labels = place_labels(&recent_rows, known, network_check);
         sections.push(Section {
-            // Every trace of recent use lives here. The directories recents live in
-            // used to be sections of their own, titled by path and drawn exactly like
-            // a configured directory, with `recent` at the far end of the rule the
-            // only thing saying why they were there. Now they are rows of this one.
+            // Every trace of recent use lives here, the places as rows of this section.
             grouped_by_place: true,
             place_labels,
             ..Section::titled(HomeState::RECENT_SECTION, recent_rows)
         });
     }
 
-    // The order is by why you came, not by where the rows come from: what you
-    // opened last, where you are standing, the object stores your credentials
-    // reach, then the catalogs. Cloud sits high because credentials
-    // on a machine are a deliberate signal, and a bucket is the one place no
-    // directory listing can ever reach.
+    // Ordered by why you came: what you opened last, where you are, the object stores
+    // your credentials reach (deliberate setup, unreachable by directory listing), then
+    // the catalogs.
     sections.extend(root_sections.into_iter().map(|(_, s)| s));
 
-    // One section for every cloud source, each a row to step into. A section per
-    // source stopped scaling at a handful: ten sources were ten headings, and the
-    // configured directories below them went off the screen. Buckets are one level
-    // down, listed once per session, never expanded here.
+    // One section for all cloud sources, each a row to step into; buckets are listed
+    // one level down, once per session.
     if !cloud.is_empty() {
         sections.push(Section::titled(
             HomeState::CLOUD_SECTION.to_string(),
@@ -2636,13 +2388,11 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         ));
     }
 
-    // Catalogs in order: yours, the listed files, then the bundled one, which is for
-    // when there is nothing of your own yet.
+    // Catalogs in order: yours, the listed files, then the bundled one.
     let mut missing = std::collections::HashSet::new();
     for catalog in catalogs {
         let mut section = catalog_section(catalog, network_check, &mut missing);
-        // A catalog's local file is named by the spec whose glob names it, as a listing
-        // names one; nothing is read for it.
+        // A catalog's local file is named by a spec whose glob matches; nothing is read.
         for row in section.rows.iter_mut().filter(|r| {
             r.kind == EntryKind::File
                 && r.format_spec.is_none()
@@ -2659,30 +2409,22 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
 
     if !elsewhere.is_empty() {
         sections.push(Section {
-            // Places to look, not datasets: folded until asked for. No subtitle: the
-            // title says what these are, and a note repeating it said nothing.
+            // Places to look, not datasets: folded until asked for.
             folded_by_default: true,
             ..Section::titled("Elsewhere", elsewhere)
         });
     }
 
-    // Fill in whatever was measured before and still matches. `scan_dir` already
-    // stat'ed every row, so verifying the fingerprint costs nothing.
-    //
-    // The mount table is read once for the whole listing rather than per row.
-    // Resolving a path against it is string work, and it is a kernel-generated file,
-    // so nothing here can block on a filesystem that has stopped answering.
+    // Fill in earlier measurements that still match: `scan_dir` already stat'ed every
+    // row, and the mount table is read once and resolved as strings, so nothing blocks.
     annotate(&mut sections, known, network_check, &mounts);
 
     Listing { sections, missing }
 }
 
-/// The key a record about `path` is filed under in the dataset index.
-///
-/// An open records what it learned under the URL it resolved to: `s3://bucket/x` for
-/// `s3://lab@bucket/x`, and the one `abfss://` spelling for every way an Azure path can
-/// be written. A recent is stored as it was typed. The two have to meet, or a dataset
-/// opened through a named source shows nothing under RECENT however often it is opened.
+/// The key a record about `path` is filed under in the dataset index. Opens record
+/// under the resolved URL (`s3://bucket/x` for `s3://lab@bucket/x`, one `abfss://`
+/// spelling for Azure) while recents are stored as typed; both must meet here.
 pub fn index_key(path: &Path) -> PathBuf {
     let text = path.to_string_lossy();
     if let Some((account, container, key)) = crate::source::azure_parts(&text) {
@@ -2702,19 +2444,10 @@ fn known_facts<'a>(
     known.get(path).or_else(|| known.get(&index_key(path)))
 }
 
-/// What the dataset index remembers each of these rows' places to be.
-///
-/// A place that was itself measured on some earlier listing — as a row of its own
-/// parent, or as a dataset opened whole — has a label there, and the place row can
-/// carry it: `bitcoin/  2 parquet`. Only from a record this build's classifier would
-/// have written, and only a label that says something: `dir` is what every directory
-/// with no data files in it says, and a place holds recents, so it says nothing.
-///
-/// A local place is held to the same fingerprint `apply_known_facts` asks of a directory:
-/// its mtime, which moves when a file is added or removed. A record of `12 parquet`
-/// for a directory that has since lost ten would otherwise sit two rows above the live
-/// listing calling it `2 parquet`. A remote place cannot be stat'ed and is taken as
-/// recorded, as its rows are.
+/// What the dataset index remembers each row's place to be (`bitcoin/  2 parquet`),
+/// from records this build's classifier would have written, skipping `dir`. A local
+/// place must still match its recorded mtime, as `apply_known_facts` requires; a
+/// remote place is taken as recorded.
 fn place_labels(
     rows: &[Entry],
     known: &std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
@@ -2756,22 +2489,8 @@ fn place_labels(
     labels
 }
 
-/// Apply a cached measurement to a row.
-///
-/// For a local row the fingerprint is checked: both size and modification time must
-/// still agree, so a dataset that has changed invalidates itself. `scan_dir` already
-/// stat'ed the row, so this costs nothing.
-///
-/// A remote row has no fingerprint to check, because checking it means a `stat` on a
-/// path that may not answer. Its cached facts are used as-is. That is the right
-/// trade: this is a cache of what a dataset looked like, the entry was written from a
-/// real read, and a stale row count is a far better answer than an empty one for the
-/// datasets that are hardest to reach and most worth remembering.
-/// Fill every row in with what is already known about it, and with where it lives.
-///
-/// Called from each of `build_listing`'s exits. Having one function rather than a
-/// loop at each return is the difference between adding a new exit and adding a new
-/// exit whose rows silently lack half their facts.
+/// Fill every row in with what is already known about it and where it lives. Called
+/// from each of `build_listing`'s exits, so no exit's rows miss facts.
 fn annotate(
     sections: &mut [Section],
     known: &std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
@@ -2787,8 +2506,7 @@ fn annotate(
             apply_known_facts(row, known, network_check(&row.path));
             row.cost.source = Some(mounts.describe(&row.path).fstype);
         }
-        // The door reads where its directory is; without this it drew the unknown
-        // place's glyph on local disk (#547 D10).
+        // The door reads where its directory is (the local glyph on local disk).
         if let Some(door) = section.door.as_mut()
             && !is_cloud_place(&door.path)
         {
@@ -2797,10 +2515,9 @@ fn annotate(
     }
 }
 
-/// Take what a measurement or a remembered record says a row costs, keeping what came
-/// from elsewhere: where it lives, from the mount table, and a spec file's variant
-/// count, from the spec. A record written before the spec named the file has no count,
-/// and taking it would leave the row with no tables to list (→) and no variants to show.
+/// Take a measured or remembered row cost, keeping what came from elsewhere: its
+/// location (mount table) and a spec file's variant count (an older record lacks
+/// it, which would leave no tables to list).
 fn take_cost(row: &mut Entry, cost: &discover::Cost) {
     let source = row.cost.source.take();
     let variants = row.cost.tables.filter(|_| row.format_spec.is_some());
@@ -2811,6 +2528,9 @@ fn take_cost(row: &mut Entry, cost: &discover::Cost) {
     }
 }
 
+/// Apply a cached measurement to a row. A local row must still match its size and
+/// mtime (`scan_dir` already stat'ed it). A remote row cannot be stat'ed safely, so
+/// its cached facts are used as is: a stale count beats none for hard-to-reach data.
 fn apply_known_facts(
     row: &mut Entry,
     known: &std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
@@ -2820,30 +2540,12 @@ fn apply_known_facts(
         return;
     };
 
-    // What a previous run found this directory to be. A listing no longer looks into a
-    // directory at all — that is a `read_dir` apiece, a round trip apiece on a share —
-    // so a row arrives `Unknown`, and this is the only thing that can answer for it
-    // without reading the directory again.
-    //
-    // Only for directories a previous run *measured*, which is narrower than it sounds:
-    // `facts_for` needs a size, and a directory only has one once its files were totalled
-    // or sampled. A plain directory has nothing recorded and is classified again every
-    // session — one `read_dir`, which is the cheap end of this. What it does cover is
-    // the expensive end: a directory whose files were read and found to be separate
-    // tables stays a directory, rather than being offered as one dataset again until
-    // its footers have been read a second time.
-    //
-    // Tested before the fingerprint below rather than after, because that fingerprint
-    // is a file's: a listing gives a directory no size, so `same_bytes` is never true
-    // for one. A directory's own mtime is what it has, and it moves when a file is
-    // added or removed, which is when this answer could change. Nothing here writes a
-    // size back onto the row, and nothing should: the fingerprint below would then be
-    // comparing a cached size with itself.
-    //
-    // Gated on the classifier, because a kind is a judgement where everything else
-    // here is a measurement. `is_one_table`'s answer is the most version-sensitive
-    // judgement datui makes — #234 introduced it and #243 changed what it runs over —
-    // so a build that decided differently does not get to speak here.
+    // What an earlier run found this directory to be: listings no longer read
+    // directories, so rows arrive `Unknown`. Only directories a run measured (with a
+    // size) have a record; what it saves is re-reading footers that found separate
+    // tables. Checked before the file fingerprint below, which never matches a
+    // directory: the directory's mtime is its fingerprint, moving as files come and go.
+    // Gated on the classifier version, since `is_one_table` is version-sensitive.
     if !remote
         && matches!(row.kind, EntryKind::Unknown | EntryKind::MultiFile)
         && facts.classified_by == crate::discover::CLASSIFIER_VERSION
@@ -2855,24 +2557,14 @@ fn apply_known_facts(
             .is_some_and(|d| d.as_secs() == facts.mtime);
         if same_mtime {
             row.kind = kind;
-            // What it holds comes back with the kind. They are one answer: a row given
-            // its kind from the cache is never looked into again, so a count left behind
-            // is left behind for the session — the row says `dir` about a directory of
-            // fifteen Parquet files, and `enrich` goes on to describe it by whatever is
-            // in its subdirectories.
+            // The holdings come back with the kind: a row given its kind from the cache is
+            // never looked into again, so a missing count would stay missing all session.
             if row.holds.is_empty() {
                 row.holds = facts.holds.clone();
             }
-            // The kind and the count, and nothing measured. Both of those come from
-            // the directory's *names*, which is what its mtime is a fingerprint
-            // for: it moves when an entry is added, removed or renamed. What the
-            // footers said — the width, the size, the column names — can change with
-            // no entry added or removed at all, by one file being rewritten in place,
-            // and a directory mtime cannot see that. `same_bytes` below is the
-            // fingerprint for those, it is a file's, and a directory has no size to offer
-            // it; so a directory of separate tables shows its width in the session that
-            // measured it and not after. That is the honest end of a weak key, and
-            // #275 phase 6 gives it a real one by verifying under the cursor.
+            // Only kind and count: both come from the directory's names, which its mtime
+            // fingerprints. Footer facts (width, size, columns) can change by a file rewritten
+            // in place, which a directory mtime cannot see, so they are not restored.
         }
     }
 
@@ -2894,31 +2586,24 @@ fn apply_known_facts(
     if !facts.columns.is_empty() {
         row.columns = facts.columns.clone();
     }
-    // The source is filled in from the live mount table afterwards, so what is
-    // restored here is only what the file itself said about itself.
+    // The source comes from the live mount table afterwards; only what the file said of
+    // itself is restored.
     take_cost(row, &facts.cost);
     if remote {
-        // A remote row was never stat'ed, so these are all it has. A record with no
-        // size to give — one object's, whose open read its footer and nothing else —
-        // gives none rather than a zero.
+        // A remote row was never stat'ed, so these are all it has; a record with no size
+        // (one object's footer read) gives none rather than zero.
         if facts.size > 0 {
             row.size = row.size.or(Some(facts.size));
         }
-        // What it was last seen to be, rather than what its name suggests. Guessing
-        // here is how the same dataset ends up reading `hive` in one section and
-        // something else in another.
-        // Only from a build that classified the way this one does: a Delta root
-        // measured before lake tables were recognized is recorded as `multifile`, and
-        // restoring that opens it as one table again.
+        // What it was last seen to be, not what its name suggests, so a dataset reads the
+        // same in every section. Only from this classifier version: an older record could
+        // call a Delta root `multifile`.
         if row.kind == EntryKind::Unknown
             && facts.classified_by == crate::discover::CLASSIFIER_VERSION
             && let Some(kind) = facts.kind
         {
             row.kind = kind;
-            // What it holds comes back with the kind. They are one answer: a row given
-            // its kind from the cache is never looked into again, so without this it
-            // says `dir` about a directory of fifteen Parquet files for the rest of the
-            // session — and `enrich` describes it by whatever is in its subdirectories.
+            // The holdings come back with the kind, or the row would say `dir` all session.
             if row.holds.is_empty() {
                 row.holds = facts.holds.clone();
             }
@@ -2949,9 +2634,7 @@ pub fn facts_for(entry: &Entry) -> Option<(PathBuf, crate::cache::DatasetFacts)>
             kind: Some(entry.kind),
             holds: entry.holds.clone(),
             classified_by: crate::discover::CLASSIFIER_VERSION,
-            // The source is where it is *now*, not where it was when measured: a
-            // path can move between mounts, and a stale answer to "will this be
-            // slow" is worse than no answer.
+            // The source is where it is now: paths move between mounts.
             cost: crate::discover::Cost {
                 source: None,
                 ..entry.cost.clone()
@@ -2960,22 +2643,14 @@ pub fn facts_for(entry: &Entry) -> Option<(PathBuf, crate::cache::DatasetFacts)>
     ))
 }
 
-/// How well an entry answers the filter, by name or by column.
-///
-/// Searching column names is what turns a list of files into something you can ask a
-/// question of: "which of these has a `customer_id`?" is the question a data person
-/// actually has, and the answer is already in the Parquet footer datui read to get
-/// the row count. A name match always outranks a column match, so typing a dataset's
-/// name still finds the dataset.
-///
-/// Higher is better, as in fzf — see [`crate::fuzzy`] for why datui scores the way
-/// that program does.
+/// How well an entry answers the filter, by name or by column (the footer's column
+/// names: "which has a `customer_id`?"). A name match always outranks a column
+/// match. Higher is better, as in fzf; see [`crate::fuzzy`].
 pub fn match_score(filter: &str, entry: &Entry) -> Option<i32> {
     match crate::fuzzy::best_match(filter, &entry.name) {
         Some(m) => Some(m.score),
-        // Ranked below every name match, so column hits are an addition to what the
-        // filter did rather than a dilution of it. Column matching is a substring test,
-        // which has no score of its own worth comparing.
+        // Below every name match; a column match is a substring test with no score of its
+        // own.
         None => matching_column(filter, entry).map(|_| -COLUMN_MATCH_PENALTY),
     }
 }
@@ -2997,15 +2672,12 @@ pub fn match_hit(filter: &str, entry: &Entry) -> Option<Hit> {
     })
 }
 
-/// Distance by which a column match sits below any name match.
-///
-/// Larger than any score a name match can reach, so the two never interleave.
+/// How far a column match sits below any name match: more than any name score, so
+/// they never interleave.
 const COLUMN_MATCH_PENALTY: i32 = 1_000_000;
 
-/// The first column of `entry` that contains `filter`, case-insensitively.
-///
-/// Substring rather than subsequence: a column name is short and specific, and a
-/// fuzzy match over dozens of them matches nearly everything.
+/// The first column of `entry` containing `filter`, case-insensitively. Substring,
+/// not subsequence: fuzzy matching dozens of names matches nearly everything.
 pub fn matching_column<'a>(filter: &str, entry: &'a Entry) -> Option<&'a str> {
     matching_column_index(filter, entry).map(|i| entry.columns[i].as_str())
 }
@@ -3021,21 +2693,16 @@ fn matching_column_index(filter: &str, entry: &Entry) -> Option<usize> {
         .position(|c| c.to_lowercase().contains(&needle))
 }
 
-/// Character positions in `haystack` that `needle` matched, for highlighting.
-///
-/// Taken from the same alignment that produced the score, so the marks are always on
-/// the characters that were actually scored.
+/// Character positions in `haystack` that `needle` matched, from the same alignment
+/// that scored it.
 pub fn fuzzy_positions(needle: &str, haystack: &str) -> Vec<usize> {
     crate::fuzzy::best_match(needle, haystack)
         .map(|m| m.positions)
         .unwrap_or_default()
 }
 
-/// Character positions of the first case-insensitive occurrence of `needle`.
-///
-/// Column matching is a substring test, not a subsequence one, so highlighting it has
-/// to be too — otherwise the marks land on letters that had nothing to do with why
-/// the row is on screen.
+/// Character positions of the first case-insensitive occurrence of `needle`, since
+/// column matching is a substring test.
 pub fn substring_positions(needle: &str, haystack: &str) -> Vec<usize> {
     if needle.is_empty() {
         return Vec::new();
@@ -3053,20 +2720,15 @@ pub fn substring_positions(needle: &str, haystack: &str) -> Vec<usize> {
     Vec::new()
 }
 
-/// Whether and how well `needle` matches `haystack`, higher being better.
-///
-/// A thin name over [`crate::fuzzy::best_match`]. Everything that ranks or highlights
-/// goes through that one function, which is what keeps the two from drifting apart.
+/// Whether and how well `needle` matches `haystack` (higher is better), through
+/// [`crate::fuzzy::best_match`] like every ranking and highlight.
 pub fn fuzzy_score(needle: &str, haystack: &str) -> Option<i32> {
     crate::fuzzy::best_match(needle, haystack).map(|m| m.score)
 }
 
 impl HomeState {
-    /// Gather roots from the working directory and the desktop.
-    ///
-    /// Where you are first, then the directories the desktop says you have opened data
-    /// from. Duplicates collapse to the first. Recents do not make roots: the place a
-    /// recent lives in is a row of `RECENT`.
+    /// Roots from the working directory, then the desktop's data directories;
+    /// duplicates collapse to the first. Recents' places are `RECENT` rows, not roots.
     pub fn roots(desktop_dirs: &[PathBuf]) -> Vec<Root> {
         Self::roots_with(desktop_dirs, is_remote_path)
     }
@@ -3078,15 +2740,12 @@ impl HomeState {
 
         let push =
             |path: PathBuf, origin: RootOrigin, roots: &mut Vec<Root>, seen: &mut Vec<PathBuf>| {
-                // The network test reads only the mount table, so it is safe on a
-                // path that would otherwise block.
+                // The network test reads only the mount table, safe on a blocking path.
                 let network = is_network(&path);
 
-                // Canonicalising and listing both touch the filesystem. On an
-                // unreachable NFS share those block — for seconds on a `soft` mount,
-                // and indefinitely and uninterruptibly on a `hard` one, which is the
-                // default. Nothing on the interface thread may do that, so a remote
-                // root is taken at face value and probed in the background instead.
+                // Canonicalizing and listing touch the filesystem and block on a dead NFS share
+                // (indefinitely on a `hard` mount): a remote root is taken as is and probed in the
+                // background.
                 let key = if network {
                     path.clone()
                 } else {
@@ -3126,10 +2785,8 @@ impl HomeState {
         roots
     }
 
-    /// Build the home listing.
-    ///
-    /// Recents lead, because for data on a mount the thing you want is almost always
-    /// something you have opened before. Roots follow, each scanned one level deep.
+    /// Build the home listing: recents first (on a mount, the dataset you want was
+    /// usually opened before), then roots scanned one level deep.
     pub fn rebuild(&mut self, recents: &[PathBuf]) {
         self.rebuild_with(recents, &[])
     }
@@ -3146,8 +2803,8 @@ impl HomeState {
             network_check: self.network_check,
             cloud: self.cloud.clone(),
             catalogs: self.catalogs.clone(),
-            // The synchronous path is for tests and library callers; it consults no
-            // cache, so what it produces is exactly what is on disk right now.
+            // The synchronous path (tests, library callers) uses no cache: exactly what is on
+            // disk now.
             known: Default::default(),
             formats: self.formats.clone(),
         };
@@ -3182,27 +2839,23 @@ impl HomeState {
                 None => note,
             });
         }
-        // A rebuild replaces every section, and search results outlive rebuilds —
-        // they came from a walk, not from this listing. Put them back.
+        // Search results outlive rebuilds (they came from a walk): put them back.
         self.sync_search_section();
-        // So does what this session has looked into. A rebuild is cheap because it
-        // reads names; a kind and a row count cost round trips, and rebuilding often
-        // — a probe answers, a bucket is discovered — must not throw them away and
-        // ask for them again.
+        // So does what this session looked into: rebuilds read names cheaply, and kinds and
+        // counts cost round trips.
         self.apply_measurements();
 
-        // Keep the cursor on the same row across a refresh; landing back at the top
-        // every time a background result arrives makes the screen unusable.
+        // Keep the cursor on its row across refreshes, not back at the top on every result.
         let placed = self.reselect(previous);
-        // A row returned to is where the user left it, not a landing a late footer may
-        // still move.
+        // A returned-to row is where the user left it, not a landing a late footer may
+        // move.
         if placed && returning.is_some() {
             self.landing = false;
         }
         if !placed {
             self.select_first_entry();
-            // The row being returned to may be in a later listing: a remote place
-            // still answering, or a search still walking.
+            // The returned-to row may be in a later listing (a remote place still answering, a
+            // search still walking).
             if self.rows_still_arriving() {
                 self.returning = returning;
             }
@@ -3214,33 +2867,31 @@ impl HomeState {
         self.follow_selection();
     }
 
-    /// Remember where the cursor is before going inside something, so leaving comes
-    /// back to it. Call before `browsing` changes.
+    /// Remember the cursor before going inside something, so leaving returns to it. Call
+    /// before `browsing` changes.
     pub fn leave_mark(&mut self) {
         let mark = Mark {
             place: self.browsing.clone(),
             key: self.selected_key(),
             filter: self.filter.clone(),
-            // A scoring out now answers while the user is elsewhere and is dropped, so
-            // the copy kept asks again when it comes back.
+            // A scoring out now would answer while away and be dropped; the kept copy asks
+            // again on return.
             search: (!self.search.running).then(|| SearchState {
                 scoring: false,
                 ..self.search.clone()
             }),
             line: self.selected.saturating_sub(self.scroll),
         };
-        // A place already on the trail is being entered again from elsewhere; its
-        // old mark describes a visit that is over.
+        // A place already on the trail is being re-entered from elsewhere; its old mark is
+        // over.
         self.trail.retain(|m| m.place != mark.place);
         self.trail.push(mark);
     }
 
-    /// Come back to the place now browsed, from `from`: the filter and search it had,
-    /// and the cursor on the row it was on once the listing lands. Call after
-    /// `browsing` is set.
-    ///
-    /// A place never entered from — Backspace above where the browse began — puts the
-    /// cursor on the place just left instead, which is the row that leads back to it.
+    /// Return to the place now browsed, from `from`: its filter, search, and the cursor
+    /// on its row once the listing lands. Call after `browsing` is set. A place never
+    /// entered from (Backspace above the browse start) puts the cursor on the place just
+    /// left.
     pub fn come_back(&mut self, from: Option<PathBuf>) {
         let to = self.browsing.clone();
         let mark = self
@@ -3310,13 +2961,9 @@ impl HomeState {
         })
     }
 
-    /// Put the cursor back on the row `key` names, if it is still on screen. Says
-    /// whether the cursor was placed by the key; when it was not, the cursor is
-    /// clamped, so a cursor left past the end by rows disappearing is never left there.
-    ///
-    /// A row the cap has just hidden is still there, behind the `more` row that now
-    /// stands for it, so the cursor goes to that row rather than to whatever fell
-    /// into its index in the section below — and that counts as placed.
+    /// Put the cursor back on the row `key` names, if still listed; true if placed. A
+    /// row the cap now hides counts as placed on its `more` row. Otherwise the cursor
+    /// is clamped so it never sits past the end.
     pub fn reselect(&mut self, key: Option<RowKey>) -> bool {
         let Some(key) = key else {
             self.clamp_selection();
@@ -3334,11 +2981,8 @@ impl HomeState {
         }
     }
 
-    /// Where the row `key` names is on screen. A row a directory's cut hides is shown
-    /// by showing that directory whole: the cursor stays on the row it was on. A row
-    /// `RECENT`'s cap hides is still there, behind the `more` row that stands for it,
-    /// so that row is the answer rather than whatever fell into its index in the
-    /// section below.
+    /// Where the row `key` names is on screen. A row a directory's cut hides makes that
+    /// directory show whole; a row `RECENT`'s cap hides answers with its `more` row.
     fn place_key(&mut self, key: &RowKey) -> Option<usize> {
         if let Some(found) = self.listed(key) {
             return Some(found);
@@ -3394,11 +3038,8 @@ impl HomeState {
         })
     }
 
-    /// Tell the listing how tall the list is, keeping the cursor on the row it was on.
-    ///
-    /// The cap on `RECENT` is a share of this height, so a shorter terminal takes rows
-    /// out from under the cursor and a taller one puts rows in above it. The renderer
-    /// calls this every frame; only a change in height does any work.
+    /// Tell the listing the list's height, keeping the cursor on its row: `RECENT`'s cap
+    /// is a share of the height. Called every frame; only a change does work.
     pub fn set_view_height(&mut self, height: usize) {
         if height == self.view_height {
             return;
@@ -3408,27 +3049,17 @@ impl HomeState {
         self.reselect(key);
     }
 
-    /// Put the viewport where the next frame will put it, without waiting for it.
-    ///
-    /// The renderer settles `scroll` from `selected` every frame, but the pass that
-    /// looks into rows is asked for when a listing lands, which is before that frame
-    /// is drawn — and a `scroll` left over from the listing just replaced points into
-    /// a different set of rows entirely. Browsing into a directory selects row 0 while
-    /// `scroll` still says four hundred, and the first batch is spent on rows nobody
-    /// is looking at.
+    /// Settle the viewport now, as the next frame will: the look-into pass is asked for
+    /// when a listing lands, before that frame, and a stale `scroll` from the replaced
+    /// listing would spend the batch on rows nobody sees.
     fn follow_selection(&mut self) {
         let rows = self.row_count();
         self.scroll = settle_top(self.scroll, self.selected, self.view_height, rows);
     }
 
-    /// Whether a section is folded: what the user last chose for it, else its default.
-    ///
-    /// Never while browsing. The listing of the place browsed into is the whole
-    /// screen, and folding it leaves nothing. The fold memory is keyed by title, and
-    /// a directory's title is its path, so a fold remembered for a section that used
-    /// to be titled by that path — the directories recents were promoted to, before
-    /// they became place rows — would otherwise fold the listing the place row leads
-    /// to, which is the one place the user has just asked to see.
+    /// Whether a section is folded: the user's last choice, else its default. Never
+    /// while browsing: the browsed listing is the whole screen, and a fold remembered
+    /// for a section once titled by that path must not hide it.
     fn section_folded(&self, section: &Section) -> bool {
         if self.browsing.is_some() {
             return false;
@@ -3452,10 +3083,9 @@ impl HomeState {
         self.set_collapsed(section, !folded);
     }
 
-    /// Nothing is remembered while browsing: the listing browsed into is never drawn
-    /// folded (see `section_folded`), and a fold written for it would be a fold for
-    /// its path, which is the title the same directory has as a configured or current
-    /// directory section on the root listing.
+    /// Fold or unfold `section`, remembered by title. Nothing is remembered while
+    /// browsing: the browsed listing never folds, and its path is also a root section's
+    /// title.
     pub fn set_collapsed(&mut self, section: usize, collapsed: bool) {
         if self.browsing.is_some() {
             return;
@@ -3466,8 +3096,7 @@ impl HomeState {
         self.folds.insert(title, collapsed);
     }
 
-    /// Move the cursor to the next (`delta` > 0) or previous section header,
-    /// wrapping. The way past a long section to the one you came for.
+    /// Move the cursor to the next (`delta` > 0) or previous section header, wrapping.
     pub fn jump_section(&mut self, delta: isize) {
         self.returning = None;
         self.landing = false;
@@ -3498,26 +3127,14 @@ impl HomeState {
         };
     }
 
-    /// Whether the listing holds anything openable at all, folded or not.
-    ///
-    /// A lake table counts. datui cannot read one as a table yet, so it is not a dataset
-    /// — but it is somewhere to go, and a warehouse directory of fifty `delta` rows with
-    /// "No datasets here." printed underneath them is plainly wrong.
-    ///
-    /// So does a row nothing has looked into, for the same reason and more sharply: in a
-    /// fresh listing that is every directory in it, and any of them may turn out to be a
-    /// dataset. This is [`EntryKind::is_dataset`] rather than
-    /// [`EntryKind::is_known_dataset`] on purpose — the question is whether there is
-    /// anywhere to go, not how many datasets there are, which is what the footer's
-    /// count asks and answers differently.
+    /// Whether the listing holds anywhere to go, folded or not: datasets, lake tables
+    /// (not readable as tables, but places), and rows not yet looked into, which may be
+    /// datasets. Hence [`EntryKind::is_dataset`], not [`EntryKind::is_known_dataset`].
     pub fn has_any_dataset(&self) -> bool {
         self.view().has_dataset
     }
 
-    /// Title of the section holding recursive search results.
-    ///
-    /// A constant because collapse state is keyed by title, and because the renderer
-    /// and the tests both need to name it.
+    /// Title of the section of recursive search results; fold state is keyed by title.
     pub const SEARCH_SECTION: &'static str = "Found";
 
     /// Title of the section listing cloud sources.
@@ -3557,14 +3174,14 @@ impl HomeState {
         self.cloud.iter().find(|s| s.buckets.contains(&root))
     }
 
-    /// One level up from `path`. A bucket's parent is the source that lists it, so
-    /// Backspace from a bucket returns to its source rather than to the home listing.
+    /// One level up from `path`. A bucket's parent is its source, so Backspace from a
+    /// bucket returns to the source.
     pub fn parent_of(&self, path: &Path) -> Option<PathBuf> {
         if cloud_source_id(path).is_some() {
             return None;
         }
-        // Out of a remote dataset's root is back to the catalog it is listed in, not
-        // up into a bucket that may not be listable at all.
+        // Out of a remote dataset's root goes back to its catalog, not into a bucket that
+        // may not be listable.
         if let Some((_, dataset)) = self.remote_dataset_of(path) {
             let place = &dataset.location;
             if same_place(path, place) {
@@ -3625,8 +3242,8 @@ impl HomeState {
         parent_location(path)
     }
 
-    /// The remote catalog dataset `path` is in: the innermost, when one dataset is
-    /// inside another, and the first listed of two that are the same place.
+    /// The remote catalog dataset `path` is in: the innermost, or the first listed of two
+    /// at the same place.
     fn remote_dataset_of(&self, path: &Path) -> Option<(&ShownCatalog, &ShownDataset)> {
         if !is_object_store_url(path) {
             return None;
@@ -3685,8 +3302,7 @@ impl HomeState {
             })
     }
 
-    /// What a catalog says an HTTP(S) file at `path` weighs, while nothing has measured
-    /// it: shown as `~33 MB`.
+    /// What a catalog says an unmeasured HTTP(S) file weighs, shown as `~33 MB`.
     pub fn size_hint(&self, path: &Path) -> Option<u64> {
         self.catalog_dataset(path).and_then(|(_, d)| d.size)
     }
@@ -3700,9 +3316,8 @@ impl HomeState {
             .cloned()
     }
 
-    /// Where a directory in an object store is in being looked into, while its row has
-    /// no label of its own yet. `None` once the row says what it holds, or when it is not
-    /// such a directory.
+    /// How far an object-store directory is in being looked into, while its row has no
+    /// label. `None` once labeled, or for other rows.
     pub fn cloud_look(&self, entry: &Entry) -> Option<CloudLook> {
         if entry.kind != EntryKind::Directory
             || !entry.holds.is_empty()
@@ -3720,8 +3335,8 @@ impl HomeState {
         }
         match self.cloud_kinds.get(&entry.path) {
             None => Some(CloudLook::Waiting),
-            // Answered with something this row does not show yet: the listing it was
-            // drawn from is being rebuilt. `dir` in the meantime would claim no data.
+            // Answered, but the row is from a listing being rebuilt: `dir` meanwhile would claim
+            // no data.
             Some((kind, holds)) if *kind != EntryKind::Directory || !holds.is_empty() => {
                 Some(CloudLook::Looking)
             }
@@ -3729,8 +3344,8 @@ impl HomeState {
         }
     }
 
-    /// What to call a place a source or catalog names itself: a remote dataset of a
-    /// catalog, or a local one that is missing.
+    /// What a source or catalog calls a place: a catalog's remote dataset, or `missing`
+    /// for an absent local one.
     pub fn place_kind(&self, path: &Path) -> Option<&'static str> {
         if self.missing.contains(path) {
             return Some("missing");
@@ -3786,13 +3401,12 @@ impl HomeState {
             .map(Vec::as_slice)
     }
 
-    /// The location as the title bar names it. Cloud places read as a trail through
-    /// the source's label, since neither `cloud://<id>` nor `s3://<id>@bucket` is
-    /// something to show a person.
+    /// The location as the title bar names it; cloud places read as a trail through the
+    /// source's label.
     pub fn location_label(&self, path: &Path) -> String {
         let sep = crate::glyphs::get().trail;
-        // Inside a remote dataset of a catalog: the catalog, the dataset's name,
-        // and the way down from it.
+        // Inside a catalog's remote dataset: the catalog, the dataset's name, and the path
+        // below it.
         if let Some((catalog, dataset)) = self.remote_dataset_of(path) {
             let text = path.to_string_lossy();
             let rest = within_rest(&text, &dataset.location.to_string_lossy());
@@ -3835,11 +3449,8 @@ impl HomeState {
         display_path(path)
     }
 
-    /// Put the current search results into `sections`, or take them out.
-    ///
-    /// Called after every rebuild and every batch of results. The section only exists
-    /// while there is a filter: with none, every row matches, and twenty thousand
-    /// matches is not a home screen.
+    /// Put the search results into `sections`, or take them out, after every rebuild and
+    /// batch. Only while there is a filter: unfiltered, everything matches.
     pub fn sync_search_section(&mut self) {
         self.sections.retain(|s| s.title != Self::SEARCH_SECTION);
         self.changed();
@@ -3847,8 +3458,7 @@ impl HomeState {
         if self.filter.is_empty() {
             return;
         }
-        // Bucket names already listed, from every source. Nothing is fetched for this:
-        // a search that went to the network per keystroke would be a bill per keystroke.
+        // Bucket names already listed; nothing is fetched (that would bill per keystroke).
         let cloud_rows: Vec<Entry> = if self.browsing.is_none() {
             self.cloud
                 .iter()
@@ -3885,18 +3495,16 @@ impl HomeState {
             return;
         }
 
-        // A dataset already on screen under the directory it lives in should not
-        // appear a second time under the search. The search is for what you could
-        // not otherwise see.
+        // A dataset already listed under its directory does not appear again under the
+        // search.
         let listed: std::collections::HashSet<&PathBuf> = self
             .sections
             .iter()
             .flat_map(|s| s.rows.iter().map(|r| &r.path))
             .collect();
 
-        // The best matches as last scored. Those for an older filter, while a scoring is
-        // out, are scored again here, once, so nothing that no longer matches shows
-        // meanwhile and the passes over the rows need not score them each time.
+        // The last scored matches; those for an older filter (a scoring out) are rescored
+        // here once, so nothing stale shows.
         let matches = self.search.matches.as_ref();
         let kept: Vec<(&Entry, i32)> = matches
             .map(|m| {
@@ -3918,8 +3526,7 @@ impl HomeState {
         let mut rows: Vec<Entry> = kept.into_iter().map(|(e, _)| e.clone()).collect();
         rows.extend(cloud_rows);
 
-        // An empty result is said when it is not the whole answer: a walk that stopped
-        // short may have missed the file, and "no match" there is something people act on.
+        // Say an empty result when the walk stopped short: "no match" may be wrong then.
         let partial = self.search.limited.is_some();
         let scored = self.search.scored_for(&self.filter);
         if rows.is_empty() && !self.search.running && !partial && scored {
@@ -3934,8 +3541,7 @@ impl HomeState {
         });
     }
 
-    /// What `Found`'s rule says: where the search looked, how many matched, and how far
-    /// the walk got.
+    /// `Found`'s rule: where it looked, how many matched, how far the walk got.
     fn found_subtitle(&self, empty: bool) -> String {
         let root = self.search.root.clone().unwrap_or_default();
         let dot = crate::glyphs::get().middot;
@@ -3946,8 +3552,8 @@ impl HomeState {
             format!("{files} files")
         };
         let subtitle = display_path(&root);
-        // How many matched, when more matched than are listed. Last, since the rule
-        // cuts a long note from the start and the place is what it can best spare.
+        // How many matched when more matched than listed; last, since the rule cuts long
+        // notes from the start.
         let counted = self
             .search
             .matches
@@ -3986,16 +3592,12 @@ impl HomeState {
 
     /// Fold a batch of search results in, keeping the list free of duplicates.
     pub fn search_batch(&mut self, root: &Path, mut found: Vec<Entry>, scanned: usize) {
-        // A batch from a walk the user has already moved on from is dropped: the
-        // walk is abandoned rather than cancelled, so late results are normal.
+        // A batch from a walk the user left is dropped: walks are abandoned, not cancelled.
         if self.search.root.as_deref() != Some(root) {
             return;
         }
-        // What earlier runs measured, so a found row carries its shape and column
-        // names like a listed one — the filter matches on column names, and without
-        // this the promise that "customer_id finds every dataset with that column"
-        // stopped at the rows already on screen. The strict (non-remote) fingerprint
-        // gates it: same size and mtime, or nothing is said.
+        // Earlier measurements give found rows their shape and columns (the filter matches
+        // columns), strictly fingerprinted by size and mtime.
         for row in &mut found {
             apply_known_facts(row, &self.known, false);
         }
@@ -4006,9 +3608,8 @@ impl HomeState {
             self.search.indexed += batch.len();
             self.search.results.push(batch.clone());
         }
-        // Matches for the filter typed are carried forward over the new files alone. A
-        // whole scoring per batch, over hundreds of batches, is what kept typed keys
-        // waiting while a large walk ran.
+        // Carry matches forward over the new files alone: rescoring everything per batch
+        // delayed typed keys during large walks.
         let limit = self.search_limit;
         let changed = match self.search.matches.as_mut() {
             Some(m) if m.query == self.filter && m.upto == start => m.extend(&batch, start, limit),
@@ -4018,8 +3619,7 @@ impl HomeState {
                 self.search.matches.as_ref().map(|m| m.upto) != before
             }
         };
-        // `Found` is rebuilt only when what it lists changed; otherwise only the progress
-        // on its rule moves.
+        // Rebuild `Found` only when its contents changed; otherwise only its progress moves.
         let found_listed = self
             .sections
             .iter()
@@ -4048,8 +3648,8 @@ impl HomeState {
         self.search.matches = Some(scored);
     }
 
-    /// The scoring a worker should do next, if one is owed: the filter has changed, or
-    /// files arrived since the last. One at a time; the next is asked for when it answers.
+    /// The scoring a worker should do next, if owed (the filter changed, or files
+    /// arrived). One at a time; the next is asked when it answers.
     pub fn score_job(&mut self) -> Option<ScoreJob> {
         if self.filter.is_empty() || self.search.scoring || self.search.scored_for(&self.filter) {
             return None;
@@ -4082,8 +3682,7 @@ impl HomeState {
         }
         self.search.matches = Some(scored);
         self.sync_search_section();
-        // Typing put the cursor on the first row there was; if that was nothing, the
-        // first match is where it belongs now.
+        // If typing left the cursor on nothing, the first match is where it belongs.
         if !matches!(self.selected_row(), Some(Row::Entry { .. })) {
             self.select_first_entry();
         }
@@ -4104,19 +3703,14 @@ impl HomeState {
         self.settle_return();
     }
 
-    /// Lines currently on screen: a header per non-empty section, followed by its
-    /// matching rows unless it is collapsed.
-    ///
-    /// Results stay grouped even while filtering. Ranking them across sections would
-    /// read better as a hit list, but it costs the one thing the grouping is for —
-    /// seeing *where* a dataset lives — and a name on its own rarely says that.
+    /// Lines on screen: a header per non-empty section, then its matching rows unless
+    /// folded. Results stay grouped while filtering, to show where a dataset lives.
     pub fn visible(&self) -> Vec<Row<'_>> {
         let view = self.view();
         view.slots.iter().map(|slot| self.row(slot)).collect()
     }
 
-    /// Which rows of [`HomeState::visible`] are section headers, without building
-    /// the rows.
+    /// Which rows of [`HomeState::visible`] are headers, without building the rows.
     pub fn header_rows(&self) -> Vec<bool> {
         (self.view().slots.iter())
             .map(|slot| matches!(slot, Slot::Plain(Row::Header { .. })))
@@ -4143,8 +3737,8 @@ impl HomeState {
         self.view().slots.get(index).map(|slot| self.row(slot))
     }
 
-    /// How many times the rows have been built, for the test that each frame builds
-    /// them at most once.
+    /// How many times the rows were built, for the test that a frame builds them at most
+    /// once.
     pub fn rows_built(&self) -> usize {
         self.rows_cache.builds.get()
     }
@@ -4180,10 +3774,8 @@ impl HomeState {
         }
     }
 
-    /// With the cursor on a row the section's cut would hide, the section shown whole
-    /// (a directory, or `RECENT`), cut it back to its first rows, the cursor on the
-    /// row standing for the rest. Says whether it did: on any other row the section
-    /// stays as it is.
+    /// With the cursor on a row the cut would hide in a section shown whole, cut it back,
+    /// the cursor on the row standing for the rest. Whether it did.
     pub fn cut_again(&mut self, section: usize) -> bool {
         let Some(key) = self.selected_key() else {
             return false;
@@ -4220,8 +3812,7 @@ impl HomeState {
         true
     }
 
-    /// The sections, to change in place. The rows are listed again from them on the
-    /// next read.
+    /// The sections, to change in place; rows are relisted on the next read.
     pub fn sections_mut(&mut self) -> &mut Vec<Section> {
         self.changed();
         &mut self.sections
@@ -4291,19 +3882,13 @@ impl HomeState {
                 .filter_map(|(i, row)| match_hit(&self.filter, row).map(|hit| (i, hit)))
                 .collect();
 
-            // A section with nothing to show is dropped, unless it is standing in for
-            // a root the user named or is currently in, where its absence would be
-            // more confusing than an empty heading, or its rows are still on the way.
-            //
-            // A door is something to show. A directory of part files written with no
-            // extension lists nothing — no name in it says data — and the door is the
-            // only way to read it; dropped here, the whole section went with it and the
-            // directory was a dead end that the open could have read.
+            // Drop a section with nothing to show, unless it stands for a named or current root,
+            // its rows are on the way, or it has a door (extensionless part files list nothing,
+            // and the door is the only way to read them).
             let keep_empty = section.unavailable || section.waiting || section.origin.is_some();
             let has_door = section.door.is_some() && self.filter.is_empty();
-            // Only inside a directory, where the listing is the whole screen and an
-            // empty one needs saying why. The root listing's sections leave them out
-            // quietly, as they always have.
+            // Only inside a directory, where an empty listing needs a reason; root sections
+            // leave them out quietly.
             let hidden =
                 if self.browsing.is_some() && self.hide_unreadable && self.filter.is_empty() {
                     section
@@ -4314,8 +3899,7 @@ impl HomeState {
                 } else {
                     0
                 };
-            // `Found` is only put in empty when it has something to say: a walk that
-            // stopped short and matched nothing.
+            // `Found` shows empty only to say something: a walk stopped short with no match.
             let says_why = section.title == Self::SEARCH_SECTION;
             if matched.is_empty()
                 && !has_door
@@ -4326,14 +3910,9 @@ impl HomeState {
                 continue;
             }
 
-            // Within a section, rank by match quality; without a filter every score is
-            // equal and the curated order is preserved. Ties go to the shorter name,
-            // which is fzf's default tiebreak and the reason `sales` prefers
-            // `sales.csv` over `sales_by_region_and_quarter.csv`.
-            //
-            // An often-opened row is lifted by its frecency, up to a few characters'
-            // worth of match: of two files `sales` finds, the one opened most comes
-            // first (#547 M9).
+            // Rank by match quality within a section (unfiltered, scores tie and the curated
+            // order stays). Ties go to the shorter name, fzf's tiebreak. Frecency lifts an
+            // often-opened row by up to a few characters' worth of match.
             let entry = |i: usize| &section.rows[i];
             if !self.filter.is_empty() {
                 let now = std::time::SystemTime::now()
@@ -4355,9 +3934,8 @@ impl HomeState {
                 });
             }
 
-            // An explicit sort overrides both. Rows with nothing to sort by go last
-            // rather than sorting as zero, so "biggest first" does not begin with a
-            // page of datasets whose size is simply unknown.
+            // An explicit sort overrides both; rows with nothing to sort by go last, not as
+            // zero.
             match self.sort {
                 SortMode::Natural => {}
                 SortMode::Size => {
@@ -4382,18 +3960,14 @@ impl HomeState {
             let collapsed = self.section_folded(section);
             out.push(Slot::Plain(Row::Header {
                 section: si,
-                // What the section holds, which the door is not: it is a way to open the
-                // directory those rows are in, so counting it would make a directory of
-                // three files say four. It is not among `rows`, so nothing here has to
-                // take it back out.
+                // The door is not counted: it opens the directory, so three files must not read four.
                 matches: matched.len(),
                 collapsed,
             }));
             if collapsed {
                 continue;
             }
-            // The way up comes first of all, as `..` does in any listing: where
-            // Backspace goes while browsing, the same place above a root.
+            // The way up first, as `..` in any listing.
             let root = section.root.as_deref();
             if self.filter.is_empty()
                 && root
@@ -4401,20 +3975,14 @@ impl HomeState {
             {
                 out.push(Slot::Plain(Row::Up { section: si }));
             }
-            // The door next, before the rows and whatever the sort, because being the
-            // first row inside a directory is the whole of what it is.
-            //
-            // Not while a filter is on. Its name carries the words `all files`, which a
-            // fuzzy filter matches for most of the alphabet — `sal` found it beside
-            // `sales.parquet` — so it steps out of the way and comes back when the
-            // filter is cleared.
+            // The door next, whatever the sort. Not while filtering: its `all files` name
+            // fuzzy-matches most of the alphabet.
             if has_door {
                 out.push(Slot::Door { section: si });
             }
-            // A directory of thousands would bury every section below it, the way
-            // into the cloud and the catalogs: at the root listing it shows its first
-            // rows, a share of the list's height, and one row standing for the rest.
-            // A filter searches them all.
+            // At the root listing a huge directory shows its first rows (a share of the
+            // height) and one row for the rest, so it does not bury the sections below. A filter
+            // searches them all.
             let shown = match root {
                 Some(_)
                     if self.browsing.is_none()
@@ -4431,15 +3999,14 @@ impl HomeState {
             } else {
                 Vec::new()
             };
-            // Sorted by rows, a row past the cut is measured too, or the biggest of
-            // the first rows would pass for the biggest of all.
+            // Sorted by rows, rows past the cut are measured too, or the biggest shown would pass
+            // for the biggest of all.
             let measuring = self.sort == SortMode::Rows
                 && rest.iter().any(|(i, _)| self.wants_measuring(entry(*i)));
             if section.grouped_by_place {
                 self.slots_by_place(si, section, &matched, &mut out);
             } else {
-                // A bookmark sits under its dataset while the rows keep the
-                // catalog's order.
+                // A bookmark sits under its dataset while rows keep the catalog's order.
                 let in_order = self.sort == SortMode::Natural
                     && self.filter.is_empty()
                     && section.origin.is_some_and(is_catalog_origin)
@@ -4469,19 +4036,11 @@ impl HomeState {
         out
     }
 
-    /// A grouped section's rows under the place each lives in, and what the cap hides.
-    ///
-    /// Places come in the order of their newest row in the section, which for `RECENT`
-    /// is the order the rows already have. Within a place the rows keep the order
-    /// `matched` gave them — recency, or the sort or match rank in effect — so a sort
-    /// orders each place and never flattens the section.
-    ///
-    /// Whole places are shown, newest first, until they have used a third of the
-    /// list's height, and always at least one; what is left is one `… N more in M
-    /// places` row. The fraction is a judgment. If it proves wrong in use the answer
-    /// is a `[home] recent_rows` setting, not a different fraction. A filter shows
-    /// every match, and the `more` row goes with the cap: a match that is hidden is
-    /// not a match.
+    /// A grouped section's rows under each one's place, and what the cap hides. Places
+    /// in order of their newest row; within a place the rows keep `matched`'s order, so
+    /// a sort orders each place. Whole places are shown newest first until a third of
+    /// the height is used (at least one), then one `… N more in M places` row. A filter
+    /// shows every match, without the cap.
     fn slots_by_place(
         &self,
         si: usize,
@@ -4507,8 +4066,7 @@ impl HomeState {
             })
             .collect();
 
-        // Before the first frame there is no height to budget against, and a listing
-        // built for a caller with no screen is asked for whole.
+        // Before the first frame there is no height; a caller with no screen gets it whole.
         let capped = !self.recent_expanded && self.filter.is_empty() && self.view_height > 0;
         let budget = self.view_height / 3;
         let mut used = 0usize;
@@ -4522,8 +4080,7 @@ impl HomeState {
                 section: si,
                 path: (*place).clone(),
                 label: section.place_labels.get(*place).cloned(),
-                // Every row in a place is on the filesystem the place is, so the first
-                // speaks for it. Filled in by `annotate` from the mount table.
+                // A place's rows share its filesystem, so the first speaks for it (from `annotate`).
                 source: section.rows[rows[0].0].cost.source.clone(),
                 held: places.iter().filter(|p| p == place).count(),
             }));
@@ -4546,8 +4103,8 @@ impl HomeState {
         }
     }
 
-    /// The names the `~` prompt offers: those in the directory being typed that its
-    /// last segment matches, best first. Hidden names only when a dot is typed.
+    /// The names the `~` prompt offers: those in the typed directory matching its last
+    /// segment, best first; hidden names only after a typed dot.
     pub fn path_candidates(&self) -> Vec<&PathName> {
         let Some(listing) = self
             .path_listing
@@ -4565,8 +4122,7 @@ impl HomeState {
                 if segment.is_empty() {
                     return Some((n, 0));
                 }
-                // A name that starts with what is typed first, as a shell completes;
-                // then the rest the fuzzy match finds.
+                // Prefix matches first, as a shell completes; then fuzzy matches.
                 let prefix = n.name.starts_with(segment) as i32 * 1_000_000;
                 fuzzy_score(segment, &n.name).map(|score| (n, prefix + score))
             })
@@ -4575,9 +4131,8 @@ impl HomeState {
         matched.into_iter().map(|(n, _)| n).collect()
     }
 
-    /// Put the `~` prompt's pick on the first name that matches what is typed, or on
-    /// none when nothing does: the list always shows which name Enter and Tab take.
-    /// ↑ from the first takes the typed path as it is.
+    /// Put the `~` prompt's pick on the first match, or none, so the list always shows
+    /// what Enter and Tab take. ↑ from the first takes the typed path as is.
     pub fn pick_first_path(&mut self) {
         self.path_pick = (!self.path_candidates().is_empty()).then_some(0);
     }
@@ -4594,8 +4149,8 @@ impl HomeState {
         Some(path)
     }
 
-    /// What Tab makes of the typed path: the one candidate whole, or the longest
-    /// start every candidate shares. `None` when it would add nothing.
+    /// What Tab makes of the typed path: the sole candidate, or the candidates' longest
+    /// common start. `None` when it adds nothing.
     pub fn path_completion(&self) -> Option<String> {
         let dir = typed_dir(&self.path_input);
         let segment = &self.path_input[dir.len()..];
@@ -4625,8 +4180,8 @@ impl HomeState {
         }
     }
 
-    /// Every URL the screen already knows: catalogs, buckets, what has been listed
-    /// and what the index remembers. What `s3://` completes from.
+    /// Every URL the screen knows (catalogs, buckets, listings, the index): what `s3://`
+    /// completes from.
     pub fn known_urls(&self) -> Vec<String> {
         let mut urls: Vec<String> = Vec::new();
         let mut add = |path: &Path| {
@@ -4667,11 +4222,8 @@ impl HomeState {
         self.row_at(self.selected)
     }
 
-    /// The highlighted row, when it is a dataset rather than a section header.
-    ///
-    /// The door counts: it is something to open, and every caller here wants what the
-    /// cursor is on. What it must not be is a row in a path-keyed map, which is why it
-    /// is [`Row::Door`] and not an entry among the section's rows.
+    /// The highlighted row when it is a dataset, door included (it can be opened; it is
+    /// [`Row::Door`] only to stay out of path-keyed maps).
     pub fn selected_entry(&self) -> Option<&Entry> {
         match self.selected_row()? {
             Row::Entry { entry, .. } | Row::Door { entry, .. } => Some(entry),
@@ -4717,23 +4269,19 @@ impl HomeState {
         matches!(self.selected_row(), Some(Row::Header { .. }))
     }
 
-    /// Remote roots that have neither answered nor been written off.
-    ///
-    /// The caller probes these off the interface thread; nothing here may touch them.
+    /// Remote roots that have neither answered nor been written off, for the caller to
+    /// probe off the UI thread.
     pub fn pending_probes(&self) -> Vec<PathBuf> {
         let check = self.network_check;
         let mut out = Vec::new();
-        // Read from the section, not its subtitle: a share's subtitle names its
-        // filesystem, and matching on the word "network" meant NFS roots were never
-        // listed at all.
+        // From the section, not its subtitle (which names the filesystem, not "network").
         for root in self.sections.iter().filter_map(|s| s.remote_root.as_ref()) {
             if !self.probes.settled(root) && !out.contains(root) {
                 out.push(root.clone());
             }
         }
-        // Descended into a remote directory — a bucket, a prefix, a share. It is the
-        // only thing on screen and its rows can come from nowhere but a probe, so it
-        // is not covered by the section scan above, which only looks at roots.
+        // A browsed remote directory: its rows can only come from a probe, and the root scan
+        // above does not cover it.
         if let Some(dir) = &self.browsing
             && check(dir)
             && cloud_source_id(dir).is_none()
@@ -4745,8 +4293,8 @@ impl HomeState {
         out
     }
 
-    /// Whether the browsed directory is strictly below where the browse began, so Esc
-    /// still has a level to climb before it returns to the listing.
+    /// Whether the browsed directory is below the browse start, so Esc has a level to
+    /// climb before the listing.
     pub fn below_browse_start(&self) -> bool {
         let (Some(dir), Some(start)) = (&self.browsing, &self.browse_start) else {
             return false;
@@ -4754,8 +4302,7 @@ impl HomeState {
         if dir == start {
             return false;
         }
-        // Up through parents rather than a path prefix: a bucket sits below its cloud
-        // source, and `s3://bucket` does not start with `cloud://<id>`.
+        // Up through parents, not a path prefix: `s3://bucket` sits below `cloud://<id>`.
         let mut current = self.parent_of(dir);
         let mut steps = 0;
         while let Some(place) = current {
@@ -4811,11 +4358,8 @@ impl HomeState {
                 && let Some((kind, holds)) = self.cloud_kinds.get(&row.path)
             {
                 row.kind = *kind;
-                // The label is what the peek counted, not the kind it decided: a prefix
-                // of twelve Parquet objects reads `12 parquet` in a bucket for the same
-                // reason it does on disk. Only when there is something to say — a claim
-                // staked before the answer arrives carries no count, and must not erase
-                // one the row already has.
+                // The label is what the peek counted (`12 parquet`), as on disk. Only when there is
+                // something: a claim without a count must not erase one the row has.
                 if !holds.is_empty() {
                     row.holds = holds.clone();
                 }
@@ -4823,17 +4367,9 @@ impl HomeState {
         }
     }
 
-    /// The cloud directories on or near the screen that nothing has peeked into, at most
-    /// `limit`, the highlighted row first.
-    ///
-    /// [`Self::unclassified_visible`]'s cloud twin, and deliberately the same shape: a
-    /// peek is a request, and the rows worth spending one on are the rows somebody is
-    /// looking at. It used to take the first forty-eight directories of each listing,
-    /// once per session — so a bucket of two hundred prefixes had its first forty-eight
-    /// labelled and the rest reading `dir` for good, however long you spent on them,
-    /// while paging straight past the first forty-eight spent forty-eight requests on
-    /// rows nobody saw. The cap and its never-again claim both go: the bound is what the
-    /// cursor rests on.
+    /// Cloud directories on or near the screen not yet peeked into, at most `limit`, the
+    /// highlighted first. The cloud twin of [`Self::unclassified_visible`]: a peek is a
+    /// request, worth spending on rows someone is looking at.
     pub fn cloud_directories_to_peek(&self, limit: usize) -> Vec<PathBuf> {
         if limit == 0 {
             return Vec::new();
@@ -4841,17 +4377,16 @@ impl HomeState {
         let view = self.view();
         let mut out: Vec<PathBuf> = Vec::new();
         for entry in self.entries_near_cursor(&view, limit) {
-            // A directory in an object store, by its URL: `read_dir` on an `s3://` path
-            // asks the working directory about a file called `s3:` and truthfully finds
-            // nothing, which is why these have a pass of their own.
+            // Object-store directories by URL (`read_dir` on `s3://` finds nothing), hence a pass
+            // of their own.
             if !is_object_store_url(&entry.path) || is_cloud_place(&entry.path) {
                 continue;
             }
             if !matches!(entry.kind, EntryKind::Directory | EntryKind::Unknown) {
                 continue;
             }
-            // A catalog dataset, and a bookmark in it, are listed by name at the
-            // top, and nothing is asked of their store until one is opened or entered.
+            // Catalog datasets and their bookmarks are listed by name; their store is not asked
+            // until opened or entered.
             if self.browsing.is_none()
                 && (self.catalog_dataset(&entry.path).is_some()
                     || self.bookmark(&entry.path).is_some())
@@ -4881,13 +4416,9 @@ impl HomeState {
         self.probes.insert(root, Probe::Unreachable(why));
     }
 
-    /// Measure a batch of rows on the calling thread.
-    ///
-    /// For tests and library callers that know their paths are safe. **The application
-    /// never calls this**: reading a footer opens a file, which blocks on a FIFO, a
-    /// device node, a wedged mount or a failing disk. In the app the interface thread
-    /// only ever decides *what* to measure, via [`HomeState::unmeasured_visible`], and
-    /// a worker does the reading.
+    /// Measure a batch of rows on the calling thread, for tests and library callers with
+    /// safe paths. The app never calls this: footer reads can block, so the UI thread
+    /// only picks rows ([`HomeState::unmeasured_visible`]) and a worker reads.
     pub fn measure_now(&mut self, limit: usize) -> bool {
         let wanted = self.unmeasured_visible(limit);
         let more = self.unmeasured_visible(limit + 1).len() > wanted.len();
@@ -4901,11 +4432,8 @@ impl HomeState {
         more
     }
 
-    /// Rows listed that have not been measured yet, up to `limit`, and sorted by rows,
-    /// the rows a directory's cut hides after them.
-    ///
-    /// The interface thread decides *what* is worth measuring — it knows what is
-    /// listed — and a worker does the reading.
+    /// Listed rows not yet measured, up to `limit`; sorted by rows, the rows a cut hides
+    /// come after.
     pub fn unmeasured_visible(&self, limit: usize) -> Vec<Entry> {
         let view = self.view();
         let mut out: Vec<Entry> = Vec::new();
@@ -4917,8 +4445,8 @@ impl HomeState {
                 }
             }
         }
-        // Sorted by rows, the rows past a directory's cut are measured after those on
-        // screen: the sort needs every count to put the biggest first.
+        // Sorted by rows, rows past a cut are measured after those on screen: the sort needs
+        // every count.
         for slot in &view.slots {
             let Slot::Plain(Row::More {
                 section,
@@ -4945,11 +4473,8 @@ impl HomeState {
         if entry.rows.is_some() || self.enriched.contains_key(&entry.path) {
             return false;
         }
-        // What a row *is* settles it before where it lives does, because the kind
-        // is already in hand and the mount table is a lookup. This runs once per
-        // row on every frame that draws the home screen, and a directory of six
-        // thousand partitions is every one of those rows: asking the cheap
-        // question first is the difference between a free frame and a scan.
+        // The kind settles it before the mount table: this runs per row per frame, and the
+        // cheap question first keeps thousands of rows free.
         if matches!(
             entry.kind,
             EntryKind::Directory | EntryKind::Unknown | EntryKind::Other
@@ -4957,17 +4482,13 @@ impl HomeState {
         {
             return false;
         }
-        // Remote rows are measured by their root's probe, which already reads that
-        // filesystem. Measuring them here too would put a second thread on a share
-        // that may never answer, and a wedged thread is never reclaimed.
+        // Remote rows are measured by their root's probe; a second thread on a share that
+        // may never answer is never reclaimed.
         !(self.network_check)(&entry.path)
     }
 
-    /// Look into a batch of rows on the calling thread.
-    ///
-    /// For tests and library callers, exactly as [`HomeState::measure_now`] is, and
-    /// for the same reason the application never calls it: `read_dir` on a wedged
-    /// mount blocks, and the thread that draws must never be the one it blocks.
+    /// Look into a batch of rows on the calling thread; for tests and library callers,
+    /// like [`HomeState::measure_now`].
     pub fn classify_now(&mut self, limit: usize) -> bool {
         let wanted = self.unclassified_visible(limit);
         let more = self.unclassified_visible(limit + 1).len() > wanted.len();
@@ -4980,25 +4501,11 @@ impl HomeState {
         more
     }
 
-    /// Rows on or near the screen that nothing has looked into yet, up to `limit`.
-    ///
-    /// [`HomeState::unmeasured_visible`]'s sibling, and deliberately a different
-    /// shape. Measuring walks the list from the top, which is affordable because
-    /// every row wants a count eventually and a listing of a few hundred gets there.
-    /// Classifying cannot work that way: a share holding six thousand date
-    /// partitions would spend ten seconds reaching the row you scrolled to, and the
-    /// rows on screen are the only ones anybody is reading. So this asks the
-    /// viewport, plus a screen either side so arrowing off the edge does not wait for
-    /// a round trip.
-    ///
-    /// The highlighted row comes first, then the rest of the screen, then the screen
-    /// below, then the screen above: when the batch is smaller than the window, the
-    /// buffer is what goes without.
-    ///
-    /// The highlighted row first because it is the one about to be acted on. → goes
-    /// inside a directory that holds one dataset and folds the section otherwise, and the
-    /// footer offers the key on the same test, so both read better for the row
-    /// being looked into in the first pass rather than the third.
+    /// Rows on or near the screen not yet looked into, up to `limit`. Unlike
+    /// [`HomeState::unmeasured_visible`], which walks from the top, this asks the
+    /// viewport plus a screen either side (thousands of partitions would take seconds to
+    /// reach the cursor): the highlighted row first (about to be acted on), then the
+    /// screen, the screen below, the screen above.
     pub fn unclassified_visible(&self, limit: usize) -> Vec<Entry> {
         if limit == 0 {
             return Vec::new();
@@ -5009,22 +4516,16 @@ impl HomeState {
             if entry.kind != EntryKind::Unknown || self.missing.contains(&entry.path) {
                 continue;
             }
-            // Already looked into, even if the look settled nothing — a path that has
-            // gone away, or a remote row that turned out not to be a directory. Asking
-            // again every frame would be a `stat` per frame on the one filesystem
-            // where that costs a round trip.
+            // Already looked into, even if that settled nothing: re-asking would stat per frame.
             if self.enriched.contains_key(&entry.path) {
                 continue;
             }
-            // A place in an object store is peeked into by listing it, not by reading
-            // it: `read_dir` on an `s3://` URL asks the working directory about a file
-            // called `s3:` and truthfully finds nothing. See
-            // [`HomeState::cloud_directories_to_peek`], which is that path.
+            // Object-store places are peeked by listing; see
+            // [`HomeState::cloud_directories_to_peek`].
             if is_object_store_url(&entry.path) || is_cloud_place(&entry.path) {
                 continue;
             }
-            // The same dataset can be listed under its directory and again under
-            // Recent, and looking into it twice would cost the round trip twice.
+            // The same dataset may be listed twice (directory and Recent); look once.
             if out.iter().any(|e| e.path == entry.path) {
                 continue;
             }
@@ -5036,16 +4537,15 @@ impl HomeState {
         out
     }
 
-    /// The entry rows on or near the screen: the highlighted row first, then the rest
-    /// of the screen, the screen below and the screen above.
+    /// The entry rows near the cursor: the highlighted one, the screen, the screen below,
+    /// the screen above.
     fn entries_near_cursor<'a>(
         &'a self,
         view: &'a View,
         limit: usize,
     ) -> impl Iterator<Item = &'a Entry> + 'a {
-        // Before the first frame there is no height to go on. The top of the list is
-        // where the viewport is about to be, and a batch's worth of it is the most
-        // that pass could use anyway.
+        // Before the first frame there is no height: take the top of the list, a batch's
+        // worth.
         let height = if self.view_height == 0 {
             limit
         } else {
@@ -5072,10 +4572,8 @@ impl HomeState {
     /// Fold known measurements into the rows currently listed.
     pub fn apply_measurements(&mut self) {
         for section in &mut self.sections {
-            // The door as well, whose path is the directory's: it *reads* that slot on
-            // purpose, so stepping into a directory the listing above already measured
-            // shows those numbers instead of a blank. Reading was never the problem —
-            // writing was, and nothing writes the door's own answer anywhere now.
+            // The door too: it reads its directory's slot on purpose, showing numbers already
+            // measured upstairs; nothing writes the door's answer.
             for row in section.rows.iter_mut().chain(section.door.iter_mut()) {
                 if let Some(m) = self.enriched.get(&row.path) {
                     row.rows = m.rows;
@@ -5093,8 +4591,7 @@ impl HomeState {
                     if !m.holds.is_empty() {
                         row.holds = m.holds.clone();
                     }
-                    // Keep the source, which came from the mount table just now; take
-                    // everything else, which came from the file.
+                    // Keep the source (from the mount table); take everything else (from the file).
                     take_cost(row, &m.cost);
                 }
             }
@@ -5187,9 +4684,8 @@ impl HomeState {
         self.selected = next as usize;
     }
 
-    /// Move the selection `delta` rows, stopping at the first and last rather than
-    /// wrapping. A step of one wraps, which is a quick way round; a jump of ten that
-    /// wrapped landed somewhere near the top with nothing to say it had gone round.
+    /// Move the selection `delta` rows, stopping at the ends rather than wrapping (a
+    /// wrapped page jump lands somewhere unexpected; single steps wrap).
     pub fn page_selection(&mut self, delta: isize) {
         self.returning = None;
         self.landing = false;
@@ -5228,8 +4724,7 @@ fn source_entry(source: &CloudSource) -> Entry {
 /// The row for one bucket.
 fn bucket_entry(url: &Path) -> Entry {
     let mut entry = Entry::directory(url);
-    // The bucket name, not the last path segment of a URL, which for `gs://name` is the
-    // whole thing anyway but reads as an accident. A source ID is not part of the name.
+    // The bucket name, without a source id, rather than the URL's last segment.
     let text = url.to_string_lossy();
     let (_, plain) = crate::source::split_source_id(&text);
     entry.name = plain
@@ -5240,12 +4735,12 @@ fn bucket_entry(url: &Path) -> Entry {
     entry
 }
 
-/// Whether a remote path's name says it is a file: a data extension, or any dot in its
-/// last segment. A trailing slash is a prefix whatever the name says.
+/// Whether a remote path's name says it is a file: a data extension or any dot in its
+/// last segment. A trailing slash is always a prefix.
 pub fn names_a_file(path: &Path) -> bool {
     let named = path.to_string_lossy();
-    // `file_name` rather than a split on `/`, which on Windows took the whole path as
-    // its last segment and called `C:\Users\RUNNER~1\…\.tmp\orders` a file.
+    // `file_name`, not a split on `/`, which on Windows took the whole path as the last
+    // segment.
     let dotted = !named.ends_with('/')
         && path
             .file_name()
@@ -5261,21 +4756,13 @@ fn entry_for_path(path: &Path, remote: bool) -> Entry {
         return table;
     }
     let mut holds = discover::Holds::default();
-    // Classifying reads the directory, and stat'ing gives size and mtime. Both touch
-    // the filesystem, so a remote entry is listed by name alone until its probe lands.
+    // Classifying and stat'ing touch the filesystem, so a remote entry is listed by name
+    // until its probe lands.
     let kind = if remote {
-        // A name is all there is to go on without reading the path. An extension
-        // settles it; anything else stays Unknown rather than being called a plain
-        // directory, which would contradict the same dataset listed under its root as
-        // `hive` once that root's probe lands.
-        //
-        // An extension datui has no reader for settles it too. `s3://bucket/data.dat`
-        // is certainly not a prefix, and calling it Unknown sent → into an empty
-        // listing with nothing to say why (#283). Excluding Unknown from what → enters
-        // was the other way to fix that, and it is the label deciding access one
-        // indirection along — every row on a share is Unknown before anything has
-        // looked into it. So the row is named instead. A trailing slash is a prefix
-        // whatever is in the name, which is what `exports/` and `2024.01.15/` are.
+        // The name alone: an extension (readable or not) makes it a file, so → never enters
+        // `data.dat` as a prefix; anything else stays Unknown, not a plain directory, which
+        // would contradict its root's probe later. A trailing slash is a prefix whatever
+        // the name (`exports/`, `2024.01.15/`).
         if names_a_file(path) {
             EntryKind::File
         } else {
@@ -5324,22 +4811,18 @@ pub fn display_path(path: &Path) -> String {
         if rest.as_os_str().is_empty() {
             return "~".to_string();
         }
-        // The platform's separator, so Windows reads `~\data\a.csv` rather than a
-        // mix of the two.
+        // The platform's separator, so Windows reads `~\data\a.csv`.
         return format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display());
     }
     path.display().to_string()
 }
 
-/// Complete a partially typed path against the directory it names.
-///
-/// Returns the longest unambiguous extension of `typed`, and how many candidates
-/// there were. Reading a directory can block, so this is only ever called from a
-/// worker — never in response to a keystroke on the interface thread.
+/// Complete a partly typed path against its directory: the longest unambiguous
+/// extension of `typed` and the candidate count. Reads a directory, so only on a
+/// worker.
 pub fn complete_path(typed: &str) -> (String, usize) {
     let expanded = expand_user_path(typed);
-    // `\` is a separator on Windows too, and what a Windows user types: `C:\data\`
-    // completed the name `data` in `C:\` instead of listing inside it.
+    // `\` is a separator on Windows too: `C:\data\` lists inside `data`.
     let is_separator = |c: char| c == '/' || (cfg!(windows) && c == '\\');
     let typed_ends_in_sep = typed.ends_with(is_separator);
 
@@ -5362,8 +4845,7 @@ pub fn complete_path(typed: &str) -> (String, usize) {
         .flatten()
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
-            // A leading dot is only offered when it was asked for; otherwise every
-            // completion in a home directory is dotfiles.
+            // Dotfiles only when a dot is typed.
             if name.starts_with('.') && !prefix.starts_with('.') {
                 return None;
             }
@@ -5375,8 +4857,7 @@ pub fn complete_path(typed: &str) -> (String, usize) {
     }
     names.sort();
 
-    // The longest prefix every candidate agrees on: completing further would be
-    // guessing between them.
+    // The candidates' common prefix: further would be guessing.
     let shared = names
         .iter()
         .skip(1)
@@ -5386,8 +4867,8 @@ pub fn complete_path(typed: &str) -> (String, usize) {
     completed.truncate(typed.len() - prefix.len());
     completed.push_str(&shared);
 
-    // A single directory gets its separator, so the next Tab descends into it: the one
-    // already being typed, so `C:\Users\` does not become `C:\Users/`.
+    // A single directory gets the separator being typed, so the next Tab descends
+    // (`C:\Users\` stays `\`).
     if names.len() == 1 && dir.join(&shared).is_dir() && !completed.ends_with(is_separator) {
         let separator = typed
             .chars()
@@ -5417,13 +4898,11 @@ pub struct PathListing {
     pub failed: bool,
 }
 
-/// Names a typed directory lists at most. A prompt is for finding one name, and a
-/// directory of a hundred thousand is typed into, not scrolled.
+/// The most names a typed directory lists: a prompt finds one name by typing.
 const PATH_LISTING_MAX: usize = 5_000;
 
-/// The directory part of a typed path: everything up to and including its last
-/// separator. For a URL, at least its scheme (`s3://`), so the buckets are what is
-/// listed under it.
+/// The directory part of a typed path, through its last separator; for a URL at
+/// least its scheme (`s3://`), so buckets list under it.
 pub fn typed_dir(typed: &str) -> &str {
     let is_separator = |c: char| c == '/' || (cfg!(windows) && c == '\\');
     let floor = typed.find("://").map_or(0, |at| at + 3);
@@ -5433,8 +4912,8 @@ pub fn typed_dir(typed: &str) -> &str {
     }
 }
 
-/// The separator a directory completed under `dir` ends with: a URL's `/`, or the one
-/// the user has been typing, so `C:\Users\` does not become `C:\Users/`.
+/// The separator a directory completed under `dir` ends with: a URL's `/`, or the
+/// one being typed.
 fn separator_in(dir: &str) -> char {
     if typed_dir_is_url(dir) {
         return '/';
@@ -5445,14 +4924,13 @@ fn separator_in(dir: &str) -> char {
         .unwrap_or(std::path::MAIN_SEPARATOR)
 }
 
-/// Whether a typed directory is a URL, listed from what datui already knows rather
-/// than read.
+/// Whether a typed directory is a URL, listed from what datui knows rather than read.
 pub fn typed_dir_is_url(dir: &str) -> bool {
     dir.contains("://")
 }
 
-/// What a local directory typed at `~` holds, for the prompt's list. Reads the
-/// directory, so it runs on a worker. Nothing typed lists the working directory.
+/// A local directory typed at `~`, for the prompt's list; reads it, so runs on a
+/// worker. Nothing typed lists the working directory.
 pub fn list_typed_dir(dir: &str) -> PathListing {
     let path = if dir.is_empty() {
         PathBuf::from(".")
@@ -5486,8 +4964,7 @@ pub fn list_typed_dir(dir: &str) -> PathListing {
 }
 
 /// The names one level below `dir` among `urls`: how `s3://`, `gs://` and `az://`
-/// complete, from buckets, prefixes and datasets datui has already listed, opened or
-/// been given by a catalog. Nothing is asked of the store.
+/// complete, from what was listed, opened or cataloged. Nothing is asked of the store.
 pub fn names_under(dir: &str, urls: impl IntoIterator<Item = String>) -> PathListing {
     let mut names: Vec<PathName> = Vec::new();
     for url in urls {
@@ -5507,8 +4984,8 @@ pub fn names_under(dir: &str, urls: impl IntoIterator<Item = String>) -> PathLis
             if name.is_empty() {
                 continue;
             }
-            // Something below it, or a trailing slash: a bucket or a prefix. A last
-            // segment with no extension is taken for one too, as a recent is.
+            // Something below it, a trailing slash, or no extension: a bucket or prefix, as for
+            // a recent.
             let is_dir = more.is_some() || !names_a_file(Path::new(&form));
             match names.iter_mut().find(|n| n.name == name) {
                 Some(known) => known.dir |= is_dir,

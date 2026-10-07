@@ -2748,6 +2748,13 @@ impl App {
 
     // ---- Home screen -----------------------------------------------------
 
+    /// Fold the measurements that arrived since the last frame into the rows.
+    pub(crate) fn apply_owed_measurements(&mut self) {
+        if std::mem::take(&mut self.home_app.measured_owed) {
+            self.home.apply_measurements();
+        }
+    }
+
     /// After a frame, ask for what it lacked: counts for the rows on screen with none,
     /// and kinds for rows nothing has looked into. Workers read; this thread decides.
     pub fn request_what_the_frame_needs(&mut self) {
@@ -2759,6 +2766,7 @@ impl App {
         if self.input_mode != InputMode::Home {
             return;
         }
+        self.apply_owed_measurements();
         if self.home_app.refresh_owed {
             self.home_refresh();
         }

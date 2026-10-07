@@ -5358,7 +5358,7 @@ fn an_unasked_download_past_its_limit_asks_once() {
     assert_eq!(asked.len(), 1, "asked once: {asked:?}");
     let (message, downloads) = &asked[0];
     assert_eq!(*downloads, 1, "it started without asking");
-    assert!(message.contains("passed 50 MB"), "{message}");
+    assert!(message.contains("passed 50 MiB"), "{message}");
     assert!(message.contains("File size: unknown"), "{message}");
     assert_eq!(
         fetched.load(Ordering::SeqCst),

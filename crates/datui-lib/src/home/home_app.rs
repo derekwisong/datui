@@ -52,6 +52,8 @@ pub struct HomeApp {
     /// Rows arrived for a listing still being read; it is listed again before the next
     /// frame.
     pub(crate) refresh_owed: bool,
+    /// Measurements arrived since the last frame; applied once before the next.
+    pub(crate) measured_owed: bool,
     /// Schema previews, memoized for the session only (persisted, they would go stale).
     pub(crate) schema_cache: HashMap<PathBuf, Option<discover::SchemaPreview>>,
     /// The home screen's `ROWS` previews, and the dataset the newest one built.
@@ -2264,8 +2266,11 @@ impl App {
                 for (path, m) in measured {
                     self.home.enriched.insert(path, m);
                 }
-                self.home.apply_measurements();
+                // A batch answers one file per event; folding each into every row and
+                // rebuilding the list per file made a big directory cost a list per file.
+                self.home_app.measured_owed = true;
                 if done {
+                    self.apply_owed_measurements();
                     self.home.measure_in_flight = false;
                     self.request_home_measurements();
                 }

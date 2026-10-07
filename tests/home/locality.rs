@@ -149,22 +149,23 @@ fn test_a_recorded_filesystem_name_classifies_the_same_way() {
     assert_eq!(Source::from_fstype("s3").locality, Locality::Object);
 }
 
-/// Reads this process has made, from the kernel's own count.
+/// Reads this thread has made, from the kernel's own count.
 ///
 /// The cost being fixed is the `read` itself, so the kernel's tally of them is what
 /// the test has to assert on. Counting inside datui would only prove datui's own
 /// bookkeeping agrees with itself — an implementation that went back to reading the
-/// file some other way would slip straight past it.
+/// file some other way would slip straight past it. The thread's count, not the
+/// process's: other tests in this executable read files meanwhile.
 #[cfg(target_os = "linux")]
 fn reads_so_far() -> u64 {
-    std::fs::read_to_string("/proc/self/io")
+    std::fs::read_to_string("/proc/thread-self/io")
         .ok()
         .and_then(|io| {
             io.lines()
                 .find_map(|line| line.strip_prefix("syscr:"))
                 .and_then(|n| n.trim().parse().ok())
         })
-        .expect("/proc/self/io reports this process's read count")
+        .expect("/proc/thread-self/io reports this thread's read count")
 }
 
 /// A burst of per-row questions costs one read of the mount table, not one per row.

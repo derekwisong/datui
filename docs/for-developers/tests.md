@@ -22,8 +22,8 @@ the executables Cargo builds.
 |---|---|
 | `./scripts/dev/test.sh check` | Check `datui-lib` without linking |
 | `./scripts/dev/test.sh unit data_quality::` | Library test executable; only data-quality tests execute |
-| `./scripts/dev/test.sh integration integration_test test_data_quality` | App integration executable; matching quality tests execute |
-| `./scripts/dev/test.sh integration home_test` | Home integration executable |
+| `./scripts/dev/test.sh integration app data_quality::` | App integration executable; only its Data Quality module executes |
+| `./scripts/dev/test.sh integration home` | Home integration executable |
 | `./scripts/dev/test.sh integration data statistics::` | Data integration executable; only its statistics module executes |
 | `./scripts/dev/test.sh cli` | CLI library tests |
 | `./scripts/dev/test.sh preflight` | Formatting (workspace and fuzz targets) and workspace clippy with all targets |
@@ -166,23 +166,35 @@ Run it after adding tests that build an `App` or touch the cache or config.
 
 ## Layout
 
-| Path | Tests |
+Each directory under `tests/` with a `main.rs` is one test executable, and its
+modules are what a filter selects (`scripts/dev/test.sh integration app loading::`).
+Every executable links the app, so a new test goes into the module that fits, not
+into a new top-level file.
+
+| Target | Tests |
 |---|---|
-| `tests/integration_test.rs` | Load, query, display, end to end; `remote_quality::` (in `tests/quality/remote.rs`) counts Data Quality's requests at an in-process S3 bucket (`tests/common/fake_s3.rs`) |
-| `tests/app/` | `capture` (the view handed back at quit), `terminal_escape` (escape sequences in what is drawn), `catalog` and `public_datasets` (with the `cloud` and `http` features), `quality_export` (Data Quality intent and export) |
-| `tests/quality_spill_test.rs` | What a full Data Quality scan leaves on disk. Its own process: it sets Polars' spill directory before Polars reads it |
-| `tests/quality_bench_test.rs` | Data Quality's cost: time, requests, bytes, peak memory and spill. Ignored; `scripts/dev/quality_bench.py BEFORE_REF` runs it here and at an earlier commit |
-| `tests/data/` | One executable, a module each: `statistics`, `distribution` (analysis), `reshape` (pivot and melt), `excel` |
-| `tests/home_test.rs` | Home screen |
-| `tests/home/` | `search` (recursive search), `locality` (filesystem detection) |
-| `tests/config/` | `settings`, `flags`, `themes`, `colors`, `indexed_colors`, `views` (the Views surface), `view_store` (saved views on disk and their scoring). Tests here only remove `NO_COLOR`; a test that needs it set gives the parser it |
-| `tests/startup_test.rs` | The binary in a pseudo-terminal (Linux): a silent terminal, stalled settings, keys typed before the app exists, startup errors |
-| `tests/fuzz_corpus_test.rs` | Every committed fuzz corpus input through its target's body in `fuzz/src/`; see [Fuzzing](fuzzing.md) |
-| `tests/cloud_live_test.rs` | Against a real object store. Ignored by default; run with `DATUI_LIVE_GCS=1` or `DATUI_LIVE_S3=<endpoint>` and `--ignored` |
+| `tests/app/` | The App end to end. Helpers in `main.rs`; tests by area in `loading`, `query`, `export`, `data_quality`, `home_screen`, `inspector`, `chart`, `analysis`, `views`, `table_keys` and `harness`; formats in `formats/` (`formats_open::`, `formats_follow::`, …); `cloud_download::` and `cloud_parity::` in `cloud/`; `remote_quality::` (in `quality/remote.rs`) counts Data Quality's requests at an in-process S3 bucket (`tests/common/fake_s3.rs`); also `capture`, `terminal_escape`, `catalog`, `public_datasets`, `quality_export` |
+| `tests/home/` | The home screen: discovery, roots, filtering, and the App driving it, with modules such as `coming_back::` and `cloud_level_paging::`; `search` (recursive search) and `locality` (filesystem detection) |
+| `tests/data/` | `statistics`, `distribution` (analysis), `reshape` (pivot and melt), `excel` |
+| `tests/config/` | `settings`, `flags`, `themes`, `colors`, `indexed_colors`, `views` (the Views surface), `view_store` (saved views on disk and their scoring) |
 | `tests/repo/` | `desktop_entry`, `release_notes`, and `wording`: retired words ([glossary](../reference/glossary.md)) and "opens anything" claims, in the UI strings, the key registry, docs, `--help` and the manpages. A real use goes in its `ALLOWED` list |
+| `tests/startup_test.rs` | The binary in a pseudo-terminal (Linux): a silent terminal, stalled settings, keys typed before the app exists, startup errors |
+| `tests/stderr_log_test.rs` | Stderr goes to the log while the TUI runs; in a child process, since it points fd 2 away |
+| `tests/quality_spill_test.rs` | What a full Data Quality scan leaves on disk. Sets Polars' spill directory before Polars reads it |
+| `tests/quality_bench_test.rs` | Data Quality's cost: time, requests, bytes, peak memory and spill. Ignored; `scripts/dev/quality_bench.py BEFORE_REF` runs it here and at an earlier commit |
+| `tests/aws_profiles_test.rs`, `tests/cloud_home_test.rs`, `tests/cloud_list_on_enter_test.rs` | Cloud sources and credentials, which they set in the environment |
+| `tests/cloud_live_test.rs` | Against a real object store. Ignored by default; run with `DATUI_LIVE_GCS=1` or `DATUI_LIVE_S3=<endpoint>` and `--ignored` |
+| `tests/fuzz_corpus_test.rs` | Every committed fuzz corpus input through its target's body in `fuzz/src/`; see [Fuzzing](fuzzing.md) |
 | `crates/datui-cli/src/docgen.rs` | `the_generated_docs_are_current`: the generated pages match the code ([Build documentation](documentation.md#generated-pages)) |
 | `crates/datui-lib/src/tests/doc_queries_tests.rs` | The docs' `q` blocks parse, and their `sql` and `q` blocks run on the datasets they name |
 | `tests/common/` | Shared helpers |
+
+A test that changes the process (an environment variable another test reads, fd 2,
+Polars' configuration) keeps a target of its own; one executable shares all of it.
+Better still, give the code the setting directly, as the `NO_COLOR` unit test gives
+the color parser `no_color`. Tests in `config` only ever remove `NO_COLOR`. A test
+that counts something process-wide counts its own thread instead
+(`/proc/thread-self/io`, as `locality` does).
 
 Unit tests live beside the code they test.
 
@@ -197,6 +209,7 @@ shared helpers in `tests/common/`:
 | `drain_events(app, rx)` | Every queued event and each event it chains to, until `work_pending` clears |
 | `next_event(app, rx)` | One queued event, or one that pending work still owes; `None` once nothing is owed |
 | `work_pending(app)` | `is_busy()`, `row_count_pending()`, or a footer pass still reading the schema |
+| `wait_for_event(tx, rx)` | For a loop that draws a frame each pass: the next event, or `FRAME_WAIT` (5 ms) when none comes, as the run loop sleeps on its channel. The event stays queued |
 
 A wait returns as soon as the work is done. One that runs past `HANG_GUARD`
 (300 s) fails the test, naming the wait's location and what was still owed,
@@ -205,9 +218,23 @@ rather than falling through to asserts on the previous state.
 `work_pending` ignores abandoned work: a cancelled analysis or a stale worker
 can keep running after the app stops waiting on it. Tests about those
 (cancellation, stale results, chart preparation, background discovery) wait on
-their own condition, as `integration_test.rs` does with `pump_until` and
+their own condition, as `tests/app/main.rs` does with `pump_until` and
 `ticks()`. Library unit tests use `crate::tests::work_pending`, which also
 covers the buffer collect.
+
+No test sleeps to let work happen. Wait for the work, the event, or the frame's
+content (wait until the screen shows the row, not for a while after the key). A
+sleep stays only where a real timer is the subject: a lock deadline, a server that
+stalls, a frame rate over a second, or proving that something does not happen.
+Such a sleep says why in a comment.
+
+## Size the expensive tests
+
+Statistical and large-data tests set the run time of their executable. Use the
+smallest input that still makes the assertion: a size test needs blocks bigger than
+anything else allocated, not 200,000 rows; a band test needs bands that do and do
+not divide the rows. Keep what is the subject (the seeds of a fit, a cap that is a
+constant), and say in the test why its size is what it is.
 
 ## Startup timing
 

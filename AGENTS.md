@@ -43,8 +43,8 @@ executables. `scripts/dev/test.sh --help` lists the scoped commands;
 | Change | First check |
 |---|---|
 | Library implementation | `scripts/dev/test.sh check`, then `scripts/dev/test.sh unit MODULE::` |
-| App/key/background behavior | `scripts/dev/test.sh integration integration_test FILTER` |
-| Home/search | `scripts/dev/test.sh integration home_test FILTER` or `integration home search::` |
+| App/key/background behavior | `scripts/dev/test.sh integration app FILTER` (modules: `loading::`, `query::`, `export::`, `data_quality::`, `formats_open::`, …) |
+| Home/search | `scripts/dev/test.sh integration home FILTER` (`search::`, `coming_back::`, …) |
 | Config/theme/views | `scripts/dev/test.sh integration config settings::` (or `colors::`, `themes::`, `views::`), plus the relevant App tests |
 | CLI definitions | `scripts/dev/test.sh check datui-cli`, then `scripts/dev/test.sh cli` |
 | A specific integration target | `scripts/dev/test.sh integration TARGET FILTER`: a `tests/*.rs` file without `.rs`, or a directory with a `main.rs` (`data`) |

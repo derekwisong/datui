@@ -2501,7 +2501,7 @@ fn every_registry_key_is_taken_where_it_is_listed() {
         (Context::Views, vec![ch('v')], &["List"]),
         // Not the home screen: what it lists, and so what a key there changes, is
         // the machine's (the working directory, the desktop's recent places).
-        // home_test covers its keys.
+        // The home tests (tests/home) cover its keys.
     ];
     // What needs a state the fixture does not have, or would leave the test.
     let mut exempt: Vec<(Context, &str)> = vec![

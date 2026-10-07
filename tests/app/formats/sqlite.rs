@@ -87,7 +87,7 @@ fn key(app: &mut App, rx: &mpsc::Receiver<AppEvent>, code: KeyCode, modifiers: K
     drain_events(app, rx);
 }
 
-/// Handle events until the home screen lists the database's tables, as `home_test`'s
+/// Handle events until the home screen lists the database's tables, as the home tests'
 /// `settle` does. A listing superseded on the way clears the in-flight flag too, so the
 /// rows are waited for as well.
 fn settle_home(app: &mut App, rx: &mpsc::Receiver<AppEvent>) {

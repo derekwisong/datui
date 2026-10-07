@@ -1200,223 +1200,256 @@ pub fn classify_directory(path: &Path) -> EntryKind {
 /// the count says what is in it, and the row's label is written from that — so a label
 /// that is wrong about the first is still true about the second.
 pub fn look_at_directory(path: &Path) -> (EntryKind, Holds) {
-    let mut holds = Holds::default();
-    // Before anything is counted: a lake table's data files genuinely do agree on a
-    // schema, so every rule below says "one table" and is right about the schema and
-    // wrong about the rows.
-    //
-    // And before the listing, which it does not need: three `join` tests answer it, and
+    // Before the listing, which it does not need: three `join` tests answer it, where
     // counting would walk up to `MAX_ENTRIES_PER_DIR` entries of every table in a
     // warehouse, on every pass, for a `holds` line beside a table whose files `enrich`
-    // then refuses to read. A prefix in a bucket does carry one, because the listing it
-    // is counted from had already been paid for.
+    // then refuses to read. A bucket prefix finds its markers in the listing it has
+    // already paid for instead.
     if let Some(lake) = lake_table(path) {
-        return (lake, holds);
+        return (lake, Holds::default());
     }
     let Ok(iter) = std::fs::read_dir(path) else {
-        return (EntryKind::Directory, holds);
+        return (EntryKind::Directory, Holds::default());
     };
+    let directory = path.file_name().unwrap_or_default().to_string_lossy();
+    let rules = Rules {
+        directory: &directory,
+        // As the listing of the rows inside does, so the tally agrees with them.
+        sniff: (!crate::home::is_remote_path(path)).then_some(path),
+        in_bucket: false,
+    };
+    // One past the cap, so "there is more" is known without paying to process it, and
+    // bounded where the entries come from: a Hadoop-style output directory is a `.crc`
+    // per data file, and skipping those before the count would let the walk run to
+    // twice the cap. A directory past it is decided by whichever entries came first.
+    let mut truncated = false;
+    let seen = iter
+        .flatten()
+        .take(MAX_ENTRIES_PER_DIR + 1)
+        .enumerate()
+        .map_while(|(at, entry)| {
+            truncated = at == MAX_ENTRIES_PER_DIR;
+            (!truncated).then(|| seen_on_disk(&entry))
+        });
+    let (kind, mut holds) = classify(seen, &rules);
+    holds.truncated = truncated;
+    (kind, holds)
+}
 
-    let mut partitions = 0usize;
-    let mut data_files = 0usize;
-    let mut seen = 0usize;
-    // As `scan_dir_bounded` does, so the tally agrees with the rows inside.
-    let mut sniffs_left = if crate::home::is_remote_path(path) {
-        0
-    } else {
-        MAX_SNIFFS_PER_DIR
+/// A local entry as [`classify`] asks about it.
+///
+/// The type the directory read already returned rather than a `stat` per entry, which
+/// on a share is a round trip apiece; a symlink still gets one, since `d_type` cannot
+/// say what is on the far end. A regular file rather than "not a directory": a FIFO
+/// named `a.csv` blocks whoever opens it, and a broken symlink named `b.csv` opens as
+/// nothing.
+fn seen_on_disk(entry: &std::fs::DirEntry) -> Seen {
+    let (is_dir, is_file) = match entry.file_type() {
+        Ok(kind) if !kind.is_symlink() => (kind.is_dir(), kind.is_file()),
+        _ => std::fs::metadata(entry.path()).map_or((false, false), |m| (m.is_dir(), m.is_file())),
     };
-    let mut counts: Vec<(crate::FileFormat, usize)> = Vec::new();
-    // A multi-file dataset is homogeneous by definition; a directory that merely
-    // contains two different spreadsheets is not one. Compared as formats rather than
-    // as extensions, so `.ipc` beside `.arrow` is one kind of thing and not two.
-    let mut format: Option<crate::FileFormat> = None;
-    let mut mixed_formats = false;
+    Seen {
+        name: entry.file_name().to_string_lossy().into_owned(),
+        is_dir,
+        is_file,
+        size: None,
+    }
+}
+
+/// One entry of a listing, on disk or in a bucket, as [`classify`] asks about it.
+#[derive(Debug, Clone)]
+pub struct Seen {
+    pub name: String,
+    pub is_dir: bool,
+    /// A regular file, which an open can read. A FIFO, a socket or a broken symlink is
+    /// neither this nor a directory.
+    pub is_file: bool,
+    /// Where the listing says it. An empty file with no extension is a tool's marker
+    /// for a folder, not data.
+    pub size: Option<u64>,
+}
+
+/// Where the local and the bucket listings deliberately differ.
+pub struct Rules<'a> {
+    /// The listed directory's own name: a part file with no extension inside
+    /// `occurrence.parquet/` is Parquet by where it sits.
+    pub directory: &'a str,
+    /// Where to look inside a file its name says nothing about, a few per listing.
+    /// `None` where each open is a round trip, and one that may not come back.
+    pub sniff: Option<&'a Path>,
+    /// A bucket prefix. Lake tables are found by the names in the listing, Iceberg by
+    /// its layout alone (asking whether `metadata/` holds a `*.metadata.json` is a
+    /// second listing); a saved DatasetDict by its `dataset_dict.json`; and only Parquet,
+    /// the one format read in place there, is offered as many files that are one table.
+    pub in_bucket: bool,
+}
+
+/// The kind of a directory and what it holds, from one level of its listing.
+///
+/// The one rule both [`look_at_directory`] and a bucket prefix ask, so a directory and
+/// the prefix that mirrors it get one answer; [`Rules`] is everything they may differ
+/// in. Whether the listing was cut short is the caller's to set.
+pub fn classify(seen: impl Iterator<Item = Seen>, rules: &Rules) -> (EntryKind, Holds) {
+    use crate::FileFormat;
+    let mut holds = Holds::default();
+    let mut counts: Vec<(FileFormat, usize)> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
     // Counted as data until the listing is done; see `is_hugging_face_metadata`.
     let mut hugging_face: Vec<String> = Vec::new();
-
-    // Bounded where the entries come from rather than after they are counted: a
-    // Hadoop-style output directory is a `.crc` per data file, and skipping those before
-    // the count would let the walk run to twice the cap. The cap is a cost bound and not
-    // a correctness one either way — a directory past it is decided by whichever entries
-    // came back first, whether they were data or a writer's own.
-    // One past the cap, so "there is more" is known without paying to process it —
-    // the same shape `scan_dir_bounded` uses, and the reason a directory of exactly five
-    // thousand entries is a total rather than a floor.
-    for (entries, entry) in iter.flatten().take(MAX_ENTRIES_PER_DIR + 1).enumerate() {
-        if entries >= MAX_ENTRIES_PER_DIR {
-            holds.truncated = true;
-            break;
+    let mut dict_file = false;
+    let mut lake: Vec<&'static str> = Vec::new();
+    // `present` is everything but a writer's own: what the majority is measured against.
+    let (mut present, mut data_files, mut parquet) = (0usize, 0usize, 0usize);
+    let mut sniffs_left = rules.sniff.map_or(0, |_| MAX_SNIFFS_PER_DIR);
+    for s in seen {
+        // Lake markers are a specification rather than a stray, so they are looked for
+        // before the bookkeeping test that would skip `_delta_log`.
+        if s.is_dir
+            && rules.in_bucket
+            && let Some(marker) = ["_delta_log", ".hoodie", "metadata", "data"]
+                .into_iter()
+                .find(|m| *m == s.name)
+        {
+            lake.push(marker);
         }
-        let entry_path = entry.path();
-        let name = entry.file_name();
-        // The markers and job files tools leave beside their output, by the one test
-        // every route makes.
-        let name = name.to_string_lossy().into_owned();
-        if is_bookkeeping(&name) {
-            holds.skipped += 1;
-            // The first few by name, not the first few the filesystem returned: a line
-            // in the pane that reads differently on two runs of the same directory is the
-            // order-dependence this module just spent a release removing. Past
-            // `MAX_ENTRIES_PER_DIR` it is the first few by name *of what was read*, and
-            // where the walk stopped is the filesystem's order again — which the `+` on
-            // every count beside them says.
-            if holds.skipped_names.last().is_none_or(|last| &name < last)
-                || holds.skipped_names.len() < SKIPPED_NAMES_SHOWN
-            {
-                holds.skipped_names.push(name);
-                holds.skipped_names.sort();
-                holds.skipped_names.truncate(SKIPPED_NAMES_SHOWN);
-            }
+        if is_bookkeeping(&s.name) {
+            skipped.push(s.name);
             continue;
         }
-        // The type the directory read already returned, rather than a `stat` per entry:
-        // this walks the whole listing now, and on a share every stat is a round trip.
-        // A symlink still gets one, because `d_type` cannot say what is on the far end.
-        //
-        // A regular file rather than "not a directory", the test `directory_format`
-        // makes: a FIFO named `a.csv` blocks whoever opens it until a writer appears, and
-        // a broken symlink named `b.csv` opens as nothing. Counting either as data offers
-        // a directory that cannot be read.
-        let followed = |path: &Path| {
-            // One `stat`, not two: what is on the far end is one question, and asking
-            // it twice is a second round trip on a share.
-            std::fs::metadata(path).map_or((false, false), |m| (m.is_dir(), m.is_file()))
-        };
-        let (is_dir, is_file) = match entry.file_type() {
-            Ok(kind) if kind.is_symlink() => followed(&entry_path),
-            Ok(kind) => (kind.is_dir(), kind.is_file()),
-            Err(_) => followed(&entry_path),
-        };
-        if is_dir {
+        present += 1;
+        if s.is_dir {
             holds.directories += 1;
-            if is_partition_dir(&entry_path) {
-                partitions += 1;
-            }
-        } else if let Some(found) = data_format(&entry_path)
+            holds.partitions += usize::from(is_partition_name(&s.name));
+            continue;
+        }
+        if s.size == Some(0) && !s.name.contains('.') {
+            holds.not_read += 1;
+            continue;
+        }
+        let name = Path::new(&s.name);
+        let key = format!("{}/{}", rules.directory, s.name);
+        let named = data_format(name);
+        let found = named
             // Text by its name, unless its bytes say more: below.
             .filter(|f| !f.is_lines())
             // A sharded checkpoint's index is counted as the JSON it is, so the label
             // counts the shards; the read still takes it, for the metadata it carries.
-            .map(
-                |found| match crate::model_files::is_safetensors_index(&entry_path) {
-                    true => crate::FileFormat::Json,
-                    false => found,
-                },
-            )
+            .map(|f| match crate::model_files::is_safetensors_index(name) {
+                true => FileFormat::Json,
+                false => f,
+            })
             // Data by where it sits rather than by its name: see [`is_data_file`].
+            .or_else(|| is_parquet_key(&key).then_some(FileFormat::Parquet))
             .or_else(|| {
-                is_parquet_key(&directory_and_name(&entry_path))
-                    .then_some(crate::FileFormat::Parquet)
+                let dir = rules.sniff?;
+                spend_sniff(&mut sniffs_left, s.is_file, name)
+                    .then(|| sniff_format(&dir.join(name)))?
             })
-            .or_else(|| {
-                (is_file && sniffs_left > 0 && worth_sniffing(&entry_path)).then(|| {
-                    sniffs_left -= 1;
-                    sniff_format(&entry_path)
-                })?
-            })
-            .or_else(|| data_format(&entry_path))
-            .filter(|_| is_file)
-        {
-            if found == crate::FileFormat::Json && is_hugging_face_metadata(&name) {
-                hugging_face.push(name.clone());
+            .or(named)
+            .filter(|_| s.is_file);
+        let Some(found) = found else {
+            // A file with no reader, and a name with nothing behind it. A file with no
+            // extension is apart: Spark writes its part files that way.
+            match s.is_file && has_no_extension(name) {
+                true => holds.unnamed += 1,
+                false => holds.not_read += 1,
             }
-            data_files += 1;
-            match counts.iter_mut().find(|(f, _)| *f == found) {
-                Some((_, n)) => *n += 1,
-                None => counts.push((found, 1)),
-            }
-            match format {
-                None => format = Some(found),
-                Some(first) if first != found => mixed_formats = true,
-                Some(_) => {}
-            }
-        } else if is_file && has_no_extension(&entry_path) {
-            holds.unnamed += 1;
-        } else {
-            // Everything else in the listing: a file with no reader, and a name with
-            // nothing behind it — a FIFO, a socket, a broken symlink. Named like data
-            // or not, none of them can be read.
-            holds.not_read += 1;
+            continue;
+        };
+        if found == FileFormat::Json && is_hugging_face_metadata(&s.name) {
+            hugging_face.push(s.name.clone());
         }
-        seen += 1;
+        dict_file |= found == FileFormat::Json && s.name == crate::hf_splits::DATASET_DICT;
+        data_files += 1;
+        parquet += usize::from(is_parquet_key(&key));
+        match counts.iter_mut().find(|(f, _)| *f == found) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((found, 1)),
+        }
     }
 
-    // A Hugging Face dataset's own JSON files are its writer's, like `_SUCCESS`.
-    if !hugging_face.is_empty() && counts.iter().any(|(f, _)| *f == crate::FileFormat::Arrow) {
-        let n = hugging_face.len();
-        for (format, count) in &mut counts {
-            if *format == crate::FileFormat::Json {
-                *count -= n;
-            }
-        }
-        counts.retain(|(_, count)| *count > 0);
-        data_files -= n;
-        seen -= n;
-        holds.skipped += n;
-        holds.skipped_names.extend(hugging_face);
-        holds.skipped_names.sort();
-        holds.skipped_names.truncate(SKIPPED_NAMES_SHOWN);
-        mixed_formats = counts.len() > 1;
-        format = counts.first().map(|(f, _)| *f);
+    // A Hugging Face dataset's own JSON files are its writer's, like `_SUCCESS`. So is
+    // a saved DatasetDict's `dataset_dict.json` beside the prefixes of its splits.
+    if !counts.iter().any(|(f, _)| *f == FileFormat::Arrow) {
+        hugging_face.clear();
     }
-
+    holds.dataset_dict = rules.in_bucket && dict_file && holds.directories > 0;
+    if holds.dataset_dict {
+        hugging_face.push(crate::hf_splits::DATASET_DICT.to_string());
+    }
+    if let Some((_, n)) = counts.iter_mut().find(|(f, _)| *f == FileFormat::Json) {
+        *n -= hugging_face.len();
+        data_files -= hugging_face.len();
+        present -= hugging_face.len();
+        skipped.append(&mut hugging_face);
+    }
     // Text is data only where nothing else is: a README beside Parquet is a file
-    // nothing reads as the directory's table, as it is to the cloud route.
-    if counts.iter().any(|(f, _)| !f.is_lines())
-        && let Some(at) = counts.iter().position(|(f, _)| f.is_lines())
-    {
-        let (_, n) = counts.remove(at);
-        data_files -= n;
-        holds.not_read += n;
-        mixed_formats = counts.len() > 1;
-        format = counts.first().map(|(f, _)| *f);
+    // nothing reads as the directory's table.
+    if counts.iter().any(|(f, _)| !f.is_lines()) {
+        for (_, n) in counts.iter_mut().filter(|(f, _)| f.is_lines()) {
+            data_files -= *n;
+            holds.not_read += std::mem::take(n);
+        }
     }
-
-    holds.partitions = partitions;
+    counts.retain(|(_, n)| *n > 0);
     order_formats(&mut counts);
+    let one_readable = matches!(counts.as_slice(), [(f, _)] if f.reads_many_files());
     holds.formats = counts
         .into_iter()
         .map(|(f, n)| (f.name().to_string(), n))
         .collect();
+    // The first few by name, not the first few the listing returned: a line in the pane
+    // that reads differently on two runs of the same directory is order-dependence. An
+    // object and a prefix of the same name are one thing named twice.
+    skipped.sort();
+    skipped.dedup();
+    holds.skipped = skipped.len();
+    skipped.truncate(SKIPPED_NAMES_SHOWN);
+    holds.skipped_names = skipped;
 
-    // Unchanged from before the probe went, deliberately. Reading the whole listing
-    // makes one `notes=old` among twenty ordinary subdirectories a hive root every time
-    // rather than only when it came back first, and two attempts at a majority to rule
-    // that out each refused a real hive root instead — against everything present, one
-    // with a README beside it; against the other directories, one with a `scripts/` and a
-    // `docs/`. Refusing a dataset is the worse direction, and a rule per case is what
-    // #275 exists to stop. The label stops deciding what `Enter` does in phase 3, and
-    // the question goes with it.
-    // Deterministic now rather than occasional, which is the cost of the whole listing:
-    // a source tree with a `cfg=debug/` in it reads `hive` on every pass, and `enrich`
-    // then walks it to depth four looking for footers. Left alone all the same — see
-    // above for the two majorities that refused real hive roots instead.
-    if partitions > 0 && partitions >= data_files {
+    // A lake table's data files genuinely agree on a schema, so every rule below says
+    // "one table" and is right about the schema and wrong about the rows. Iceberg takes
+    // the whole shape rather than its plain names: its data under `data/`, not beside it.
+    let marked = |m| lake.contains(&m);
+    if marked("_delta_log") {
+        return (EntryKind::Delta, holds);
+    }
+    if marked(".hoodie") {
+        return (EntryKind::Hudi, holds);
+    }
+    if marked("metadata") && marked("data") && parquet == 0 {
+        return (EntryKind::Iceberg, holds);
+    }
+    // Deliberately no majority: one `notes=old/` among twenty ordinary subdirectories
+    // reads `hive`, and the two majorities tried to rule that out each refused a real
+    // hive root instead — one with a README beside it, one with a `scripts/` and a
+    // `docs/`. Refusing a dataset is the worse direction.
+    if holds.partitions > 0 && holds.partitions >= data_files {
         return (EntryKind::Hive, holds);
     }
-
-    // Require a format that can actually be read as many files. Without this the home
-    // screen offers a directory of `.tsv` or `.xlsx` as one dataset and the open refuses
-    // it — the same "offered but unreadable" the one vocabulary exists to stop, one
-    // layer up.
-    let readable_as_one = format.is_some_and(crate::FileFormat::reads_many_files);
-    // Require homogeneity *and* that data is what this directory is mostly for.
-    // Without the majority test, any directory with a couple of stray CSVs in it would
-    // be offered as a dataset, which is worse than useless: it hides the directory.
-    let homogeneous = data_files > 1 && !mixed_formats && readable_as_one;
-    let mostly_data = data_files * 2 >= seen;
-    // A model directory opens as the model: its shards as one table, the JSON beside
-    // them left out. One file of weights is a model too.
-    let model = partitions == 0 && is_model_directory(counts_names(&holds));
-    let kind = if (homogeneous && mostly_data) || model {
-        EntryKind::MultiFile
+    // One format that can be read as many files, and data is what the directory is
+    // mostly for: a directory with a couple of stray CSVs in it is a place, and offering
+    // it as a dataset hides it. A model opens as the model however much JSON is beside
+    // its weights.
+    let one_table = if rules.in_bucket {
+        parquet > 1 && parquet == data_files && parquet * 2 >= present
     } else {
-        // Everything else — including a directory holding a single data file — is a
-        // place to look inside, not a dataset in its own right.
-        EntryKind::Directory
+        (data_files > 1 && one_readable && data_files * 2 >= present)
+            || (holds.partitions == 0 && is_model_directory(counts_names(&holds)))
+    };
+    let kind = match one_table {
+        true => EntryKind::MultiFile,
+        false => EntryKind::Directory,
     };
     (kind, holds)
+}
+
+/// Spends one of a listing's looks inside a file on `name`, when it is a regular file
+/// whose name says nothing (see [`worth_sniffing`]) and the budget is not used up.
+fn spend_sniff(left: &mut usize, is_file: bool, name: &Path) -> bool {
+    let spend = is_file && *left > 0 && worth_sniffing(name);
+    *left -= usize::from(spend);
+    spend
 }
 
 /// Entries under `metadata/` to look at before giving up on Iceberg. A table with a
@@ -1562,8 +1595,7 @@ fn scan_dir_with(
             EntryKind::Unknown
         } else if meta.is_file() && is_data_file(&path) {
             EntryKind::File
-        } else if meta.is_file() && sniffs_left > 0 && worth_sniffing(&path) {
-            sniffs_left -= 1;
+        } else if spend_sniff(&mut sniffs_left, meta.is_file(), &path) {
             match sniff_listed(&path, formats) {
                 Some(Sniffed::Format(_)) => EntryKind::File,
                 Some(Sniffed::Spec(found)) => {

@@ -867,14 +867,14 @@ fn look_at_page(
     (kind, holds)
 }
 
-/// The kind *and* what the listing found, as [`crate::discover::look_at_directory`]
-/// gives them for a local directory. A prefix's row is labelled from the second.
+/// The kind *and* what the listing found, by [`crate::discover::classify`], the rule a
+/// local directory is classified by. A prefix's row is labelled from the second.
 pub fn look_at_listing(
     prefix: &str,
     directories: &[String],
     objects: &[(String, u64)],
 ) -> (crate::discover::EntryKind, crate::discover::Holds) {
-    use crate::discover::EntryKind;
+    use crate::discover::Seen;
     let last = |key: &str| {
         key.trim_end_matches('/')
             .rsplit('/')
@@ -882,207 +882,38 @@ pub fn look_at_listing(
             .unwrap_or("")
             .to_string()
     };
-    // Prefixes a writer made for itself are not directories anybody put data in, by the
-    // same test the objects get. `_temporary/` beside two Parquet files counted toward
-    // the majority and tipped a directory the local route called one dataset. The lake
-    // markers below still look at every prefix — `_delta_log` is exactly the name this
-    // skips, and it is a specification rather than a stray.
-    // The prefix's own key, before anything counts it. A console makes a folder by
-    // writing an object at its key, and listing that directory hands it straight back:
-    // it stands for the prefix being listed, not for anything in it. Dropped once,
-    // here, because the three counts below each missed it in their own way — `.` in the
-    // name carried it past `is_empty_marker` into `not_read`, and a `_temporary/` prefix
-    // reported itself under `skipped`. Whatever its size: `cloud-samples-data` writes
-    // eleven bytes into its markers.
     let here = prefix.trim_matches('/');
-    let objects: Vec<(String, u64)> = objects
-        .iter()
-        .filter(|(key, _)| here.is_empty() || key.trim_matches('/') != here)
-        .cloned()
-        .collect();
-    let objects = objects.as_slice();
-
-    let counted: Vec<&String> = directories
-        .iter()
-        .filter(|f| !crate::discover::is_bookkeeping(&last(f)))
-        .collect();
-    let partitions = counted
-        .iter()
-        .filter(|f| crate::discover::is_partition_name(&last(f)))
-        .count();
-    // Everything in this prefix that is not a marker or a writer's own file: what the
-    // local route calls `seen`, and what the majority below is measured against.
-    let present: Vec<&String> = objects
-        .iter()
-        .filter(|(key, size)| {
-            let name = last(key);
-            !name.is_empty()
-                && !crate::discover::is_bookkeeping(&name)
-                && !is_empty_marker(&name, *size)
-                && !(*size == 0 && directories.iter().any(|f| last(f) == name))
-        })
-        .map(|(key, _)| key)
-        .collect();
-    // Of those, the ones named as something datui reads. A `README.md` beside two
-    // Parquet files is neither a marker nor data, and counting it as data made this
-    // route answer `dir` where the local one said `multi` — the same directory, two
-    // answers, which is what one vocabulary is for.
-    let format_of = |key: &str| crate::discover::data_format(std::path::Path::new(key));
-    // Text is data only where nothing else is, as on disk.
-    let other_data = present.iter().any(|key| {
-        format_of(key).is_some_and(|f| !f.is_lines()) || crate::discover::is_parquet_key(key)
-    });
-    let files: Vec<&&String> = present
-        .iter()
-        .filter(|key| {
-            // Or a part file with no extension inside a `.parquet` directory, which is
-            // data by where it sits rather than by what it is called.
-            format_of(key).is_some_and(|f| !(other_data && f.is_lines()))
-                || crate::discover::is_parquet_key(key)
-        })
-        .collect();
-    // What the prefix holds, counted the way a local listing counts it: data files by
-    // format, the prefixes beside them, and the markers passed over. Only Parquet is
-    // read in place, but the label says what is there either way.
-    let mut counts: Vec<(&'static str, usize)> = Vec::new();
-    for key in &files {
+    let prefixes: Vec<String> = directories.iter().map(|d| last(d)).collect();
+    let objects = objects.iter().filter_map(|(key, size)| {
         let name = last(key);
-        let format = crate::discover::data_format(std::path::Path::new(name.as_str()))
-            .map(|f| f.name())
-            .unwrap_or("parquet");
-        match counts.iter_mut().find(|(f, _)| *f == format) {
-            Some((_, n)) => *n += 1,
-            None => counts.push((format, 1)),
-        }
-    }
-    // A Hugging Face dataset's own JSON files are its writer's, as they are on disk.
-    // So is a saved DatasetDict's `dataset_dict.json`, beside the prefixes of its
-    // splits: the listing alone would call it a prefix of one JSON file.
-    let arrow = counts
-        .iter()
-        .any(|(f, _)| *f == crate::FileFormat::Arrow.name());
-    let dataset_dict = !counted.is_empty()
-        && files
-            .iter()
-            .any(|key| last(key) == crate::hf_splits::DATASET_DICT);
-    let hugging_face: Vec<String> = files
-        .iter()
-        .map(|key| last(key))
-        .filter(|name| {
-            (arrow && crate::discover::is_hugging_face_metadata(name))
-                || (dataset_dict && name == crate::hf_splits::DATASET_DICT)
+        // Dropped before anything counts them: the prefix's own key, which a console
+        // writes to make a folder and the listing hands straight back, whatever its size
+        // (`cloud-samples-data` writes eleven bytes into its markers); and an empty
+        // object named like a prefix beside it, which is that prefix, counted once.
+        let stands_for_a_prefix = (!here.is_empty() && key.trim_matches('/') == here)
+            || (*size == 0 && prefixes.contains(&name));
+        (!name.is_empty() && !stands_for_a_prefix).then_some(Seen {
+            name,
+            is_dir: false,
+            is_file: true,
+            size: Some(*size),
         })
-        .collect();
-    let json = crate::FileFormat::Json.name();
-    for (format, n) in &mut counts {
-        if *format == json {
-            *n -= hugging_face.len();
-        }
-    }
-    counts.retain(|(_, n)| *n > 0);
-    // The same order the local routes rank by, so a prefix and the directory it mirrors
-    // name the same format — including on a tie, where Parquet wins.
-    counts.sort_by(|a, b| crate::discover::rank_formats((a.0, a.1), (b.0, b.1)));
-    // Prefixes as well as objects: `_temporary/` is a writer's own directory and is
-    // counted as skipped on disk, so a Spark output prefix must not read `2 parquet`
-    // here and `2 parquet · 1 skipped (_temporary)` there.
-    // An empty object with no dot and no prefix beside it: `present` drops it as a
-    // console's folder placeholder, and without one there is no folder it stands for.
-    // It is a file nothing can read, which is what the local route calls it — not a
-    // writer's own, which is what naming it under `skipped` would say.
-    let orphan_markers: Vec<String> = objects
+    });
+    let seen = prefixes
         .iter()
-        .filter(|(key, size)| {
-            let name = last(key);
-            !name.is_empty()
-                && is_empty_marker(&name, *size)
-                && !crate::discover::is_bookkeeping(&name)
-                && !directories.iter().any(|f| last(f) == name)
+        .map(|name| Seen {
+            name: name.clone(),
+            is_dir: true,
+            is_file: false,
+            size: None,
         })
-        .map(|(key, _)| last(key))
-        .collect();
-    let mut skipped_names: Vec<String> = objects
-        .iter()
-        // A zero-byte object beside a prefix of the same name is that prefix, written
-        // by a console: counted once, under the prefix, as the local route counts it.
-        .filter(|(key, size)| !(*size == 0 && directories.iter().any(|f| last(f) == last(key))))
-        .map(|(key, _)| last(key))
-        .chain(directories.iter().map(|f| last(f)))
-        .filter(|name| !name.is_empty() && crate::discover::is_bookkeeping(name))
-        .chain(hugging_face)
-        .collect();
-    skipped_names.sort();
-    // An object and a prefix of the same name are one thing named twice: the listing
-    // reports both, and the dedupe above only catches the zero-byte spelling of it.
-    skipped_names.dedup();
-    let skipped = skipped_names.len();
-    skipped_names.truncate(crate::discover::SKIPPED_NAMES_SHOWN);
-    // Present, not data by name, and with no extension to say otherwise: the local
-    // route's `unnamed`, counted apart so the door still reads a Spark prefix.
-    let unnamed = present
-        .iter()
-        .filter(|key| !files.contains(key))
-        .filter(|key| crate::discover::has_no_extension(std::path::Path::new(&last(key))))
-        .count();
-    let holds = crate::discover::Holds {
-        formats: counts
-            .into_iter()
-            .map(|(f, n)| (f.to_string(), n))
-            .collect(),
-        directories: counted.len(),
-        partitions,
-        // Present, not a writer's own, and not named as anything datui reads — plus
-        // the empty placeholders standing for no folder, which `present` dropped.
-        not_read: present.len() - files.len() - unnamed + orphan_markers.len(),
-        unnamed,
-        skipped,
-        skipped_names,
-        truncated: false,
-        dataset_dict,
+        .chain(objects);
+    let rules = crate::discover::Rules {
+        directory: &last(here),
+        sniff: None,
+        in_bucket: true,
     };
-    // A lake table first: its data files genuinely agree on a schema, so every rule
-    // below says "one table" and is right about the schema and wrong about the rows.
-    // The markers are prefixes in the listing that already happened, so this costs
-    // nothing.
-    let directory = |name: &str| directories.iter().any(|f| last(f) == name);
-    if directory("_delta_log") {
-        return (EntryKind::Delta, holds);
-    }
-    if directory(".hoodie") {
-        return (EntryKind::Hudi, holds);
-    }
-    let parquet = files
-        .iter()
-        .filter(|key| crate::discover::is_parquet_key(key))
-        .count();
-    // Iceberg's marker is a plain name, so it takes the whole shape rather than the name
-    // alone: `metadata/` beside `data/`, and the table's own data under `data/` rather
-    // than at the root. Whether `metadata/` holds a `*.metadata.json` is not asked, as
-    // it is locally — that is a second listing, and this is the layout the spec
-    // describes. So this is the looser of the two rules, and deliberately: a project
-    // directory that happens to hold `data/` and `metadata/` is mislabelled and still
-    // browsable, where a real Iceberg table read as one table is wrong about the rows.
-    // A README beside them does not disqualify it.
-    if directory("metadata") && directory("data") && parquet == 0 {
-        return (EntryKind::Iceberg, holds);
-    }
-    // Everything the listing reported that is not a writer's own file, which is what the
-    // local route counts: its `else` arm puts a stray it cannot read into `not_read` and
-    // still counts it as seen. The orphan markers are exactly that stray — dropped from
-    // `present` because they are empty — so leaving them out here made a directory of two
-    // Parquet files and five of them `dir` on disk and `multi` in a bucket.
-    let seen = counted.len() + present.len() + orphan_markers.len();
-    // The local route's rule, unchanged: see `discover::classify_directory` for why a
-    // majority here refuses real hive roots.
-    if partitions > 0 && partitions >= files.len() {
-        return (EntryKind::Hive, holds);
-    }
-    let kind = if parquet > 1 && parquet == files.len() && parquet * 2 >= seen {
-        EntryKind::MultiFile
-    } else {
-        EntryKind::Directory
-    };
-    (kind, holds)
+    crate::discover::classify(seen, &rules)
 }
 
 /// Split a `gs://` or `s3://` URL into its bucket and the prefix inside it.

@@ -581,12 +581,6 @@ pub enum AppEvent {
     /// A frame was painted. The run loop calls [`App::frame_painted`] itself; a harness
     /// that paints nothing sends this when [`App::count_waits_for_a_frame`].
     FramePainted,
-    /// Every footer of a dataset that opened from two of them has now been read. What
-    /// they say is in `App::pending_footers_result`; the columns they add join the
-    /// dataset already on screen.
-    BackgroundFootersJoined {
-        generation: u64,
-    },
     /// Every line of a text file opened from its first rows is indexed, `rows` of
     /// them, for the dataset of `generation`.
     LinesIndexed {
@@ -3013,7 +3007,6 @@ impl App {
                 first_rows_asked: 0,
                 len_count_failed: None,
                 end_after_count: None,
-                pending_footers_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
                 end_when_the_footers_land: None,
                 end_when_indexed: None,
                 indexing_stop: Arc::default(),
@@ -4417,8 +4410,7 @@ impl App {
             AppEvent::BackgroundLenReady { .. }
             | AppEvent::FramePainted
             | AppEvent::BackgroundLenFailed { .. }
-            | AppEvent::LinesIndexed { .. }
-            | AppEvent::BackgroundFootersJoined { .. } => self.counting_event(event),
+            | AppEvent::LinesIndexed { .. } => self.counting_event(event),
             AppEvent::BackgroundQualitySampleKept { kept } => {
                 self.retain_quality_sample(kept);
                 None
@@ -5233,6 +5225,12 @@ impl App {
         answer: Answer,
     ) -> Option<AppEvent> {
         match answer {
+            Answer::FootersJoined(found) => match job {
+                Job::FootersJoin { dataset } => {
+                    self.footers_joined(dataset, found.map(|found| *found))
+                }
+                _ => None,
+            },
             Answer::Load(answer) => {
                 // The open's to judge, by its own identity rather than the generation: an
                 // answer for an open given up or replaced, or for a phase it has left,
@@ -5689,6 +5687,10 @@ impl App {
                 if let loading::Step::Failed(failed) = self.loading.failed(*load, message) {
                     self.load_failed(failed);
                 }
+            }
+            // A pass that failed could not read them: the dataset stops waiting.
+            Job::FootersJoin { dataset } => {
+                self.footers_joined(*dataset, None);
             }
             Job::ChartPrepare(prep) => {
                 let message = if panicked {

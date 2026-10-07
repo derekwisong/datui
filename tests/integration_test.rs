@@ -17418,6 +17418,7 @@ fn serve_over_http_stalling(
             let (first, rest) = body.split_at(stall.map_or(0, |(at, _)| at.min(body.len())));
             let _ = stream.write_all(first).and_then(|()| stream.flush());
             if let Some((_, quiet)) = stall {
+                // A server that goes quiet mid-body: the stall is the subject.
                 std::thread::sleep(quiet);
             }
             let _ = stream.write_all(rest);
@@ -17570,6 +17571,7 @@ fn an_abandoned_http_download_stops_while_the_server_is_silent() {
             "still downloading: {:?}",
             files()
         );
+        // Nothing reports the file's removal; the time it may take is the assertion.
         std::thread::sleep(Duration::from_millis(10));
     }
     // The stopped worker reports, for a load nobody is waiting on.

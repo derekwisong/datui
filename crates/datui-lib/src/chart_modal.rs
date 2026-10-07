@@ -1648,6 +1648,23 @@ impl ChartModal {
 impl crate::form::Form for ChartModal {
     type Field = ChartFocus;
 
+    fn shown_picker(&mut self) -> Option<(&mut crate::widgets::ui::PickerState, bool)> {
+        let multi = self.picker_multi();
+        self.picker.as_mut().map(|p| (p, multi))
+    }
+
+    fn dismiss_picker(&mut self) {
+        ChartModal::close_picker(self);
+    }
+
+    fn pick(&mut self, toggle: bool) {
+        if toggle {
+            self.picker_toggle();
+        } else {
+            self.picker_choose();
+        }
+    }
+
     fn fields(&self) -> Vec<(ChartFocus, crate::form::FieldKind)> {
         use crate::form::FieldKind;
         self.row_order()

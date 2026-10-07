@@ -5,7 +5,7 @@ use crate::chart_export::{ChartExportFormat, ChartExportRequest};
 use crate::chart_export_modal::{ChartExportFocus, ExportDefaults};
 use crate::chart_modal::{ChartFocus, Mark};
 use crate::feedback::Confirm;
-use crate::form::{FormKey, PickerKey};
+use crate::form::FormKey;
 use crate::logging::LogFailure;
 use crate::output_file::Overwrite;
 use crate::widgets::crosshair::{self, Move};
@@ -32,21 +32,7 @@ impl App {
             return self.chart_export_key(event);
         }
 
-        let multi = self.chart_modal.picker_multi();
-        if let Some(picker) = self.chart_modal.picker.as_mut() {
-            match crate::form::picker_key(picker, multi, event) {
-                PickerKey::Close => self.chart_modal.close_picker(),
-                PickerKey::Choose => self.chart_modal.picker_choose(),
-                PickerKey::Toggle => self.chart_modal.picker_toggle(),
-                PickerKey::ChooseAndMove(forward) => {
-                    self.chart_modal.picker_choose();
-                    crate::form::Form::move_focus(
-                        &mut self.chart_modal,
-                        if forward { 1 } else { -1 },
-                    );
-                }
-                PickerKey::Handled | PickerKey::Other => {}
-            }
+        if crate::form::picker_form_key(&mut self.chart_modal, event) {
             return None;
         }
 

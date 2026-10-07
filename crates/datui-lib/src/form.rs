@@ -108,6 +108,18 @@ pub trait Form {
             .map(|(_, kind)| kind)
     }
 
+    /// The picker open over a field, and whether it takes several values; `None`
+    /// for a form with no picker open.
+    fn shown_picker(&mut self) -> Option<(&mut PickerState, bool)> {
+        None
+    }
+
+    /// Close the open picker, choosing nothing.
+    fn dismiss_picker(&mut self) {}
+
+    /// Take the picker's item and close it, or with `toggle`, flip it and stay open.
+    fn pick(&mut self, _toggle: bool) {}
+
     /// Focus `field` if the form shows it: a click on a row, or a modal moving
     /// focus itself. Returns whether it did.
     fn focus(&mut self, field: Self::Field) -> bool {
@@ -235,6 +247,25 @@ pub fn key<T: Form + ?Sized>(form: &mut T, event: &KeyEvent) -> FormKey<T::Field
         _ if kind.types() => FormKey::Text(field),
         _ => FormKey::Other,
     }
+}
+
+/// `event` in a form with a picker open: the picker takes it ([`picker_key`]),
+/// choosing, toggling or closing through the form. Returns whether a picker was open.
+pub fn picker_form_key<T: Form + ?Sized>(form: &mut T, event: &KeyEvent) -> bool {
+    let Some((picker, multi)) = form.shown_picker() else {
+        return false;
+    };
+    match picker_key(picker, multi, event) {
+        PickerKey::Close => form.dismiss_picker(),
+        PickerKey::Choose => form.pick(false),
+        PickerKey::Toggle => form.pick(true),
+        PickerKey::ChooseAndMove(forward) => {
+            form.pick(false);
+            form.move_focus(if forward { 1 } else { -1 });
+        }
+        PickerKey::Handled | PickerKey::Other => {}
+    }
+    true
 }
 
 /// A move of a list's cursor, from the keys every list answers: ↑ / `k`, ↓ / `j`,

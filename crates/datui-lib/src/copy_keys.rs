@@ -3,7 +3,7 @@
 
 use crate::copy_modal::CopyFocus;
 use crate::feedback::Confirm;
-use crate::form::{FormKey, PickerKey};
+use crate::form::FormKey;
 use crate::jobs::{Answer, Job};
 use crate::open_options::OpenOptions;
 use crate::table::DataTableState;
@@ -15,19 +15,7 @@ use std::path::Path;
 impl App {
     /// Keys in the copy modal.
     pub(crate) fn copy_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
-        if let Some(picker) = self.copy_modal.picker.as_mut() {
-            match crate::form::picker_key(picker, false, event) {
-                PickerKey::Close => self.copy_modal.picker = None,
-                PickerKey::Choose | PickerKey::Toggle => self.copy_modal.picker_choose(),
-                PickerKey::ChooseAndMove(forward) => {
-                    self.copy_modal.picker_choose();
-                    crate::form::Form::move_focus(
-                        &mut self.copy_modal,
-                        if forward { 1 } else { -1 },
-                    );
-                }
-                PickerKey::Handled | PickerKey::Other => {}
-            }
+        if crate::form::picker_form_key(&mut self.copy_modal, event) {
             return None;
         }
 

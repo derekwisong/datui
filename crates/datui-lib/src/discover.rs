@@ -1508,8 +1508,8 @@ pub fn scan_dir_specs(dir: &Path, formats: &crate::formats::Registry) -> Scan {
 /// How often a listing still being read shows what it has so far.
 const LISTING_PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
 
-/// [`scan_dir_bounded`], handing `progress` the rows read so far, sorted, every
-/// [`LISTING_PROGRESS_EVERY`] while the read goes on. A directory a share takes seconds
+/// [`scan_dir_bounded`], handing `progress` the rows read since it was last called,
+/// in the order read, every [`LISTING_PROGRESS_EVERY`] while the read goes on. A directory a share takes seconds
 /// to list shows its first rows as they arrive rather than a spinner until the last.
 pub fn scan_dir_progressive(dir: &Path, progress: impl FnMut(&[Entry])) -> Scan {
     scan_dir_with(dir, &crate::formats::Registry::default(), progress)
@@ -1526,6 +1526,8 @@ fn scan_dir_with(
     let mut shown = std::time::Instant::now();
 
     let mut entries = Vec::new();
+    // How many of `entries` `progress` has been handed.
+    let mut sent = 0usize;
     let mut seen = 0usize;
     let mut truncated = false;
     // Files with no extension are looked at, a few bytes each, so a Spark part file
@@ -1584,9 +1586,8 @@ fn scan_dir_with(
         }
         entries.push(entry);
         if shown.elapsed() >= LISTING_PROGRESS_EVERY {
-            let mut so_far = entries.clone();
-            sort_entries(&mut so_far);
-            progress(&so_far);
+            progress(&entries[sent..]);
+            sent = entries.len();
             shown = std::time::Instant::now();
         }
     }

@@ -1521,7 +1521,8 @@ pub struct HomeState {
     pub probed: std::collections::HashMap<PathBuf, std::sync::Arc<[Entry]>>,
     /// Network roots that did not answer.
     pub unreachable: std::collections::HashSet<PathBuf>,
-    /// The rows of network directories still being listed, read so far.
+    /// The rows of network directories still being listed, read so far, in the order
+    /// they came. [`build_listing`] puts them in listing order.
     pub listing_so_far: std::collections::HashMap<PathBuf, Vec<Entry>>,
     /// Network directories whose listing stopped at [`discover::MAX_ENTRIES_PER_DIR`].
     pub cut_short: std::collections::HashSet<PathBuf>,
@@ -1974,6 +1975,19 @@ fn probed_entry(
         .cloned()
 }
 
+/// Rows read so far of a listing still going on, as the finished listing will order
+/// them: a bucket's directories above its objects, a directory's sorted as
+/// [`discover::sort_entries`] does.
+fn in_listing_order(dir: &Path, rows: &[Entry]) -> Vec<Entry> {
+    let mut rows = rows.to_vec();
+    if is_object_store_url(dir) {
+        rows.sort_by_key(|row| row.kind != EntryKind::Directory);
+    } else {
+        discover::sort_entries(&mut rows);
+    }
+    rows
+}
+
 /// Build the home listing.
 ///
 /// A free function taking everything it needs, so it can run on a worker thread. It
@@ -2069,7 +2083,11 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             let rows = probed
                 .get(&dir)
                 .map(|rows| rows.to_vec())
-                .or_else(|| listing_so_far.get(&dir).cloned())
+                .or_else(|| {
+                    listing_so_far
+                        .get(&dir)
+                        .map(|rows| in_listing_order(&dir, rows))
+                })
                 .unwrap_or_default();
             (rows, cut_short.contains(&dir))
         } else if database {
@@ -2278,7 +2296,11 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             probed
                 .get(&root.path)
                 .map(|rows| rows.to_vec())
-                .or_else(|| listing_so_far.get(&root.path).cloned())
+                .or_else(|| {
+                    listing_so_far
+                        .get(&root.path)
+                        .map(|rows| in_listing_order(&root.path, rows))
+                })
                 .unwrap_or_default()
         } else if root.available {
             let scan = discover::scan_dir_specs(&root.path, formats);

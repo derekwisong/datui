@@ -412,7 +412,8 @@ pub enum AppEvent {
         /// The listing stopped at [`crate::discover::MAX_ENTRIES_PER_DIR`].
         cut_short: bool,
     },
-    /// The rows of a network directory read so far, while its listing goes on.
+    /// Rows of a network directory read since its last batch, while its listing goes
+    /// on.
     HomeProbeProgress {
         root: PathBuf,
         rows: Vec<crate::discover::Entry>,
@@ -1028,6 +1029,9 @@ pub struct App {
     home_schema_inflight: Vec<PathBuf>,
     /// Invalidates listings and measurements from a request the user has moved past.
     home_generation: u64,
+    /// Rows came in for a listing still being read; it is listed again before the
+    /// next frame.
+    home_refresh_owed: bool,
     /// Home screen state. Rebuilt from the filesystem whenever home is entered;
     /// nothing here is persisted beyond the recents list.
     pub home: home::HomeState,
@@ -6070,6 +6074,7 @@ impl App {
             home_search_inflight: false,
             home_search_generation: 0,
             home_generation: 0,
+            home_refresh_owed: false,
             home_schema_inflight: Vec::new(),
             last_load_error: None,
             pending_clear_recents: false,
@@ -6278,6 +6283,9 @@ impl App {
         self.inspector_needs();
         if self.input_mode != InputMode::Home {
             return;
+        }
+        if self.home_refresh_owed {
+            self.home_refresh();
         }
         if std::mem::take(&mut self.home.pending_enrich) {
             self.request_home_measurements();

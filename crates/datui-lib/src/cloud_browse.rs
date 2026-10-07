@@ -1128,13 +1128,13 @@ pub struct Level {
     pub cancelled: bool,
 }
 
-/// What a listing hands the rows it has so far.
+/// What a listing hands each page of rows as it comes.
 pub type Progress = std::sync::Arc<dyn Fn(&[crate::discover::Entry]) + Send + Sync>;
 
 /// How a listing is watched while it runs.
 #[derive(Clone, Default)]
 pub struct Watch {
-    /// Handed the rows so far after every page but the last.
+    /// Handed each page's rows, directories first, after every page but the last.
     pub progress: Option<Progress>,
     /// Set, the listing stops before its next page.
     pub cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -1503,6 +1503,10 @@ async fn list_pages(
             .await
             .map_err(|e| format!("{e}"))?;
         let (more_directories, more_objects) = rows_of(page.result);
+        let page_rows = watch
+            .progress
+            .as_ref()
+            .map(|_| rows(&more_directories, &more_objects));
         directories.extend(more_directories);
         objects.extend(more_objects);
         let mut listed = rows(&directories, &objects);
@@ -1516,8 +1520,8 @@ async fn list_pages(
         }
         match page.page_token {
             Some(next) => {
-                if let Some(progress) = &watch.progress {
-                    progress(&listed);
+                if let (Some(progress), Some(page_rows)) = (&watch.progress, &page_rows) {
+                    progress(page_rows);
                 }
                 token = Some(next);
             }

@@ -6330,7 +6330,8 @@ mod cloud_level_paging {
         assert_eq!(app.home.browsing, Some(PathBuf::from(LEVEL)));
     }
 
-    /// Handle events until `done` holds.
+    /// Handle events until `done` holds, asking for what each frame needs as the event
+    /// loop does: rows that came in are listed then.
     fn until(app: &mut App, rx: &Receiver<AppEvent>, what: &str, done: impl Fn(&App) -> bool) {
         let deadline = Instant::now() + Duration::from_secs(30);
         while !done(app) {
@@ -6341,6 +6342,7 @@ mod cloud_level_paging {
                     next = app.event(&event);
                 }
             }
+            app.request_what_the_frame_needs();
         }
     }
 
@@ -6370,10 +6372,7 @@ mod cloud_level_paging {
             ))
             .expect("listed");
         // Five pages of a thousand, each shown as it came; the sixth says there is more.
-        assert_eq!(
-            *progress.lock().unwrap(),
-            vec![1000, 2000, 3000, 4000, 5000]
-        );
+        assert_eq!(*progress.lock().unwrap(), vec![1000; 5]);
         assert_eq!(s3.wire.level_pages("by_station/"), 6);
         assert_eq!(level.rows.len(), datui::cloud_browse::MAX_LEVEL_ROWS);
         assert!(level.truncated && !level.cancelled);
@@ -6407,12 +6406,9 @@ mod cloud_level_paging {
             app.home.listing_so_far.contains_key(&level)
         });
         assert!(!app.home.probed.contains_key(&level));
-        settle(&mut app, &rx, |app| subtitle(app).is_some());
-        assert!(
-            subtitle(&app).is_some_and(|s| s.ends_with(" so far")),
-            "{:?}",
-            subtitle(&app)
-        );
+        until(&mut app, &rx, "the rows so far, said", |app| {
+            subtitle(app).is_some_and(|s| s.ends_with(" so far"))
+        });
         until(&mut app, &rx, "the whole listing", |app| {
             app.home.probed.contains_key(&level)
         });

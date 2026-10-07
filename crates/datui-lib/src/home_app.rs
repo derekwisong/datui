@@ -574,10 +574,10 @@ impl App {
                         let watch = crate::cloud_browse::Watch {
                             progress: Some(std::sync::Arc::new({
                                 let (tx, root) = (tx.clone(), root.clone());
-                                move |so_far: &[crate::discover::Entry]| {
+                                move |page: &[crate::discover::Entry]| {
                                     let _ = tx.send(AppEvent::HomeProbeProgress {
                                         root: root.clone(),
-                                        rows: so_far.to_vec(),
+                                        rows: page.to_vec(),
                                     });
                                 }
                             })),
@@ -627,10 +627,10 @@ impl App {
                     let rows = if std::fs::read_dir(&root).is_ok() {
                         // What has been read shows while the rest is read: a share can take
                         // seconds over a directory of thousands.
-                        let scan = crate::discover::scan_dir_progressive(&root, |so_far| {
+                        let scan = crate::discover::scan_dir_progressive(&root, |read| {
                             let _ = tx.send(AppEvent::HomeProbeProgress {
                                 root: root.clone(),
-                                rows: so_far.to_vec(),
+                                rows: read.to_vec(),
                             });
                         });
                         cut_short = scan.truncated;
@@ -1087,6 +1087,7 @@ impl App {
 
     /// Rebuild the home listing from the filesystem.
     pub(crate) fn home_refresh(&mut self) {
+        self.home_refresh_owed = false;
         // Every way into a source comes through here: Enter, Backspace up from a
         // bucket, a jump, and rows arriving while the source is already open.
         #[cfg(feature = "cloud")]
@@ -2630,8 +2631,10 @@ impl App {
                 // over the whole answer.
                 if self.home_probes_inflight.contains(root) && !self.home.probed.contains_key(root)
                 {
-                    self.home.listing_so_far.insert(root.clone(), rows.clone());
-                    self.home_refresh();
+                    let so_far = self.home.listing_so_far.entry(root.clone()).or_default();
+                    so_far.extend(rows.iter().cloned());
+                    // Listed once a frame, however many batches came in it.
+                    self.home_refresh_owed = true;
                 }
                 None
             }

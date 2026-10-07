@@ -137,3 +137,39 @@ fn without_cloud_a_bucket_says_it_cannot_be_listed() {
         Some("cloud support not in this build")
     );
 }
+
+/// Batches of rows add to what was read, and however many arrive before a frame, the
+/// place is listed once for it.
+#[test]
+fn batches_read_before_a_frame_are_listed_once() {
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, crate::tests::test_runtime());
+    app.input_mode = InputMode::Home;
+    app.home.network_check = |_| true;
+    let dir = PathBuf::from("/pretend/share/raw");
+    app.home.browsing = Some(dir.clone());
+    app.home_probes_inflight = vec![dir.clone()];
+    let row = |name: &str| discover::Entry::directory(&dir.join(name));
+
+    let generation = app.home_generation;
+    for name in ["a", "b", "c"] {
+        app.event(&AppEvent::HomeProbeProgress {
+            root: dir.clone(),
+            rows: vec![row(name)],
+        });
+    }
+    assert_eq!(
+        app.home_generation, generation,
+        "nothing listed between frames"
+    );
+    let names: Vec<&str> = app.home.listing_so_far[&dir]
+        .iter()
+        .map(|row| row.name.as_str())
+        .collect();
+    assert_eq!(names, ["a", "b", "c"]);
+
+    app.request_what_the_frame_needs();
+    assert_eq!(app.home_generation, generation.wrapping_add(1));
+    app.request_what_the_frame_needs();
+    assert_eq!(app.home_generation, generation.wrapping_add(1));
+}

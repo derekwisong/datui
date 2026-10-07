@@ -1079,18 +1079,21 @@ async fn list_level(
     resolved: &crate::cloud_sources::Resolved,
     watch: &Watch,
 ) -> Result<Level, String> {
-    if resolved.kind == ProviderKind::Azure {
-        return list_azure_objects(resolved, watch).await;
-    }
-    let (kind, bucket, _) =
-        split_bucket_url(&resolved.url).ok_or_else(|| format!("not an object-store URL: {url}"))?;
     let (pager, prefix) = store(resolved)?;
-
+    let prefix = prefix.trim_matches('/').to_string();
     // Rows keep the source the listing was asked for, so opening one reaches the same
-    // server.
-    let base = match crate::source::split_source_id(url).0 {
-        Some(id) => format!("{}://{id}@{bucket}", kind.scheme()),
-        None => format!("{}://{bucket}", kind.scheme()),
+    // server. An Azure place is named by its canonical URL, a directory with its slash.
+    let (base, directory_end) = match crate::source::azure_parts(&resolved.url) {
+        Some((account, container, _)) => (crate::source::azure_url(&account, &container, ""), "/"),
+        None => {
+            let (kind, bucket, _) = split_bucket_url(&resolved.url)
+                .ok_or_else(|| format!("not an object-store URL: {url}"))?;
+            let base = match crate::source::split_source_id(url).0 {
+                Some(id) => format!("{}://{id}@{bucket}/", kind.scheme()),
+                None => format!("{}://{bucket}/", kind.scheme()),
+            };
+            (base, "")
+        }
     };
     list_pages(pager.as_ref(), &prefix, watch, |result| {
         let prefixes: Vec<String> = result
@@ -1098,18 +1101,16 @@ async fn list_level(
             .iter()
             .map(|p| p.as_ref().to_string())
             .collect();
-        let directories = result
-            .common_prefixes
+        let directories = prefixes
             .iter()
             .map(|common| {
                 let name = common
-                    .as_ref()
                     .rsplit('/')
                     .find(|part| !part.is_empty())
-                    .unwrap_or(common.as_ref())
+                    .unwrap_or(common)
                     .to_string();
-                crate::discover::Entry::directory(Path::new(&format!("{base}/{}", common.as_ref())))
-                    .with_name(name)
+                let path = format!("{base}{common}{directory_end}");
+                crate::discover::Entry::directory(Path::new(&path)).with_name(name)
             })
             .collect();
         let objects = result
@@ -1121,7 +1122,7 @@ async fn list_level(
             .map(|object| {
                 let location = object.location.as_ref().to_string();
                 let name = location.rsplit('/').next().unwrap_or(&location).to_string();
-                let path = PathBuf::from(format!("{base}/{location}"));
+                let path = PathBuf::from(format!("{base}{location}"));
                 // No extension is left openable: a part file with none may well be
                 // Parquet.
                 let kind = if crate::discover::unreadable_by_name(&path) {
@@ -1231,67 +1232,6 @@ async fn list_pages(
             }
         }
     }
-}
-
-/// One level of an Azure container or directory. Accounts with hierarchical namespace
-/// list each directory as a prefix and as an empty blob of the same name; only the prefix
-/// is kept.
-async fn list_azure_objects(
-    resolved: &crate::cloud_sources::Resolved,
-    watch: &Watch,
-) -> Result<Level, String> {
-    let (account, container, _) = crate::source::azure_parts(&resolved.url)
-        .ok_or_else(|| format!("not an Azure URL: {}", resolved.url))?;
-    let (pager, prefix) = store(resolved)?;
-    let prefix = prefix.trim_matches('/').to_string();
-    list_pages(pager.as_ref(), &prefix, watch, |result| {
-        let prefixes: Vec<String> = result
-            .common_prefixes
-            .iter()
-            .map(|p| p.as_ref().to_string())
-            .collect();
-        let directories = prefixes
-            .iter()
-            .map(|common| {
-                let name = common
-                    .rsplit('/')
-                    .find(|part| !part.is_empty())
-                    .unwrap_or(common)
-                    .to_string();
-                crate::discover::Entry::directory(Path::new(&crate::source::azure_url(
-                    &account,
-                    &container,
-                    &format!("{common}/"),
-                )))
-                .with_name(name)
-            })
-            .collect();
-        let objects = result
-            .objects
-            .into_iter()
-            .filter_map(|object| {
-                let location = object.location.as_ref().to_string();
-                let name = location.rsplit('/').next().unwrap_or(&location).to_string();
-                if name.is_empty()
-                    || is_marker(&name)
-                    || crate::azure::is_folder_marker(&location, object.size, &prefixes)
-                    || is_empty_marker(&name, object.size)
-                    || (object.size == 0 && location.trim_end_matches('/') == prefix)
-                {
-                    return None;
-                }
-                let path = PathBuf::from(crate::source::azure_url(&account, &container, &location));
-                Some(object_row(
-                    path,
-                    crate::discover::EntryKind::File,
-                    name,
-                    &object,
-                ))
-            })
-            .collect();
-        (directories, objects)
-    })
-    .await
 }
 
 /// A source's first level, as the home screen lists it: buckets for S3 and Google

@@ -25737,12 +25737,12 @@ fn test_terminal_background_switches_the_palette_under_auto() {
     ] {
         app.event(&AppEvent::TerminalBackground(mode));
         assert_eq!(
-            app.theme().get("table_header_bg"),
+            app.theme().table_header_bg(),
             hex(&stock.table_header_bg),
             "{mode:?}"
         );
-        assert_eq!(app.theme().get("dimmed"), hex(&stock.dimmed), "{mode:?}");
-        assert_eq!(app.theme().get("accent"), hex("#123456"), "{mode:?}");
+        assert_eq!(app.theme().dimmed(), hex(&stock.dimmed), "{mode:?}");
+        assert_eq!(app.theme().accent(), hex("#123456"), "{mode:?}");
         // Drawn with it.
         let mut buf = Buffer::empty(area);
         Widget::render(&mut app, area, &mut buf);
@@ -25759,7 +25759,7 @@ fn test_terminal_background_switches_the_palette_under_auto() {
     let mut app = App::new_with_config(tx, common::test_runtime(), theme, light);
     app.event(&AppEvent::TerminalBackground(ThemeMode::Dark));
     assert_eq!(
-        app.theme().get("table_header_bg"),
+        app.theme().table_header_bg(),
         hex(&ColorConfig::light().table_header_bg)
     );
     app.event(&AppEvent::TerminalFocused);
@@ -25786,7 +25786,7 @@ fn test_first_frame_uses_the_terminals_last_answer() {
         app.settle_first_palette(answered);
         app
     };
-    let header = |app: &App| app.theme().get("table_header_bg");
+    let header = |app: &App| app.theme().table_header_bg();
     let dark = hex(&ColorConfig::dark().table_header_bg);
     let light = hex(&ColorConfig::light().table_header_bg);
 
@@ -25837,18 +25837,18 @@ fn test_terminal_background_switches_between_named_themes() {
     for _ in 0..2 {
         app.event(&AppEvent::TerminalBackground(ThemeMode::Light));
         let light = ColorConfig::light();
-        assert_eq!(app.theme().get("accent"), hex(&light.accent));
-        assert_eq!(app.theme().get("dimmed"), hex(&light.dimmed));
-        assert_eq!(app.theme().get("find_match"), hex("#ff9e64"));
+        assert_eq!(app.theme().accent(), hex(&light.accent));
+        assert_eq!(app.theme().dimmed(), hex(&light.dimmed));
+        assert_eq!(app.theme().find_match(), hex("#ff9e64"));
 
         app.event(&AppEvent::TerminalBackground(ThemeMode::Dark));
-        assert_eq!(app.theme().get("accent"), hex("#e0af68"));
-        assert_eq!(app.theme().get("dimmed"), hex("#111111"));
+        assert_eq!(app.theme().accent(), hex("#e0af68"));
+        assert_eq!(app.theme().dimmed(), hex("#111111"));
         assert_eq!(
-            app.theme().get("controls_bg"),
+            app.theme().controls_bg(),
             hex(&ColorConfig::dark().controls_bg)
         );
-        assert_eq!(app.theme().get("find_match"), hex("#ff9e64"));
+        assert_eq!(app.theme().find_match(), hex("#ff9e64"));
     }
     assert_eq!(app.flash_message(), None);
 

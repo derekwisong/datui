@@ -541,7 +541,7 @@ fn other_is_the_legends_last_entry() {
     let swatch = (0..area.width)
         .find(|&x| buf[(x, row)].symbol() == "█")
         .unwrap();
-    assert_eq!(buf[(swatch, row)].fg, theme.get("dimmed"));
+    assert_eq!(buf[(swatch, row)].fg, theme.dimmed());
 }
 
 /// The open Picker drops over the panel under its row, with a checkbox per item
@@ -1565,7 +1565,7 @@ fn the_grid_follows_the_toggle() {
     modal.toggle_grid();
     let on = draw(&modal);
     assert!(grid_cells(&on) > 100);
-    let grid = theme.get("chart_grid");
+    let grid = theme.chart_grid();
     assert!(
         on.content()
             .iter()
@@ -1737,7 +1737,7 @@ fn the_crosshair_reads_out_every_series() {
             "{rows:#?}"
         );
         let column = place.column(19_786.0);
-        let accent = theme.get("accent");
+        let accent = theme.accent();
         let marks = (place.graph.top()..place.graph.bottom())
             .filter(|&y| on[(column, y)].symbol() == g.plot.axis.vertical)
             .inspect(|&y| assert_eq!(on[(column, y)].fg, accent))

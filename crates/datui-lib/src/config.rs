@@ -3362,6 +3362,72 @@ pub struct Theme {
 /// The theme's chart series slots, `chart_1` to `chart_10`.
 pub const CHART_SERIES_SLOTS: usize = 10;
 
+/// Typed accessors for the theme's color slots, so a misspelled slot does not compile
+/// rather than drawing in `Color::Reset`.
+macro_rules! color_slots {
+    ($($slot:ident),* $(,)?) => {
+        impl Theme {
+            $(
+                pub fn $slot(&self) -> Color {
+                    self.get(stringify!($slot))
+                }
+            )*
+        }
+
+        /// Every slot with an accessor, for the test that the theme defines each.
+        #[cfg(test)]
+        pub(crate) const COLOR_SLOTS: &[&str] = &[$(stringify!($slot)),*];
+    };
+}
+
+color_slots!(
+    accent,
+    accent_bright,
+    background,
+    chart_1,
+    chart_grid,
+    chip_key,
+    chip_label,
+    controls_bg,
+    dimmed,
+    distribution_normal,
+    distribution_skewed,
+    error,
+    find_match,
+    gradient_end,
+    gradient_start,
+    hex_control,
+    hex_ff,
+    hex_high,
+    hex_null,
+    hex_printable,
+    hex_whitespace,
+    input_cursor,
+    label,
+    modal_border,
+    modal_border_active,
+    modal_border_error,
+    outlier_marker,
+    sidebar_border,
+    success,
+    surface,
+    table_column_separator,
+    table_header,
+    table_header_bg,
+    table_row_numbers,
+    text_inverse,
+    text_primary,
+    text_secondary,
+    throbber,
+    type_binary,
+    type_bool,
+    type_float,
+    type_int,
+    type_str,
+    type_temporal,
+    warning,
+);
+
 impl Theme {
     /// Create a Theme from a ThemeConfig by parsing all color strings
     pub fn from_config(config: &ThemeConfig) -> Result<Self> {
@@ -3388,8 +3454,9 @@ impl Theme {
         Ok(Self { colors })
     }
 
-    /// Get a color by name, returns Reset if not found
-    pub fn get(&self, name: &str) -> Color {
+    /// The color in slot `name`, `Reset` where there is none. Read through the typed
+    /// accessors ([`color_slots`]).
+    fn get(&self, name: &str) -> Color {
         self.colors.get(name).copied().unwrap_or(Color::Reset)
     }
 
@@ -3669,6 +3736,16 @@ mod tests {
     }
 
     use super::*;
+
+    /// Each typed accessor names a slot the theme has: a slot it lacks would draw in
+    /// `Color::Reset`.
+    #[test]
+    fn every_color_accessor_names_a_slot() {
+        let theme = Theme::from_config(&AppConfig::default().theme).unwrap();
+        for slot in COLOR_SLOTS {
+            assert!(theme.colors.contains_key(*slot), "no {slot} slot");
+        }
+    }
 
     #[test]
     fn a_key_the_registry_does_not_know_is_named_with_the_nearest() {

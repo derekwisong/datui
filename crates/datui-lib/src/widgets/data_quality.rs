@@ -291,7 +291,7 @@ fn render_header(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buf
     if config.from_cache && !config.page.is_setup() {
         spans.push(Span::styled(
             "  [session cache]",
-            Style::default().fg(config.theme.get("dimmed")),
+            Style::default().fg(config.theme.dimmed()),
         ));
     }
     // State, not a message: it holds until the worker exits, on every page.
@@ -303,14 +303,13 @@ fn render_header(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buf
                 glyphs::get().middot,
                 crate::render::analysis_view::elapsed(cancelling.since.elapsed())
             ),
-            Style::default().fg(config.theme.get("warning")),
+            Style::default().fg(config.theme.warning()),
         ));
     }
     Paragraph::new(Line::from(spans))
         .style(crate::widgets::analysis::header_style(
-            config.theme,
-            "controls_bg",
-            "table_header",
+            config.theme.controls_bg(),
+            config.theme.table_header(),
         ))
         .render(area, buf);
 }
@@ -343,16 +342,16 @@ fn render_tabs(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffe
         Paragraph::new(Line::styled(
             "Setup",
             Style::default()
-                .fg(config.theme.get("accent"))
+                .fg(config.theme.accent())
                 .add_modifier(Modifier::BOLD),
         ))
         .render(area, buf);
         return;
     }
     let shown = config.page.tab();
-    let dimmed = Style::default().fg(config.theme.get("dimmed"));
+    let dimmed = Style::default().fg(config.theme.dimmed());
     let accent = Style::default()
-        .fg(config.theme.get("accent"))
+        .fg(config.theme.accent())
         .add_modifier(Modifier::BOLD);
     // Each title padded a space each side, a space between: a click on one presses
     // its number, as typed.
@@ -1126,7 +1125,7 @@ fn render_overview(
         };
         Paragraph::new(dotted(message))
             .wrap(Wrap { trim: true })
-            .style(Style::default().fg(config.theme.get("dimmed")))
+            .style(Style::default().fg(config.theme.dimmed()))
             .render(list, buf);
         return;
     }
@@ -1157,7 +1156,7 @@ fn render_overview(
         }
         Paragraph::new(Line::styled(
             fit(&text, list.width as usize),
-            Style::default().fg(config.theme.get("dimmed")),
+            Style::default().fg(config.theme.dimmed()),
         ))
         .render(Rect { height: 1, ..list }, buf);
         list.y += 1;
@@ -1167,7 +1166,7 @@ fn render_overview(
     if shown.is_empty() {
         Paragraph::new(dotted("No findings match · Esc shows all"))
             .wrap(Wrap { trim: true })
-            .style(Style::default().fg(config.theme.get("dimmed")))
+            .style(Style::default().fg(config.theme.dimmed()))
             .render(list, buf);
         return;
     }
@@ -1197,11 +1196,11 @@ fn render_verdict(
     let g = glyphs::get();
     let theme = config.theme;
     let (mark, tone) = if report.problems > 0 {
-        (g.warning, theme.get("warning"))
+        (g.warning, theme.warning())
     } else if report.metadata_only || report.no_rows {
-        (g.middot, theme.get("dimmed"))
+        (g.middot, theme.dimmed())
     } else {
-        (g.check, theme.get("success"))
+        (g.check, theme.success())
     };
     Paragraph::new(Line::from(vec![
         Span::styled(format!("{mark} "), Style::default().fg(tone)),
@@ -1238,8 +1237,8 @@ fn coverage_lines(
     }
     sections.truncate(max_lines);
     let text_width = (width as usize).saturating_sub(COVERAGE_LABEL).max(1);
-    let dimmed = Style::default().fg(theme.get("dimmed"));
-    let plain = Style::default().fg(theme.get("text_primary"));
+    let dimmed = Style::default().fg(theme.dimmed());
+    let plain = Style::default().fg(theme.text_primary());
     let mut lines = Vec::new();
     for (index, (label, facts)) in sections.iter().enumerate() {
         // Every later section keeps one line; this one may take the rest.
@@ -1323,7 +1322,7 @@ pub(crate) fn rule_line(
         Span::styled(
             title.to_string(),
             Style::default()
-                .fg(theme.get("accent"))
+                .fg(theme.accent())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
@@ -1335,8 +1334,8 @@ pub(crate) fn rule_line(
         spans.push(Span::styled(
             chip,
             Style::default()
-                .bg(theme.get("controls_bg"))
-                .fg(theme.get("text_primary")),
+                .bg(theme.controls_bg())
+                .fg(theme.text_primary()),
         ));
         spans.push(Span::raw(" "));
     }
@@ -1344,7 +1343,7 @@ pub(crate) fn rule_line(
         glyphs::get()
             .rule_h
             .repeat((width as usize).saturating_sub(used)),
-        Style::default().fg(theme.get("table_column_separator")),
+        Style::default().fg(theme.table_column_separator()),
     ));
     Line::from(spans)
 }
@@ -1352,9 +1351,9 @@ pub(crate) fn rule_line(
 fn severity_mark(severity: Severity, theme: &Theme) -> Span<'static> {
     let g = glyphs::get();
     match severity {
-        Severity::Problem => Span::styled(g.warning, Style::default().fg(theme.get("warning"))),
-        Severity::Note => Span::styled(g.middot, Style::default().fg(theme.get("text_primary"))),
-        Severity::Clean => Span::styled(g.check, Style::default().fg(theme.get("success"))),
+        Severity::Problem => Span::styled(g.warning, Style::default().fg(theme.warning())),
+        Severity::Note => Span::styled(g.middot, Style::default().fg(theme.text_primary())),
+        Severity::Clean => Span::styled(g.check, Style::default().fg(theme.success())),
     }
 }
 
@@ -1501,18 +1500,18 @@ fn render_findings(
                 let mut spans = vec![
                     Span::styled(
                         if is_selected { g.rail } else { " " },
-                        Style::default().fg(theme.get("accent")),
+                        Style::default().fg(theme.accent()),
                     ),
                     Span::raw(" "),
                     severity_mark(finding.severity, theme),
                     Span::raw(" "),
                     Span::styled(
                         format!("{:<title_width$}", finding.title),
-                        Style::default().fg(theme.get("text_primary")),
+                        Style::default().fg(theme.text_primary()),
                     ),
                     Span::styled(
                         format!("{columns:<columns_width$} "),
-                        Style::default().fg(theme.get("text_primary")),
+                        Style::default().fg(theme.text_primary()),
                     ),
                     Span::styled(
                         if ordered {
@@ -1520,13 +1519,13 @@ fn render_findings(
                         } else {
                             summary
                         },
-                        Style::default().fg(theme.get("dimmed")),
+                        Style::default().fg(theme.dimmed()),
                     ),
                 ];
                 if ordered {
                     spans.push(Span::styled(
                         format!("{:>affected_width$}", affected(finding)),
-                        Style::default().fg(theme.get("text_primary")),
+                        Style::default().fg(theme.text_primary()),
                     ));
                 }
                 let line = Line::from(spans);
@@ -1554,7 +1553,7 @@ fn check_lines(
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     let width = width as usize;
-    let dimmed = Style::default().fg(theme.get("dimmed"));
+    let dimmed = Style::default().fg(theme.dimmed());
     let g = glyphs::get();
     let shown = limit.unwrap_or(checks.len()).min(checks.len());
     let outcome = |check: &Check| match &check.outcome {
@@ -1593,12 +1592,12 @@ fn check_lines(
     for check in &checks[..shown] {
         let (mark, style) = match &check.outcome {
             Outcome::Passed => (
-                Span::styled(g.check, Style::default().fg(theme.get("success"))),
-                Style::default().fg(theme.get("text_primary")),
+                Span::styled(g.check, Style::default().fg(theme.success())),
+                Style::default().fg(theme.text_primary()),
             ),
             Outcome::Found { tier, .. } => (
                 severity_mark(*tier, theme),
-                Style::default().fg(theme.get("text_primary")),
+                Style::default().fg(theme.text_primary()),
             ),
             Outcome::Skipped(_) | Outcome::Unavailable(_) => (Span::styled(g.dash, dimmed), dimmed),
         };
@@ -1692,7 +1691,7 @@ fn render_finding_detail(
         return;
     };
     let theme = config.theme;
-    let dimmed = Style::default().fg(theme.get("dimmed"));
+    let dimmed = Style::default().fg(theme.dimmed());
     let (headline, evidence) = describe(finding, results);
     // A reading surface: cap the measure on a wide terminal. The checks table on
     // the clean entry is a table, and may use more of the width.
@@ -1897,8 +1896,8 @@ fn render_time_roles(
     buf: &mut Buffer,
 ) {
     let theme = config.theme;
-    let dimmed = Style::default().fg(theme.get("dimmed"));
-    let accent = Style::default().fg(theme.get("accent"));
+    let dimmed = Style::default().fg(theme.dimmed());
+    let accent = Style::default().fg(theme.accent());
     let columns = config.setup.time_candidates;
     let roles = TemporalRole::ALL.len() as u16;
     let sections = Layout::default()
@@ -2002,7 +2001,7 @@ fn render_time_roles(
                     if is_chosen {
                         accent
                     } else {
-                        Style::default().fg(theme.get("text_primary"))
+                        Style::default().fg(theme.text_primary())
                     },
                 ),
                 Span::styled(format!("{dtype:<type_width$}"), dimmed),
@@ -2043,7 +2042,7 @@ fn render_columns(
     } else {
         0
     };
-    let dimmed = Style::default().fg(config.theme.get("dimmed"));
+    let dimmed = Style::default().fg(config.theme.dimmed());
     let rows = results.columns.iter().enumerate().map(|(index, profile)| {
         let severity = report
             .column_status
@@ -2163,7 +2162,7 @@ fn render_segments(
         return;
     };
     let theme = config.theme;
-    let dimmed = Style::default().fg(theme.get("dimmed"));
+    let dimmed = Style::default().fg(theme.dimmed());
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(2), Constraint::Fill(1)])
@@ -2177,7 +2176,7 @@ fn render_segments(
              partition, row chunk or time window, and compare the parts.",
         )
         .wrap(Wrap { trim: true })
-        .style(Style::default().fg(theme.get("text_primary")))
+        .style(Style::default().fg(theme.text_primary()))
         .render(sections[1], buf);
         return;
     }
@@ -2314,7 +2313,7 @@ fn render_segment_detail(
         return;
     };
     let theme = config.theme;
-    let dimmed = Style::default().fg(theme.get("dimmed"));
+    let dimmed = Style::default().fg(theme.dimmed());
     let changes = crate::data_quality::segment_changes(results, segment_index);
     let sections = Layout::default()
         .direction(Direction::Vertical)
@@ -2439,7 +2438,7 @@ fn render_trends(
     }
     Paragraph::new(text)
         .wrap(Wrap { trim: true })
-        .style(Style::default().fg(config.theme.get("text_primary")))
+        .style(Style::default().fg(config.theme.text_primary()))
         .render(body, buf);
 }
 
@@ -2486,7 +2485,7 @@ fn render_intervals(
     };
     let theme = config.theme;
     let plan = config.plan;
-    let dimmed = Style::default().fg(theme.get("dimmed"));
+    let dimmed = Style::default().fg(theme.dimmed());
     let [title, note, body] = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -2527,7 +2526,7 @@ fn render_intervals(
         };
         Paragraph::new(dotted(message))
             .wrap(Wrap { trim: true })
-            .style(Style::default().fg(theme.get("text_primary")))
+            .style(Style::default().fg(theme.text_primary()))
             .render(
                 Rect {
                     height: body.height + 1,
@@ -2704,7 +2703,7 @@ fn render_interval_detail(
             _ => share(count, of),
         };
         let mark = (selected == Some(fact))
-            .then(|| Span::styled(glyphs::get().rail, Style::default().fg(theme.get("accent"))));
+            .then(|| Span::styled(glyphs::get().rail, Style::default().fg(theme.accent())));
         Some((
             FieldRow {
                 mark,
@@ -2788,7 +2787,7 @@ fn render_interval_detail(
                 &format!("  Rows do not open: {what} is not a filter value"),
                 width,
             ),
-            Style::default().fg(theme.get("dimmed")),
+            Style::default().fg(theme.dimmed()),
         )
     });
     for (row, fact) in &rows {
@@ -2799,7 +2798,7 @@ fn render_interval_detail(
         if fact.is_some() && *fact == selected {
             for line in &mut row_lines {
                 if let Some(label) = line.spans.get_mut(2) {
-                    label.style = Style::default().fg(theme.get("accent"));
+                    label.style = Style::default().fg(theme.accent());
                 }
             }
         }
@@ -2831,7 +2830,7 @@ fn render_interval_pairs(
 ) {
     let theme = config.theme;
     let plan = config.plan;
-    let dimmed = Style::default().fg(theme.get("dimmed"));
+    let dimmed = Style::default().fg(theme.dimmed());
     let [title, body] = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(2), Constraint::Fill(1)])
@@ -3109,7 +3108,7 @@ fn render_trend_table(
     buf: &mut Buffer,
 ) {
     let theme = config.theme;
-    let dimmed = Style::default().fg(theme.get("dimmed"));
+    let dimmed = Style::default().fg(theme.dimmed());
     let (name_width, bars) = trend_layout(results, area.width);
     let view = trend_view(results, config.metric, bars);
     let notes = trend_notes(config, results, &view)
@@ -3148,7 +3147,7 @@ fn render_trend_table(
     )
     .render(note, buf);
     let g = glyphs::get();
-    let accent = Style::default().fg(theme.get("accent"));
+    let accent = Style::default().fg(theme.accent());
     let lines = view.lines.iter().map(|row| {
         let spark = view
             .bars
@@ -3202,8 +3201,8 @@ fn render_trend_detail(
     };
     let theme = config.theme;
     let g = glyphs::get();
-    let dimmed = Style::default().fg(theme.get("dimmed"));
-    let accent = Style::default().fg(theme.get("accent"));
+    let dimmed = Style::default().fg(theme.dimmed());
+    let accent = Style::default().fg(theme.accent());
     let [area] = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Fill(1)])
@@ -3213,7 +3212,7 @@ fn render_trend_detail(
     let view = trend_view(results, config.metric, bars);
     let (Some(line), false) = (view.lines.get(config.trend_line), view.bars.is_empty()) else {
         Paragraph::new(dotted("No bars · Esc Trends"))
-            .style(Style::default().fg(theme.get("text_primary")))
+            .style(Style::default().fg(theme.text_primary()))
             .render(area, buf);
         return;
     };
@@ -3497,7 +3496,7 @@ fn render_gaps(
     };
     let theme = config.theme;
     let plan = config.plan;
-    let dimmed = Style::default().fg(theme.get("dimmed"));
+    let dimmed = Style::default().fg(theme.dimmed());
     let [area] = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Fill(1)])
@@ -3509,7 +3508,7 @@ fn render_gaps(
              belong in.",
         )
         .wrap(Wrap { trim: true })
-        .style(Style::default().fg(theme.get("text_primary")))
+        .style(Style::default().fg(theme.text_primary()))
         .render(area, buf);
         return;
     };
@@ -3518,7 +3517,7 @@ fn render_gaps(
         _ => {
             Paragraph::new(gaps_summary(plan, &gaps))
                 .wrap(Wrap { trim: true })
-                .style(Style::default().fg(theme.get("text_primary")))
+                .style(Style::default().fg(theme.text_primary()))
                 .render(area, buf);
             return;
         }
@@ -3616,7 +3615,7 @@ fn render_gaps(
     .render(note, buf);
     if check.runs.is_empty() {
         Paragraph::new("Every expected window has rows")
-            .style(Style::default().fg(theme.get("text_primary")))
+            .style(Style::default().fg(theme.text_primary()))
             .render(body, buf);
         return;
     }
@@ -3744,7 +3743,7 @@ fn render_expected_windows(config: &DataQualityWidgetConfig<'_>, area: Rect, buf
         y += 1;
     }
     put_line(Line::raw(""), area, &mut y, buf);
-    let dimmed = Style::default().fg(theme.get("dimmed"));
+    let dimmed = Style::default().fg(theme.dimmed());
     for note in &notes {
         for text in crate::widgets::info::wrap_to(note, width.saturating_sub(2)) {
             put_line(Line::styled(format!("  {text}"), dimmed), area, &mut y, buf);
@@ -3753,7 +3752,7 @@ fn render_expected_windows(config: &DataQualityWidgetConfig<'_>, area: Rect, buf
     if let Some(error) = &form.error {
         put_line(Line::raw(""), area, &mut y, buf);
         put_line(
-            Line::styled(fit(error, width), Style::default().fg(theme.get("warning"))),
+            Line::styled(fit(error, width), Style::default().fg(theme.warning())),
             area,
             &mut y,
             buf,
@@ -3933,7 +3932,7 @@ fn render_counted(mut lines: Vec<Line<'static>>, area: Rect, theme: &Theme, buf:
         lines.truncate(height - 1);
         lines.push(Line::styled(
             format!("  {} {below} more", glyphs::get().ellipsis),
-            Style::default().fg(theme.get("dimmed")),
+            Style::default().fg(theme.dimmed()),
         ));
     }
     Paragraph::new(lines).render(area, buf);
@@ -4322,7 +4321,7 @@ fn passes_label(config: &DataQualityWidgetConfig<'_>) -> String {
 fn render_run_prompt(area: Rect, theme: &Theme, buf: &mut Buffer) {
     Paragraph::new(dotted("No report · e Setup, then Enter"))
         .alignment(Alignment::Center)
-        .style(Style::default().fg(theme.get("text_primary")))
+        .style(Style::default().fg(theme.text_primary()))
         .render(area, buf);
 }
 

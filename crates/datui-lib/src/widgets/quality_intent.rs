@@ -42,7 +42,7 @@ pub fn render_list(
 ) {
     let theme = config.theme;
     let plan = config.plan;
-    let dimmed = Style::default().fg(theme.get("dimmed"));
+    let dimmed = Style::default().fg(theme.dimmed());
     let columns = intent_columns(config.state.quality_schema(&plan.scope));
     let [title, body, key] = Layout::default()
         .direction(Direction::Vertical)

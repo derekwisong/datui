@@ -160,7 +160,7 @@ impl<'a> AnalysisWidget<'a> {
             _ => tool_name,
         };
 
-        let header_row_style = header_style(self.theme, "controls_bg", "table_header");
+        let header_row_style = header_style(self.theme.controls_bg(), self.theme.table_header());
         Paragraph::new(breadcrumb_text)
             .style(header_row_style)
             .render(layout[0], buf);
@@ -188,7 +188,7 @@ impl<'a> AnalysisWidget<'a> {
                     .split(main_layout[0]);
                 Paragraph::new("Pick a tool in the sidebar")
                     .centered()
-                    .style(Style::default().fg(self.theme.get("text_primary")))
+                    .style(Style::default().fg(self.theme.text_primary()))
                     .render(inner[1], buf);
             }
             Some(tool) => {
@@ -281,7 +281,8 @@ impl<'a> AnalysisWidget<'a> {
 
             // The breadcrumb carries the name alone; the control bar says Esc.
             let title_text = format!("Distribution Analysis: {}", dist.column_name);
-            let header_row_style = header_style(self.theme, "controls_bg", "table_header");
+            let header_row_style =
+                header_style(self.theme.controls_bg(), self.theme.table_header());
             Paragraph::new(title_text)
                 .style(header_row_style)
                 .render(layout[0], buf);
@@ -455,7 +456,7 @@ impl<'a> AnalysisWidget<'a> {
             "Correlation: {} vs {}",
             matrix.columns[row], matrix.columns[col]
         );
-        let header_row_style = header_style(self.theme, "controls_bg", "table_header");
+        let header_row_style = header_style(self.theme.controls_bg(), self.theme.table_header());
         Paragraph::new(title_text)
             .style(header_row_style)
             .render(layout[0], buf);
@@ -548,8 +549,8 @@ fn render_correlation_pair_summary(
     let pairs = matrix.sample_sizes[row][col];
     let p_value = matrix.p_value(method, row, col);
 
-    let label_style = Style::default().fg(theme.get("text_secondary"));
-    let value_style = Style::default().fg(theme.get("text_primary"));
+    let label_style = Style::default().fg(theme.text_secondary());
+    let value_style = Style::default().fg(theme.text_primary());
 
     let mut lines: Vec<Line> = Vec::new();
     if r.is_nan() {
@@ -706,13 +707,12 @@ impl StatisticsTable<'_> {
         for &stat_idx in &visible_stats {
             header_cells.push(Cell::from(stat_display_names[stat_idx]).style(Style::default()));
         }
-        let header_row_style = header_style(theme, "controls_bg", "table_header");
+        let header_row_style = header_style(theme.controls_bg(), theme.table_header());
         let header_row = Row::new(header_cells.clone()).style(header_row_style);
 
         for col_stat in &results.column_statistics {
             let mut cells = vec![
-                Cell::from(col_stat.name.as_str())
-                    .style(Style::default().fg(theme.get("text_primary"))),
+                Cell::from(col_stat.name.as_str()).style(Style::default().fg(theme.text_primary())),
             ];
             for &stat_idx in &visible_stats {
                 let stat_name = stat_names[stat_idx];
@@ -844,18 +844,16 @@ fn format_fit_pvalue(test: &FitTest) -> String {
 /// Holds, marginal, rejected.
 fn pvalue_style(p: f64, theme: &Theme) -> Style {
     if p >= 0.05 {
-        Style::default().fg(theme.get("distribution_normal"))
+        Style::default().fg(theme.distribution_normal())
     } else if p > 0.01 {
-        Style::default().fg(theme.get("distribution_skewed"))
+        Style::default().fg(theme.distribution_skewed())
     } else {
-        Style::default().fg(theme.get("outlier_marker"))
+        Style::default().fg(theme.outlier_marker())
     }
 }
 
-/// Build header-style: bg+fg when bg_key is not Reset, else fg-only.
-pub(crate) fn header_style(theme: &Theme, bg_key: &str, fg_key: &str) -> Style {
-    let bg = theme.get(bg_key);
-    let fg = theme.get(fg_key);
+/// A header's style: `bg` behind `fg`, or `fg` alone when `bg` is the terminal's own.
+pub(crate) fn header_style(bg: Color, fg: Color) -> Style {
     if bg == Color::Reset {
         Style::default().fg(fg)
     } else {
@@ -943,25 +941,25 @@ fn render_distribution_table(
     for &stat_idx in &visible_stats {
         header_cells.push(Cell::from(column_names[stat_idx]).style(Style::default()));
     }
-    let header_row_style = header_style(theme, "controls_bg", "table_header");
+    let header_row_style = header_style(theme.controls_bg(), theme.table_header());
     let header_row = Row::new(header_cells).style(header_row_style);
     for (dist_analysis, texts) in results.distribution_analyses.iter().zip(texts) {
         // The verdict in the colors of its p-value; no clear fit in the rejected one.
         let type_color = match dist_analysis.distribution_type {
-            DistributionType::Unknown => theme.get("outlier_marker"),
-            DistributionType::Constant => theme.get("text_primary"),
+            DistributionType::Unknown => theme.outlier_marker(),
+            DistributionType::Constant => theme.text_primary(),
             _ => pvalue_style(dist_analysis.confidence, theme)
                 .fg
-                .unwrap_or_else(|| theme.get("text_primary")),
+                .unwrap_or_else(|| theme.text_primary()),
         };
 
         // Relaxed outlier color thresholds - red only for very high percentages that might indicate data errors
         let outlier_style = if dist_analysis.outliers.percentage > 20.0 {
             // Red: very high outlier percentage (>20%) - might indicate data errors
-            Style::default().fg(theme.get("outlier_marker"))
+            Style::default().fg(theme.outlier_marker())
         } else if dist_analysis.outliers.percentage > 5.0 {
             // Yellow for moderate outliers (5-20%)
-            Style::default().fg(theme.get("distribution_skewed"))
+            Style::default().fg(theme.distribution_skewed())
         } else {
             // Default (white) for low outlier percentages (0-5%)
             Style::default()
@@ -973,18 +971,18 @@ fn render_distribution_table(
 
         // Skewness color coding: similar to describe table
         let skewness_style = if skewness_value >= 3.0 {
-            Style::default().fg(theme.get("outlier_marker"))
+            Style::default().fg(theme.outlier_marker())
         } else if skewness_value >= 1.0 {
-            Style::default().fg(theme.get("distribution_skewed"))
+            Style::default().fg(theme.distribution_skewed())
         } else {
             Style::default()
         };
 
         // Kurtosis color coding: 3.0 is normal, high/low is notable
         let kurtosis_style = if (kurtosis_value - 3.0).abs() >= 3.0 {
-            Style::default().fg(theme.get("outlier_marker"))
+            Style::default().fg(theme.outlier_marker())
         } else if (kurtosis_value - 3.0).abs() >= 1.0 {
-            Style::default().fg(theme.get("distribution_skewed"))
+            Style::default().fg(theme.distribution_skewed())
         } else {
             Style::default()
         };
@@ -998,11 +996,11 @@ fn render_distribution_table(
             .shapiro_wilk_pvalue
             .map(|p| {
                 if p > 0.05 {
-                    Style::default().fg(theme.get("distribution_normal"))
+                    Style::default().fg(theme.distribution_normal())
                 } else if p > 0.01 {
-                    Style::default().fg(theme.get("distribution_skewed"))
+                    Style::default().fg(theme.distribution_skewed())
                 } else {
-                    Style::default().fg(theme.get("outlier_marker"))
+                    Style::default().fg(theme.outlier_marker())
                 }
             })
             .unwrap_or_default();
@@ -1011,12 +1009,12 @@ fn render_distribution_table(
         // Use explicit text_primary so column names stay visible (avoids black-on-black)
         let mut cells = vec![
             Cell::from(dist_analysis.column_name.as_str())
-                .style(Style::default().fg(theme.get("text_primary"))),
+                .style(Style::default().fg(theme.text_primary())),
         ];
 
         let cv_style = if dist_analysis.characteristics.coefficient_of_variation > 1.0 {
             // High variability.
-            Style::default().fg(theme.get("distribution_skewed"))
+            Style::default().fg(theme.distribution_skewed())
         } else {
             Style::default()
         };
@@ -1108,7 +1106,11 @@ fn cursor_rail(focused: bool, theme: &Theme) -> Span<'static> {
 
 /// The rail's color: the accent with focus, dimmed without.
 pub(crate) fn rail_style(focused: bool, theme: &Theme) -> Style {
-    Style::default().fg(theme.get(if focused { "accent" } else { "dimmed" }))
+    Style::default().fg(if focused {
+        theme.accent()
+    } else {
+        theme.dimmed()
+    })
 }
 
 /// The row the cursor is on: the tint while the table has focus; without it,
@@ -1186,7 +1188,7 @@ fn draw_scroll_marks(
     if area.height == 0 || area.width == 0 {
         return;
     }
-    let style = header_style(theme, "controls_bg", "accent").add_modifier(Modifier::BOLD);
+    let style = header_style(theme.controls_bg(), theme.accent()).add_modifier(Modifier::BOLD);
     if start > 0 && locked_width > 0 && locked_width <= area.width {
         Paragraph::new(crate::glyphs::get().arrow_left)
             .style(style)
@@ -1290,8 +1292,8 @@ fn render_correlation_matrix(
 
     let (selected_row, selected_col) = selected_cell.unwrap_or((n, n));
 
-    let header_row_style = header_style(theme, "controls_bg", "table_header");
-    let dim_header_style = header_style(theme, "controls_bg", "table_header");
+    let header_row_style = header_style(theme.controls_bg(), theme.table_header());
+    let dim_header_style = header_style(theme.controls_bg(), theme.table_header());
 
     let mut header_cells = vec![Cell::from("")];
     for j in start_col..end_col {
@@ -1316,7 +1318,7 @@ fn render_correlation_matrix(
 
         // Row header cell - dim highlight if selected row
         let row_header_style = if is_selected_row {
-            Style::default().bg(theme.get("surface"))
+            Style::default().bg(theme.surface())
         } else {
             Style::default()
         };
@@ -1351,7 +1353,7 @@ fn render_correlation_matrix(
                     .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
             } else if is_selected_row || is_in_selected_col {
                 // Selected row or column: dim background with colored text
-                Style::default().fg(text_color).bg(theme.get("surface"))
+                Style::default().fg(text_color).bg(theme.surface())
             } else {
                 // Normal cell: just text color
                 Style::default().fg(text_color)
@@ -1361,7 +1363,7 @@ fn render_correlation_matrix(
         }
 
         let row_style = if is_selected_row {
-            Style::default().bg(theme.get("surface"))
+            Style::default().bg(theme.surface())
         } else {
             Style::default()
         };
@@ -1393,16 +1395,16 @@ fn get_correlation_color(correlation: f64, theme: &Theme) -> Color {
 
     if abs_corr < 0.05 {
         // No correlation (close to 0) - dimmed
-        theme.get("dimmed")
+        theme.dimmed()
     } else if abs_corr < 0.3 {
         // Low correlation - normal text
-        theme.get("text_primary")
+        theme.text_primary()
     } else if correlation > 0.0 {
         // Positive correlation - keybind hints color (UI element, not chart)
-        theme.get("chip_key")
+        theme.chip_key()
     } else {
         // Negative correlation - error/warning color
-        theme.get("outlier_marker")
+        theme.outlier_marker()
     }
 }
 
@@ -1780,7 +1782,7 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
             Bar::default()
                 .value(data_height)
                 .text_value(String::new())
-                .style(Style::default().fg(theme.get("chart_1")))
+                .style(Style::default().fg(theme.chart_1()))
         })
         .collect();
 
@@ -1847,7 +1849,7 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
         .name("") // Empty name to prevent legend from appearing
         .marker(marker)
         .graph_type(GraphType::Scatter)
-        .style(Style::default().fg(theme.get("dimmed")))
+        .style(Style::default().fg(theme.dimmed()))
         .data(&histogram.curve);
 
     let theory_chart = Chart::new(vec![theory_dataset])
@@ -2023,14 +2025,14 @@ fn render_qq_plot(config: DistributionPlotConfig, buf: &mut Buffer) {
         Dataset::default()
             .name("") // Empty name to hide from legend
             .marker(marker)
-            .style(Style::default().fg(theme.get("dimmed")))
+            .style(Style::default().fg(theme.dimmed()))
             .graph_type(GraphType::Line)
             .data(&reference_line),
         // Q-Q plot data points
         Dataset::default()
             .name("") // Empty name to hide from legend
             .marker(marker)
-            .style(Style::default().fg(theme.get("chart_1")))
+            .style(Style::default().fg(theme.chart_1()))
             .graph_type(GraphType::Scatter)
             .data(&qq_data),
     ];
@@ -2071,7 +2073,7 @@ fn distribution_axes<'a>(
     y: AxisSpec<'a>,
     marker: ratatui::symbols::Marker,
 ) -> PlotAxes<'a> {
-    let secondary = Style::default().fg(theme.get("text_secondary"));
+    let secondary = Style::default().fg(theme.text_secondary());
     PlotAxes {
         titles: Style::default(),
         ..PlotAxes::new(x, y, secondary, marker)
@@ -2121,7 +2123,7 @@ fn condensed_statistics_lines(
     width: u16,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
-    let style = Style::default().fg(theme.get("text_primary"));
+    let style = Style::default().fg(theme.text_primary());
     let mut lines = Vec::new();
     let mut spans = Vec::new();
     let mut used = 0usize;
@@ -2742,8 +2744,8 @@ mod tests {
     #[test]
     fn the_unfocused_selection_is_dimmed() {
         let theme = Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
-        let accent = theme.get("accent");
-        let dimmed = theme.get("dimmed");
+        let accent = theme.accent();
+        let dimmed = theme.dimmed();
         let rail = crate::glyphs::get().rail;
         let area = Rect::new(0, 0, 30, 8);
         let sidebar = |focus: AnalysisFocus| {

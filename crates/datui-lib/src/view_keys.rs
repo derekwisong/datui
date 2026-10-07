@@ -23,7 +23,7 @@ impl App {
                     // Back to the list; the form's staged edits die with it.
                     self.view_modal.exit_form();
                 } else {
-                    self.view_modal.close();
+                    self.close_overlay();
                 }
             }
             _ if self.view_modal.score_details.is_some() => {}
@@ -36,7 +36,7 @@ impl App {
                         // The list stays open, so the user sees what failed.
                         self.error_modal.show(format!("Error applying view: {}", e));
                     } else {
-                        self.view_modal.active = false;
+                        self.close_overlay();
                     }
                 }
             }

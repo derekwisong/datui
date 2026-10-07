@@ -70,7 +70,7 @@ fn press(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Option<AppEve
 /// `i`, then → to the Resources tab, where the file size is: past a Parquet tab.
 fn open_resources(app: &mut App) {
     press(app, KeyCode::Char('i'), KeyModifiers::NONE);
-    assert_eq!(app.input_mode, InputMode::Info);
+    assert_eq!(app.overlay, Overlay::Info);
     for _ in 0..3 {
         press(app, KeyCode::Right, KeyModifiers::NONE);
         if app.info_modal.active_tab == crate::widgets::info::InfoTab::Resources {
@@ -127,7 +127,7 @@ fn info_draws_and_answers_keys_while_its_read_waits() {
     }
     // Esc and `i` act at once, and the panel opened again asks nothing new.
     press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
     open_resources(&mut app);
     let _ = screen(&mut app);
 

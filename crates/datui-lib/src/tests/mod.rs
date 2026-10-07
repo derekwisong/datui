@@ -1817,8 +1817,7 @@ fn a_parked_end_does_not_put_its_message_on_the_chart_view() {
     let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
     assert!(footer_text(&mut app).contains("Counting rows"), "parked");
 
-    app.input_mode = crate::InputMode::Chart;
-    app.chart.modal.active = true;
+    app.overlay = crate::Overlay::Chart;
 
     let bar = footer_text(&mut app);
     assert!(
@@ -2341,7 +2340,7 @@ fn stale_analysis_answers_are_ignored() {
             plan: Box::default(),
         },
     ];
-    app.analysis_modal.active = true;
+    app.overlay = crate::Overlay::Analysis;
     app.analysis_modal.selected_tool = Some(crate::analysis_modal::AnalysisTool::DataQuality);
     let runs: Vec<_> = answers
         .iter()
@@ -2421,7 +2420,7 @@ fn a_panicking_worker_ends_its_job() {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
     let generation = app.task_generation();
-    app.input_mode = crate::InputMode::PivotMelt;
+    app.overlay = crate::Overlay::PivotMelt;
     let ticket = app.spawn_job(
         Job::Pivot,
         Some(App::COMPUTING_PIVOT),
@@ -2626,7 +2625,7 @@ fn a_failure_leaves_other_work_alone() {
         .supersede(|job| matches!(job, Job::ChartExport { .. }));
     fail(&mut app, older);
     untouched(&app, "an older chart export");
-    assert!(!app.chart.export_modal.active);
+    assert_ne!(app.overlay, crate::Overlay::ChartExport);
 
     // An open is no longer waited on once the user has gone home from it.
     let load = app.open_for_tests("gone.csv");

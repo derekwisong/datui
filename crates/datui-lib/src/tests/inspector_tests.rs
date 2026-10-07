@@ -28,7 +28,7 @@ fn press(app: &mut App, code: KeyCode) -> Option<AppEvent> {
 /// Enter on the hidden field: the answer the worker sends, still unhandled.
 fn read_hidden(app: &mut App, rx: &std::sync::mpsc::Receiver<AppEvent>) -> AppEvent {
     press(app, KeyCode::Char(' '));
-    assert_eq!(app.input_mode, InputMode::Inspect);
+    assert_eq!(app.overlay, Overlay::Inspect);
     press(app, KeyCode::End);
     assert!(app.inspector_modal.focused().unwrap().hidden);
     press(app, KeyCode::Enter);
@@ -219,7 +219,7 @@ fn enter_reads_an_unread_field_and_the_footer_says_so() {
 fn the_field_list_is_worked_out_once_per_change() {
     let (mut app, _rx) = app();
     press(&mut app, KeyCode::Char(' '));
-    assert_eq!(app.input_mode, InputMode::Inspect);
+    assert_eq!(app.overlay, Overlay::Inspect);
     draw(&mut app);
     let builds = app.inspector_modal.list_builds;
     draw(&mut app);

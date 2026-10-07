@@ -38,7 +38,6 @@ pub enum FormFocus {
 
 #[derive(Default)]
 pub struct ViewModal {
-    pub active: bool,
     pub mode: ViewModalMode,
     pub table_state: TableState,
     pub rows: Vec<ViewRow>,
@@ -239,7 +238,6 @@ impl ViewModal {
     /// Take the modal down wholesale, whatever mode it is in.
     pub fn close(&mut self) {
         self.exit_form();
-        self.active = false;
         self.score_details = None;
     }
 }

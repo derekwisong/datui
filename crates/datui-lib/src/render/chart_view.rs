@@ -93,7 +93,7 @@ pub fn render(
         },
     );
 
-    if app.chart.export_modal.active {
+    if app.overlay == crate::Overlay::ChartExport {
         // A commitment, so a compact centered dialog, never scaling with the
         // terminal; it scrolls inside its frame on a short one.
         let modal_width = (chart_area.width * 3 / 4).min(66);

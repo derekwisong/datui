@@ -213,7 +213,7 @@ fn a_dbc_file_lists_a_table_per_message() {
     app.home.select(at);
     key(&mut app, &rx, KeyCode::Enter);
     assert_eq!(app.error_message(), None);
-    assert_eq!(app.input_mode, InputMode::Normal, "{:?}", app.home.status);
+    assert!(app.at_table(), "{:?}", app.home.status);
     let df = frame(&app);
     assert_eq!(df.height(), 51, "50 classic frames and the FD one");
     key(&mut app, &rx, KeyCode::Char('q'));

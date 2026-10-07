@@ -132,7 +132,7 @@ fn info_without_a_codebook_has_no_about_column() {
 fn the_inspector_names_the_code_under_the_cursor() {
     let (mut app, _rx) = app();
     press(&mut app, KeyCode::Char(' '));
-    assert_eq!(app.input_mode, InputMode::Inspect);
+    assert_eq!(app.overlay, Overlay::Inspect);
     let screen = draw(&mut app);
     assert!(screen.contains("Element type"), "{screen}");
     assert!(

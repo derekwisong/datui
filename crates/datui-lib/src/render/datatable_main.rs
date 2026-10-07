@@ -21,9 +21,9 @@ pub fn render(
     ctx: &RenderContext,
 ) {
     let active_sidebar = ActiveSidebar::from_modals(
-        app.info_modal.active,
-        app.sort_filter_modal.active,
-        app.view_modal.active,
+        app.overlay.shows(&crate::Overlay::Info),
+        app.overlay == crate::Overlay::SortFilter,
+        app.overlay == crate::Overlay::View,
     );
 
     let datatable_layout = DatatableLayout::compute(
@@ -136,7 +136,7 @@ pub fn render(
                 }
                 .render_centered(table_area, buf, ctx);
             }
-            if app.info_modal.active {
+            if app.overlay.shows(&crate::Overlay::Info) {
                 let facts = crate::App::facts_shown(
                     &app.info.file_facts,
                     app.dataset_generation,
@@ -169,11 +169,11 @@ pub fn render(
         }
     }
 
-    if app.sort_filter_modal.active {
+    if app.overlay == crate::Overlay::SortFilter {
         crate::render::sort_filter_sidebar::render(sort_area, buf, &mut app.sort_filter_modal, ctx);
     }
 
-    if app.view_modal.active {
+    if app.overlay == crate::Overlay::View {
         crate::render::view_sidebar::render(
             sort_area,
             buf,
@@ -184,19 +184,18 @@ pub fn render(
     }
 
     // A takeover: the form beside a preview of the reshaped rows.
-    if app.pivot_melt_modal.active {
+    if app.overlay == crate::Overlay::PivotMelt {
         pivot_melt::render(main_area, buf, &mut app.pivot_melt_modal, ctx);
     }
 
-    if app.export_modal.active {
+    if matches!(app.overlay, crate::Overlay::Export { .. }) {
         // A commitment, so a compact centered dialog that never scales with
         // the terminal.
         let modal_area = export::dialog_area(area);
         export::render_export_modal(modal_area, buf, &mut app.export_modal, ctx);
     }
 
-    if app.inspector_modal.active
-        && app.input_mode == crate::InputMode::Inspect
+    if app.overlay == crate::Overlay::Inspect
         && let Some(state) = app.data_table_state.as_ref()
     {
         // A takeover: the row's fields want the width a long value reads at, and
@@ -211,11 +210,11 @@ pub fn render(
         );
     }
 
-    if app.input_mode == crate::InputMode::GoToColumn {
+    if app.overlay == crate::Overlay::GoToColumn {
         render_go_to_column(data_area, buf, &app.pickers.go_to_column, ctx);
     }
 
-    if app.input_mode == crate::InputMode::PickFormat {
+    if app.overlay == crate::Overlay::PickFormat {
         render_picker(
             data_area,
             buf,
@@ -225,19 +224,19 @@ pub fn render(
         );
     }
 
-    if app.input_mode == crate::InputMode::Retype
+    if matches!(app.overlay, crate::Overlay::Retype { .. })
         && let Some(modal) = &app.column_forms.retype
     {
         crate::widgets::retype::render_retype(area, buf, modal, ctx);
     }
 
-    if app.input_mode == crate::InputMode::Combine
+    if matches!(app.overlay, crate::Overlay::Combine { .. })
         && let Some(modal) = &app.column_forms.combine
     {
         crate::widgets::retype::render_combine(area, buf, modal, ctx);
     }
 
-    if app.input_mode == crate::InputMode::Sample
+    if app.overlay == crate::Overlay::Sample
         && let Some(form) = &app.sample.form
     {
         // A dialog over the table: what it covers takes no clicks.
@@ -245,7 +244,7 @@ pub fn render(
         crate::widgets::sample_form::render(form, true, data_area, buf, ctx);
     }
 
-    if app.input_mode == crate::InputMode::PickTable
+    if app.overlay == crate::Overlay::PickTable
         && let Some(tables) = app.pickers.table_choices.as_ref()
     {
         let details: Vec<String> = tables
@@ -270,7 +269,7 @@ pub fn render(
         );
     }
 
-    if app.copy_modal.active {
+    if app.overlay == crate::Overlay::Copy {
         // A commitment like export: compact and centered. The dialog holds
         // the most rows any scope offers, so stepping the scope moves nothing,
         // the spec and the footer; an open Picker earns the room it drops into.

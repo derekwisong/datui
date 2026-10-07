@@ -12,9 +12,7 @@ use crate::chart_modal::{Aggregate, ChartModal, ChartSpec, ColorCounts, Mark};
 use crate::chart_plot::{LinesData, PlotContext, PlotData, plot};
 use crate::jobs::{Answer, ChartPrep, Job};
 use crate::output_file::Overwrite;
-use crate::{
-    App, AppEvent, ExportProgress, InputMode, chart_export, numfmt, output_file, sampling,
-};
+use crate::{App, AppEvent, ExportProgress, Overlay, chart_export, numfmt, output_file, sampling};
 use chart_export::{ChartExportFormat, ChartExportRequest, ExportOptions, Figure};
 
 /// The chart view, its export form, and the preparations it keeps or waits on.
@@ -529,7 +527,7 @@ impl App {
     /// Whether the chart view wants data it does not have and cannot be told it will
     /// never get.
     pub(crate) fn chart_request_pending(&self) -> bool {
-        if self.input_mode != InputMode::Chart || !self.chart.modal.active {
+        if !self.overlay.shows(&Overlay::Chart) {
             return false;
         }
         ChartRequest::from_modal(&self.chart.modal)
@@ -553,6 +551,9 @@ impl App {
         self.jobs.supersede(is_chart_prep);
         // A failed export reopens its modal; it must not follow the user to the next
         // dataset.
+        if self.overlay == Overlay::ChartExport {
+            self.step_back();
+        }
         self.chart.export_modal.close();
         let writing = self
             .jobs
@@ -607,7 +608,7 @@ impl App {
     /// of column or option is noticed as soon as it is made and render only ever draws.
     pub(crate) fn ensure_chart_data(&mut self) {
         const CHART_AGGREGATE_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
-        if self.input_mode != InputMode::Chart || !self.chart.modal.active {
+        if !self.overlay.shows(&Overlay::Chart) {
             return;
         }
         // What Every row costs, as the table counted it.
@@ -748,7 +749,7 @@ impl App {
                 // first. A Ctrl-O in that window has already left the chart view, and
                 // there is nothing to export any more: release the app rather than park
                 // an export that no view would ever prepare.
-                if self.input_mode != InputMode::Chart || !self.chart.modal.active {
+                if !self.overlay.shows(&Overlay::Chart) {
                     self.export_progress = None;
                     self.status_message = None;
                     self.busy = false;
@@ -866,6 +867,9 @@ impl App {
             Err(message) => {
                 self.chart.export_modal.reopen_with_path(path, format);
                 self.chart.export_modal.error = Some(message);
+                if self.overlay == Overlay::Chart {
+                    self.open_overlay(Overlay::ChartExport);
+                }
             }
         }
     }

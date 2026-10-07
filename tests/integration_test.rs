@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use datui::analysis_modal::AnalysisTool;
 use datui::event_pump::EventPump;
-use datui::{App, AppEvent, InputMode, JobKind, OpenOptions, QueryMode};
+use datui::{App, AppEvent, InputMode, JobKind, OpenOptions, Overlay, QueryMode};
 use polars::prelude::*;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -186,7 +186,7 @@ fn test_wait_past_its_guard_fails() {
 fn test_app_creation() {
     let (tx, _) = mpsc::channel();
     let app = App::new(tx, common::test_runtime());
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
 }
 
 #[test]
@@ -223,7 +223,7 @@ fn test_full_workflow() {
     // 2. Filter the data (s = Sort & Filter, switch to Filter tab, configure, Apply)
     let key_event = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE);
     app.event(AppEvent::Key(key_event));
-    assert!(app.sort_filter_modal.active);
+    assert_eq!(app.overlay, Overlay::SortFilter);
 
     app.sort_filter_modal.switch_tab(); // Filter tab
     app.sort_filter_modal.filter.available_columns =
@@ -245,7 +245,7 @@ fn test_full_workflow() {
         app.event(next_event);
     }
     drain_events(&mut app, &rx);
-    assert!(!app.sort_filter_modal.active);
+    assert_ne!(app.overlay, Overlay::SortFilter);
 
     let datatable = app.data_table_state.as_ref().unwrap();
     assert_eq!(datatable.lf().clone().collect().unwrap().shape().0, 33);
@@ -253,7 +253,7 @@ fn test_full_workflow() {
     // 3. Sort the data (s = Sort & Filter, Sort tab, configure, Apply)
     let key_event = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE);
     app.event(AppEvent::Key(key_event));
-    assert!(app.sort_filter_modal.active);
+    assert_eq!(app.overlay, Overlay::SortFilter);
 
     app.sort_filter_modal.sort.columns = app
         .data_table_state
@@ -285,7 +285,7 @@ fn test_full_workflow() {
         app.event(next_event);
     }
     drain_events(&mut app, &rx);
-    assert!(!app.sort_filter_modal.active);
+    assert_ne!(app.overlay, Overlay::SortFilter);
 
     let datatable = app.data_table_state.as_ref().unwrap();
     let df = datatable.lf().clone().collect().unwrap();
@@ -315,17 +315,17 @@ fn test_chart_open_and_esc_back() {
         OpenOptions::default(),
     );
     assert!(app.data_table_state.is_some());
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
 
     let key_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE);
     app.event(AppEvent::Key(key_c));
-    assert_eq!(app.input_mode, InputMode::Chart);
-    assert!(app.chart.modal.active);
+    assert_eq!(app.overlay, Overlay::Chart);
+    assert!(app.overlay.shows(&Overlay::Chart));
 
     let key_esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
     app.event(AppEvent::Key(key_esc));
-    assert_eq!(app.input_mode, InputMode::Normal);
-    assert!(!app.chart.modal.active);
+    assert!(app.at_table());
+    assert!(!app.overlay.shows(&Overlay::Chart));
 }
 
 #[test]
@@ -345,13 +345,13 @@ fn test_chart_q_does_not_exit() {
         KeyCode::Char('c'),
         KeyModifiers::NONE,
     )));
-    assert_eq!(app.input_mode, InputMode::Chart);
+    assert_eq!(app.overlay, Overlay::Chart);
 
     // q does nothing in chart view (no exit)
     let key_q = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
     let out = app.event(AppEvent::Key(key_q));
     assert!(out.is_none());
-    assert_eq!(app.input_mode, InputMode::Chart);
+    assert_eq!(app.overlay, Overlay::Chart);
 }
 
 /// The chart type switches from anywhere: 1-7 name one in order, [ and ] step,
@@ -403,7 +403,7 @@ fn test_chart_type_switches_from_anywhere() {
         app.chart.modal.picker.is_none(),
         "Esc closes only the Picker"
     );
-    assert_eq!(app.input_mode, InputMode::Chart);
+    assert_eq!(app.overlay, Overlay::Chart);
 }
 
 /// `g` toggles the grid from anywhere on a chart with axes, as the Grid row's
@@ -443,7 +443,7 @@ fn test_chart_g_toggles_the_grid() {
     // Reopened from the same column, the chart keeps its grid.
     press(&mut app, KeyCode::Esc);
     press(&mut app, KeyCode::Esc);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
     press(&mut app, KeyCode::Char('c'));
     assert!(app.chart.modal.grid);
 }
@@ -531,7 +531,7 @@ fn test_chart_crosshair_keys_and_click() {
     press(&mut app, KeyCode::Char('x'));
     press(&mut app, KeyCode::Esc);
     assert!(!app.chart.modal.plot_focus);
-    assert_eq!(app.input_mode, InputMode::Chart);
+    assert_eq!(app.overlay, Overlay::Chart);
 
     // A click on the plot: the crosshair on the point drawn nearest it.
     draw(&mut app);
@@ -550,7 +550,7 @@ fn test_chart_crosshair_keys_and_click() {
 
     press(&mut pump.app, KeyCode::Esc);
     press(&mut pump.app, KeyCode::Esc);
-    assert_eq!(pump.app.input_mode, InputMode::Normal);
+    assert!(pump.app.at_table());
 }
 
 /// Shelves take columns through the shared Picker: Space opens it on a shelf,
@@ -614,7 +614,7 @@ fn test_chart_export_path_expands_tilde() {
         KeyCode::Char('e'),
         KeyModifiers::NONE,
     )));
-    assert!(app.chart.export_modal.active);
+    assert_eq!(app.overlay, Overlay::ChartExport);
     app.chart
         .export_modal
         .path_input
@@ -656,7 +656,7 @@ fn open_chart_view(name: &str) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<A
         KeyCode::Char('c'),
         KeyModifiers::NONE,
     )));
-    assert_eq!(app.input_mode, InputMode::Chart);
+    assert_eq!(app.overlay, Overlay::Chart);
     (app, rx, tx)
 }
 
@@ -707,7 +707,7 @@ fn test_chart_data_is_prepared_in_the_background() {
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
     assert!(!app.chart_preparing());
 }
 
@@ -853,8 +853,9 @@ fn test_chart_export_waits_for_the_current_selection_not_a_failed_one() {
         path.exists(),
         "the export completed from the valid selection"
     );
-    assert!(
-        !app.chart.export_modal.active,
+    assert_ne!(
+        app.overlay,
+        Overlay::ChartExport,
         "no error reopened the modal"
     );
     assert!(app.chart_data_ready());
@@ -869,10 +870,10 @@ fn test_chart_export_with_a_blank_path_says_why() {
     app.event(AppEvent::Resize(80, 24));
     pump_until_chart_ready(&mut app, &rx, &tx);
     press(&mut app, KeyCode::Char('e'));
-    assert!(app.chart.export_modal.active);
+    assert_eq!(app.overlay, Overlay::ChartExport);
     assert!(app.chart.export_modal.path_input.value().is_empty());
     assert!(press(&mut app, KeyCode::Enter).is_none());
-    assert!(app.chart.export_modal.active, "the dialog stays");
+    assert_eq!(app.overlay, Overlay::ChartExport, "the dialog stays");
     assert_eq!(
         app.chart.export_modal.error.as_deref(),
         Some("Enter a file path.")
@@ -903,7 +904,11 @@ fn test_chart_footer_offers_export_only_when_there_is_a_chart() {
     let empty = footer(&mut app);
     assert!(!empty.contains("Export"), "{empty}");
     assert!(press(&mut app, KeyCode::Char('e')).is_none());
-    assert!(!app.chart.export_modal.active, "and e does nothing there");
+    assert_ne!(
+        app.overlay,
+        Overlay::ChartExport,
+        "and e does nothing there"
+    );
 }
 
 /// The help over the `:` command line at 80x24 sits above the footer's prompt: its
@@ -961,8 +966,9 @@ fn test_chart_export_waits_for_prepared_data_and_writes_in_background() {
         std::fs::read(&path).unwrap().starts_with(b"%PDF-"),
         "the export was written once its data arrived"
     );
-    assert!(
-        !app.chart.export_modal.active,
+    assert_ne!(
+        app.overlay,
+        Overlay::ChartExport,
         "the export modal closes on success"
     );
 }
@@ -993,7 +999,7 @@ fn test_chart_export_replaces_only_what_was_agreed() {
         run_to_idle(&mut app, &rx, &tx, AppEvent::ChartExport(request.clone()));
         // The form comes back with the reason on its status line, not a modal.
         assert_eq!(app.error_message(), None, "{name}");
-        assert!(app.chart.export_modal.active, "{name}");
+        assert_eq!(app.overlay, Overlay::ChartExport, "{name}");
         assert!(
             app.chart
                 .export_modal
@@ -1004,7 +1010,7 @@ fn test_chart_export_replaces_only_what_was_agreed() {
         );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "theirs", "{name}");
         press(&mut app, KeyCode::Esc);
-        assert!(!app.chart.export_modal.active);
+        assert_ne!(app.overlay, Overlay::ChartExport);
 
         let replace = ChartExportRequest {
             overwrite: Overwrite::Replace,
@@ -1303,14 +1309,14 @@ fn chart_rows_are_read_on_enter() {
     // Esc puts a pending change back and leaves the chart open.
     press(&mut app, KeyCode::Char('5'));
     press(&mut app, KeyCode::Esc);
-    assert_eq!(app.input_mode, InputMode::Chart);
+    assert_eq!(app.overlay, Overlay::Chart);
     assert_eq!(app.chart.modal.row_limit, None);
     assert!(screen(&mut app).contains("Every row (900)"));
     // A switch there and back holds nothing to undo: one Esc closes.
     press(&mut app, KeyCode::Right);
     press(&mut app, KeyCode::Left);
     press(&mut app, KeyCode::Esc);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
 }
 
 /// The export dialog: the chart's legend setting carries over, a size preset sets
@@ -1329,7 +1335,7 @@ fn chart_export_dialog_presets_and_legend() {
     pump_until_chart_ready(&mut app, &rx, &tx);
 
     press(&mut app, KeyCode::Char('e'));
-    assert!(app.chart.export_modal.active);
+    assert_eq!(app.overlay, Overlay::ChartExport);
     assert_eq!(
         app.chart.export_modal.legend,
         LegendPlace::Off,
@@ -1693,7 +1699,11 @@ fn test_esc_cancels_a_distribution_analysis_in_flight() {
     app.event(AppEvent::Key(esc));
     assert!(app.analysis_modal.computing.is_none());
     assert_eq!(app.analysis_modal.selected_tool, None);
-    assert!(app.analysis_modal.active, "still on the analysis screen");
+    assert_eq!(
+        app.overlay,
+        Overlay::Analysis,
+        "still on the analysis screen"
+    );
     assert_eq!(app.flash_message(), Some("Analysis cancelled"));
 
     // The worker finishes anyway; what it sends is stale.
@@ -2099,7 +2109,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         "returning from Detail should land back on the same column"
     );
 
-    app.analysis_modal.close();
+    app.close_overlay();
     app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('a'),
         KeyModifiers::NONE,
@@ -2204,7 +2214,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         KeyModifiers::NONE,
     )));
     drain_events(&mut app, &rx);
-    assert!(!app.analysis_modal.active);
+    assert_ne!(app.overlay, Overlay::Analysis);
     let area = Rect::new(0, 0, 80, 24);
     let mut evidence_buffer = Buffer::empty(area);
     app.render(area, &mut evidence_buffer);
@@ -2220,19 +2230,19 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         KeyCode::Char('a'),
         KeyModifiers::NONE,
     )));
-    assert!(!app.analysis_modal.active);
+    assert_ne!(app.overlay, Overlay::Analysis);
     app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
-    assert!(app.analysis_modal.active);
+    assert_eq!(app.overlay, Overlay::Analysis);
     assert!(app.analysis_modal.quality.observation_detail);
     assert_eq!(
         app.data_table_state.as_ref().unwrap().len_generation(),
         original_view
     );
 
-    app.analysis_modal.close();
+    app.close_overlay();
     let state = app.data_table_state.as_mut().unwrap();
     state.deferred(|s| s.reverse());
     app.event(AppEvent::Key(KeyEvent::new(
@@ -2359,13 +2369,16 @@ fn modified_letters_are_not_table_feature_keys() {
         KeyCode::Char('e'),
         KeyModifiers::CONTROL,
     )));
-    assert!(!app.export_modal.active, "Ctrl+E is not e");
+    assert!(
+        !matches!(app.overlay, Overlay::Export { .. }),
+        "Ctrl+E is not e"
+    );
 
     app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('y'),
         KeyModifiers::CONTROL,
     )));
-    assert!(!app.copy_modal.active, "Ctrl+Y is not y");
+    assert_ne!(app.overlay, Overlay::Copy, "Ctrl+Y is not y");
 
     // And the plain letter still works. (Paging keeps Ctrl+F/B/D/U: those
     // four are the guard's explicit exceptions, matching their declared arms.)
@@ -2373,7 +2386,10 @@ fn modified_letters_are_not_table_feature_keys() {
         KeyCode::Char('e'),
         KeyModifiers::NONE,
     )));
-    assert!(app.export_modal.active, "e still opens Export");
+    assert!(
+        matches!(app.overlay, Overlay::Export { .. }),
+        "e still opens Export"
+    );
 }
 
 /// Declining an overwrite returns to the filled export form: the typed path
@@ -2398,7 +2414,7 @@ fn declining_an_overwrite_keeps_the_export_form() {
         |app: &mut App, code| app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
 
     key(&mut app, KeyCode::Char('e'));
-    assert!(app.export_modal.active);
+    assert!(matches!(app.overlay, Overlay::Export { .. }));
     // The form suggests a name; Backspace takes it away.
     assert_eq!(app.export_modal.path_input.value(), "people-export.parquet");
     key(&mut app, KeyCode::Backspace);
@@ -2407,7 +2423,10 @@ fn declining_an_overwrite_keeps_the_export_form() {
     // Enter on the empty form says why inline instead of doing nothing,
     // and typing is the correction that clears it.
     key(&mut app, KeyCode::Enter);
-    assert!(app.export_modal.active, "an empty path raises no modal");
+    assert!(
+        matches!(app.overlay, Overlay::Export { .. }),
+        "an empty path raises no modal"
+    );
     assert_eq!(
         app.export_modal.path_error.as_deref(),
         Some("Enter a file path.")
@@ -2430,9 +2449,12 @@ fn declining_an_overwrite_keeps_the_export_form() {
     // A reflexive second Enter declines, and the form comes back as typed.
     key(&mut app, KeyCode::Enter);
     assert!(!app.confirmation_modal.active);
-    assert!(app.export_modal.active, "No returns to the form");
+    assert!(
+        matches!(app.overlay, Overlay::Export { .. }),
+        "No returns to the form"
+    );
     assert_eq!(app.export_modal.path_input.value(), typed);
-    assert_eq!(app.input_mode, InputMode::Export);
+    assert!(matches!(app.overlay, Overlay::Export { .. }));
     assert_eq!(
         std::fs::read_to_string(&target).unwrap(),
         "old contents",
@@ -2443,13 +2465,16 @@ fn declining_an_overwrite_keeps_the_export_form() {
     key(&mut app, KeyCode::Enter);
     assert!(app.confirmation_modal.active);
     key(&mut app, KeyCode::Esc);
-    assert!(app.export_modal.active, "Esc returns to the form");
+    assert!(
+        matches!(app.overlay, Overlay::Export { .. }),
+        "Esc returns to the form"
+    );
     assert_eq!(app.export_modal.path_input.value(), typed);
 
     // Esc from the form itself discards it.
     key(&mut app, KeyCode::Esc);
-    assert!(!app.export_modal.active);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(!matches!(app.overlay, Overlay::Export { .. }));
+    assert!(app.at_table());
 }
 
 /// Enter on a tool always takes the cursor into its pane, whether it shows the
@@ -2518,7 +2543,7 @@ fn enter_on_a_tool_enters_its_pane_and_esc_steps_back() {
         AnalysisFocus::Sidebar,
         "Esc: the tools"
     );
-    assert!(app.analysis_modal.active, "Esc steps back one level");
+    assert_eq!(app.overlay, Overlay::Analysis, "Esc steps back one level");
     press(&mut app, KeyCode::Up);
     press(&mut app, KeyCode::Enter);
     assert_eq!(
@@ -2531,9 +2556,9 @@ fn enter_on_a_tool_enters_its_pane_and_esc_steps_back() {
     press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Esc);
     press(&mut app, KeyCode::Esc);
-    assert!(!app.analysis_modal.active);
+    assert_ne!(app.overlay, Overlay::Analysis);
     press(&mut app, KeyCode::Char('a'));
-    assert!(app.analysis_modal.active);
+    assert_eq!(app.overlay, Overlay::Analysis);
     assert_eq!(
         app.analysis_modal.selected_tool,
         Some(AnalysisTool::Describe)
@@ -2970,7 +2995,7 @@ fn data_quality_reads_as_a_report() {
         KeyModifiers::NONE,
     )));
     drain_events(&mut app, &rx);
-    assert!(!app.analysis_modal.active);
+    assert_ne!(app.overlay, Overlay::Analysis);
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.num_rows(), 4);
@@ -3119,7 +3144,7 @@ fn a_sampled_finding_opens_its_sampled_rows() {
     }
     drain_events(&mut app, &rx);
     pump_until_idle(&mut app, &rx, &tx);
-    assert!(!app.analysis_modal.active);
+    assert_ne!(app.overlay, Overlay::Analysis);
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(
         state.num_rows(),
@@ -3130,7 +3155,11 @@ fn a_sampled_finding_opens_its_sampled_rows() {
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
-    assert!(app.analysis_modal.active, "Esc goes back to the report");
+    assert_eq!(
+        app.overlay,
+        Overlay::Analysis,
+        "Esc goes back to the report"
+    );
     assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 5_000);
 }
 
@@ -3278,8 +3307,9 @@ fn findings_narrow_order_and_open_kept_evidence_without_a_read() {
     );
     press(&mut app, KeyCode::Esc);
     assert!(!app.analysis_modal.quality.findings.narrowed());
-    assert!(
-        app.analysis_modal.active,
+    assert_eq!(
+        app.overlay,
+        Overlay::Analysis,
         "Esc showed every finding; it did not leave"
     );
     press(&mut app, KeyCode::Char('t'));
@@ -3362,13 +3392,13 @@ fn findings_narrow_order_and_open_kept_evidence_without_a_read() {
     }
     drain_events(&mut app, &rx);
     pump_until_idle(&mut app, &rx, &tx);
-    assert!(!app.analysis_modal.active);
+    assert_ne!(app.overlay, Overlay::Analysis);
     assert_eq!(
         app.data_table_state.as_ref().unwrap().num_rows(),
         identity.rows_involved
     );
     press(&mut app, KeyCode::Esc);
-    assert!(app.analysis_modal.active);
+    assert_eq!(app.overlay, Overlay::Analysis);
     assert!(
         app.analysis_modal.quality.observation_detail,
         "Esc from the rows is the finding again"
@@ -3414,7 +3444,7 @@ fn findings_narrow_order_and_open_kept_evidence_without_a_read() {
     );
     press(&mut app, KeyCode::Enter);
     assert!(!app.analysis_modal.quality.observation_detail);
-    assert!(app.analysis_modal.active && !app.is_busy());
+    assert!(app.overlay == Overlay::Analysis && !app.is_busy());
 }
 
 /// A full scan keeps no rows, so a finding's rows are a read of their own: Enter
@@ -3530,10 +3560,10 @@ fn full_scan_evidence_is_read_only_on_confirm() {
     }
     drain_events(&mut app, &rx);
     pump_until_idle(&mut app, &rx, &tx);
-    assert!(!app.analysis_modal.active);
+    assert_ne!(app.overlay, Overlay::Analysis);
     assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 900);
     press(&mut app, KeyCode::Esc);
-    assert!(app.analysis_modal.active);
+    assert_eq!(app.overlay, Overlay::Analysis);
 }
 
 /// A finding's rows over a compressed CSV scan its decompressed copy: capture there
@@ -3598,7 +3628,7 @@ fn evidence_rows_over_a_decompressed_file_hold_it() {
     }
     drain_events(&mut app, &rx);
     pump_until_idle(&mut app, &rx, &tx);
-    assert!(!app.analysis_modal.active, "the rows are on screen");
+    assert_ne!(app.overlay, Overlay::Analysis, "the rows are on screen");
     assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 10);
 
     let Err(error) = app.capture_view() else {
@@ -3708,7 +3738,11 @@ fn one_sample_serves_every_analysis_tool() {
     let next = key(&mut app, KeyCode::Char('v'));
     run(&mut app, next);
     pump_until_idle(&mut app, &rx, &tx);
-    assert!(!app.analysis_modal.active, "the sample replaces the tool");
+    assert_ne!(
+        app.overlay,
+        Overlay::Analysis,
+        "the sample replaces the tool"
+    );
     assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 100);
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
@@ -3718,7 +3752,7 @@ fn one_sample_serves_every_analysis_tool() {
         "the view says what it is and the way out"
     );
     key(&mut app, KeyCode::Esc);
-    assert!(app.analysis_modal.active);
+    assert_eq!(app.overlay, Overlay::Analysis);
     assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 1_000);
     assert!(app.analysis_modal.describe_results.is_some());
 
@@ -4167,9 +4201,9 @@ fn data_quality_reads_nothing_until_setup_runs() {
     // Reopened, the unchanged report comes back from the session cache. Esc
     // steps back to the tools, then closes.
     press(&mut app, KeyCode::Esc);
-    assert!(app.analysis_modal.active);
+    assert_eq!(app.overlay, Overlay::Analysis);
     press(&mut app, KeyCode::Esc);
-    assert!(!app.analysis_modal.active);
+    assert_ne!(app.overlay, Overlay::Analysis);
     press(&mut app, KeyCode::Char('a'));
     app.analysis_modal.sidebar_state.select(Some(3));
     assert!(press(&mut app, KeyCode::Enter).is_none());
@@ -4912,10 +4946,14 @@ fn intervals_are_chosen_in_setup_and_inspected_without_a_read() {
     drain_events(&mut app, &rx);
     pump_until_idle(&mut app, &rx, &tx);
     // With the file gone, only the kept sample could have answered.
-    assert!(!app.analysis_modal.active);
+    assert_ne!(app.overlay, Overlay::Analysis);
     assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), count);
     press(&mut app, KeyCode::Esc);
-    assert!(app.analysis_modal.active, "Esc goes back to the detail");
+    assert_eq!(
+        app.overlay,
+        Overlay::Analysis,
+        "Esc goes back to the detail"
+    );
     assert_eq!(app.analysis_modal.quality.page, QualityPage::IntervalDetail);
     // Esc from the detail is the list, the interval still selected.
     press(&mut app, KeyCode::Esc);
@@ -5084,7 +5122,7 @@ fn trends_and_gaps_are_inspected_without_a_read() {
     press(&mut app, KeyCode::Right);
     press(&mut app, KeyCode::Down);
     type_text(&mut app, "q?");
-    assert!(app.analysis_modal.active, "q typed, not quit");
+    assert_eq!(app.overlay, Overlay::Analysis, "q typed, not quit");
     press(&mut app, KeyCode::Enter);
     let editor = render(&mut app, 80, 24);
     assert!(
@@ -5365,7 +5403,7 @@ fn a_file_changed_on_disk_is_read_again_once_opened_again() {
     // Back to the report: the session's, from its cache.
     press(&mut app, KeyCode::Esc);
     press(&mut app, KeyCode::Esc);
-    assert!(!app.analysis_modal.active);
+    assert_ne!(app.overlay, Overlay::Analysis);
     open_quality_setup(&mut app);
     assert!(app.analysis_modal.quality.from_cache);
     assert_eq!(amount_nulls(&app), 0, "the snapshot, not the file");
@@ -8741,12 +8779,15 @@ fn test_a_failed_export_reopens_the_form_as_it_was() {
     app.export_modal.sync_format_to_path();
     app.export_modal.csv_include_header = false;
     let export = press(&mut app, KeyCode::Enter).expect("the export starts");
-    assert!(!app.export_modal.active, "out of the way while it writes");
+    assert!(
+        !matches!(app.overlay, Overlay::Export { .. }),
+        "out of the way while it writes"
+    );
     run_to_idle(&mut app, &rx, &tx, export);
 
     assert_eq!(app.error_message(), None, "no modal");
-    assert!(app.export_modal.active);
-    assert_eq!(app.input_mode, datui::InputMode::Export);
+    assert!(matches!(app.overlay, Overlay::Export { .. }));
+    assert!(matches!(app.overlay, datui::Overlay::Export { .. }));
     assert_eq!(
         app.export_modal.path_input.value(),
         target.display().to_string()
@@ -8772,7 +8813,7 @@ fn test_a_failed_export_reopens_the_form_as_it_was() {
     let export = press(&mut app, KeyCode::Enter).expect("the export starts again");
     run_to_idle(&mut app, &rx, &tx, export);
     assert!(target.exists());
-    assert!(!app.export_modal.active);
+    assert!(!matches!(app.overlay, Overlay::Export { .. }));
     assert!(
         app.flash_message()
             .is_some_and(|m| m.starts_with("Exported to "))
@@ -10610,9 +10651,8 @@ fn test_escape_from_home_returns_to_the_dataset_that_was_open() {
         KeyModifiers::NONE,
     )));
 
-    assert_eq!(
-        app.input_mode,
-        InputMode::Normal,
+    assert!(
+        app.at_table(),
         "Esc from home should return to the open dataset"
     );
     // Said on arrival, so a reflexive Esc too many does not leave the next keys acting
@@ -11187,9 +11227,8 @@ fn test_opening_from_home_does_not_show_the_previous_dataset() {
     while let Some(event) = next {
         next = app.event(event);
     }
-    assert_eq!(
-        app.input_mode,
-        InputMode::Normal,
+    assert!(
+        app.at_table(),
         "opening from home should leave the home screen"
     );
     assert_ne!(app.open_path(), Some(second.as_path()), "still loading");
@@ -12546,11 +12585,10 @@ fn test_enter_inspects_where_there_is_nothing_to_drill_into() {
     let plain = painted(&mut app, &rx, &tx, area);
     assert!(!plain.contains("Enter Drill"), "{plain}");
     press_and_send(&mut app, &tx, KeyCode::Enter);
-    assert_eq!(app.input_mode, InputMode::Inspect);
-    assert!(app.inspector_modal.active);
+    assert_eq!(app.overlay, Overlay::Inspect);
     press_and_send(&mut app, &tx, KeyCode::Esc);
-    assert_eq!(app.input_mode, InputMode::Normal);
-    assert!(!app.inspector_modal.active);
+    assert!(app.at_table());
+    assert_ne!(app.overlay, Overlay::Inspect);
 
     app.event(AppEvent::QQuery("select n: count a by c".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
@@ -12561,16 +12599,16 @@ fn test_enter_inspects_where_there_is_nothing_to_drill_into() {
     );
     press_and_send(&mut app, &tx, KeyCode::Enter);
     pump_until_idle(&mut app, &rx, &tx);
-    assert_eq!(app.input_mode, InputMode::Normal, "Enter drilled");
+    assert!(app.at_table(), "Enter drilled");
     assert!(app.data_table_state.as_ref().unwrap().is_drilled_down());
 
     let inside = painted(&mut app, &rx, &tx, area);
     assert!(inside.contains("Esc Back"), "{inside}");
     assert!(!inside.contains("Drill"), "{inside}");
     press_and_send(&mut app, &tx, KeyCode::Enter);
-    assert_eq!(app.input_mode, InputMode::Inspect);
+    assert_eq!(app.overlay, Overlay::Inspect);
     press_and_send(&mut app, &tx, KeyCode::Esc);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
     assert!(app.data_table_state.as_ref().unwrap().is_drilled_down());
 }
 
@@ -12611,8 +12649,7 @@ fn test_enter_inspects_a_loaded_list_column_and_drills_a_by_view() {
 
     press_and_send(&mut app, &tx, KeyCode::Enter);
     pump_until_idle(&mut app, &rx, &tx);
-    assert_eq!(app.input_mode, InputMode::Inspect);
-    assert!(app.inspector_modal.active);
+    assert_eq!(app.overlay, Overlay::Inspect);
     press_and_send(&mut app, &tx, KeyCode::Esc);
     let state = app.data_table_state.as_ref().unwrap();
     assert!(!state.is_drilled_down());
@@ -12626,7 +12663,7 @@ fn test_enter_inspects_a_loaded_list_column_and_drills_a_by_view() {
     assert!(app.data_table_state.as_ref().unwrap().is_grouped());
     press_and_send(&mut app, &tx, KeyCode::Enter);
     pump_until_idle(&mut app, &rx, &tx);
-    assert_eq!(app.input_mode, InputMode::Normal, "Enter drilled");
+    assert!(app.at_table(), "Enter drilled");
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.is_drilled_down());
     assert!(state.lf().clone().collect().unwrap().height() > 0);
@@ -12711,7 +12748,7 @@ fn test_inspector_drills_into_nested_values_and_json_text() {
     // The row, on its first field; Enter opens the struct.
     painted(&mut app, &rx, &tx, area);
     press_and_send(&mut app, &tx, KeyCode::Enter);
-    assert_eq!(app.input_mode, InputMode::Inspect);
+    assert_eq!(app.overlay, Overlay::Inspect);
     let root = painted(&mut app, &rx, &tx, area);
     assert!(root.contains(" Enter  Open "), "{root}");
     press_and_send(&mut app, &tx, KeyCode::Enter);
@@ -12740,7 +12777,7 @@ fn test_inspector_drills_into_nested_values_and_json_text() {
     assert_eq!(levels(&app), ["customer"]);
     press_and_send(&mut app, &tx, KeyCode::Left);
     assert!(levels(&app).is_empty());
-    assert_eq!(app.input_mode, InputMode::Inspect);
+    assert_eq!(app.overlay, Overlay::Inspect);
 
     // A list of structs is a table of its fields.
     press_and_send(&mut app, &tx, KeyCode::Char('j'));
@@ -12792,7 +12829,7 @@ fn test_inspector_drills_into_nested_values_and_json_text() {
 
     // Esc at the row closes the inspector.
     press_and_send(&mut app, &tx, KeyCode::Esc);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
 }
 
 /// #615: NDJSON objects load as structs and lists, and drill the same way.
@@ -12833,7 +12870,7 @@ fn test_inspector_drills_into_ndjson_objects() {
     for _ in 0..3 {
         press_and_send(&mut app, &tx, KeyCode::Esc);
     }
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
 }
 
 /// Salaries by department, 40 rows: `dept` cycles eng, ops, sales and a null every
@@ -13081,9 +13118,9 @@ fn test_sql_shapes_without_a_source_do_not_drill() {
             "{sql}"
         );
         press_and_send(&mut app, &tx, KeyCode::Enter);
-        assert_eq!(app.input_mode, InputMode::Inspect, "{sql}");
+        assert_eq!(app.overlay, Overlay::Inspect, "{sql}");
         press_and_send(&mut app, &tx, KeyCode::Esc);
-        assert_eq!(app.input_mode, InputMode::Normal, "{sql}");
+        assert!(app.at_table(), "{sql}");
         assert!(!app.data_table_state.as_ref().unwrap().is_drilled_down());
     }
 }
@@ -17254,7 +17291,7 @@ fn column_names(app: &App) -> Vec<String> {
 fn header_from_schema_tab(app: &mut App, rx: &mpsc::Receiver<AppEvent>) {
     use datui::widgets::info::InfoTab;
     assert!(app.event(key(KeyCode::Char('i'))).is_none());
-    assert_eq!(app.input_mode, InputMode::Info);
+    assert_eq!(app.overlay, Overlay::Info);
     for _ in 0..16 {
         if app.info_modal.active_tab == InfoTab::Schema {
             break;
@@ -17289,11 +17326,7 @@ fn h_turns_a_csv_header_off_and_on() {
     );
 
     header_from_schema_tab(&mut app, &rx);
-    assert_eq!(
-        app.input_mode,
-        InputMode::Normal,
-        "the read takes the screen"
-    );
+    assert!(app.at_table(), "the read takes the screen");
     assert_eq!(column_names(&app), ["column_1", "column_2"]);
     let notes = app.data_table_state.as_ref().unwrap().notes();
     assert!(
@@ -17331,8 +17364,8 @@ fn h_does_nothing_on_parquet() {
     assert!(app.event(key(KeyCode::Char('H'))).is_none());
     assert!(!app.is_busy());
     assert_eq!(
-        app.input_mode,
-        InputMode::Info,
+        app.overlay,
+        Overlay::Info,
         "nothing to read, the panel stays"
     );
     assert_eq!(column_names(&app), before);
@@ -17909,14 +17942,15 @@ fn home_f1_opens_help_mid_filter() {
 #[test]
 fn v_with_no_matching_view_opens_the_list() {
     let (mut app, _rx, _tx) = open_query_filter_fixture("t_fallback.csv");
-    assert!(!app.view_modal.active);
+    assert_ne!(app.overlay, Overlay::View);
 
     app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('V'),
         KeyModifiers::SHIFT,
     )));
-    assert!(
-        app.view_modal.active,
+    assert_eq!(
+        app.overlay,
+        Overlay::View,
         "V without a match shows what exists rather than staying silent"
     );
 
@@ -17924,7 +17958,7 @@ fn v_with_no_matching_view_opens_the_list() {
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
-    assert!(!app.view_modal.active);
+    assert_ne!(app.overlay, Overlay::View);
 }
 
 /// The view modal keys and renders off its own `active`, not the input mode,
@@ -17938,10 +17972,14 @@ fn view_modal_does_not_survive_going_home() {
         KeyCode::Char('v'),
         KeyModifiers::NONE,
     )));
-    assert!(app.view_modal.active);
+    assert_eq!(app.overlay, Overlay::View);
 
     app.enter_home();
-    assert!(!app.view_modal.active, "going home closes the views list");
+    assert_ne!(
+        app.overlay,
+        Overlay::View,
+        "going home closes the views list"
+    );
 }
 
 /// A helper for the modal tests: one key press with no modifiers.
@@ -18011,7 +18049,7 @@ fn copy_format(app: &mut App, format: datui::clipboard::CopyFormat) {
 fn test_copy_dialog_keeps_its_size_across_scopes() {
     let (mut app, _rx, _tx) = open_query_filter_fixture("copy_fixed_height.csv");
     press(&mut app, KeyCode::Char('y'));
-    assert!(app.copy_modal.active);
+    assert_eq!(app.overlay, Overlay::Copy);
     let mut frames = std::collections::HashSet::new();
     for scope in datui::copy_modal::CopyScope::ALL {
         copy_scope(&mut app, scope);
@@ -18078,7 +18116,7 @@ fn test_sort_filter_esc_discards_staged_edits() {
 
     // Open the modal, walk to the column list, and hide the first column — staged only.
     open_columns_list(&mut app);
-    assert!(app.sort_filter_modal.active);
+    assert_eq!(app.overlay, Overlay::SortFilter);
     press(&mut app, KeyCode::Down); // select the first column
     press(&mut app, KeyCode::Char('v'));
     assert!(
@@ -18091,7 +18129,7 @@ fn test_sort_filter_esc_discards_staged_edits() {
     );
 
     press(&mut app, KeyCode::Esc);
-    assert!(!app.sort_filter_modal.active);
+    assert_ne!(app.overlay, Overlay::SortFilter);
 
     // Reopen: the canceled hide is gone and nothing is staged as sorted.
     press(&mut app, KeyCode::Char('s'));
@@ -18309,7 +18347,7 @@ fn a_freeze_survives_a_narrow_window() {
     // column pulls the boundary back to it.
     freeze_through(&mut app, "delta");
     let with_sidebar = draw(&mut app, 60, 20);
-    assert!(app.sort_filter_modal.active);
+    assert_eq!(app.overlay, Overlay::SortFilter);
     assert!(with_sidebar.contains("Sort & Filter"), "{with_sidebar}");
     apply(&mut app);
     assert_eq!(
@@ -18690,7 +18728,7 @@ fn test_sort_filter_per_column_directions_reach_the_table() {
         let _ = tx.send(next);
     }
     pump_until_idle(&mut app, &rx, &tx);
-    assert!(!app.sort_filter_modal.active, "Enter applies and closes");
+    assert_ne!(app.overlay, Overlay::SortFilter, "Enter applies and closes");
 
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(
@@ -18757,7 +18795,7 @@ fn test_filter_editor_keyboard_flow() {
         let _ = tx.send(next);
     }
     pump_until_idle(&mut app, &rx, &tx);
-    assert!(!app.sort_filter_modal.active);
+    assert_ne!(app.overlay, Overlay::SortFilter);
     assert_eq!(current_rows(&app), 50, "only the alpha_ rows remain");
 
     // Reopen: the statement is staged; Del deletes it; Ctrl+Enter clears the filter.
@@ -18834,7 +18872,7 @@ fn test_ctrl_j_applies_from_the_filter_editor() {
         let _ = tx.send(next);
     }
     pump_until_idle(&mut app, &rx, &tx);
-    assert!(!app.sort_filter_modal.active);
+    assert_ne!(app.overlay, Overlay::SortFilter);
     assert_eq!(current_rows(&app), 50, "the row in progress was applied");
 }
 
@@ -18895,7 +18933,7 @@ fn test_the_first_filter_is_s_down_space() {
     );
     press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Char(' '));
-    assert!(app.sort_filter_modal.active, "the sidebar stays open");
+    assert_eq!(app.overlay, Overlay::SortFilter, "the sidebar stays open");
     assert!(
         app.sort_filter_modal.filter.editor.is_some(),
         "and the editor is up, on the add row"
@@ -18917,11 +18955,11 @@ fn test_filter_editor_esc_ends_the_edit_not_the_sidebar() {
         app.sort_filter_modal.filter.editor.is_none(),
         "the edit dies"
     );
-    assert!(app.sort_filter_modal.active, "the sidebar does not");
+    assert_eq!(app.overlay, Overlay::SortFilter, "the sidebar does not");
     assert!(app.sort_filter_modal.filter.statements.is_empty());
 
     press(&mut app, KeyCode::Esc);
-    assert!(!app.sort_filter_modal.active);
+    assert_ne!(app.overlay, Overlay::SortFilter);
 }
 
 /// The sidebar is one Surface: one border, no bordered buttons, the actions in
@@ -18970,7 +19008,7 @@ fn test_export_format_follows_typed_extension() {
     let (mut app, _rx, _tx) = open_query_filter_fixture("export_ext_follows.csv");
 
     press(&mut app, KeyCode::Char('e'));
-    assert!(app.export_modal.active);
+    assert!(matches!(app.overlay, Overlay::Export { .. }));
     app.export_modal.selected_format = ExportFormat::Parquet;
 
     let out = common::fixture_dir().join("export_ext_follows_out.csv");
@@ -19015,7 +19053,7 @@ fn test_export_enter_applies_from_any_row() {
     let (mut app, _rx, _tx) = open_query_filter_fixture("export_enter_anywhere.csv");
 
     press(&mut app, KeyCode::Char('e'));
-    assert!(app.export_modal.active);
+    assert!(matches!(app.overlay, Overlay::Export { .. }));
     let out = common::fixture_dir().join("export_enter_anywhere_out.csv");
     for ch in out.to_str().unwrap().chars() {
         press(&mut app, KeyCode::Char(ch));
@@ -19043,7 +19081,10 @@ fn test_export_enter_applies_from_any_row() {
         }
         _ => panic!("Enter on a checkbox builds the export"),
     }
-    assert!(!app.export_modal.active, "and the dialog is gone");
+    assert!(
+        !matches!(app.overlay, Overlay::Export { .. }),
+        "and the dialog is gone"
+    );
 }
 
 /// Every dialog takes the same keys (`datui::form`): ↓ / ↑ move between fields from
@@ -19085,7 +19126,7 @@ fn every_dialog_moves_between_fields_with_the_arrows_on_open() {
     press(&mut app, KeyCode::Char(' '));
     assert!(!app.export_modal.csv_include_header, "Space toggles");
     press(&mut app, KeyCode::Esc);
-    assert!(!app.export_modal.active);
+    assert!(!matches!(app.overlay, Overlay::Export { .. }));
 
     // Copy opens on the scope; Space takes the next, ↓ the format.
     press(&mut app, KeyCode::Char('y'));
@@ -19097,7 +19138,7 @@ fn every_dialog_moves_between_fields_with_the_arrows_on_open() {
     press(&mut app, KeyCode::Down);
     assert_eq!(app.copy_modal.focus, CopyFocus::Format);
     press(&mut app, KeyCode::Esc);
-    assert!(!app.copy_modal.active);
+    assert_ne!(app.overlay, Overlay::Copy);
 
     // Pivot & Melt opens on its tab bar, a choice: → is Melt, ↓ the first row.
     press(&mut app, KeyCode::Char('p'));
@@ -19221,9 +19262,9 @@ fn esc_closes_the_picker_then_the_dialog() {
     );
     press(&mut app, KeyCode::Esc);
     assert!(app.pivot_melt_modal.picker.is_none());
-    assert!(app.pivot_melt_modal.active, "the dialog survives");
+    assert_eq!(app.overlay, Overlay::PivotMelt, "the dialog survives");
     press(&mut app, KeyCode::Esc);
-    assert!(!app.pivot_melt_modal.active);
+    assert_ne!(app.overlay, Overlay::PivotMelt);
 }
 
 /// A several-choice picker keeps its level: Enter keeps the toggles made in it, Esc
@@ -19259,7 +19300,7 @@ fn enter_on_an_incomplete_form_stays_and_says_why() {
     press(&mut app, KeyCode::Char('p'));
     for _ in 0..2 {
         assert!(press(&mut app, KeyCode::Enter).is_none());
-        assert!(app.pivot_melt_modal.active);
+        assert_eq!(app.overlay, Overlay::PivotMelt);
         assert!(app.pivot_melt_modal.attention, "the gap line re-accents");
         assert!(!app.modal_showing());
         press(&mut app, KeyCode::Down);
@@ -19352,7 +19393,7 @@ fn sort_and_filter_edits_what_is_in_effect() {
         let _ = tx.send(next);
     }
     pump_until_idle(&mut app, &rx, &tx);
-    assert!(!app.sort_filter_modal.active);
+    assert_ne!(app.overlay, Overlay::SortFilter);
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(
         state.view_sort_columns(),
@@ -19412,7 +19453,7 @@ fn test_info_panel_arrows_switch_tabs_from_the_body() {
     let (mut app, _rx, _tx) = open_query_filter_fixture("info_arrows.csv");
 
     press(&mut app, KeyCode::Char('i'));
-    assert!(app.info_modal.active);
+    assert!(app.overlay.shows(&Overlay::Info));
     assert_eq!(app.info_modal.active_tab, InfoTab::Schema);
 
     press(&mut app, KeyCode::Right);
@@ -20137,10 +20178,9 @@ fn test_copy_dialog_sends_each_scope_to_the_destination() {
 
     // Row scope is the default, header off: the current row as bare TSV.
     key(&mut app, KeyCode::Char('y'));
-    assert_eq!(app.input_mode, InputMode::Copy);
-    assert!(app.copy_modal.active);
+    assert_eq!(app.overlay, Overlay::Copy);
     key(&mut app, KeyCode::Enter);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
     assert_eq!(copies.lock().unwrap()[0].text, "Oslo\t700000");
 
     // The view scope: header on by default, every buffered screen row, and
@@ -20764,7 +20804,7 @@ fn test_inspector_opens_moves_between_rows_and_fields_and_closes() {
     let (mut app, rx, tx, _) = open_inspector_fixture(dir.path());
 
     press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
-    assert_eq!(app.input_mode, InputMode::Inspect);
+    assert_eq!(app.overlay, Overlay::Inspect);
     let screen = draw_inspector(&mut app);
     assert!(screen.contains("Row 1"), "{screen}");
     assert!(screen.contains("Fields"), "{screen}");
@@ -20817,8 +20857,8 @@ fn test_inspector_opens_moves_between_rows_and_fields_and_closes() {
     assert_eq!(inspected_field(&app), "id");
 
     press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-    assert_eq!(app.input_mode, InputMode::Normal);
-    assert!(!app.inspector_modal.active);
+    assert!(app.at_table());
+    assert_ne!(app.overlay, Overlay::Inspect);
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.start_row() + state.table_state.selected().unwrap(), 1);
 
@@ -20826,7 +20866,7 @@ fn test_inspector_opens_moves_between_rows_and_fields_and_closes() {
     press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
     assert_eq!(inspected_field(&app), "id");
     press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
 }
 
 /// Text is exact in the pane and escaped on `e`: a break and a literal
@@ -20945,7 +20985,7 @@ fn test_inspector_reads_hidden_and_binary_fields_on_enter() {
         app.inspector_modal.filter.is_empty(),
         "Esc clears the find first"
     );
-    assert!(app.inspector_modal.active);
+    assert_eq!(app.overlay, Overlay::Inspect);
     press_key(&mut app, KeyCode::Up, KeyModifiers::NONE);
     assert_eq!(inspected_field(&app), "blob");
     let screen = draw_inspector(&mut app);
@@ -21010,7 +21050,7 @@ fn test_inspector_follows_the_view_and_leaves_enter_to_drill() {
     press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     pump_until_idle(&mut app, &rx, &tx);
     assert!(app.data_table_state.as_ref().unwrap().is_drilled_down());
-    assert!(!app.inspector_modal.active);
+    assert_ne!(app.overlay, Overlay::Inspect);
 }
 
 /// #548: a huge value is read a screen at a time. Tab focuses it and End
@@ -21057,9 +21097,9 @@ fn test_inspector_reads_a_huge_value_to_its_end_in_two_keys() {
     assert_eq!(copies.lock().unwrap().last().unwrap().len(), huge.len());
     // Esc gives the focus back to the list, then closes.
     press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-    assert!(app.inspector_modal.active);
+    assert_eq!(app.overlay, Overlay::Inspect);
     press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-    assert!(!app.inspector_modal.active);
+    assert_ne!(app.overlay, Overlay::Inspect);
 }
 
 /// Every row of `app` drawn at `width`×`height`, one string per terminal row.
@@ -21138,7 +21178,7 @@ fn test_inspector_lists_a_short_row_whole_and_offers_only_keys_that_act() {
     let dir = tempfile::tempdir().unwrap();
     let (mut app, _rx, _tx) = open_orders_fixture(dir.path());
     press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-    assert_eq!(app.input_mode, InputMode::Inspect);
+    assert_eq!(app.overlay, Overlay::Inspect);
     for (width, height) in [(80, 24), (200, 50)] {
         let rows = rows_at(&mut app, width, height);
         let text = rows.join("\n");
@@ -21184,7 +21224,7 @@ fn test_inspector_title_names_the_group_inside_a_drill() {
     painted(&mut app, &rx, &tx, Rect::new(0, 0, 80, 24));
     press_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
     press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-    assert_eq!(app.input_mode, InputMode::Inspect);
+    assert_eq!(app.overlay, Overlay::Inspect);
     let m = datui::glyphs::get().middot;
     let state = app.data_table_state.as_ref().unwrap();
     let key = state.drilled_group_key().unwrap().1[0].clone();
@@ -21347,7 +21387,7 @@ fn test_inspector_esc_leaves_compare_first_and_tab_moves_nothing() {
     assert!(wide.contains("Esc  No compare"), "{wide}");
     press_key(&mut app, KeyCode::Esc, none);
     assert!(!app.inspector_modal.compare, "Esc leaves Compare");
-    assert_eq!(app.input_mode, InputMode::Inspect, "and only Compare");
+    assert_eq!(app.overlay, Overlay::Inspect, "and only Compare");
     let wide = rows_at(&mut app, 200, 24).join("\n");
     assert!(wide.contains("Y  Copy row"), "{wide}");
     assert!(wide.contains("c  Compare"), "{wide}");
@@ -21437,7 +21477,7 @@ fn test_inspector_copies_the_row_as_json() {
     let (mut app, _rx, _tx, copies) = open_inspector_fixture(dir.path());
     press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
     press_key(&mut app, KeyCode::Char('Y'), KeyModifiers::NONE);
-    assert!(app.inspector_modal.active, "the inspector stays open");
+    assert_eq!(app.overlay, Overlay::Inspect, "the inspector stays open");
     let copied = copies.lock().unwrap().last().unwrap().clone();
     let json: serde_json::Value = serde_json::from_str(&copied).unwrap();
     assert_eq!(json["id"], 1);
@@ -21566,7 +21606,7 @@ fn test_inspector_finds_text_inside_a_value() {
     press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
     assert!(app.inspector_modal.value_find.is_none());
     press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-    assert!(app.inspector_modal.active);
+    assert_eq!(app.overlay, Overlay::Inspect);
 }
 
 /// #548: on a wide terminal the fields and the value sit side by side, and a
@@ -21909,12 +21949,12 @@ fn out_of_range_dates_draw_on_every_screen() {
             assert!(screen.contains(least[0]), "Describe's min:\n{screen}");
         }
         for _ in 0..6 {
-            if !app.analysis_modal.active {
+            if app.overlay != Overlay::Analysis {
                 break;
             }
             press_through(&mut app, KeyCode::Esc);
         }
-        assert!(!app.analysis_modal.active);
+        assert_ne!(app.overlay, Overlay::Analysis);
     }
 
     // Data Quality split by a datetime: by partition each value is its own
@@ -21979,12 +22019,12 @@ fn out_of_range_dates_draw_on_every_screen() {
             draw_wide(&mut app, &format!("{grain:?} {page:?}"));
         }
         for _ in 0..6 {
-            if !app.analysis_modal.active {
+            if app.overlay != Overlay::Analysis {
                 break;
             }
             press_through(&mut app, KeyCode::Esc);
         }
-        assert!(!app.analysis_modal.active);
+        assert_ne!(app.overlay, Overlay::Analysis);
     }
 
     // A chart over the datetimes: the axis falls back to the stored numbers.
@@ -22004,7 +22044,7 @@ fn out_of_range_dates_draw_on_every_screen() {
     pump_until_chart_ready(&mut app, &rx, &tx);
     draw_wide(&mut app, "chart");
     press_through(&mut app, KeyCode::Esc);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
 
     // Each group's datetimes as a list.
     app.data_table_state
@@ -22326,12 +22366,12 @@ fn wide_table_pages_across_300_columns() {
 
     // g: a picker of the shown columns; typing narrows, Enter goes.
     let screen = press_and_draw(&mut app, KeyCode::Char('g'), size);
-    assert_eq!(app.input_mode, InputMode::GoToColumn);
+    assert_eq!(app.overlay, Overlay::GoToColumn);
     assert!(screen.contains("Go to Column"), "{screen}");
     let screen = type_and_draw(&mut app, "label_150", size);
     assert!(screen.contains("label_150"), "{screen}");
     let screen = press_and_draw(&mut app, KeyCode::Enter, size);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
     assert_eq!(columns_shown(&app).unwrap().first, 151);
     assert_eq!(cursor_at(&app), 151, "g moves the cursor");
     assert!(header_line(&screen).contains("label_150"), "{screen}");
@@ -22345,10 +22385,10 @@ fn wide_table_pages_across_300_columns() {
     press_and_draw(&mut app, KeyCode::Char('g'), size);
     type_and_draw(&mut app, "zzz", size);
     let screen = press_and_draw(&mut app, KeyCode::Enter, size);
-    assert_eq!(app.input_mode, InputMode::GoToColumn);
+    assert_eq!(app.overlay, Overlay::GoToColumn);
     assert!(screen.contains("No column matches"), "{screen}");
     press_and_draw(&mut app, KeyCode::Esc, size);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
     assert_eq!(columns_shown(&app).unwrap().first, 151);
     // The last column lands on a full last page rather than alone.
     press_and_draw(&mut app, KeyCode::Char('g'), size);
@@ -22585,7 +22625,7 @@ fn wide_table_paging_after_a_query_with_one_and_no_columns() {
     }
     for key in ['{', '}', 'g'] {
         press_and_draw(&mut app, KeyCode::Char(key), size);
-        assert_eq!(app.input_mode, InputMode::Normal, "{key}");
+        assert!(app.at_table(), "{key}");
         assert_eq!(app.data_table_state.as_ref().unwrap().termcol_index, 0);
         assert_eq!(columns_shown(&app), None);
     }
@@ -23076,7 +23116,7 @@ fn test_value_counts_count_the_column_and_step_columns() {
     let (mut app, rx, tx) =
         open_csv_with("value_counts_keys.csv", COUNTS_CSV, OpenOptions::default());
     counts_key(&mut app, &rx, &tx, KeyCode::Char('F'));
-    assert_eq!(app.input_mode, InputMode::ValueCounts);
+    assert_eq!(app.overlay, Overlay::ValueCounts);
     assert_eq!(app.value_counts.column(), Some("pay"));
     let line = |s: &str, n| (s.to_string(), n);
     assert_eq!(
@@ -23135,7 +23175,7 @@ fn test_value_counts_count_the_column_and_step_columns() {
     assert_eq!(app.value_counts.column(), Some("pay"));
 
     press_and_send(&mut app, &tx, KeyCode::Esc);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
 }
 
 /// Enter drills into the rows holding the value, null included, the way a `by`
@@ -23150,7 +23190,7 @@ fn test_value_counts_enter_drills_and_esc_comes_back() {
     press_and_send(&mut app, &tx, KeyCode::Enter);
     pump_until_idle(&mut app, &rx, &tx);
     painted(&mut app, &rx, &tx, area);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.is_drilled_down());
     assert_eq!(
@@ -23161,7 +23201,7 @@ fn test_value_counts_enter_drills_and_esc_comes_back() {
 
     press_and_send(&mut app, &tx, KeyCode::Esc);
     pump_until_idle(&mut app, &rx, &tx);
-    assert_eq!(app.input_mode, InputMode::ValueCounts, "back to the counts");
+    assert_eq!(app.overlay, Overlay::ValueCounts, "back to the counts");
     assert!(
         app.value_counts.computing.is_none(),
         "nothing counted again"
@@ -23179,7 +23219,7 @@ fn test_value_counts_enter_drills_and_esc_comes_back() {
     press_and_send(&mut app, &tx, KeyCode::Esc);
     pump_until_idle(&mut app, &rx, &tx);
     press_and_send(&mut app, &tx, KeyCode::Esc);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
     painted(&mut app, &rx, &tx, area);
     assert_eq!(on_screen(&app, "id").len(), 10);
 }
@@ -23247,7 +23287,7 @@ fn test_value_counts_top_values_then_other() {
     let screen = counts_screen(&mut app, 80, 24);
     assert!(screen.contains("other (5 values)"), "{screen}");
     press_and_send(&mut app, &tx, KeyCode::Enter);
-    assert_eq!(app.input_mode, InputMode::ValueCounts);
+    assert_eq!(app.overlay, Overlay::ValueCounts);
     assert!(!app.data_table_state.as_ref().unwrap().is_drilled_down());
 }
 
@@ -23306,7 +23346,7 @@ fn test_value_counts_copy_and_export() {
     let out = tempfile::tempdir().unwrap();
     let csv = out.path().join("counts.csv");
     press_and_send(&mut app, &tx, KeyCode::Char('e'));
-    assert_eq!(app.input_mode, InputMode::Export);
+    assert!(matches!(app.overlay, Overlay::Export { .. }));
     let screen = counts_screen(&mut app, 80, 24);
     assert!(
         screen.contains("Value Counts"),
@@ -23317,7 +23357,7 @@ fn test_value_counts_copy_and_export() {
         .set_value(csv.display().to_string());
     press_and_send(&mut app, &tx, KeyCode::Enter);
     pump_until_idle(&mut app, &rx, &tx);
-    assert_eq!(app.input_mode, InputMode::ValueCounts);
+    assert_eq!(app.overlay, Overlay::ValueCounts);
     let written = std::fs::read_to_string(&csv).unwrap();
     assert!(
         written.starts_with("pay,count,percent,cumulative_percent\ncard,5,"),
@@ -23350,7 +23390,7 @@ fn test_comma_toggles_digit_grouping() {
     assert!(painted(&mut app, &rx, &tx, area).contains("1,234,567"));
 
     counts_key(&mut app, &rx, &tx, KeyCode::Char('F'));
-    assert_eq!(app.input_mode, InputMode::ValueCounts);
+    assert_eq!(app.overlay, Overlay::ValueCounts);
     let screen = counts_screen(&mut app, 80, 24);
     assert!(
         screen.contains("1,234,567"),
@@ -23413,7 +23453,7 @@ fn test_the_column_cursor_drives_the_per_column_keys() {
     press_and_send(&mut app, &tx, KeyCode::Char('l'));
 
     press_and_send(&mut app, &tx, KeyCode::Char('s'));
-    assert_eq!(app.input_mode, InputMode::SortFilter);
+    assert_eq!(app.overlay, Overlay::SortFilter);
     let sort = &app.sort_filter_modal.sort;
     let row = sort.table_state.selected().unwrap();
     assert_eq!(sort.filtered_columns()[row].1.name, "amount");
@@ -23426,14 +23466,14 @@ fn test_the_column_cursor_drives_the_per_column_keys() {
     assert_eq!(filter.available_columns[chosen], "amount");
     press_and_send(&mut app, &tx, KeyCode::Esc);
     press_and_send(&mut app, &tx, KeyCode::Esc);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
 
     press_and_send(&mut app, &tx, KeyCode::Char('l'));
     press_and_send(&mut app, &tx, KeyCode::Char(' '));
-    assert_eq!(app.input_mode, InputMode::Inspect);
+    assert_eq!(app.overlay, Overlay::Inspect);
     assert_eq!(app.inspector_modal.focused().unwrap().name, "id");
     press_and_send(&mut app, &tx, KeyCode::Esc);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
 
     press_and_send(&mut app, &tx, KeyCode::Char('h'));
     press_and_send(&mut app, &tx, KeyCode::Char('y'));
@@ -23756,7 +23796,7 @@ fn a_filter_value_its_column_cannot_read_is_refused_with_a_reason() {
             logical_op: datui::filter_modal::LogicalOperator::And,
         });
     run_and_settle(&mut app, key(KeyCode::Enter), &rx, &tx);
-    assert_eq!(app.input_mode, InputMode::SortFilter, "the sidebar stays");
+    assert_eq!(app.overlay, Overlay::SortFilter, "the sidebar stays");
     assert_eq!(
         app.sort_filter_modal.sort.status.as_deref(),
         Some("day: \"2024-13-01\" is not a date written YYYY-MM-DD")
@@ -23765,7 +23805,7 @@ fn a_filter_value_its_column_cannot_read_is_refused_with_a_reason() {
     // Fixed, it applies.
     app.sort_filter_modal.filter.statements[0].value = "2024-01-01".into();
     run_and_settle(&mut app, key(KeyCode::Enter), &rx, &tx);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
     assert_eq!(quick_view(&app), (2, strings(&["day > 2024-01-01"])));
 }
 
@@ -24629,7 +24669,7 @@ fn test_copy_as_python_writes_the_view_as_a_script() {
     copy_scope(&mut app, datui::copy_modal::CopyScope::Python);
     assert_eq!(app.copy_modal.row_order().len(), 1, "no format or header");
     key(&mut app, KeyCode::Enter);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
 
     let path = dir.path().join("sales.csv");
     let expected = format!(
@@ -25180,7 +25220,7 @@ fn test_a_sniffed_file_copies_and_exports_as_the_format_read() {
         KeyCode::Char('e'),
         KeyModifiers::NONE,
     )));
-    assert!(app.export_modal.active);
+    assert!(matches!(app.overlay, Overlay::Export { .. }));
     assert_eq!(
         app.export_modal.selected_format,
         datui::export_modal::ExportFormat::Parquet
@@ -25871,12 +25911,12 @@ fn type_into(app: &mut App, text: &str) {
 /// The Info panel's Schema tab, its cursor on `column`, and Enter: the type picker.
 fn retype_from_schema(app: &mut App, column: &str) {
     // Back from a type, the picker leaves the panel open.
-    if app.input_mode != datui::InputMode::Info {
+    if app.overlay != datui::Overlay::Info {
         app.event(key(KeyCode::Char('i')));
     }
     assert_eq!(
-        app.input_mode,
-        datui::InputMode::Info,
+        app.overlay,
+        datui::Overlay::Info,
         "{column}: the panel opens"
     );
     let at = app
@@ -25900,7 +25940,7 @@ fn retype_from_schema(app: &mut App, column: &str) {
         app.event(key(KeyCode::Down));
     }
     app.event(key(KeyCode::Enter));
-    assert_eq!(app.input_mode, datui::InputMode::Retype);
+    assert!(matches!(app.overlay, datui::Overlay::Retype { .. }));
 }
 
 fn summaries(app: &App) -> Vec<String> {
@@ -25935,7 +25975,7 @@ fn a_column_retyped_in_the_table() {
     retype_from_schema(&mut app, "code");
     type_into(&mut app, "i64");
     app.event(key(KeyCode::Enter));
-    assert_eq!(app.input_mode, datui::InputMode::Info, "back to the panel");
+    assert_eq!(app.overlay, datui::Overlay::Info, "back to the panel");
     pump_until(&mut app, &rx, &tx, |app| {
         !app.is_busy() && !app.unfit_count_pending()
     });
@@ -26099,7 +26139,7 @@ fn combine_into_datetime_matches_the_specs_column() {
     app.open_context_menu(ratatui::layout::Position { x: 2, y: 2 });
     app.event(key(KeyCode::Up));
     app.event(key(KeyCode::Enter));
-    assert_eq!(app.input_mode, datui::InputMode::Combine);
+    assert!(matches!(app.overlay, datui::Overlay::Combine { .. }));
     // Date, Time, then the UTC offset: Space picks it.
     app.event(key(KeyCode::Tab));
     app.event(key(KeyCode::Tab));

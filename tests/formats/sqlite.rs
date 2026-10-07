@@ -262,7 +262,7 @@ fn a_database_of_several_tables_lands_on_its_tables() {
     app.home.select(at);
     key(&mut app, &rx, KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(app.error_message(), None);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
     assert_eq!(frame(&app).height(), 200);
     assert_eq!(app.open_path(), Some(db.join("orders").as_path()));
 

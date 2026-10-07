@@ -284,8 +284,7 @@ impl App {
     /// A query ran and its rows are in: the prompt closes on them.
     pub(crate) fn leave_query_prompt_after_run(&mut self) {
         self.prompt.sql_completion = None;
-        self.input_mode = InputMode::Normal;
-        self.prompt.input_type = None;
+        self.show_table();
         self.prompt.sql_input.set_focused(false);
         self.prompt.query_input.set_focused(false);
         if let Some(state) = &mut self.data_table_state {
@@ -308,8 +307,7 @@ impl App {
         self.prompt.sql_input.clear();
         self.prompt.query_input.set_focused(false);
         self.prompt.sql_input.set_focused(false);
-        self.input_mode = InputMode::Normal;
-        self.prompt.input_type = None;
+        self.show_table();
         if let Some(state) = &mut self.data_table_state {
             state.dismiss_error();
             state.suppress_error_display = false;

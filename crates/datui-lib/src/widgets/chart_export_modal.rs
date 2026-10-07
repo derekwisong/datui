@@ -171,7 +171,6 @@ mod tests {
     fn the_reason_sits_on_the_status_line() {
         let ctx = RenderContext::for_test();
         let mut modal = ChartExportModal::new();
-        modal.active = true;
         modal.error = Some("Enter a file path.".to_string());
         let area = Rect::new(0, 0, 64, height(&ChartExportModal::new()));
         let mut buf = Buffer::empty(area);

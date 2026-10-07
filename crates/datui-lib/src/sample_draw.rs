@@ -410,7 +410,7 @@ impl App {
             self.flash_note(reason);
         }
         self.spawn_collect(None);
-        if draw.then_analyze && self.analysis_modal.active {
+        if draw.then_analyze && self.overlay == crate::Overlay::Analysis {
             self.analysis_modal.computing = None;
             return self.start_analysis_run();
         }
@@ -551,7 +551,7 @@ impl App {
         if let Some(original) = self.data_table_state.replace(view) {
             self.quality.evidence_return = Some(Box::new(original));
             self.quality.evidence_label = Some(label);
-            self.analysis_modal.active = false;
+            self.step_back();
             self.forget_the_rows_read();
             self.spawn_async_collect("Loading the sample...");
         }

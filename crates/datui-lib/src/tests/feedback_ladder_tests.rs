@@ -13,8 +13,7 @@ fn key(app: &mut App, code: KeyCode) -> Option<AppEvent> {
 fn an_incomplete_pivot_apply_stays_inline() {
     let (tx, _rx) = mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
-    app.pivot_melt_modal.active = true;
-    app.input_mode = InputMode::PivotMelt;
+    app.overlay = Overlay::PivotMelt;
     key(&mut app, KeyCode::Enter);
     assert!(!app.error_modal.active, "validation is not a failure");
     assert!(app.pivot_melt_modal.attention, "the gap line is lit");
@@ -31,7 +30,7 @@ fn the_views_save_refusal_stays_on_the_surface() {
     let df = polars::df!("a" => [1i64, 2]).unwrap();
     app.data_table_state =
         Some(crate::table::DataTableState::new(df.lazy(), None, None, None, None, true).unwrap());
-    app.view_modal.active = true;
+    app.overlay = crate::Overlay::View;
     key(&mut app, KeyCode::Char('s'));
     assert!(!app.error_modal.active, "a refusal is not a failure");
     assert!(

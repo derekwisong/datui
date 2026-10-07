@@ -23,7 +23,7 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderCo
     if app.value_counts.shows_histogram() {
         draw_histogram(area, buf, app, ctx);
     }
-    if app.export_modal.active {
+    if matches!(app.overlay, crate::Overlay::Export { .. }) {
         // The same compact dialog the table's export opens.
         let dialog = crate::widgets::export::dialog_area(area);
         crate::widgets::export::render_export_modal(dialog, buf, &mut app.export_modal, ctx);

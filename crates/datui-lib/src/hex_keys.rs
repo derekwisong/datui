@@ -5,7 +5,7 @@ use crate::hex_view::{
     Found, HexFindRun, HexHit, HexSource, HexView, MAX_RECORD_SIZE, Origin, PromptKind,
 };
 use crate::jobs::{Answer, Job, Progress};
-use crate::{App, AppEvent, InputMode};
+use crate::{App, AppEvent, InputMode, Overlay};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -30,7 +30,7 @@ impl App {
         self.hex_view
             .view
             .as_ref()
-            .filter(|_| self.input_mode == InputMode::Hex)
+            .filter(|_| self.overlay == Overlay::Hex)
     }
 
     /// The one local file the dataset on screen was read from, which the Info panel's
@@ -73,25 +73,19 @@ impl App {
     }
 
     /// The file is mapped: the view opens on it.
-    pub(crate) fn hex_opened(&mut self, job: Job, current: bool, source: HexSource) {
-        let Job::HexOpen {
-            origin,
-            fallback,
-            record_size,
-        } = job
-        else {
-            return;
-        };
-        if !current {
-            return;
-        }
+    pub(crate) fn hex_opened(
+        &mut self,
+        origin: Origin,
+        fallback: bool,
+        record_size: Option<usize>,
+        source: HexSource,
+    ) {
         self.hex_view.serial += 1;
         let mut view = HexView::new(source, origin, fallback, self.hex_view.serial);
         view.record_size = record_size.map(|n| n.clamp(1, MAX_RECORD_SIZE));
         view.input = crate::widgets::text_input::TextInput::new().with_theme(&self.theme);
         self.hex_view.view = Some(view);
-        self.info_modal.close();
-        self.input_mode = InputMode::Hex;
+        self.open_overlay(Overlay::Hex);
     }
 
     /// An open found a local file nothing reads, or was asked for its bytes.
@@ -131,17 +125,13 @@ impl App {
                 None
             }
             Origin::Table | Origin::Info => {
-                self.stop_hex_find();
-                self.hex_view.view = None;
-                self.input_mode = if self.data_table_state.is_some() {
-                    InputMode::Normal
-                } else {
-                    InputMode::Home
-                };
+                self.close_overlay();
+                if self.data_table_state.is_none() {
+                    self.input_mode = InputMode::Home;
+                }
                 // Back to the panel it was opened from, on the tab it was on.
                 if origin == Origin::Info && self.data_table_state.is_some() {
-                    self.info_modal.active = true;
-                    self.input_mode = InputMode::Info;
+                    self.open_overlay(Overlay::Info);
                 }
                 None
             }
@@ -395,13 +385,7 @@ impl App {
     }
 
     /// A find answered: the cursor goes to the match.
-    pub(crate) fn hex_found(&mut self, job: Job, current: bool, hit: HexHit) {
-        let Job::HexFind(run) = job else {
-            return;
-        };
-        if !current {
-            return;
-        }
+    pub(crate) fn hex_found(&mut self, run: HexFindRun, hit: HexHit) {
         self.status_message = None;
         let Some(view) = self.hex_view.view.as_mut().filter(|v| v.serial == run.view) else {
             return;
@@ -479,9 +463,7 @@ impl App {
         };
         self.source.opened_from_home = from_home || self.source.opened_from_home;
         // The table takes the screen; a read that fails says why over it.
-        self.stop_hex_find();
-        self.hex_view.view = None;
-        self.input_mode = InputMode::Normal;
+        self.close_overlay();
         self.set_loading_phase("Scanning input", 10);
         self.name_what_is_loading(path.clone());
         Some(AppEvent::Open(vec![path], options))

@@ -323,7 +323,7 @@ impl App {
         if let Some(original) = self.data_table_state.replace(view) {
             self.quality.evidence_return = Some(Box::new(original));
             self.quality.evidence_label = Some(label);
-            self.analysis_modal.active = false;
+            self.step_back();
             self.forget_the_rows_read();
             self.spawn_async_collect("Loading matching rows...");
         }
@@ -338,7 +338,9 @@ impl App {
         self.counting.len_count_inflight = None;
         self.data_table_state = Some(*original);
         self.quality.evidence_label = None;
-        self.analysis_modal.active = reopen_analysis;
+        if reopen_analysis {
+            self.open_overlay(crate::Overlay::Analysis);
+        }
         self.busy = false;
         self.status_message = None;
         true

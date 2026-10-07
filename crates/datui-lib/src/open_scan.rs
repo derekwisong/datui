@@ -145,7 +145,7 @@ impl App {
     /// As [`Self::set_loading_phase`], for an open chosen on the home screen when
     /// `from_home`: that is where its failure is reported.
     pub(crate) fn announce_open(&mut self, from_home: bool, phase: String, percent: u16) {
-        self.make_way_for_an_open();
+        self.put_down_load_in_flight();
         self.loading.announce(from_home, phase, percent);
     }
 
@@ -154,18 +154,19 @@ impl App {
         self.loading.name(path);
     }
 
-    /// An open is being asked for: a load already doing work is put down for it, unless
-    /// it has not started any (the look or the frame that leads to this open).
-    pub(crate) fn make_way_for_an_open(&mut self) {
+    /// Put down the load in flight, unless it has not started any work (the look or the
+    /// frame that leads to this open): what an open still choosing its path needs, and
+    /// the first step of [`Self::begin_new_dataset`].
+    pub(crate) fn put_down_load_in_flight(&mut self) {
         if let Some(retired) = self.loading.make_way() {
             self.put_down_load(retired);
         }
     }
 
-    /// An open has its request: make way for it, and stop what the dataset on screen
-    /// was still reading for itself.
+    /// The entry point of an open that has its request: the load in flight goes, and
+    /// so does what the dataset on screen was still reading for itself.
     pub(crate) fn begin_new_dataset(&mut self) {
-        self.make_way_for_an_open();
+        self.put_down_load_in_flight();
         // A preview's dataset this open did not take is a page nobody is opening.
         self.home_app.previews.drop_prepared();
         self.reset_chart_state();
@@ -435,7 +436,7 @@ impl App {
             self.source.original_file_delimiter = None;
         }
         // A panel still up says what it says about the dataset on screen.
-        if self.info_modal.active {
+        if self.overlay.shows(&crate::Overlay::Info) {
             self.read_file_facts();
             self.count_unfit();
         }
@@ -1373,7 +1374,7 @@ impl App {
         let mut other_tables_found = facts.other_tables;
         other_tables_found.extend(other_tables);
         let state = state.with_open(OpenFacts {
-            fetched: Self::fetched(download.as_ref(), path.as_deref()),
+            fetched: Self::was_fetched(download.as_ref(), path.as_deref()),
             download,
             converted,
             other_tables: other_tables_found,
@@ -1392,6 +1393,8 @@ impl App {
     fn spawn_load_phase(&mut self, load: loading::LoadId, step: loading::Step) {
         use loading::{LoadAnswer, Step};
         let job = Job::Load(load);
+        // Every phase that reads, reads with the same cloud settings on the shared runtime.
+        let (cloud, runtime) = (self.app_config.cloud.clone(), self.runtime.clone());
         match step {
             #[cfg(any(feature = "http", feature = "cloud"))]
             Step::ReadHeaders {
@@ -1400,7 +1403,6 @@ impl App {
                 options,
                 writer,
             } => {
-                let (cloud, runtime) = (self.app_config.cloud.clone(), self.runtime.clone());
                 self.spawn_job(job, Some("Reading headers..."), move |_| {
                     let read = crate::remote_model::read(&url, format, &cloud, &runtime, &|| {
                         writer.stopped()
@@ -1447,8 +1449,6 @@ impl App {
             }
             #[cfg(any(feature = "http", feature = "cloud"))]
             Step::Probe(pending) => {
-                #[cfg(feature = "cloud")]
-                let (cloud, runtime) = (self.app_config.cloud.clone(), self.runtime.clone());
                 self.spawn_job(job, Some("Checking size..."), move |_| {
                     // Arrow in a store: its listing says which objects, and which of
                     // them are streams to download.
@@ -1497,8 +1497,6 @@ impl App {
                 // replaces it, and when the app drops: the download stops at the next
                 // chunk, or while the source is silent, and removes its file. Quitting
                 // removes it even if the process ends first (`ExitSweep`).
-                #[cfg(feature = "cloud")]
-                let (cloud, runtime) = (self.app_config.cloud.clone(), self.runtime.clone());
                 let status = match &pending {
                     #[cfg(feature = "http")]
                     loading::PendingDownload::Http { .. } => "Downloading...",
@@ -1630,8 +1628,6 @@ impl App {
                 options,
                 writer,
             } => {
-                #[cfg(any(feature = "http", feature = "cloud"))]
-                let (cloud, runtime) = (self.app_config.cloud.clone(), self.runtime.clone());
                 self.spawn_job(job, Some("Reading spec..."), move |_| {
                     #[cfg(any(feature = "http", feature = "cloud"))]
                     let fetched = crate::remote_model::fetch_small(
@@ -1771,7 +1767,7 @@ impl App {
                         .unwrap_or_default();
                     open_notes.extend(opened.iter().flat_map(|o| o.notes.iter().cloned()));
                     let state = state.with_open(OpenFacts {
-                        fetched: Self::fetched(download.as_ref(), Some(&path)),
+                        fetched: Self::was_fetched(download.as_ref(), Some(&path)),
                         download,
                         open_notes,
                         records: opened.and_then(|o| o.window),
@@ -1858,7 +1854,6 @@ impl App {
                 display,
                 status,
             } => {
-                let cloud = self.app_config.cloud.clone();
                 let formats = self.formats.clone();
                 // A download is scanned from a temp path the user never typed and would not
                 // recognise; the URL they did type is what names the dataset.
@@ -1877,8 +1872,6 @@ impl App {
                 made,
             } => {
                 self.debug.schema_load = None;
-                let cloud = self.app_config.cloud.clone();
-                let runtime = self.runtime.clone();
                 let report = crate::measurements::OpenReport {
                     progress,
                     meter: Arc::new(crate::measurements::Meter::default()),

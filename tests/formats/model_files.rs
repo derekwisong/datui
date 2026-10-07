@@ -8,7 +8,7 @@ use crate::common::{self, drain_events, pump_open_until_loaded};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use datui::model_files::MetaValue;
 use datui::text_formats::Detail;
-use datui::{App, AppEvent, InputMode, OpenOptions};
+use datui::{App, AppEvent, OpenOptions, Overlay};
 use polars::prelude::*;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -192,7 +192,7 @@ fn a_gguf_file_opens_with_its_metadata_on_the_model_tab() {
     // `i` opens on the Model tab, and the template is there in full.
     press(&mut app, KeyCode::Char('i'));
     drain_events(&mut app, &rx);
-    assert_eq!(app.input_mode, InputMode::Info);
+    assert_eq!(app.overlay, Overlay::Info);
     let text = screen(&mut app).join("\n");
     for expected in [
         "GGUF v3",

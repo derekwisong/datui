@@ -177,8 +177,8 @@ fn a_view_saved_on_one_table_fits_that_table_of_the_file_alone() {
     // V finds nothing that fits, so it opens the list rather than apply the view.
     press(&mut app, 'V');
     assert!(app.views.active_id.is_none());
-    assert!(app.view_modal.active, "the list opens instead");
-    app.view_modal.close();
+    assert_eq!(app.overlay, crate::Overlay::View, "the list opens instead");
+    app.close_overlay();
 
     // Downloaded, the dataset is the database's URL whatever the table.
     let url = PathBuf::from("https://example.com/data/shop.db");
@@ -236,7 +236,7 @@ fn a_frame_from_python_matches_views_by_its_columns() {
     open_with(&mut app, &rx, &tx, frame(5));
     assert!(app.path.is_none(), "a frame has no path");
     press(&mut app, 'v');
-    assert!(app.view_modal.active, "v opens the views list");
+    assert_eq!(app.overlay, crate::Overlay::View, "v opens the views list");
     app.data_table_state
         .as_mut()
         .unwrap()
@@ -250,7 +250,7 @@ fn a_frame_from_python_matches_views_by_its_columns() {
         app.view_modal.rows[0].reason,
         Some(view::MatchReason::SameColumns)
     );
-    app.view_modal.close();
+    app.close_overlay();
 
     // The next frame with these columns: V applies the view and says why.
     open_with(&mut app, &rx, &tx, frame(8));

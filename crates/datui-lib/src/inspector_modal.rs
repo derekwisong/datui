@@ -210,7 +210,6 @@ impl PaneKey {
 
 #[derive(Default)]
 pub struct InspectorModal {
-    pub active: bool,
     pub fields: Vec<InspectField>,
     /// The find text over the fields' names, then their values.
     pub filter: String,
@@ -310,7 +309,6 @@ impl InspectorModal {
         self.visible = (0..fields.len()).collect();
         self.fields = fields;
         self.listed = None;
-        self.active = true;
         self.finding = false;
         self.focus = Focus::List;
         self.list_offset = 0;
@@ -328,7 +326,6 @@ impl InspectorModal {
     }
 
     pub fn close(&mut self) {
-        self.active = false;
         self.finding = false;
         self.focus = Focus::List;
         self.read = None;

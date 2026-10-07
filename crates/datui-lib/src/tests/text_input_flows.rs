@@ -15,7 +15,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 
 use crate::widgets::text_input::TextInput;
-use crate::{App, AppEvent, InputMode, OpenOptions};
+use crate::{App, AppEvent, InputMode, OpenOptions, Overlay};
 
 /// An app with a small CSV loaded, driven the way the real event loop drives it.
 ///
@@ -158,7 +158,7 @@ fn typing_a_query_and_submitting_it_applies_the_query() {
     );
 
     h.press(KeyCode::Enter);
-    assert_eq!(h.app.input_mode, InputMode::Normal);
+    assert!(h.app.at_table());
     let state = h.app.data_table_state.as_ref().expect("state");
     assert_eq!(state.get_active_query(), "select name where age > 40");
 }
@@ -198,7 +198,7 @@ fn esc_leaves_the_query_bar_without_running_anything() {
     h.type_str("select name where age > 40");
     h.press(KeyCode::Esc);
 
-    assert_eq!(h.app.input_mode, InputMode::Normal);
+    assert!(h.app.at_table());
     let state = h.app.data_table_state.as_ref().expect("state");
     assert_eq!(state.get_active_query(), "");
 }
@@ -262,7 +262,7 @@ fn the_command_line_goes_to_a_row_and_keeps_the_query() {
     assert_eq!(h.app.prompt.query_input.value(), "2");
     assert_eq!(crate::render::input_strip::prefix(&h.app), "row:");
     h.press(KeyCode::Enter);
-    assert_eq!(h.app.input_mode, InputMode::Normal);
+    assert!(h.app.at_table());
     let state = h.app.data_table_state.as_ref().expect("state");
     assert_eq!(state.cursor_row(), 1, "row 2 of the view");
     assert_eq!(
@@ -287,7 +287,7 @@ fn the_sort_and_filter_modal_filters_columns_as_you_type() {
     let mut h = Harness::with_data();
 
     h.press(KeyCode::Char('s'));
-    assert_eq!(h.app.input_mode, InputMode::SortFilter);
+    assert_eq!(h.app.overlay, Overlay::SortFilter);
     focus_column_filter(&mut h.app);
 
     h.type_str("ag");
@@ -454,7 +454,7 @@ fn the_export_modal_takes_a_path() {
     let mut h = Harness::with_data();
 
     h.press(KeyCode::Char('e'));
-    assert_eq!(h.app.input_mode, InputMode::Export);
+    assert!(matches!(h.app.overlay, Overlay::Export { .. }));
 
     // The modal suggests a filename; replace it with one of our own.
     let suggested = h.app.export_modal.path_input.value().to_string();
@@ -472,7 +472,7 @@ fn the_pivot_and_melt_modal_opens_a_picker_narrowed_as_you_type() {
     let mut h = Harness::with_data();
 
     h.press(KeyCode::Char('p'));
-    assert_eq!(h.app.input_mode, InputMode::PivotMelt);
+    assert_eq!(h.app.overlay, Overlay::PivotMelt);
     h.app.pivot_melt_modal.focus = crate::pivot_melt_modal::PivotMeltFocus::PivotIndex;
 
     // Space opens a picked row's Picker; typing narrows it.
@@ -534,7 +534,7 @@ fn esc_closes_the_query_prompt_from_every_mode() {
             h.press_with(KeyCode::Char('t'), KeyModifiers::CONTROL);
         }
         h.press(KeyCode::Esc);
-        assert_eq!(h.app.input_mode, InputMode::Normal, "{mode:?}");
+        assert!(h.app.at_table(), "{mode:?}");
         assert_eq!(h.app.prompt.input_type, None, "{mode:?}");
         assert_eq!(h.app.query_prompt_mode(), None, "{mode:?}");
     }
@@ -559,7 +559,7 @@ fn a_find_lights_up_matches_and_keeps_them() {
     let drawn = query_screen(&mut h.app);
     assert!(drawn.contains("1 on screen"), "{drawn}");
     h.press_with(KeyCode::Char('g'), KeyModifiers::CONTROL);
-    assert_eq!(h.app.input_mode, InputMode::Normal);
+    assert!(h.app.at_table());
     let state = h.app.data_table_state.as_ref().expect("state");
     assert_eq!(state.num_rows(), 1, "only alan's row has al");
     assert_eq!(state.view_filters()[0].describe(), "has \"al\"");

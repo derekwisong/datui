@@ -172,7 +172,7 @@ fn leaving_the_dataset_abandons_an_export_write() {
     });
     app.event(AppEvent::JobEnded(ticket));
     assert!(!app.error_modal.active);
-    assert!(!app.chart.export_modal.active);
+    assert_ne!(app.overlay, Overlay::ChartExport);
     assert!(!app.is_busy());
 }
 
@@ -263,8 +263,7 @@ fn a_failed_preparation_is_remembered_not_retried() {
     assert!(!app.chart.cache.satisfies(&request));
 
     // With that selection on screen, nothing more is wanted.
-    app.input_mode = InputMode::Chart;
-    app.chart.modal.active = true;
+    app.overlay = Overlay::Chart;
     histogram_modal(&mut app.chart.modal, "a");
     assert_eq!(ChartRequest::from_modal(&app.chart.modal), Some(request));
     assert!(!app.chart_request_pending(), "not asked for again");
@@ -278,8 +277,7 @@ fn moving_on_cancels_the_preparation_in_flight() {
     let (tx, _rx) = mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
     let a = histogram_request("a");
-    app.input_mode = InputMode::Chart;
-    app.chart.modal.active = true;
+    app.overlay = Overlay::Chart;
     histogram_modal(&mut app.chart.modal, "a");
     let started = start_prep(&mut app, &a, None);
 
@@ -480,7 +478,7 @@ fn select_xy(app: &mut App) {
         KeyCode::Char('c'),
         KeyModifiers::NONE,
     )));
-    assert_eq!(app.input_mode, InputMode::Chart);
+    assert_eq!(app.overlay, Overlay::Chart);
     app.chart.modal.set_mark(Mark::Line);
     app.chart.modal.spec.encoding.x.field = Some("x".to_string());
     app.chart.modal.spec.encoding.y.field = vec!["y".to_string()];
@@ -563,12 +561,12 @@ fn a_sort_or_filter_keeps_the_chart_columns() {
     select_xy(&mut app);
     pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
     key(&mut app, KeyCode::Esc);
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
 
     app.event(AppEvent::Sort(vec!["y".to_string()], vec![true]));
     pump(&mut app, &rx, &tx, |a| !a.is_busy());
     key(&mut app, KeyCode::Char('c'));
-    assert_eq!(app.input_mode, InputMode::Chart);
+    assert_eq!(app.overlay, Overlay::Chart);
     assert_eq!(app.chart.modal.x().map(String::as_str), Some("x"));
     assert_eq!(app.chart.modal.y(), ["y"]);
     pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
@@ -872,7 +870,7 @@ fn a_reselection_behind_a_stale_worker_counts_as_preparing() {
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
-    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.at_table());
     assert!(
         !app.chart_preparing(),
         "nothing is wanted while the chart is closed"

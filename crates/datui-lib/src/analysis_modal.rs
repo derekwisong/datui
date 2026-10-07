@@ -446,7 +446,6 @@ impl ColumnScroll {
 
 #[derive(Default)]
 pub struct AnalysisModal {
-    pub active: bool,
     pub scroll_position: usize,
     pub selected_column: Option<usize>,
     pub describe_columns: ColumnScroll,
@@ -608,7 +607,6 @@ impl AnalysisModal {
             .take()
             .filter(|kept| view.is_some() && kept.view == view);
         self.results_view = view;
-        self.active = true;
         self.scroll_position = 0;
         self.selected_column = None;
         self.describe_columns = ColumnScroll::default();
@@ -669,7 +667,6 @@ impl AnalysisModal {
             distribution_row: self.distribution_table_state.selected(),
             cell: self.selected_correlation,
         });
-        self.active = false;
         self.scroll_position = 0;
         self.selected_column = None;
         self.describe_columns = ColumnScroll::default();
@@ -1001,8 +998,7 @@ impl AnalysisModal {
     /// Whether `s` opens the Sample form here: on a tool's main view, with nothing
     /// else holding the keys — no run, no popup, no editor, no text field.
     pub fn sample_key_opens_form(&self) -> bool {
-        self.active
-            && self.view == AnalysisView::Main
+        self.view == AnalysisView::Main
             && self.selected_tool.is_some()
             && self.computing.is_none()
             && self.quality.picker.is_none()
@@ -1023,39 +1019,33 @@ impl AnalysisModal {
 
     /// Whether the export dialog's path owns typed characters.
     pub fn export_typing(&self) -> bool {
-        self.active
-            && self
-                .quality
-                .export
-                .as_ref()
-                .is_some_and(|form| !form.on_format)
+        self.quality
+            .export
+            .as_ref()
+            .is_some_and(|form| !form.on_format)
     }
 
     /// Whether a Column intent field owns typed characters, so Ctrl-C and `?` are
     /// text there as in any field.
     pub fn intent_typing(&self) -> bool {
-        self.active
-            && self
-                .quality
-                .intent_form
-                .as_ref()
-                .is_some_and(crate::intent_modal::IntentForm::typing)
+        self.quality
+            .intent_form
+            .as_ref()
+            .is_some_and(crate::intent_modal::IntentForm::typing)
     }
 
     /// Whether the Sample form's scope field owns typed characters, so Ctrl-C and `?`
     /// are text there as in any field.
     pub fn sample_scope_typing(&self) -> bool {
-        self.active
-            && self.sample_form.as_ref().is_some_and(|form| {
-                form.field.is_text() && (!form.inline || self.focus == AnalysisFocus::Main)
-            })
+        self.sample_form.as_ref().is_some_and(|form| {
+            form.field.is_text() && (!form.inline || self.focus == AnalysisFocus::Main)
+        })
     }
 
     /// Whether the Expected editor's From or Before has the cursor, so every key
     /// but its own types there.
     pub fn quality_expected_typing(&self) -> bool {
-        self.active
-            && self.quality.page == QualityPage::ExpectedWindows
+        self.quality.page == QualityPage::ExpectedWindows
             && self
                 .quality
                 .expected_form

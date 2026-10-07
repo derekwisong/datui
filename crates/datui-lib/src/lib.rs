@@ -134,6 +134,7 @@ mod open_options;
 mod open_scan;
 pub mod output_file;
 mod overlay;
+pub use overlay::Overlay;
 pub mod parquet_footer;
 pub mod past_calendar;
 mod picker_keys;
@@ -748,7 +749,7 @@ impl App {
     /// Whether a dataset held `download` because it came from a remote `path` (the
     /// URL it is shown by): a local stream's conversion and standard input's spool are
     /// held the same way.
-    fn fetched(download: Option<&crate::download::TempDownload>, path: Option<&Path>) -> bool {
+    fn was_fetched(download: Option<&crate::download::TempDownload>, path: Option<&Path>) -> bool {
         download.is_some() && path.is_some_and(source::is_remote_url)
     }
 }
@@ -767,6 +768,7 @@ pub enum RunInput {
     LazyFrame(Box<LazyFrame>, OpenOptions),
 }
 
+/// The screen keys go to when no overlay is open (see [`Overlay`]).
 #[derive(Debug, Default, PartialEq, Eq)]
 pub enum InputMode {
     #[default]
@@ -775,33 +777,8 @@ pub enum InputMode {
     /// arguments, and from inside a session, which is what makes datui a place you
     /// stay rather than a command you re-run.
     Home,
-    SortFilter,
-    PivotMelt,
+    /// The command line or the find line.
     Editing,
-    Export,
-    /// The copy dialog over the table.
-    Copy,
-    /// The row inspector over the table.
-    Inspect,
-    /// The column picker over the table: type a column's name to go to it.
-    GoToColumn,
-    /// The format picker over a table read through a spec: read it with another.
-    PickFormat,
-    /// A column's type, picked over the table: from the Info panel's Schema tab or
-    /// the cell menu.
-    Retype,
-    /// A datetime made from columns, as a spec's derived column.
-    Combine,
-    /// The table picker over a table of a file of several: open another.
-    PickTable,
-    Info,
-    Chart,
-    /// Value Counts: how often each value of one column occurs in the view.
-    ValueCounts,
-    /// The hex view: a file's bytes.
-    Hex,
-    /// The Sample form over the table (`S`).
-    Sample,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1038,6 +1015,8 @@ pub struct App {
     /// The command line: its inputs per mode, completion, and the query it is running.
     pub prompt: query_prompt::QueryPrompt,
     pub input_mode: InputMode,
+    /// What is open over the table. See [`Overlay`].
+    pub overlay: Overlay,
     pub sort_filter_modal: SortFilterModal,
     pub pivot_melt_modal: PivotMeltModal,
     pub view_modal: ViewModal,
@@ -1225,7 +1204,7 @@ impl App {
     /// The newest cancelled analysis or sample read still running, and whether it was
     /// cancelled during a read nothing can stop.
     fn cancelled_analysis(&self) -> Option<(std::time::Instant, bool)> {
-        let (since, job) = self.jobs.cancelled_running(Self::reads_for_analysis)?;
+        let (since, job) = self.jobs.cancelled_running(Self::is_analysis_read)?;
         let runs_out = match job {
             Job::Analysis(run) => run.runs_out,
             _ => true,
@@ -1234,7 +1213,7 @@ impl App {
     }
 
     /// A read for the Analysis tools: a run, or the sample read to show as a table.
-    fn reads_for_analysis(job: &Job) -> bool {
+    fn is_analysis_read(job: &Job) -> bool {
         matches!(job, Job::Analysis(_) | Job::SampleRows)
     }
 
@@ -1388,7 +1367,7 @@ impl App {
             .jobs
             .current(|job| matches!(job, Job::SampleRows))
             .is_some();
-        self.jobs.cancel(Self::reads_for_analysis);
+        self.jobs.cancel(Self::is_analysis_read);
         self.jobs.advance();
         // Keys typed while it ran were typed at the run, which is gone: an impatient
         // second Enter replayed now would start it again behind the Esc.
@@ -1419,7 +1398,7 @@ impl App {
 
     /// Whether the Pivot & Melt builder is waiting on a pivot it started.
     pub(crate) fn pivot_computing(&self) -> bool {
-        self.input_mode == InputMode::PivotMelt
+        self.overlay == Overlay::PivotMelt
             && self.jobs.current(|job| matches!(job, Job::Pivot)).is_some()
     }
 
@@ -1651,7 +1630,7 @@ impl App {
     }
 
     /// Where `key` takes the user out of the dataset: quitting, or home.
-    fn leaves(&self, key: &KeyEvent) -> Option<Leaving> {
+    fn leaving_by(&self, key: &KeyEvent) -> Option<Leaving> {
         if !key.is_press() {
             return None;
         }
@@ -1811,7 +1790,7 @@ impl App {
     fn follow_mark(&self) -> Option<crate::render::footer::FollowMark> {
         use crate::follow::Standing;
         // The hex view shows a file's bytes, not the table the follow moves.
-        if self.input_mode == InputMode::Hex {
+        if self.overlay == Overlay::Hex {
             return None;
         }
         let state = self.data_table_state.as_ref()?;
@@ -1868,11 +1847,10 @@ impl App {
         let misfits = follow.misfits();
         // What `t` does on this screen: pause or resume at the table; over a surface
         // that keeps the rows it was opened on, read the new ones.
-        let refreshes = self.input_mode == InputMode::ValueCounts
-            || (self.input_mode == InputMode::Chart
-                && self.chart.modal.picker.is_none()
-                && !self.chart.export_modal.active)
-            || (self.analysis_modal.active && self.analysis_modal.current_results().is_some());
+        let refreshes = self.overlay == Overlay::ValueCounts
+            || (self.overlay == Overlay::Chart && self.chart.modal.picker.is_none())
+            || (self.overlay == Overlay::Analysis
+                && self.analysis_modal.current_results().is_some());
         let key = if self.in_normal_table_view() {
             Some(match follow.standing {
                 Standing::Paused => "Resume",
@@ -1995,13 +1973,12 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let quit = ctrl && matches!(key.code, KeyCode::Char('q' | 'c'));
         let home = ctrl && key.code == KeyCode::Char('o');
-        let cancel_analysis = self.analysis_modal.active
+        let cancel_analysis = self.overlay == Overlay::Analysis
             && self.analysis_modal.computing.is_some()
             && key.code == KeyCode::Esc;
         let cancel_pivot = self.pivot_computing() && key.code == KeyCode::Esc;
-        let leave_quality_evidence = self.quality.evidence_return.is_some()
-            && self.input_mode == InputMode::Normal
-            && key.code == KeyCode::Esc;
+        let leave_quality_evidence =
+            self.quality.evidence_return.is_some() && self.at_table() && key.code == KeyCode::Esc;
         let cancel_view = key.code == KeyCode::Esc && self.view_applying();
         let cancel_find = key.code == KeyCode::Esc && self.finding();
         let stop_sample =
@@ -2113,10 +2090,8 @@ impl App {
     /// The plain table view: Normal mode with no help overlay, modal, or in-view modal
     /// (view, analysis) or context menu drawn over it.
     pub fn in_normal_table_view(&self) -> bool {
-        self.input_mode == InputMode::Normal
+        self.at_table()
             && !self.help.is_open()
-            && !self.view_modal.active
-            && !self.analysis_modal.active
             && !self.error_modal.active
             && !self.confirmation_modal.active
             && self.context_menu.is_none()
@@ -2168,11 +2143,9 @@ impl App {
     /// The context menu is open over the plain table view, nothing over it.
     pub(crate) fn menu_showing(&self) -> bool {
         self.context_menu.is_some()
-            && self.input_mode == InputMode::Normal
+            && self.at_table()
             && self.data_table_state.is_some()
             && !self.help.is_open()
-            && !self.view_modal.active
-            && !self.analysis_modal.active
             && !self.error_modal.active
             && !self.confirmation_modal.active
     }
@@ -2264,68 +2237,68 @@ impl App {
     /// Whether a text field currently owns typed characters, so the wheel and `?` leave
     /// it alone. The home filter is deliberately excluded.
     pub fn text_field_focused(&self) -> bool {
-        match self.input_mode {
-            InputMode::Editing => true,
-            InputMode::Export => matches!(
+        match self.overlay {
+            Overlay::None => match self.input_mode {
+                InputMode::Editing => true,
+                InputMode::Home => false,
+                InputMode::Normal => false,
+            },
+            Overlay::Analysis => {
+                self.analysis_modal.sample_scope_typing()
+                    || self.analysis_modal.quality_expected_typing()
+                    || self.analysis_modal.intent_typing()
+                    || self.analysis_modal.export_typing()
+            }
+            Overlay::View => {
+                self.view_modal.mode != ViewModalMode::List
+                    && matches!(
+                        self.view_modal.form_focus,
+                        FormFocus::Name
+                            | FormFocus::Description
+                            | FormFocus::ExactPath
+                            | FormFocus::RelativePath
+                            | FormFocus::PathPattern
+                            | FormFocus::FilenamePattern
+                    )
+            }
+            Overlay::Export { .. } => matches!(
                 self.export_modal.focus,
                 ExportFocus::PathInput | ExportFocus::CsvDelimiter
             ),
             // The Picker narrows by typing, so it types.
-            InputMode::Copy => self.copy_modal.picker.is_some(),
+            Overlay::Copy => self.copy_modal.picker.is_some(),
             // The find line types.
-            InputMode::Inspect => self.inspector_modal.finding,
+            Overlay::Inspect => self.inspector_modal.finding,
             // The Picker narrows by typing, so it types.
-            InputMode::GoToColumn => true,
-            InputMode::PickFormat | InputMode::Retype => true,
-            InputMode::Combine => {
+            Overlay::GoToColumn => true,
+            Overlay::PickFormat | Overlay::Retype { .. } => true,
+            Overlay::Combine { .. } => {
                 self.column_forms.combine.as_ref().is_some_and(|c| {
                     c.picker.is_some() || c.focus == retype_modal::CombineField::Name
                 })
             }
-            InputMode::PickTable => true,
-            InputMode::Sample => self
+            Overlay::PickTable => true,
+            Overlay::Sample => self
                 .sample
                 .form
                 .as_ref()
                 .is_some_and(|form| form.field.is_text()),
             // The whole inline editor types (pickers narrow, the value edits), as
             // do the add-sort Picker and the Columns tab's find.
-            InputMode::SortFilter => self.sort_filter_modal.typing(),
-            InputMode::PivotMelt => {
+            Overlay::SortFilter => self.sort_filter_modal.typing(),
+            Overlay::PivotMelt => {
                 // The Picker narrows by typing, so it types too.
                 self.pivot_melt_modal.picker.is_some()
                     || self
                         .pivot_melt_modal
                         .is_text_row(self.pivot_melt_modal.focus)
             }
-            InputMode::Chart => {
-                if self.chart.export_modal.active {
-                    self.chart.export_modal.focus.is_text()
-                } else {
-                    // The open column Picker narrows by typing, so it types.
-                    self.chart.modal.picker.is_some()
-                }
-            }
-            InputMode::Normal => {
-                self.analysis_modal.sample_scope_typing()
-                    || self.analysis_modal.quality_expected_typing()
-                    || self.analysis_modal.intent_typing()
-                    || self.analysis_modal.export_typing()
-                    || (self.view_modal.active
-                        && self.view_modal.mode != ViewModalMode::List
-                        && matches!(
-                            self.view_modal.form_focus,
-                            FormFocus::Name
-                                | FormFocus::Description
-                                | FormFocus::ExactPath
-                                | FormFocus::RelativePath
-                                | FormFocus::PathPattern
-                                | FormFocus::FilenamePattern
-                        ))
-            }
-            InputMode::Home | InputMode::Info | InputMode::ValueCounts => false,
+            Overlay::ChartExport => self.chart.export_modal.focus.is_text(),
+            // The open column Picker narrows by typing, so it types.
+            Overlay::Chart => self.chart.modal.picker.is_some(),
+            Overlay::Info | Overlay::ValueCounts => false,
             // The prompt types, and so does the spec picker's filter.
-            InputMode::Hex => self
+            Overlay::Hex => self
                 .hex_view
                 .view
                 .as_ref()
@@ -2343,7 +2316,7 @@ impl App {
         self.is_busy()
             || (self.row_count_pending() && !self.awaiting_open_confirmation())
             // The clock beside "source read finishing" keeps time until it has.
-            || (self.analysis_modal.active && self.cancelled_analysis_running().is_some())
+            || (self.overlay == Overlay::Analysis && self.cancelled_analysis_running().is_some())
             || self.chart_preparing()
             || self.value_counts_computing()
             || (self.input_mode == InputMode::Home
@@ -2742,7 +2715,7 @@ impl App {
     /// its phases answer. Its jobs are [`Job::Load`] with the id returned.
     #[cfg(test)]
     pub(crate) fn open_for_tests(&mut self, path: &str) -> loading::LoadId {
-        self.make_way_for_an_open();
+        self.put_down_load_in_flight();
         let _ = self.loading.open(loading::OpenRequest {
             paths: vec![PathBuf::from(path)],
             options: OpenOptions::default(),
@@ -2765,7 +2738,7 @@ impl App {
         options: &OpenOptions,
         debug_label: Option<String>,
     ) -> bool {
-        self.make_way_for_an_open();
+        self.put_down_load_in_flight();
         let _ = self
             .loading
             .open_frame(LazyFrame::default(), options.clone());
@@ -3084,6 +3057,7 @@ impl App {
                 inline_failures: 0,
             },
             input_mode: InputMode::Normal,
+            overlay: Overlay::None,
             sort_filter_modal: SortFilterModal::new(),
             pivot_melt_modal: PivotMeltModal::new(),
             view_modal: ViewModal::new(),
@@ -3135,7 +3109,6 @@ impl App {
             column_forms: retype_keys::ColumnForms {
                 retype: None,
                 combine: None,
-                retype_from_info: false,
             },
             error_modal: ErrorModal::new(),
             flash: None,
@@ -3211,7 +3184,7 @@ impl App {
     /// and the reading is a worker's job — this thread only decides what is worth
     /// asking about.
     pub fn request_what_the_frame_needs(&mut self) {
-        if self.input_mode == InputMode::Normal {
+        if self.at_table() {
             self.load_ahead();
             self.catch_up_follow();
         }
@@ -3280,8 +3253,8 @@ impl App {
     pub fn keys_context(&self) -> datui_cli::keys::Context {
         use crate::analysis_modal::{AnalysisTool, AnalysisView};
         use datui_cli::keys::Context;
-        if self.analysis_modal.active {
-            return match self.analysis_modal.view {
+        match self.overlay {
+            Overlay::Analysis => match self.analysis_modal.view {
                 AnalysisView::DistributionDetail => Context::DistributionDetail,
                 AnalysisView::CorrelationDetail => Context::CorrelationDetail,
                 AnalysisView::Main => match self.analysis_modal.selected_tool {
@@ -3290,34 +3263,32 @@ impl App {
                     Some(AnalysisTool::DataQuality) => Context::DataQuality,
                     Some(AnalysisTool::Describe) | None => Context::Describe,
                 },
-            };
-        }
-        if self.view_modal.active {
-            return Context::Views;
-        }
-        match self.input_mode {
-            InputMode::Normal => Context::Table,
-            InputMode::Editing => match self.prompt.input_type {
-                Some(InputType::Find) => Context::Find,
-                _ => Context::Query,
             },
-            InputMode::SortFilter => Context::SortFilter,
-            InputMode::PivotMelt => Context::PivotMelt,
-            InputMode::Export => Context::Export,
-            InputMode::Copy => Context::Copy,
-            InputMode::Inspect => Context::Inspector,
-            InputMode::GoToColumn => Context::GoToColumn,
-            InputMode::PickFormat => Context::FormatPicker,
-            InputMode::Retype => Context::Retype,
-            InputMode::Combine => Context::Combine,
-            InputMode::PickTable => Context::TablePicker,
-            InputMode::Sample => Context::Sample,
-            InputMode::Info => Context::Info,
-            InputMode::Chart => Context::Chart,
-            InputMode::Home if self.info.documentation.is_open() => Context::Documentation,
-            InputMode::Home => Context::Home,
-            InputMode::Hex => Context::Hex,
-            InputMode::ValueCounts => Context::ValueCounts,
+            Overlay::View => Context::Views,
+            Overlay::None => match self.input_mode {
+                InputMode::Normal => Context::Table,
+                InputMode::Editing => match self.prompt.input_type {
+                    Some(InputType::Find) => Context::Find,
+                    _ => Context::Query,
+                },
+                InputMode::Home if self.info.documentation.is_open() => Context::Documentation,
+                InputMode::Home => Context::Home,
+            },
+            Overlay::SortFilter => Context::SortFilter,
+            Overlay::PivotMelt => Context::PivotMelt,
+            Overlay::Export { .. } => Context::Export,
+            Overlay::Copy => Context::Copy,
+            Overlay::Inspect => Context::Inspector,
+            Overlay::GoToColumn => Context::GoToColumn,
+            Overlay::PickFormat => Context::FormatPicker,
+            Overlay::Retype { .. } => Context::Retype,
+            Overlay::Combine { .. } => Context::Combine,
+            Overlay::PickTable => Context::TablePicker,
+            Overlay::Sample => Context::Sample,
+            Overlay::Info => Context::Info,
+            Overlay::Chart | Overlay::ChartExport => Context::Chart,
+            Overlay::Hex => Context::Hex,
+            Overlay::ValueCounts => Context::ValueCounts,
         }
     }
 
@@ -3404,11 +3375,8 @@ impl App {
     /// were.
     fn declined(&mut self) -> Option<AppEvent> {
         match self.confirmation_modal.take() {
-            Some(Confirm::ChartExport(_)) => self.chart.export_modal.resume(),
-            Some(Confirm::Export(_)) => {
-                self.export_modal.resume();
-                self.input_mode = InputMode::Export;
-            }
+            Some(Confirm::ChartExport(_)) => self.open_overlay(Overlay::ChartExport),
+            Some(Confirm::Export(_)) => self.open_over(|returns_to| Overlay::Export { returns_to }),
             // Backing out of a download, or a large read, goes home: `enter_home` puts
             // the open down.
             Some(Confirm::Download) => self.enter_home(),
@@ -3479,7 +3447,7 @@ impl App {
         }
         // And for a count of footers, at the table its progress line is on.
         if event.code == KeyCode::Esc
-            && self.input_mode == InputMode::Normal
+            && self.at_table()
             && self.in_normal_table_view()
             && self.footers_counted().is_some()
         {
@@ -3488,8 +3456,7 @@ impl App {
         }
 
         if event.code == KeyCode::Esc
-            && self.input_mode == InputMode::Normal
-            && !self.analysis_modal.active
+            && self.at_table()
             && !self.error_modal.active
             && !self.confirmation_modal.active
             && self.return_from_quality_evidence(true)
@@ -3617,10 +3584,7 @@ impl App {
         // in Normal). No is_press()/is_release() check: some terminals do not report key
         // kind correctly. Exclude view/analysis modals so they can handle Left/Right
         // themselves.
-        let in_main_table = !(self.input_mode != InputMode::Normal
-            || self.help.is_open()
-            || self.view_modal.active
-            || self.analysis_modal.active);
+        let in_main_table = self.at_table() && !self.help.is_open();
         // The footer offers the column's keys once the column cursor moves, until a
         // key that is not about the column.
         if in_main_table && event.is_press() {
@@ -3664,73 +3628,28 @@ impl App {
             }
         }
 
-        if self.input_mode == InputMode::SortFilter {
-            return self.sort_filter_key(event);
-        }
-
-        if self.input_mode == InputMode::Export {
-            return self.export_key(event);
-        }
-
-        if self.input_mode == InputMode::Sample {
-            return self.table_sample_form_key(event);
-        }
-
-        if self.input_mode == InputMode::Inspect {
-            return self.inspector_key(event);
-        }
-
-        if self.input_mode == InputMode::ValueCounts {
-            return self.value_counts_key(event);
-        }
-
-        if self.input_mode == InputMode::Hex {
-            return self.hex_key(event);
-        }
-
-        if self.input_mode == InputMode::GoToColumn {
-            self.go_to_column_key(event);
-            return None;
-        }
-
-        if self.input_mode == InputMode::PickFormat {
-            return self.format_picker_key(event);
-        }
-
-        if self.input_mode == InputMode::Retype {
-            return self.retype_key(event);
-        }
-
-        if self.input_mode == InputMode::Combine {
-            return self.combine_key(event);
-        }
-
-        if self.input_mode == InputMode::PickTable {
-            return self.table_picker_key(event);
-        }
-
-        if self.input_mode == InputMode::Copy {
-            return self.copy_key(event);
-        }
-
-        if self.input_mode == InputMode::PivotMelt {
-            return self.pivot_melt_key(event);
-        }
-
-        if self.input_mode == InputMode::Info {
-            return self.info_key(event);
-        }
-
-        if self.input_mode == InputMode::Chart {
-            return self.chart_key(event);
-        }
-
-        if self.analysis_modal.active {
-            return self.analysis_key(event);
-        }
-
-        if self.view_modal.active {
-            return self.view_key(event);
+        match self.overlay {
+            Overlay::None => {}
+            Overlay::SortFilter => return self.sort_filter_key(event),
+            Overlay::Export { .. } => return self.export_key(event),
+            Overlay::Sample => return self.table_sample_form_key(event),
+            Overlay::Inspect => return self.inspector_key(event),
+            Overlay::ValueCounts => return self.value_counts_key(event),
+            Overlay::Hex => return self.hex_key(event),
+            Overlay::GoToColumn => {
+                self.go_to_column_key(event);
+                return None;
+            }
+            Overlay::PickFormat => return self.format_picker_key(event),
+            Overlay::Retype { .. } => return self.retype_key(event),
+            Overlay::Combine { .. } => return self.combine_key(event),
+            Overlay::PickTable => return self.table_picker_key(event),
+            Overlay::Copy => return self.copy_key(event),
+            Overlay::PivotMelt => return self.pivot_melt_key(event),
+            Overlay::Info => return self.info_key(event),
+            Overlay::Chart | Overlay::ChartExport => return self.chart_key(event),
+            Overlay::Analysis => return self.analysis_key(event),
+            Overlay::View => return self.view_key(event),
         }
 
         if self.input_mode == InputMode::Editing {
@@ -3884,7 +3803,7 @@ impl App {
                     && let Some(state) = self.data_table_state.as_ref()
                 {
                     self.value_counts.rebase(state.len_generation());
-                    self.input_mode = InputMode::ValueCounts;
+                    self.open_overlay(Overlay::ValueCounts);
                 }
                 if drilled_up {
                     self.spawn_async_collect(Self::LOADING_BUFFER);
@@ -3938,7 +3857,7 @@ impl App {
             }
             KeyCode::PageUp if event.is_press() => self.scroll_key(Scroll::PageUp),
             KeyCode::Enter if event.is_press() => {
-                if self.input_mode != InputMode::Normal {
+                if !self.at_table() {
                     return None;
                 }
                 // With no group to drill into, Enter is Space: the row inspector.
@@ -3976,7 +3895,7 @@ impl App {
                     {
                         self.info_modal.detail_selected = at;
                     }
-                    self.input_mode = InputMode::Info;
+                    self.open_overlay(Overlay::Info);
                     self.read_file_facts();
                     self.count_unfit();
                 }
@@ -4013,7 +3932,7 @@ impl App {
                 None
             }
             KeyCode::Char('S') => {
-                if self.input_mode == InputMode::Normal {
+                if self.at_table() {
                     self.open_table_sample_form();
                 }
                 None
@@ -4034,7 +3953,7 @@ impl App {
                         &self.theme,
                         current.as_deref(),
                     );
-                    self.input_mode = InputMode::SortFilter;
+                    self.open_overlay(Overlay::SortFilter);
                 }
                 None
             }
@@ -4048,12 +3967,13 @@ impl App {
             KeyCode::Char('a') => {
                 // Open analysis modal; no computation until user selects a tool from the sidebar (Enter)
                 if self.data_table_state.is_some()
-                    && self.input_mode == InputMode::Normal
+                    && self.at_table()
                     && self.quality.evidence_return.is_none()
                 {
                     // The results a close put down come back on the view they are of.
                     let view = self.data_table_state.as_ref().map(|s| s.len_generation());
                     self.analysis_modal.open(view);
+                    self.open_overlay(Overlay::Analysis);
                     // The sample outlives a close, but its scope names this
                     // dataset's rows: another dataset starts from its current view.
                     if self.analysis_modal.sample_dataset != Some(self.dataset_generation) {
@@ -4072,7 +3992,7 @@ impl App {
             }
             KeyCode::Char('c') => {
                 if let Some(state) = &self.data_table_state
-                    && self.input_mode == InputMode::Normal
+                    && self.at_table()
                 {
                     let numeric_columns: Vec<String> = state
                         .schema()
@@ -4134,18 +4054,18 @@ impl App {
                     }
                     self.chart.modal.view_sampled = sampled;
                     self.chart.cache.clear();
-                    self.input_mode = InputMode::Chart;
+                    self.open_overlay(Overlay::Chart);
                 }
                 None
             }
             KeyCode::Char('p') => {
-                if self.data_table_state.is_some() && self.input_mode == InputMode::Normal {
+                if self.data_table_state.is_some() && self.at_table() {
                     self.open_pivot_builder();
                 }
                 None
             }
             KeyCode::Char('e') => {
-                if self.data_table_state.is_some() && self.input_mode == InputMode::Normal {
+                if self.data_table_state.is_some() && self.at_table() {
                     self.export_counts = None;
                     self.export_modal.open(
                         self.source.original_file_format,
@@ -4171,36 +4091,36 @@ impl App {
                                     .is_some_and(|dtype| crate::avro_types::renames(name, dtype))
                             });
                     }
-                    self.input_mode = InputMode::Export;
+                    self.open_over(|returns_to| Overlay::Export { returns_to });
                 }
                 None
             }
             KeyCode::Char(' ') if event.is_press() => {
-                if self.input_mode == InputMode::Normal {
+                if self.at_table() {
                     self.open_inspector();
                 }
                 None
             }
             KeyCode::Char('g') if event.is_press() => {
-                if self.input_mode == InputMode::Normal {
+                if self.at_table() {
                     self.open_go_to_column();
                 }
                 None
             }
             KeyCode::Char('b') if event.is_press() => {
-                if self.input_mode == InputMode::Normal {
+                if self.at_table() {
                     self.open_format_picker();
                 }
                 None
             }
             KeyCode::Char('T') if event.is_press() => {
-                if self.input_mode == InputMode::Normal {
+                if self.at_table() {
                     self.open_table_picker();
                 }
                 None
             }
             KeyCode::Char('y') => {
-                if self.input_mode == InputMode::Normal
+                if self.at_table()
                     && let Some(state) = self.data_table_state.as_ref()
                 {
                     let columns = state.get_column_order().to_vec();
@@ -4212,7 +4132,7 @@ impl App {
                     };
                     let current = state.current_column().map(str::to_string);
                     self.copy_modal.open(columns, current.as_deref(), context);
-                    self.input_mode = InputMode::Copy;
+                    self.open_overlay(Overlay::Copy);
                 }
                 None
             }
@@ -4286,7 +4206,7 @@ impl App {
         match event {
             AppEvent::Key(key) => {
                 // Leaving while standard input is still being recorded asks first.
-                if let Some(leaving) = self.leaves(&key)
+                if let Some(leaving) = self.leaving_by(&key)
                     && !self.confirmation_modal.active
                     && self.recording().is_some_and(|spool| spool.live())
                 {
@@ -4411,7 +4331,7 @@ impl App {
                 let formats = self.formats.clone();
                 // The open's first phase. Unleased, as the look is: an answer for an open
                 // the user has left (Ctrl+O) is thrown away by the loader, not waited for.
-                self.make_way_for_an_open();
+                self.put_down_load_in_flight();
                 let load = self.loading.look_at_paths();
                 self.spawn_job(Job::OpenNamed(load), Some("Scanning input..."), move |_| {
                     if let Some(missing) = Self::missing_named_path(&paths, &formats) {
@@ -4440,7 +4360,7 @@ impl App {
                 // is the whole of what doing this on the event thread cost.
                 let looking = dir;
                 let options = options;
-                self.make_way_for_an_open();
+                self.put_down_load_in_flight();
                 let load = self.loading.look_at_directory(looking.clone());
                 // A newer look replaces an older one.
                 self.jobs
@@ -4632,8 +4552,7 @@ impl App {
                     let result = state.deferred(|s| s.melt(&spec));
                     match result {
                         Ok(()) => {
-                            self.pivot_melt_modal.close();
-                            self.input_mode = InputMode::Normal;
+                            self.close_overlay();
                             self.spawn_async_collect("Computing melt...");
                             None
                         }
@@ -5137,7 +5056,7 @@ impl App {
             outcome,
             ..
         } = self.jobs.end(ticket)?;
-        let cancelled_analysis = !current && Self::reads_for_analysis(&job);
+        let cancelled_analysis = !current && Self::is_analysis_read(&job);
         let waited = keys.is_some();
         let out = match outcome {
             Outcome::Answered(answer) => self.answered(job, current, waited, *answer),
@@ -5385,7 +5304,7 @@ impl App {
                     self.retain_quality_sample(&kept);
                 }
                 if current
-                    && self.analysis_modal.active
+                    && self.overlay == Overlay::Analysis
                     && self.analysis_modal.selected_tool
                         == Some(analysis_modal::AnalysisTool::DataQuality)
                 {
@@ -5421,10 +5340,9 @@ impl App {
                 });
                 match installed {
                     Some(Ok(())) => {
-                        self.pivot_melt_modal.close();
                         // Only from the modal: a trip home meanwhile stays home.
-                        if self.input_mode == InputMode::PivotMelt {
-                            self.input_mode = InputMode::Normal;
+                        if self.overlay == Overlay::PivotMelt {
+                            self.close_overlay();
                         }
                         // The wait passes to the read of its rows.
                         self.spawn_async_collect(Self::LOADING_BUFFER);
@@ -5478,7 +5396,7 @@ impl App {
                     .read
                     .as_ref()
                     .is_some_and(|read| read.key() == (frame, row));
-                if self.inspector_modal.active && asked {
+                if self.overlay == Overlay::Inspect && asked {
                     self.inspector_modal.read =
                         Some(inspector_modal::FieldRead::Read { frame, row, values });
                 }
@@ -5486,7 +5404,7 @@ impl App {
             }
             (Job::InspectJson { token }, Answer::JsonParsed(root)) => {
                 // Superseded means something replaced the view, which owns the wait.
-                if !current || !self.inspector_modal.active {
+                if !current || self.overlay != Overlay::Inspect {
                     return None;
                 }
                 let modal = &mut self.inspector_modal;
@@ -5528,15 +5446,14 @@ impl App {
                 None
             }
             (_, Answer::ValueWritten(open)) => {
-                if current && self.inspector_modal.active {
+                if current && self.overlay == Overlay::Inspect {
                     self.external.open = Some(open);
                 }
                 None
             }
             (_, Answer::Exported(path)) => {
                 // Written: the dialog held for a failure is done with.
-                self.export_modal.close();
-                self.export_counts = None;
+                self.forget_export();
                 if current {
                     self.export_progress = None;
                     self.flash_path("Exported to ", &path);
@@ -5596,12 +5513,19 @@ impl App {
                 self.find_answered(run, current, found);
                 None
             }
-            (job, Answer::HexOpened(source)) => {
-                self.hex_opened(job, current, *source);
+            (
+                Job::HexOpen {
+                    origin,
+                    fallback,
+                    record_size,
+                },
+                Answer::HexOpened(source),
+            ) if current => {
+                self.hex_opened(origin, fallback, record_size, *source);
                 None
             }
-            (job, Answer::HexFound(hit)) => {
-                self.hex_found(job, current, hit);
+            (Job::HexFind(run), Answer::HexFound(hit)) if current => {
+                self.hex_found(run, hit);
                 None
             }
             (_, Answer::ValueCounts(counts)) => {
@@ -5638,6 +5562,16 @@ impl App {
         message: &str,
         panicked: bool,
     ) {
+        // Where there is one line for the reason, a panic's message (an internal error
+        // with the log's path under it) gives way to the log.
+        let could_not = |what: &str| {
+            if panicked {
+                format!("Could not {what}; see the log")
+            } else {
+                format!("Could not {what}: {message}")
+            }
+        };
+        // The jobs judged by something of their own rather than by being current.
         match job {
             // Judged by the open, as its answers are: one put down or replaced is not the
             // open the user is waiting on.
@@ -5645,10 +5579,12 @@ impl App {
                 if let loading::Step::Failed(failed) = self.loading.failed(*load, message) {
                     self.load_failed(failed);
                 }
+                return;
             }
             // A pass that failed could not read them: the dataset stops waiting.
             Job::FootersJoin { dataset } => {
                 self.footers_joined(*dataset, None);
+                return;
             }
             Job::ChartPrepare(prep) => {
                 let message = if panicked {
@@ -5657,41 +5593,12 @@ impl App {
                     message.to_string()
                 };
                 self.chart_prepared(*prep.clone(), current, Err(message));
+                return;
             }
-            Job::Classify(_) => {
-                if current {
-                    self.home.status = None;
-                    self.error_modal.show(message.to_string());
-                }
+            Job::Rows(_) | Job::OwedRows { .. } => {
+                return self.rows_failed(current, waited, message, None);
             }
-            Job::Rows(_) | Job::OwedRows { .. } => self.rows_failed(current, waited, message, None),
-            Job::Analysis(_) | Job::SampleRows => {
-                if current {
-                    self.analysis_modal.computing = None;
-                    self.error_modal.show(message.to_string());
-                }
-            }
-            Job::SampleDraw(_) => self.sample_draw_failed(job, current, message),
-            // The form stays up with its spec, to be fixed.
-            Job::Pivot | Job::Copy => {
-                if current {
-                    self.error_modal.show(message.to_string());
-                }
-            }
-            // The dialog is still up, the reason on its status line under the path.
-            Job::QualityReport => {
-                if current {
-                    match self.analysis_modal.quality.export.as_mut() {
-                        Some(form) => form.error = Some(message.to_string()),
-                        None => self.error_modal.show(message.to_string()),
-                    }
-                }
-            }
-            Job::ViewPivot(_) => {
-                if current {
-                    self.view_pivot_failed(message);
-                }
-            }
+            Job::SampleDraw(_) => return self.sample_draw_failed(job, current, message),
             // The preview says why in its own pane; the log has a panic's details.
             Job::ReshapePreview { epoch, token } => {
                 let message = if panicked {
@@ -5700,29 +5607,7 @@ impl App {
                     message.to_string()
                 };
                 self.reshape_preview_ended(*epoch, *token, None, Err(message));
-            }
-            Job::DrillRow => {
-                // The grouped view stays as it was. A flash has one line, and a panic's
-                // message is an internal error with the log's path under it: the log
-                // has the details.
-                if current {
-                    self.flash_note(if panicked {
-                        "Could not drill in; see the log".to_string()
-                    } else {
-                        format!("Could not drill in: {message}")
-                    });
-                }
-            }
-            Job::InspectJson { token } => {
-                let modal = &mut self.inspector_modal;
-                if current && let Some(wait) = modal.json_wait.take_if(|w| w.token == *token) {
-                    modal.not_json = Some((wait.frame, wait.row, wait.path));
-                    self.flash_note(if panicked {
-                        "Could not read the JSON; see the log".to_string()
-                    } else {
-                        sentence(message)
-                    });
-                }
+                return;
             }
             Job::InspectPretty { token } => {
                 let modal = &mut self.inspector_modal;
@@ -5734,6 +5619,7 @@ impl App {
                         place: place.clone(),
                     });
                 }
+                return;
             }
             Job::InspectUnpack { token } => {
                 let modal = &mut self.inspector_modal;
@@ -5745,71 +5631,100 @@ impl App {
                         place: place.clone(),
                     });
                 }
+                return;
             }
-            Job::OpenValue => {
-                if current {
+            Job::Find(_) => return self.find_failed(current, message),
+            // Judged by the dataset, as its answer is; the panel has one line for it.
+            Job::FileFacts { dataset } => {
+                let why = if panicked {
+                    "could not read; see the log".to_string()
+                } else {
+                    message.to_string()
+                };
+                self.file_facts_landed(*dataset, FileFacts::Failed(why));
+                return;
+            }
+            // The note is left unsaid; the log has why.
+            Job::UnfitCount { .. } => {
+                log::warn!(target: "datui", "counting values that did not fit their type failed: {message}");
+                return;
+            }
+            // The Info tab keeps what the open read.
+            Job::JournalDetail { .. } => return,
+            Job::Export if !current => {
+                self.forget_export();
+                return;
+            }
+            _ => {}
+        }
+        // The rest act only for the job still current.
+        if !current {
+            return;
+        }
+        match job {
+            Job::Classify(_) => {
+                self.home.status = None;
+                self.error_modal.show(message.to_string());
+            }
+            Job::Analysis(_) | Job::SampleRows => {
+                self.analysis_modal.computing = None;
+                self.error_modal.show(message.to_string());
+            }
+            // The form stays up with its spec, to be fixed.
+            Job::Pivot | Job::Copy | Job::HexOpen { .. } => {
+                self.error_modal.show(message.to_string());
+            }
+            // The dialog is still up, the reason on its status line under the path.
+            Job::QualityReport => match self.analysis_modal.quality.export.as_mut() {
+                Some(form) => form.error = Some(message.to_string()),
+                None => self.error_modal.show(message.to_string()),
+            },
+            Job::ViewPivot(_) => self.view_pivot_failed(message),
+            // The grouped view stays as it was.
+            Job::DrillRow => self.flash_note(could_not("drill in")),
+            Job::InspectJson { token } => {
+                let modal = &mut self.inspector_modal;
+                if let Some(wait) = modal.json_wait.take_if(|w| w.token == *token) {
+                    modal.not_json = Some((wait.frame, wait.row, wait.path));
                     self.flash_note(if panicked {
-                        "Could not open the value; see the log".to_string()
+                        "Could not read the JSON; see the log".to_string()
                     } else {
-                        format!("Could not open the value: {message}")
+                        sentence(message)
                     });
                 }
             }
+            Job::OpenValue => self.flash_note(could_not("open the value")),
             Job::InspectRow { frame, row } => {
-                if current {
-                    let asked = self
-                        .inspector_modal
-                        .read
-                        .as_ref()
-                        .is_some_and(|read| read.key() == (*frame, *row));
-                    if asked {
-                        // The pane has room for the reason; a panic's is the log's.
-                        let message = if panicked {
-                            "Could not read the field; see the log".to_string()
-                        } else {
-                            format!("Could not read the field: {message}")
-                        };
-                        self.inspector_modal.read = Some(inspector_modal::FieldRead::Failed {
-                            frame: *frame,
-                            row: *row,
-                            message,
-                        });
-                    }
+                let asked = self
+                    .inspector_modal
+                    .read
+                    .as_ref()
+                    .is_some_and(|read| read.key() == (*frame, *row));
+                if asked {
+                    self.inspector_modal.read = Some(inspector_modal::FieldRead::Failed {
+                        frame: *frame,
+                        row: *row,
+                        message: could_not("read the field"),
+                    });
                 }
             }
             // The form comes back as it was, the reason on its status line, to fix
             // the path and press Enter again.
             Job::Export => {
-                if current {
-                    self.export_progress = None;
-                    self.export_modal.resume();
-                    self.export_modal.path_error = Some(message.to_string());
-                    self.input_mode = InputMode::Export;
-                } else {
-                    self.export_modal.close();
-                    self.export_counts = None;
-                }
+                self.export_progress = None;
+                self.export_modal.path_error = Some(message.to_string());
+                self.open_over(|returns_to| Overlay::Export { returns_to });
             }
             Job::ChartExport { path, format } => {
-                if current {
-                    self.finish_chart_export(path, *format, Err(message.to_string()));
-                }
-            }
-            Job::Find(_) => self.find_failed(current, message),
-            Job::HexOpen { .. } => {
-                if current {
-                    self.error_modal.show(message.to_string());
-                }
+                self.finish_chart_export(path, *format, Err(message.to_string()));
             }
             Job::HexFind(_) => {
-                if current {
-                    self.status_message = None;
-                    self.flash_note(message.to_string());
-                }
+                self.status_message = None;
+                self.flash_note(message.to_string());
             }
+            // Said on the screen, in place of the counts.
             Job::ValueCounts => {
-                // Said on the screen, in place of the counts.
-                if current && let Some(computing) = self.value_counts.computing.take() {
+                if let Some(computing) = self.value_counts.computing.take() {
                     let why = if panicked {
                         "could not count; see the log".to_string()
                     } else {
@@ -5818,23 +5733,7 @@ impl App {
                     self.value_counts.failed = Some((computing.column, why));
                 }
             }
-            // Judged by the dataset, as its answer is.
-            Job::FileFacts { dataset } => {
-                // The panel has one line for it, and a panic's message is an internal
-                // error with the log's path under it.
-                let why = if panicked {
-                    "could not read; see the log".to_string()
-                } else {
-                    message.to_string()
-                };
-                self.file_facts_landed(*dataset, FileFacts::Failed(why));
-            }
-            // The note is left unsaid; the log has why.
-            Job::UnfitCount { .. } => {
-                log::warn!(target: "datui", "counting values that did not fit their type failed: {message}");
-            }
-            // The Info tab keeps what the open read.
-            Job::JournalDetail { .. } => {}
+            _ => {}
         }
     }
 
@@ -6201,7 +6100,7 @@ impl App {
         let progress_rows = u16::from(progress.is_some() && prompt_rows < prompt_room);
         let footer_lines = 1 + prompt_rows + progress_rows;
         // The inspector is framed; its border sets it off from the footer.
-        let rule = self.input_mode != InputMode::Inspect;
+        let rule = self.overlay != Overlay::Inspect;
         let app_layout = app_layout(area, self.debug.enabled, footer_lines, rule);
         // A terminal too short for all of it keeps the status line first, then the
         // prompt, then the progress.

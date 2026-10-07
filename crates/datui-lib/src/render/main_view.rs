@@ -33,14 +33,14 @@ impl MainViewContent {
             MainViewContent::Home
         } else if app.awaiting_dataset() {
             MainViewContent::Loading
-        } else if app.input_mode == crate::InputMode::Hex && app.hex_view.view.is_some() {
+        } else if app.overlay == crate::Overlay::Hex && app.hex_view.view.is_some() {
             MainViewContent::Hex
         } else if app.value_counts_shown() {
             MainViewContent::ValueCounts
         } else {
             MainViewContent::from_app_state(
-                app.analysis_modal.active,
-                app.input_mode == crate::InputMode::Chart,
+                app.overlay == crate::Overlay::Analysis,
+                app.overlay.shows(&crate::Overlay::Chart),
             )
         }
     }
@@ -95,7 +95,7 @@ pub fn mode_hints(app: &crate::App, content: MainViewContent) -> Vec<Hint> {
                     }
                 };
             }
-            if app.input_mode == crate::InputMode::Sample
+            if app.overlay == crate::Overlay::Sample
                 && let Some(form) = &app.sample.form
             {
                 return sample_form_hints(form);
@@ -109,13 +109,10 @@ pub fn mode_hints(app: &crate::App, content: MainViewContent) -> Vec<Hint> {
                 return vec![stop()];
             }
             // The builder is a takeover with no footer of its own.
-            if app.input_mode == crate::InputMode::PivotMelt && app.pivot_melt_modal.active {
+            if app.overlay == crate::Overlay::PivotMelt {
                 return crate::widgets::pivot_melt::hints(&app.pivot_melt_modal);
             }
-            if app.input_mode != crate::InputMode::Normal
-                || app.sort_filter_modal.active
-                || app.view_modal.active
-            {
+            if !app.at_table() {
                 return Vec::new();
             }
             let mut keys = Vec::new();
@@ -275,7 +272,7 @@ pub fn help_key(app: &crate::App, content: MainViewContent) -> Option<&'static s
     let types = match content {
         MainViewContent::Datatable => {
             app.input_mode == crate::InputMode::Editing
-                || (app.input_mode == crate::InputMode::PivotMelt
+                || (app.overlay == crate::Overlay::PivotMelt
                     && crate::widgets::pivot_melt::question_types(&app.pivot_melt_modal))
         }
         // The Documentation view over home takes no text, whatever the filter holds.
@@ -858,7 +855,7 @@ fn value_counts_control_keys(app: &crate::App) -> Vec<Hint> {
     let key = |keys| registry_hint(Context::ValueCounts, keys);
     let say = |keys, label| registry_hint_as(Context::ValueCounts, None, keys, label);
     // The export dialog carries its own footer.
-    if app.input_mode == crate::InputMode::Export {
+    if matches!(app.overlay, crate::Overlay::Export { .. }) {
         return vec![
             registry_hint(Context::Global, "Ctrl+Q"),
             registry_hint_in(Context::Export, Some("Form"), "Esc"),
@@ -909,7 +906,7 @@ fn value_counts_control_keys(app: &crate::App) -> Vec<Hint> {
 fn chart_hints(app: &crate::App) -> Vec<Hint> {
     let in_group = |group, keys| registry_hint_in(Context::Chart, Some(group), keys);
     let say = |group, keys, label| registry_hint_as(Context::Chart, Some(group), keys, label);
-    if app.chart.export_modal.active {
+    if app.overlay == crate::Overlay::ChartExport {
         return ["Enter", "Tab", "Esc"]
             .into_iter()
             .map(|keys| in_group("Export dialog", keys))
@@ -1017,7 +1014,7 @@ mod tests {
 
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = crate::App::new(tx, crate::tests::test_runtime());
-        app.analysis_modal.active = true;
+        app.overlay = crate::Overlay::Analysis;
         app.analysis_modal.selected_tool = Some(AnalysisTool::DataQuality);
         for page in [
             QualityPage::Setup,
@@ -1052,7 +1049,7 @@ mod tests {
 
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = crate::App::new(tx, crate::tests::test_runtime());
-        app.analysis_modal.active = true;
+        app.overlay = crate::Overlay::Analysis;
         let g = crate::glyphs::get();
         let has = |app: &crate::App, key: &str| {
             super::analysis_control_keys(app)

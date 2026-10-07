@@ -1340,13 +1340,8 @@ impl App {
         if self.return_from_quality_evidence(false) {
             self.analysis_modal.close();
         }
-        // The view modal keys and renders off its own `active`, not the input
-        // mode, so left open here it would come back as a zombie over the next
-        // dataset opened.
-        self.view_modal.close();
-        self.inspector_modal.close();
+        self.close_overlays();
         self.stop_find();
-        self.hex_view.view = None;
         // A count of the dataset being left is read for nobody.
         self.stop_value_count();
         self.export_counts = None;
@@ -1409,7 +1404,7 @@ impl App {
             return None;
         }
         if self.data_table_state.is_some() {
-            self.input_mode = InputMode::Normal;
+            self.show_table();
             // Said on arrival: Esc pressed once too often to clear the home screen lands
             // here, and the keys typed next act on the table (#547 D14).
             let name = self
@@ -2378,7 +2373,7 @@ impl App {
             left_out,
             ..self.open_defaults()
         };
-        self.input_mode = InputMode::Normal;
+        self.show_table();
         // Chosen here, so a failure is reported here.
         self.announce_open(true, "Scanning input".to_string(), 10);
         // A frame is drawn between this keypress and the `Open` that carries it out,

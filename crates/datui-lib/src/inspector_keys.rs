@@ -4,8 +4,8 @@
 use crate::form::ListMove;
 use crate::jobs::{Answer, Job};
 use crate::{
-    App, AppEvent, InputMode, clipboard, copy_modal, external_open, inspector_bytes,
-    inspector_drill, inspector_modal, inspector_reader, sentence,
+    App, AppEvent, Overlay, clipboard, copy_modal, external_open, inspector_bytes, inspector_drill,
+    inspector_modal, inspector_reader, sentence,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -14,7 +14,7 @@ impl App {
     /// and it is not one whose rows drill into groups (a `by` view, a SQL GROUP BY).
     /// Inside a drill-down there is nothing further to drill into either.
     pub fn enter_inspects(&self) -> bool {
-        self.input_mode == InputMode::Normal
+        self.at_table()
             && self
                 .data_table_state
                 .as_ref()
@@ -33,7 +33,7 @@ impl App {
         }
         self.inspector_modal
             .open(state.inspect_fields(), state.current_column());
-        self.input_mode = InputMode::Inspect;
+        self.open_overlay(Overlay::Inspect);
     }
 
     fn close_inspector(&mut self) {
@@ -457,7 +457,7 @@ impl App {
     /// bytes decompressed for their Text view. None holds the keys: moving on
     /// drops what is no longer wanted.
     pub(crate) fn inspector_needs(&mut self) {
-        if self.input_mode != InputMode::Inspect || !self.inspector_modal.active {
+        if self.overlay != Overlay::Inspect {
             return;
         }
         let Some(state) = self.data_table_state.as_ref() else {

@@ -6,7 +6,7 @@
 
 use crate::common::{self, drain_events, pump_open_until_loaded};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use datui::{App, AppEvent, InputMode, OpenOptions};
+use datui::{App, AppEvent, OpenOptions, Overlay};
 use polars::prelude::*;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -156,7 +156,7 @@ fn a_midi_file_opens_as_its_events() {
     // `i` shows the note first, then, once read, the MIDI tab.
     press(&mut app, KeyCode::Char('i'));
     drain_events(&mut app, &rx);
-    assert_eq!(app.input_mode, InputMode::Info);
+    assert_eq!(app.overlay, Overlay::Info);
     let notes = screen(&mut app);
     assert!(notes.contains("never end"), "{notes}");
     press(&mut app, KeyCode::Esc);

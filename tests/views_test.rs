@@ -46,7 +46,7 @@ fn the_views_surface_saves_applies_and_deletes() {
 
     // v opens the list.
     press(&mut app, KeyCode::Char('v'));
-    assert!(app.view_modal.active);
+    assert_eq!(app.overlay, datui::Overlay::View);
     assert_eq!(app.view_modal.mode, ViewModalMode::List);
     assert!(app.view_modal.rows.is_empty());
 
@@ -64,7 +64,11 @@ fn the_views_surface_saves_applies_and_deletes() {
         "the refusal is on the list's status line"
     );
     assert_eq!(app.view_modal.mode, ViewModalMode::List);
-    assert!(app.view_modal.active, "the list survives the refusal");
+    assert_eq!(
+        app.overlay,
+        datui::Overlay::View,
+        "the list survives the refusal"
+    );
 
     // Give the state something to carry.
     app.data_table_state
@@ -134,7 +138,7 @@ fn the_views_surface_saves_applies_and_deletes() {
     // Enter applies the selected view and closes the list; its rows are read in
     // the background.
     press(&mut app, KeyCode::Enter);
-    assert!(!app.view_modal.active, "apply closes the list");
+    assert_ne!(app.overlay, datui::Overlay::View, "apply closes the list");
     drain_events(&mut app, &rx);
 
     // Applied, the view follows the table: adjust the sort and re-save
@@ -152,7 +156,7 @@ fn the_views_surface_saves_applies_and_deletes() {
         "editing the applied view updates its settings from the table"
     );
     press(&mut app, KeyCode::Esc);
-    assert!(!app.view_modal.active);
+    assert_ne!(app.overlay, datui::Overlay::View);
     press(&mut app, KeyCode::Char('v'));
 
     // Delete asks with the one confirmation, on No: Enter there and Esc each
@@ -165,7 +169,11 @@ fn the_views_surface_saves_applies_and_deletes() {
     press(&mut app, KeyCode::Esc);
     assert!(!app.confirmation_modal.active);
     assert_eq!(app.view_modal.rows.len(), 1, "cancel deletes nothing");
-    assert!(app.view_modal.active, "Esc closed only the confirmation");
+    assert_eq!(
+        app.overlay,
+        datui::Overlay::View,
+        "Esc closed only the confirmation"
+    );
     press(&mut app, KeyCode::Char('d'));
     press(&mut app, KeyCode::Enter);
     assert!(!app.confirmation_modal.active);
@@ -175,9 +183,9 @@ fn the_views_surface_saves_applies_and_deletes() {
     press(&mut app, KeyCode::Left);
     press(&mut app, KeyCode::Enter);
     assert!(app.view_modal.rows.is_empty(), "Enter on Delete deletes");
-    assert!(app.view_modal.active, "the list stays open");
+    assert_eq!(app.overlay, datui::Overlay::View, "the list stays open");
     press(&mut app, KeyCode::Esc);
-    assert!(!app.view_modal.active);
+    assert_ne!(app.overlay, datui::Overlay::View);
 
     // Ctrl+J saves from the description, the same as Ctrl+Enter: some
     // terminals send one as the other, so it must never delete the line being
@@ -217,7 +225,7 @@ fn the_views_surface_saves_applies_and_deletes() {
     press(&mut app, KeyCode::Enter);
     assert!(app.view_modal.rows.is_empty());
     press(&mut app, KeyCode::Esc);
-    assert!(!app.view_modal.active);
+    assert_ne!(app.overlay, datui::Overlay::View);
 
     // A view's schema criterion belongs to the view: editing it while a
     // different table is open must not swap in that table's columns.
@@ -411,7 +419,7 @@ fn a_view_draws_its_sample_again_from_the_seed() {
 
     // A chart of the view, with an option set: the view keeps it.
     press(&mut app, KeyCode::Char('c'));
-    assert_eq!(app.input_mode, datui::InputMode::Chart);
+    assert_eq!(app.overlay, datui::Overlay::Chart);
     app.chart.modal.hist_bins = 17;
     press(&mut app, KeyCode::Esc);
     drain_events(&mut app, &rx);
@@ -458,7 +466,7 @@ fn a_view_draws_its_sample_again_from_the_seed() {
     assert_eq!(app.input_mode, datui::InputMode::Normal);
     assert!(app.chart.modal.restored);
     press(&mut app, KeyCode::Char('c'));
-    assert_eq!(app.input_mode, datui::InputMode::Chart);
+    assert_eq!(app.overlay, datui::Overlay::Chart);
     assert_eq!(app.chart.modal.spec, chart.spec);
     assert_eq!(app.chart.modal.hist_bins, 17);
 }

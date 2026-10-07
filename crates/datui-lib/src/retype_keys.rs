@@ -3,7 +3,7 @@
 
 use crate::form::FormKey;
 use crate::retype_modal::{Chosen, CombineField, CombineModal, RetypeModal};
-use crate::{App, AppEvent, InputMode};
+use crate::{App, AppEvent, Overlay};
 use crossterm::event::{KeyCode, KeyEvent};
 use polars::prelude::DataType;
 
@@ -13,8 +13,6 @@ pub struct ColumnForms {
     pub retype: Option<crate::retype_modal::RetypeModal>,
     /// The combine form, while it is open.
     pub combine: Option<crate::retype_modal::CombineModal>,
-    /// The type picker or the combine form go back to the Info panel, not the table.
-    pub(crate) retype_from_info: bool,
 }
 
 /// How many values on screen the format picker judges and previews formats by.
@@ -53,8 +51,7 @@ impl App {
             current.as_ref(),
             examples,
         ));
-        self.column_forms.retype_from_info = self.input_mode == InputMode::Info;
-        self.input_mode = InputMode::Retype;
+        self.open_over(|returns_to| Overlay::Retype { returns_to });
     }
 
     /// The combine form, its date the column `date`.
@@ -72,18 +69,7 @@ impl App {
             .collect();
         let taken: Vec<String> = schema.iter_names().map(|n| n.to_string()).collect();
         self.column_forms.combine = Some(CombineModal::new(date.to_string(), columns, &taken));
-        self.column_forms.retype_from_info = self.input_mode == InputMode::Info;
-        self.input_mode = InputMode::Combine;
-    }
-
-    fn close_retype(&mut self) {
-        self.column_forms.retype = None;
-        self.column_forms.combine = None;
-        self.input_mode = if self.column_forms.retype_from_info {
-            InputMode::Info
-        } else {
-            InputMode::Normal
-        };
+        self.open_over(|returns_to| Overlay::Combine { returns_to });
     }
 
     /// The type picker's keys: type to narrow, ↑↓ move, Enter chooses, Esc goes back.
@@ -92,19 +78,19 @@ impl App {
         match event.code {
             KeyCode::Esc => {
                 if !modal.back() {
-                    self.close_retype();
+                    self.close_overlay();
                 }
             }
             KeyCode::Enter => match modal.choose() {
                 Chosen::Nothing | Chosen::Format => {}
                 Chosen::AsRead => {
                     let column = modal.column.clone();
-                    self.close_retype();
+                    self.close_overlay();
                     self.retype_column(&column, None);
                 }
                 Chosen::Type(ty) => {
                     let column = modal.column.clone();
-                    self.close_retype();
+                    self.close_overlay();
                     self.retype_column(&column, Some(ty));
                 }
             },
@@ -139,7 +125,7 @@ impl App {
         }
         modal.problem = None;
         match crate::form::key(modal, event) {
-            FormKey::Cancel => self.close_retype(),
+            FormKey::Cancel => self.close_overlay(),
             FormKey::Submit => {
                 let derived = match modal.derived() {
                     Ok(derived) => derived,
@@ -158,7 +144,7 @@ impl App {
                             modal.problem = Some(problem);
                         }
                     }
-                    _ => self.close_retype(),
+                    _ => self.close_overlay(),
                 }
             }
             FormKey::Step(CombineField::Kind, delta) => modal.step_kind(delta),

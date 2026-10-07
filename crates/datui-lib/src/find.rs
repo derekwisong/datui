@@ -828,8 +828,7 @@ impl App {
         self.prompt.find.input.set_focused(false);
         self.prompt.find.error = None;
         self.prompt.find.live = None;
-        self.input_mode = InputMode::Normal;
-        self.prompt.input_type = None;
+        self.show_table();
     }
 
     /// A key in the find prompt. Ctrl+R switches regex, Ctrl+T letters in order,

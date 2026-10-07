@@ -245,7 +245,6 @@ mod tests {
         let ctx = RenderContext::for_test();
         let tint = ctx.highlight_style().bg.expect("the default theme tints");
         let mut modal = ExportModal::new();
-        modal.active = true;
         modal.selected_format = ExportFormat::Tsv;
         let buf = draw(&mut modal, MAX_WIDTH, HEIGHT);
         let rows = crate::tests::buffer_lines(&buf);
@@ -286,7 +285,6 @@ mod tests {
         let ctx = RenderContext::for_test();
         let tint = ctx.highlight_style().bg.expect("the default theme tints");
         let mut modal = ExportModal::new();
-        modal.active = true;
         modal.selected_format = ExportFormat::Csv;
         modal.csv_compression = Some(CompressionFormat::Zstd);
         let buf = draw(&mut modal, MAX_WIDTH, HEIGHT);
@@ -309,7 +307,6 @@ mod tests {
     fn a_narrow_dialog_shows_the_chosen_format_alone() {
         let g = crate::glyphs::get();
         let mut modal = ExportModal::new();
-        modal.active = true;
         modal.selected_format = ExportFormat::Parquet;
         let rows = crate::tests::buffer_lines(&draw(&mut modal, 50, HEIGHT));
         let row = &rows[usize::from(FORMAT_Y)];
@@ -325,7 +322,6 @@ mod tests {
     #[test]
     fn fields_follow_the_format_under_a_fixed_format_row() {
         let mut modal = ExportModal::new();
-        modal.active = true;
         let shown = |modal: &mut ExportModal| {
             let rows = crate::tests::buffer_lines(&draw(modal, MAX_WIDTH, HEIGHT));
             assert!(rows[usize::from(FORMAT_Y)].contains("Format:"));
@@ -350,7 +346,6 @@ mod tests {
     #[test]
     fn each_format_value_is_a_click_target() {
         let mut modal = ExportModal::new();
-        modal.active = true;
         modal.selected_format = ExportFormat::Tsv;
         let hits = crate::pointer::recording(|| {
             draw(&mut modal, MAX_WIDTH, HEIGHT);
@@ -408,7 +403,6 @@ mod tests {
     #[test]
     fn csv_says_how_nested_columns_are_written() {
         let mut modal = ExportModal::new();
-        modal.active = true;
         for width in [50u16, MAX_WIDTH] {
             let out = painted(&mut modal, width, HEIGHT);
             assert!(!out.contains(NESTED_NOTE), "no nested columns: {out}");
@@ -427,7 +421,6 @@ mod tests {
     #[test]
     fn avro_says_it_renames_columns() {
         let mut modal = ExportModal::new();
-        modal.active = true;
         modal.selected_format = ExportFormat::Avro;
         for width in [50u16, MAX_WIDTH] {
             let out = painted(&mut modal, width, HEIGHT);
@@ -448,7 +441,6 @@ mod tests {
     #[test]
     fn the_blank_path_message_renders_inline() {
         let mut modal = ExportModal::new();
-        modal.active = true;
         modal.path_error = Some("Enter a file path.".to_string());
         for format in [ExportFormat::Csv, ExportFormat::Parquet] {
             modal.selected_format = format;
@@ -469,7 +461,6 @@ mod tests {
             let screen = Rect::new(0, 0, width, 24);
             let dialog = dialog_area(screen);
             let mut modal = ExportModal::new();
-            modal.active = true;
             let mut buf = Buffer::empty(screen);
             render_export_modal(dialog, &mut buf, &mut modal, &RenderContext::for_test());
             let text = crate::tests::buffer_lines(&buf).join("\n");

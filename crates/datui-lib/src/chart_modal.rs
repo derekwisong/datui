@@ -486,7 +486,6 @@ pub const NONE_ITEM: &str = "none";
 /// Chart view state: the spec, the options, and the panel's focus.
 #[derive(Default)]
 pub struct ChartModal {
-    pub active: bool,
     pub spec: ChartSpec,
     /// The distinct colors the series slots come out as on this terminal
     /// (`Theme::series_colors`); `None` before the app says, read as [`COLOR_MAX`].
@@ -607,7 +606,6 @@ impl ChartModal {
         grid: bool,
         dataset: u64,
     ) {
-        self.active = true;
         self.close_picker();
         self.temporal_candidates = columns.datetime.to_vec();
         self.bucketable_candidates = columns.bucketable.to_vec();
@@ -739,7 +737,6 @@ impl ChartModal {
 
     /// Close the chart view. The choices stay for the next open on this dataset.
     pub fn close(&mut self) {
-        self.active = false;
         self.close_picker();
         self.plot_focus = false;
         self.rows_draft = None;

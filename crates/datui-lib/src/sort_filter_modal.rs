@@ -35,7 +35,6 @@ pub enum SortFilterField {
 
 #[derive(Default)]
 pub struct SortFilterModal {
-    pub active: bool,
     pub active_tab: SortFilterTab,
     pub focus: SortFilterField,
     pub sort: SortModal,
@@ -61,7 +60,6 @@ impl SortFilterModal {
         theme: &crate::config::Theme,
         current: Option<&str>,
     ) {
-        self.active = true;
         self.active_tab = SortFilterTab::InEffect;
         self.sort.status = None;
         self.sort.history_limit = history_limit;
@@ -88,7 +86,6 @@ impl SortFilterModal {
     }
 
     pub fn close(&mut self) {
-        self.active = false;
         self.filter.editor = None;
         self.sort_picker = None;
     }

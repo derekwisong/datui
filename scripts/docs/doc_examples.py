@@ -237,7 +237,7 @@ def example_blocks() -> list[Block]:
     out = []
     text = (ROOT / "crates/datui-cli/examples.toml").read_text(encoding="utf-8").splitlines()
     for example in data["example"]:
-        line = next((n + 1 for n, l in enumerate(text) if l.startswith("command") and tomllib.loads(l)["command"] == example["command"]), 1)
+        line = next((n + 1 for n, row in enumerate(text) if row.startswith("command") and tomllib.loads(row)["command"] == example["command"]), 1)
         attrs = set()
         if example["test"] in ("network", "interactive"):
             attrs.add(example["test"])

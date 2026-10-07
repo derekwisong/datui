@@ -163,6 +163,24 @@ impl App {
                 .data_table_state
                 .as_ref()
                 .is_some_and(|state| state.counts_itself_later())
+            // The lines are all indexed but their answer, which brings the count, is not
+            // yet handled: the indexer marks them done before it answers.
+            || self.lines_answer_owed()
+    }
+
+    /// Whether the lines of the dataset on screen have an indexing answer still to be
+    /// handled. Not for a frame shown in their place (the quality evidence view).
+    fn lines_answer_owed(&self) -> bool {
+        let dataset = self.dataset_generation;
+        self.data_table_state
+            .as_ref()
+            .is_some_and(|state| state.lines_to_index().is_some())
+            && self
+                .jobs
+                .current(
+                    |job| matches!(job, Job::IndexLines { dataset: asked } if *asked == dataset),
+                )
+                .is_some()
     }
 
     pub(crate) fn dataset_is_still_reading_its_footers(&self) -> bool {

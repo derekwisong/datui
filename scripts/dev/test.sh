@@ -24,7 +24,8 @@ Edit loop
 
 What CI checks
   lint                     Check formatting and run clippy in the workspace, the fuzz
-                           targets and datui-pyo3 (preflight is the same)
+                           targets and datui-pyo3; then ruff, shellcheck and typos,
+                           each when installed (preflight is the same)
   clippy                   Clippy on the root workspace alone (the pre-commit hook)
   msrv                     Check the workspace with the rust-version in Cargo.toml
   docs [--require]         Lint the docs, their examples and the manpages, and run the
@@ -167,6 +168,13 @@ need_venv() {
 # Workspaces of their own, which the root's `cargo fmt` and clippy do not reach.
 OTHER_WORKSPACES=(fuzz/Cargo.toml crates/datui-pyo3/Cargo.toml)
 
+# Whether an optional tool is installed; says so when it is not.
+have() {
+    command -v "$1" >/dev/null 2>&1 && return 0
+    printf '%s not installed; skipping it.\n' "$1" >&2
+    return 1
+}
+
 clippy_workspace() {
     run cargo clippy --workspace --all-targets --locked -- -D warnings
 }
@@ -238,6 +246,14 @@ case "$command" in
             run cargo clippy --manifest-path "$manifest" --all-targets --locked -- -D warnings \
                 || failed=1
         done
+        # Not Rust: each runs when installed, so a contributor without one is not blocked.
+        if have ruff; then run ruff check scripts python || failed=1; fi
+        if have shellcheck; then
+            shell_scripts=()  # not mapfile: macOS ships bash 3.2
+            while IFS= read -r script; do shell_scripts+=("$script"); done < <(git ls-files '*.sh')
+            run shellcheck "${shell_scripts[@]}" || failed=1
+        fi
+        if have typos; then run typos || failed=1; fi
         exit "$failed"
         ;;
     clippy)
@@ -252,7 +268,7 @@ case "$command" in
             exit 1
         fi
         if ! $print_only && command -v rustup >/dev/null 2>&1 \
-            && ! rustup toolchain list | grep -q "^$version[-.]"; then
+            && ! rustup toolchain list | grep -q "^${version}[-.]"; then
             printf 'Rust %s is not installed: rustup toolchain install %s --profile minimal\n' \
                 "$version" "$version" >&2
             exit 1

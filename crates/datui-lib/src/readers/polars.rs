@@ -62,10 +62,8 @@ fn bucket_csv(input: super::BucketIn<'_>) -> Result<polars::prelude::LazyFrame> 
     let nv = super::csv::build_null_values_with(options, None, || {
         super::csv::csv_schema_for_null_values(reader(), options)
     })?;
-    // No `--infer-types` here: its sample would be a second read of the bucket. Nor
-    // Polars' `try_parse_dates`, which fails the whole read on a value it cannot parse,
-    // even one like those it inferred the type from. Timestamps stay text, and so do
-    // padded numbers: `--skip-initial-space` only takes their padding off.
+    // No `--infer-types` (its sample would reread the bucket), nor `try_parse_dates` (one
+    // unparsable value fails the whole read): timestamps and padded numbers stay text.
     let lf = super::csv::configure_csv_reader(reader(), options, nv.as_ref())
         .finish()
         .and_then(|lf| crate::csv_dialect::name_columns(lf, None))
@@ -506,33 +504,15 @@ fn json(path: &Path, format: JsonFormat) -> Result<LazyFrame> {
         .lazy())
 }
 
-/// How the files of one dataset are stacked into one table.
-///
-/// `diagonal`, so a file written before a column existed brings the rest of its
-/// rows instead of refusing the whole directory; the column reads null for it, and
-/// the Notes say which files have it. `to_supertypes`, because a CSV column is
-/// typed by inference per file — one `N/A` makes `amount` a String in one file and
-/// an Int64 in the next — and without widening, name agreement is not enough to
-/// stack them.
-///
-/// Both are opt-ins everywhere else: DuckDB's `union_by_name`, pyarrow's
-/// `unify_schemas`, Spark's `mergeSchema`. They are the default here because a
-/// library that unions silently becomes wrong analysis downstream, while datui
-/// says what it did in the Notes and keeps `Enter` on the row conservative — a
-/// directory whose files are not one table is gone inside, not unioned, and this is
-/// what the `(all files)` row behind it reads with.
-///
-/// **Only for the formats that rule can judge**, which is CSV and NDJSON here, and
-/// Parquet through `lenient_scan` elsewhere. Arrow, Avro, ORC and `.json` keep
-/// their columns nowhere cheap to reach, so nothing looks at them before the open
-/// and nothing could say what a union of them had done — a silent union with no
-/// gate in front of it and no note behind it is the pairing this whole change
-/// exists to remove, not something to spread further.
-///
-/// Identical schemas stack exactly as before: diagonal over one schema is vertical,
-/// and nothing is widened where nothing differs. Arrow streams converted beside IPC
-/// files read in place stack with it too: the streams and the files are one
-/// directory's table, read two ways (`App::scan_arrow_parts`).
+/// How one dataset's files stack into one table: `diagonal` (a file predating a column
+/// keeps its rows, null there, the Notes saying which) and `to_supertypes` (per-file CSV
+/// inference types `amount` String in one file and Int64 in another). Opt-ins elsewhere
+/// (DuckDB `union_by_name`, Spark `mergeSchema`), defaults here because datui notes
+/// what it did and `Enter` goes inside directories that are not one table; this is what
+/// their `(all files)` row reads with. Only for formats that rule judges (CSV, NDJSON;
+/// Parquet via `lenient_scan`): Arrow, Avro, ORC and `.json` would be silent, unnoted
+/// unions. Identical schemas stack as before; converted Arrow streams stack with IPC
+/// files read in place (`App::scan_arrow_parts`).
 pub(crate) fn union_of_files() -> polars::prelude::UnionArgs {
     polars::prelude::UnionArgs {
         diagonal: true,

@@ -22,12 +22,8 @@ pub enum MainViewContent {
 }
 
 impl MainViewContent {
-    /// Which view is showing. The one place that decides, so the main area and the
-    /// footer at the foot of it cannot disagree about what the user is looking at.
-    ///
-    /// Home first: it is where you are, not an overlay. Then a load in flight, which
-    /// owns the screen until it has a dataset to hand over — every other view would be
-    /// drawing the dataset it is replacing.
+    /// Which view is showing, decided once so the main area and footer agree: home first,
+    /// then a load in flight (which owns the screen until its dataset arrives).
     pub fn current(app: &crate::App) -> Self {
         if app.input_mode == crate::InputMode::Home {
             MainViewContent::Home
@@ -300,12 +296,8 @@ fn slot(keys: &str, label: Option<&'static str>, width: usize) -> Hint {
     }
 }
 
-/// What Enter does on the home screen's row, as the footer names it.
-///
-/// Enter is labelled with what it will do on *this* row, not with the word "Open". On
-/// a directory whose files are not one table, Enter goes inside — and a hint saying
-/// "Open" there taught the wrong thing on the first try, which is the try that forms
-/// the impression.
+/// The footer's name for what Enter does on the home row (on a non-table directory it
+/// goes inside, so not "Open").
 pub fn enter_label(enter: crate::WhatEnter) -> &'static str {
     match enter {
         crate::WhatEnter::OpensDirectory => "Open all",
@@ -324,10 +316,8 @@ pub fn enter_label(enter: crate::WhatEnter) -> &'static str {
     }
 }
 
-/// Footer keys for the analysis screen, per view, tool and Data Quality
-/// page. This is the screen's one hint surface: the widgets draw no key rows
-/// of their own, and a detail view's bar describes the detail, not the view
-/// it came from.
+/// Footer keys for the analysis screen per view, tool and Data Quality page: the screen's
+/// only hint surface; a detail's bar describes the detail.
 fn analysis_control_keys(app: &crate::App) -> Vec<Hint> {
     use crate::analysis_modal::{AnalysisTool, AnalysisView};
     let modal = &app.analysis_modal;
@@ -381,10 +371,8 @@ fn analysis_control_keys(app: &crate::App) -> Vec<Hint> {
     if modal.computing.is_some() {
         return vec![say("Esc", "Cancel")];
     }
-    // Only keys that act right now, in the one chip order: primary first, the way
-    // out last. The footer shows the first three with Esc kept, so what the
-    // focused pane is for leads, then Tab, which is how the other pane is
-    // reached; the shared sample after.
+    // Only keys that act now, in chip order: primary first, Tab next, the shared sample
+    // after, the way out last (the footer keeps the first three plus Esc).
     let in_pane = modal.focus == crate::analysis_modal::AnalysisFocus::Main;
     let esc = say(
         "Esc",
@@ -591,10 +579,8 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<Hint> {
     if modal.quality.page == QualityPage::Setup {
         return setup_control_keys(app);
     }
-    // One shape on every page: what this page is for, then the keys every page
-    // shares in one order (Setup first: the plan is what a report is read
-    // against), then the rest of this page's, Tab, and the way out last. The
-    // footer keeps the first three with Esc; the tabs on screen name the pages.
+    // Every page: its purpose, then shared keys in one order (Setup first), the page's own,
+    // Tab, the way out last (the footer keeps the first three plus Esc).
     let page = modal.quality.page;
     let results = modal.quality.results.as_ref();
     // Column and metric pick what the segments show; with nothing split they would
@@ -712,10 +698,8 @@ fn trend_keys(modal: &crate::analysis_modal::AnalysisModal) -> Vec<Hint> {
     keys
 }
 
-/// Setup's keys: Run first, then what the row under the cursor takes, and the
-/// way out last. Enter is Run here and nowhere else; the lists and forms Setup opens say
-/// Choose, Done or Apply. While a cancelled read finishes, Run is not offered, and
-/// Setup's own line says why.
+/// Setup's keys: Run first (Enter is Run only here), the cursor row's keys, the way out
+/// last. While a cancelled read finishes, Run is not offered and Setup's line says why.
 fn setup_control_keys(app: &crate::App) -> Vec<Hint> {
     use crate::analysis_modal::SetupRow;
     let modal = &app.analysis_modal;

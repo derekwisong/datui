@@ -1,23 +1,11 @@
-//! The temporary files an open's workers write, so that quitting removes them.
-//!
-//! A download or a decompression writes a temporary file that removes itself when its
-//! last holder drops it. Quitting raises the open's stop flag, but the process can end
-//! before a worker sees it, and then nothing removes the file it was writing. So each
-//! writer [creates](Writer::create) its file through the open, which claims it, and the
-//! claim lives inside the file's holder: it goes when the file does, after it.
-//! Quitting drops the app first, which removes every file the event thread holds, and
-//! then [`ExitSweep`] waits a short grace for the workers, which stop and remove their
-//! own; whatever is still claimed after that is removed by the sweep. A file created
-//! while the sweep runs is waited for too, and one created after it is removed by its
-//! writer.
-//!
-//! On Windows a file cannot be removed while a frame still maps it (Polars reads
-//! files through memory maps), so a holder's removal can fail. Its claim then keeps
-//! the path as left over: a later claim letting go tries it again, and so does the
-//! sweep at exit, once the app and its frames are gone.
-//!
-//! A process killed outright (SIGKILL) runs none of this, and a partial file stays in
-//! the temp directory.
+//! The temporary files an open's workers write, so quitting removes them. Such a file
+//! removes itself when its last holder drops it, but the process can end before a
+//! stopped worker gets there. So each writer [creates](Writer::create) its file through
+//! the open, which claims it for the file's lifetime. On quit the app drops first, then
+//! [`ExitSweep`] gives workers a short grace and removes whatever is still claimed
+//! (waiting for files mid-creation; later ones are refused). On Windows a file mapped by
+//! a frame cannot be removed, so its claim keeps the path for later claims and the exit
+//! sweep to retry. SIGKILL skips all this.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -86,10 +74,9 @@ impl Unfinished {
         self.lock().busy()
     }
 
-    /// By `deadline`, remove every file still claimed. Their writers, stopped already,
-    /// remove their own as they notice; one still busy at the deadline has its file
-    /// removed under it, and fails to remove it again, harmlessly. A file being created
-    /// is waited for like a claimed one; one created after this is refused.
+    /// By `deadline`, remove every file still claimed; stopped writers remove their own,
+    /// and one busy at the deadline loses its file (and harmlessly fails to remove it). Files
+    /// mid-creation are waited for; later ones are refused.
     pub(crate) fn sweep(&self, deadline: Instant) {
         let (_, released) = &*self.0;
         let mut files = self.lock();
@@ -153,13 +140,9 @@ impl Writer {
         self.stop.load(Ordering::Relaxed)
     }
 
-    /// Create a file with `make` and claim it. `None`, with nothing left on disk, once
-    /// the open is stopped or the files are swept.
-    ///
-    /// One step as far as the sweep is concerned: a sweep that starts while `make` runs
-    /// waits for it, then either removes the file it claimed or finds it already
-    /// removed. Claiming after creating would leave a gap in which a sweep sees nothing
-    /// to wait for and the process ends with the new file on disk.
+    /// Create a file with `make` and claim it, as one step to the sweep (a sweep during
+    /// `make` waits, then removes it or finds it gone; claiming afterward would leave a
+    /// gap). `None`, with nothing on disk, once the open is stopped or swept.
     pub(crate) fn create<F: AsRef<Path>, E>(
         &self,
         make: impl FnOnce() -> Result<F, E>,

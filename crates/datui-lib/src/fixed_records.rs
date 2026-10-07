@@ -1,17 +1,10 @@
-//! Fixed-width values read straight out of a memory map.
-//!
-//! A column is a run of values `width` bytes wide, `stride` bytes apart, starting
-//! `start` bytes into one of the reader's sources; `count` values side by side make one
-//! Array cell. Rows of records (each field a column with the record size as its stride)
-//! and one file per column (stride equal to width) are both that shape, so one strided
-//! decoder serves the format specs and NumPy arrays, and [`decode`] is public for other
-//! readers of packed values (audio samples, CAN signals). The sources are kept, so a
-//! viewer of the raw bytes can read them too.
-//!
-//! The frame is decoded over a row index ([`crate::row_index`]): a query decodes only
-//! the columns and rows it reaches, and runs on the streaming engine. A window of an
-//! untouched view is read through [`FixedRecords::window`], which starts the columns
-//! further in and builds no index.
+//! Fixed-width values read straight out of a memory map. A column is values `width`
+//! bytes wide, `stride` apart, from `start` into a source; `count` side by side make an
+//! Array cell. Records (stride = record size) and one file per column (stride = width)
+//! share one strided decoder for format specs and NumPy; [`decode`] is public for other
+//! packed readers (audio, CAN). Sources are kept for raw-byte viewers. Frames decode
+//! over a row index ([`crate::row_index`]) on the streaming engine; an untouched view's
+//! window reads via [`FixedRecords::window`] without an index.
 
 use crate::row_index::RowSource;
 use polars::prelude::*;
@@ -368,10 +361,9 @@ pub fn decode_rows(bytes: &[u8], column: &ColumnLayout, index: &IdxCa) -> Polars
     decode_strided(bytes, column, rows.len(), |i| rows[i] as usize)
 }
 
-/// The values of `column` from `bytes` for records that start at `records`, in that
-/// order: each record's cell is `column.start` bytes into it, and `stride` is not used.
-/// For records that are not evenly spaced, such as the messages of a log, found by an
-/// index. A cell past the end of `bytes` is an error.
+/// The values of `column` from `bytes` for records starting at `records`, in order
+/// (`column.start` into each; `stride` unused): for unevenly spaced records like log
+/// messages found by an index. A cell past the end is an error.
 pub fn decode_at(bytes: &[u8], column: &ColumnLayout, records: &[usize]) -> PolarsResult<Column> {
     // The stride is not used here, so a layout may leave it 0.
     ColumnLayout {
@@ -840,11 +832,9 @@ pub struct FixedRecords {
 }
 
 impl FixedRecords {
-    /// The columns over `sources`, at most `rows` long: fewer when a source runs out
-    /// first, so no read ever goes past the end of one, and a partial last record is
-    /// left out rather than refused. The rows come from the sources' lengths as they
-    /// are now: a file that has grown is read by building the records again, over a
-    /// fresh map, with the same columns and `usize::MAX` rows. No more than
+    /// The columns over `sources`, at most `rows` long (fewer when a source runs out, never
+    /// reading past one, dropping a partial last record), from the sources' current lengths.
+    /// A grown file rebuilds records over a fresh map with `usize::MAX` rows. At most
     /// [`crate::row_index::MAX_ROWS`] are shown.
     pub fn new(
         sources: Vec<Arc<Bytes>>,

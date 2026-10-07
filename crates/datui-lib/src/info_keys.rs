@@ -1,6 +1,7 @@
 //! The info panel's keys.
 
 use crate::cli::FileFormat;
+use crate::form::ListMove;
 use crate::widgets::info::FileFacts;
 use crate::widgets::info::InfoTab;
 use crate::{App, AppEvent, InputMode};
@@ -36,6 +37,36 @@ impl App {
             .map(|s| s.schema().len())
             .unwrap_or(0);
         let visible = self.info_modal.schema_visible_height;
+
+        // Each tab's list moves its own cursor: the schema's and the notes' a row at a
+        // time, the documentation's and the file's tables' by rows and pages too, a
+        // detail list scrolled (the render keeps it in range).
+        if let Some(step) = ListMove::from_key(event) {
+            let one = matches!(step, ListMove::Up | ListMove::Down);
+            let modal = &mut self.info_modal;
+            if schema_tab && one {
+                if step == ListMove::Down {
+                    modal.schema_table_down(total_rows, visible);
+                } else {
+                    modal.schema_table_up(total_rows, visible);
+                }
+                return None;
+            } else if documentation_tab && !matches!(step, ListMove::Home | ListMove::End) {
+                let page = self.info_documentation.view_height;
+                self.info_documentation.move_cursor(step.delta(page));
+                return None;
+            } else if notes_tab && one {
+                modal.notes_move(step.delta(1), notes);
+                return None;
+            } else if let Some(tables) = &tables {
+                let page = modal.detail_visible;
+                modal.detail_selected = step.apply(modal.detail_selected, tables.len(), page);
+                return None;
+            } else if detail_tab {
+                modal.detail_scroll_by(step.delta(modal.detail_visible));
+                return None;
+            }
+        }
 
         match event.code {
             KeyCode::Esc | KeyCode::Char('i') if event.is_press() => {
@@ -74,26 +105,6 @@ impl App {
                 let offered = self.info_tabs_on_offer();
                 self.info_modal.switch_tab(offered);
             }
-            KeyCode::Down | KeyCode::Char('j') if event.is_press() && schema_tab => {
-                self.info_modal.schema_table_down(total_rows, visible);
-            }
-            KeyCode::Up | KeyCode::Char('k') if event.is_press() && schema_tab => {
-                self.info_modal.schema_table_up(total_rows, visible);
-            }
-            KeyCode::Down | KeyCode::Char('j') if event.is_press() && documentation_tab => {
-                self.info_documentation.move_cursor(1);
-            }
-            KeyCode::Up | KeyCode::Char('k') if event.is_press() && documentation_tab => {
-                self.info_documentation.move_cursor(-1);
-            }
-            KeyCode::PageDown if event.is_press() && documentation_tab => {
-                let page = self.info_documentation.view_height.max(1) as isize;
-                self.info_documentation.move_cursor(page);
-            }
-            KeyCode::PageUp if event.is_press() && documentation_tab => {
-                let page = self.info_documentation.view_height.max(1) as isize;
-                self.info_documentation.move_cursor(-page);
-            }
             KeyCode::Enter | KeyCode::Char(' ') if event.is_press() && documentation_tab => {
                 self.info_documentation.toggle_legend();
             }
@@ -106,12 +117,6 @@ impl App {
                     Some(text) => self.copy_documentation_text(text),
                     None => self.flash_note("Nothing to copy on this line".to_string()),
                 }
-            }
-            KeyCode::Down | KeyCode::Char('j') if event.is_press() && notes_tab => {
-                self.info_modal.notes_move(1, notes);
-            }
-            KeyCode::Up | KeyCode::Char('k') if event.is_press() && notes_tab => {
-                self.info_modal.notes_move(-1, notes);
             }
             KeyCode::Enter if event.is_press() && notes_tab => {
                 self.read_the_selected_note_s_column_as_text();
@@ -127,52 +132,8 @@ impl App {
                     self.open_retype(&column);
                 }
             }
-            KeyCode::Down | KeyCode::Char('j') if event.is_press() && tables.is_some() => {
-                let last = tables.as_ref().map_or(0, |t| t.len().saturating_sub(1));
-                self.info_modal.detail_selected = (self.info_modal.detail_selected + 1).min(last);
-            }
-            KeyCode::Up | KeyCode::Char('k') if event.is_press() && tables.is_some() => {
-                self.info_modal.detail_selected = self.info_modal.detail_selected.saturating_sub(1);
-            }
-            KeyCode::PageDown if event.is_press() && tables.is_some() => {
-                let last = tables.as_ref().map_or(0, |t| t.len().saturating_sub(1));
-                let page = self.info_modal.detail_visible.max(1);
-                self.info_modal.detail_selected =
-                    (self.info_modal.detail_selected + page).min(last);
-            }
-            KeyCode::PageUp if event.is_press() && tables.is_some() => {
-                let page = self.info_modal.detail_visible.max(1);
-                self.info_modal.detail_selected =
-                    self.info_modal.detail_selected.saturating_sub(page);
-            }
-            KeyCode::Home if event.is_press() && tables.is_some() => {
-                self.info_modal.detail_selected = 0;
-            }
-            KeyCode::End if event.is_press() && tables.is_some() => {
-                let last = tables.as_ref().map_or(0, |t| t.len().saturating_sub(1));
-                self.info_modal.detail_selected = last;
-            }
             KeyCode::Enter if event.is_press() && tables.is_some() => {
                 return self.open_table_from_info(tables.as_deref().unwrap_or_default());
-            }
-            KeyCode::Down | KeyCode::Char('j') if event.is_press() && detail_tab => {
-                self.info_modal.detail_scroll_by(1);
-            }
-            KeyCode::Up | KeyCode::Char('k') if event.is_press() && detail_tab => {
-                self.info_modal.detail_scroll_by(-1);
-            }
-            KeyCode::PageDown if event.is_press() && detail_tab => {
-                self.info_modal.detail_page(true);
-            }
-            KeyCode::PageUp if event.is_press() && detail_tab => {
-                self.info_modal.detail_page(false);
-            }
-            KeyCode::Home if event.is_press() && detail_tab => {
-                self.info_modal.detail_scroll = 0;
-            }
-            KeyCode::End if event.is_press() && detail_tab => {
-                // The render clamps it to the last page.
-                self.info_modal.detail_scroll = usize::MAX;
             }
             _ => {}
         }

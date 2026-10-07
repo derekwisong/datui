@@ -143,6 +143,7 @@ pub mod python_script;
 pub mod quality_export;
 mod quality_form_keys;
 pub mod quality_intent;
+mod quality_keys;
 mod quality_memory;
 pub mod quality_report;
 mod quality_runs;

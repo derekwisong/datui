@@ -237,6 +237,55 @@ pub fn key<T: Form + ?Sized>(form: &mut T, event: &KeyEvent) -> FormKey<T::Field
     }
 }
 
+/// A move of a list's cursor, from the keys every list answers: ↑ / `k`, ↓ / `j`,
+/// PageUp, PageDown, Home and End.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListMove {
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    Home,
+    End,
+}
+
+impl ListMove {
+    /// The move `event` asks for, if it is a press of a list key.
+    pub fn from_key(event: &KeyEvent) -> Option<Self> {
+        if !event.is_press() {
+            return None;
+        }
+        Some(match event.code {
+            KeyCode::Up | KeyCode::Char('k') => Self::Up,
+            KeyCode::Down | KeyCode::Char('j') => Self::Down,
+            KeyCode::PageUp => Self::PageUp,
+            KeyCode::PageDown => Self::PageDown,
+            KeyCode::Home => Self::Home,
+            KeyCode::End => Self::End,
+            _ => return None,
+        })
+    }
+
+    /// How far it moves, `page` rows to a page; Home and End as far as a move goes.
+    pub fn delta(self, page: usize) -> isize {
+        let page = isize::try_from(page.max(1)).unwrap_or(isize::MAX);
+        match self {
+            Self::Up => -1,
+            Self::Down => 1,
+            Self::PageUp => -page,
+            Self::PageDown => page,
+            Self::Home => isize::MIN,
+            Self::End => isize::MAX,
+        }
+    }
+
+    /// `at` moved in a list of `len` rows, `page` rows to a page, kept in the list.
+    pub fn apply(self, at: usize, len: usize, page: usize) -> usize {
+        let last = len.saturating_sub(1);
+        at.saturating_add_signed(self.delta(page)).min(last)
+    }
+}
+
 /// What a key did in an open picker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PickerKey {

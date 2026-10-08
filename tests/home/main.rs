@@ -5618,7 +5618,7 @@ mod coming_back {
     use ratatui::widgets::Widget;
     use std::path::{Path, PathBuf};
     use std::sync::mpsc::Receiver;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
     use tempfile::TempDir;
 
     thread_local! {
@@ -5658,34 +5658,18 @@ mod coming_back {
         (app, rx)
     }
 
-    fn handle(app: &mut App, event: AppEvent) {
-        let mut next = Some(event);
-        while let Some(event) = next {
-            next = app.event(event);
-        }
-    }
-
     /// Handle events until no listing is out and `done` holds, then draw a frame, which
     /// is what settles the scroll.
     pub(super) fn settle(app: &mut App, rx: &Receiver<AppEvent>, done: impl Fn(&App) -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            while let Ok(event) = rx.try_recv() {
-                handle(app, event);
-            }
-            if !app.home.listing_in_flight && !app.home.search.running && done(app) {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "the home screen never settled: {}; rows {:?}",
-                crate::common::home_pending(app),
-                entries(app)
-            );
-            if let Ok(event) = rx.recv_timeout(Duration::from_millis(20)) {
-                handle(app, event);
-            }
-        }
+        let settled = crate::common::handle_until(app, rx, Duration::from_secs(30), |app| {
+            !app.home.listing_in_flight && !app.home.search.running && done(app)
+        });
+        assert!(
+            settled,
+            "the home screen never settled: {}; rows {:?}",
+            crate::common::home_pending(app),
+            entries(app)
+        );
         draw(app);
     }
 
@@ -6316,7 +6300,7 @@ mod cloud_level_paging {
     use datui::{App, AppEvent};
     use std::path::PathBuf;
     use std::sync::mpsc::Receiver;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     /// More partitions than the cap: 5,100 is five full pages and a sixth.
     const PARTITIONS: usize = 5_100;
@@ -6365,20 +6349,11 @@ mod cloud_level_paging {
         assert_eq!(app.home.browsing, Some(PathBuf::from(LEVEL)));
     }
 
-    /// Handle events until `done` holds, asking for what each frame needs as the event
-    /// loop does: rows that came in are listed then.
+    /// Handle events until `done` holds, with each frame's work as the event loop does:
+    /// rows that came in are listed then.
     fn until(app: &mut App, rx: &Receiver<AppEvent>, what: &str, done: impl Fn(&App) -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while !done(app) {
-            assert!(Instant::now() < deadline, "never: {what}");
-            if let Ok(event) = rx.recv_timeout(Duration::from_millis(20)) {
-                let mut next = Some(event);
-                while let Some(event) = next {
-                    next = app.event(event);
-                }
-            }
-            app.request_what_the_frame_needs();
-        }
+        let got_there = crate::common::handle_until(app, rx, Duration::from_secs(30), done);
+        assert!(got_there, "never: {what}");
     }
 
     fn subtitle(app: &App) -> Option<String> {
@@ -6576,36 +6551,18 @@ fn home_at_80x24(
     (tmp, app, rx)
 }
 
-/// Handle events, drawing a frame after each as the run loop does, until no listing is
-/// out and `done` holds. Measurements fold into the rows at a frame, not as they land:
-/// waiting on events alone, one that landed after the last listing was never seen.
+/// Handle events, with each frame's work as the run loop does, until no listing is out
+/// and `done` holds. Measurements fold into the rows at a frame, not as they land.
 fn listed(
     app: &mut datui::App,
     rx: &std::sync::mpsc::Receiver<datui::AppEvent>,
     done: impl Fn(&datui::App) -> bool,
 ) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    loop {
-        draw(app);
-        if !app.home.listing_in_flight && done(app) {
-            cursor_line(app);
-            return;
-        }
-        // The listing's answer comes on the channel: wait for it, not for time.
-        let left = deadline.saturating_duration_since(std::time::Instant::now());
-        let event = rx.recv_timeout(left).expect("the listing never landed");
-        let mut next = Some(event);
-        while let Some(event) = next {
-            next = app.event(event);
-        }
-    }
-}
-
-/// Draw a frame at 80×24, as the run loop draws one.
-fn draw(app: &mut datui::App) {
-    use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
-    let area = Rect::new(0, 0, 80, 24);
-    Widget::render(&mut *app, area, &mut Buffer::empty(area));
+    let landed = common::handle_until(app, rx, std::time::Duration::from_secs(30), |app| {
+        !app.home.listing_in_flight && done(app)
+    });
+    assert!(landed, "the listing never landed");
+    cursor_line(app);
 }
 
 /// Draw a frame at 80×24 and say which screen line the cursor is on.
@@ -8901,7 +8858,7 @@ mod path_prompt {
     use crossterm::event::KeyCode;
     use datui::{App, AppEvent};
     use std::sync::mpsc::Receiver;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
     use tempfile::TempDir;
 
     fn type_text(app: &mut App, text: &str) {
@@ -8912,20 +8869,14 @@ mod path_prompt {
 
     /// Handle events until the typed directory is listed under the prompt.
     fn listed(app: &mut App, rx: &Receiver<AppEvent>) {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            let dir = datui::home::typed_dir(&app.home.path_input).to_string();
-            if app.home.path_listing.as_ref().is_some_and(|l| l.dir == dir) {
-                return;
-            }
-            assert!(Instant::now() < deadline, "{dir} was never listed");
-            if let Ok(event) = rx.recv_timeout(Duration::from_millis(20)) {
-                let mut next = Some(event);
-                while let Some(event) = next {
-                    next = app.event(event);
-                }
-            }
-        }
+        let typed = |app: &App| datui::home::typed_dir(&app.home.path_input).to_string();
+        let got_there = crate::common::handle_until(app, rx, Duration::from_secs(30), |app| {
+            app.home
+                .path_listing
+                .as_ref()
+                .is_some_and(|l| l.dir == typed(app))
+        });
+        assert!(got_there, "{} was never listed", typed(app));
     }
 
     fn screen(app: &mut App, w: u16, h: u16) -> Vec<String> {

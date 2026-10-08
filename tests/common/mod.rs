@@ -141,9 +141,46 @@ pub fn next_event_within(
 #[track_caller]
 pub fn drain_events(app: &mut App, rx: &Receiver<AppEvent>) {
     while let Some(event) = next_event(app, rx) {
-        let mut next = Some(event);
-        while let Some(event) = next {
-            next = app.event(event);
+        handle_chain(app, event);
+    }
+}
+
+/// Handle `event` and every event it chains to.
+#[allow(dead_code)]
+pub fn handle_chain(app: &mut App, event: AppEvent) {
+    let mut next = Some(event);
+    while let Some(event) = next {
+        next = app.event(event);
+    }
+}
+
+/// Handle events, with the frame's work once those on hand are handled, as the run loop
+/// does, until `done` holds; whether it did within `guard`. For state no work flag
+/// covers, such as rows a listing or a measurement brings, which reach the screen at a
+/// frame. The caller fails the test, naming what never came.
+#[allow(dead_code)]
+#[must_use]
+pub fn handle_until(
+    app: &mut App,
+    rx: &Receiver<AppEvent>,
+    guard: Duration,
+    done: impl Fn(&App) -> bool,
+) -> bool {
+    let deadline = Instant::now() + guard;
+    loop {
+        while let Ok(event) = rx.try_recv() {
+            handle_chain(app, event);
+        }
+        app.frame_work();
+        if done(app) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        // Whatever the app waits on answers on the channel: an event ends the wait.
+        if let Ok(event) = rx.recv_timeout(Duration::from_millis(20)) {
+            handle_chain(app, event);
         }
     }
 }

@@ -128,6 +128,13 @@ fn charts_draw_and_export_as_their_goldens() {
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx.clone(), crate::tests::test_runtime());
     open(&mut app, &rx, &tx, table(dir.path()));
+    // The Rows row shows the table's count, the footer's own worker, which `is_busy`
+    // does not cover; a chart drawn before it lands says `Every row` alone.
+    pump(&mut app, &rx, &tx, |a| {
+        a.data_table_state
+            .as_ref()
+            .is_some_and(|s| s.num_rows_if_valid().is_some())
+    });
     app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('c'),
         KeyModifiers::NONE,

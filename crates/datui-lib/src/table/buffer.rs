@@ -1509,10 +1509,11 @@ impl DataTableState {
         behind || ahead
     }
 
-    /// How near its end the view comes before the buffer grows ahead: half the reach, at
-    /// least a page (a cloud fetch outlasts a PageDown).
+    /// How near its end the view comes before the buffer grows ahead: half the pages
+    /// ahead, at least a page (a cloud fetch outlasts a PageDown). Pages, not
+    /// [`Self::reach_ahead`]: a view that has not moved reads nothing ahead.
     fn proximity(&self) -> usize {
-        (self.reach_ahead() / 2).max(self.visible_rows)
+        (self.reach_rows(self.pages_lookahead) / 2).max(self.visible_rows)
     }
 
     /// As [`Self::proximity`], behind the view.

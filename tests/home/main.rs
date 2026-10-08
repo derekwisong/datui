@@ -8,7 +8,6 @@ use datui::home::{HomeState, RootOrigin, Row, fuzzy_score};
 use std::fs;
 use tempfile::TempDir;
 
-mod alloc_budget;
 #[path = "../common/mod.rs"]
 mod common;
 #[cfg(feature = "cloud")]
@@ -985,11 +984,10 @@ fn test_enrichment_is_capped_per_pass_and_reports_more_work() {
     assert!(!more, "nothing left to measure");
 }
 
-/// A filter lifts a directory's cut, but only the rows near the screen are measured, a
-/// page each way; the rest as scrolling brings them near. Sorted by rows, every row is,
-/// since its count places it.
+/// The rows near the screen are measured first, wherever the cursor is; then the rest
+/// of the listing, so a column name matches any row.
 #[test]
-fn test_a_filter_measures_the_rows_near_the_screen_not_every_match() {
+fn test_rows_near_the_screen_are_measured_first_then_the_rest() {
     let tmp = TempDir::new().unwrap();
     for i in 0..300 {
         touch(tmp.path(), &format!("f{i:03}.parquet"));
@@ -1000,17 +998,7 @@ fn test_a_filter_measures_the_rows_near_the_screen_not_every_match() {
         ..Default::default()
     };
     home.rebuild(&[]);
-    home.filter = "f".to_string();
-    while home.measure_now(16) {}
-    let measured = home.enriched.len();
-    assert!(
-        (20..=60).contains(&measured),
-        "{measured} rows measured for a 20-row screen"
-    );
     let far = tmp.path().join("f250.parquet");
-    assert!(!home.enriched.contains_key(&far));
-
-    // Scrolled down to it, it is measured.
     let at = home
         .visible()
         .iter()
@@ -1018,19 +1006,56 @@ fn test_a_filter_measures_the_rows_near_the_screen_not_every_match() {
         .expect("f250 is listed");
     home.selected = at;
     home.scroll = at.saturating_sub(10);
-    while home.measure_now(16) {}
-    assert!(
-        home.enriched.contains_key(&far),
-        "measured once near the screen"
-    );
-    assert!(home.enriched.len() < 300);
 
-    home.sort = datui::home::SortMode::Rows;
+    assert!(home.measure_now(16), "more to measure");
+    assert!(home.enriched.contains_key(&far), "the cursor's row first");
+    assert!(
+        !home.enriched.contains_key(&tmp.path().join("f000.parquet")),
+        "not the top of the list"
+    );
+
     while home.measure_now(16) {}
+    assert_eq!(home.enriched.len(), 300, "then every row");
+}
+
+/// `Found` is built again on every key and search batch from the walk's rows; what was
+/// measured of them stays.
+#[test]
+fn test_a_found_row_keeps_its_measurement_when_found_is_built_again() {
+    use polars::prelude::*;
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(tmp.path().join("a")).unwrap();
+    let deep = tmp.path().join("a/found.parquet");
+    let mut frame = DataFrame::new(3, vec![Column::new("revenue".into(), &[1i64, 2, 3])]).unwrap();
+    ParquetWriter::new(fs::File::create(&deep).unwrap())
+        .finish(&mut frame)
+        .unwrap();
+    let mut home = HomeState {
+        filter: "found".into(),
+        view_height: 20,
+        ..Default::default()
+    };
+    home.rebuild(&[]);
+    home.search.root = Some(tmp.path().to_path_buf());
+    home.search
+        .set_results(vec![discover::Entry::for_test(&deep, "a/found.parquet")]);
+    home.search.done = true;
+    home.sync_search_section();
+    while home.measure_now(16) {}
+    let found = |home: &HomeState| {
+        home.visible().iter().find_map(|r| match r {
+            Row::Entry { entry, .. } if entry.path == deep => {
+                Some((entry.rows, entry.columns.clone()))
+            }
+            _ => None,
+        })
+    };
+    assert_eq!(found(&home), Some((Some(3), vec!["revenue".to_string()])));
+    home.sync_search_section();
     assert_eq!(
-        home.enriched.len(),
-        300,
-        "sorted by rows, every row is measured"
+        found(&home),
+        Some((Some(3), vec!["revenue".to_string()])),
+        "built again, still measured"
     );
 }
 

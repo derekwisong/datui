@@ -11,6 +11,9 @@ impl DataTableState {
             && selected >= self.visible_rows
             && self.visible_rows > 0
         {
+            // The page moves, not the cursor: left past the last row, the draw would
+            // move the page a second row to show it.
+            self.table_state.select(Some(self.visible_rows - 1));
             return self.slide_table(1);
         }
         false

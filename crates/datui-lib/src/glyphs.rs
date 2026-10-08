@@ -750,10 +750,13 @@ pub fn cell_width(text: &str) -> usize {
 /// `text` fitted to `width` cells: whole if it fits, else cut at a grapheme boundary
 /// and closed with `marker` (never half a wide character). Control characters are
 /// dropped, as ratatui drops them. If `marker` itself does not fit, as much as does.
+/// Reads `text` only as far as `width` cells and one more, however long it is.
 pub fn fit_cells<'a>(text: &'a str, width: usize, marker: &str) -> Cow<'a, str> {
     use ratatui::buffer::CellWidth;
     let marker_width = cell_width(marker);
-    if plain_ascii(text) {
+    let head_len = text.len().min(width.saturating_add(1));
+    let head = text.get(..head_len).unwrap_or(text);
+    if head.len() == head_len && plain_ascii(head) {
         if text.len() <= width {
             return Cow::Borrowed(text);
         }
@@ -763,12 +766,18 @@ pub fn fit_cells<'a>(text: &'a str, width: usize, marker: &str) -> Cow<'a, str> 
         return Cow::Owned(format!("{}{marker}", &text[..width - marker_width]));
     }
     let span = ratatui::text::Span::raw(text);
-    let total: usize = drawn_graphemes(&span)
-        .map(|g| usize::from(g.cell_width()))
-        .sum();
+    // Whether it fits, measured no further than past `width`.
+    let mut total = 0usize;
+    let mut drawn_bytes = 0usize;
+    for g in drawn_graphemes(&span) {
+        total += usize::from(g.cell_width());
+        if total > width {
+            break;
+        }
+        drawn_bytes += g.len();
+    }
     if total <= width {
-        let whole = drawn_graphemes(&span).map(str::len).sum::<usize>() == text.len();
-        return if whole {
+        return if drawn_bytes == text.len() {
             Cow::Borrowed(text)
         } else {
             Cow::Owned(drawn_graphemes(&span).collect())

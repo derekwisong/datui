@@ -12,7 +12,7 @@ modules:
 
 | Target | Holds |
 |---|---|
-| `app` | The App end to end: helpers in `main.rs`, tests by area (`loading`, `query`, `export`, `data_quality`, `home_screen`, `inspector`, `chart`, `analysis`, `views`, `table_keys`, `harness`), formats in `formats/`, cloud in `cloud/`, `remote_quality` in `quality/`, and `capture`, `terminal_escape`, `catalog`, `public_datasets`, `quality_export` |
+| `app` | The App end to end: helpers in `main.rs`, tests by area (`loading`, `query`, `export`, `data_quality`, `home_screen`, `inspector`, `chart`, `analysis`, `views`, `table_keys`, `harness`), formats in `formats/`, cloud in `cloud/`, `remote_quality` in `quality/`, and `capture`, `terminal_escape`, `catalog`, `public_datasets`, `quality_export`; `alloc_budget` holds per-key allocation budgets, counted by a pass-through allocator on the test's own thread |
 | `home` | The home screen, with `search` and `locality` |
 | `data` | `statistics`, `distribution`, `reshape`, `excel` |
 | `config` | `settings`, `flags`, `themes`, `colors`, `indexed_colors`, `views`, `view_store` |

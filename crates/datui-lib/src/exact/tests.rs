@@ -364,10 +364,64 @@ fn the_preview_marks_direction_controls() {
 fn a_cell_previews_only_the_start_of_a_huge_value() {
     let g = crate::glyphs::unicode();
     let huge = "x".repeat(CELL_PREVIEW_BYTES * 10);
-    let cell = cell_preview(&huge, g);
-    assert_eq!(cell.len(), CELL_PREVIEW_BYTES + g.ellipsis.len());
+    let cell = cell_preview(&huge, g, 80);
+    assert_eq!(cell.len(), cell_cut(80) + 1 + g.ellipsis.len());
     assert!(cell.ends_with(g.ellipsis));
-    assert_eq!(cell_preview("a\nb", g), "a¶b");
+    assert_eq!(cell_preview("a\nb", g, 80), "a¶b");
+    // A wider screen keeps more.
+    assert_eq!(
+        cell_preview(&huge, g, 1_000).len(),
+        1_001 + g.ellipsis.len()
+    );
+}
+
+/// Cut past `cells`, a value draws and measures at any width up to `cells` as the
+/// whole value does: wide characters, joined emoji, marks and combining accents
+/// included. What a cut keeps follows the cells, not the bytes.
+#[test]
+fn a_cut_cell_draws_as_the_whole_value_at_any_width_it_can_have() {
+    let cells = 40;
+    let texts = [
+        "plain words ".repeat(200),
+        "東京の市場、報告。".repeat(100),
+        "line one\nline two\ttab ".repeat(50),
+        "👨‍👩‍👧‍👦 family ".repeat(60),
+        "e\u{301}a\u{301}".repeat(300),
+        "\u{200b}".repeat(30) + "end",
+        // Measured at no width, drawn as a one-cell mark: more is kept, never less.
+        "abc\u{200e}".repeat(50),
+        "x\u{202e}y\u{202c}".repeat(50),
+    ];
+    for g in [crate::glyphs::unicode(), crate::glyphs::ascii()] {
+        for text in &texts {
+            let whole = preview(text, g);
+            let cut = cell_text(Cow::Borrowed(text), g, cells);
+            assert!(cut.len() <= 4 * 4 * cells + 64, "{} bytes kept", cut.len());
+            for width in 1..=cells {
+                assert_eq!(
+                    crate::glyphs::fit_cells(&cut, width, g.ellipsis),
+                    crate::glyphs::fit_cells(&whole, width, g.ellipsis),
+                    "{text:.20?} at {width}"
+                );
+            }
+            if crate::glyphs::cell_width(&whole) > cells {
+                assert!(crate::glyphs::cell_width(&cut) > cells, "{text:.20?}");
+            }
+        }
+    }
+    // The one exception, so it cannot widen unseen: past twice `cells` graphemes of
+    // no width, the cut comes before anything is seen.
+    let invisible = "\u{200b}".repeat(100) + "end";
+    let cut = cell_text(Cow::Borrowed(&invisible), crate::glyphs::unicode(), cells);
+    assert_eq!(
+        cut,
+        "\u{200b}".repeat(2 * cells + 1) + crate::glyphs::unicode().ellipsis
+    );
+    // Short or owned text that needs no mark is kept as it is.
+    let owned = String::from("1,234");
+    let at = owned.as_ptr();
+    let kept = cell_text(Cow::Owned(owned), crate::glyphs::unicode(), cells);
+    assert_eq!(kept.as_ptr(), at);
 }
 
 /// One huge string or a million items in a list stop at the budget too.
@@ -451,4 +505,14 @@ fn a_list_previews_ten_items_and_counts_the_rest() {
     );
     let ten = Series::new("".into(), (0..10).collect::<Vec<i32>>());
     assert_eq!(list_preview(&ten), "[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]");
+    // Items of a megabyte each: no more than a cell could show is copied.
+    let huge = "x".repeat(1 << 20);
+    let articles = Series::new("".into(), vec![huge.as_str(); 10]);
+    let text = list_preview(&articles);
+    assert!(
+        text.len() < 2 * CELL_PREVIEW_BYTES + 8,
+        "{} bytes",
+        text.len()
+    );
+    assert!(text.starts_with("[xxx") && text.ends_with("..."));
 }

@@ -329,7 +329,7 @@ impl DataTableState {
     }
 
     /// The first `limit` distinct non-null values of `column` in the display buffer, as
-    /// text. Reads nothing; a column not buffered gives none.
+    /// text, a long string by its start. Reads nothing; a column not buffered gives none.
     pub(crate) fn buffered_values(&self, column: &str, limit: usize) -> Vec<String> {
         let Some(series) = [self.view.df.as_ref(), self.view.locked_df.as_ref()]
             .into_iter()
@@ -346,7 +346,11 @@ impl DataTableState {
             }
             let text = match value {
                 AnyValue::Null => continue,
-                AnyValue::String(text) => text.to_string(),
+                // Drawn each frame beside a column's name: its start, not a whole
+                // article.
+                AnyValue::String(text) => {
+                    crate::exact::prefix(text, crate::exact::CELL_PREVIEW_BYTES).to_string()
+                }
                 AnyValue::List(items) => crate::exact::list_preview(&items),
                 // Drawn on the UI thread: Polars' display panics on a date past
                 // the calendar.

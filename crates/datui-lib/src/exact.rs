@@ -105,15 +105,20 @@ pub fn str_value<'a>(value: &AnyValue<'a>) -> Cow<'a, str> {
 }
 
 /// How the table previews a list cell: its first ten items, and how many there
-/// are when that is not all of them (`[a, b...] (12 items)`).
+/// are when that is not all of them (`[a, b...] (12 items)`). Past
+/// [`CELL_PREVIEW_BYTES`], more than a cell shows, it stops with `...`.
 pub fn list_preview(items: &Series) -> String {
     const SHOWN: usize = 10;
     let mut text = String::from("[");
     for (i, item) in items.iter().take(SHOWN).enumerate() {
+        if text.len() > CELL_PREVIEW_BYTES {
+            text.push_str("...");
+            return text;
+        }
         if i > 0 {
             text.push_str(", ");
         }
-        text.push_str(&str_value(&item));
+        text.push_str(prefix(&str_value(&item), CELL_PREVIEW_BYTES));
     }
     if items.len() > SHOWN {
         let _ = write!(text, "...] ({} items)", items.len());
@@ -580,19 +585,68 @@ fn has_marked(s: &str) -> bool {
         || (s.bytes().any(|b| matches!(b, 0xc2 | 0xd8 | 0xe2)) && s.chars().any(marked))
 }
 
-/// Bytes of a value a table cell previews: more than any terminal row draws.
+/// Bytes of a nested value a table cell previews: more than any terminal row draws.
 pub const CELL_PREVIEW_BYTES: usize = 4096;
 
-/// [`preview`] of the start of `s`, ending in the ellipsis when cut: a cell
-/// draws only its start, and measuring a huge value whole every frame costs
-/// what the value costs.
-pub fn cell_preview(s: &str, g: &crate::glyphs::Glyphs) -> String {
-    let head = prefix(s, CELL_PREVIEW_BYTES);
-    let mut text = preview(head, g).into_owned();
-    if head.len() < s.len() {
-        text.push_str(g.ellipsis);
+/// The cells a preview drawn in `width` cells (a terminal, or the area it is
+/// drawn in) keeps of a value: past that width and past any width a column can be
+/// set to by hand, so the cut never shows.
+pub fn cell_cut(width: u16) -> usize {
+    usize::from(width.max(crate::widgets::column_widths::MAX_WIDTH))
+}
+
+/// [`cell_text`] of `s`, cut past [`cell_cut`] of `width`.
+pub fn cell_preview(s: &str, g: &crate::glyphs::Glyphs, width: u16) -> String {
+    cell_text(Cow::Borrowed(s), g, cell_cut(width))
+}
+
+/// [`preview`] of the start of `text` that covers more than `cells` cells,
+/// ending in the ellipsis when cut: a cell draws only its start, and measuring
+/// a huge value whole costs what the value costs. Drawn at `cells` or fewer, it
+/// reads and measures as the whole value would. An owned `text` that needs
+/// neither cut nor mark is kept, not copied.
+pub fn cell_text(text: Cow<'_, str>, g: &crate::glyphs::Glyphs, cells: usize) -> String {
+    let head = cell_prefix(&text, cells);
+    if head.len() == text.len() {
+        if !has_marked(&text) {
+            return text.into_owned();
+        }
+        return preview(&text, g).into_owned();
     }
-    text
+    let mut out = preview(head, g).into_owned();
+    out.push_str(g.ellipsis);
+    out
+}
+
+/// The start of `s` that covers more than `cells` cells once [`preview`] marks
+/// it, or all of `s`. Measured by grapheme at ratatui's widths, a control as its
+/// one-cell mark. A value of zero-width graphemes stops at twice `cells`
+/// graphemes, so nothing is walked whole.
+pub fn cell_prefix(s: &str, cells: usize) -> &str {
+    use ratatui::buffer::CellWidth;
+    use unicode_segmentation::UnicodeSegmentation;
+    if s.len() <= cells {
+        return s;
+    }
+    let plain = s.as_bytes()[..=cells]
+        .iter()
+        .take_while(|b| (0x20..0x7f).contains(*b))
+        .count();
+    if plain > cells {
+        return &s[..=cells];
+    }
+    let mut width = 0usize;
+    for (n, (at, grapheme)) in s.grapheme_indices(true).enumerate() {
+        if width > cells || n > 2 * cells {
+            return &s[..at];
+        }
+        width += if grapheme.contains(char::is_control) {
+            1
+        } else {
+            usize::from(grapheme.cell_width())
+        };
+    }
+    s
 }
 
 /// One-line preview of `s`: a line break, a tab or another [`marked`] character

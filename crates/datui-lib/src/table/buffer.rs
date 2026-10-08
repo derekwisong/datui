@@ -64,6 +64,7 @@ impl FillPlan {
             _ => (df, self.buffer_start, None),
         };
         let (df, start) = self.cut_to_caps(df, start, seam);
+        let df = fewer_chunks(df);
         CollectResult {
             df,
             start,
@@ -179,6 +180,27 @@ pub(super) fn estimate_bytes_per_row(
         })
         .sum::<usize>()
         .max(1)
+}
+
+/// The most chunks a buffer column keeps: each fill stitched on adds one, and a column
+/// of many small chunks is slower to read from.
+pub(super) const MAX_BUFFER_CHUNKS: usize = 16;
+
+/// `df` in one chunk per column once fills stitched on have left it in more than
+/// [`MAX_BUFFER_CHUNKS`]. A copy, on the worker, once every so many fills.
+fn fewer_chunks(df: DataFrame) -> DataFrame {
+    let chunks = df
+        .columns()
+        .iter()
+        .filter_map(Column::as_series)
+        .map(|s| s.chunks().len())
+        .max()
+        .unwrap_or(0);
+    if chunks <= MAX_BUFFER_CHUNKS {
+        return df;
+    }
+    let rows = df.height();
+    compact_rows(df, 0, rows, None)
 }
 
 /// Rows `[offset, offset + len)` of `df`, copied when a slice would keep much more
@@ -368,21 +390,39 @@ pub(super) fn files_holding(offsets: &[usize], start: usize, len: usize) -> Opti
     Some((file_of(start), file_of(end - 1).min(files - 1)))
 }
 
-/// Rows `[start, start + len)` of `lf` as `all_columns`: with counted `files`, a scan of
-/// only the files holding them; with `records`, read straight from the source.
+/// Where a window of a view reads its rows from, besides the frame itself.
+#[derive(Clone, Copy, Default)]
+pub(super) struct Sources<'a> {
+    /// Counted remote files: a scan of only the files holding the window.
+    pub(super) files: Option<&'a RemoteFiles>,
+    /// Records read straight from the source.
+    pub(super) records: Option<&'a dyn crate::formats::pushdown::Windowed>,
+    /// Where the rows of a CSV start: the window reads on from the mark before it.
+    pub(super) csv: Option<&'a Arc<super::csv_marks::CsvMarks>>,
+}
+
+/// Rows `[start, start + len)` of `lf` as `all_columns`, read from the narrowest of
+/// `sources` that has them.
 pub(super) fn window_of(
     lf: &LazyFrame,
-    files: Option<&RemoteFiles>,
-    records: Option<&dyn crate::formats::pushdown::Windowed>,
+    sources: Sources<'_>,
     read_as_text: &[PlSmallStr],
     start: usize,
     len: usize,
     all_columns: Vec<Expr>,
 ) -> PolarsResult<LazyFrame> {
+    let Sources {
+        files,
+        records,
+        csv,
+    } = sources;
     // Polars gives an anonymous scan no row offset, so a slice deep in the view would
     // read every row before it; the source starts the window there instead.
     if let Some(records) = records {
         return Ok(records.window(start, len)?.select(all_columns));
+    }
+    if let Some(window) = csv.and_then(|marks| marks.window(lf, start, len)) {
+        return Ok(window.select(all_columns));
     }
     if let Some((files, offsets)) = files.and_then(|f| f.offsets.as_ref().map(|o| (f, o)))
         && let Some((first, last)) = files_holding(offsets, start, len)
@@ -412,6 +452,8 @@ pub(crate) struct ViewRows {
     files: Option<RemoteFiles>,
     /// See [`DataTableState::window_now`].
     records: Option<Arc<dyn crate::formats::pushdown::Windowed>>,
+    /// See [`DataTableState::csv_window`].
+    csv: Option<Arc<super::csv_marks::CsvMarks>>,
     read_as_text: Vec<PlSmallStr>,
     /// The buffer on hand and the view row it starts at.
     pub(crate) buffer: Option<(DataFrame, usize)>,
@@ -460,8 +502,11 @@ impl ViewRows {
     ) -> PolarsResult<LazyFrame> {
         window_of(
             &self.lf,
-            self.files.as_ref(),
-            self.records.as_deref(),
+            Sources {
+                files: self.files.as_ref(),
+                records: self.records.as_deref(),
+                csv: self.csv.as_ref(),
+            },
             &self.read_as_text,
             start,
             len,
@@ -478,12 +523,38 @@ impl ViewRows {
             lf,
             files: None,
             records: None,
+            csv: None,
             read_as_text: Vec::new(),
             buffer,
             num_rows: None,
             streaming: false,
         }
     }
+}
+
+/// Rows a fill reads ahead of the view, at most, when a read decodes whole data pages:
+/// a read of this many costs about what one page does.
+pub(super) const PAGES_DECODED_AHEAD: usize = 8192;
+
+/// Bytes of rows a fill reads ahead of the view, at most, when a read decodes whole data
+/// pages: rows of long text read ahead fewer.
+pub(super) const BYTES_DECODED_AHEAD: usize = 8 << 20;
+
+/// Whether `lf` reads local Parquet files: a read of it decodes whole data pages.
+pub(super) fn decodes_pages(lf: &LazyFrame) -> bool {
+    use polars::lazy::dsl::{DslPlan, FileScanDsl, ScanSources};
+    let remote = |path: &str| crate::cloud::source::is_remote_url(Path::new(path));
+    (&lf.logical_plan).into_iter().any(|node| match node {
+        DslPlan::Scan {
+            sources: ScanSources::Paths(paths),
+            scan_type,
+            ..
+        } => {
+            matches!(**scan_type, FileScanDsl::Parquet { .. })
+                && !paths.iter().any(|path| remote(path.as_str()))
+        }
+        _ => false,
+    })
 }
 
 /// Snap `[start, end)` outward to whole row groups (`offsets`, total last). The groups
@@ -728,7 +799,7 @@ impl DataTableState {
             let dist_to_start = view_start.saturating_sub(self.view.buffered_start_row);
             let dist_to_end = self.view.buffered_end_row.saturating_sub(view_end);
             let needs_expansion_back =
-                dist_to_start <= self.proximity_threshold && self.view.buffered_start_row > 0;
+                dist_to_start <= self.proximity_behind() && self.view.buffered_start_row > 0;
             let needs_expansion_forward =
                 dist_to_end <= self.proximity_threshold && self.view.buffered_end_row < bound;
 
@@ -737,12 +808,12 @@ impl DataTableState {
                 (self.view.buffered_start_row, self.view.buffered_end_row)
             } else {
                 let mut s = if needs_expansion_back {
-                    view_start.saturating_sub(self.reach_rows(self.pages_lookback))
+                    view_start.saturating_sub(self.reach_behind())
                 } else {
                     self.view.buffered_start_row
                 };
                 let mut e = if needs_expansion_forward {
-                    (view_end + self.reach_rows(self.pages_lookahead)).min(bound)
+                    (view_end + self.reach_ahead()).min(bound)
                 } else {
                     self.view.buffered_end_row
                 };
@@ -754,23 +825,21 @@ impl DataTableState {
             let scrolled_past_end = had_buffer && view_start >= self.view.buffered_end_row;
             let scrolled_past_start = had_buffer && view_end <= self.view.buffered_start_row;
             let extend_forward_ok = scrolled_past_end
-                && (view_start - self.view.buffered_end_row)
-                    <= self.reach_rows(self.pages_lookahead);
+                && (view_start - self.view.buffered_end_row) <= self.reach_ahead();
             let extend_backward_ok = scrolled_past_start
-                && (self.view.buffered_start_row - view_end)
-                    <= self.reach_rows(self.pages_lookback);
+                && (self.view.buffered_start_row - view_end) <= self.reach_behind();
 
             let mut s;
             let mut e;
             if extend_forward_ok {
                 s = self.view.buffered_start_row;
-                e = (view_end + self.reach_rows(self.pages_lookahead)).min(bound);
+                e = (view_end + self.reach_ahead()).min(bound);
             } else if extend_backward_ok {
-                s = view_start.saturating_sub(self.reach_rows(self.pages_lookback));
+                s = view_start.saturating_sub(self.reach_behind());
                 e = self.view.buffered_end_row;
             } else {
-                s = view_start.saturating_sub(self.reach_rows(self.pages_lookback));
-                e = (view_end + self.reach_rows(self.pages_lookahead)).min(bound);
+                s = view_start.saturating_sub(self.reach_behind());
+                e = (view_end + self.reach_ahead()).min(bound);
                 let min_initial_len = self.min_buffer_len();
                 let current_len = e.saturating_sub(s);
                 if current_len < min_initial_len {
@@ -1136,10 +1205,14 @@ impl DataTableState {
         len: usize,
         all_columns: Vec<Expr>,
     ) -> PolarsResult<LazyFrame> {
+        let records = self.window_now();
         window_of(
             &self.view.lf,
-            self.files_window(),
-            self.window_now().as_deref(),
+            Sources {
+                files: self.files_window(),
+                records: records.as_deref(),
+                csv: self.csv_window(),
+            },
             &self.read_as_text,
             start,
             len,
@@ -1156,6 +1229,7 @@ impl DataTableState {
             // A find reads every row it can reach: lines still being indexed are read
             // through the frame, which waits for them, not the window of those so far.
             records: self.window_now().filter(|_| self.indexing().is_none()),
+            csv: self.csv_window().cloned(),
             read_as_text: self.read_as_text.clone(),
             buffer: self
                 .view
@@ -1236,6 +1310,17 @@ impl DataTableState {
         self.remote_source && self.is_pristine()
     }
 
+    /// The marks a window reads on from, while the frame is the scan as loaded and that
+    /// is one CSV scan: a filter, sort or query reads every row before its window.
+    fn csv_window(&self) -> Option<&Arc<super::csv_marks::CsvMarks>> {
+        if !self.is_pristine() {
+            return None;
+        }
+        self.csv_marks
+            .get_or_init(|| super::csv_marks::CsvMarks::of(&self.original_lf))
+            .as_ref()
+    }
+
     /// The files a page reads by, while the frame is the scan as loaded: a filter or
     /// sort reads every file before its window, so it goes through the whole scan.
     fn files_window(&self) -> Option<&RemoteFiles> {
@@ -1260,9 +1345,7 @@ impl DataTableState {
 
     /// The smallest buffer worth filling: a page plus the reach either side.
     fn min_buffer_len(&self) -> usize {
-        self.visible_rows.max(1)
-            + self.reach_rows(self.pages_lookahead)
-            + self.reach_rows(self.pages_lookback)
+        self.visible_rows.max(1) + self.reach_ahead() + self.reach_behind()
     }
 
     /// True when the view already shows the last page, so End has nothing to load.
@@ -1300,6 +1383,9 @@ impl DataTableState {
             .as_deref()
             .filter(|_| self.remote_window())
         else {
+            if !self.remote_source {
+                self.read_past_the_rows_on_hand(buffer_start, buffer_end);
+            }
             return;
         };
         (*buffer_start, *buffer_end) = align_to_row_groups(
@@ -1337,16 +1423,21 @@ impl DataTableState {
         }
         // A view straddling two groups needs both, but one is on hand: fetch the other
         // alone and stitch it on (see `apply_async_collect`).
-        if self.buffer_on_hand() {
-            let (held_start, held_end) = (self.view.buffered_start_row, self.view.buffered_end_row);
-            if held_start <= *buffer_start && *buffer_start < held_end && held_end < *buffer_end {
-                *buffer_start = held_end;
-            } else if *buffer_start < held_start
-                && held_start < *buffer_end
-                && *buffer_end <= held_end
-            {
-                *buffer_end = held_start;
-            }
+        self.read_past_the_rows_on_hand(buffer_start, buffer_end);
+    }
+
+    /// Narrow `[buffer_start, buffer_end)` to the rows past the ones on hand, on the side it
+    /// grows, when a fill is stitched to them: rows read once are not read again.
+    fn read_past_the_rows_on_hand(&self, buffer_start: &mut usize, buffer_end: &mut usize) {
+        if !self.stitches_buffer() {
+            return;
+        }
+        let (held_start, held_end) = (self.view.buffered_start_row, self.view.buffered_end_row);
+        if held_start <= *buffer_start && *buffer_start < held_end && held_end < *buffer_end {
+            *buffer_start = held_end;
+        } else if *buffer_start < held_start && held_start < *buffer_end && *buffer_end <= held_end
+        {
+            *buffer_end = held_start;
         }
     }
 
@@ -1411,17 +1502,42 @@ impl DataTableState {
             + self
                 .visible_rows
                 .min(self.num_rows_bound().saturating_sub(self.view.start_row));
-        let behind = self.view.start_row - self.view.buffered_start_row <= near
+        let behind = self.view.start_row - self.view.buffered_start_row <= self.proximity_behind()
             && self.view.buffered_start_row > 0;
         let ahead = self.view.buffered_end_row - view_end <= near
             && self.view.buffered_end_row < self.num_rows_bound();
         behind || ahead
     }
 
-    /// How near an end the view comes before the buffer grows: half the reach, at least a
-    /// page (a cloud fetch outlasts a PageDown).
+    /// How near its end the view comes before the buffer grows ahead: half the reach, at
+    /// least a page (a cloud fetch outlasts a PageDown).
     fn proximity(&self) -> usize {
-        (self.reach_rows(self.pages_lookahead) / 2).max(self.visible_rows)
+        (self.reach_ahead() / 2).max(self.visible_rows)
+    }
+
+    /// As [`Self::proximity`], behind the view.
+    fn proximity_behind(&self) -> usize {
+        (self.reach_behind() / 2).max(self.visible_rows)
+    }
+
+    /// Rows the buffer reaches ahead of the view: see [`Self::reach_rows`]. A read that
+    /// decodes whole data pages reads on through them, once a read has measured the rows:
+    /// the rows past the page cost little now, and paging through them reads nothing.
+    fn reach_ahead(&self) -> usize {
+        let reach = self.reach_rows(self.pages_lookahead);
+        let measured = self
+            .view
+            .observed_bytes_per_row
+            .filter(|_| self.decodes_pages && !self.remote_source && self.is_pristine());
+        match measured {
+            Some(bytes) => reach.max((BYTES_DECODED_AHEAD / bytes).min(PAGES_DECODED_AHEAD)),
+            None => reach,
+        }
+    }
+
+    /// Rows the buffer reaches behind the view: see [`Self::reach_rows`].
+    fn reach_behind(&self) -> usize {
+        self.reach_rows(self.pages_lookback)
     }
 
     /// Where the view and the buffer are, to tell one load-ahead attempt from the next.

@@ -270,9 +270,23 @@ impl DataTableState {
     }
 
     /// Whether a fill adjoining the rows on hand is stitched to them rather than replacing
-    /// them. See [`FillPlan`].
+    /// them, so rows read once are not read again. Only while the frame is the scan as
+    /// loaded, whose rows two reads agree on (a sort's ties may not). See [`FillPlan`].
     pub(crate) fn stitches_buffer(&self) -> bool {
-        self.remote_window() && self.buffer_on_hand()
+        self.is_pristine() && self.buffer_on_hand() && self.buffer_has_the_columns()
+    }
+
+    /// Whether the rows on hand have the columns a read now gives, in its order: rows
+    /// of other columns cannot take a fill stitched on.
+    fn buffer_has_the_columns(&self) -> bool {
+        self.view.buffered_df.as_ref().is_some_and(|df| {
+            let names = df.columns().iter().map(|c| c.name().as_str());
+            let mut shown = self.view.column_order.iter().map(String::as_str);
+            names
+                .filter(|name| *name != crate::formats::schema_union::DRIFT_COLUMN)
+                .all(|name| shown.next() == Some(name))
+                && shown.next().is_none()
+        })
     }
 
     /// The rows on hand and the view row of the first, when the whole buffered range is

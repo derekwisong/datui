@@ -289,31 +289,305 @@ fn off_never_moves() {
     }
 }
 
-/// A new size draws the frame whole on the cleared screen.
+/// A backend whose reported size the test sets, so `autoresize` sees a resize.
+struct Resizable {
+    inner: CrosstermBackend<Tape>,
+    size: std::rc::Rc<std::cell::Cell<ratatui::layout::Size>>,
+}
+
+impl std::io::Write for Resizable {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.inner.write(bytes)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        std::io::Write::flush(&mut self.inner)
+    }
+}
+
+impl Backend for Resizable {
+    type Error = std::io::Error;
+
+    fn draw<'a, I>(&mut self, content: I) -> std::io::Result<()>
+    where
+        I: Iterator<Item = (u16, u16, &'a Cell)>,
+    {
+        self.inner.draw(content)
+    }
+
+    fn hide_cursor(&mut self) -> std::io::Result<()> {
+        self.inner.hide_cursor()
+    }
+
+    fn show_cursor(&mut self) -> std::io::Result<()> {
+        self.inner.show_cursor()
+    }
+
+    fn get_cursor_position(&mut self) -> std::io::Result<ratatui::layout::Position> {
+        Ok(ratatui::layout::Position::ORIGIN)
+    }
+
+    fn set_cursor_position<P: Into<ratatui::layout::Position>>(
+        &mut self,
+        position: P,
+    ) -> std::io::Result<()> {
+        self.inner.set_cursor_position(position)
+    }
+
+    fn clear(&mut self) -> std::io::Result<()> {
+        self.inner.clear()
+    }
+
+    fn clear_region(&mut self, clear_type: ClearType) -> std::io::Result<()> {
+        self.inner.clear_region(clear_type)
+    }
+
+    fn size(&self) -> std::io::Result<ratatui::layout::Size> {
+        Ok(self.size.get())
+    }
+
+    fn window_size(&mut self) -> std::io::Result<ratatui::backend::WindowSize> {
+        Ok(ratatui::backend::WindowSize {
+            columns_rows: self.size.get(),
+            pixels: ratatui::layout::Size::default(),
+        })
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Backend::flush(&mut self.inner)
+    }
+}
+
+/// A frame of numbered lines, one per screen line, starting at `from`.
+fn numbered(width: u16, height: u16, from: usize) -> Buffer {
+    let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+    for y in 0..height {
+        let text = format!(
+            "line {} {}",
+            from + usize::from(y),
+            "x".repeat(usize::from(y))
+        );
+        buf.set_string(0, y, text, ratatui::style::Style::default());
+    }
+    buf
+}
+
+/// The screen a fresh terminal shows after drawing `frame` whole.
+fn redraw_of(frame: &Buffer) -> Vec<String> {
+    let (width, height) = (frame.area.width, frame.area.height);
+    let (mut terminal, tape) = in_memory(width, height);
+    Drawer::new(false)
+        .draw(&mut terminal, |f| {
+            f.buffer_mut().content.clone_from_slice(&frame.content)
+        })
+        .unwrap();
+    let mut screen = vt100::Parser::new(height, width, 0);
+    screen.process(&tape.take());
+    cells_of(&screen)
+}
+
+/// Each cell's text and background; a cell never written reads as a space.
+fn cells_of(parser: &vt100::Parser) -> Vec<String> {
+    let screen = parser.screen();
+    let (height, width) = screen.size();
+    (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| {
+                    let c = screen.cell(y, x).unwrap();
+                    let text = if c.has_contents() { c.contents() } else { " " };
+                    format!("{text}{:?}{:?}|", c.fgcolor(), c.bgcolor())
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// A new size, on the same terminal, draws the frame whole on the cleared screen.
 #[test]
 fn a_new_size_is_drawn_whole() {
+    let tape = Tape::default();
+    let size = std::rc::Rc::new(std::cell::Cell::new(ratatui::layout::Size::new(20, 6)));
+    let backend = Resizable {
+        inner: CrosstermBackend::new(tape.clone()),
+        size: size.clone(),
+    };
+    let mut terminal = Terminal::new(backend).unwrap();
     let mut drawer = Drawer::new(true);
-    let (mut terminal, _) = in_memory(10, 4);
-    drawer
-        .draw(&mut terminal, |f| {
-            f.buffer_mut()
-                .set_string(0, 0, "abc", ratatui::style::Style::default())
-        })
-        .unwrap();
-    // As Ratatui's resize does: a blank screen and new buffers.
-    let (mut terminal, tape) = in_memory(12, 5);
-    drawer
-        .draw(&mut terminal, |f| {
-            f.buffer_mut()
-                .set_string(0, 0, "abc", ratatui::style::Style::default())
-        })
-        .unwrap();
-    let out = tape.take();
-    assert!(
-        find(&out, b"abc").is_some(),
-        "{:?}",
-        String::from_utf8_lossy(&out)
-    );
+    let mut screen = vt100::Parser::new(6, 20, 0);
+    let mut draw =
+        |terminal: &mut Terminal<Resizable>, screen: &mut vt100::Parser, frame: &Buffer| {
+            drawer
+                .draw(terminal, |f| {
+                    f.buffer_mut().content.clone_from_slice(&frame.content)
+                })
+                .unwrap();
+            screen.process(&tape.take());
+        };
+    draw(&mut terminal, &mut screen, &numbered(20, 6, 0));
+    draw(&mut terminal, &mut screen, &numbered(20, 6, 1));
+    // The window grows a line and narrows; the terminal keeps what it showed.
+    size.set(ratatui::layout::Size::new(16, 7));
+    screen.screen_mut().set_size(7, 16);
+    let frame = numbered(16, 7, 2);
+    draw(&mut terminal, &mut screen, &frame);
+    assert_eq!(cells_of(&screen), redraw_of(&frame));
+}
+
+/// Text the terminal shows that was never drawn (another program wrote it) goes
+/// with a repaint, though a move would have carried it along.
+#[test]
+fn a_repaint_draws_over_what_drifted() {
+    let (mut terminal, tape) = in_memory(20, 6);
+    let mut drawer = Drawer::new(true);
+    let mut screen = vt100::Parser::new(6, 20, 0);
+    let mut draw = |drawer: &mut Drawer, screen: &mut vt100::Parser, frame: &Buffer| {
+        drawer
+            .draw(&mut terminal, |f| {
+                f.buffer_mut().content.clone_from_slice(&frame.content)
+            })
+            .unwrap();
+        screen.process(&tape.take());
+    };
+    draw(&mut drawer, &mut screen, &numbered(20, 6, 0));
+    screen.process(b"\x1b[3;15Hstray");
+    drawer.repaint();
+    let frame = numbered(20, 6, 1);
+    draw(&mut drawer, &mut screen, &frame);
+    assert_eq!(cells_of(&screen), redraw_of(&frame));
+}
+
+struct Rng(u64);
+
+impl Rng {
+    fn below(&mut self, n: u64) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0 % n
+    }
+}
+
+/// What a terminal does with the bytes, for [`random_frames`].
+#[derive(Clone, Copy, PartialEq)]
+enum Honors {
+    /// Every sequence, as vt100 models it.
+    Everything,
+    /// No `CSI n S` / `CSI n T`, as the Linux console and Emacs `term`.
+    NoScrollUpDown,
+    /// No insert or delete line: a terminal the move would leave behind.
+    NoInsertDelete,
+}
+
+/// `out` without the CSI sequences ending in one of `finals`.
+fn without(out: &[u8], finals: &[u8]) -> Vec<u8> {
+    let mut kept = Vec::with_capacity(out.len());
+    let mut i = 0;
+    while i < out.len() {
+        if out[i..].starts_with(b"\x1b[") {
+            let end = i
+                + 2
+                + out[i + 2..]
+                    .iter()
+                    .position(|b| b.is_ascii_alphabetic())
+                    .unwrap();
+            if !(finals.contains(&out[end]) && !out[i + 2..end].contains(&b'?')) {
+                kept.extend_from_slice(&out[i..=end]);
+            }
+            i = end + 1;
+        } else {
+            kept.push(out[i]);
+            i += 1;
+        }
+    }
+    kept
+}
+
+/// Frames from a few kinds of line, so repeats, blanks, wide characters and equal
+/// lines are common, shifted and edited at random; after every frame the screen is
+/// a fresh redraw's. Returns (frames, moves, wrong screens).
+fn random_frames(terminal: Honors, seeds: u64) -> (usize, usize, usize) {
+    const W: u16 = 24;
+    const H: u16 = 10;
+    let kinds = [
+        "",
+        "aaaa",
+        "aaaa",
+        "bb",
+        "日本語x",
+        "zzzzzzzzzzzzzzzzzzzzzzzz",
+        "a",
+        "      x",
+    ];
+    let backgrounds = [
+        ratatui::style::Color::Reset,
+        ratatui::style::Color::Blue,
+        ratatui::style::Color::Reset,
+    ];
+    let (mut frames, mut moves, mut wrong) = (0, 0, 0);
+    for seed in 1..=seeds {
+        let (mut term, tape) = in_memory(W, H);
+        let mut drawer = Drawer::new(true);
+        let mut screen = vt100::Parser::new(H, W, 0);
+        let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+        let mut lines: Vec<u64> = (0..H).map(|_| rng.below(24)).collect();
+        for _ in 0..60 {
+            let top = rng.below(3) as usize;
+            let bottom = usize::from(H) - rng.below(3) as usize;
+            let by = 1 + rng.below(3) as usize;
+            if bottom > top + by {
+                if rng.below(2) == 0 {
+                    lines[top..bottom].rotate_left(by);
+                } else {
+                    lines[top..bottom].rotate_right(by);
+                }
+            }
+            for _ in 0..rng.below(4) {
+                lines[rng.below(u64::from(H)) as usize] = rng.below(24);
+            }
+            let mut frame = Buffer::empty(Rect::new(0, 0, W, H));
+            for (y, &k) in lines.iter().enumerate() {
+                let style = ratatui::style::Style::default().bg(backgrounds[(k / 8 % 3) as usize]);
+                frame.set_style(Rect::new(0, y as u16, W, 1), style);
+                frame.set_string(0, y as u16, kinds[(k % 8) as usize], style);
+            }
+            drawer
+                .draw(&mut term, |f| {
+                    f.buffer_mut().content.clone_from_slice(&frame.content)
+                })
+                .unwrap();
+            let out = tape.take();
+            moves += usize::from(moved_by_terminal(&out));
+            screen.process(&match terminal {
+                Honors::Everything => out,
+                Honors::NoScrollUpDown => without(&out, b"ST"),
+                Honors::NoInsertDelete => without(&out, b"LM"),
+            });
+            frames += 1;
+            wrong += usize::from(cells_of(&screen) != redraw_of(&frame));
+        }
+    }
+    (frames, moves, wrong)
+}
+
+/// Whatever moves the drawer picks, among duplicate, blank and wide lines, the
+/// screen is a redraw's: a move only chooses how the terminal's lines are reused.
+#[test]
+fn random_frames_show_what_a_redraw_shows() {
+    let (frames, moves, wrong) = random_frames(Honors::Everything, 60);
+    assert_eq!(wrong, 0, "{wrong} of {frames} screens differ");
+    assert!(moves * 4 > frames, "{moves} moves in {frames} frames");
+}
+
+/// Moves use only insert and delete line, so a terminal without `CSI S` / `CSI T`
+/// (the Linux console) shows the same; one without insert and delete line would
+/// not, which shows the test can tell.
+#[test]
+fn moves_need_only_insert_and_delete_line() {
+    let (frames, _, wrong) = random_frames(Honors::NoScrollUpDown, 20);
+    assert_eq!(wrong, 0, "{wrong} of {frames} screens differ");
+    let (frames, _, wrong) = random_frames(Honors::NoInsertDelete, 20);
+    assert!(wrong * 2 > frames, "only {wrong} of {frames} differ");
 }
 
 fn lines_of(texts: &[&str]) -> Buffer {
@@ -336,7 +610,7 @@ fn hashes(buf: &Buffer) -> Vec<u64> {
 fn a_band_between_header_and_footer_moves() {
     let before = lines_of(&["head", "r1", "r2", "r3", "r4", "r5", "foot"]);
     let after = lines_of(&["head", "r2", "r3", "r4", "r5", "r6", "foot"]);
-    let moved = find_move(&hashes(&before), &hashes(&after)).unwrap();
+    let moved = find_move(&hashes(&before), &hashes(&after), &mut Vec::new()).unwrap();
     assert_eq!(
         moved,
         Moved {
@@ -351,7 +625,7 @@ fn a_band_between_header_and_footer_moves() {
     assert_eq!(hashes(&shifted)[1..5], hashes(&after)[1..5]);
     assert_eq!(shifted[(0, 5)], Cell::EMPTY);
 
-    let moved = find_move(&hashes(&after), &hashes(&before)).unwrap();
+    let moved = find_move(&hashes(&after), &hashes(&before), &mut Vec::new()).unwrap();
     assert_eq!(
         (moved.top, moved.bottom, moved.by, moved.up),
         (1, 6, 1, false)
@@ -362,11 +636,14 @@ fn a_band_between_header_and_footer_moves() {
 #[test]
 fn a_frame_that_did_not_move_has_no_move() {
     let a = lines_of(&["a", "b", "c", "d"]);
-    assert_eq!(find_move(&hashes(&a), &hashes(&a)), None);
+    assert_eq!(find_move(&hashes(&a), &hashes(&a), &mut Vec::new()), None);
     let blank = lines_of(&["", "", "", ""]);
-    assert_eq!(find_move(&hashes(&blank), &hashes(&blank)), None);
+    assert_eq!(
+        find_move(&hashes(&blank), &hashes(&blank), &mut Vec::new()),
+        None
+    );
     let b = lines_of(&["a", "x", "c", "d"]);
-    assert_eq!(find_move(&hashes(&a), &hashes(&b)), None);
+    assert_eq!(find_move(&hashes(&a), &hashes(&b), &mut Vec::new()), None);
 }
 
 /// A frame takes no new buffers: the screen, the frame Ratatui renders into, the
@@ -401,4 +678,16 @@ fn frames_reuse_their_buffers() {
         assert_eq!(held(&mut fast), before);
     }
     assert_eq!(moved, 20);
+}
+
+/// A resize, or the terminal back in focus, asks the run loop for a repaint.
+#[test]
+fn resize_and_focus_ask_for_a_repaint() {
+    let mut driven = app(10);
+    assert!(!driven.app.take_repaint());
+    driven.handle(AppEvent::TerminalFocused);
+    assert!(driven.app.take_repaint());
+    assert!(!driven.app.take_repaint());
+    driven.handle(AppEvent::Resize(COLS, LINES));
+    assert!(driven.app.take_repaint());
 }

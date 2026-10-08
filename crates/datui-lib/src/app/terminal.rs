@@ -66,6 +66,11 @@ impl QuietTerminal {
         self.1.clear(terminal)
     }
 
+    /// Draw every cell with the next frame (after a resize, or back in focus).
+    pub(crate) fn repaint(&mut self) {
+        self.1.repaint();
+    }
+
     /// `display.scroll_region`.
     pub(crate) fn scroll_with_region(&mut self, on: bool) {
         self.1.set_scroll(on);

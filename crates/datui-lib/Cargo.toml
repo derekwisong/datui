@@ -34,8 +34,7 @@ futures-core = "0.3"
 dirs = "7.0"
 fs2 = "0.4"
 globset = "0.4"
-# `scrolling-regions`: a scroll is moved by the terminal (app/draw.rs).
-ratatui = { version = "0.30.0", features = ["all-widgets", "scrolling-regions"] }
+ratatui = { version = "0.30.0", features = ["all-widgets"] }
 # Cutting a cell by grapheme (exact::cell_prefix); already in the tree through ratatui.
 unicode-segmentation = "1.13"
 unicode-width = "0.2"

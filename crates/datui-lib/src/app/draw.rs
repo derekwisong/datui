@@ -3,21 +3,22 @@
 //! Ratatui's diff compares each cell with the cell at the same place last frame, so a
 //! one-line scroll looks like a whole new page and is sent as one. When a band of
 //! full-width lines in the new frame is last frame's band moved up or down, this asks
-//! the terminal to move it (a scroll region: `CSI top;bottom r`, `CSI n S` or `T`),
-//! moves its own copy of the screen the same way, and diffs against that: only the
-//! lines the scroll exposed, and whatever else changed, are sent.
+//! the terminal to move it ([`MoveLines`]: delete or insert lines inside a scroll
+//! region), moves its own copy of the screen the same way, and diffs against that:
+//! only the lines the move exposed, and whatever else changed, are sent.
 //!
 //! [`Drawer`] keeps what the terminal shows (`shown`) in place of Ratatui's previous
 //! buffer, which `Terminal` does not let out. Every frame goes through it; a frame
 //! that is not such a move is the plain diff against `shown`, which is exactly what
-//! `Terminal::draw` would send.
+//! `Terminal::draw` would send. Every frame is one synchronized update (DEC 2026),
+//! which terminals without it ignore, so a move and its diff show at once.
 
 use std::hash::{Hash, Hasher};
 use std::io;
 
 use ratatui::Frame;
 use ratatui::Terminal;
-use ratatui::backend::Backend;
+use ratatui::backend::{Backend, ClearType};
 use ratatui::buffer::{Buffer, Cell};
 
 /// A band of lines `top..bottom` that moved up (`up`) or down by `by` lines.
@@ -34,10 +35,13 @@ pub(crate) struct Moved {
 pub(crate) struct Drawer {
     shown: Buffer,
     next: Buffer,
-    /// One hash per line of `shown`, then of `next`.
+    /// One hash per line of `shown`, then of `next`; empty while `scroll` is off.
     shown_lines: Vec<u64>,
     next_lines: Vec<u64>,
+    /// Lines changed in place before each line, for [`find_move`].
+    changed: Vec<u32>,
     scroll: bool,
+    repaint: bool,
 }
 
 impl Drawer {
@@ -51,6 +55,7 @@ impl Drawer {
     /// Whether a scroll is moved by the terminal (`display.scroll_region`).
     pub(crate) fn set_scroll(&mut self, scroll: bool) {
         self.scroll = scroll;
+        self.shown_lines.clear();
     }
 
     /// Clear the terminal; the next frame is drawn whole.
@@ -59,9 +64,20 @@ impl Drawer {
         terminal: &mut Terminal<B>,
     ) -> io::Result<()> {
         terminal.clear()?;
+        self.forget();
+        Ok(())
+    }
+
+    /// Clear and draw every cell with the next frame, in its update: what the
+    /// terminal shows may have drifted from `shown` (another program wrote to it, or
+    /// it drew a glyph wider than measured), and a move would carry the drift along.
+    pub(crate) fn repaint(&mut self) {
+        self.repaint = true;
+    }
+
+    fn forget(&mut self) {
         self.shown.reset();
         self.shown_lines.clear();
-        Ok(())
     }
 
     /// Render a frame and send what changed, as `Terminal::draw` does with no cursor.
@@ -70,6 +86,10 @@ impl Drawer {
         B: Backend<Error = io::Error> + io::Write,
         F: FnOnce(&mut Frame),
     {
+        crossterm::queue!(
+            terminal.backend_mut(),
+            crossterm::terminal::BeginSynchronizedUpdate
+        )?;
         // A new size clears the screen and resizes Ratatui's buffers.
         terminal.autoresize()?;
         render(&mut terminal.get_frame());
@@ -79,22 +99,36 @@ impl Drawer {
             self.shown = Buffer::empty(area);
             self.shown_lines.clear();
         }
-        line_hashes(&self.next, &mut self.next_lines);
-        if self.scroll
-            && self.shown_lines.len() == self.next_lines.len()
-            && let Some(moved) = find_move(&self.shown_lines, &self.next_lines)
-        {
-            match scroll_terminal(terminal.backend_mut(), moved) {
-                Ok(()) => shift(&mut self.shown, moved),
-                // A Windows console without ANSI: nothing was written.
-                Err(e) if e.kind() == io::ErrorKind::Unsupported => self.scroll = false,
-                Err(e) => return Err(e),
+        if std::mem::take(&mut self.repaint) {
+            terminal.backend_mut().clear_region(ClearType::All)?;
+            self.forget();
+        }
+        if self.scroll {
+            line_hashes(&self.next, &mut self.next_lines);
+            if self.shown_lines.len() == self.next_lines.len()
+                && let Some(moved) =
+                    find_move(&self.shown_lines, &self.next_lines, &mut self.changed)
+                && saves_bytes(&self.shown, &self.next, moved)
+            {
+                match crossterm::queue!(terminal.backend_mut(), MoveLines(moved)) {
+                    Ok(()) => shift(&mut self.shown, moved),
+                    // A Windows console without ANSI: nothing was written.
+                    Err(e) if e.kind() == io::ErrorKind::Unsupported => {
+                        self.scroll = false;
+                        self.next_lines.clear();
+                    }
+                    Err(e) => return Err(e),
+                }
             }
         }
         terminal
             .backend_mut()
             .draw(self.shown.diff_iter(&self.next))?;
         terminal.hide_cursor()?;
+        crossterm::queue!(
+            terminal.backend_mut(),
+            crossterm::terminal::EndSynchronizedUpdate
+        )?;
         Backend::flush(terminal.backend_mut())?;
         std::mem::swap(&mut self.shown, &mut self.next);
         std::mem::swap(&mut self.shown_lines, &mut self.next_lines);
@@ -106,22 +140,37 @@ impl Drawer {
     }
 }
 
-fn scroll_terminal<B: Backend<Error = io::Error> + io::Write>(
-    backend: &mut B,
-    moved: Moved,
-) -> io::Result<()> {
-    // Lines a scroll exposes take the current background; the last frame ended with
-    // its attributes reset, and this makes sure. A command, not bytes: a console
-    // without ANSI would print them.
-    crossterm::queue!(
-        backend,
-        crossterm::style::SetAttribute(crossterm::style::Attribute::Reset)
-    )?;
-    let region = moved.top..moved.bottom;
-    if moved.up {
-        backend.scroll_region_up(region, moved.by)
-    } else {
-        backend.scroll_region_down(region, moved.by)
+/// Move a band of lines with the terminal's own line editing: set the scroll region
+/// to the band, delete (up) or insert (down) `by` lines at its top, and reset the
+/// region. Delete and insert line work wherever scroll regions do (the Linux console
+/// and Emacs `term` have no `CSI S` / `CSI T`), and the lines they open take the
+/// current background, which the reset attributes make the default. Origin mode is
+/// turned off first, so the cursor position is the screen's, not the region's.
+struct MoveLines(Moved);
+
+impl crossterm::Command for MoveLines {
+    fn write_ansi(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
+        let Moved {
+            top,
+            bottom,
+            by,
+            up,
+        } = self.0;
+        write!(
+            f,
+            "\x1b[0m\x1b[?6l\x1b[{};{bottom}r\x1b[{};1H\x1b[{by}{}\x1b[r",
+            top + 1,
+            top + 1,
+            if up { 'M' } else { 'L' }
+        )
+    }
+
+    #[cfg(windows)]
+    fn execute_winapi(&self) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "moving lines needs ANSI",
+        ))
     }
 }
 
@@ -178,11 +227,26 @@ impl Hasher for Packed {
 
 /// The band whose move saves the most lines: lines in it that changed in place,
 /// less the `by` lines the move exposes, which are drawn new. None when no move
-/// saves at least two.
-pub(crate) fn find_move(shown: &[u64], next: &[u64]) -> Option<Moved> {
+/// saves at least two. `changed` is scratch, kept to save allocating it each frame.
+///
+/// A move goes at most half the screen, since a farther one leaves fewer lines to
+/// keep than it exposes, and at most [`MAX_MOVE`] lines, so the search is linear in
+/// the height: with the lines changed in place counted ahead, a 300-line screen is
+/// about 40,000 comparisons.
+pub(crate) fn find_move(shown: &[u64], next: &[u64], changed: &mut Vec<u32>) -> Option<Moved> {
     let height = shown.len();
-    let mut best: Option<(usize, Moved)> = None;
-    for by in 1..height {
+    if shown == next {
+        return None;
+    }
+    changed.clear();
+    changed.push(0);
+    let mut count = 0;
+    for (s, n) in shown.iter().zip(next) {
+        count += u32::from(s != n);
+        changed.push(count);
+    }
+    let mut best: Option<(u32, Moved)> = None;
+    for by in 1..=(height / 2).min(MAX_MOVE) {
         for up in [true, false] {
             // Lines `y` of the new frame equal to line `y + by` (up) or `y - by` shown.
             let same = |y: usize| {
@@ -204,8 +268,7 @@ pub(crate) fn find_move(shown: &[u64], next: &[u64]) -> Option<Moved> {
                 }
                 // The region holds the band and the lines it moves into or out of.
                 let (top, bottom) = (start, y + by);
-                let changed = (top..bottom).filter(|&l| next[l] != shown[l]).count();
-                let saved = changed.saturating_sub(by);
+                let saved = (changed[bottom] - changed[top]).saturating_sub(by as u32);
                 if saved >= 2 && best.is_none_or(|(s, _)| saved > s) {
                     best = Some((
                         saved,
@@ -221,6 +284,58 @@ pub(crate) fn find_move(shown: &[u64], next: &[u64]) -> Option<Moved> {
         }
     }
     best.map(|(_, moved)| moved)
+}
+
+/// The farthest move looked for: a half page on a 128-line screen.
+const MAX_MOVE: usize = 64;
+
+/// About the bytes a move's escapes take.
+const MOVE_COST: usize = 30;
+
+/// About the bytes the diff spends to start a run of changed cells: a cursor move
+/// and, usually, colors.
+const RUN_COST: usize = 12;
+
+/// About the bytes the diff sends to turn `from` into `to`: a byte a cell, and
+/// [`RUN_COST`] for each run of changed cells.
+fn diff_cost<'a>(from: impl Iterator<Item = &'a Cell>, to: &[Cell]) -> usize {
+    let (mut cost, mut in_run) = (0, false);
+    for (a, b) in from.zip(to) {
+        if a == b {
+            in_run = false;
+        } else {
+            cost += if in_run { 1 } else { 1 + RUN_COST };
+            in_run = true;
+        }
+    }
+    cost
+}
+
+/// Whether `moved` and the diff after it cost fewer bytes than the plain diff, by
+/// the estimate of [`diff_cost`]: lines can be equal but for a few cells (a row
+/// number), which the plain diff sends cheaper than an exposed line.
+pub(crate) fn saves_bytes<'a>(shown: &'a Buffer, next: &'a Buffer, moved: Moved) -> bool {
+    let width = usize::from(shown.area.width);
+    let line = |buf: &'a Buffer, y: usize| &buf.content[y * width..(y + 1) * width];
+    let (top, bottom, by) = (
+        usize::from(moved.top),
+        usize::from(moved.bottom),
+        usize::from(moved.by),
+    );
+    let plain: usize = (top..bottom)
+        .map(|y| diff_cost(line(shown, y).iter(), line(next, y)))
+        .sum();
+    let after: usize = (top..bottom)
+        .map(|y| {
+            let from = if moved.up { y + by } else { y.wrapping_sub(by) };
+            if (top..bottom).contains(&from) {
+                diff_cost(line(shown, from).iter(), line(next, y))
+            } else {
+                diff_cost(std::iter::repeat_n(&Cell::EMPTY, width), line(next, y))
+            }
+        })
+        .sum();
+    after + MOVE_COST < plain
 }
 
 /// Move `buf`'s lines as the terminal moved its own, blanking the exposed ones.

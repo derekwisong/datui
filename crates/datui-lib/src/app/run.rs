@@ -381,7 +381,12 @@ fn run_impl(
     let background = (asked && config.theme.follow)
         .then(|| startup::take_answer(&rx, background, &mut backlog))
         .flatten();
-    if config.theme.follow && terminal_color::supported() {
+    // Focus reports: under `auto` the background is asked again, and a frame back in
+    // focus is repainted whole, since a scroll moved by the terminal carries along
+    // whatever drifted on screen meanwhile.
+    let focus_reports =
+        (config.theme.follow && terminal_color::supported()) || config.display.scroll_region;
+    if focus_reports {
         follow_focus(&mut std::io::stdout());
     }
 
@@ -441,13 +446,22 @@ fn run_impl(
     let end = pump.run(|app| {
         if let Some(open) = app.take_external_open() {
             let mouse = app.mouse_enabled();
-            let focus = app.follows_terminal() && terminal_color::supported();
-            let note = open_externally(&open, &mut reader, &input_tx, mouse, focus, &mut terminal);
+            let note = open_externally(
+                &open,
+                &mut reader,
+                &input_tx,
+                mouse,
+                focus_reports,
+                &mut terminal,
+            );
             app.external_opened(&open, note);
         }
         // Between frames, so the question is never written into the middle of one.
         if app.take_background_query() && terminal_color::supported() {
             terminal_color::ask(&mut std::io::stdout());
+        }
+        if app.take_repaint() {
+            terminal.repaint();
         }
         terminal.draw(|frame| frame.render_widget(app, frame.area()))?;
         let _ = std::io::stdout().flush();

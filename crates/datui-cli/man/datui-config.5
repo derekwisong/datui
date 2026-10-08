@@ -113,7 +113,7 @@ Accent the i key when datui has noticed something about the data. Default: \fBtr
 Take the mouse: the wheel scrolls, a click selects. false leaves it to the terminal. Default: \fBtrue\fR. Flag: \fB\-\-mouse\fR.
 .TP
 \fBdisplay.scroll_region\fR (\fIbool\fR)
-Move lines with the terminal's scroll region when the screen scrolls, so a scroll writes the new lines, not the page. false redraws every line that moved, for a terminal that mishandles scroll regions. Default: \fBtrue\fR.
+Move lines within the terminal when the screen scrolls, so a scroll writes the new lines, not the page. false redraws every line that moved, for a terminal that mishandles the move. Default: \fBtrue\fR.
 .TP
 \fBdisplay.sidebar_width\fR (\fIinteger\fR)
 Width of every sidebar, in cells. Unset: each sidebar's own. Unset by default.

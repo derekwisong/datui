@@ -13,6 +13,9 @@ pub struct DisplaySettings {
     pub(crate) number_format: NumberFormatSettings,
     /// The terminal should be asked for its background before the next frame.
     pub(crate) background_query: bool,
+    /// The next frame repaints every cell: the terminal was resized or came back to
+    /// the front, and what it shows may have drifted from what was drawn.
+    pub(crate) repaint: bool,
 }
 
 /// The theme's colors and the display settings, handed to every widget a frame draws

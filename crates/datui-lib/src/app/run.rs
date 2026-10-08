@@ -234,7 +234,7 @@ fn run_impl(
         _ => None,
     };
     let mut terminal = match ratatui::try_init() {
-        Ok(terminal) => QuietTerminal(Some(terminal)),
+        Ok(terminal) => QuietTerminal::new(terminal),
         Err(e) => {
             // No screen to keep up: an unusable config or a missing named file is said first.
             if config.is_none() {
@@ -335,17 +335,13 @@ fn run_impl(
                         AppEvent::Terminal(crossterm::event::Event::Resize(..))
                     )
                 {
-                    terminal
-                        .get()
-                        .draw(|frame| startup::draw_waiting(frame, waiting_on.as_deref()))?;
+                    terminal.draw(|frame| startup::draw_waiting(frame, waiting_on.as_deref()))?;
                 }
                 // Typed before there was an app to take it: handled, in order, first.
                 backlog.push(event);
             }
             Err(_) => {
-                terminal
-                    .get()
-                    .draw(|frame| startup::draw_waiting(frame, waiting_on.as_deref()))?;
+                terminal.draw(|frame| startup::draw_waiting(frame, waiting_on.as_deref()))?;
                 let _ = std::io::stdout().flush();
                 waiting_shown = true;
             }
@@ -396,6 +392,7 @@ fn run_impl(
 
     // Taken once the settings say so; handed back with the screen.
     pointer::capture(config.display.mouse, &mut std::io::stdout());
+    terminal.scroll_with_region(config.display.scroll_region);
 
     let mut app = App::new_with_views(tx.clone(), rt_handle, theme, config, views);
     app.settle_first_palette(background);
@@ -445,16 +442,14 @@ fn run_impl(
         if let Some(open) = app.take_external_open() {
             let mouse = app.mouse_enabled();
             let focus = app.follows_terminal() && terminal_color::supported();
-            let note = open_externally(&open, &mut reader, &input_tx, mouse, focus, terminal.get());
+            let note = open_externally(&open, &mut reader, &input_tx, mouse, focus, &mut terminal);
             app.external_opened(&open, note);
         }
         // Between frames, so the question is never written into the middle of one.
         if app.take_background_query() && terminal_color::supported() {
             terminal_color::ask(&mut std::io::stdout());
         }
-        terminal
-            .get()
-            .draw(|frame| frame.render_widget(app, frame.area()))?;
+        terminal.draw(|frame| frame.render_widget(app, frame.area()))?;
         let _ = std::io::stdout().flush();
         Ok(())
     })?;
@@ -497,7 +492,7 @@ fn open_externally(
     tx: &std::sync::mpsc::Sender<AppEvent>,
     mouse: bool,
     focus: bool,
-    terminal: &mut ratatui::DefaultTerminal,
+    terminal: &mut QuietTerminal,
 ) -> Option<String> {
     let program = external_open::program_for(open.document, |name| std::env::var(name).ok());
     let result = match &program {

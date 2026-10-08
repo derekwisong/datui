@@ -936,6 +936,9 @@ pub struct DisplayConfig {
     /// Take the mouse (wheel scrolls, click selects); terminal text selection then needs
     /// its bypass modifier (usually Shift).
     pub mouse: bool,
+    /// Scroll the table by moving the terminal's lines (a scroll region) and drawing
+    /// only the new ones, instead of redrawing every line that moved.
+    pub scroll_region: bool,
     /// A fixed width for every sidebar (Info, Sort & Filter, Views, Pivot & Melt). None:
     /// each sidebar's own.
     pub sidebar_width: Option<u16>,
@@ -1856,6 +1859,7 @@ impl Default for DisplayConfig {
             type_row: true,
             notes_accent: true,
             mouse: true,
+            scroll_region: true,
             sidebar_width: None,
             right_align_numbers: true,
             number_format: NumberFormatConfig::default(),

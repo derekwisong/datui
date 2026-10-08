@@ -5,6 +5,7 @@
 pub mod applied;
 pub(crate) mod background;
 pub mod context_menu;
+pub(crate) mod draw;
 pub mod event_pump;
 pub(crate) mod feedback;
 pub(crate) mod footer_state;

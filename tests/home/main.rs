@@ -8,6 +8,7 @@ use datui::home::{HomeState, RootOrigin, Row, fuzzy_score};
 use std::fs;
 use tempfile::TempDir;
 
+mod alloc_budget;
 #[path = "../common/mod.rs"]
 mod common;
 #[cfg(feature = "cloud")]

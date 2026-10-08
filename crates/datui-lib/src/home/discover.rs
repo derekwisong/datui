@@ -314,6 +314,9 @@ pub struct Entry {
     /// A table inside a file of tables (SQLite, a NumPy archive): its path is the file's
     /// with the table's name appended.
     pub table: Option<TableOf>,
+    /// Whether a measurement from [`crate::home::HomeState::enriched`] is folded into
+    /// this row, so the passes asking which rows to measure need not look it up.
+    pub measured: bool,
 }
 
 /// What a row inside a file of tables says about its table.
@@ -456,6 +459,7 @@ impl Entry {
             cost: Cost::default(),
             holds: Default::default(),
             opens_whole_directory: false,
+            measured: false,
             format_spec: None,
             table: None,
         }

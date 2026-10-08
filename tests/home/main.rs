@@ -1582,6 +1582,7 @@ fn entry_with_columns(name: &str, columns: &[&str]) -> datui::home::discover::En
         cost: Default::default(),
         holds: Default::default(),
         opens_whole_directory: false,
+        measured: false,
         format_spec: None,
         table: None,
     }
@@ -2163,6 +2164,7 @@ fn sized(name: &str, size: u64, rows: usize) -> datui::home::discover::Entry {
         cost: Default::default(),
         holds: Default::default(),
         opens_whole_directory: false,
+        measured: false,
         format_spec: None,
         table: None,
     }

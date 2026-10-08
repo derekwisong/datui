@@ -378,12 +378,13 @@ pub enum AppEvent {
 
 impl AppEvent {
     /// A report sent many times while work runs: the loop may fold several into one
-    /// frame.
+    /// frame. A measuring batch's end too: batches of tiny files end a few a
+    /// millisecond, and a frame each cost more than the measuring.
     pub fn is_progress(&self) -> bool {
         matches!(
             self,
-            AppEvent::HomeMeasured { done: false, .. }
-                | AppEvent::HomeClassified { done: false, .. }
+            AppEvent::HomeMeasured { .. }
+                | AppEvent::HomeClassified { .. }
                 | AppEvent::HomeSearchBatch { .. }
                 | AppEvent::HomeProbeProgress { .. }
                 | AppEvent::JobProgress {
@@ -2021,6 +2022,9 @@ impl App {
     /// Take the numbers the whole frame is drawn from: the footer count, read once
     /// because two parts of the screen show it while a thread moves it.
     fn begin_frame(&mut self) {
+        // Measurements land a file at a time over listings of thousands: folded into the
+        // rows once a frame, not once an answer.
+        self.home.apply_new_measurements();
         // Back from home to the table whose lines were being indexed.
         if self.counting.indexing_paused && self.input_mode != InputMode::Home {
             self.index_lines();
@@ -2711,13 +2715,6 @@ impl App {
 
     // ---- Home screen -----------------------------------------------------
 
-    /// Fold the measurements that arrived since the last frame into the rows.
-    pub(crate) fn apply_owed_measurements(&mut self) {
-        if std::mem::take(&mut self.home_app.measured_owed) {
-            self.home.apply_measurements();
-        }
-    }
-
     /// After a frame, ask for what it lacked: counts for the rows on screen with none,
     /// and kinds for rows nothing has looked into. Workers read; this thread decides.
     pub fn request_what_the_frame_needs(&mut self) {
@@ -2729,7 +2726,6 @@ impl App {
         if self.input_mode != InputMode::Home {
             return;
         }
-        self.apply_owed_measurements();
         if self.home_app.refresh_owed {
             self.home_refresh();
         }

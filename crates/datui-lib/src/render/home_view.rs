@@ -646,20 +646,21 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                     selected,
                     area.width as usize,
                     app.throbber_frame as usize,
-                    &hit.positions,
+                    &hit.positions(&app.home.filter, entry),
                     ctx,
                 ));
             }
             crate::home::Row::Entry {
                 entry, nested, hit, ..
             } => {
+                let marks = hit.positions(&app.home.filter, entry);
                 lines.push(entry_line(
                     entry,
                     selected,
                     EntryNotes {
                         // A row matched by a column rather than its name says so.
                         matched_column: hit.column_of(entry),
-                        marks: &hit.positions,
+                        marks: &marks,
                         // Sources a URL can name, from the config (not those listed so far, so hidden or
                         // undiscovered ones are not reported missing). Inside a source the trail names it.
                         known_sources: app
@@ -1008,11 +1009,11 @@ struct ListDraw<'f> {
 
 /// What one entry's row says beside its name, worked out by the caller.
 #[derive(Default)]
-struct EntryNotes<'a> {
+struct EntryNotes<'a, 'm> {
     /// The column the filter matched, when the name did not.
     matched_column: Option<&'a str>,
     /// The matched characters: in the name, or in `matched_column` when set.
-    marks: &'a [usize],
+    marks: &'m [usize],
     /// Sources a URL may name; `None` where the trail already names it.
     known_sources: Option<&'a [crate::config::CloudConnectionConfig]>,
     place_kind: Option<&'static str>,
@@ -1377,7 +1378,7 @@ fn locality_color(locality: Option<crate::home::locality::Locality>, ctx: &Rende
 fn entry_line<'a>(
     entry: &'a Entry,
     selected: bool,
-    notes: EntryNotes<'a>,
+    notes: EntryNotes<'a, '_>,
     list: &ListDraw,
 ) -> Line<'a> {
     let ListDraw {

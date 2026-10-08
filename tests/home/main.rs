@@ -9360,7 +9360,13 @@ fn test_dot_dot_at_the_root_listing_goes_above_the_root() {
         app.home.browsing,
         root.parent().map(std::path::Path::to_path_buf)
     );
-    assert_eq!(app.home.browsing.as_deref(), Some(tmp.path()));
+    // The working directory may be reported resolved (macOS: /var is /private/var)
+    // and the temp dir not, or the reverse (a Windows short name).
+    let canonical = |p: &std::path::Path| datui::canonical::canonicalize(p).unwrap();
+    assert_eq!(
+        app.home.browsing.as_deref().map(canonical),
+        Some(canonical(tmp.path()))
+    );
 }
 
 /// → on a directory's more row shows it whole. ← on a row past its first ones cuts

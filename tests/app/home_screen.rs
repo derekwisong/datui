@@ -2545,6 +2545,43 @@ fn the_wordmark_yields_to_small_terminals() {
     );
 }
 
+/// `-c home.wordmark=false` puts the one-line title bar where the wordmark would
+/// fit; the default keeps the wordmark.
+#[test]
+fn home_wordmark_off_draws_the_title_bar() {
+    use clap::Parser;
+    use datui::config::{AppConfig, ConfigLayer};
+    let Some(wordmark) = datui::glyphs::get().wordmark else {
+        return; // ASCII locale: the title bar is all there is.
+    };
+    let drawn = |argv: &[&str]| -> String {
+        let args = datui_cli::Args::try_parse_from(argv).expect("parses");
+        let layer = ConfigLayer::from_overrides(&args.config).expect("-c parses");
+        let config = AppConfig::from_layers([layer]).expect("config reads");
+        let theme = datui::Theme::from_config(&config.theme).unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new_with_config(tx, common::test_runtime(), theme, config);
+        app.enter_home();
+        let area = Rect::new(0, 0, 100, 50);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        buf.content().iter().map(|c| c.symbol()).collect()
+    };
+
+    // The title bar is the top row, padded by one column: ` datui ` then the path.
+    let title_bar = |screen: &str| screen.chars().take(100).collect::<String>();
+    let on = drawn(&["datui"]);
+    assert!(on.contains(wordmark[0]), "the default draws the wordmark");
+    assert!(!title_bar(&on).starts_with("  datui "), "and no title bar");
+
+    let off = drawn(&["datui", "-c", "home.wordmark=false"]);
+    assert!(!off.contains(wordmark[0]), "off, no wordmark");
+    assert!(
+        title_bar(&off).starts_with("  datui "),
+        "the title bar stands in"
+    );
+}
+
 /// The home screen lists a Hugging Face cache's splits inside it, above its files, and
 /// a split's place (`hf_cache/test`) opens that split as `--table` would.
 #[test]

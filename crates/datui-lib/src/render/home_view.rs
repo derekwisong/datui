@@ -75,10 +75,12 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderCo
     }
 
     // The wordmark costs two rows and twenty-five columns over the title bar; on a short
-    // or narrow terminal the one-line bar comes back.
-    let wordmark = glyphs::get()
-        .wordmark
-        .filter(|_| padded.height >= WORDMARK_MIN_HEIGHT && padded.width >= WORDMARK_MIN_WIDTH);
+    // or narrow terminal, or with `home.wordmark` off, the one-line bar comes back.
+    let wordmark = glyphs::get().wordmark.filter(|_| {
+        app.app_config.home.wordmark
+            && padded.height >= WORDMARK_MIN_HEIGHT
+            && padded.width >= WORDMARK_MIN_WIDTH
+    });
     let title_h = wordmark.map(|w| w.len() as u16).unwrap_or(1);
     let rows = Layout::default()
         .direction(Direction::Vertical)

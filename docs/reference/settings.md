@@ -114,6 +114,7 @@ lives, imports, the theme and troubleshooting.
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
 | `home.desktop_recents` | bool | `true` |  | Also list directories from the desktop's recently-used files; never the file names. |
+| `home.wordmark` | bool | `true` |  | Show the datui wordmark at the top of the home screen; off, the one-line title bar. |
 | `home.show_unreadable` | bool | `false` |  | List files datui cannot read, dimmed (Ctrl+A toggles). |
 | `home.hide` | list | `[]` |  | Catalogs not shown, by id: mine (catalog.toml), examples, or a listed file's name; one entry as catalog/id, such as examples/nyc-taxis. Adds up across imports. |
 | `home.preview_max` | size | `"64MiB"` |  | Largest local file whose first rows the home screen previews; 0 turns the preview off. |

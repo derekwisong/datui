@@ -1082,7 +1082,9 @@ impl DataTable {
                         Cell::from(cell_line(spans, w, col.right_align))
                     })
                     .collect();
-                let row_style = if row_index % 2 == 1 {
+                // Striped by view row, so the stripes move with a scroll and the
+                // terminal can move the lines (app/draw.rs).
+                let row_style = if (self.drawn_from + row_index) % 2 == 1 {
                     self.alternate_row_bg
                         .map(|c| Style::default().bg(c))
                         .unwrap_or_default()
@@ -1324,16 +1326,17 @@ impl DataTable {
             // Match the table background (alternate rows striped); the selected row carries the
             // table's highlight tint.
             let is_selected = params.selected_row == Some(row_idx);
+            let striped = (self.drawn_from + row_idx) % 2 == 1;
             let (fg, bg) = if is_selected {
                 (
                     Color::Reset,
                     self.selected_bg
-                        .or(self.alternate_row_bg.filter(|_| row_idx % 2 == 1)),
+                        .or(self.alternate_row_bg.filter(|_| striped)),
                 )
             } else {
                 (
                     self.row_numbers_fg,
-                    self.alternate_row_bg.filter(|_| row_idx % 2 == 1),
+                    self.alternate_row_bg.filter(|_| striped),
                 )
             };
             let row_num_style = match bg {

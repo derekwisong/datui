@@ -76,7 +76,8 @@ pub struct DataTable {
     /// The glyph set the table draws with: the terminal's, unless a test asks for one.
     pub glyphs: &'static crate::glyphs::Glyphs,
     /// The terminal's width, which bounds automatic text widths (see
-    /// [`crate::widgets::column_widths::text_cap`]). 0 takes the table's own width.
+    /// [`crate::widgets::column_widths::text_cap`]) and how much of a value a cell keeps.
+    /// 0 takes the table's own width.
     pub screen_width: u16,
     /// The cell a find landed on: its view row and column.
     pub find_cell: Option<(usize, String)>,
@@ -201,17 +202,32 @@ struct Sizing<'a> {
 }
 
 /// A column's values on screen, formatted, and what they measure.
+#[derive(Clone)]
 pub(crate) struct Cells {
     cells: Vec<SliceCell>,
+    /// Each cell's width, so a scroll measures the page without measuring again.
+    widths: Vec<u16>,
     /// Cells for the widest value on screen.
     value_width: u16,
     /// Whether any row on screen holds a value rather than a null.
     has_values: bool,
 }
 
-/// The cells the last frame drew, reused when the page is unchanged (cursor move,
-/// spinner): a column's cells stand while it is the same series, cut, formatting,
-/// glyphs and null marks.
+impl Cells {
+    fn new(cells: Vec<SliceCell>, widths: Vec<u16>) -> Self {
+        Self {
+            value_width: widths.iter().copied().max().unwrap_or(0),
+            has_values: cells.iter().any(|c| matches!(c, SliceCell::Value(_))),
+            cells,
+            widths,
+        }
+    }
+}
+
+/// The cells the last frame drew, reused while a column is the same series,
+/// formatting, cut, glyphs and null marks: whole when the page is unchanged (cursor
+/// move, spinner), and for the rows still on screen after a scroll, so a scroll
+/// formats only the rows it brings in.
 #[derive(Default)]
 pub(crate) struct PageCells {
     columns: std::collections::HashMap<String, KeptCells>,
@@ -224,6 +240,7 @@ struct KeptCells {
     offset: usize,
     rows: usize,
     format: CellFormatter,
+    cut: usize,
     glyphs: &'static crate::glyphs::Glyphs,
     nulls: Vec<&'static str>,
     drift: Vec<u32>,
@@ -240,6 +257,7 @@ impl PageCells {
     }
 }
 
+#[derive(Clone)]
 enum SliceCell {
     /// A null, drawn as the glyph for its kind of empty.
     Null(&'static str),
@@ -776,7 +794,18 @@ impl DataTable {
         fitted
     }
 
+    /// The most cells a cell is cut to: past any width it can be drawn at, the
+    /// terminal's or one set by hand, so the cut never shows.
+    fn cell_cut(&self) -> usize {
+        usize::from(
+            self.screen_width
+                .max(crate::widgets::column_widths::MAX_WIDTH),
+        )
+    }
+
     /// The first `rows` values of `col_data`, formatted for their cells and measured.
+    /// With `kept`, the cells of a page `shift` rows earlier (the same series and
+    /// formatting), each row still on screen is taken from it rather than formatted.
     fn format_cells(
         &self,
         col_data: &Column,
@@ -784,42 +813,68 @@ impl DataTable {
         col_fmt: &CellFormatter,
         null_glyph_by_group: &[&'static str],
         scratch: &mut String,
+        kept: Option<(Cells, &[u32], isize)>,
     ) -> Cells {
+        let mut cells = Vec::with_capacity(rows);
+        let mut widths = Vec::with_capacity(rows);
+        let (mut old, old_drift, shift) = match kept {
+            Some((old, drift, shift)) => (Some(old), drift, shift),
+            None => (None, &[][..], 0),
+        };
+        for row_index in 0..rows {
+            let from = old.as_mut().and_then(|old| {
+                let at = usize::try_from(row_index as isize + shift).ok()?;
+                // A null's glyph follows its row's file, which the scroll moves too.
+                (at < old.cells.len() && old_drift.get(at) == self.drift_rows.get(row_index)).then(
+                    || {
+                        let cell = std::mem::replace(&mut old.cells[at], SliceCell::Null(""));
+                        (cell, old.widths[at])
+                    },
+                )
+            });
+            let (cell, width) = from.unwrap_or_else(|| {
+                self.format_cell(col_data, row_index, col_fmt, null_glyph_by_group, scratch)
+            });
+            cells.push(cell);
+            widths.push(width);
+        }
+        Cells::new(cells, widths)
+    }
+
+    /// Row `row_index` of `col_data`, formatted for its cell, and its width.
+    fn format_cell(
+        &self,
+        col_data: &Column,
+        row_index: usize,
+        col_fmt: &CellFormatter,
+        null_glyph_by_group: &[&'static str],
+        scratch: &mut String,
+    ) -> (SliceCell, u16) {
         #[cfg(test)]
         tests::FORMATTED.with(|n| n.set(n.get() + 1));
         let g = self.glyphs;
-        let mut cells = Vec::with_capacity(rows);
-        let mut value_width = 0usize;
-        for row_index in 0..rows {
-            let value = col_data.get(row_index).unwrap();
-            if matches!(value, AnyValue::Null) {
-                let glyph = self
-                    .drift_rows
-                    .get(row_index)
-                    .and_then(|group| null_glyph_by_group.get(*group as usize))
-                    .copied()
-                    .unwrap_or(g.null);
-                value_width = value_width.max(crate::glyphs::cell_width(glyph));
-                cells.push(SliceCell::Null(glyph));
-                continue;
-            }
-            // A list is previewed here, for the cells on screen only: the buffer keeps
-            // it a list, as formatting a whole row group's lists stalled every scroll.
-            let text = match &value {
-                AnyValue::List(items) => Cow::Owned(crate::exact::list_preview(items)),
-                value => numfmt::format_any_value(col_fmt, value, scratch),
-            };
-            // Breaks and tabs would vanish and run text together; only a cell's start is measured,
-            // not a huge value whole.
-            let text = crate::exact::cell_preview(&text, g);
-            value_width = value_width.max(crate::glyphs::cell_width(&text));
-            cells.push(SliceCell::Value(text));
+        let width = |text: &str| u16::try_from(crate::glyphs::cell_width(text)).unwrap_or(u16::MAX);
+        let value = col_data.get(row_index).unwrap();
+        if matches!(value, AnyValue::Null) {
+            let glyph = self
+                .drift_rows
+                .get(row_index)
+                .and_then(|group| null_glyph_by_group.get(*group as usize))
+                .copied()
+                .unwrap_or(g.null);
+            return (SliceCell::Null(glyph), width(glyph));
         }
-        Cells {
-            has_values: cells.iter().any(|c| matches!(c, SliceCell::Value(_))),
-            cells,
-            value_width: u16::try_from(value_width).unwrap_or(u16::MAX),
-        }
+        // A list is previewed here, for the cells on screen only: the buffer keeps
+        // it a list, as formatting a whole row group's lists stalled every scroll.
+        let text = match &value {
+            AnyValue::List(items) => Cow::Owned(crate::exact::list_preview(items)),
+            value => numfmt::format_any_value(col_fmt, value, scratch),
+        };
+        // Breaks and tabs would vanish and run text together; only what a cell can
+        // show is kept and measured, not a huge value whole.
+        let text = crate::exact::cell_text(text, g, self.cell_cut());
+        let w = width(&text);
+        (SliceCell::Value(text), w)
     }
 
     /// One column's heading, type and first `rows` values, formatted and measured.
@@ -867,18 +922,38 @@ impl DataTable {
 
         let rows = rows.min(col_data.len());
         let drift = &self.drift_rows[..rows.min(self.drift_rows.len())];
+        let cut = self.cell_cut();
         let cells = match source {
             Some((page, series, offset)) => match page.columns.get_mut(name) {
                 Some(kept)
                     if Arc::ptr_eq(&kept.series.0, &series.0)
-                        && kept.offset == offset
-                        && kept.rows == rows
                         && kept.format == col_fmt
+                        && kept.cut == cut
                         && std::ptr::eq(kept.glyphs, g)
-                        && kept.nulls == null_glyph_by_group
-                        && kept.drift == drift =>
+                        && kept.nulls == null_glyph_by_group =>
                 {
                     kept.used = true;
+                    if kept.offset != offset || kept.rows != rows || kept.drift != drift {
+                        let old = std::mem::replace(
+                            &mut kept.cells,
+                            Arc::new(Cells::new(Vec::new(), Vec::new())),
+                        );
+                        // The frame before let go of its columns, so the cells move.
+                        let old = Arc::try_unwrap(old).unwrap_or_else(|old| (*old).clone());
+                        let shift = offset as isize - kept.offset as isize;
+                        kept.cells = Arc::new(self.format_cells(
+                            col_data,
+                            rows,
+                            &col_fmt,
+                            &null_glyph_by_group,
+                            scratch,
+                            Some((old, &kept.drift, shift)),
+                        ));
+                        kept.offset = offset;
+                        kept.rows = rows;
+                        kept.drift.clear();
+                        kept.drift.extend_from_slice(drift);
+                    }
                     kept.cells.clone()
                 }
                 _ => {
@@ -888,12 +963,14 @@ impl DataTable {
                         &col_fmt,
                         &null_glyph_by_group,
                         scratch,
+                        None,
                     ));
                     let kept = KeptCells {
                         series,
                         offset,
                         rows,
                         format: col_fmt,
+                        cut,
                         glyphs: g,
                         nulls: null_glyph_by_group,
                         drift: drift.to_vec(),
@@ -904,9 +981,14 @@ impl DataTable {
                     cells
                 }
             },
-            None => {
-                Arc::new(self.format_cells(col_data, rows, &col_fmt, &null_glyph_by_group, scratch))
-            }
+            None => Arc::new(self.format_cells(
+                col_data,
+                rows,
+                &col_fmt,
+                &null_glyph_by_group,
+                scratch,
+                None,
+            )),
         };
 
         let drift_mark = self.drift_mark_for(name, drifting);
@@ -997,7 +1079,10 @@ impl DataTable {
                             }
                             None => return Cell::default(),
                         };
-                        Cell::from(cell_line(vec![span], w, col.right_align))
+                        // Room for the padding a right-aligned cell puts before it.
+                        let mut spans = Vec::with_capacity(1 + usize::from(col.right_align));
+                        spans.push(span);
+                        Cell::from(cell_line(spans, w, col.right_align))
                     })
                     .collect();
                 let row_style = if row_index % 2 == 1 {
@@ -1230,14 +1315,14 @@ impl DataTable {
 
         let number = |row_idx: usize| params.numbers.get(row_idx).copied().unwrap_or_default();
         let max_row_num = (0..rows_to_render).map(number).max().unwrap_or_default();
-        let max_width = max_row_num.to_string().len();
+        let max_width = max_row_num.checked_ilog10().unwrap_or(0) as usize + 1;
+        // One line's text, written again for each row.
+        let mut padded_text = String::with_capacity(max_width);
 
         for row_idx in 0..rows_to_render.min(area.height.saturating_sub(header_h) as usize) {
-            let row_num_text = number(row_idx).to_string();
-
-            // Right-align row numbers within the available width
-            let padding = max_width.saturating_sub(row_num_text.len());
-            let padded_text = format!("{}{}", " ".repeat(padding), row_num_text);
+            use std::fmt::Write as _;
+            padded_text.clear();
+            let _ = write!(padded_text, "{:>max_width$}", number(row_idx));
 
             // Match the table background (alternate rows striped); the selected row carries the
             // table's highlight tint.
@@ -1261,14 +1346,19 @@ impl DataTable {
 
             let y = area.y + row_idx as u16 + header_h;
             if y < area.y + area.height {
-                Paragraph::new(padded_text).style(row_num_style).render(
-                    Rect {
-                        x: area.x,
-                        y,
-                        width: area.width,
-                        height: 1,
-                    },
-                    buf,
+                let line = Rect {
+                    x: area.x,
+                    y,
+                    width: area.width,
+                    height: 1,
+                };
+                buf.set_style(line, row_num_style);
+                buf.set_stringn(
+                    line.x,
+                    y,
+                    &padded_text,
+                    usize::from(line.width),
+                    Style::default(),
                 );
             }
         }
@@ -1280,6 +1370,9 @@ impl StatefulWidget for DataTable {
 
     fn render(mut self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         state.page_cells.next_frame();
+        if self.screen_width == 0 {
+            self.screen_width = area.width;
+        }
         // The view's own sort, not the grouped original's: it is what ordered the
         // rows being drawn, so the header marks can never disagree with them.
         (self.sort_columns, self.sort_descending) = state.header_sort();

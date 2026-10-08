@@ -270,19 +270,18 @@ fn direction_controls_are_marked_in_a_cell() {
     );
 }
 
-/// A cell measures only the start of a huge value, and says it goes on.
+/// A cell keeps and measures only what it can show of a huge value, past the
+/// widest it can be drawn, and says it goes on.
 #[test]
 fn a_huge_value_is_measured_by_its_start() {
     let table = DataTable::default();
-    let huge = "x".repeat(crate::exact::CELL_PREVIEW_BYTES * 4);
+    let huge = "x".repeat(1 << 20);
     let df = df!("s" => [huge.as_str()]).unwrap();
     let mut scratch = String::new();
     let slice = table.slice_column(&df, 0, 1, &HashSet::new(), &mut scratch, None);
     let ellipsis = crate::glyphs::cell_width(table.glyphs.ellipsis);
-    assert_eq!(
-        usize::from(slice.cells.value_width),
-        crate::exact::CELL_PREVIEW_BYTES + ellipsis
-    );
+    let widest = usize::from(crate::widgets::column_widths::MAX_WIDTH);
+    assert_eq!(usize::from(slice.cells.value_width), widest + 1 + ellipsis);
 }
 
 #[test]

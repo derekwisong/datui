@@ -359,8 +359,8 @@ fn label(
             let text = match counts.value(at) {
                 Ok(value) => {
                     let mut scratch = String::new();
-                    let shown = numfmt::format_any_value(fmt, &value, &mut scratch).into_owned();
-                    crate::exact::cell_preview(&shown, g)
+                    let shown = numfmt::format_any_value(fmt, &value, &mut scratch);
+                    crate::exact::cell_text(shown, g, crate::exact::CELL_PREVIEW_CELLS)
                 }
                 Err(_) => String::new(),
             };
@@ -419,9 +419,15 @@ pub fn summary_items(
     for (name, value) in [("Min", &summary.min), ("Max", &summary.max)] {
         if let Some(value) = value {
             let mut scratch = String::new();
+            // A string column's least or greatest value may be a whole article.
+            let text = numfmt::format_any_value(&values, value, &mut scratch);
             items.push((
                 name,
-                numfmt::format_any_value(&values, value, &mut scratch).into_owned(),
+                crate::exact::cell_text(
+                    text,
+                    crate::glyphs::get(),
+                    crate::exact::CELL_PREVIEW_CELLS,
+                ),
             ));
         }
     }

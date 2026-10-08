@@ -316,8 +316,8 @@ fn within(url: &str, root: &str) -> bool {
     }
 }
 
-/// Whether two locations are one place, however a trailing slash or Azure URL is
-/// spelled.
+/// Whether two locations are one place, however a trailing slash, an Azure URL or a
+/// local path's separators and drive letter are spelled.
 fn same_place(a: &Path, b: &Path) -> bool {
     place_key(a) == place_key(b)
 }
@@ -325,6 +325,11 @@ fn same_place(a: &Path, b: &Path) -> bool {
 /// A location as [`same_place`] compares it.
 fn place_key(path: &Path) -> String {
     let text = path.to_string_lossy();
+    // A catalog may write `C:/data/x.csv` where a listing or a recent has
+    // `C:\data\x.csv`; compare local paths by their components.
+    if !text.contains("://") {
+        return crate::config::path_place(path).display().to_string();
+    }
     #[cfg(feature = "cloud")]
     {
         crate::cloud::source::canonical_cloud_place(&text)
@@ -5615,5 +5620,33 @@ mod build_feature_tests {
         let mine = shown.iter().find(|c| c.id == "mine").unwrap();
         assert_eq!(mine.datasets.len(), 2);
         assert_eq!(mine.label, crate::home::catalog::MINE_LABEL);
+    }
+}
+
+#[cfg(test)]
+mod place_tests {
+    use super::same_place;
+    use std::path::Path;
+
+    #[test]
+    fn local_paths_are_one_place_however_spelled() {
+        assert!(same_place(
+            Path::new("/data/./sales/"),
+            Path::new("/data/sales")
+        ));
+        assert!(!same_place(
+            Path::new("/data/sales"),
+            Path::new("/data/sale")
+        ));
+        assert!(same_place(
+            Path::new("s3://bucket/dir/"),
+            Path::new("s3://bucket/dir")
+        ));
+        if cfg!(windows) {
+            assert!(same_place(
+                Path::new("c:/data/sales.csv"),
+                Path::new(r"C:\data\sales.csv")
+            ));
+        }
     }
 }

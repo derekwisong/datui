@@ -526,36 +526,77 @@ impl Counter {
         target: usize,
     ) -> (usize, usize) {
         let (mut row, mut pos) = at;
-        let mut marked = pos;
+        // Where rows were marked, each span between to be counted by Polars' chunker too.
+        let mut spans = vec![(row, pos)];
         while row < target && pos < bytes.len() {
             let end = match self.row_end(bytes, pos) {
-                Some(end) => end,
+                RowEnd::At(end) => end,
                 // A last row with no line end is a row, unless only comments are left.
-                None if self.only_comments(&bytes[pos..]) => {
+                RowEnd::Open if self.only_comments(&bytes[pos..]) => {
                     pos = bytes.len();
                     break;
                 }
-                None => bytes.len(),
+                RowEnd::Open => bytes.len(),
+                // Where the parser and the chunker part, which rows Polars means is not
+                // provable: its slice decides.
+                RowEnd::Stray => {
+                    known.broken = true;
+                    return (row, pos);
+                }
             };
             #[cfg(test)]
             COUNTED.with(|counted| counted.set(counted.get() + end - pos));
-            // Polars' chunker must see this one row, ending here, too.
-            let last = end == bytes.len();
-            if self.lines.count_rows(&bytes[pos..end], last) != (1, end - pos) {
-                known.broken = true;
-                break;
-            }
             pos = end;
             row += 1;
-            if pos - marked >= CHUNK && pos < bytes.len() {
+            if spans.last().is_some_and(|&(_, at)| pos - at >= CHUNK) && pos < bytes.len() {
                 known.mark(row, pos);
-                marked = pos;
+                spans.push((row, pos));
             }
         }
-        if row == target && pos < bytes.len() {
+        spans.push((row, pos));
+        if !self.chunker_agrees_on(bytes, &spans) {
+            known.broken = true;
+        } else if row == target && pos < bytes.len() {
             known.mark(row, pos);
         }
         (row, pos)
+    }
+
+    /// Whether Polars' chunker counts the rows from `from` to `to` (row, byte) as this
+    /// count does: as many, the last ending where the count says.
+    fn chunker_agrees(&self, bytes: &[u8], from: (usize, usize), to: (usize, usize)) -> bool {
+        if to.1 == from.1 {
+            return to.0 == from.0;
+        }
+        let last = to.1 == bytes.len();
+        self.lines.count_rows(&bytes[from.1..to.1], last) == (to.0 - from.0, to.1 - from.1)
+    }
+
+    /// Whether Polars' chunker agrees on every span between `points` (row, byte). Spans
+    /// start at rows, so each is counted alone: a long seek's on several threads.
+    fn chunker_agrees_on(&self, bytes: &[u8], points: &[(usize, usize)]) -> bool {
+        let spans: Vec<_> = points.windows(2).map(|w| (w[0], w[1])).collect();
+        let threads = std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .min(8);
+        if spans.len() < 4 || threads < 2 {
+            return spans
+                .iter()
+                .all(|&(from, to)| self.chunker_agrees(bytes, from, to));
+        }
+        let per = spans.len().div_ceil(threads);
+        std::thread::scope(|scope| {
+            let parts: Vec<_> = spans
+                .chunks(per)
+                .map(|part| {
+                    scope.spawn(move || {
+                        part.iter()
+                            .all(|&(from, to)| self.chunker_agrees(bytes, from, to))
+                    })
+                })
+                .collect();
+            parts.into_iter().all(|part| part.join().unwrap_or(false))
+        })
     }
 
     /// Whether `rest` holds comment lines and nothing else.
@@ -573,8 +614,13 @@ impl Counter {
     }
 
     /// Where the row starting at `pos` ends, past its line end, comment lines before it
-    /// passed over; `None` when the bytes end first.
-    fn row_end(&self, bytes: &[u8], mut pos: usize) -> Option<usize> {
+    /// passed over.
+    fn row_end(&self, bytes: &[u8], pos: usize) -> RowEnd {
+        self.find_row_end(bytes, pos).unwrap_or(RowEnd::Open)
+    }
+
+    /// [`Self::row_end`]; `None` when the bytes end first.
+    fn find_row_end(&self, bytes: &[u8], mut pos: usize) -> Option<RowEnd> {
         if let Some(prefix) = &self.comment {
             while bytes[pos..].starts_with(prefix) {
                 pos += memchr::memchr(self.eol, &bytes[pos..])? + 1;
@@ -607,7 +653,12 @@ impl Counter {
             i += n;
             let c = bytes[i];
             if c == self.eol {
-                return Some(i + 1);
+                return Some(RowEnd::At(i + 1));
+            }
+            // A quote inside a field opens nothing for the parser, but the chunker
+            // takes it to open a quoted run.
+            if Some(c) == quote {
+                return Some(RowEnd::Stray);
             }
             i += 1;
             if c == self.separator {
@@ -615,6 +666,16 @@ impl Counter {
             }
         }
     }
+}
+
+/// Where a row ends, for [`Counter::row_end`].
+enum RowEnd {
+    /// Past its line end, here.
+    At(usize),
+    /// The bytes end first.
+    Open,
+    /// A quote inside a field, where Polars' parser and chunker part.
+    Stray,
 }
 
 /// A window of rows from a mark, read when the frame is collected.

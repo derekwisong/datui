@@ -4590,13 +4590,24 @@ impl HomeState {
         more
     }
 
-    /// Listed rows not yet measured, up to `limit`; sorted by rows, the rows a cut hides
-    /// come after.
+    /// Rows not yet measured, up to `limit`: those on or near the screen (see
+    /// [`HomeState::entries_near_cursor`]), as the cursor and scroll bring them; a filter
+    /// over thousands of files opens the few it shows, not all it reveals. Sorted by size
+    /// or rows, every listed row, since measuring can move it; by rows, the rows a cut
+    /// hides come after.
     pub fn unmeasured_visible(&self, limit: usize) -> Vec<Entry> {
         let view = self.view();
         let mut out: Vec<Entry> = Vec::new();
-        for entry in view.slots.iter().filter_map(|slot| self.entry_of(slot)) {
-            if self.wants_measuring(entry) {
+        // Before the first frame there is no screen: the top of the list.
+        let every_row =
+            matches!(self.sort, SortMode::Size | SortMode::Rows) || self.view_height == 0;
+        let rows: Box<dyn Iterator<Item = &Entry>> = if every_row {
+            Box::new(view.slots.iter().filter_map(|slot| self.entry_of(slot)))
+        } else {
+            Box::new(self.entries_near_cursor(&view, limit))
+        };
+        for entry in rows {
+            if self.wants_measuring(entry) && !out.iter().any(|e| e.path == entry.path) {
                 out.push(entry.clone());
                 if out.len() >= limit {
                     return out;

@@ -126,9 +126,9 @@ fn run_until_quiet(app: &mut App, rx: &Receiver<AppEvent>, area: Rect, tally: &m
 }
 
 /// Filter keystrokes over a directory of 2,000 files. The first reveals every row
-/// (a filter lifts the directory's cut), and each is measured; the rest narrow the
-/// list. Once 5.4 million allocations a key: every measurement that landed folded
-/// every row again and scored the whole listing again (#813).
+/// (a filter lifts the directory's cut), and the rows near the screen are measured;
+/// the rest narrow the list. Once 5.4 million allocations a key: every measurement
+/// that landed folded every row again and scored the whole listing again (#813).
 #[test]
 fn a_filter_keystroke_over_thousands_of_files_stays_in_budget() {
     let tmp = TempDir::new().unwrap();
@@ -178,19 +178,15 @@ fn a_filter_keystroke_over_thousands_of_files_stays_in_budget() {
     }
     assert_eq!(app.home.filter, "rprt4");
 
-    // Measured: 13 allocations handling a measurement and 2,100 drawing a frame (the
-    // rows folded in, the list built, the screen drawn) while they land, and 7,000 to
-    // 10,500 for a key that measures nothing, frames and all. Before #813: 2,100,
-    // 25,000 and 51,000. The budgets are about twice what they are now.
-    let (_, measured, revealing) = &per_key[0];
+    // Measured: 5,000 allocations handling a key, 13 more for each measurement it
+    // brings, 2,100 drawing a frame (the rows folded in, the list built, the screen
+    // drawn), 7,000 to 10,500 for a key that measures nothing, frames and all. Before
+    // #813: 2,100 a measurement, 25,000 a frame, 51,000 a key, and the first key measured
+    // every row it revealed. The budgets are about twice what they are now.
+    let (_, measured, _) = &per_key[0];
     assert!(
-        *measured >= 1_900,
-        "the first key revealed the rows: {per_key:?}"
-    );
-    assert!(
-        revealing.handled / *measured as u64 <= 30,
-        "{} allocations handling {measured} measurements: {per_key:?}",
-        revealing.handled
+        (1..=150).contains(measured),
+        "the first key measured the rows near the screen, not all 2,000: {per_key:?}"
     );
     for (c, measured, tally) in &per_key {
         assert!(
@@ -198,6 +194,12 @@ fn a_filter_keystroke_over_thousands_of_files_stays_in_budget() {
             "typing {c:?}, {} frames made {} allocations: {per_key:?}",
             tally.drawn,
             tally.frames
+        );
+        assert!(
+            tally.handled <= 10_000 + 30 * *measured as u64,
+            "typing {c:?} made {} allocations handling it and {measured} measurements: \
+             {per_key:?}",
+            tally.handled
         );
         if *measured == 0 {
             let total = tally.handled + tally.frames;

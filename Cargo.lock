@@ -1309,7 +1309,7 @@ checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 
 [[package]]
 name = "datui"
-version = "0.4.4-dev"
+version = "0.4.4"
 dependencies = [
  "arbitrary",
  "bzip2",
@@ -1334,7 +1334,7 @@ dependencies = [
 
 [[package]]
 name = "datui-cli"
-version = "0.4.4-dev"
+version = "0.4.4"
 dependencies = [
  "clap",
  "clap_complete",
@@ -1344,7 +1344,7 @@ dependencies = [
 
 [[package]]
 name = "datui-lib"
-version = "0.4.4-dev"
+version = "0.4.4"
 dependencies = [
  "arboard",
  "arrow",

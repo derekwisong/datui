@@ -61,6 +61,10 @@ pub struct RenderContext {
     pub cell_cursor: Option<Color>,
     /// Whether the data table shows its second header row of column types.
     pub dtype_row: bool,
+    /// Stripes follow the rows, so a scroll moved by the terminal keeps them
+    /// (`display.scroll_region`); off, they stay on screen lines, so a scroll redrawn
+    /// in place rewrites only the text.
+    pub stripes_follow_rows: bool,
 
     pub str_col: Color,
     pub int_col: Color,
@@ -138,6 +142,12 @@ impl RenderContext {
         self
     }
 
+    /// The same context with stripes on rows or on screen lines.
+    pub fn with_stripes_follow_rows(mut self, on: bool) -> Self {
+        self.stripes_follow_rows = on;
+        self
+    }
+
     /// Build render context from app theme and config.
     /// This is a snapshot; changes to theme won't affect this instance.
     pub fn from_theme_and_config(
@@ -179,6 +189,7 @@ impl RenderContext {
             column_cursor: theme.get_optional("table_column_cursor"),
             cell_cursor: theme.get_optional("table_cell_cursor"),
             dtype_row: true,
+            stripes_follow_rows: true,
 
             str_col: if column_colors {
                 theme.type_str()

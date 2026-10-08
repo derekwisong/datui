@@ -691,3 +691,39 @@ fn resize_and_focus_ask_for_a_repaint() {
     driven.handle(AppEvent::Resize(COLS, LINES));
     assert!(driven.app.take_repaint());
 }
+
+/// The background of each table line, top to bottom, below the two header lines.
+fn stripes(frame: &Buffer) -> Vec<ratatui::style::Color> {
+    (2..LINES - 2).map(|y| frame[(COLS - 1, y)].bg).collect()
+}
+
+/// On, the stripes move with the rows a scroll moves; off (`display.scroll_region =
+/// false`), they stay on screen lines, so a scroll redrawn in place changes only the
+/// text, as before there was a move.
+#[test]
+fn stripes_follow_rows_only_when_the_terminal_moves_them() {
+    for on in [true, false] {
+        let mut driven = app(400);
+        driven.app.app_config.display.scroll_region = on;
+        // Down to the page's last line, then one past it: the page moves one row.
+        for _ in 0..(LINES - 5) {
+            press(&mut driven, KeyCode::Down);
+        }
+        let bf = render(&mut driven);
+        let before = stripes(&bf);
+        press(&mut driven, KeyCode::Down);
+        let frame = render(&mut driven);
+        let after = stripes(&frame);
+        assert!(
+            before.iter().any(|c| *c != before[0]),
+            "striped: {before:?}"
+        );
+        // Up to the cursor's two lines, which carry its tint.
+        let n = before.len() - 2;
+        if on {
+            assert_eq!(after[..n], before[1..=n], "moved with the rows");
+        } else {
+            assert_eq!(after[..n], before[..n], "on the same lines");
+        }
+    }
+}

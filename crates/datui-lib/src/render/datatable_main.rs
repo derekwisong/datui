@@ -104,6 +104,7 @@ pub fn render(
                 .with_cell_padding(ctx.table_cell_padding)
                 .with_screen_width(main_area.width)
                 .with_alternate_row_bg(ctx.alternate_row_color)
+                .with_stripes_follow_rows(ctx.stripes_follow_rows)
                 .with_binary_col(ctx.binary_col)
                 .with_binary_columns(state.binary_column_names())
                 .with_number_format(ctx.number_format.clone())

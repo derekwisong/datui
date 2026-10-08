@@ -5331,7 +5331,8 @@ impl App {
             self.display.column_colors,
             self.display.number_format.clone(),
         )
-        .with_dtype_row(self.display.dtype_row);
+        .with_dtype_row(self.display.dtype_row)
+        .with_stripes_follow_rows(self.app_config.display.scroll_region);
 
         let main_view_content = MainViewContent::current(self);
 

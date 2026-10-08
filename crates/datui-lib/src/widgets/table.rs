@@ -31,6 +31,8 @@ pub struct DataTable {
     pub separator_fg: Color,
     pub table_cell_padding: u16,
     pub alternate_row_bg: Option<Color>,
+    /// Stripes by view row, moving with a scroll; false, by screen line.
+    pub stripes_follow_rows: bool,
     /// When true, colorize cells by column type using the optional colors below.
     pub column_colors: bool,
     pub str_col: Option<Color>,
@@ -106,6 +108,7 @@ impl Default for DataTable {
             separator_fg: Color::Reset,
             table_cell_padding: 1,
             alternate_row_bg: None,
+            stripes_follow_rows: true,
             column_colors: false,
             str_col: None,
             int_col: None,
@@ -411,6 +414,24 @@ impl DataTable {
     pub fn with_alternate_row_bg(mut self, color: Option<Color>) -> Self {
         self.alternate_row_bg = color;
         self
+    }
+
+    /// Stripes by view row (`display.scroll_region` on), or by screen line.
+    pub fn with_stripes_follow_rows(mut self, on: bool) -> Self {
+        self.stripes_follow_rows = on;
+        self
+    }
+
+    /// Whether the `index`th line drawn is striped. By view row the stripes move with
+    /// a scroll, so the terminal can move the lines (app/draw.rs); by screen line a
+    /// scroll redrawn in place changes only the text.
+    fn striped(&self, index: usize) -> bool {
+        let first = if self.stripes_follow_rows {
+            self.drawn_from
+        } else {
+            0
+        };
+        (first + index) % 2 == 1
     }
 
     /// Enable column-type coloring and set colors for string, int, float, bool, and temporal columns.
@@ -1082,9 +1103,7 @@ impl DataTable {
                         Cell::from(cell_line(spans, w, col.right_align))
                     })
                     .collect();
-                // Striped by view row, so the stripes move with a scroll and the
-                // terminal can move the lines (app/draw.rs).
-                let row_style = if (self.drawn_from + row_index) % 2 == 1 {
+                let row_style = if self.striped(row_index) {
                     self.alternate_row_bg
                         .map(|c| Style::default().bg(c))
                         .unwrap_or_default()
@@ -1326,7 +1345,7 @@ impl DataTable {
             // Match the table background (alternate rows striped); the selected row carries the
             // table's highlight tint.
             let is_selected = params.selected_row == Some(row_idx);
-            let striped = (self.drawn_from + row_idx) % 2 == 1;
+            let striped = self.striped(row_idx);
             let (fg, bg) = if is_selected {
                 (
                     Color::Reset,

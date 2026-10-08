@@ -523,7 +523,7 @@ mod remote {
             vec![PathBuf::from("s3://lake/ckpt/")],
             OpenOptions::default(),
         ));
-        while let Some(event) = next.take().or_else(|| next_event(&app, &rx)) {
+        while let Some(event) = next.take().or_else(|| next_event(&mut app, &rx)) {
             next = app.event(event);
         }
         shards_read(&app);
@@ -556,7 +556,7 @@ mod remote {
         while app.error_message().is_none() && !app.awaiting_open_confirmation() {
             let event = next
                 .take()
-                .or_else(|| next_event(&app, &rx))
+                .or_else(|| next_event(&mut app, &rx))
                 .expect("the open asks about the download");
             next = app.event(event);
         }
@@ -570,7 +570,7 @@ mod remote {
             KeyCode::Enter,
             KeyModifiers::NONE,
         )));
-        while let Some(event) = next.take().or_else(|| next_event(&app, &rx)) {
+        while let Some(event) = next.take().or_else(|| next_event(&mut app, &rx)) {
             next = app.event(event);
         }
         assert_eq!(app.error_message(), None);

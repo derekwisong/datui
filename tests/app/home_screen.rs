@@ -1409,7 +1409,7 @@ fn test_an_unexamined_remote_lake_root_is_classified_off_the_event_thread() {
 
     // The worker's answer comes back on the channel.
     let mut opened = false;
-    while let Some(event) = next_event(&app, &rx) {
+    while let Some(event) = next_event(&mut app, &rx) {
         if matches!(event, AppEvent::Open(..)) {
             opened = true;
         }
@@ -2252,7 +2252,7 @@ fn test_a_missing_named_path_is_found_on_a_worker() {
     );
     let mut found = None;
     while found.is_none() {
-        let mut next = next_event(&app, &rx);
+        let mut next = next_event(&mut app, &rx);
         while let Some(event) = next.take() {
             match event {
                 AppEvent::NamedPathMissing(path) => found = Some(path),
@@ -2430,7 +2430,7 @@ fn test_a_setting_that_agrees_with_the_rule_changes_nothing() {
             match next.take() {
                 Some(AppEvent::Open(paths, options)) => return Some((paths, options)),
                 Some(ev) => next = app.event(ev),
-                None => match next_event(&app, &rx) {
+                None => match next_event(&mut app, &rx) {
                     Some(ev) => next = Some(ev),
                     None => panic!("the chain stopped without settling"),
                 },

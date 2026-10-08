@@ -371,7 +371,7 @@ fn a_large_log_is_indexed_behind_its_first_rows() {
     while app.data_table_state.is_none() || app.is_busy() {
         match next.take() {
             Some(event) => next = app.event(event),
-            None => next = common::next_event(&app, &rx),
+            None => next = common::next_event(&mut app, &rx),
         }
     }
     let mut next = press(&mut app, KeyCode::End);
@@ -465,7 +465,7 @@ fn open_first_rows(path: PathBuf) -> (App, mpsc::Receiver<AppEvent>) {
     while app.data_table_state.is_none() || app.is_busy() {
         match next.take() {
             Some(event) => next = app.event(event),
-            None => next = common::next_event(&app, &rx),
+            None => next = common::next_event(&mut app, &rx),
         }
     }
     (app, rx)

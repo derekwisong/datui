@@ -1076,7 +1076,7 @@ fn test_a_local_hive_past_one_wave_opens_from_its_ends_and_reads_each_footer_onc
         if opened && !app.is_busy() {
             break;
         }
-        next = next_event(&app, &rx);
+        next = next_event(&mut app, &rx);
         assert!(
             next.is_some() || opened,
             "the open stopped before its dataset"
@@ -4082,7 +4082,7 @@ fn test_a_probe_answering_does_not_cancel_an_open_in_flight() {
         cut_short: false,
     });
 
-    while let Some(event) = next_event(&app, &rx) {
+    while let Some(event) = next_event(&mut app, &rx) {
         let mut follow = app.event(event);
         while let Some(next) = follow {
             follow = app.event(next);
@@ -4917,7 +4917,7 @@ fn test_looking_at_a_directory_happens_after_the_first_frame() {
     // The worker's answer is that a directory was named, which is looked at next.
     let mut next = None;
     while next.is_none() {
-        let event = next_event(&app, &rx).expect("the worker answers");
+        let event = next_event(&mut app, &rx).expect("the worker answers");
         next = app.event(event);
     }
     match next {
@@ -4980,7 +4980,7 @@ fn test_a_csv_setting_does_not_decide_a_directory_of_parquet() {
                     panic!("a CSV setting cannot make two Parquet tables into one")
                 }
                 Some(ev) => next = app.event(ev),
-                None => match next_event(&app, &rx) {
+                None => match next_event(&mut app, &rx) {
                     Some(ev) => next = Some(ev),
                     None => panic!("the chain stopped without settling"),
                 },
@@ -5021,7 +5021,7 @@ fn test_a_directory_with_no_data_is_not_forced_open() {
                 panic!("a directory with nothing readable in it has no table to open")
             }
             Some(ev) => next = app.event(ev),
-            None => match next_event(&app, &rx) {
+            None => match next_event(&mut app, &rx) {
                 Some(ev) => next = Some(ev),
                 None => panic!("the chain stopped without settling"),
             },
@@ -5172,7 +5172,7 @@ fn test_a_directory_of_one_compressed_delimited_file_opens() {
                 match next.take() {
                     Some(AppEvent::Crash(message)) => panic!("{case}: {message}"),
                     Some(event) => next = app.event(event),
-                    None => match next_event(&app, &rx) {
+                    None => match next_event(&mut app, &rx) {
                         Some(event) => next = Some(event),
                         None => break,
                     },
@@ -5349,7 +5349,7 @@ fn an_unasked_download_past_its_limit_asks_once() {
                 ));
                 next = Some(key(KeyCode::Enter));
             }
-            None => match next_event(&app, &rx) {
+            None => match next_event(&mut app, &rx) {
                 Some(ev) => next = Some(ev),
                 None => break,
             },
@@ -6922,7 +6922,7 @@ fn test_a_footer_count_says_so_on_screen() {
         screen.contains("Counting rows to skip the footer"),
         "{screen}"
     );
-    while let Some(event) = next.take().or_else(|| next_event(&app, &rx)) {
+    while let Some(event) = next.take().or_else(|| next_event(&mut app, &rx)) {
         next = app.event(event);
     }
     pump_until_idle(&mut app, &rx, &tx);
@@ -6975,7 +6975,7 @@ fn test_a_large_in_memory_read_asks_first() {
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
-    while let Some(event) = next.take().or_else(|| next_event(&app, &rx)) {
+    while let Some(event) = next.take().or_else(|| next_event(&mut app, &rx)) {
         next = app.event(event);
     }
     pump_until_idle(&mut app, &rx, &tx);

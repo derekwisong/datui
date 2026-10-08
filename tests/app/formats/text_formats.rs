@@ -587,12 +587,12 @@ fn an_sdf_file_opens_from_a_url() {
                 KeyModifiers::NONE,
             )));
         }
-        let Some(event) = next.take().or_else(|| next_event(&app, &rx)) else {
+        let Some(event) = next.take().or_else(|| next_event(&mut app, &rx)) else {
             continue;
         };
         next = app.event(event);
     }
-    while let Some(event) = next.take().or_else(|| next_event(&app, &rx)) {
+    while let Some(event) = next.take().or_else(|| next_event(&mut app, &rx)) {
         next = app.event(event);
     }
     assert_eq!(app.error_message(), None);

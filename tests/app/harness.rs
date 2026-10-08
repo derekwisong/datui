@@ -38,5 +38,5 @@ fn test_wait_past_its_guard_fails() {
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
     app.set_loading_phase("nothing will answer", 0);
-    common::next_event_within(&app, &rx, std::time::Duration::from_millis(1));
+    common::next_event_within(&mut app, &rx, std::time::Duration::from_millis(1));
 }

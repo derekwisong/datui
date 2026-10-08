@@ -1,6 +1,8 @@
 //! The terminal while the TUI holds it: setting it up, handing it back, and letting
 //! it go quietly once it has gone.
 
+use super::draw::Drawer;
+
 /// Undo `run`'s terminal setup: release the mouse, pop keyboard flags (harmless if never
 /// pushed or ignored), restore the screen. Reports failures on stderr without panicking:
 /// after a hangup `ratatui::restore`'s `eprintln!` would panic twice and abort.
@@ -44,12 +46,34 @@ pub(crate) fn follow_focus(out: &mut impl std::io::Write) {
 
 /// Ratatui's terminal, let go without its `Drop` when the terminal has gone. That
 /// `Drop` shows the cursor and `eprintln!`s a failure, which after a hangup panics,
-/// panics again in the panic hook, and aborts.
-pub(crate) struct QuietTerminal(pub(crate) Option<ratatui::DefaultTerminal>);
+/// panics again in the panic hook, and aborts. Frames go through its [`Drawer`].
+pub(crate) struct QuietTerminal(pub(crate) Option<ratatui::DefaultTerminal>, Drawer);
 
 impl QuietTerminal {
-    pub(crate) fn get(&mut self) -> &mut ratatui::DefaultTerminal {
-        self.0.as_mut().expect("held until dropped")
+    pub(crate) fn new(terminal: ratatui::DefaultTerminal) -> Self {
+        // Off until the settings say otherwise.
+        Self(Some(terminal), Drawer::new(false))
+    }
+
+    pub(crate) fn draw(&mut self, render: impl FnOnce(&mut ratatui::Frame)) -> std::io::Result<()> {
+        let terminal = self.0.as_mut().expect("held until dropped");
+        self.1.draw(terminal, render)
+    }
+
+    /// Clear the screen, after another program had it; the next frame is drawn whole.
+    pub(crate) fn clear(&mut self) -> std::io::Result<()> {
+        let terminal = self.0.as_mut().expect("held until dropped");
+        self.1.clear(terminal)
+    }
+
+    /// Draw every cell with the next frame (after a resize, or back in focus).
+    pub(crate) fn repaint(&mut self) {
+        self.1.repaint();
+    }
+
+    /// `display.scroll_region`.
+    pub(crate) fn scroll_with_region(&mut self, on: bool) {
+        self.1.set_scroll(on);
     }
 }
 

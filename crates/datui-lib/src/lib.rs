@@ -2680,6 +2680,7 @@ impl App {
                         ..Default::default()
                     }),
                 background_query: false,
+                repaint: false,
             },
             jobs,
             runtime,
@@ -3771,6 +3772,7 @@ impl App {
             }
             AppEvent::Resize(_cols, _rows) => {
                 // The next render sets visible_rows and needs_recollect; the main loop collects.
+                self.display.repaint = true;
                 None
             }
             AppEvent::Collect => {
@@ -3945,6 +3947,7 @@ impl App {
             }
             AppEvent::TerminalFocused => {
                 self.display.background_query |= self.app_config.theme.follow;
+                self.display.repaint = true;
                 None
             }
             // Taken before here: a press becomes a key in `handle_event`; terminal, wake, exit,
@@ -5253,6 +5256,12 @@ impl App {
         std::mem::take(&mut self.display.background_query)
     }
 
+    /// Whether the next frame repaints every cell (after a resize, or when the
+    /// terminal regains focus), for the run loop.
+    pub fn take_repaint(&mut self) -> bool {
+        std::mem::take(&mut self.display.repaint)
+    }
+
     /// The colors the next frame is drawn with.
     pub fn theme(&self) -> &Theme {
         &self.theme
@@ -5322,7 +5331,8 @@ impl App {
             self.display.column_colors,
             self.display.number_format.clone(),
         )
-        .with_dtype_row(self.display.dtype_row);
+        .with_dtype_row(self.display.dtype_row)
+        .with_stripes_follow_rows(self.app_config.display.scroll_region);
 
         let main_view_content = MainViewContent::current(self);
 

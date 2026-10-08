@@ -70,6 +70,7 @@ lives, imports, the theme and troubleshooting.
 | `display.type_row` | bool | `true` |  | A second header row naming each column's type (D toggles). |
 | `display.notes_accent` | bool | `true` |  | Accent the i key when datui has noticed something about the data. |
 | `display.mouse` | bool | `true` | `--mouse` | Take the mouse: the wheel scrolls, a click selects. false leaves it to the terminal. |
+| `display.scroll_region` | bool | `true` |  | Move lines within the terminal when the screen scrolls, so a scroll writes the new lines, not the page. false redraws every line that moved, for a terminal that mishandles the move. |
 | `display.sidebar_width` | integer | unset |  | Width of every sidebar, in cells. Unset: each sidebar's own. |
 | `display.right_align_numbers` | bool | `true` |  | Right-align numeric columns and their headers. |
 | `display.number_format` | preset \| table | `"none"` | `--number-format` | Digit grouping: none, thousands, european, si, swiss, indian, underscore or system, or a [display.number_format] table (, toggles). |

@@ -287,6 +287,7 @@ pub const SETTINGS: &[Setting] = &[
     s("display.type_row", Bool, Value("true"), "A second header row naming each column's type (D toggles)."),
     s("display.notes_accent", Bool, Value("true"), "Accent the i key when datui has noticed something about the data."),
     s("display.mouse", Bool, Value("true"), "Take the mouse: the wheel scrolls, a click selects. false leaves it to the terminal.").flag("mouse"),
+    s("display.scroll_region", Bool, Value("true"), "Move lines within the terminal when the screen scrolls, so a scroll writes the new lines, not the page. false redraws every line that moved, for a terminal that mishandles the move."),
     s("display.sidebar_width", Count, Unset("70"), "Width of every sidebar, in cells. Unset: each sidebar's own."),
     s("display.right_align_numbers", Bool, Value("true"), "Right-align numeric columns and their headers.").kwarg("right_align_numbers"),
     s("display.number_format", Toml("preset \\| table"), Value("\"none\""), "Digit grouping: none, thousands, european, si, swiss, indian, underscore or system, or a [display.number_format] table (, toggles).").flag("number-format").kwarg("number_format"),

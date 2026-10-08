@@ -2624,6 +2624,7 @@ mod public_datasets;
 mod quality_export;
 mod terminal_escape;
 
+mod alloc_budget;
 mod analysis;
 mod chart;
 mod data_quality;

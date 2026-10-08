@@ -3,28 +3,126 @@
 
 use super::*;
 
+/// Read the rows the view needs, as a worker does for the app; the range read, if any.
+fn fill(state: &mut DataTableState) -> Option<(usize, usize)> {
+    let request = state.prepare_async_collect(None)?;
+    let range = (request.buffer_start, request.buffer_end);
+    let df = collect_lazy(request.lf, request.polars_streaming).unwrap();
+    state.apply_async_collect(request.plan.fit(df));
+    Some(range)
+}
+
+/// The buffer holds the view's rows where it says, in the columns shown: `truth` is the
+/// view read whole.
+fn holds_the_rows(state: &DataTableState, truth: &DataFrame, step: &str) {
+    let Some(buffer) = state.view.buffered_df.as_ref() else {
+        return;
+    };
+    let start = state.view.buffered_start_row;
+    assert_eq!(
+        state.view.buffered_end_row - start,
+        buffer.height(),
+        "{step}"
+    );
+    let shown = || state.view.column_order.iter().map(String::as_str);
+    let want = truth
+        .slice(start as i64, buffer.height())
+        .select(shown())
+        .unwrap();
+    let got = buffer.select(shown()).unwrap();
+    assert!(
+        got.equals_missing(&want),
+        "{step}: the buffer at {start} holds other rows"
+    );
+}
+
 /// Page down from the top `pages` times as the app does: each key slides the view, a
 /// view past the buffer reads its rows, and a view near the buffer's end reads ahead.
-/// Returns every range read.
+/// After every read the buffer holds the view's rows. Returns every range read.
 fn page_down(state: &mut DataTableState, pages: usize) -> Vec<(usize, usize)> {
+    let truth = state.view.lf.clone().collect().unwrap();
     let mut reads = Vec::new();
-    let mut fill = |state: &mut DataTableState| {
-        if let Some(request) = state.prepare_async_collect(None) {
-            reads.push((request.buffer_start, request.buffer_end));
-            let df = collect_lazy(request.lf, request.polars_streaming).unwrap();
-            state.apply_async_collect(request.plan.fit(df));
-        }
-    };
-    fill(state);
-    for _ in 0..pages {
+    reads.extend(fill(state));
+    holds_the_rows(state, &truth, "first read");
+    for page in 0..pages {
         if state.slide_table(state.visible_rows as i64) {
-            fill(state);
+            reads.extend(fill(state));
         }
         if state.wants_to_load_ahead() {
-            fill(state);
+            reads.extend(fill(state));
         }
+        holds_the_rows(state, &truth, &format!("page {page}"));
     }
     reads
+}
+
+/// A CSV of `rows` rows, every 13th with a quoted field over two lines.
+fn csv_state(dir: &Path, rows: usize, max_rows: Option<usize>) -> DataTableState {
+    let path = dir.join("walk.csv");
+    let mut text = String::from("id,name,note\n");
+    for i in 0..rows {
+        if i % 13 == 0 {
+            text.push_str(&format!("{i},\"multi\nline {i}\",x\n"));
+        } else {
+            text.push_str(&format!("{i},name {i},y\n"));
+        }
+    }
+    std::fs::write(&path, text).unwrap();
+    let options = OpenOptions {
+        max_buffered_rows: max_rows,
+        ..OpenOptions::default()
+    };
+    let read =
+        crate::formats::readers::csv::read_delimited(&path, b',', &options, &Default::default())
+            .unwrap();
+    DataTableState::from_read(read, &options).unwrap()
+}
+
+/// Random moves (pages up and down, rows, jumps) under row caps, and columns hidden
+/// and reordered midway: after every read the buffer holds the view's rows.
+#[test]
+fn stitched_buffers_hold_the_views_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    for (max_rows, seed) in [
+        (None, 1u64),
+        (Some(1_000), 2),
+        (Some(300), 3),
+        (Some(150), 4),
+    ] {
+        let mut state = csv_state(dir.path(), 8_000, max_rows);
+        state.visible_rows = 40;
+        let truth = state.view.lf.clone().collect().unwrap();
+        let rows = truth.height() as i64;
+        let mut r = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        fill(&mut state);
+        for step in 0..300 {
+            r ^= r << 13;
+            r ^= r >> 7;
+            r ^= r << 17;
+            let page = state.visible_rows as i64;
+            let delta = match r % 10 {
+                0 => -page,
+                1 => (r as i64 >> 8).rem_euclid(rows) - state.start_row() as i64,
+                2 => -1,
+                3 => 1,
+                _ => page,
+            };
+            if state.slide_table(delta) {
+                fill(&mut state);
+            }
+            if state.wants_to_load_ahead() {
+                fill(&mut state);
+            }
+            holds_the_rows(&state, &truth, &format!("cap {max_rows:?} step {step}"));
+        }
+    }
+    let mut state = csv_state(dir.path(), 3_000, None);
+    state.visible_rows = 40;
+    page_down(&mut state, 5);
+    state.set_column_order(vec!["id".into(), "note".into()]);
+    page_down(&mut state, 20);
+    state.set_column_order(vec!["note".into(), "id".into(), "name".into()]);
+    page_down(&mut state, 20);
 }
 
 /// Paging forward through `state` reads no row twice, and reads at most the rows paged
@@ -83,7 +181,8 @@ fn paging_a_frame_reads_each_row_once() {
 /// ties may come back in another order, so two reads are not stitched.
 #[test]
 fn a_sorted_view_is_not_stitched() {
-    let df = df!("id" => (0..3_000i64).map(|i| i % 7).collect::<Vec<_>>()).unwrap();
+    // No ties, so the view read whole orders its rows as a window does.
+    let df = df!("id" => (0..3_000i64).map(|i| (i * 7) % 3_001).collect::<Vec<_>>()).unwrap();
     let mut state = DataTableState::new(df.lazy(), None, None, None, None, true).unwrap();
     state.sort(vec!["id".into()], true);
     state.visible_rows = 40;

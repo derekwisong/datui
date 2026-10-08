@@ -16,35 +16,6 @@ use std::sync::mpsc;
 
 use crate::common;
 
-fn work_pending(app: &App) -> bool {
-    app.is_busy() || app.row_count_pending()
-}
-
-/// The next event on the channel, or one background work still owes; `None` once
-/// nothing is there and nothing is owed.
-fn next_event(app: &App, rx: &mpsc::Receiver<AppEvent>) -> Option<AppEvent> {
-    // Only a hang guard; nothing here is timed.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
-    loop {
-        if let Ok(event) = rx.try_recv() {
-            return Some(event);
-        }
-        if app.count_waits_for_a_frame() {
-            return Some(AppEvent::FramePainted);
-        }
-        if !work_pending(app) {
-            return None;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "background work never reported back"
-        );
-        if let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
-            return Some(event);
-        }
-    }
-}
-
 /// Handle `first` and every event it chains to, then whatever background work owes,
 /// until nothing is pending. Returns how many Data Quality runs finished.
 fn drain(app: &mut App, rx: &mpsc::Receiver<AppEvent>, first: Option<AppEvent>) -> usize {
@@ -63,7 +34,7 @@ fn drain(app: &mut App, rx: &mpsc::Receiver<AppEvent>, first: Option<AppEvent>) 
     if let Some(event) = first {
         handle(app, event);
     }
-    while let Some(event) = next_event(app, rx) {
+    while let Some(event) = common::next_event(app, rx) {
         handle(app, event);
     }
     runs

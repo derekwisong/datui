@@ -2022,13 +2022,7 @@ impl App {
     /// Take the numbers the whole frame is drawn from: the footer count, read once
     /// because two parts of the screen show it while a thread moves it.
     fn begin_frame(&mut self) {
-        // Measurements land a file at a time over listings of thousands: folded into the
-        // rows once a frame, not once an answer.
-        self.home.apply_new_measurements();
-        // Back from home to the table whose lines were being indexed.
-        if self.counting.indexing_paused && self.input_mode != InputMode::Home {
-            self.index_lines();
-        }
+        self.take_in_what_arrived();
         self.counting.footers_this_frame = self.footer_progress().reading();
         self.counting.listed_this_frame = self.footer_progress().listed();
         // Whatever this frame does not draw cannot be clicked.
@@ -2036,6 +2030,30 @@ impl App {
         if let Some(state) = self.data_table_state.as_mut() {
             state.forget_drawn();
         }
+    }
+
+    /// The state half of [`Self::begin_frame`]: what a frame takes in whether or not it
+    /// is painted.
+    fn take_in_what_arrived(&mut self) {
+        // Measurements land a file at a time over listings of thousands: folded into the
+        // rows once a frame, not once an answer.
+        self.home.apply_new_measurements();
+        // Back from home to the table whose lines were being indexed.
+        if self.counting.indexing_paused && self.input_mode != InputMode::Home {
+            self.index_lines();
+        }
+    }
+
+    /// A frame's work without painting it, in the order [`EventPump::run`] does it
+    /// around a frame: ask for what the frame needs, take in what arrived (as drawing
+    /// does), and ask again for what that changed. For a harness with no terminal, at
+    /// the point the run loop would draw: once the events on hand are handled.
+    ///
+    /// [`EventPump::run`]: crate::app::event_pump::EventPump::run
+    pub fn frame_work(&mut self) {
+        self.request_what_the_frame_needs();
+        self.take_in_what_arrived();
+        self.request_what_the_frame_needs();
     }
 
     /// The footer counter: the open's while one is on its way, else the dataset's. Each

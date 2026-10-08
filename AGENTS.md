@@ -89,9 +89,10 @@ target, as `quality_spill_test` and the cloud credential targets do; prefer
 giving the code the setting directly instead.
 
 Tests that drive an `App` wait on the work with the helpers in `tests/common/`
-(`pump_open_until_loaded`, `drain_events`, `next_event`, `work_pending`, and
-`wait_for_event` in a loop that draws frames), or wait for the frame's content,
-never on a sleep or a quiet channel. A sleep stays only where a real timer is the
+(`pump_open_until_loaded`, `drain_events`, `next_event`, `handle_until`,
+`work_pending`, and `wait_for_event` in a loop that draws frames), or wait for the
+frame's content, never on a sleep or a quiet channel. The helpers run the frame's
+work (`App::frame_work`) once the events on hand are handled, as the run loop does. A sleep stays only where a real timer is the
 subject, with a comment saying so. Size statistical and large-data tests to the
 smallest input that still makes the assertion; they set their executable's run
 time. Measured costs and the layout's reasons: `tests/ORGANIZATION.md`; commands

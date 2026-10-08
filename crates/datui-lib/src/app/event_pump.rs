@@ -567,6 +567,8 @@ impl EventPump {
             redraw |= app.flash_background_panic();
             redraw |= app.flash_polars_warning();
 
+            // `App::frame_work` is this and the frame below without the paint, for
+            // harnesses: keep the two in step.
             app.request_what_the_frame_needs();
 
             if redraw {

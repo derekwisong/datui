@@ -237,7 +237,7 @@ fn a_failed_download_leaves_no_file() {
     };
     chain(&mut app, AppEvent::Open(vec![PathBuf::from(URL)], options));
     while !app.awaiting_open_confirmation() {
-        let event = next_event(&app, &rx).expect("the size probe answers");
+        let event = next_event(&mut app, &rx).expect("the size probe answers");
         chain(&mut app, event);
     }
     s3.remove(KEY);
@@ -273,7 +273,7 @@ fn an_object_that_will_not_read_is_named_by_its_url() {
             ..OpenOptions::default()
         };
         chain(&mut app, AppEvent::Open(vec![PathBuf::from(&url)], options));
-        while let Some(event) = next_event(&app, &rx) {
+        while let Some(event) = next_event(&mut app, &rx) {
             chain(&mut app, event);
             if app.awaiting_open_confirmation() {
                 chain(
@@ -385,7 +385,7 @@ fn a_download_nobody_takes_leaves_no_file() {
     open_and_confirm(&mut app, &rx, dir.path());
     // The download's answer waits in its job until the app takes it.
     let ready = loop {
-        let event = next_event(&app, &rx).expect("the download answers");
+        let event = next_event(&mut app, &rx).expect("the download answers");
         if matches!(event, AppEvent::JobEnded(t) if t.kind() == JobKind::Load) {
             break event;
         }
@@ -432,7 +432,7 @@ fn measure_download_peak_memory() {
     open_and_confirm(&mut app, &rx, dir.path());
     // Held: the answer waits in its job, and owns the file, until the app takes it.
     let _ready = loop {
-        let event = next_event(&app, &rx).expect("the download answers");
+        let event = next_event(&mut app, &rx).expect("the download answers");
         if matches!(event, AppEvent::JobEnded(t) if t.kind() == JobKind::Load) {
             break event;
         }

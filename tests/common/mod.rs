@@ -80,10 +80,12 @@ fn footers_pending(app: &App) -> bool {
 }
 
 /// The next event: one already on the channel, or one background work still owes.
-/// `None` once nothing is there and nothing is owed.
+/// `None` once nothing is there and nothing is owed. Each time the channel is found
+/// empty, the frame's work runs first ([`App::frame_work`]), as the run loop draws a
+/// frame once the events on hand are handled: call it once an event's chain is done.
 #[allow(dead_code)]
 #[track_caller]
-pub fn next_event(app: &App, rx: &Receiver<AppEvent>) -> Option<AppEvent> {
+pub fn next_event(app: &mut App, rx: &Receiver<AppEvent>) -> Option<AppEvent> {
     next_event_within(app, rx, HANG_GUARD)
 }
 
@@ -92,10 +94,20 @@ pub fn next_event(app: &App, rx: &Receiver<AppEvent>) -> Option<AppEvent> {
 /// asserts on the previous state.
 #[allow(dead_code)]
 #[track_caller]
-pub fn next_event_within(app: &App, rx: &Receiver<AppEvent>, guard: Duration) -> Option<AppEvent> {
+pub fn next_event_within(
+    app: &mut App,
+    rx: &Receiver<AppEvent>,
+    guard: Duration,
+) -> Option<AppEvent> {
     let caller = std::panic::Location::caller();
     let deadline = Instant::now() + guard;
     loop {
+        if let Ok(event) = rx.try_recv() {
+            return Some(event);
+        }
+        // Everything on hand is handled: the run loop draws a frame now, and what it
+        // folds in or asks for may be what the test waits on.
+        app.frame_work();
         if let Ok(event) = rx.try_recv() {
             return Some(event);
         }
@@ -123,15 +135,52 @@ pub fn next_event_within(app: &App, rx: &Receiver<AppEvent>, guard: Duration) ->
     }
 }
 
-/// Handle events, and every event they chain to, until nothing is queued and no
-/// background work is owed.
+/// Handle events, and every event they chain to, with the frame's work after each
+/// chain as the run loop does, until nothing is queued and no background work is owed.
 #[allow(dead_code)]
 #[track_caller]
 pub fn drain_events(app: &mut App, rx: &Receiver<AppEvent>) {
     while let Some(event) = next_event(app, rx) {
-        let mut next = Some(event);
-        while let Some(event) = next {
-            next = app.event(event);
+        handle_chain(app, event);
+    }
+}
+
+/// Handle `event` and every event it chains to.
+#[allow(dead_code)]
+pub fn handle_chain(app: &mut App, event: AppEvent) {
+    let mut next = Some(event);
+    while let Some(event) = next {
+        next = app.event(event);
+    }
+}
+
+/// Handle events, with the frame's work once those on hand are handled, as the run loop
+/// does, until `done` holds; whether it did within `guard`. For state no work flag
+/// covers, such as rows a listing or a measurement brings, which reach the screen at a
+/// frame. The caller fails the test, naming what never came.
+#[allow(dead_code)]
+#[must_use]
+pub fn handle_until(
+    app: &mut App,
+    rx: &Receiver<AppEvent>,
+    guard: Duration,
+    done: impl Fn(&App) -> bool,
+) -> bool {
+    let deadline = Instant::now() + guard;
+    loop {
+        while let Ok(event) = rx.try_recv() {
+            handle_chain(app, event);
+        }
+        app.frame_work();
+        if done(app) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        // Whatever the app waits on answers on the channel: an event ends the wait.
+        if let Ok(event) = rx.recv_timeout(Duration::from_millis(20)) {
+            handle_chain(app, event);
         }
     }
 }
@@ -147,6 +196,7 @@ pub fn read_rows(app: &mut App, rx: &Receiver<AppEvent>) {
 
 /// Open `paths` and handle the load chain, background results included, until the
 /// table, its row count and its footers are in. A crash is handled and ends the wait.
+/// The frame's work runs between chains, as in [`drain_events`].
 #[allow(dead_code)]
 #[track_caller]
 pub fn pump_open_until_loaded(

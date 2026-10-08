@@ -70,36 +70,14 @@ fn key(app: &mut App, rx: &mpsc::Receiver<AppEvent>, code: KeyCode) {
 
 /// Handle events until the home screen lists the log's tables.
 fn settle_home(app: &mut App, rx: &mpsc::Receiver<AppEvent>) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    loop {
-        while let Ok(event) = rx.try_recv() {
-            let mut next = Some(event);
-            while let Some(event) = next {
-                next = app.event(event);
-            }
-        }
-        let listed = app
-            .home
-            .sections
-            .iter()
-            .any(|s| s.rows.iter().any(|r| r.table.is_some()));
-        if !app.home.listing_in_flight && listed {
-            let area = ratatui::layout::Rect::new(0, 0, 100, 30);
-            let mut buf = ratatui::buffer::Buffer::empty(area);
-            ratatui::widgets::Widget::render(&mut *app, area, &mut buf);
-            return;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the listing never came"
-        );
-        if let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(20)) {
-            let mut next = Some(event);
-            while let Some(event) = next {
-                next = app.event(event);
-            }
-        }
-    }
+    let listed = common::handle_until(app, rx, std::time::Duration::from_secs(30), |app| {
+        !app.home.listing_in_flight
+            && (app.home.sections.iter()).any(|s| s.rows.iter().any(|r| r.table.is_some()))
+    });
+    assert!(listed, "the listing never came");
+    let area = ratatui::layout::Rect::new(0, 0, 100, 30);
+    let mut buf = ratatui::buffer::Buffer::empty(area);
+    ratatui::widgets::Widget::render(&mut *app, area, &mut buf);
 }
 
 /// A ULog file lands on the home screen inside it, a row per topic and instance and

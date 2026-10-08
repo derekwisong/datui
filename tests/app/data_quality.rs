@@ -2376,7 +2376,7 @@ fn conflict_evidence_is_read_only_by_a_full_scan() {
                 }
                 next = app.event(event);
             }
-            None => match next_event(&app, &rx) {
+            None => match next_event(&mut app, &rx) {
                 Some(event) => next = Some(event),
                 None => break,
             },

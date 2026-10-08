@@ -228,8 +228,14 @@ shared helpers in `tests/common/`:
 | `pump_open_until_loaded(app, rx, paths, options)` | An open's whole event chain, then `work_pending` to clear |
 | `drain_events(app, rx)` | Every queued event and each event it chains to, until `work_pending` clears |
 | `next_event(app, rx)` | One queued event, or one that pending work still owes; `None` once nothing is owed |
+| `handle_until(app, rx, guard, done)` | Events and each event they chain to until `done` holds, for state no work flag covers (a home listing); `false` past `guard` |
 | `work_pending(app)` | `is_busy()`, `row_count_pending()`, or a footer pass still reading the schema |
 | `wait_for_event(tx, rx)` | For a loop that draws a frame each pass: the next event, or `FRAME_WAIT` (5 ms) when none comes, as the run loop sleeps on its channel. The event stays queued |
+
+Each helper runs the frame's work, `App::frame_work`, once the events on hand are
+handled, as the run loop does before it draws: home measurements fold into their
+rows and the frame asks for what it lacks (rows ahead, measurements, a follow's
+rows). A wait on state a frame brings needs no frame of its own.
 
 A wait returns as soon as the work is done. One that runs past `HANG_GUARD`
 (300 s) fails the test, naming the wait's location and what was still owed,

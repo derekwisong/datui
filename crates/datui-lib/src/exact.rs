@@ -588,13 +588,16 @@ fn has_marked(s: &str) -> bool {
 /// Bytes of a nested value a table cell previews: more than any terminal row draws.
 pub const CELL_PREVIEW_BYTES: usize = 4096;
 
-/// Cells of a value [`cell_preview`] keeps where the caller names no width:
-/// more than any terminal row draws.
-pub const CELL_PREVIEW_CELLS: usize = 512;
+/// The cells a preview drawn in `width` cells (a terminal, or the area it is
+/// drawn in) keeps of a value: past that width and past any width a column can be
+/// set to by hand, so the cut never shows.
+pub fn cell_cut(width: u16) -> usize {
+    usize::from(width.max(crate::widgets::column_widths::MAX_WIDTH))
+}
 
-/// [`cell_text`] of `s` cut past [`CELL_PREVIEW_CELLS`].
-pub fn cell_preview(s: &str, g: &crate::glyphs::Glyphs) -> String {
-    cell_text(Cow::Borrowed(s), g, CELL_PREVIEW_CELLS)
+/// [`cell_text`] of `s`, cut past [`cell_cut`] of `width`.
+pub fn cell_preview(s: &str, g: &crate::glyphs::Glyphs, width: u16) -> String {
+    cell_text(Cow::Borrowed(s), g, cell_cut(width))
 }
 
 /// [`preview`] of the start of `text` that covers more than `cells` cells,

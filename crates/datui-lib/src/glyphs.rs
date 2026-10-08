@@ -754,8 +754,9 @@ pub fn cell_width(text: &str) -> usize {
 pub fn fit_cells<'a>(text: &'a str, width: usize, marker: &str) -> Cow<'a, str> {
     use ratatui::buffer::CellWidth;
     let marker_width = cell_width(marker);
-    let head = text.get(..text.len().min(width + 1)).unwrap_or(text);
-    if head.len() == text.len().min(width + 1) && plain_ascii(head) {
+    let head_len = text.len().min(width.saturating_add(1));
+    let head = text.get(..head_len).unwrap_or(text);
+    if head.len() == head_len && plain_ascii(head) {
         if text.len() <= width {
             return Cow::Borrowed(text);
         }

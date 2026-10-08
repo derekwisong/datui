@@ -797,10 +797,7 @@ impl DataTable {
     /// The most cells a cell is cut to: past any width it can be drawn at, the
     /// terminal's or one set by hand, so the cut never shows.
     fn cell_cut(&self) -> usize {
-        usize::from(
-            self.screen_width
-                .max(crate::widgets::column_widths::MAX_WIDTH),
-        )
+        crate::exact::cell_cut(self.screen_width)
     }
 
     /// The first `rows` values of `col_data`, formatted for their cells and measured.

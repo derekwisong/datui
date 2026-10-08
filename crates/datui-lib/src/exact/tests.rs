@@ -364,10 +364,15 @@ fn the_preview_marks_direction_controls() {
 fn a_cell_previews_only_the_start_of_a_huge_value() {
     let g = crate::glyphs::unicode();
     let huge = "x".repeat(CELL_PREVIEW_BYTES * 10);
-    let cell = cell_preview(&huge, g);
-    assert_eq!(cell.len(), CELL_PREVIEW_CELLS + 1 + g.ellipsis.len());
+    let cell = cell_preview(&huge, g, 80);
+    assert_eq!(cell.len(), cell_cut(80) + 1 + g.ellipsis.len());
     assert!(cell.ends_with(g.ellipsis));
-    assert_eq!(cell_preview("a\nb", g), "a¶b");
+    assert_eq!(cell_preview("a\nb", g, 80), "a¶b");
+    // A wider screen keeps more.
+    assert_eq!(
+        cell_preview(&huge, g, 1_000).len(),
+        1_001 + g.ellipsis.len()
+    );
 }
 
 /// Cut past `cells`, a value draws and measures at any width up to `cells` as the
@@ -383,6 +388,9 @@ fn a_cut_cell_draws_as_the_whole_value_at_any_width_it_can_have() {
         "👨‍👩‍👧‍👦 family ".repeat(60),
         "e\u{301}a\u{301}".repeat(300),
         "\u{200b}".repeat(30) + "end",
+        // Measured at no width, drawn as a one-cell mark: more is kept, never less.
+        "abc\u{200e}".repeat(50),
+        "x\u{202e}y\u{202c}".repeat(50),
     ];
     for g in [crate::glyphs::unicode(), crate::glyphs::ascii()] {
         for text in &texts {
@@ -401,6 +409,14 @@ fn a_cut_cell_draws_as_the_whole_value_at_any_width_it_can_have() {
             }
         }
     }
+    // The one exception, so it cannot widen unseen: past twice `cells` graphemes of
+    // no width, the cut comes before anything is seen.
+    let invisible = "\u{200b}".repeat(100) + "end";
+    let cut = cell_text(Cow::Borrowed(&invisible), crate::glyphs::unicode(), cells);
+    assert_eq!(
+        cut,
+        "\u{200b}".repeat(2 * cells + 1) + crate::glyphs::unicode().ellipsis
+    );
     // Short or owned text that needs no mark is kept as it is.
     let owned = String::from("1,234");
     let at = owned.as_ptr();

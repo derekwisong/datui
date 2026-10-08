@@ -121,6 +121,8 @@ pub fn draw(
         &counts.dtype,
         counts.is_sample(),
         ctx,
+        crate::glyphs::get(),
+        body.width,
     );
     let strip_lines = pack(&strip, width);
     let mut y = body.y;
@@ -159,7 +161,7 @@ pub fn draw(
     let value_fmt = ctx.number_format.formatter_for(&column, &counts.dtype);
     let labels: Vec<(String, Style)> = lines
         .iter()
-        .map(|line| label(&counts, line.kind, &value_fmt, ctx))
+        .map(|line| label(&counts, line.kind, &value_fmt, ctx, body.width))
         .collect();
     let numbers: Vec<String> = lines
         .iter()
@@ -352,6 +354,7 @@ fn label(
     kind: LineKind,
     fmt: &CellFormatter,
     ctx: &RenderContext,
+    width: u16,
 ) -> (String, Style) {
     let g = crate::glyphs::get();
     match kind {
@@ -360,7 +363,7 @@ fn label(
                 Ok(value) => {
                     let mut scratch = String::new();
                     let shown = numfmt::format_any_value(fmt, &value, &mut scratch);
-                    crate::exact::cell_text(shown, g, crate::exact::CELL_PREVIEW_CELLS)
+                    crate::exact::cell_text(shown, g, crate::exact::cell_cut(width))
                 }
                 Err(_) => String::new(),
             };
@@ -382,13 +385,16 @@ fn label(
 
 /// The summary strip's items, label and value: count, distinct and nulls always;
 /// sum, mean, min and max for numbers; min and max for dates and times. A sample's
-/// sum is not the column's, and is left out.
+/// sum is not the column's, and is left out. Min and max read as a table cell
+/// does, cut past `width` with breaks marked in `g`.
 pub fn summary_items(
     summary: &Summary,
     column: &str,
     dtype: &DataType,
     sample: bool,
     ctx: &RenderContext,
+    g: &crate::glyphs::Glyphs,
+    width: u16,
 ) -> Vec<(&'static str, String)> {
     // How many rows, values and nulls are datui's counts, not the column's data:
     // grouped as every count on screen is, whatever the table's number format.
@@ -423,11 +429,7 @@ pub fn summary_items(
             let text = numfmt::format_any_value(&values, value, &mut scratch);
             items.push((
                 name,
-                crate::exact::cell_text(
-                    text,
-                    crate::glyphs::get(),
-                    crate::exact::CELL_PREVIEW_CELLS,
-                ),
+                crate::exact::cell_text(text, g, crate::exact::cell_cut(width)),
             ));
         }
     }
@@ -547,6 +549,30 @@ mod tests {
         assert!(rows[head + 2].contains("20.0%") && rows[head + 2].contains("80.0%"));
         assert!(rows[head + 3].contains(g.null), "nulls on their own line");
         assert!(rows[head + 3].contains("100.0%"));
+    }
+
+    /// A least or greatest value over several lines reads as a table cell does,
+    /// its breaks marked in the glyph set it is drawn with, and a huge one is cut.
+    #[test]
+    fn a_multi_line_min_is_marked_and_cut() {
+        let ctx = RenderContext::for_test();
+        let summary = crate::analysis::value_counts::Summary {
+            rows: 2,
+            distinct: 2,
+            nulls: 0,
+            sum: None,
+            mean: None,
+            min: Some(AnyValue::StringOwned("line one\nline two".into())),
+            max: Some(AnyValue::StringOwned("x".repeat(1 << 20).into())),
+        };
+        for g in [crate::glyphs::unicode(), crate::glyphs::ascii()] {
+            let items = summary_items(&summary, "s", &DataType::String, false, &ctx, g, 80);
+            let value = |name: &str| &items.iter().find(|(n, _)| *n == name).unwrap().1;
+            assert_eq!(value("Min"), &format!("line one{}line two", g.newline_mark));
+            let max = value("Max");
+            assert!(max.ends_with(g.ellipsis), "{} bytes", max.len());
+            assert!(max.len() < 300, "{} bytes", max.len());
+        }
     }
 
     /// The strip's counts are datui's own, grouped as every count on screen is,

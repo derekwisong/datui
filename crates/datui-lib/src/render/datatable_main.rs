@@ -60,7 +60,12 @@ pub fn render(
                     let parts: Vec<String> = key_columns
                         .iter()
                         .zip(key_values.iter())
-                        .map(|(col, val)| format!("{col}={}", crate::exact::cell_preview(val, g)))
+                        .map(|(col, val)| {
+                            format!(
+                                "{col}={}",
+                                crate::exact::cell_preview(val, g, main_area.width)
+                            )
+                        })
                         .collect();
                     format!(
                         "{} Group: {}",

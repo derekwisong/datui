@@ -2,6 +2,12 @@
 //! a key does fails here. Counted on the test's own thread (the key and the frame it
 //! draws), so background jobs and other tests do not count. Budgets are about twice
 //! what was measured.
+//!
+//! What they do not see: work moved off the UI thread (onto Polars' or rayon's pool)
+//! is not counted, however much it allocates. They were measured on a debug build;
+//! a release build allocates less, which only adds slack. A Polars upgrade that
+//! changes what `Column::get` or `AnyValue` allocate can move the numbers, which the
+//! headroom is for.
 
 use super::*;
 use std::alloc::{GlobalAlloc, Layout, System};

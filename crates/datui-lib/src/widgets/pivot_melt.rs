@@ -474,6 +474,7 @@ fn grid_columns(
     head: &DataFrame,
     rows: usize,
     limit: usize,
+    width: u16,
     ctx: &RenderContext,
 ) -> Vec<GridColumn> {
     let g = crate::glyphs::get();
@@ -491,6 +492,7 @@ fn grid_columns(
                     Ok(value) => Some(crate::exact::cell_preview(
                         &numfmt::format_any_value(&fmt, &value, &mut scratch),
                         g,
+                        width,
                     )),
                 })
                 .collect();
@@ -531,7 +533,7 @@ fn render_grid(area: Rect, buf: &mut Buffer, head: &DataFrame, stale: bool, ctx:
     let total = area.width as usize;
     // Each column takes a cell and a gap at least: only those that could fit are
     // formatted.
-    let columns = grid_columns(head, body_rows, total / 3 + 1, ctx);
+    let columns = grid_columns(head, body_rows, total / 3 + 1, area.width, ctx);
 
     // Which columns fit, keeping room to say how many do not.
     let mut shown = 0;

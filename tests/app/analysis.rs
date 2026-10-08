@@ -840,7 +840,7 @@ fn test_value_counts_drill_breadcrumb_marks_a_tab() {
     let screen = counts_screen(&mut app, 80, 12);
     let crumb = screen.lines().next().unwrap();
     let g = datui::glyphs::get();
-    let marked = datui::exact::cell_preview("a\tb", g);
+    let marked = datui::exact::cell_preview("a\tb", g, 80);
     assert!(crumb.contains(&format!("k={marked}")), "{crumb:?}");
 }
 

@@ -6,17 +6,21 @@
 //! window's ends. A window reads on from the mark at or before it, so paging costs the
 //! rows moved, and no byte is counted twice.
 //!
-//! A wrong row is never shown for a faster one. Rows are counted as Polars' parser
-//! splits them (a quote opens a field only at its start), and every window checks that
-//! the rows parsed are the rows counted and that its marks agree with the ones before.
-//! Any doubt, and the file's windows go back to Polars' own slice for good.
+//! A wrong row is never shown for a faster one: only rows provably Polars' own reading.
+//! Each row is counted twice, as Polars' parser splits rows (a quote opens a field only
+//! at its start) and as Polars' chunker does ([`CountLines`], a quote anywhere), and the
+//! two must agree; every window checks that the rows parsed are the rows counted and
+//! that its marks agree with the ones before. Any doubt, and the file's windows go
+//! back to Polars' own slice for good, erring where it errs. A file read with
+//! `--ignore-errors` has no marks: Polars' slice decides what it shows.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
+use polars::io::csv::read::_csv_read_internal::CountLines;
 use polars::io::csv::read::CommentPrefix;
-use polars::lazy::dsl::{DslPlan, FileScanDsl, ScanSources};
+use polars::lazy::dsl::{DslPlan, FileScanDsl, FunctionExpr, ScanSources, StringFunction};
 use polars::prelude::*;
 use polars_buffer::Buffer;
 
@@ -131,10 +135,13 @@ impl CsvMarks {
         let FileScanDsl::Csv { options } = &**scan_type else {
             return None;
         };
+        // With errors ignored, the rows Polars shows depend on how it reads the file
+        // around them; only its own slice gives them.
         if args.row_index.is_some()
             || args.include_file_paths.is_some()
             || args.pre_slice.is_some()
             || options.n_rows.is_some()
+            || options.ignore_errors
         {
             return None;
         }
@@ -362,10 +369,18 @@ impl CsvMarks {
             return None;
         }
         // Parsed as Polars parses the file, and checked: rows that do not come out as
-        // counted mean the count is not Polars', here or before.
-        let parsed = self.parse(&bytes[from..to], columns);
-        match parsed {
-            Ok(df) if df.height() == counted => Some(df),
+        // counted mean the count is not Polars', here or before. A window of no columns
+        // (a count) parses the first, to check against.
+        let first = self.schema.iter_names().next().cloned();
+        let parse_columns = match columns {
+            Some([]) => first.as_ref().map(std::slice::from_ref),
+            columns => columns,
+        };
+        match self.parse(&bytes[from..to], parse_columns) {
+            Ok(df) if df.height() == counted => match columns {
+                Some([]) => Some(DataFrame::empty_with_height(counted)),
+                _ => Some(df),
+            },
             _ => {
                 known.broken = true;
                 None
@@ -411,6 +426,12 @@ fn per_row(expr: &Expr) -> bool {
             truthy,
             falsy,
         } => per_row(predicate) && per_row(truthy) && per_row(falsy),
+        // A date parse with no format infers one from the values it is given: from a
+        // window's alone, it may infer another than the column's.
+        Expr::Function {
+            function: FunctionExpr::StringExpr(StringFunction::Strptime(_, options)),
+            input,
+        } => options.format.is_some() && input.iter().all(per_row),
         Expr::Function { input, function } => {
             PER_ROW_FUNCTIONS.contains(&function.to_string().as_str()) && input.iter().all(per_row)
         }
@@ -424,7 +445,6 @@ const PER_ROW_FUNCTIONS: &[&str] = &[
     "str.strip_chars",
     "str.strip_chars_start",
     "str.strip_chars_end",
-    "str.strptime",
     "str.to_integer",
     "str.replace",
     "str.replace_all",
@@ -468,6 +488,8 @@ fn ends_hash(bytes: &[u8]) -> u64 {
 /// quoted field ends the row; with a comment prefix, a line starting with it at a
 /// row's start is no row. A blank line is a row.
 struct Counter {
+    /// Polars' chunker's count, which every row's must match.
+    lines: CountLines,
     quote: Option<u8>,
     separator: u8,
     eol: u8,
@@ -478,6 +500,11 @@ impl Counter {
     fn of(options: &CsvReadOptions) -> Counter {
         let parse = &options.parse_options;
         Counter {
+            lines: CountLines::new(
+                parse.quote_char,
+                parse.eol_char,
+                parse.comment_prefix.clone(),
+            ),
             quote: parse.quote_char,
             separator: parse.separator,
             eol: parse.eol_char,
@@ -512,6 +539,12 @@ impl Counter {
             };
             #[cfg(test)]
             COUNTED.with(|counted| counted.set(counted.get() + end - pos));
+            // Polars' chunker must see this one row, ending here, too.
+            let last = end == bytes.len();
+            if self.lines.count_rows(&bytes[pos..end], last) != (1, end - pos) {
+                known.broken = true;
+                break;
+            }
             pos = end;
             row += 1;
             if pos - marked >= CHUNK && pos < bytes.len() {

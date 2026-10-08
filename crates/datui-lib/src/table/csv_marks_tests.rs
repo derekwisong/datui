@@ -77,6 +77,9 @@ fn comments_blank_lines_and_crlf_count_as_polars_counts_them() {
         if i % 7 == 0 {
             text.push_str("# a comment, \"unclosed\r\n");
         }
+        if i % 11 == 3 {
+            text.push_str("\r\n");
+        }
         text.push_str(&format!("{i},{}\r\n", i * 2));
     }
     // No line end after the last row.
@@ -147,7 +150,7 @@ fn paging_counts_each_byte_about_once() {
     let mut windows = 0usize;
     for start in (0..2_000).step_by(40) {
         // On the worker it runs on in the app; here on this thread.
-        marks.read(start, 40).unwrap();
+        marks.read(start, 40, None).unwrap();
         windows += 1;
     }
     let counted = COUNTED.with(std::cell::Cell::get) - before;
@@ -251,44 +254,6 @@ fn a_frame_that_moves_rows_is_not_read_from_marks() {
     assert!(marks.window(&other, 3, 2).is_none());
 }
 
-/// The row ends the scalar walk finds are the ones Polars' counter finds, for text of
-/// quotes, separators, comment marks and line ends in every order.
-#[test]
-fn the_walk_ends_rows_where_polars_counter_does() {
-    let alphabet = *b"a,\"\n#\r";
-    let mut seed = 0x9e37_79b9_7f4a_7c15u64;
-    for case in 0..400 {
-        let len = 1 + case % 60;
-        let mut bytes: Vec<u8> = (0..len)
-            .map(|_| {
-                seed ^= seed << 13;
-                seed ^= seed >> 7;
-                seed ^= seed << 17;
-                alphabet[(seed % alphabet.len() as u64) as usize]
-            })
-            .collect();
-        bytes.push(b'\n');
-        for comment in [None, Some("#")] {
-            let options =
-                CsvReadOptions::default().map_parse_options(|p| p.with_comment_prefix(comment));
-            let counter = Counter::of(&options);
-            let (mut pos, mut rows) = (0, 0);
-            while let Some(end) = counter.row_end(&bytes, pos) {
-                pos = end;
-                rows += 1;
-                let (counted, used) = counter.lines.count_rows(&bytes[..pos], false);
-                assert_eq!(
-                    (counted, used),
-                    (rows, pos),
-                    "{:?} with comments {}",
-                    String::from_utf8_lossy(&bytes),
-                    comment.is_some()
-                );
-            }
-        }
-    }
-}
-
 /// A pristine view of a CSV reads its pages from marks; a sorted one through Polars.
 #[test]
 fn a_pristine_view_pages_from_marks() {
@@ -314,4 +279,430 @@ fn a_pristine_view_pages_from_marks() {
     assert!(rows.equals_missing(&want), "{rows}\nwanted\n{want}");
     state.sort(vec!["amount".into()], false);
     assert!(!from_marks(&state).0);
+}
+
+/// xorshift: the same cases on every run.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+
+    fn chance(&mut self, percent: usize) -> bool {
+        self.below(100) < percent
+    }
+}
+
+/// How a random CSV is written.
+struct Style {
+    separator: u8,
+    quote: u8,
+    comment: Option<&'static str>,
+    blank_lines: bool,
+    crlf: bool,
+    ragged: bool,
+    stray_quote: bool,
+}
+
+fn random_field(r: &mut Rng, style: &Style) -> String {
+    let q = style.quote as char;
+    let sep = style.separator as char;
+    match r.below(10) {
+        0 => String::new(),
+        1 => format!("{}", r.below(1000)),
+        2 => format!("{q}a{sep}b\nc{q}"),
+        3 => format!("{q}x{q}{q}y{q}{q}\r\nz{q}"),
+        4 => format!("{q}{q}"),
+        5 if style.stray_quote => format!("ab{q}c"),
+        6 => format!("{q}#not a comment\n# still not{q}"),
+        7 => "NA".into(),
+        _ => format!("w{}", r.below(50)),
+    }
+}
+
+/// A CSV of `rows` rows of `columns` fields in `style`: short and long rows, blank
+/// lines, comments, quoted line ends, quotes inside fields, a BOM, CRLF.
+fn random_csv(r: &mut Rng, style: &Style, columns: usize, rows: usize, header: bool) -> String {
+    let eol = if style.crlf { "\r\n" } else { "\n" };
+    let sep = (style.separator as char).to_string();
+    let mut text = String::new();
+    if r.chance(20) {
+        text.push('\u{feff}');
+    }
+    if header {
+        let names: Vec<String> = (0..columns).map(|i| format!("c{i}")).collect();
+        text.push_str(&names.join(&sep));
+        text.push_str(eol);
+    }
+    for i in 0..rows {
+        if let Some(c) = style.comment
+            && r.chance(10)
+        {
+            let q = style.quote as char;
+            text.push_str(&format!("{c} comment {q}open{sep}{i}{eol}"));
+        }
+        if style.blank_lines && r.chance(8) {
+            text.push_str(eol);
+        }
+        let n = if style.ragged && r.chance(10) {
+            if r.chance(50) {
+                columns + 1
+            } else {
+                columns.saturating_sub(1).max(1)
+            }
+        } else {
+            columns
+        };
+        let mut fields: Vec<String> = (0..n).map(|_| random_field(r, style)).collect();
+        fields[0] = format!("{i}");
+        text.push_str(&fields.join(&sep));
+        if i + 1 < rows || r.chance(70) {
+            text.push_str(if style.crlf && r.chance(80) {
+                "\r\n"
+            } else {
+                "\n"
+            });
+        }
+    }
+    text
+}
+
+/// Random windows of `lf` from marks, in both engines: each is the rows Polars' own
+/// slice gives, or what the whole frame holds there; an error only where the slice
+/// fails too.
+fn random_windows_hold(lf: &LazyFrame, r: &mut Rng, label: &str) -> Vec<String> {
+    let Some(marks) = CsvMarks::of(lf) else {
+        return vec![format!("no marks: {label}")];
+    };
+    let mut wrong = Vec::new();
+    for streaming in [false, true] {
+        let Ok(whole) = crate::analysis::statistics::collect_lazy(lf.clone(), streaming) else {
+            continue;
+        };
+        for _ in 0..8 {
+            let start = r.below(whole.height() + 3);
+            let len = 1 + r.below(12);
+            let Some(window) = marks.window(lf, start, len) else {
+                wrong.push(format!("no window: {label}"));
+                continue;
+            };
+            let truth = whole.slice(start as i64, len);
+            let old = crate::analysis::statistics::collect_lazy(
+                lf.clone().slice(start as i64, len as IdxSize),
+                streaming,
+            );
+            let got = crate::analysis::statistics::collect_lazy(window, streaming);
+            let fine = match (&got, &old) {
+                (Ok(got), Ok(old)) => got.equals_missing(old) || got.equals_missing(&truth),
+                (Ok(got), Err(_)) => got.equals_missing(&truth),
+                (Err(_), old) => old.is_err(),
+            };
+            if !fine {
+                wrong.push(format!(
+                    "{label}: rows {start}+{len} streaming {streaming}: got {got:?}, old {old:?}"
+                ));
+            }
+        }
+    }
+    wrong
+}
+
+fn write_csv(text: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("t.csv");
+    std::fs::write(&path, text).unwrap();
+    (dir, path)
+}
+
+/// Random CSVs as datui opens them, with its options: no window from marks is a
+/// wrong row or an error the slice would not give.
+#[test]
+fn random_csvs_read_from_marks_as_polars_reads_them() {
+    let mut r = Rng(0x1234_5678_9abc_def1);
+    let mut wrong = Vec::new();
+    for case in 0..300 {
+        let style = Style {
+            separator: b',',
+            quote: b'"',
+            comment: [None, Some("#"), Some("//")][r.below(3)],
+            blank_lines: r.chance(40),
+            crlf: r.chance(30),
+            ragged: false,
+            stray_quote: r.chance(20),
+        };
+        let columns = 1 + r.below(4);
+        let rows = r.below(60);
+        let variant = r.below(7);
+        let mut body = random_csv(&mut r, &style, columns, rows, variant != 2);
+        let mut options = OpenOptions {
+            comment_char: style.comment.map(String::from),
+            ..OpenOptions::default()
+        };
+        match variant {
+            1 => {
+                body = format!("junk \"line\nmore, junk\n{body}");
+                options.skip_lines = Some(2);
+            }
+            2 => options.has_header = Some(false),
+            3 => options.skip_rows = Some(r.below(3)),
+            4 => options.null_values = Some(vec!["NA".into(), "w3".into()]),
+            5 => options.skip_initial_space = true,
+            6 => options.ignore_errors = true,
+            _ => {}
+        }
+        let (_dir, path) = write_csv(&body);
+        let Ok(read) = crate::formats::readers::csv::read_delimited(
+            &path,
+            b',',
+            &options,
+            &Default::default(),
+        ) else {
+            continue;
+        };
+        wrong.extend(random_windows_hold(
+            &read.lf,
+            &mut r,
+            &format!("case {case} variant {variant}: {body:?}"),
+        ));
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// Random CSVs scanned with Polars' own options: separators, quote characters,
+/// ragged rows truncated or ignored, missing fields null or not.
+#[test]
+fn random_csvs_with_polars_options_read_from_marks() {
+    let mut r = Rng(0xdead_beef_cafe_f00d);
+    let mut wrong = Vec::new();
+    for case in 0..300 {
+        let style = Style {
+            separator: b",;\t"[r.below(3)],
+            quote: b"\"'"[r.below(2)],
+            comment: [None, Some("#")][r.below(2)],
+            blank_lines: r.chance(40),
+            crlf: r.chance(30),
+            ragged: r.chance(40),
+            stray_quote: r.chance(20),
+        };
+        let columns = 1 + r.below(4);
+        let rows = r.below(60);
+        let body = random_csv(&mut r, &style, columns, rows, true);
+        let (_dir, path) = write_csv(&body);
+        let truncate = style.ragged && r.chance(50);
+        let ignore = style.ragged && !truncate;
+        let lf = LazyCsvReader::new(PlRefPath::try_from_path(&path).unwrap())
+            .with_glob(false)
+            .with_separator(style.separator)
+            .with_quote_char(Some(style.quote))
+            .with_comment_prefix(style.comment.map(PlSmallStr::from))
+            .with_truncate_ragged_lines(truncate)
+            .with_ignore_errors(ignore)
+            .with_missing_is_null(r.chance(50))
+            .with_encoding(CsvEncoding::LossyUtf8)
+            .finish()
+            .unwrap();
+        // The plan's conversion is cached at an open; here, by asking for the schema.
+        let _ = lf.clone().collect_schema();
+        wrong.extend(random_windows_hold(
+            &lf,
+            &mut r,
+            &format!("case {case}: {body:?}"),
+        ));
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// Short rows, a blank line and trailing blank lines read as nulls, as Polars reads
+/// them, wherever a window starts.
+#[test]
+fn short_rows_and_blank_lines_read_as_polars_reads_them() {
+    for text in [
+        "c0,c1,c2\n0,a,b\n1,a\n2,a,b\n3,a,b\n4,a,b\n",
+        "c0,c1,c2\n0,a,b\n1\n2,a,b\n3,a,b\n4,a,b\n",
+        "c0,c1,c2\n\n0,a,b\n1,a,b\n",
+        "c0,c1\n0,a\n\n\n1,b\n2,c\n",
+        "c0,c1\n0,a\n1,b\n\n\n",
+        "c0,c1\r\n0,a\r\n\r\n1,b\r\n2,c\r\n",
+    ] {
+        let (_dir, lf) = frame(text, &OpenOptions::default());
+        windows_match(&lf);
+    }
+}
+
+/// A quote inside a field (`24" monitor`) opens nothing, as in Polars' parser: rows
+/// after it are not shifted, with or without `--ignore-errors`.
+#[test]
+fn a_quote_inside_a_field_shifts_no_row() {
+    let mut text = String::from("id,desc,price\n");
+    for i in 0..3_000 {
+        if i % 500 == 17 {
+            text.push_str(&format!("{i},24\" monitor,{i}\n"));
+        } else {
+            text.push_str(&format!("{i},item {i},{i}.5\n"));
+        }
+    }
+    for ignore_errors in [false, true] {
+        let options = OpenOptions {
+            ignore_errors,
+            ..OpenOptions::default()
+        };
+        let (_dir, lf) = frame(&text, &options);
+        let marks = CsvMarks::of(&lf).unwrap();
+        // Read whole, the file is the truth; Polars' own slice can lose rows after the
+        // quote (its count skips the line ends past it).
+        let whole = lf.clone().collect().ok();
+        for start in (0..3_000).step_by(97) {
+            let got = marks.window(&lf, start, 40).unwrap().collect();
+            let old = lf.clone().slice(start as i64, 40).collect();
+            let truth = whole.as_ref().map(|df| df.slice(start as i64, 40));
+            match (got, old) {
+                (Ok(got), Ok(old)) => assert!(
+                    got.equals_missing(&old) || truth.is_some_and(|t| got.equals_missing(&t)),
+                    "rows {start}+40 (ignore errors {ignore_errors})"
+                ),
+                (Ok(got), Err(_)) => {
+                    let ids = got.column("id").unwrap().i64().unwrap().clone();
+                    assert_eq!(ids.get(0), Some(start as i64), "rows {start}+40");
+                }
+                (Err(e), old) => assert!(old.is_err(), "rows {start}+40 fail only from marks: {e}"),
+            }
+        }
+    }
+}
+
+/// A count that strays from the parser is caught: the rows parsed differ from the
+/// rows counted, the marks break, and the file reads through Polars from then on.
+#[test]
+fn rows_that_parse_other_than_counted_break_the_marks() {
+    // An unclosed quote at a field's start swallows the rest of the file for the count;
+    // Polars' parser, splitting by line, reads on.
+    let mut text = String::from("id,note\n");
+    for i in 0..200 {
+        let note = if i == 50 {
+            "\"open".to_string()
+        } else {
+            format!("n{i}")
+        };
+        text.push_str(&format!("{i},{note}\n"));
+    }
+    let options = OpenOptions {
+        ignore_errors: true,
+        ..OpenOptions::default()
+    };
+    let (_dir, lf) = frame(&text, &options);
+    let marks = CsvMarks::of(&lf).unwrap();
+    let whole = lf.clone().collect().ok();
+    for start in [0, 40, 100, 150] {
+        let got = marks.window(&lf, start, 20).unwrap().collect();
+        let old = lf.clone().slice(start as i64, 20).collect();
+        let truth = whole.as_ref().map(|df| df.slice(start as i64, 20));
+        match (got, old) {
+            (Ok(got), Ok(old)) => assert!(
+                got.equals_missing(&old) || truth.is_some_and(|t| got.equals_missing(&t)),
+                "rows {start}+20"
+            ),
+            // Where the slice fails, rows from marks are the file's lines, in place.
+            (Ok(got), Err(_)) => {
+                let ids: Vec<Option<i64>> =
+                    got.column("id").unwrap().i64().unwrap().iter().collect();
+                let lines: Vec<Option<i64>> =
+                    (start..start + ids.len()).map(|i| Some(i as i64)).collect();
+                assert_eq!(ids, lines, "rows {start}+20");
+            }
+            (Err(_), old) => assert!(old.is_err(), "rows {start}+20 fail only from marks"),
+        }
+    }
+}
+
+/// A hidden column is not parsed from a mark, as Polars' scan skips it: a value it
+/// cannot read fails nothing.
+#[test]
+fn a_hidden_column_is_not_parsed() {
+    let mut text = String::from("a,b\n");
+    for i in 0..300 {
+        if i == 150 {
+            text.push_str(&format!("{i},N/A\n"));
+        } else {
+            text.push_str(&format!("{i},{i}\n"));
+        }
+    }
+    let options = OpenOptions {
+        infer_schema_length: Some(100),
+        ..OpenOptions::default()
+    };
+    let (_dir, lf) = frame(&text, &options);
+    let marks = CsvMarks::of(&lf).unwrap();
+    let shown = lf.clone().select([col("a")]);
+    let old = shown.clone().slice(140, 20).collect().unwrap();
+    let got = marks.window(&shown, 140, 20).unwrap().collect().unwrap();
+    assert!(got.equals_missing(&old), "{got}\nwanted\n{old}");
+}
+
+/// Steps that read other rows than their own are not read from marks.
+#[test]
+fn only_per_row_expressions_read_from_marks() {
+    let (_dir, lf) = frame(&many_rows(50), &OpenOptions::default());
+    let marks = CsvMarks::of(&lf).unwrap();
+    let per_row = [
+        col("id") * lit(2),
+        col("name").str().to_uppercase(),
+        when(col("id").gt(lit(3))).then(lit(1)).otherwise(lit(0)),
+        col("amount").cast(DataType::Int64),
+    ];
+    for expr in per_row {
+        let shown = lf.clone().with_columns([expr.clone().alias("x")]);
+        assert!(marks.window(&shown, 3, 2).is_some(), "{expr:?}");
+    }
+    let across_rows = [
+        col("id").shift(lit(1)),
+        col("id").cum_sum(false),
+        col("id").sum(),
+        col("id").unique(),
+        col("id").sum().over([col("name")]).unwrap(),
+        int_range(lit(0), len(), 1, DataType::Int64),
+    ];
+    for expr in across_rows {
+        let shown = lf.clone().with_columns([expr.clone().alias("x")]);
+        assert!(marks.window(&shown, 3, 2).is_none(), "{expr:?}");
+    }
+}
+
+/// The steps datui's own reads add to a CSV (trimmed names, spaces skipped, text
+/// typed, dates parsed) keep the scan's rows in place: its windows read from marks.
+#[test]
+fn datuis_reads_of_a_csv_read_from_marks() {
+    let text = "id, name ,when,amount,code\n1, a,2020-01-02,1.5,007\n2, b,2020-01-03,2.5,008\n";
+    for (case, options) in [
+        OpenOptions::default(),
+        OpenOptions {
+            skip_initial_space: true,
+            ..OpenOptions::default()
+        },
+        OpenOptions {
+            parse_strings: Some(crate::loading::open_options::ParseStringsTarget::All),
+            ..OpenOptions::default()
+        },
+        OpenOptions {
+            null_values: Some(vec!["a".into()]),
+            parse_dates: true,
+            ..OpenOptions::default()
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (_dir, lf) = frame(text, &options);
+        let marks = CsvMarks::of(&lf).expect("one CSV scan");
+        let window = marks.window(&lf, 1, 1);
+        assert!(window.is_some(), "case {case}: {:?}", lf.logical_plan);
+        windows_of(&marks, &lf);
+    }
 }

@@ -2,29 +2,30 @@
 //!
 //! Polars keeps no row offsets for CSV: a window at row N counts every row before it,
 //! so a page deep in a large file costs a pass over most of the file. [`CsvMarks`]
-//! records where rows start as windows find them, counted as Polars counts them
-//! ([`CountLines`]): a mark every chunk counted, and each window's ends. A window reads
-//! on from the mark at or before it, so paging costs the rows moved, and no byte is
-//! counted twice.
+//! records where rows start as windows find them: a mark every chunk counted, and each
+//! window's ends. A window reads on from the mark at or before it, so paging costs the
+//! rows moved, and no byte is counted twice.
+//!
+//! A wrong row is never shown for a faster one. Rows are counted as Polars' parser
+//! splits them (a quote opens a field only at its start), and every window checks that
+//! the rows parsed are the rows counted and that its marks agree with the ones before.
+//! Any doubt, and the file's windows go back to Polars' own slice for good.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use polars::io::csv::read::_csv_read_internal::CountLines;
 use polars::io::csv::read::CommentPrefix;
 use polars::lazy::dsl::{DslPlan, FileScanDsl, ScanSources};
 use polars::prelude::*;
 use polars_buffer::Buffer;
 
-/// Bytes counted at a step, and between marks: the first step of a seek counts the
-/// least, so a page's move counts about a page; each step after counts twice the last,
-/// up to the most.
+/// Bytes between the marks a long seek leaves.
 #[cfg(not(test))]
-const CHUNK: (usize, usize) = (64 << 10, 1 << 20);
-/// Small in tests, so a test file is counted in many chunks.
+const CHUNK: usize = 1 << 20;
+/// Small in tests, so a test file is marked many times.
 #[cfg(test)]
-const CHUNK: (usize, usize) = (16, 64);
+const CHUNK: usize = 64;
 
 #[cfg(test)]
 thread_local! {
@@ -55,14 +56,29 @@ enum Source {
     Buffer(Buffer<u8>),
 }
 
+/// What tells one version of a file from another: its length, modification time and
+/// inode, and a hash of its first and last few KB.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Stamp {
+    len: u64,
+    modified: Option<SystemTime>,
+    inode: u64,
+    ends: u64,
+}
+
+/// Bytes of each end of a file its [`Stamp`] hashes.
+const STAMP_BYTES: usize = 4096;
+
 /// Marks found so far, for the file as it was when they were found.
 #[derive(Default)]
 struct Known {
-    /// The file's length and modification time when marked: another means the marks
-    /// are of other bytes.
-    stamp: Option<(u64, Option<SystemTime>)>,
+    /// The file when marked: another means the marks are of other bytes.
+    stamp: Option<Stamp>,
     /// (row, byte where it starts), rows ascending; the first is row 0.
     at: Vec<(usize, usize)>,
+    /// A window disagreed with the marks: this version of the file reads through
+    /// Polars' slice from now on.
+    broken: bool,
 }
 
 impl Known {
@@ -72,10 +88,22 @@ impl Known {
         self.at.get(i.checked_sub(1)?).copied()
     }
 
+    /// Record that `row` starts at `byte`. A mark of the row at another byte, or out of
+    /// order with its neighbors, means the count went wrong: the marks break.
     fn mark(&mut self, row: usize, byte: usize) {
         let i = self.at.partition_point(|&(r, _)| r < row);
-        if self.at.get(i).is_none_or(|&(r, _)| r != row) {
-            self.at.insert(i, (row, byte));
+        match self.at.get(i) {
+            Some(&(r, b)) if r == row => self.broken |= b != byte,
+            next => {
+                let before = i.checked_sub(1).map(|j| self.at[j]);
+                let in_order =
+                    before.is_none_or(|(_, b)| b < byte) && next.is_none_or(|&(_, b)| byte < b);
+                if in_order {
+                    self.at.insert(i, (row, byte));
+                } else {
+                    self.broken = true;
+                }
+            }
         }
     }
 }
@@ -123,7 +151,14 @@ impl CsvMarks {
             }
             _ => return None,
         };
-        // Settled when the dataset opened: the plan caches it.
+        // Settled when the dataset opened, and cached in the plan: without it the
+        // schema would be inferred from the file here, on the UI thread.
+        let DslPlan::Scan { cached_ir, .. } = &scan else {
+            return None;
+        };
+        if !cached_ir.lock().is_ok_and(|ir| ir.is_some()) {
+            return None;
+        }
         let schema = LazyFrame::from(scan.clone()).collect_schema().ok()?;
         let run = crate::loading::follow::run_options(options, &schema)?;
         let mut head = (**options).clone();
@@ -139,8 +174,8 @@ impl CsvMarks {
     }
 
     /// Rows `[start, start + len)` of `lf`, read on from the mark at or before them.
-    /// `None` unless `lf` is this scan under steps that keep every row in place
-    /// (selections, new columns, renames), which a pristine view's are.
+    /// `None` unless `lf` is this scan under steps that keep every row in place: see
+    /// [`Self::replace`].
     pub(crate) fn window(
         self: &Arc<Self>,
         lf: &LazyFrame,
@@ -168,7 +203,8 @@ impl CsvMarks {
         })
     }
 
-    /// Put `with` where `plan` reads this scan through row-keeping steps alone.
+    /// Put `with` where `plan` reads this scan through row-keeping steps alone: columns
+    /// selected, renamed or computed row by row from expressions known to be per-row.
     fn replace(&self, plan: &mut DslPlan, with: &DslPlan) -> bool {
         match plan {
             DslPlan::IR { dsl, .. } => {
@@ -190,7 +226,10 @@ impl CsvMarks {
                 *plan = with.clone();
                 true
             }
-            DslPlan::Select { input, .. } | DslPlan::HStack { input, .. } => {
+            DslPlan::Select { input, expr, .. } if expr.iter().all(per_row) => {
+                self.replace(Arc::make_mut(input), with)
+            }
+            DslPlan::HStack { input, exprs, .. } if exprs.iter().all(per_row) => {
                 self.replace(Arc::make_mut(input), with)
             }
             // Polars names its functions by these; it does not export their type.
@@ -211,7 +250,6 @@ impl CsvMarks {
             Source::Path(path) => {
                 let file = std::fs::File::open(path)?;
                 let meta = file.metadata()?;
-                let stamp = Some((meta.len(), meta.modified().ok()));
                 let bytes = if meta.len() == 0 {
                     Buffer::new()
                 } else {
@@ -219,13 +257,21 @@ impl CsvMarks {
                     // scans; see `crate::formats::fixed_records::Bytes::map`.
                     Buffer::from_owner(unsafe { memmap2::Mmap::map(&file)? })
                 };
-                (bytes, stamp)
+                let stamp = Stamp {
+                    len: meta.len(),
+                    modified: meta.modified().ok(),
+                    inode: inode(&meta),
+                    ends: ends_hash(&bytes),
+                };
+                (bytes, Some(stamp))
             }
         };
         let mut known = self.known.lock().unwrap_or_else(|e| e.into_inner());
-        if known.stamp != stamp || known.at.is_empty() {
-            known.at.clear();
-            known.stamp = stamp;
+        if known.stamp != stamp || (known.at.is_empty() && !known.broken) {
+            *known = Known {
+                stamp,
+                ..Known::default()
+            };
             // Where Polars cannot say, every window reads through it as before.
             if let Ok(Some(first)) = self.first_row(&bytes) {
                 known.at.push((0, first));
@@ -253,58 +299,177 @@ impl CsvMarks {
         Ok(at.filter(|&at| at + rest.len() <= bytes.len()))
     }
 
-    /// Rows `[start, start + len)`, parsed as the scan parses them.
-    fn read(&self, start: usize, len: usize) -> PolarsResult<DataFrame> {
-        let (bytes, mut known) = self.bytes()?;
-        let Some(begin) = known.floor(start) else {
-            drop(known);
-            // The first row could not be placed: Polars counts from the start.
-            return LazyFrame::from(self.scan.clone())
-                .slice(start as i64, len as IdxSize)
-                .collect();
-        };
-        let counter = Counter::of(&self.run);
-        let (row, from) = counter.seek(&bytes, &mut known, begin, start);
-        let to = if row < start {
-            from
-        } else {
-            counter.seek(&bytes, &mut known, (row, from), start + len).1
-        };
-        drop(known);
-        if from >= to {
-            return Ok(DataFrame::empty_with_schema(&self.schema));
+    /// Rows `[start, start + len)` of `columns` (every column when `None`), parsed as
+    /// the scan parses them: from a mark when the marks hold, else through Polars.
+    fn read(
+        &self,
+        start: usize,
+        len: usize,
+        columns: Option<&[PlSmallStr]>,
+    ) -> PolarsResult<DataFrame> {
+        match self.read_from_marks(start, len, columns) {
+            Some(df) => Ok(df),
+            None => self.through_polars(start, len, columns),
         }
-        Ok(self
-            .scan_of(bytes.sliced(from..to))?
-            .collect()?
-            .slice(0, len))
     }
 
-    /// The scan, reading `run` as rows from its first byte: Polars' own reader, as the
-    /// scan as loaded reads.
-    fn scan_of(&self, run: Buffer<u8>) -> PolarsResult<LazyFrame> {
-        let DslPlan::Scan {
-            unified_scan_args, ..
-        } = &self.scan
-        else {
-            polars_bail!(ComputeError: "a CSV window without its scan");
+    /// The window as Polars reads it without marks: every row before it counted.
+    fn through_polars(
+        &self,
+        start: usize,
+        len: usize,
+        columns: Option<&[PlSmallStr]>,
+    ) -> PolarsResult<DataFrame> {
+        let mut lf = LazyFrame::from(self.scan.clone());
+        if let Some(columns) = columns {
+            lf = lf.select(
+                columns
+                    .iter()
+                    .map(|name| col(name.clone()))
+                    .collect::<Vec<_>>(),
+            );
+        }
+        lf.slice(start as i64, len as IdxSize).collect()
+    }
+
+    /// The window read from the mark before it, or `None` when the marks cannot be
+    /// trusted for it: then they are not trusted again for this version of the file.
+    fn read_from_marks(
+        &self,
+        start: usize,
+        len: usize,
+        columns: Option<&[PlSmallStr]>,
+    ) -> Option<DataFrame> {
+        let (bytes, mut known) = self.bytes().ok()?;
+        if known.broken {
+            return None;
+        }
+        let begin = known.floor(start)?;
+        let counter = Counter::of(&self.run);
+        let (row, from) = counter.seek(&bytes, &mut known, begin, start);
+        let (end_row, to) = if row < start {
+            (row, from)
+        } else {
+            counter.seek(&bytes, &mut known, (row, from), start + len)
         };
-        Ok(LazyFrame::from(DslPlan::Scan {
-            sources: ScanSources::Buffers(Arc::from([run])),
-            unified_scan_args: unified_scan_args.clone(),
-            scan_type: Box::new(FileScanDsl::Csv {
-                options: Arc::new(self.run.clone()),
-            }),
-            cached_ir: Default::default(),
-        }))
+        if known.broken {
+            return None;
+        }
+        let counted = end_row.saturating_sub(start);
+        if counted == 0 {
+            // Past the last row by the count: an empty read would say where the data
+            // ends, which only Polars can say for sure.
+            return None;
+        }
+        // Parsed as Polars parses the file, and checked: rows that do not come out as
+        // counted mean the count is not Polars', here or before.
+        let parsed = self.parse(&bytes[from..to], columns);
+        match parsed {
+            Ok(df) if df.height() == counted => Some(df),
+            _ => {
+                known.broken = true;
+                None
+            }
+        }
+    }
+
+    /// `run`, rows from its first byte, as the scan as loaded parses them: Polars' own
+    /// reader with the scan's options. Only `columns` are parsed.
+    fn parse(&self, run: &[u8], columns: Option<&[PlSmallStr]>) -> PolarsResult<DataFrame> {
+        let mut options = self.run.clone();
+        if let Some(columns) = columns {
+            options.columns = Some(columns.iter().cloned().collect());
+        }
+        let df = options
+            .into_reader_with_file_handle(std::io::Cursor::new(run))
+            .finish()?;
+        project(df, columns)
     }
 }
 
-/// Counts rows as Polars does: quoted line ends are not row ends, and with a comment
-/// prefix, comment lines are not rows.
+/// `df` as `columns`, in their order.
+fn project(df: DataFrame, columns: Option<&[PlSmallStr]>) -> PolarsResult<DataFrame> {
+    match columns {
+        Some(columns) => df.select(columns.iter().cloned()),
+        None => Ok(df),
+    }
+}
+
+/// Whether `expr` computes each row from that row alone: columns, scalar literals,
+/// casts, arithmetic and comparisons, conditions, and the functions datui's reads
+/// apply to text. Anything else (a shift, a rank, an aggregation, a window) reads
+/// other rows, which a window does not hold.
+fn per_row(expr: &Expr) -> bool {
+    match expr {
+        Expr::Column(_) => true,
+        Expr::Literal(value) => value.is_scalar(),
+        Expr::Alias(inner, _) | Expr::KeepName(inner) => per_row(inner),
+        Expr::Cast { expr, .. } => per_row(expr),
+        Expr::BinaryExpr { left, right, .. } => per_row(left) && per_row(right),
+        Expr::Ternary {
+            predicate,
+            truthy,
+            falsy,
+        } => per_row(predicate) && per_row(truthy) && per_row(falsy),
+        Expr::Function { input, function } => {
+            PER_ROW_FUNCTIONS.contains(&function.to_string().as_str()) && input.iter().all(per_row)
+        }
+        _ => false,
+    }
+}
+
+/// Functions known to compute a row from that row alone, by the names Polars gives
+/// them.
+const PER_ROW_FUNCTIONS: &[&str] = &[
+    "str.strip_chars",
+    "str.strip_chars_start",
+    "str.strip_chars_end",
+    "str.strptime",
+    "str.to_integer",
+    "str.replace",
+    "str.replace_all",
+    "str.to_lowercase",
+    "str.to_uppercase",
+    "str.len_bytes",
+    "str.len_chars",
+    "str.contains",
+    "str.starts_with",
+    "str.ends_with",
+    "is_null",
+    "is_not_null",
+    "fill_null",
+    "coalesce",
+    "abs",
+    "round",
+    "not",
+];
+
+#[cfg(unix)]
+fn inode(meta: &std::fs::Metadata) -> u64 {
+    std::os::unix::fs::MetadataExt::ino(meta)
+}
+
+#[cfg(not(unix))]
+fn inode(_meta: &std::fs::Metadata) -> u64 {
+    0
+}
+
+/// A hash of the first and last [`STAMP_BYTES`] of `bytes`.
+fn ends_hash(bytes: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes[..bytes.len().min(STAMP_BYTES)].hash(&mut hasher);
+    bytes[bytes.len().saturating_sub(STAMP_BYTES)..].hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Counts rows as Polars' parser splits them: a quote opens a field only at the
+/// field's start, and closes at the next quote not doubled; a line end outside a
+/// quoted field ends the row; with a comment prefix, a line starting with it at a
+/// row's start is no row. A blank line is a row.
 struct Counter {
-    lines: CountLines,
     quote: Option<u8>,
+    separator: u8,
     eol: u8,
     comment: Option<Vec<u8>>,
 }
@@ -313,12 +478,8 @@ impl Counter {
     fn of(options: &CsvReadOptions) -> Counter {
         let parse = &options.parse_options;
         Counter {
-            lines: CountLines::new(
-                parse.quote_char,
-                parse.eol_char,
-                parse.comment_prefix.clone(),
-            ),
             quote: parse.quote_char,
+            separator: parse.separator,
             eol: parse.eol_char,
             comment: parse.comment_prefix.as_ref().map(|prefix| match prefix {
                 CommentPrefix::Single(c) => vec![*c],
@@ -328,8 +489,8 @@ impl Counter {
     }
 
     /// From row `at.0`, which starts at byte `at.1`, on to row `target`: that row and
-    /// where it starts, or the last row and the end when the bytes end first. Whole
-    /// chunks are counted at once and marked; the rest a row at a time.
+    /// where it starts, or the last row and the end when the bytes end first. A mark
+    /// every [`CHUNK`] bytes passed, and at the end.
     fn seek(
         &self,
         bytes: &[u8],
@@ -338,38 +499,25 @@ impl Counter {
         target: usize,
     ) -> (usize, usize) {
         let (mut row, mut pos) = at;
-        let mut size = CHUNK.0;
+        let mut marked = pos;
         while row < target && pos < bytes.len() {
-            let end = (pos + size).min(bytes.len());
-            let last = end == bytes.len();
-            #[cfg(test)]
-            COUNTED.with(|counted| counted.set(counted.get() + end - pos));
-            let (rows, used) = self.lines.count_rows(&bytes[pos..end], last);
-            if rows == 0 {
-                if last {
+            let end = match self.row_end(bytes, pos) {
+                Some(end) => end,
+                // A last row with no line end is a row, unless only comments are left.
+                None if self.only_comments(&bytes[pos..]) => {
+                    pos = bytes.len();
                     break;
                 }
-                // A row longer than the chunk.
-                size = size.saturating_mul(2);
-                continue;
-            }
-            if row + rows > target {
-                break;
-            }
-            row += rows;
-            pos += used;
-            if pos < bytes.len() {
-                known.mark(row, pos);
-            }
-            size = (size * 2).min(CHUNK.1.max(size));
-        }
-        while row < target && pos < bytes.len() {
-            // A last row with no line end is a row too.
-            let end = self.row_end(bytes, pos).unwrap_or(bytes.len());
+                None => bytes.len(),
+            };
             #[cfg(test)]
             COUNTED.with(|counted| counted.set(counted.get() + end - pos));
             pos = end;
             row += 1;
+            if pos - marked >= CHUNK && pos < bytes.len() {
+                known.mark(row, pos);
+                marked = pos;
+            }
         }
         if row == target && pos < bytes.len() {
             known.mark(row, pos);
@@ -377,23 +525,62 @@ impl Counter {
         (row, pos)
     }
 
+    /// Whether `rest` holds comment lines and nothing else.
+    fn only_comments(&self, mut rest: &[u8]) -> bool {
+        let Some(prefix) = &self.comment else {
+            return false;
+        };
+        while rest.starts_with(prefix) {
+            match memchr::memchr(self.eol, rest) {
+                Some(n) => rest = &rest[n + 1..],
+                None => return true,
+            }
+        }
+        rest.is_empty()
+    }
+
     /// Where the row starting at `pos` ends, past its line end, comment lines before it
-    /// passed over as [`CountLines`] passes them; `None` when the bytes end first.
+    /// passed over; `None` when the bytes end first.
     fn row_end(&self, bytes: &[u8], mut pos: usize) -> Option<usize> {
         if let Some(prefix) = &self.comment {
             while bytes[pos..].starts_with(prefix) {
-                pos += prefix.len() + memchr::memchr(self.eol, &bytes[pos + prefix.len()..])? + 1;
+                pos += memchr::memchr(self.eol, &bytes[pos..])? + 1;
             }
         }
-        let mut quoted = false;
-        for (i, &c) in bytes[pos..].iter().enumerate() {
-            if Some(c) == self.quote {
-                quoted = !quoted;
-            } else if c == self.eol && !quoted {
-                return Some(pos + i + 1);
+        let quote = self.quote;
+        let mut field_start = pos;
+        let mut i = pos;
+        loop {
+            if quote.is_some_and(|q| bytes.get(i) == Some(&q)) && i == field_start {
+                // A quoted field: on to its closing quote; a doubled quote is one quote.
+                let q = quote.unwrap_or_default();
+                i += 1;
+                loop {
+                    i += memchr::memchr(q, bytes.get(i..)?)?;
+                    if bytes.get(i + 1) == Some(&q) {
+                        i += 2;
+                    } else {
+                        i += 1;
+                        break;
+                    }
+                }
+                continue;
+            }
+            let rest = bytes.get(i..)?;
+            let n = match quote {
+                Some(q) => memchr::memchr3(self.separator, self.eol, q, rest)?,
+                None => memchr::memchr2(self.separator, self.eol, rest)?,
+            };
+            i += n;
+            let c = bytes[i];
+            if c == self.eol {
+                return Some(i + 1);
+            }
+            i += 1;
+            if c == self.separator {
+                field_start = i;
             }
         }
-        None
     }
 }
 
@@ -413,9 +600,15 @@ impl AnonymousScan for Run {
         Ok(self.marks.schema.clone())
     }
 
+    /// The columns a view shows: hidden ones are not parsed, as Polars' scan skips them.
+    fn allows_projection_pushdown(&self) -> bool {
+        true
+    }
+
     fn scan(&self, args: AnonymousScanArgs) -> PolarsResult<DataFrame> {
         let len = args.n_rows.map_or(self.len, |n| n.min(self.len));
-        self.marks.read(self.start, len)
+        self.marks
+            .read(self.start, len, args.with_columns.as_deref())
     }
 }
 

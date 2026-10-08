@@ -2553,9 +2553,8 @@ impl App {
         app_config: AppConfig,
         view_manager: Views,
     ) -> App {
-        let cache = CacheManager::new(APP_NAME).unwrap_or_else(|_| CacheManager {
-            cache_dir: std::env::temp_dir().join(APP_NAME),
-        });
+        let cache = CacheManager::new(APP_NAME)
+            .unwrap_or_else(|_| CacheManager::with_dir(std::env::temp_dir().join(APP_NAME)));
         let jobs = Jobs::new(events.clone());
         let formats = Arc::new(crate::formats::Registry::load(
             &crate::formats::search_path_for(&app_config),

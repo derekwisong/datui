@@ -176,6 +176,7 @@ impl<K: Kind> Store<K> {
         K::Value: 'a,
     {
         let mut written = Vec::new();
+        let mut bytes = 0u64;
         for (key, fingerprint, value) in entries {
             let file = self.file(key);
             let stored = (|| -> Result<()> {
@@ -190,6 +191,7 @@ impl<K: Kind> Store<K> {
                 }
                 fs::create_dir_all(self.dir())?;
                 atomic_write(&file, &frame)?;
+                bytes += frame.len() as u64;
                 Ok(())
             })();
             match stored {
@@ -197,8 +199,23 @@ impl<K: Kind> Store<K> {
                 Err(e) => log::warn!(target: "datui", "save a {} entry: {e:#}", K::DIR),
             }
         }
-        if !written.is_empty() {
+        if !written.is_empty() && self.may_pass_budget(bytes) {
             self.sweep(&written);
+        }
+    }
+
+    /// Whether the kind may now be past its budget: unknown until this session's first
+    /// sweep, then what that sweep found plus everything written since. Sweeping reads
+    /// the whole directory, and measuring a directory of thousands writes a batch at a
+    /// time; a sweep per batch grew with the cache.
+    fn may_pass_budget(&self, written: u64) -> bool {
+        let mut swept = self.cache.swept.lock().unwrap_or_else(|e| e.into_inner());
+        match swept.get_mut(K::DIR) {
+            Some(total) => {
+                *total = total.saturating_add(written);
+                *total > self.budget
+            }
+            None => true,
         }
     }
 
@@ -232,7 +249,13 @@ impl<K: Kind> Store<K> {
                     }
                 }
                 let mut total: u64 = kept.iter().map(|(_, len, _)| len).sum();
+                let found = self.cache.swept.clone();
+                let note = |total: u64| {
+                    let mut swept = found.lock().unwrap_or_else(|e| e.into_inner());
+                    swept.insert(K::DIR, total);
+                };
                 if total <= self.budget {
+                    note(total);
                     return Ok(());
                 }
                 kept.sort();
@@ -244,6 +267,7 @@ impl<K: Kind> Store<K> {
                         total -= len;
                     }
                 }
+                note(total);
                 Ok(())
             })
             .or_log(&format!("sweep the {} cache", K::DIR));

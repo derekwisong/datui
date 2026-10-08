@@ -213,9 +213,10 @@ fn a_hit_only_touches<K: Sample>() {
     let _ = inode;
 }
 
+/// A session's first write sweeps; later ones only past the budget.
 fn sweeps_stale_temp_files<K: Sample>() {
     let (store, _dir) = store::<K>();
-    store.put("k/a", "fp", &K::sample(1));
+    fs::create_dir_all(store.dir()).unwrap();
     let stale = store.dir().join("x.shape.1.0.tmp");
     let fresh = store.dir().join("x.shape.1.1.tmp");
     fs::write(&stale, b"half").unwrap();
@@ -224,6 +225,24 @@ fn sweeps_stale_temp_files<K: Sample>() {
     store.put("k/b", "fp", &K::sample(1));
     assert!(!stale.exists(), "a dead writer's temp file goes");
     assert!(fresh.exists(), "a live writer's stays");
+}
+
+/// After its first sweep a session knows the kind's bytes and sweeps again only when
+/// its writes could pass the budget: measuring a directory of thousands writes a batch
+/// at a time, and each sweep reads the whole directory.
+fn sweeps_only_when_the_budget_may_pass<K: Sample>() {
+    let (store, _dir) = store::<K>();
+    store.put("k/a", "fp", &K::sample(1));
+    let stale = store.dir().join("x.shape.1.0.tmp");
+    fs::write(&stale, b"half").unwrap();
+    age(&stale, 1_000);
+    store.put("k/b", "fp", &K::sample(1));
+    assert!(stale.exists(), "well under the budget, nothing was swept");
+    let one = fs::metadata(store.file("k/a")).unwrap().len();
+    let store = store.with_budget(2 * one);
+    store.put("k/c", "fp", &K::sample(1));
+    assert!(!stale.exists(), "past it, the sweep came");
+    assert_eq!(store.len(), 2, "and kept the budget");
 }
 
 fn clear_all_removes_it<K: Sample>() {
@@ -296,6 +315,10 @@ macro_rules! suite {
             #[test]
             fn sweeps_stale_temp_files() {
                 super::sweeps_stale_temp_files::<$kind>();
+            }
+            #[test]
+            fn sweeps_only_when_the_budget_may_pass() {
+                super::sweeps_only_when_the_budget_may_pass::<$kind>();
             }
             #[test]
             fn clear_all_removes_it() {

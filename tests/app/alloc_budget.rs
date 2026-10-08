@@ -1,7 +1,7 @@
-//! Allocation budgets for keys the table repeats: a change that multiplies the work
-//! a key does fails here. Counted on the test's own thread (the key and the frame it
-//! draws), so background jobs and other tests do not count. Budgets are about twice
-//! what was measured.
+//! Allocation budgets for keys the table repeats, and the home screen's filter and
+//! measuring: a change that multiplies the work a key does fails here. Counted on the
+//! test's own thread (the key and the frame it draws), so background jobs and other
+//! tests do not count. Budgets are about twice what was measured.
 //!
 //! What they do not see: work moved off the UI thread (onto Polars' or rayon's pool)
 //! is not counted, however much it allocates. They were measured on a debug build;
@@ -193,4 +193,145 @@ fn row_down_over_numbers_stays_within_budget() {
     // cells; before the cells were kept through a scroll, 7,965 and 566 KB.
     assert!(calls <= 5_000, "{calls} allocations per key");
     assert!(bytes <= 700_000, "{bytes} bytes per key");
+}
+
+/// What the home screen still has out: a listing, a search walk or its scoring, a
+/// measuring or classifying batch, a cloud peek.
+fn home_busy(app: &App) -> bool {
+    let home = &app.home;
+    home.listing_in_flight
+        || home.search.running
+        || home.search.scoring
+        || home.measure_in_flight
+        || home.classify_in_flight
+        || !home.peeking.is_empty()
+}
+
+/// Allocation calls on this thread, apart: handling events and keys, and drawing frames.
+#[derive(Debug, Default)]
+struct Tally {
+    handled: usize,
+    frames: usize,
+    drawn: usize,
+}
+
+impl Tally {
+    fn handle(&mut self, app: &mut App, event: AppEvent) {
+        self.handled += counted(|| {
+            let mut next = Some(event);
+            while let Some(event) = next {
+                next = app.event(event);
+            }
+        })
+        .0;
+    }
+
+    fn draw(&mut self, app: &mut App) {
+        self.frames += counted(|| {
+            app.render(SCREEN, &mut Buffer::empty(SCREEN));
+            app.request_what_the_frame_needs();
+        })
+        .0;
+        self.drawn += 1;
+    }
+}
+
+/// Run the loop as the app does at its busiest, a frame after every event, until the
+/// home screen has nothing out and nothing is queued.
+fn home_until_quiet(app: &mut App, rx: &mpsc::Receiver<AppEvent>, tally: &mut Tally) {
+    let deadline = std::time::Instant::now() + common::HANG_GUARD;
+    loop {
+        tally.draw(app);
+        if let Ok(event) = rx.try_recv() {
+            tally.handle(app, event);
+            continue;
+        }
+        if !home_busy(app) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the home screen never settled: {}",
+            common::home_pending(app)
+        );
+        if let Ok(event) = rx.recv_timeout(common::FRAME_WAIT) {
+            tally.handle(app, event);
+        }
+    }
+}
+
+/// Browsing a directory of 1,500 files measures every one, those on screen first, and
+/// each measurement costs its row, not the listing; then filter keystrokes narrow it.
+/// Once 5.4 million allocations a key over 5,000 files: every measurement that landed
+/// folded every row again and scored the whole listing again (#813). 1,500 files keep
+/// the search's scoring inline (`SCORE_INLINE_MAX` is 2,000).
+#[test]
+fn home_filter_keys_and_measurements_stay_within_budget() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let words = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"];
+    for i in 0..1_500 {
+        let name = format!("report_{i:05}_{}.csv", words[i % words.len()]);
+        std::fs::write(dir.path().join(name), b"a,b\n1,2\n").unwrap();
+    }
+    let mut config = datui::config::AppConfig::default();
+    config.home.desktop_recents = false;
+    config.home.hide = vec!["examples".to_string()];
+    config.cloud.discover = Some(datui::config::CloudDiscover::None);
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new_with_config(
+        tx,
+        common::test_runtime(),
+        datui::Theme {
+            colors: std::collections::HashMap::new(),
+        },
+        config,
+    );
+    let cache = tempfile::TempDir::new().unwrap();
+    app.use_cache(datui::CacheManager::with_dir(cache.path().to_path_buf()));
+    app.home.browsing = Some(dir.path().to_path_buf());
+    app.enter_home();
+    let mut browsing = Tally::default();
+    home_until_quiet(&mut app, &rx, &mut browsing);
+    let measured = app.home.enriched.len();
+    assert!(measured >= 1_500, "every file measured: {measured}");
+
+    let mut per_key = Vec::new();
+    for c in "rprt4".chars() {
+        let mut tally = Tally::default();
+        tally.handle(
+            &mut app,
+            AppEvent::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)),
+        );
+        home_until_quiet(&mut app, &rx, &mut tally);
+        per_key.push((c, tally));
+    }
+    assert_eq!(app.home.filter, "rprt4");
+
+    // Measured: 9 allocations handling a measurement, 1,700 drawing a frame while they
+    // land (the rows folded in, the list built, the screen drawn); 2,900 to 7,900
+    // handling a filter key and the search batches it brings, 2,100 to 2,300 a frame.
+    // Before #813: 137 a measurement, 3,100 a frame, 14,700 to 42,100 a key. The
+    // budgets are about twice what they are now.
+    assert!(
+        browsing.handled / measured <= 20,
+        "{} allocations handling {measured} measurements",
+        browsing.handled
+    );
+    for (what, tally) in std::iter::once(("browsing", &browsing))
+        .chain(per_key.iter().map(|(_, tally)| ("a key", tally)))
+    {
+        assert!(
+            tally.frames / tally.drawn <= 4_500,
+            "{what}: {} frames made {} allocations: {per_key:?}",
+            tally.drawn,
+            tally.frames
+        );
+    }
+    for (c, tally) in &per_key {
+        assert!(
+            tally.handled <= 16_000,
+            "handling {c:?} made {} allocations: {per_key:?}",
+            tally.handled
+        );
+    }
 }

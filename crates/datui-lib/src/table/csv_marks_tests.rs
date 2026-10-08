@@ -378,8 +378,21 @@ fn random_csv(r: &mut Rng, style: &Style, columns: usize, rows: usize, header: b
 /// Random windows of `lf` from marks, in both engines: each is the rows Polars' own
 /// slice gives, or what the whole frame holds there; an error only where the slice
 /// fails too.
-fn random_windows_hold(lf: &LazyFrame, r: &mut Rng, label: &str) -> Vec<String> {
-    let Some(marks) = CsvMarks::of(lf) else {
+fn random_windows_hold(
+    lf: &LazyFrame,
+    ignores_errors: bool,
+    r: &mut Rng,
+    label: &str,
+) -> Vec<String> {
+    let marks = CsvMarks::of(lf);
+    if ignores_errors {
+        // Polars' slice alone decides what such a file shows.
+        return match marks {
+            Some(_) => vec![format!("marks with errors ignored: {label}")],
+            None => Vec::new(),
+        };
+    }
+    let Some(marks) = marks else {
         return vec![format!("no marks: {label}")];
     };
     let mut wrong = Vec::new();
@@ -469,6 +482,7 @@ fn random_csvs_read_from_marks_as_polars_reads_them() {
         };
         wrong.extend(random_windows_hold(
             &read.lf,
+            options.ignore_errors,
             &mut r,
             &format!("case {case} variant {variant}: {body:?}"),
         ));
@@ -513,6 +527,7 @@ fn random_csvs_with_polars_options_read_from_marks() {
         let _ = lf.clone().collect_schema();
         wrong.extend(random_windows_hold(
             &lf,
+            ignore,
             &mut r,
             &format!("case {case}: {body:?}"),
         ));
@@ -537,10 +552,12 @@ fn short_rows_and_blank_lines_read_as_polars_reads_them() {
     }
 }
 
-/// A quote inside a field (`24" monitor`) opens nothing, as in Polars' parser: rows
-/// after it are not shifted, with or without `--ignore-errors`.
+/// A quote inside a field (`24" monitor`): Polars' parser reads past it, but its
+/// chunker takes it to open a quoted run, so the two counts part there and the marks
+/// break. Every window then reads as Polars' slice reads it, erring where it errs.
+/// With `--ignore-errors` there are no marks at all.
 #[test]
-fn a_quote_inside_a_field_shifts_no_row() {
+fn a_quote_inside_a_field_reads_as_polars_slice() {
     let mut text = String::from("id,desc,price\n");
     for i in 0..3_000 {
         if i % 500 == 17 {
@@ -549,41 +566,41 @@ fn a_quote_inside_a_field_shifts_no_row() {
             text.push_str(&format!("{i},item {i},{i}.5\n"));
         }
     }
-    for ignore_errors in [false, true] {
-        let options = OpenOptions {
-            ignore_errors,
-            ..OpenOptions::default()
-        };
-        let (_dir, lf) = frame(&text, &options);
-        let marks = CsvMarks::of(&lf).unwrap();
-        // Read whole, the file is the truth; Polars' own slice can lose rows after the
-        // quote (its count skips the line ends past it).
-        let whole = lf.clone().collect().ok();
-        for start in (0..3_000).step_by(97) {
-            let got = marks.window(&lf, start, 40).unwrap().collect();
-            let old = lf.clone().slice(start as i64, 40).collect();
-            let truth = whole.as_ref().map(|df| df.slice(start as i64, 40));
-            match (got, old) {
-                (Ok(got), Ok(old)) => assert!(
-                    got.equals_missing(&old) || truth.is_some_and(|t| got.equals_missing(&t)),
-                    "rows {start}+40 (ignore errors {ignore_errors})"
-                ),
-                (Ok(got), Err(_)) => {
-                    let ids = got.column("id").unwrap().i64().unwrap().clone();
-                    assert_eq!(ids.get(0), Some(start as i64), "rows {start}+40");
-                }
-                (Err(e), old) => assert!(old.is_err(), "rows {start}+40 fail only from marks: {e}"),
+    let (_dir, lf) = frame(&text, &OpenOptions::default());
+    let marks = CsvMarks::of(&lf).unwrap();
+    for start in (0..3_000).step_by(97) {
+        let got = marks.window(&lf, start, 40).unwrap().collect();
+        let old = lf.clone().slice(start as i64, 40).collect();
+        match (got, old) {
+            (Ok(got), Ok(old)) => assert!(got.equals_missing(&old), "rows {start}+40"),
+            // Before the quote, rows where Polars' slice fails reading on past them are
+            // the file's lines, in place.
+            (Ok(got), Err(_)) => {
+                assert!(start < 17, "rows {start}+40 past the quote");
+                let ids: Vec<Option<i64>> =
+                    got.column("id").unwrap().i64().unwrap().iter().collect();
+                let lines: Vec<Option<i64>> =
+                    (start..start + ids.len()).map(|i| Some(i as i64)).collect();
+                assert_eq!(ids, lines, "rows {start}+40");
             }
+            (Err(e), old) => assert!(old.is_err(), "rows {start}+40 fail only from marks: {e}"),
         }
     }
+    assert!(marks.known.lock().unwrap().broken, "the counts parted");
+
+    let ignoring = OpenOptions {
+        ignore_errors: true,
+        ..OpenOptions::default()
+    };
+    let (_dir, lf) = frame(&text, &ignoring);
+    assert!(CsvMarks::of(&lf).is_none(), "no marks with errors ignored");
 }
 
-/// A count that strays from the parser is caught: the rows parsed differ from the
-/// rows counted, the marks break, and the file reads through Polars from then on.
+/// The two counts agree on an unclosed quote at a field's start (both read on to the
+/// next quote): the rows past it are Polars' own reading of those bytes, merged rows
+/// and all, and match its slice wherever that reads them.
 #[test]
-fn rows_that_parse_other_than_counted_break_the_marks() {
-    // An unclosed quote at a field's start swallows the rest of the file for the count;
-    // Polars' parser, splitting by line, reads on.
+fn an_unclosed_quote_reads_as_polars_reads_it() {
     let mut text = String::from("id,note\n");
     for i in 0..200 {
         let note = if i == 50 {
@@ -593,24 +610,15 @@ fn rows_that_parse_other_than_counted_break_the_marks() {
         };
         text.push_str(&format!("{i},{note}\n"));
     }
-    let options = OpenOptions {
-        ignore_errors: true,
-        ..OpenOptions::default()
-    };
-    let (_dir, lf) = frame(&text, &options);
+    let (_dir, lf) = frame(&text, &OpenOptions::default());
     let marks = CsvMarks::of(&lf).unwrap();
-    let whole = lf.clone().collect().ok();
-    for start in [0, 40, 100, 150] {
+    for start in [0, 40, 49, 50, 100, 150] {
         let got = marks.window(&lf, start, 20).unwrap().collect();
         let old = lf.clone().slice(start as i64, 20).collect();
-        let truth = whole.as_ref().map(|df| df.slice(start as i64, 20));
         match (got, old) {
-            (Ok(got), Ok(old)) => assert!(
-                got.equals_missing(&old) || truth.is_some_and(|t| got.equals_missing(&t)),
-                "rows {start}+20"
-            ),
-            // Where the slice fails, rows from marks are the file's lines, in place.
+            (Ok(got), Ok(old)) => assert!(got.equals_missing(&old), "rows {start}+20"),
             (Ok(got), Err(_)) => {
+                assert!(start + got.height() <= 50, "rows {start}+20 past the quote");
                 let ids: Vec<Option<i64>> =
                     got.column("id").unwrap().i64().unwrap().iter().collect();
                 let lines: Vec<Option<i64>> =
@@ -620,6 +628,54 @@ fn rows_that_parse_other_than_counted_break_the_marks() {
             (Err(_), old) => assert!(old.is_err(), "rows {start}+20 fail only from marks"),
         }
     }
+}
+
+/// A window that reads no columns (a count) parses one to check the rows against, and
+/// does not break the marks.
+#[test]
+fn a_window_of_no_columns_counts_its_rows() {
+    let (_dir, lf) = frame(&many_rows(200), &OpenOptions::default());
+    let marks = CsvMarks::of(&lf).unwrap();
+    let rows = marks.read(150, 20, Some(&[])).unwrap();
+    assert_eq!((rows.height(), rows.width()), (20, 0));
+    assert!(!marks.known.lock().unwrap().broken);
+}
+
+/// A date parse with no format infers it from the values it sees: from a window's it
+/// could infer another than the whole column's, so it is read through Polars. One with
+/// a format reads from marks.
+#[test]
+fn a_date_parse_with_no_format_is_not_read_from_marks() {
+    let mut text = String::from("id,d\n");
+    for i in 0..400 {
+        if i < 200 {
+            text.push_str(&format!("{i},2020-01-{:02}\n", i % 28 + 1));
+        } else {
+            text.push_str(&format!("{i},{:02}/01/2020\n", i % 28 + 1));
+        }
+    }
+    let options = OpenOptions {
+        parse_dates: false,
+        infer_schema_length: Some(0),
+        ..OpenOptions::default()
+    };
+    let (_dir, lf) = frame(&text, &options);
+    let marks = CsvMarks::of(&lf).unwrap();
+    let parse = |format: Option<&str>| {
+        let options = StrptimeOptions {
+            format: format.map(Into::into),
+            strict: false,
+            exact: true,
+            cache: true,
+        };
+        lf.clone()
+            .with_columns([col("d").str().to_date(options).alias("parsed")])
+    };
+    assert!(marks.window(&parse(None), 250, 3).is_none());
+    let explicit = parse(Some("%Y-%m-%d"));
+    let got = marks.window(&explicit, 250, 3).unwrap().collect().unwrap();
+    let old = explicit.slice(250, 3).collect().unwrap();
+    assert!(got.equals_missing(&old));
 }
 
 /// A hidden column is not parsed from a mark, as Polars' scan skips it: a value it
@@ -705,4 +761,106 @@ fn datuis_reads_of_a_csv_read_from_marks() {
         assert!(window.is_some(), "case {case}: {:?}", lf.logical_plan);
         windows_of(&marks, &lf);
     }
+}
+
+/// Random files of quotes where Polars' parser and chunker part (`24" tv`, `O"Brien`,
+/// `5'11"`), quoted separators and doubled quotes, rows over two lines, unclosed
+/// quotes, CRLF. A window from marks shows Polars' slice, or, where the slice fails or
+/// reads otherwise, the rows the file was written with, up to any unclosed quote.
+/// With `--ignore-errors` there are no marks.
+#[test]
+fn where_polars_slice_fails_marks_show_only_the_files_rows() {
+    let mut r = Rng(0x5151_7777_aaaa_0001);
+    let mut wrong = Vec::new();
+    for case in 0..300 {
+        let rows = 5 + r.below(300);
+        let unclosed_at = r.chance(30).then(|| r.below(rows));
+        let eol = if r.chance(30) { "\r\n" } else { "\n" };
+        let mut text = format!("id,desc,n{eol}");
+        let mut written: Vec<String> = Vec::new();
+        for i in 0..rows {
+            let (raw, value) = if Some(i) == unclosed_at {
+                ("\"oops".to_string(), None)
+            } else {
+                match r.below(8) {
+                    0 => (format!("{}\" tv", r.below(90)), None),
+                    1 => ("O\"Brien".to_string(), None),
+                    2 => ("\"q, \"\"x\"\"\"".to_string(), Some("q, \"x\"".to_string())),
+                    3 => (
+                        format!("\"multi{eol}line\""),
+                        Some(format!("multi{eol}line")),
+                    ),
+                    4 => ("5'11\"".to_string(), None),
+                    _ => (format!("w{i}"), None),
+                }
+            };
+            written.push(value.unwrap_or_else(|| raw.clone()));
+            text.push_str(&format!("{i},{raw},{i}{eol}"));
+        }
+        let ignore_errors = r.chance(30);
+        let options = OpenOptions {
+            ignore_errors,
+            ..OpenOptions::default()
+        };
+        let (_dir, path) = write_csv(&text);
+        let Ok(read) = crate::formats::readers::csv::read_delimited(
+            &path,
+            b',',
+            &options,
+            &Default::default(),
+        ) else {
+            continue;
+        };
+        let lf = read.lf;
+        let marks = CsvMarks::of(&lf);
+        if ignore_errors {
+            if marks.is_some() {
+                wrong.push(format!("case {case}: marks with errors ignored"));
+            }
+            continue;
+        }
+        let Some(marks) = marks else {
+            wrong.push(format!("case {case}: no marks"));
+            continue;
+        };
+        for _ in 0..20 {
+            let start = r.below(rows + 2);
+            let len = 1 + r.below(30);
+            let old = lf.clone().slice(start as i64, len as IdxSize).collect();
+            let Ok(got) = marks.window(&lf, start, len).unwrap().collect() else {
+                if old.is_ok() {
+                    wrong.push(format!(
+                        "case {case}: rows {start}+{len} fail only from marks"
+                    ));
+                }
+                continue;
+            };
+            if old.as_ref().is_ok_and(|old| old.equals_missing(&got)) {
+                continue;
+            }
+            let ids = got.column("id").unwrap().cast(&DataType::Int64).unwrap();
+            let ids = ids.i64().unwrap();
+            let desc = got.column("desc").unwrap().cast(&DataType::String).unwrap();
+            let desc = desc.str().unwrap();
+            for k in 0..got.height() {
+                let row = start + k;
+                if unclosed_at.is_some_and(|u| row >= u) {
+                    break;
+                }
+                let right = row < written.len()
+                    && ids.get(k) == Some(row as i64)
+                    && desc.get(k).unwrap_or("") == written[row].trim_end_matches('\r');
+                if !right {
+                    wrong.push(format!(
+                        "case {case}: row {row} shows id {:?} desc {:?}, written {:?}",
+                        ids.get(k),
+                        desc.get(k),
+                        written.get(row)
+                    ));
+                    break;
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }

@@ -124,3 +124,50 @@ fn a_directory_of_one_csv_pages_in_place() {
     assert!(row > 0);
     assert_eq!(id, Some(row as i64));
 }
+
+/// An unclosed quote at row 300 and inch marks every 997 rows. With
+/// `--ignore-errors` the file has no marks and opens as Polars' slice reads it,
+/// failing as before. Without, a jump shows either Polars' error or, before the
+/// unclosed quote, each row where it is.
+#[test]
+fn jumps_past_an_unclosed_quote_show_no_row_out_of_place() {
+    let mut text = String::from("id,desc,n\n");
+    for i in 0..20_000 {
+        if i == 300 {
+            text.push_str(&format!("{i},\"oops,{i}\n"));
+        } else if i % 997 == 5 {
+            text.push_str(&format!("{i},24\" tv,{i}\n"));
+        } else {
+            text.push_str(&format!("{i},item {i},{i}\n"));
+        }
+    }
+    let ignoring = OpenOptions {
+        ignore_errors: true,
+        ..OpenOptions::default()
+    };
+    let (app, _rx) = open_csv("csv_paging_unclosed_ignored.csv", &text, ignoring);
+    assert!(
+        app.error_message().is_some(),
+        "opens as Polars' slice reads it, failing"
+    );
+
+    let (mut app, rx) = open_csv("csv_paging_unclosed.csv", &text, OpenOptions::default());
+    for target in [250usize, 290, 299, 300, 310, 1_000, 5_000, 9_000] {
+        if app.error_message().is_some() {
+            press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+            settle(&mut app, &rx);
+        }
+        if let Some(state) = app.data_table_state.as_mut() {
+            state.scroll_to_row_centered(target);
+        }
+        app.spawn_async_collect(datui::App::LOADING_BUFFER);
+        settle(&mut app, &rx);
+        if app.error_message().is_some() {
+            continue;
+        }
+        let (row, id) = first_id(&app);
+        if row < 300 {
+            assert_eq!(id, Some(row as i64), "jump to {target}");
+        }
+    }
+}

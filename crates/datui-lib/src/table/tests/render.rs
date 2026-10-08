@@ -1530,6 +1530,46 @@ fn the_offscreen_hint_takes_a_heading_cell_not_a_value_cell() {
     }
 }
 
+/// Past the page's last row, a row down moves the page one row and formats only the
+/// row it brings in; the rows still on screen keep their cells.
+#[test]
+fn a_row_down_moves_the_page_one_row_and_formats_only_that_row() {
+    let formatted = || crate::widgets::table::tests::FORMATTED.with(std::cell::Cell::get);
+    let df = df!(
+        "n" => (0..100i64).collect::<Vec<_>>(),
+        "s" => (0..100).map(|i| format!("v{i}")).collect::<Vec<_>>(),
+    )
+    .unwrap();
+    let mut state = state_of(&df, 5);
+    draw(DataTable::new(), &mut state, 40, 8);
+    let rows = state.visible_rows;
+    for _ in 0..rows - 1 {
+        state.select_next();
+    }
+    draw(DataTable::new(), &mut state, 40, 8);
+    assert_eq!(state.view.start_row, 0);
+    let mut moved = 0;
+    for step in 1..=20 {
+        let before = formatted();
+        if state.select_next() {
+            state.collect();
+        }
+        let page = draw(DataTable::new(), &mut state, 40, 8);
+        assert_eq!(state.view.start_row, step, "{page:#?}");
+        assert_eq!(state.table_state.selected(), Some(rows - 1));
+        assert!(page[1].contains(&format!("v{step}")), "{page:#?}");
+        assert!(
+            page[rows].contains(&format!("v{}", step + rows - 1)),
+            "{page:#?}"
+        );
+        // A new buffer is a new series, formatted whole; otherwise only the new row.
+        if formatted() - before == 2 {
+            moved += 1;
+        }
+    }
+    assert!(moved >= 10, "{moved} of 20 rows down reused the page");
+}
+
 /// A frame whose page did not change formats no cell; a change to the rows, their
 /// order, their side of the rule or how they read draws what changed.
 #[test]

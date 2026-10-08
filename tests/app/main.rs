@@ -2627,6 +2627,7 @@ mod terminal_escape;
 mod alloc_budget;
 mod analysis;
 mod chart;
+mod csv_paging;
 mod data_quality;
 mod export;
 mod harness;

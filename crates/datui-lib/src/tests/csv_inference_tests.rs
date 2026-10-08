@@ -60,6 +60,21 @@ fn test_infer_schema_length_csv_short_inference_shows_error_modal() {
         !pump_open_until_done(&mut app, &rx, path, opts),
         "load should not crash; parse failure should be surfaced via error modal"
     );
+    // A page is read for its own rows: the error shows once the view reaches row 101.
+    if let Some(state) = app.data_table_state.as_mut() {
+        state.visible_rows = 40;
+        state.scroll_to_row_centered(110);
+    }
+    app.spawn_async_collect(crate::App::LOADING_BUFFER);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    while crate::tests::work_pending(&app) && std::time::Instant::now() < deadline {
+        if let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            let mut next = Some(event);
+            while let Some(event) = next {
+                next = app.event(event);
+            }
+        }
+    }
     assert!(
         app.error_modal.active,
         "error modal should be shown after parse failure"

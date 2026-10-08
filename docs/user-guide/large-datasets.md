@@ -13,6 +13,7 @@ datui --sample-rows 50000 https://d37ci6vzurychx.cloudfront.net/trip-data/yellow
 | To | Do |
 |---|---|
 | Page quickly through a large dataset | Prefer Parquet: its footers hold the types and row counts, and it is read a row group at a time |
+| Page deep into a large CSV | The first jump to a row counts the rows before it; from there a page reads only its own rows, ahead of the screen as you go |
 | Open local partitions | Pass the directory (`datui events/`), so datui combines the footers and counts the rows |
 | Analyze many rows | Analyses read a [sample](analysis-features.md#sampling), 100,000 rows by default; `--sample-rows N` changes it, `0` reads every row |
 | Work on part of a large table | <kbd>S</kbd> draws a [sample](sampling.md) into memory: the query, Analysis, charts and export run on it, and export saves it |

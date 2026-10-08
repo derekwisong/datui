@@ -939,26 +939,7 @@ impl Parse {
         }
         match &**scan_type {
             FileScanDsl::Csv { options } => {
-                if options.columns.is_some()
-                    || options.projection.is_some()
-                    || options.row_index.is_some()
-                {
-                    return None;
-                }
-                let mut options = (**options).clone();
-                options.path = None;
-                options.has_header = false;
-                options.skip_rows = 0;
-                options.skip_lines = 0;
-                options.skip_rows_after_header = 0;
-                options.n_rows = None;
-                // The names and types the scan settled on, by position.
-                options.schema = Some(schema.clone());
-                options.schema_overwrite = None;
-                options.dtype_overwrite = None;
-                options.column_names_overwrite = None;
-                options.raise_if_empty = false;
-                Some(Parse::Csv(Box::new(options)))
+                run_options(options, schema).map(|options| Parse::Csv(Box::new(options)))
             }
             FileScanDsl::NDJson { options } => Some(Parse::Lines {
                 ignore_errors: options.ignore_errors,
@@ -966,6 +947,29 @@ impl Parse {
             _ => None,
         }
     }
+}
+
+/// How a CSV scan with `options` reads a run of its rows that starts at a record: no
+/// header, nothing skipped, the names and types the scan settled on (`schema`). `None`
+/// when the scan picks columns or numbers rows itself.
+pub(crate) fn run_options(options: &CsvReadOptions, schema: &SchemaRef) -> Option<CsvReadOptions> {
+    if options.columns.is_some() || options.projection.is_some() || options.row_index.is_some() {
+        return None;
+    }
+    let mut options = options.clone();
+    options.path = None;
+    options.has_header = false;
+    options.skip_rows = 0;
+    options.skip_lines = 0;
+    options.skip_rows_after_header = 0;
+    options.n_rows = None;
+    // The names and types the scan settled on, by position.
+    options.schema = Some(schema.clone());
+    options.schema_overwrite = None;
+    options.dtype_overwrite = None;
+    options.column_names_overwrite = None;
+    options.raise_if_empty = false;
+    Some(options)
 }
 
 /// Rows `[skip, skip + take)` of the records in `span` of a followed file, read when

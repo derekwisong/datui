@@ -6576,14 +6576,21 @@ fn home_at_80x24(
     (tmp, app, rx)
 }
 
-/// Handle events until no listing is out and `done` holds, then draw.
+/// Handle events, drawing a frame after each as the run loop does, until no listing is
+/// out and `done` holds. Measurements fold into the rows at a frame, not as they land:
+/// waiting on events alone, one that landed after the last listing was never seen.
 fn listed(
     app: &mut datui::App,
     rx: &std::sync::mpsc::Receiver<datui::AppEvent>,
     done: impl Fn(&datui::App) -> bool,
 ) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while app.home.listing_in_flight || !done(app) {
+    loop {
+        draw(app);
+        if !app.home.listing_in_flight && done(app) {
+            cursor_line(app);
+            return;
+        }
         // The listing's answer comes on the channel: wait for it, not for time.
         let left = deadline.saturating_duration_since(std::time::Instant::now());
         let event = rx.recv_timeout(left).expect("the listing never landed");
@@ -6592,7 +6599,13 @@ fn listed(
             next = app.event(event);
         }
     }
-    cursor_line(app);
+}
+
+/// Draw a frame at 80×24, as the run loop draws one.
+fn draw(app: &mut datui::App) {
+    use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
+    let area = Rect::new(0, 0, 80, 24);
+    Widget::render(&mut *app, area, &mut Buffer::empty(area));
 }
 
 /// Draw a frame at 80×24 and say which screen line the cursor is on.

@@ -244,6 +244,12 @@ pub struct DataTableState {
     /// The fixed records the data as loaded is, while pristine: a window starts decoding
     /// at the window, not row 0.
     fixed_window: Option<Arc<dyn crate::formats::pushdown::Windowed>>,
+    /// The data as loaded is a local Parquet scan: a read decodes whole data pages, so
+    /// thousands of rows cost about what one page does. See `reach_ahead`.
+    decodes_pages: bool,
+    /// Where the rows of the data as loaded start, when it is one CSV scan: found on the
+    /// first window, shared by every copy of this state. See [`csv_marks::CsvMarks`].
+    csv_marks: CsvMarksOf,
     /// A source that runs the sidebar's filters and sort itself (a SQLite table), while
     /// the data as loaded is the root: see [`Self::pushed_view`].
     pushdown: Option<Arc<dyn crate::formats::pushdown::Pushdown>>,
@@ -466,6 +472,9 @@ pub struct DatasetAtOpen {
 /// a remote scan's window when the cap is off.
 pub const DEFAULT_MAX_BUFFERED_ROWS: usize = 100_000;
 
+/// The marks of the data as loaded, made when a window first asks for them.
+type CsvMarksOf = Arc<std::sync::OnceLock<Option<Arc<csv_marks::CsvMarks>>>>;
+
 /// Seeds `DataTableState::len_generation`, unique per state, so a count for one dataset
 /// never validates another.
 static NEXT_LEN_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -636,6 +645,8 @@ impl DataTableState {
             format_read: None,
             delimited: None,
             fixed_window: None,
+            csv_marks: CsvMarksOf::default(),
+            decodes_pages: buffer::decodes_pages(&lf),
             pushdown: None,
             source_hold: None,
             read_mode: None,
@@ -841,6 +852,8 @@ impl DataTableState {
     fn replace_root(&mut self, lf: LazyFrame, schema: Arc<Schema>) {
         // The records, or the table, no longer stand for the root.
         self.fixed_window = None;
+        self.csv_marks = CsvMarksOf::default();
+        self.decodes_pages = buffer::decodes_pages(&lf);
         self.pushdown = None;
         self.root_generation = next_len_generation();
         self.invalidate_num_rows();
@@ -1197,6 +1210,7 @@ impl DataTableState {
 mod buffer;
 mod columns;
 mod copy;
+mod csv_marks;
 mod drawn;
 mod facts;
 mod quality;
@@ -1213,5 +1227,7 @@ pub use view::*;
 
 #[cfg(test)]
 mod checkpoint_tests;
+#[cfg(test)]
+mod fill_tests;
 #[cfg(test)]
 mod tests;

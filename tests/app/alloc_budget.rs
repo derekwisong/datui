@@ -335,3 +335,60 @@ fn home_filter_keys_and_measurements_stay_within_budget() {
         );
     }
 }
+
+/// Allocation calls and bytes per press of `code`, each press drawn and its reads
+/// asked for and handled as the run loop does them.
+fn per_key_with_reads(
+    app: &mut App,
+    rx: &mpsc::Receiver<AppEvent>,
+    code: KeyCode,
+    presses: usize,
+) -> (usize, usize) {
+    let mut buf = Buffer::empty(SCREEN);
+    let (calls, bytes) = counted(|| {
+        for _ in 0..presses {
+            press_key(app, code, KeyModifiers::NONE);
+            buf.reset();
+            app.render(SCREEN, &mut buf);
+            app.frame_painted();
+            app.request_what_the_frame_needs();
+            drain_events(app, rx);
+        }
+    });
+    (calls / presses, bytes / presses)
+}
+
+/// Page down through a CSV, reading ahead as it goes: what the UI thread does for a
+/// key, its frame and the reads ahead it plans and installs.
+#[test]
+fn page_down_through_a_csv_stays_within_budget() {
+    let path = common::fixture_dir().join("alloc_budget_pages.csv");
+    let mut text = String::from("id,name,when,amount,flag\n");
+    for i in 0..30_000 {
+        text.push_str(&format!(
+            "{i},name {i},2020-01-{:02},{}.25,{}\n",
+            i % 28 + 1,
+            i * 7 % 1_000,
+            i % 2 == 0
+        ));
+    }
+    std::fs::write(&path, text).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    // The first frame sets the rows on screen, which the buffer is then read for.
+    for _ in 0..3 {
+        app.render(SCREEN, &mut Buffer::empty(SCREEN));
+        app.frame_painted();
+        drain_events(&mut app, &rx);
+    }
+    per_key_with_reads(&mut app, &rx, KeyCode::PageDown, 20);
+    let from = app.data_table_state.as_ref().unwrap().start_row();
+    let (calls, bytes) = per_key_with_reads(&mut app, &rx, KeyCode::PageDown, 60);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.start_row() >= from + 60 * 40, "paged down");
+    // Measured: 1,564 allocations and 104 KB a key, the reads ahead landing included.
+    // The reads themselves run on workers: `table::fill_tests` bounds the rows they read.
+    assert!(calls <= 3_500, "{calls} allocations per key");
+    assert!(bytes <= 200_000, "{bytes} bytes per key");
+}

@@ -152,11 +152,13 @@ fn evicts_by_bytes_in_lru_order<K: Sample>() {
     // `a` is the oldest, but using it makes `b` the one used longest ago.
     assert!(store.get("k/a", "fp").is_some());
 
+    // Past the budget, down to three quarters of it: two of four.
     let store = store.with_budget(3 * one);
     store.put("k/d", "fp", &K::sample(1));
-    assert_eq!(store.len(), 3, "kept to its budget in bytes");
+    assert_eq!(store.len(), 2, "kept under its budget in bytes");
     assert!(store.get("k/b", "fp").is_none(), "b went");
-    for kept in ["k/a", "k/c", "k/d"] {
+    assert!(store.get("k/c", "fp").is_none(), "then c");
+    for kept in ["k/a", "k/d"] {
         assert!(store.get(kept, "fp").is_some(), "{kept} stayed");
     }
 
@@ -242,7 +244,7 @@ fn sweeps_only_when_the_budget_may_pass<K: Sample>() {
     let store = store.with_budget(2 * one);
     store.put("k/c", "fp", &K::sample(1));
     assert!(!stale.exists(), "past it, the sweep came");
-    assert_eq!(store.len(), 2, "and kept the budget");
+    assert_eq!(store.len(), 1, "down to three quarters of the budget");
 }
 
 fn clear_all_removes_it<K: Sample>() {

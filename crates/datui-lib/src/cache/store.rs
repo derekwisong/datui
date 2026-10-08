@@ -219,8 +219,8 @@ impl<K: Kind> Store<K> {
         }
     }
 
-    /// Drop stale temp files and, past the budget, the least recently used entries,
-    /// never one of `keep`. Under the kind's lock only so two sweeps do not race;
+    /// Drop stale temp files and, past the budget, the least recently used entries down
+    /// to three quarters of it, never one of `keep`. Under the kind's lock only so two sweeps do not race;
     /// writes land by rename and need none.
     fn sweep(&self, keep: &[PathBuf]) {
         self.cache
@@ -258,9 +258,12 @@ impl<K: Kind> Store<K> {
                     note(total);
                     return Ok(());
                 }
+                // Down to three quarters, so a cache that has filled its budget, where an LRU
+                // cache settles, does not sweep again on the next write.
+                let target = self.budget / 4 * 3;
                 kept.sort();
                 for (_, len, file) in kept {
-                    if total <= self.budget {
+                    if total <= target {
                         break;
                     }
                     if !keep.contains(&file) && fs::remove_file(&file).is_ok() {

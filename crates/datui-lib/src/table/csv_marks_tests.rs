@@ -719,11 +719,11 @@ fn only_per_row_expressions_read_from_marks() {
     }
     let across_rows = [
         col("id").shift(lit(1)),
-        col("id").cum_sum(false),
+        col("id").reverse(),
         col("id").sum(),
         col("id").unique(),
         col("id").sum().over([col("name")]).unwrap(),
-        int_range(lit(0), len(), 1, DataType::Int64),
+        col("id").sort(Default::default()),
     ];
     for expr in across_rows {
         let shown = lf.clone().with_columns([expr.clone().alias("x")]);

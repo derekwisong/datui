@@ -98,6 +98,7 @@ fn row(path: &str, kind: crate::home::discover::EntryKind) -> Entry {
         cost: Default::default(),
         holds: Default::default(),
         opens_whole_directory: false,
+        measured: false,
         format_spec: None,
         table: None,
     }

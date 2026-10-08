@@ -113,15 +113,22 @@ pub struct Match {
     pub positions: Vec<usize>,
 }
 
-/// Score one alignment: the greedy forward walk starting at `start`.
+/// Score one alignment: the greedy forward walk starting at `start`, its positions
+/// written into `positions`.
 ///
 /// Returns `None` when the needle does not fit in what remains of the haystack.
-fn score_from(hay: &[char], lower: &[char], needle: &[char], start: usize) -> Option<Match> {
+fn score_from(
+    hay: &[char],
+    lower: &[char],
+    needle: &[char],
+    start: usize,
+    positions: &mut Vec<usize>,
+) -> Option<i32> {
     if lower[start] != needle[0] {
         return None;
     }
 
-    let mut positions = Vec::with_capacity(needle.len());
+    positions.clear();
     let mut score = 0i32;
     let mut consecutive = 0usize;
     let mut first_bonus = 0i32;
@@ -184,60 +191,115 @@ fn score_from(hay: &[char], lower: &[char], needle: &[char], start: usize) -> Op
         positions.push(pos);
     }
 
-    Some(Match { score, positions })
+    Some(score)
 }
 
 /// The best fuzzy match of `needle` in `haystack`, or `None`: every start is tried and
 /// the highest alignment wins. Case-insensitive; an empty needle matches with score 0.
 pub fn best_match(needle: &str, haystack: &str) -> Option<Match> {
+    best_match_with(needle, haystack, |score, positions| Match {
+        score,
+        positions: positions.to_vec(),
+    })
+}
+
+/// The buffers one scoring reuses, so a listing of thousands scores with no allocation
+/// per name but its answer.
+#[derive(Default)]
+struct Scratch {
+    hay: Vec<char>,
+    lower: Vec<char>,
+    needle: Vec<char>,
+    trial: Vec<usize>,
+    best: Vec<usize>,
+}
+
+thread_local! {
+    static SCRATCH: std::cell::RefCell<Scratch> = std::cell::RefCell::new(Scratch::default());
+}
+
+/// [`best_match`], handing the score and positions to `answer` rather than allocating
+/// a [`Match`].
+pub fn best_match_with<T>(
+    needle: &str,
+    haystack: &str,
+    answer: impl FnOnce(i32, &[usize]) -> T,
+) -> Option<T> {
     if needle.is_empty() {
-        return Some(Match {
-            score: 0,
-            positions: Vec::new(),
-        });
+        return Some(answer(0, &[]));
     }
     // Most names in a long list do not match. For ASCII, which is most names, saying so
     // takes one pass over the bytes and no allocation; the search scores tens of
     // thousands of names per keystroke.
-    if needle.is_ascii() && haystack.is_ascii() && !ascii_subsequence(haystack, needle) {
+    let ascii = needle.is_ascii() && haystack.is_ascii();
+    if ascii && !ascii_subsequence(haystack, needle) {
         return None;
     }
-    let hay: Vec<char> = haystack.chars().collect();
-    let lower: Vec<char> = haystack.to_lowercase().chars().collect();
-    let needle: Vec<char> = needle.to_lowercase().chars().collect();
+    SCRATCH.with(|scratch| match scratch.try_borrow_mut() {
+        Ok(mut scratch) => score_best(&mut scratch, ascii, needle, haystack, answer),
+        // Only if `answer` scores again; it gets buffers of its own.
+        Err(_) => score_best(&mut Scratch::default(), ascii, needle, haystack, answer),
+    })
+}
+
+fn score_best<T>(
+    scratch: &mut Scratch,
+    ascii: bool,
+    needle: &str,
+    haystack: &str,
+    answer: impl FnOnce(i32, &[usize]) -> T,
+) -> Option<T> {
+    let Scratch {
+        hay,
+        lower,
+        needle: need,
+        trial,
+        best,
+    } = scratch;
+    hay.clear();
+    lower.clear();
+    need.clear();
+    hay.extend(haystack.chars());
+    if ascii {
+        lower.extend(hay.iter().map(char::to_ascii_lowercase));
+        need.extend(needle.chars().map(|c| c.to_ascii_lowercase()));
+    } else {
+        lower.extend(haystack.to_lowercase().chars());
+        need.extend(needle.to_lowercase().chars());
+    }
     // Lowercasing can change length (ß, İ). Falling back keeps the indices honest
     // rather than highlighting the wrong characters.
     if lower.len() != hay.len() {
-        return simple_match(&hay, &needle);
+        return simple_match(hay, need).map(|m| answer(m.score, &m.positions));
     }
-    if needle.len() > hay.len() {
+    if need.len() > hay.len() {
         return None;
     }
     // A single cheap pass in front of the exhaustive one. Most candidates in a long
     // list do not match at all, and those now cost O(n) instead of a scan from every
     // position the first character happens to sit at.
-    if !subsequence(&lower, &needle) {
+    if !subsequence(lower, need) {
         return None;
     }
 
     // The whole name typed is the answer: `hour` must find `hour` before `time_hour`,
     // which the boundary after `_` scores the same.
-    if lower == needle {
-        let mut m = score_from(&hay, &lower, &needle, 0)?;
-        m.score += EXACT_BONUS;
-        return Some(m);
+    if lower == need {
+        let score = score_from(hay, lower, need, 0, best)?;
+        return Some(answer(score + EXACT_BONUS, best));
     }
 
-    let mut best: Option<Match> = None;
+    let mut top: Option<i32> = None;
     for start in 0..hay.len() {
         // Only positions where the first needle character actually sits can start an
         // alignment, which is what keeps the exhaustive search cheap in practice.
-        if lower[start] != needle[0] {
+        if lower[start] != need[0] {
             continue;
         }
-        if let Some(candidate) = score_from(&hay, &lower, &needle, start) {
-            if best.as_ref().is_none_or(|b| candidate.score > b.score) {
-                best = Some(candidate);
+        if let Some(score) = score_from(hay, lower, need, start, trial) {
+            if top.is_none_or(|t| score > t) {
+                top = Some(score);
+                std::mem::swap(trial, best);
             }
         } else {
             // The needle no longer fits in what remains; no later start will fit
@@ -245,7 +307,7 @@ pub fn best_match(needle: &str, haystack: &str) -> Option<Match> {
             break;
         }
     }
-    best
+    top.map(|score| answer(score, best))
 }
 
 /// A plain greedy subsequence walk, for haystacks whose lowercase form has a

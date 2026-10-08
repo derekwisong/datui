@@ -190,13 +190,16 @@ fn test_repeated_network_questions_share_one_read_of_the_mount_table() {
 }
 
 /// The cached table is shared rather than re-parsed: two callers in the same moment
-/// get the same allocation.
+/// get the same allocation. Of three calls, two in a row share one: the table another
+/// test cached may expire between the first two on a loaded machine, but then the
+/// second caches a fresh one for the third.
 #[test]
 fn test_callers_in_the_same_moment_get_the_same_mount_table() {
-    let first = Mounts::cached();
-    let second = Mounts::cached();
+    let calls = [Mounts::cached(), Mounts::cached(), Mounts::cached()];
     assert!(
-        std::sync::Arc::ptr_eq(&first, &second),
+        calls
+            .windows(2)
+            .any(|w| std::sync::Arc::ptr_eq(&w[0], &w[1])),
         "two reads in the same moment should share one parsed table"
     );
 }

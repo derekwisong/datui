@@ -12,12 +12,19 @@ pub use store::{StableHasher, stable_hash};
 #[derive(Clone, Debug)]
 pub struct CacheManager {
     pub(crate) cache_dir: PathBuf,
+    /// Each kind's bytes on disk as its last sweep found them, plus what this session
+    /// wrote since; shared by clones. See [`store::Store::put_all`].
+    pub(crate) swept:
+        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<&'static str, u64>>>,
 }
 
 impl CacheManager {
     /// Create a CacheManager rooted at an explicit directory (primarily for testing).
     pub fn with_dir(cache_dir: PathBuf) -> Self {
-        Self { cache_dir }
+        Self {
+            cache_dir,
+            swept: Default::default(),
+        }
     }
 
     /// Create a CacheManager for `app_name`. `DATUI_CACHE_DIR` overrides the location;
@@ -26,9 +33,7 @@ impl CacheManager {
         #[cfg(test)]
         isolate_cache();
         if let Some(dir) = std::env::var_os("DATUI_CACHE_DIR") {
-            return Ok(Self {
-                cache_dir: PathBuf::from(dir),
-            });
+            return Ok(Self::with_dir(PathBuf::from(dir)));
         }
         // A test reaching the real cache would write fixtures into the developer's recents:
         // refuse. Test binaries live under `target/<profile>/deps/`; the real binary never.
@@ -45,7 +50,7 @@ impl CacheManager {
             .ok_or_else(|| color_eyre::eyre::eyre!("Could not determine cache directory"))?
             .join(app_name);
 
-        Ok(Self { cache_dir })
+        Ok(Self::with_dir(cache_dir))
     }
 
     /// Get the cache directory path

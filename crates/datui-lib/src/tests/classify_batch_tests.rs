@@ -19,6 +19,13 @@ fn unlooked_at(n: usize) -> home::Listing {
     }
 }
 
+/// Draw a frame, which folds in the answers that landed since the last.
+fn draw(app: &mut App) {
+    let area = ratatui::layout::Rect::new(0, 0, 100, 24);
+    let mut buf = ratatui::buffer::Buffer::empty(area);
+    ratatui::widgets::Widget::render(&mut *app, area, &mut buf);
+}
+
 /// Put the viewport where a frame of twenty rows would put it after moving down
 /// to `selected` from the top, exactly as `render_list` does. The two move
 /// together, so a test that set one and not the other would describe a screen
@@ -107,6 +114,7 @@ fn a_pass_that_outlives_its_listing_still_counts() {
         )],
         done: true,
     });
+    draw(&mut app);
 
     let kind = app.home.visible().iter().find_map(|row| match row {
         home::Row::Entry { entry, .. } if entry.path == path => Some(entry.kind),
@@ -146,8 +154,9 @@ fn space_folds_a_header_and_types_only_mid_filter() {
     assert_eq!(app.home.filter, "d ");
 }
 
-/// A row's label shows as soon as its answer lands, not when the batch it was in
-/// finishes; the slot stays taken until then, so a second batch never overlaps it.
+/// A row's label shows with the next frame after its answer lands, not when the batch
+/// it was in finishes; the slot stays taken until then, so a second batch never
+/// overlaps it.
 #[test]
 fn a_label_lands_before_its_batch_is_done() {
     let (tx, _rx) = mpsc::channel();
@@ -166,6 +175,7 @@ fn a_label_lands_before_its_batch_is_done() {
         )],
         done: false,
     });
+    draw(&mut app);
 
     let kind = app.home.visible().iter().find_map(|row| match row {
         home::Row::Entry { entry, .. } if entry.path == path => Some(entry.kind),

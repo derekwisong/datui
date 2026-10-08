@@ -1338,13 +1338,12 @@ impl Row<'_> {
     }
 }
 
-/// How a row answers the filter: its score and the matched characters, in its name
-/// or a matched column's name. Computed when rows are listed, not when drawn.
-#[derive(Debug, Clone, Default, PartialEq)]
+/// How a row answers the filter: its score, and whether its name or a column matched.
+/// Scored when rows are listed; the matched characters are found when drawn, for the
+/// rows on screen rather than every row of thousands.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Hit {
     pub score: i32,
-    /// Character positions to mark: in the name, or in the matched column's name.
-    pub positions: std::sync::Arc<[usize]>,
     /// Index into the entry's `columns` of the matching column, when the name did not
     /// match.
     pub column: Option<usize>,
@@ -1357,6 +1356,15 @@ impl Hit {
             .and_then(|i| entry.columns.get(i))
             .map(String::as_str)
     }
+
+    /// Character positions to mark for `filter`: in the name, or in the matched
+    /// column's name. From the same alignment that scored it.
+    pub fn positions(&self, filter: &str, entry: &Entry) -> Vec<usize> {
+        match self.column_of(entry) {
+            Some(column) => substring_positions(filter, column),
+            None => fuzzy_positions(filter, &entry.name),
+        }
+    }
 }
 
 /// [`HomeState::visible`]'s rows, cached until their inputs change: building scores
@@ -1367,6 +1375,17 @@ impl Hit {
 pub struct RowsCache {
     built: std::cell::RefCell<Option<View>>,
     builds: std::cell::Cell<usize>,
+    /// The last build's hits, kept for the next build when only some rows changed
+    /// (measured, or `Found` replaced): see [`HomeState::rows_changed`].
+    rescored: std::cell::RefCell<Option<Hits>>,
+}
+
+/// Every row's match against the filter, by section and row index; `None` where the row
+/// does not match. A section with no hits is scored at the next build.
+#[derive(Debug, Clone)]
+struct Hits {
+    filter: String,
+    sections: Vec<Option<Vec<Option<Hit>>>>,
 }
 
 /// The rows as last built, and what they were built from.
@@ -1374,6 +1393,7 @@ pub struct RowsCache {
 struct View {
     key: ViewKey,
     slots: Vec<Slot>,
+    hits: Hits,
     /// See [`HomeState::has_any_dataset`].
     has_dataset: bool,
 }
@@ -1551,6 +1571,8 @@ pub struct HomeState {
     /// Row and column counts already read, by path, so each dataset is measured once a
     /// session.
     pub enriched: std::collections::HashMap<PathBuf, Measured>,
+    /// Paths recorded in `enriched` since the rows last took them in.
+    pub unapplied: std::collections::HashSet<PathBuf>,
     /// Sections folded (`true`) or opened by the user, by title so it survives rebuilds
     /// that renumber sections, and cached across restarts. Unlisted sections take their
     /// default. Use [`HomeState::toggle_collapsed`] and [`HomeState::set_collapsed`].
@@ -1739,6 +1761,7 @@ impl Default for HomeState {
             peek_failed: std::collections::HashSet::new(),
             waiting_since: None,
             enriched: std::collections::HashMap::new(),
+            unapplied: Default::default(),
             folds: std::collections::HashMap::new(),
             folds_owed: false,
             search: SearchState::default(),
@@ -2530,6 +2553,28 @@ fn annotate(
     }
 }
 
+/// Write a measurement into its row.
+fn fold_measured(row: &mut Entry, m: &Measured) {
+    row.measured = true;
+    row.rows = m.rows;
+    row.cols = m.cols;
+    row.cols_sampled = m.cols_sampled;
+    if let Some(kind) = m.kind {
+        row.kind = kind;
+    }
+    if m.size.is_some() {
+        row.size = m.size;
+    }
+    if !m.columns.is_empty() && row.columns != m.columns {
+        row.columns.clone_from(&m.columns);
+    }
+    if !m.holds.is_empty() && row.holds != m.holds {
+        row.holds.clone_from(&m.holds);
+    }
+    // Keep the source (from the mount table); take everything else (from the file).
+    take_cost(row, &m.cost);
+}
+
 /// Take a measured or remembered row cost, keeping what came from elsewhere: its
 /// location (mount table) and a spec file's variant count (an older record lacks
 /// it, which would leave no tables to list).
@@ -2672,19 +2717,58 @@ pub fn match_score(filter: &str, entry: &Entry) -> Option<i32> {
 
 /// [`match_score`], with what the row is marked by when drawn.
 pub fn match_hit(filter: &str, entry: &Entry) -> Option<Hit> {
-    if let Some(m) = crate::home::fuzzy::best_match(filter, &entry.name) {
-        return Some(Hit {
-            score: m.score,
-            positions: m.positions.into(),
+    Needle::new(filter).hit(entry)
+}
+
+/// A filter prepared once for scoring a whole listing: lowered once, not once per row
+/// and column.
+struct Needle<'a> {
+    filter: &'a str,
+    lower: String,
+}
+
+impl<'a> Needle<'a> {
+    fn new(filter: &'a str) -> Self {
+        Needle {
+            filter,
+            lower: filter.to_lowercase(),
+        }
+    }
+
+    fn hit(&self, entry: &Entry) -> Option<Hit> {
+        let named = crate::home::fuzzy::best_match_with(self.filter, &entry.name, |score, _| Hit {
+            score,
             column: None,
         });
+        if named.is_some() {
+            return named;
+        }
+        Some(Hit {
+            score: -COLUMN_MATCH_PENALTY,
+            column: Some(self.column(entry)?),
+        })
     }
-    let index = matching_column_index(filter, entry)?;
-    Some(Hit {
-        score: -COLUMN_MATCH_PENALTY,
-        positions: substring_positions(filter, &entry.columns[index]).into(),
-        column: Some(index),
-    })
+
+    /// The first column of `entry` containing the filter, case-insensitively.
+    fn column(&self, entry: &Entry) -> Option<usize> {
+        if self.filter.is_empty() {
+            return None;
+        }
+        (entry.columns.iter()).position(|c| contains_folded(c, &self.lower))
+    }
+}
+
+/// Whether `haystack` contains `lower` (already lowercase), ignoring case; without
+/// allocating when both are ASCII.
+fn contains_folded(haystack: &str, lower: &str) -> bool {
+    if haystack.is_ascii() && lower.is_ascii() {
+        let (hay, needle) = (haystack.as_bytes(), lower.as_bytes());
+        return needle.is_empty()
+            || hay
+                .windows(needle.len())
+                .any(|w| w.eq_ignore_ascii_case(needle));
+    }
+    haystack.to_lowercase().contains(lower)
 }
 
 /// How far a column match sits below any name match: more than any name score, so
@@ -2694,18 +2778,7 @@ const COLUMN_MATCH_PENALTY: i32 = 1_000_000;
 /// The first column of `entry` containing `filter`, case-insensitively. Substring,
 /// not subsequence: fuzzy matching dozens of names matches nearly everything.
 pub fn matching_column<'a>(filter: &str, entry: &'a Entry) -> Option<&'a str> {
-    matching_column_index(filter, entry).map(|i| entry.columns[i].as_str())
-}
-
-fn matching_column_index(filter: &str, entry: &Entry) -> Option<usize> {
-    if filter.is_empty() {
-        return None;
-    }
-    let needle = filter.to_lowercase();
-    entry
-        .columns
-        .iter()
-        .position(|c| c.to_lowercase().contains(&needle))
+    (Needle::new(filter).column(entry)).map(|i| entry.columns[i].as_str())
 }
 
 /// Character positions in `haystack` that `needle` matched, from the same alignment
@@ -3468,8 +3541,17 @@ impl HomeState {
     /// Put the search results into `sections`, or take them out, after every rebuild and
     /// batch. Only while there is a filter: unfiltered, everything matches.
     pub fn sync_search_section(&mut self) {
+        // The other sections keep their hits: results land in batches while the user types.
+        let found = (self.sections.iter()).position(|s| s.title == Self::SEARCH_SECTION);
+        let mut kept = self.take_hits();
         self.sections.retain(|s| s.title != Self::SEARCH_SECTION);
         self.changed();
+        if let (Some(hits), Some(at)) = (kept.as_mut(), found)
+            && at < hits.sections.len()
+        {
+            hits.sections.remove(at);
+        }
+        *self.rows_cache.rescored.get_mut() = kept;
 
         if self.filter.is_empty() {
             return;
@@ -3511,17 +3593,20 @@ impl HomeState {
             return;
         }
 
-        // A dataset already listed under its directory does not appear again under the
-        // search.
-        let listed: std::collections::HashSet<&PathBuf> = self
-            .sections
-            .iter()
-            .flat_map(|s| s.rows.iter().map(|r| &r.path))
-            .collect();
-
         // The last scored matches; those for an older filter (a scoring out) are rescored
         // here once, so nothing stale shows.
         let matches = self.search.matches.as_ref();
+        // A dataset already listed under its directory does not appear again under the
+        // search. Only rows named as a match can be one: the rest of thousands are passed
+        // over on a short name, not a path hashed component by component.
+        let names: std::collections::HashSet<&std::ffi::OsStr> = (matches.iter())
+            .flat_map(|m| m.top.iter())
+            .map(|e| e.path.file_name().unwrap_or(e.path.as_os_str()))
+            .collect();
+        let listed: std::collections::HashSet<&PathBuf> = (self.sections.iter())
+            .flat_map(|s| s.rows.iter().map(|r| &r.path))
+            .filter(|path| path.file_name().is_none_or(|name| names.contains(name)))
+            .collect();
         let kept: Vec<(&Entry, i32)> = matches
             .map(|m| {
                 let fresh = m.query == self.filter;
@@ -3541,6 +3626,13 @@ impl HomeState {
             .unwrap_or_default();
         let mut rows: Vec<Entry> = kept.into_iter().map(|(e, _)| e.clone()).collect();
         rows.extend(cloud_rows);
+        // The walk's rows are snapshots: what this session measured of them is folded in
+        // here, as nothing measures them again.
+        for row in &mut rows {
+            if let Some(m) = self.enriched.get(&row.path) {
+                fold_measured(row, m);
+            }
+        }
 
         // Say an empty result when the walk stopped short: "no match" may be wrong then.
         let partial = self.search.limited.is_some();
@@ -3762,6 +3854,38 @@ impl HomeState {
     /// The rows have changed under the cache: built again on the next read.
     fn changed(&mut self) {
         *self.rows_cache.built.get_mut() = None;
+        *self.rows_cache.rescored.get_mut() = None;
+    }
+
+    /// The hits the cache holds for the rows as listed now, for the filter as it is;
+    /// the rows are built again on the next read.
+    fn take_hits(&mut self) -> Option<Hits> {
+        let built = self.rows_cache.built.get_mut().take();
+        match self.rows_cache.rescored.get_mut().take() {
+            Some(hits) => Some(hits),
+            None => built
+                .filter(|view| view.key.matches(self))
+                .map(|view| view.hits),
+        }
+        .filter(|hits| hits.filter == self.filter)
+    }
+
+    /// Only `touched` rows (section, index) changed, in what they hold rather than in
+    /// name or number: the next build scores those again and keeps the last build's
+    /// hits for the rest.
+    fn rows_changed(&mut self, touched: &[(usize, usize)]) {
+        let Some(mut hits) = self.take_hits() else {
+            return;
+        };
+        let needle = Needle::new(&self.filter);
+        for &(si, i) in touched {
+            if let Some(Some(section)) = hits.sections.get_mut(si)
+                && let Some(hit) = section.get_mut(i)
+            {
+                *hit = needle.hit(&self.sections[si].rows[i]);
+            }
+        }
+        *self.rows_cache.rescored.get_mut() = Some(hits);
     }
 
     /// Show these catalogs.
@@ -3863,7 +3987,7 @@ impl HomeState {
                 section: *section,
                 entry: &self.sections[*section].rows[*index],
                 nested: *nested,
-                hit: hit.clone(),
+                hit: *hit,
             },
             Slot::Door { section } => Row::Door {
                 section: *section,
@@ -3876,9 +4000,15 @@ impl HomeState {
     }
 
     fn build_view(&self) -> View {
+        // Taken, so a build for any other change scores every row.
+        let kept = (self.rows_cache.rescored.take()).filter(|hits| {
+            hits.filter == self.filter && hits.sections.len() <= self.sections.len()
+        });
+        let hits = self.score_rows(kept);
         View {
             key: ViewKey::of(self),
-            slots: self.slots(),
+            slots: self.slots(&hits),
+            hits,
             has_dataset: self
                 .sections
                 .iter()
@@ -3887,15 +4017,35 @@ impl HomeState {
         }
     }
 
-    fn slots(&self) -> Vec<Slot> {
+    /// Every row scored against the filter, but for the sections `kept` holds for the
+    /// rows as listed.
+    fn score_rows(&self, kept: Option<Hits>) -> Hits {
+        let needle = Needle::new(&self.filter);
+        let mut kept = kept.map(|hits| hits.sections).unwrap_or_default();
+        let sections =
+            (self.sections.iter().enumerate())
+                .map(|(si, section)| {
+                    let reused = (kept.get_mut(si).and_then(Option::take))
+                        .filter(|hits| hits.len() == section.rows.len());
+                    Some(reused.unwrap_or_else(|| {
+                        (section.rows.iter()).map(|row| needle.hit(row)).collect()
+                    }))
+                })
+                .collect();
+        Hits {
+            filter: self.filter.clone(),
+            sections,
+        }
+    }
+
+    fn slots(&self, hits: &Hits) -> Vec<Slot> {
         let mut out: Vec<Slot> = Vec::new();
         for (si, section) in self.sections.iter().enumerate() {
-            let mut matched: Vec<(usize, Hit)> = section
-                .rows
-                .iter()
+            let mut matched: Vec<(usize, Hit)> = (section.rows.iter())
+                .zip(hits.sections[si].iter().flatten())
                 .enumerate()
-                .filter(|(_, row)| !(self.hide_unreadable && row.hidden_by_default()))
-                .filter_map(|(i, row)| match_hit(&self.filter, row).map(|hit| (i, hit)))
+                .filter(|(_, (row, _))| !(self.hide_unreadable && row.hidden_by_default()))
+                .filter_map(|(i, (_, hit))| hit.map(|hit| (i, hit)))
                 .collect();
 
             // Drop a section with nothing to show, unless it stands for a named or current root,
@@ -4104,7 +4254,7 @@ impl HomeState {
                 section: si,
                 index: *index,
                 nested: true,
-                hit: hit.clone(),
+                hit: *hit,
             }));
             used += cost;
             shown += 1;
@@ -4441,20 +4591,28 @@ impl HomeState {
         for entry in wanted {
             let mut probe = entry.clone();
             discover::enrich(&mut probe);
-            self.enriched
-                .insert(entry.path.clone(), measured_from(&probe, &entry));
+            self.record_measurement(entry.path.clone(), measured_from(&probe, &entry));
         }
-        self.apply_measurements();
+        self.apply_new_measurements();
         more
     }
 
-    /// Listed rows not yet measured, up to `limit`; sorted by rows, the rows a cut hides
-    /// come after.
+    /// Rows not yet measured, up to `limit`: those on or near the screen first (see
+    /// [`HomeState::entries_near_cursor`]), so what is shown is measured before the rest;
+    /// then the rest of the rows listed, from the top, so a column name matches any of
+    /// them; sorted by rows, then the rows a cut hides.
     pub fn unmeasured_visible(&self, limit: usize) -> Vec<Entry> {
         let view = self.view();
         let mut out: Vec<Entry> = Vec::new();
-        for entry in view.slots.iter().filter_map(|slot| self.entry_of(slot)) {
-            if self.wants_measuring(entry) {
+        let listed = view.slots.iter().filter_map(|slot| self.entry_of(slot));
+        // Before the first frame there is no screen: the top of the list.
+        let near: Box<dyn Iterator<Item = &Entry>> = if self.view_height == 0 {
+            Box::new(std::iter::empty())
+        } else {
+            Box::new(self.entries_near_cursor(&view, limit))
+        };
+        for entry in near.chain(listed) {
+            if self.wants_measuring(entry) && !out.iter().any(|e| e.path == entry.path) {
                 out.push(entry.clone());
                 if out.len() >= limit {
                     return out;
@@ -4486,7 +4644,7 @@ impl HomeState {
 
     /// Whether `entry` is a local dataset with no count yet that measuring would give.
     fn wants_measuring(&self, entry: &Entry) -> bool {
-        if entry.rows.is_some() || self.enriched.contains_key(&entry.path) {
+        if entry.rows.is_some() || entry.measured || self.enriched.contains_key(&entry.path) {
             return false;
         }
         // The kind settles it before the mount table: this runs per row per frame, and the
@@ -4510,10 +4668,9 @@ impl HomeState {
         let more = self.unclassified_visible(limit + 1).len() > wanted.len();
         for entry in wanted {
             let probe = look_into_as(&entry, &Default::default());
-            self.enriched
-                .insert(entry.path.clone(), measured_from(&probe, &entry));
+            self.record_measurement(entry.path.clone(), measured_from(&probe, &entry));
         }
-        self.apply_measurements();
+        self.apply_new_measurements();
         more
     }
 
@@ -4585,30 +4742,34 @@ impl HomeState {
         }
     }
 
-    /// Fold known measurements into the rows currently listed.
+    /// Record what measuring `path` found, for [`HomeState::apply_new_measurements`] to
+    /// fold into its rows.
+    pub fn record_measurement(&mut self, path: PathBuf, measured: Measured) {
+        self.unapplied.insert(path.clone());
+        self.enriched.insert(path, measured);
+    }
+
+    /// Record a size alone: a measurement that landed meanwhile keeps the rest.
+    pub fn record_size(&mut self, path: PathBuf, measured: Measured) {
+        match self.enriched.get_mut(&path) {
+            Some(known) => {
+                known.size = measured.size;
+                self.unapplied.insert(path);
+            }
+            None => self.record_measurement(path, measured),
+        }
+    }
+
+    /// Fold every known measurement into the rows currently listed, as a new listing
+    /// needs.
     pub fn apply_measurements(&mut self) {
+        self.unapplied.clear();
         for section in &mut self.sections {
             // The door too: it reads its directory's slot on purpose, showing numbers already
             // measured upstairs; nothing writes the door's answer.
             for row in section.rows.iter_mut().chain(section.door.iter_mut()) {
                 if let Some(m) = self.enriched.get(&row.path) {
-                    row.rows = m.rows;
-                    row.cols = m.cols;
-                    row.cols_sampled = m.cols_sampled;
-                    if let Some(kind) = m.kind {
-                        row.kind = kind;
-                    }
-                    if m.size.is_some() {
-                        row.size = m.size;
-                    }
-                    if !m.columns.is_empty() {
-                        row.columns = m.columns.clone();
-                    }
-                    if !m.holds.is_empty() {
-                        row.holds = m.holds.clone();
-                    }
-                    // Keep the source (from the mount table); take everything else (from the file).
-                    take_cost(row, &m.cost);
+                    fold_measured(row, m);
                 }
             }
             // The door's name says what it opens, and a measurement can change that: the
@@ -4618,8 +4779,60 @@ impl HomeState {
             }
         }
         self.changed();
-        // Landed on a door the footers have since turned down, and not moved: the cursor
-        // goes where it would have landed had they been read first.
+        self.land_again();
+    }
+
+    /// Fold the measurements recorded since the last fold into their rows. Only those
+    /// rows change and are scored again: measurements land a file at a time while the
+    /// user types, over listings of thousands.
+    pub fn apply_new_measurements(&mut self) {
+        if self.unapplied.is_empty() {
+            return;
+        }
+        let unapplied = std::mem::take(&mut self.unapplied);
+        // A row's name first: hashing a short name is cheaper than hashing a whole path
+        // component by component, and few of thousands of rows are among those measured.
+        // Equal paths have equal names, so no measured row is passed over.
+        let names: std::collections::HashSet<&std::ffi::OsStr> = (unapplied.iter())
+            .map(|path| path.file_name().unwrap_or(path.as_os_str()))
+            .collect();
+        let new = |path: &Path| {
+            path.file_name().is_none_or(|name| names.contains(name)) && unapplied.contains(path)
+        };
+        let mut touched: Vec<(usize, usize)> = Vec::new();
+        let mut any = false;
+        for (si, section) in self.sections.iter_mut().enumerate() {
+            let mut here = false;
+            for (i, row) in section.rows.iter_mut().enumerate() {
+                if new(&row.path)
+                    && let Some(m) = self.enriched.get(&row.path)
+                {
+                    fold_measured(row, m);
+                    touched.push((si, i));
+                    here = true;
+                }
+            }
+            if let Some(door) = section.door.as_mut()
+                && new(&door.path)
+                && let Some(m) = self.enriched.get(&door.path)
+            {
+                fold_measured(door, m);
+                here = true;
+            }
+            if here && let Some(door) = section.door.as_mut() {
+                door.name = door_name(door, &section.rows);
+            }
+            any |= here;
+        }
+        if any {
+            self.rows_changed(&touched);
+            self.land_again();
+        }
+    }
+
+    /// Landed on a door the footers have since turned down, and not moved: the cursor
+    /// goes where it would have landed had they been read first.
+    fn land_again(&mut self) {
         if self.landing
             && let Some(Row::Door { entry, .. }) = self.row_at(self.selected)
             && !door_lands(entry)
@@ -4732,6 +4945,7 @@ fn source_entry(source: &CloudSource) -> Entry {
         cost: Default::default(),
         holds: Default::default(),
         opens_whole_directory: false,
+        measured: false,
         format_spec: None,
         table: None,
     }
@@ -4807,6 +5021,7 @@ fn entry_for_path(path: &Path, remote: bool) -> Entry {
         cost: Default::default(),
         holds,
         opens_whole_directory: false,
+        measured: false,
         format_spec: None,
         table: None,
     };

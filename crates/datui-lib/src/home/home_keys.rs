@@ -12,6 +12,10 @@ impl App {
         // The line beside the prompt answers the last key only; a key with something to
         // say sets it again below.
         self.home.status = None;
+        // Answers handled in the same pass as this key are folded first, so the key acts
+        // on the rows as they now are (a directory's kind, a door's name), not as the last
+        // frame left them.
+        self.home.apply_new_measurements();
 
         if self.info.documentation.is_open() {
             self.documentation_key(event);

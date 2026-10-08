@@ -52,8 +52,6 @@ pub struct HomeApp {
     /// Rows arrived for a listing still being read; it is listed again before the next
     /// frame.
     pub(crate) refresh_owed: bool,
-    /// Measurements arrived since the last frame; applied once before the next.
-    pub(crate) measured_owed: bool,
     /// Schema previews, memoized for the session only (persisted, they would go stale).
     pub(crate) schema_cache: HashMap<PathBuf, Option<discover::SchemaPreview>>,
     /// The home screen's `ROWS` previews, and the dataset the newest one built.
@@ -2260,27 +2258,19 @@ impl App {
             }
             AppEvent::HomeMeasured { measured, done } => {
                 for (path, m) in measured {
-                    self.home.enriched.insert(path, m);
+                    self.home.record_measurement(path, m);
                 }
-                // A batch answers one file per event; folding each into every row and
-                // rebuilding the list per file made a big directory cost a list per file.
-                self.home_app.measured_owed = true;
+                // A batch answers one file per event; they are folded in at the next frame
+                // (`begin_frame`), not one list per file.
                 if done {
-                    self.apply_owed_measurements();
                     self.home.measure_in_flight = false;
                     self.request_home_measurements();
                 }
                 None
             }
             AppEvent::HomeSized { path, measured } => {
-                // Only the size: a measurement that landed meanwhile keeps the rest.
-                match self.home.enriched.get_mut(&path) {
-                    Some(known) => known.size = measured.size,
-                    None => {
-                        self.home.enriched.insert(path, measured);
-                    }
-                }
-                self.home.apply_measurements();
+                self.home.record_size(path, measured);
+                self.home.apply_new_measurements();
                 None
             }
             AppEvent::HomeWebGone { path, gone } => {
@@ -2291,11 +2281,10 @@ impl App {
                 // Kept even if the listing was rebuilt since: probes and peeks rebuild it often,
                 // and dropping answers would leave rows unlabeled.
                 for (path, m) in measured {
-                    self.home.enriched.insert(path, m);
+                    self.home.record_measurement(path, m);
                 }
                 // Nothing re-sorts: kinds are written into rows in place, so the listing never
-                // reshuffles under the cursor.
-                self.home.apply_measurements();
+                // reshuffles under the cursor. Folded in at the next frame, as measurements.
                 // The next batch comes from the viewport as it is now, not the rows scrolled past.
                 if done {
                     self.home.classify_in_flight = false;

@@ -371,7 +371,10 @@ impl App {
             });
         }
         self.forget_the_rows_read();
-        self.data_table_state = Some(state);
+        // The dataset this one replaces is let go, and the memory it held handed back.
+        if let Some(closed) = self.data_table_state.replace(state) {
+            crate::app::background::release(closed);
+        }
         // A followed file's watcher starts with its dataset and stops with it.
         if options.follow
             && let Some(state) = self.data_table_state.as_mut()

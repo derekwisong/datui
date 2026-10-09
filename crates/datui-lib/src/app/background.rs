@@ -296,6 +296,27 @@ impl Drop for OwedAnswer {
     }
 }
 
+/// Let go of what a closed dataset held: dropped on a thread of its own (a big frame
+/// takes a while to free), then the allocator is asked to hand its free pages back.
+/// glibc keeps freed memory in its arenas for reuse, so without the trim a closed
+/// dataset stays in the process's footprint.
+pub(crate) fn release(held: impl Send + 'static) {
+    std::thread::spawn(move || {
+        drop(held);
+        trim_allocator();
+    });
+}
+
+/// Return the allocator's free pages to the system; a no-op where it cannot.
+fn trim_allocator() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: `malloc_trim` only releases memory glibc's allocator holds free; it takes
+    // no pointers and is safe to call from any thread.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+
 /// Cache writes an open makes for home (the recent, the shape): off the UI thread,
 /// counted so the home listing waits for them, else a quick `q` could list the
 /// cache before the recent is in.

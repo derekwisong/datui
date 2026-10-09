@@ -2,7 +2,7 @@
 //! in-process S3 stand-in (`common/fake_s3.rs`), held by the dataset scanning it, and
 //! removed by whatever ends it. Nothing leaves the loopback.
 
-use crate::common::next_event;
+use crate::common::{HANG_GUARD, next_event};
 use crate::fake_s3::FakeS3;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use datui::{App, AppConfig, AppEvent, JobKind, OpenOptions};
@@ -126,6 +126,8 @@ fn a_download_lands_whole_and_lives_with_its_dataset() {
     );
     settle(&mut app, &rx);
     assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 1);
+    // The replaced dataset is dropped on a thread of its own.
+    assert!(App::releases_settled(HANG_GUARD));
     assert!(
         files_in(dir.path()).is_empty(),
         "the replaced dataset's file went"

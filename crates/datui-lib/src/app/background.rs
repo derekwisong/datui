@@ -301,14 +301,42 @@ impl Drop for OwedAnswer {
 /// glibc keeps freed memory in its arenas for reuse, so without the trim a closed
 /// dataset stays in the process's footprint.
 pub(crate) fn release(held: impl Send + 'static) {
+    *RELEASING.0.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+    let done = Released;
     // No thread to be had: the closure, and what it holds, is dropped here as the spawn
     // fails, untrimmed, rather than the app failing.
     let _ = std::thread::Builder::new()
         .name("datui-release".into())
         .spawn(move || {
+            let _done = done;
             drop(held);
             trim_allocator();
         });
+}
+
+/// Releases not yet dropped: what a wait for a closed dataset's files to go waits on.
+static RELEASING: (std::sync::Mutex<usize>, std::sync::Condvar) =
+    (std::sync::Mutex::new(0), std::sync::Condvar::new());
+
+/// Counts a release down when its thread ends, or when the closure is dropped unrun.
+struct Released;
+
+impl Drop for Released {
+    fn drop(&mut self) {
+        let (count, ended) = &RELEASING;
+        *count.lock().unwrap_or_else(|e| e.into_inner()) -= 1;
+        ended.notify_all();
+    }
+}
+
+/// Wait up to `within` for every release to be dropped; false if one is still going.
+pub(crate) fn releases_settled(within: std::time::Duration) -> bool {
+    let (count, ended) = &RELEASING;
+    let count = count.lock().unwrap_or_else(|e| e.into_inner());
+    let (count, _) = ended
+        .wait_timeout_while(count, within, |n| *n > 0)
+        .unwrap_or_else(|e| e.into_inner());
+    *count == 0
 }
 
 /// Return the allocator's free pages to the system; a no-op where it cannot.

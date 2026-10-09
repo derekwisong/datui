@@ -1184,6 +1184,13 @@ impl App {
         self.pipes.stdout_pass = Some(Box::new(out));
     }
 
+    /// Wait up to `within` for closed datasets, dropped on threads of their own, to be
+    /// let go: their temp files are gone once this is true.
+    #[doc(hidden)]
+    pub fn releases_settled(within: std::time::Duration) -> bool {
+        crate::app::background::releases_settled(within)
+    }
+
     /// The follow of the dataset on screen, while it is followed.
     pub fn follow(&self) -> Option<&crate::loading::follow::Follow> {
         self.data_table_state.as_ref()?.follow()

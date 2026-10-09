@@ -69,6 +69,8 @@ pub struct HomeApp {
     /// Directories the `~` prompt asked a worker to list, until each answers: typing
     /// within one directory asks once.
     pub(crate) path_listings_out: std::collections::HashSet<String>,
+    /// The session's start at home has been made, with no row picked: never again.
+    pub(crate) rested: bool,
     /// The cache's dataset index has been read this session; later listings use it
     /// as kept, without a scan of the cache.
     pub(crate) facts_read: bool,
@@ -1480,9 +1482,10 @@ impl App {
         // a new one, and `~` opens the path prompt.
         self.home.filter_selected = !self.home.filter.is_empty();
         self.home.folds_owed = true;
-        // With no dataset to come back to, no row is picked: nothing is read until one is.
-        // Coming back from one, the cursor lands on it, a row the user chose.
-        self.home.resting = self.path.is_none();
+        // Coming back from a dataset, the cursor lands on it, a row the user chose.
+        if self.path.is_some() {
+            self.home.resting = false;
+        }
         self.home_app.left = self.path.clone();
         self.home_refresh();
         if let Some(open_path) = self.path.clone() {
@@ -1508,6 +1511,14 @@ impl App {
             }
         }
         self.input_mode = InputMode::Home;
+    }
+
+    /// The session starts at home with no row picked, reading nothing until one is.
+    /// Once a session: a later visit home keeps whatever was chosen.
+    pub fn rest_at_start(&mut self) {
+        if !std::mem::replace(&mut self.home_app.rested, true) {
+            self.home.resting = true;
+        }
     }
 
     /// Esc backs out one layer: the filter, the directory descended into, then back to

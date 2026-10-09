@@ -5758,6 +5758,7 @@ mod coming_back {
             held.borrow_mut().get_or_insert_with(super::hold_cwd);
         });
         app.home.browsing = place.map(Path::to_path_buf);
+        app.rest_at_start();
         app.enter_home();
         settle(&mut app, &rx, |_| true);
         (app, rx)
@@ -10205,5 +10206,18 @@ mod at_rest {
             rests_on(&app).is_some(),
             "the cursor still rests where it did"
         );
+    }
+
+    /// Resting is the session's start alone: once a row is picked, coming home again
+    /// (a failed open, a hex view left, Ctrl+O) keeps it picked.
+    #[test]
+    fn the_rest_is_once_a_session() {
+        let (_tmp, mut app, _rx) = opened();
+        press(&mut app, KeyCode::Down);
+        assert!(!app.home.resting);
+        app.enter_home();
+        assert!(!app.home.resting, "coming home keeps the pick");
+        app.rest_at_start();
+        assert!(!app.home.resting, "and the start is not made twice");
     }
 }

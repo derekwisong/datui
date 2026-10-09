@@ -698,6 +698,7 @@ impl App {
         // so `--no-header` and skips are already accounted for. A lake table opens home
         // with the same refusal its row gives.
         if let Some(format) = kind.lake_name() {
+            self.rest_at_start();
             self.enter_home();
             self.home.lake_here = Some((dir.clone(), format));
             self.home_jump_into(dir);
@@ -716,6 +717,7 @@ impl App {
         }
         // A place to look inside: `datui .`, or a directory of separate tables (whose
         // `(all files)` row unions them).
+        self.rest_at_start();
         self.enter_home();
         self.home_jump_into(dir);
         None
@@ -741,6 +743,7 @@ impl App {
             return open(self, dir, options);
         };
         if let Some(format) = kind.lake_name() {
+            self.rest_at_start();
             self.enter_home();
             self.home.lake_here = Some((dir.clone(), format));
             self.home_jump_into(dir);
@@ -767,6 +770,7 @@ impl App {
             return open(self, directory, options);
         }
         // Only directories, or nothing readable: browse inside, with the reason if any.
+        self.rest_at_start();
         self.enter_home();
         self.home_jump_into(dir);
         self.home.status = Self::why_a_cloud_prefix_cannot_be_read(holds);

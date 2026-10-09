@@ -874,7 +874,7 @@ fn the_sort_list_cursor_is_real_on_open() {
 /// went — it does not climb above the directory the browse began at.
 #[test]
 fn test_escape_stops_at_where_browsing_began() {
-    let (tx, _rx) = mpsc::channel();
+    let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
     app.enter_home();
     let tmp = tempfile::tempdir().unwrap();
@@ -887,7 +887,14 @@ fn test_escape_stops_at_where_browsing_began() {
 
     app.home.path_input_active = true;
     app.home.path_input = start.display().to_string();
-    key(&mut app, KeyCode::Enter);
+    // A worker looks at the typed path; its answer goes inside.
+    if let Some(next) = app.event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    ))) {
+        common::handle_chain(&mut app, next);
+    }
+    common::drain_events(&mut app, &rx);
     assert_eq!(app.home.browsing.as_deref(), Some(start.as_path()));
 
     // As if Enter had descended into `b`.

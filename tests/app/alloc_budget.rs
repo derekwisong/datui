@@ -260,8 +260,8 @@ fn home_until_quiet(app: &mut App, rx: &mpsc::Receiver<AppEvent>, tally: &mut Ta
     }
 }
 
-/// Browsing a directory of 1,500 files measures every one, those on screen first, and
-/// each measurement costs its row, not the listing; then filter keystrokes narrow it.
+/// Browsing a directory of 1,500 files measures the rows on screen, and each
+/// measurement costs its row, not the listing; then filter keystrokes narrow it.
 /// Once 5.4 million allocations a key over 5,000 files: every measurement that landed
 /// folded every row again and scored the whole listing again (#813). 1,500 files keep
 /// the search's scoring inline (`SCORE_INLINE_MAX` is 2,000).
@@ -293,7 +293,10 @@ fn home_filter_keys_and_measurements_stay_within_budget() {
     let mut browsing = Tally::default();
     home_until_quiet(&mut app, &rx, &mut browsing);
     let measured = app.home.enriched.len();
-    assert!(measured >= 1_500, "every file measured: {measured}");
+    assert!(
+        (1..200).contains(&measured),
+        "the rows on screen measured, not the directory: {measured}"
+    );
 
     let mut per_key = Vec::new();
     for c in "rprt4".chars() {

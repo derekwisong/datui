@@ -393,8 +393,9 @@ fn ctrl_x_at_home_shows_a_file_s_bytes_and_esc_goes_back_home() {
     app.enter_home();
     press(&mut app, KeyCode::Char('~'));
     type_in(&mut app, &dir.display().to_string());
-    press(&mut app, KeyCode::Enter);
     let tx = _tx.clone();
+    // A worker looks at the typed path; its answer goes inside.
+    press_and_send(&mut app, &tx, KeyCode::Enter);
     pump_until(&mut app, &rx, &tx, |app| {
         app.home.visible().iter().any(|row| {
             matches!(row, datui::home::Row::Entry { entry, .. } if entry.path.ends_with("hex_home.csv"))

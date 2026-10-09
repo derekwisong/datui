@@ -461,6 +461,17 @@ fn test_opening_from_home_does_not_show_the_previous_dataset() {
     while let Some(event) = next {
         next = app.event(event);
     }
+    // A worker looks at the typed path first; its answer opens it. Taken one event at a
+    // time, so nothing of the load is handled before its first frame.
+    while !app.at_table() {
+        let event = rx
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .expect("the look answers");
+        let mut next = Some(event);
+        while let Some(event) = next {
+            next = app.event(event);
+        }
+    }
     assert!(
         app.at_table(),
         "opening from home should leave the home screen"
@@ -587,12 +598,22 @@ fn a_load_chosen_at_home_fails_at_home() {
     app.home.status = None;
     while rx.try_recv().is_ok() {}
     type_at_prompt(&mut app, &model);
-    // The prompt lists the directory being typed meanwhile; nothing is opened.
-    assert!(
-        !rx.try_iter()
-            .any(|event| matches!(event, AppEvent::Open(..))),
-        "nothing was opened"
-    );
+    // The prompt lists the directory being typed meanwhile, and a worker looks at the
+    // path; nothing is opened.
+    for _tick in ticks() {
+        let mut idle = true;
+        while let Ok(event) = rx.try_recv() {
+            assert!(!matches!(event, AppEvent::Open(..)), "nothing was opened");
+            idle = false;
+            if let Some(next) = app.event(event) {
+                tx.send(next).unwrap();
+            }
+        }
+        if idle && !app.is_busy() {
+            break;
+        }
+        common::wait_for_event(&tx, &rx);
+    }
     // A typed path has no row to dim, so the line says it.
     assert_eq!(
         app.home.status.as_deref(),
@@ -1124,6 +1145,18 @@ fn test_right_does_not_browse_from_an_ordinary_row() {
     );
 }
 
+/// What Enter asks of a path nothing has looked at: a worker looks, and its answer is
+/// acted on.
+fn looked_at_on_a_worker(app: &mut App, rx: &mpsc::Receiver<AppEvent>, follow: Option<AppEvent>) {
+    let follow = follow.expect("a look at the path");
+    assert!(
+        matches!(follow, AppEvent::ClassifyThenOpen { .. }),
+        "the key thread reads nothing"
+    );
+    common::handle_chain(app, follow);
+    common::drain_events(app, rx);
+}
+
 /// A lake table typed at `~` is not opened as one table either.
 ///
 /// `home_open_selected` learned to go inside one; the path input had no check at all, so
@@ -1139,7 +1172,7 @@ fn test_a_lake_table_typed_as_a_path_is_gone_inside_not_opened() {
         std::fs::write(table.join(part), b"x").unwrap();
     }
 
-    let (tx, _rx) = mpsc::channel();
+    let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
     app.enter_home();
     app.home.path_input_active = true;
@@ -1149,8 +1182,9 @@ fn test_a_lake_table_typed_as_a_path_is_gone_inside_not_opened() {
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
+    looked_at_on_a_worker(&mut app, &rx, follow);
 
-    assert!(follow.is_none(), "nothing was opened");
+    assert_eq!(app.input_mode, InputMode::Home, "nothing was opened");
     assert_eq!(
         app.home.browsing.as_deref(),
         Some(table.as_path()),
@@ -1272,7 +1306,7 @@ fn test_an_unexamined_lake_root_is_classified_before_it_is_opened() {
         std::fs::write(table.join(part), b"x").unwrap();
     }
 
-    let (tx, _rx) = mpsc::channel();
+    let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
     app.enter_home();
     app.home.browsing = Some(tmp.path().to_path_buf());
@@ -1302,8 +1336,13 @@ fn test_an_unexamined_lake_root_is_classified_before_it_is_opened() {
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
+    looked_at_on_a_worker(&mut app, &rx, follow);
 
-    assert!(follow.is_none(), "nothing was opened as one table");
+    assert_eq!(
+        app.input_mode,
+        InputMode::Home,
+        "nothing was opened as one table"
+    );
     assert_eq!(
         app.home.browsing.as_deref(),
         Some(table.as_path()),
@@ -1693,7 +1732,7 @@ fn test_the_door_into_a_lake_table_says_its_files_are_not_the_table() {
     );
 
     // And the row one level up still goes inside rather than reading it.
-    let (tx, _rx) = mpsc::channel();
+    let (tx, up_rx) = mpsc::channel();
     let mut up = App::new(tx, common::test_runtime());
     up.enter_home();
     up.home.browsing = Some(tmp.path().to_path_buf());
@@ -1705,7 +1744,8 @@ fn test_the_door_into_a_lake_table_says_its_files_are_not_the_table() {
         .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "events"))
         .expect("the directory is listed");
     up.home.selected = row;
-    assert!(up.event(key(KeyCode::Enter)).is_none());
+    let follow = up.event(key(KeyCode::Enter));
+    looked_at_on_a_worker(&mut up, &up_rx, follow);
     assert_eq!(up.home.browsing.as_deref(), Some(events.as_path()));
     let said = lake_heading(&mut up);
     assert!(

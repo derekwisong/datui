@@ -5451,7 +5451,9 @@ impl HomeState {
         }
         // The rows are drawn from the sections as they are now; the list is built again
         // only when a row moves, comes or goes, which is rare once the first answers are in.
-        if moved || !self.hits_hold(&touched) {
+        // Sorted by something measured, it is built again for each answer: the order and
+        // what the `more` row says are made of them.
+        if moved || sort != SortMode::Natural || !self.hits_hold(&touched) {
             self.rows_changed(&touched);
         }
         self.land_again();

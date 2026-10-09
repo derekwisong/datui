@@ -9883,6 +9883,49 @@ mod listing_work {
         assert!(home.unstated_for_sort(usize::MAX).is_empty());
     }
 
+    /// Sorted by rows, the `more` row stops saying `measuring` once every row behind it
+    /// is answered, even when the answers leave the order as it was.
+    #[test]
+    fn the_more_row_stops_measuring_when_the_rows_are_in() {
+        let mut home = HomeState::default();
+        let rows: Vec<Entry> = (0..40)
+            .map(|i| file(format!("/pretend/root/f{i:02}.csv")))
+            .collect();
+        let paths: Vec<PathBuf> = rows.iter().map(|r| r.path.clone()).collect();
+        home.apply_listing(Listing {
+            sections: vec![Section {
+                root: Some(PathBuf::from("/pretend/root")),
+                ..Section::titled("/pretend/root", rows)
+            }],
+            ..Default::default()
+        });
+        home.view_height = 20;
+        home.sort = SortMode::Rows;
+        let measuring = |home: &HomeState| {
+            home.visible().iter().any(|row| {
+                matches!(
+                    row,
+                    Row::More {
+                        measuring: true,
+                        ..
+                    }
+                )
+            })
+        };
+        assert!(measuring(&home));
+        for path in paths {
+            home.record_measurement(
+                path,
+                Measured {
+                    stat_only: false,
+                    ..stat(10, 1)
+                },
+            );
+        }
+        home.apply_new_measurements();
+        assert!(!measuring(&home), "nothing is being measured any more");
+    }
+
     /// Sorted by size or time, every row needs its stat and nothing more: those off
     /// screen are stat'ed, never read.
     #[test]

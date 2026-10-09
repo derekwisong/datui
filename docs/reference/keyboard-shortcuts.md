@@ -138,7 +138,7 @@ Where a dataset opens.
 
 | Key | Action |
 |---|---|
-| `↑ / ↓` | Move the selection (Ctrl+P / Ctrl+N too). datui opens with no row picked, reading nothing; the first ↑ or ↓ picks the top row, PgUp, PgDn, Home and End move from it, and typing picks the best match |
+| `↑ / ↓` | Move the selection (Ctrl+P / Ctrl+N too). datui opens with no row picked, reading nothing, the row it lands on shown tinted; the first ↑ or ↓ picks that row, PgUp, PgDn, Home, End, Ctrl+↑ / Ctrl+↓ and the wheel move from it, a click picks the row clicked, and typing picks the best match |
 | `Ctrl+↑ / Ctrl+↓` | Previous or next section |
 | `PgUp / PgDn` | A screenful, stopping at the first and last |
 | `Home / End` | The first or last row. The filter has no cursor to move: it is edited at its end |
@@ -150,7 +150,7 @@ Where a dataset opens.
 
 | Key | Action |
 |---|---|
-| `Enter` | What the footer says on this row: "Open all" reads a whole directory as one table, "Inside" steps into it, "Open" loads a file, "Look" finds out first. A catalog bookmark, indented under its dataset, opens whole. On a section header, fold or unfold it; on a more row, show the rest; on `..`, go up a level; on the hidden-files row, show them. With no row picked yet, the top row |
+| `Enter` | What the footer says on this row: "Open all" reads a whole directory as one table, "Inside" steps into it, "Open" loads a file, "Look" finds out first. A catalog bookmark, indented under its dataset, opens whole. On a section header, fold or unfold it; on a more row, show the rest; on `..`, go up a level; on the hidden-files row, show them. With no row picked yet, Enter acts on the row datui lands on, shown tinted |
 | `Backspace` | Delete a filter character; on an empty filter, up a level (from a bucket, back to its cloud source; from the top of a catalog's remote dataset, back here) |
 | `Esc` | Back out one layer: the path prompt, the filter (onto the first dataset), the directory (back to the row it was entered from), then to the open table |
 

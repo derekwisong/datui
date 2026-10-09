@@ -9675,6 +9675,41 @@ mod listing_work {
         assert_eq!(matched, [first, second]);
     }
 
+    /// A root that went quiet and speaks again is listed again, no longer said not to
+    /// answer.
+    #[test]
+    fn a_root_that_answers_again_is_no_longer_not_answering() {
+        let root = PathBuf::from("/pretend/share");
+        let mut home = HomeState {
+            network_check: |_| true,
+            ..Default::default()
+        };
+        home.apply_listing(Listing {
+            sections: vec![Section {
+                root: Some(root.clone()),
+                remote_root: Some(root.clone()),
+                waiting: true,
+                ..Section::titled("/pretend/share", Vec::new())
+            }],
+            ..Default::default()
+        });
+        home.probes.go_silent(&root);
+        home.relist_remote(&root);
+        assert!(home.sections[0].unavailable && !home.sections[0].waiting);
+        assert_eq!(
+            home.sections[0].unavailable_note.as_deref(),
+            Some(datui::home::NOT_ANSWERING)
+        );
+
+        home.probes
+            .read(&root, &[file("/pretend/share/a.csv".into())]);
+        home.relist_remote(&root);
+        let section = &home.sections[0];
+        assert!(section.waiting, "listing again");
+        assert!(!section.unavailable && section.unavailable_note.is_none());
+        assert_eq!(section.rows.len(), 1);
+    }
+
     /// Sorted by size or time, every row needs its stat and nothing more: those off
     /// screen are stat'ed, never read.
     #[test]

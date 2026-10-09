@@ -3210,20 +3210,20 @@ impl HomeState {
         );
         name_by_spec(&self.formats, &mut section.rows);
         let silent = self.probes.silent(root);
+        let unreachable = self.probes.unreachable(root);
         let waiting = !self.probes.settled(root);
         self.replace_sections(|home| {
             if browsed {
                 home.sections[at] = section;
                 return;
             }
-            // A root keeps its heading; its rows and its wait are the probe's.
+            // A root keeps its heading; its rows, its wait and whether it answers are the
+            // probe's, so a root that speaks again is no longer said not to answer.
             let shown = &mut home.sections[at];
             shown.rows = section.rows;
             shown.waiting = waiting;
-            if silent {
-                shown.unavailable = true;
-                shown.unavailable_note = Some(NOT_ANSWERING.to_string());
-            }
+            shown.unavailable = silent || unreachable;
+            shown.unavailable_note = silent.then(|| NOT_ANSWERING.to_string());
         });
     }
 

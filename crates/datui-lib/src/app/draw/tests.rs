@@ -338,7 +338,7 @@ impl Backend for Resizable {
         self.inner.clear()
     }
 
-    fn clear_region(&mut self, clear_type: ClearType) -> std::io::Result<()> {
+    fn clear_region(&mut self, clear_type: ratatui::backend::ClearType) -> std::io::Result<()> {
         self.inner.clear_region(clear_type)
     }
 
@@ -432,6 +432,28 @@ fn a_new_size_is_drawn_whole() {
     let frame = numbered(16, 7, 2);
     draw(&mut terminal, &mut screen, &frame);
     assert_eq!(cells_of(&screen), redraw_of(&frame));
+}
+
+/// A frame that changes nothing on screen writes nothing: no update brackets, no
+/// color reset, no cursor. A repaint is written though nothing changed.
+#[test]
+fn an_unchanged_frame_writes_nothing() {
+    for scroll in [true, false] {
+        let mut driven = app(400);
+        let mut e = Emulated::new(scroll);
+        let frame = render(&mut driven);
+        assert!(!e.draw(&frame).is_empty());
+        assert_eq!(e.draw(&frame), b"", "scroll {scroll}");
+        press(&mut driven, KeyCode::Down);
+        let frame = render(&mut driven);
+        assert!(!e.draw(&frame).is_empty(), "a move is drawn");
+        assert_eq!(e.draw(&frame), b"");
+        e.drawer.repaint();
+        let out = e.draw(&frame);
+        assert!(out.starts_with(b"\x1b[?2026h"), "{out:?}");
+        assert!(out.ends_with(b"\x1b[?2026l"), "{out:?}");
+        assert_eq!(e.lines(), redrawn(&frame).lines());
+    }
 }
 
 /// Text the terminal shows that was never drawn (another program wrote it) goes

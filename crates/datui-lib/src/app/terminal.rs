@@ -1,7 +1,34 @@
 //! The terminal while the TUI holds it: setting it up, handing it back, and letting
 //! it go quietly once it has gone.
 
+use std::io::{BufWriter, Stdout};
+
+use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
+
 use super::draw::Drawer;
+
+/// The terminal frames are drawn on: standard output behind a buffer a large frame
+/// fits in, so a frame goes out in one write. Standard output alone is line
+/// buffered (1 KiB), which cut a repaint into a write per KiB.
+pub(crate) type Screen = Terminal<CrosstermBackend<BufWriter<Stdout>>>;
+
+/// Room for a whole frame: a 200x50 repaint in truecolor is about 25 KB.
+const FRAME_BUFFER: usize = 64 << 10;
+
+/// Take the terminal as `ratatui::try_init` does (raw mode, the alternate screen, a
+/// panic hook that hands them back), drawing through [`Screen`]'s buffer.
+pub(crate) fn take_screen() -> std::io::Result<Screen> {
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        ratatui::restore();
+        hook(info);
+    }));
+    crossterm::terminal::enable_raw_mode()?;
+    crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen)?;
+    let out = BufWriter::with_capacity(FRAME_BUFFER, std::io::stdout());
+    Terminal::new(CrosstermBackend::new(out))
+}
 
 /// Undo `run`'s terminal setup: release the mouse, pop keyboard flags (harmless if never
 /// pushed or ignored), restore the screen. Reports failures on stderr without panicking:
@@ -47,10 +74,10 @@ pub(crate) fn follow_focus(out: &mut impl std::io::Write) {
 /// Ratatui's terminal, let go without its `Drop` when the terminal has gone. That
 /// `Drop` shows the cursor and `eprintln!`s a failure, which after a hangup panics,
 /// panics again in the panic hook, and aborts. Frames go through its [`Drawer`].
-pub(crate) struct QuietTerminal(pub(crate) Option<ratatui::DefaultTerminal>, Drawer);
+pub(crate) struct QuietTerminal(pub(crate) Option<Screen>, Drawer);
 
 impl QuietTerminal {
-    pub(crate) fn new(terminal: ratatui::DefaultTerminal) -> Self {
+    pub(crate) fn new(terminal: Screen) -> Self {
         // Off until the settings say otherwise.
         Self(Some(terminal), Drawer::new(false))
     }

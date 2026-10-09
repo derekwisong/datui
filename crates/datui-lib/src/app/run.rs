@@ -2,7 +2,7 @@
 //! signals that end it, and handing a file to the system's opener.
 
 use crate::app::terminal::{
-    QuietTerminal, TakenTerminal, follow_focus, push_keyboard_flags, restore_terminal,
+    QuietTerminal, TakenTerminal, follow_focus, push_keyboard_flags, restore_terminal, take_screen,
 };
 use crate::config::AppConfig;
 use crate::view::Views;
@@ -233,7 +233,7 @@ fn run_impl(
         }
         _ => None,
     };
-    let mut terminal = match ratatui::try_init() {
+    let mut terminal = match take_screen() {
         Ok(terminal) => QuietTerminal::new(terminal),
         Err(e) => {
             // No screen to keep up: an unusable config or a missing named file is said first.
@@ -342,7 +342,6 @@ fn run_impl(
             }
             Err(_) => {
                 terminal.draw(|frame| startup::draw_waiting(frame, waiting_on.as_deref()))?;
-                let _ = std::io::stdout().flush();
                 waiting_shown = true;
             }
         }
@@ -464,7 +463,6 @@ fn run_impl(
             terminal.repaint();
         }
         terminal.draw(|frame| frame.render_widget(app, frame.area()))?;
-        let _ = std::io::stdout().flush();
         Ok(())
     })?;
     let result = conclude(end, &pump.app, capture, &mut reader, &mut screen);

@@ -536,7 +536,7 @@ impl Drop for TuiSession {
 }
 
 /// Wraps whatever hook is installed (color-eyre's, under ratatui's). Installed per
-/// session, above the hook `ratatui::try_init` adds each time.
+/// session, above the hook `take_screen` adds each time.
 fn install_panic_hook() {
     let tui_thread = std::thread::current().id();
     let previous = std::panic::take_hook();

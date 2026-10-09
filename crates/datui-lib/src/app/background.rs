@@ -301,10 +301,14 @@ impl Drop for OwedAnswer {
 /// glibc keeps freed memory in its arenas for reuse, so without the trim a closed
 /// dataset stays in the process's footprint.
 pub(crate) fn release(held: impl Send + 'static) {
-    std::thread::spawn(move || {
-        drop(held);
-        trim_allocator();
-    });
+    // No thread to be had: the closure, and what it holds, is dropped here as the spawn
+    // fails, untrimmed, rather than the app failing.
+    let _ = std::thread::Builder::new()
+        .name("datui-release".into())
+        .spawn(move || {
+            drop(held);
+            trim_allocator();
+        });
 }
 
 /// Return the allocator's free pages to the system; a no-op where it cannot.
@@ -398,5 +402,26 @@ mod cache_writes_tests {
         let started = std::time::Instant::now();
         writes.settle();
         assert!(started.elapsed() < CacheWrites::SETTLE);
+    }
+}
+
+#[cfg(test)]
+mod release_tests {
+    /// Says on a channel when it is dropped.
+    struct Held(std::sync::mpsc::Sender<()>);
+
+    impl Drop for Held {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
+
+    /// What a closed dataset held is dropped, off the calling thread.
+    #[test]
+    fn a_released_value_is_dropped() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        super::release(Held(tx));
+        rx.recv_timeout(std::time::Duration::from_secs(60))
+            .expect("dropped");
     }
 }

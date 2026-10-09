@@ -3559,6 +3559,48 @@ fn a_paste_into_the_path_prompt_is_one_edit() {
     assert_eq!(p.app.home.path_input, path.trim_end());
 }
 
+/// A space pasted into a picker narrows it: it neither chooses nor toggles, as Space
+/// typed there would.
+#[test]
+fn a_paste_into_a_picker_narrows_it() {
+    let (mut p, _dir) = loaded_pump();
+    p.terminal_key(plain(KeyCode::Char('s'))).unwrap();
+    assert_eq!(p.app.overlay, Overlay::SortFilter);
+    let theme = p.app.theme.clone();
+    p.app.sort_filter_modal.filter.open_editor(&theme, 10);
+    p.send(paste(" a\n")).unwrap();
+    p.drain().unwrap();
+    let editor = p
+        .app
+        .sort_filter_modal
+        .filter
+        .editor
+        .as_ref()
+        .expect("editing");
+    assert_eq!(
+        editor.step,
+        crate::app::modals::filter_modal::FilterEditStep::Column,
+        "nothing chosen"
+    );
+    assert_eq!(editor.column.filter, " a");
+}
+
+/// The SQL prompt keeps a pasted statement's lines: a comment stays on its line.
+#[cfg(feature = "sql")]
+#[test]
+fn a_paste_into_the_sql_prompt_keeps_its_lines() {
+    let (mut p, _dir) = loaded_pump();
+    p.app.app_config.query.default_mode = crate::QueryMode::Sql;
+    p.terminal_key(plain(KeyCode::Char(':'))).unwrap();
+    p.send(paste("-- people\r\nSELECT * FROM df")).unwrap();
+    p.drain().unwrap();
+    assert_eq!(p.app.input_mode, InputMode::Editing, "not run");
+    assert_eq!(
+        p.app.prompt.sql_input.value(),
+        "-- people\nSELECT * FROM df"
+    );
+}
+
 /// In a text field a paste is typed, line breaks as spaces: nothing is submitted, and
 /// keys typed after it land after it.
 #[test]
@@ -3604,4 +3646,26 @@ fn a_paste_while_keys_are_held_waits_its_turn() {
     p.app.busy = false;
     settle(&mut p);
     assert_eq!(p.app.prompt.query_input.value(), "abcd");
+}
+
+/// Wherever a typed character would edit text, the paste finds that text, and
+/// nowhere else.
+#[test]
+fn the_focused_text_is_where_typing_goes() {
+    for opens in [":", "/", "g", "s", "i", ""] {
+        let (mut p, _dir) = loaded_pump();
+        type_keys(&mut p, opens);
+        let typing = p.app.text_field_focused();
+        assert_eq!(
+            p.app.focused_text_mut().is_some(),
+            typing,
+            "after {opens:?}"
+        );
+        if typing {
+            let before = rendered(&mut p.app);
+            p.send(paste("zz")).unwrap();
+            p.drain().unwrap();
+            assert_ne!(rendered(&mut p.app), before, "after {opens:?}: pasted");
+        }
+    }
 }

@@ -16,7 +16,7 @@ use color_eyre::Result;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 
 use crate::app::jobs::Hold;
-use crate::app::keys::paste_keys::{self, PasteTarget};
+use crate::app::keys::paste_keys::PasteTarget;
 use crate::app::pointer::Pointer;
 use crate::{App, AppEvent};
 
@@ -363,7 +363,7 @@ impl EventPump {
             return Ok(false);
         }
         // Classified as the text's first character, typed.
-        let Some(first) = paste_keys::one_line(&text).chars().next() else {
+        let Some(first) = crate::widgets::text_input::one_line(&text).chars().next() else {
             return Ok(false);
         };
         match self.classify(&KeyEvent::new(KeyCode::Char(first), KeyModifiers::NONE)) {

@@ -2048,7 +2048,7 @@ impl App {
             // What Ctrl+A shows; the cursor goes to the first, where the hidden row stood.
             Some(home::Row::Hidden { .. }) => {
                 self.home.hide_unreadable = false;
-                if let Some(idx) = self.home.visible().iter().position(|row| {
+                if let Some(idx) = self.home.position(|row| {
                     matches!(row, home::Row::Entry { entry, .. }
                         if entry.hidden_by_default())
                 }) {

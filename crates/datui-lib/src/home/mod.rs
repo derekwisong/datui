@@ -1393,6 +1393,9 @@ struct Hits {
 struct View {
     key: ViewKey,
     slots: Vec<Slot>,
+    /// Which slots are section headers, in order: few, so the list's lines are found
+    /// from them without walking every row.
+    headers: Vec<usize>,
     hits: Hits,
     /// See [`HomeState::has_any_dataset`].
     has_dataset: bool,
@@ -1461,6 +1464,67 @@ enum Slot {
     Door {
         section: usize,
     },
+}
+
+/// Where the listed rows fall in the list, given its section headers: with `spaced`, a
+/// blank line comes before every header but the first. Answers in a few steps for
+/// any row or line, so a frame never walks thousands of rows to find its own.
+#[derive(Debug, Clone)]
+pub struct ListLines {
+    headers: Vec<usize>,
+    rows: usize,
+    spaced: bool,
+}
+
+impl ListLines {
+    /// How many rows are listed.
+    pub fn rows(&self) -> usize {
+        self.rows
+    }
+
+    /// How many of them are section headers.
+    pub fn headers(&self) -> usize {
+        self.headers.len()
+    }
+
+    /// The line row `row` is drawn on.
+    pub fn line_of(&self, row: usize) -> usize {
+        if !self.spaced {
+            return row;
+        }
+        // Headers at or above the row, but the first, each bring a blank line.
+        let above = self.headers.partition_point(|&h| h <= row);
+        let first_at_top = self.headers.first() == Some(&0);
+        row + above.saturating_sub(usize::from(first_at_top))
+    }
+
+    /// Lines the whole list takes.
+    pub fn total(&self) -> usize {
+        match self.rows {
+            0 => 0,
+            n => self.line_of(n - 1) + 1,
+        }
+    }
+
+    /// The first row drawn on `line` or below it.
+    pub fn first_row_from(&self, line: usize) -> usize {
+        let (mut lo, mut hi) = (0, self.rows);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if self.line_of(mid) < line {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        lo
+    }
+
+    /// The row drawn on `line`; `None` for a blank line or past the end.
+    pub fn row_on(&self, line: usize) -> Option<usize> {
+        let row = self.first_row_from(line);
+        (row < self.rows && self.line_of(row) == line).then_some(row)
+    }
 }
 
 /// The place a recent lives in: its directory or object-store prefix; a bare bucket
@@ -3100,7 +3164,7 @@ impl HomeState {
 
     /// Where the row `key` names is on screen, as it is listed now.
     fn listed(&self, key: &RowKey) -> Option<usize> {
-        self.visible().iter().position(|row| match (row, key) {
+        self.position(|row| match (row, key) {
             (Row::Entry { entry, .. }, RowKey::Entry(path)) => entry.path == *path,
             (Row::Door { entry, .. }, RowKey::Door(path)) => entry.path == *path,
             (Row::Place { path, .. }, RowKey::Place(wanted)) => path == wanted,
@@ -3120,7 +3184,7 @@ impl HomeState {
         let (RowKey::Entry(path) | RowKey::Place(path)) = key else {
             return None;
         };
-        self.visible().iter().position(|row| {
+        self.position(|row| {
             matches!(row, Row::More { section, .. }
             if self.sections.get(*section).is_some_and(|s| {
                 s.grouped_by_place
@@ -3193,13 +3257,7 @@ impl HomeState {
     pub fn jump_section(&mut self, delta: isize) {
         self.returning = None;
         self.landing = false;
-        let rows = self.visible();
-        let headers: Vec<usize> = rows
-            .iter()
-            .enumerate()
-            .filter(|(_, r)| matches!(r, Row::Header { .. }))
-            .map(|(i, _)| i)
-            .collect();
+        let headers = self.view().headers.clone();
         if headers.is_empty() {
             return;
         }
@@ -3823,21 +3881,34 @@ impl HomeState {
         view.slots.iter().map(|slot| self.row(slot)).collect()
     }
 
-    /// Which rows of [`HomeState::visible`] are headers, without building the rows.
-    pub fn header_rows(&self) -> Vec<bool> {
-        (self.view().slots.iter())
-            .map(|slot| matches!(slot, Slot::Plain(Row::Header { .. })))
-            .collect()
+    /// Where each row of [`HomeState::visible`] falls in the list, `spaced` with a
+    /// blank line before every header but the first; from the headers alone, so a frame
+    /// costs the rows it shows, not the rows listed.
+    pub fn list_lines(&self, spaced: bool) -> ListLines {
+        let view = self.view();
+        ListLines {
+            headers: view.headers.clone(),
+            rows: view.slots.len(),
+            spaced,
+        }
     }
 
     /// How many rows the filter matches: the sum of the section headers' counts.
     pub fn matched(&self) -> usize {
-        (self.view().slots.iter())
-            .map(|slot| match slot {
+        let view = self.view();
+        (view.headers.iter())
+            .map(|&i| match &view.slots[i] {
                 Slot::Plain(Row::Header { matches, .. }) => *matches,
                 _ => 0,
             })
             .sum()
+    }
+
+    /// The first row of [`HomeState::visible`] that `wanted` picks, without building
+    /// the rest.
+    pub fn position(&self, mut wanted: impl FnMut(&Row<'_>) -> bool) -> Option<usize> {
+        let view = self.view();
+        view.slots.iter().position(|slot| wanted(&self.row(slot)))
     }
 
     /// How many rows [`HomeState::visible`] lists.
@@ -4010,9 +4081,14 @@ impl HomeState {
             hits.filter == self.filter && hits.sections.len() <= self.sections.len()
         });
         let hits = self.score_rows(kept);
+        let slots = self.slots(&hits);
         View {
             key: ViewKey::of(self),
-            slots: self.slots(&hits),
+            headers: (slots.iter().enumerate())
+                .filter(|(_, slot)| matches!(slot, Slot::Plain(Row::Header { .. })))
+                .map(|(i, _)| i)
+                .collect(),
+            slots,
             hits,
             has_dataset: self
                 .sections
@@ -4860,11 +4936,10 @@ impl HomeState {
 
     /// Where [`HomeState::select_first_entry`] puts the cursor.
     fn landing_row(&self) -> usize {
-        let rows = self.visible();
         // Recent is ranked by frecency, and the last file opened is still one Enter away.
         if self.filter.is_empty()
             && let Some(newest) = self.newest_recent.as_ref()
-            && let Some(at) = rows.iter().position(|r| {
+            && let Some(at) = self.position(|r| {
                 matches!(r, Row::Entry { section, entry, .. }
                     if entry.path == *newest
                         && self.sections[*section].title == Self::RECENT_SECTION)
@@ -4872,19 +4947,16 @@ impl HomeState {
         {
             return at;
         }
-        let first = rows
-            .iter()
-            .position(|r| matches!(r, Row::Entry { .. } | Row::Door { .. }));
-        let first = match first.and_then(|i| rows.get(i)) {
-            Some(Row::Door { entry, .. }) if !door_lands(entry) => rows
-                .iter()
+        let first = self.position(|r| matches!(r, Row::Entry { .. } | Row::Door { .. }));
+        let first = match first.and_then(|i| self.row_at(i)) {
+            Some(Row::Door { entry, .. }) if !door_lands(entry) => self
                 .position(|r| matches!(r, Row::Entry { .. } | Row::Hidden { .. }))
                 .or(first),
             _ => first,
         };
         // A directory of files datui cannot open: the row that says so.
         first
-            .or_else(|| rows.iter().position(|r| matches!(r, Row::Hidden { .. })))
+            .or_else(|| self.position(|r| matches!(r, Row::Hidden { .. })))
             .unwrap_or(0)
     }
 

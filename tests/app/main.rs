@@ -25,6 +25,9 @@ mod cloud_download;
 #[cfg(feature = "cloud")]
 #[path = "cloud/parity.rs"]
 mod cloud_parity;
+#[cfg(feature = "cloud")]
+#[path = "cloud/reopen.rs"]
+mod cloud_reopen;
 #[path = "../common/mod.rs"]
 mod common;
 #[path = "formats/elf.rs"]

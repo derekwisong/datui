@@ -208,7 +208,7 @@ fn a_reopen_drills_into_the_same_group_again() {
     assert!(state.is_grouped());
     assert_eq!(
         app.flash_message(),
-        Some(format!("No group key = {group} in the current files").as_str())
+        Some(format!("No rows with key = {group} in the current files").as_str())
     );
 }
 
@@ -246,4 +246,59 @@ fn with_nothing_to_reopen_the_error_is_shown() {
     read_fails(&mut app, GONE);
     assert!(!app.confirmation_modal.active);
     assert_eq!(app.error_message(), Some(GONE));
+}
+
+/// A value drilled into is taken again in its column's new type; one that is not a
+/// value of it is said to be gone, and the view stays as it was, readable.
+#[test]
+fn a_value_drill_follows_its_columns_type_or_is_said_gone() {
+    use polars::prelude::AnyValue;
+    let (mut app, rx, tx, _dir, path) = opened_app(6, &["k0", "k1", "k2"]);
+    let state = app.data_table_state.as_mut().unwrap();
+    state
+        .deferred(|s| s.drill_into_value("val", AnyValue::Int64(30)))
+        .unwrap();
+    app.spawn_async_collect(App::LOADING_BUFFER);
+    pump(&mut app, &rx, &tx, |a| !a.is_busy());
+    assert_eq!(ids(&app), [3]);
+
+    // `val` is text now: 30 is cast to "30", and the drill holds.
+    read_fails(&mut app, GONE);
+    std::fs::write(&path, "id,key,val\n3,k0,30\n4,k1,x\n7,k1,30\n").unwrap();
+    settle(&mut app, &rx, &tx, key(KeyCode::Enter));
+    assert_eq!(app.error_message(), None);
+    assert!(app.data_table_state.as_ref().unwrap().is_drilled_down());
+    assert_eq!(ids(&app), [3, 7]);
+
+    // A key drilled into as text, where the column is now numbers: gone.
+    let (mut app, rx, tx, _dir, path) = opened_app(6, &["k0", "k1", "k2"]);
+    let state = app.data_table_state.as_mut().unwrap();
+    state
+        .deferred(|s| s.drill_into_value("key", AnyValue::StringOwned("k1".into())))
+        .unwrap();
+    app.spawn_async_collect(App::LOADING_BUFFER);
+    pump(&mut app, &rx, &tx, |a| !a.is_busy());
+    assert_eq!(ids(&app), [1, 4]);
+    read_fails(&mut app, GONE);
+    std::fs::write(&path, "id,key,val\n0,1,0\n1,2,10\n").unwrap();
+    settle(&mut app, &rx, &tx, key(KeyCode::Enter));
+    assert_eq!(app.error_message(), None);
+    assert!(!app.data_table_state.as_ref().unwrap().is_drilled_down());
+    assert_eq!(
+        app.flash_message(),
+        Some("No rows with key = k1 in the current files")
+    );
+    assert_eq!(ids(&app), [0, 1], "the view reads");
+}
+
+/// What the question was asked over read the dataset that is replaced: it closes.
+#[test]
+fn reopen_closes_what_the_question_was_asked_over() {
+    let (mut app, rx, tx, _dir, _path) = opened_app(6, &["k0", "k1"]);
+    app.open_overlay(Overlay::PivotMelt);
+    read_fails(&mut app, GONE);
+    settle(&mut app, &rx, &tx, key(KeyCode::Enter));
+    assert_eq!(app.overlay, Overlay::None);
+    assert_eq!(app.error_message(), None);
+    assert_eq!(ids(&app), [0, 1, 2, 3, 4, 5]);
 }

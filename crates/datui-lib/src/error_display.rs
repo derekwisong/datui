@@ -165,9 +165,13 @@ fn gone_since_opened(err: &io::Error) -> Option<String> {
         .strip_prefix(prefix)
         .filter(|_| !prefix.is_empty())
         .map_or(path.as_str(), |rest| rest.trim_start_matches('/'));
-    Some(format!(
-        "{GONE_SINCE_OPENED}: {file}. Reopen the dataset to read the current files."
-    ))
+    Some(gone_since_opened_message(file))
+}
+
+/// What a read says of `file`, listed by the open and gone or changed since.
+#[cfg(feature = "cloud")]
+pub(crate) fn gone_since_opened_message(file: &str) -> String {
+    format!("{GONE_SINCE_OPENED}: {file}. Reopen the dataset to read the current files.")
 }
 
 /// What an object store said about a file in it: a missing object, refused access, or

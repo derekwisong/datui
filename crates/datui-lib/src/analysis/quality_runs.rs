@@ -952,14 +952,18 @@ impl App {
             let (_, key) = Self::cloud_bucket_and_key(url).map_err(StreamError::Write)?;
             let path = crate::cloud::cloud_browse::object_path(&key);
             let listed = object.etag.clone();
+            let gone = crate::error_display::gone_since_opened_message(&key);
             let open = async move {
-                let got = store.get(&path).await.map_err(|e| e.to_string())?;
+                let got = store.get(&path).await.map_err(|e| match e {
+                    object_store::Error::NotFound { .. } => gone.clone(),
+                    e => e.to_string(),
+                })?;
                 // Rewritten since opened (perhaps same size): the copy would not be the dataset on
                 // screen.
                 if let (Some(listed), Some(fetched)) = (&listed, &got.meta.e_tag)
                     && !crate::cloud::local_copy::same_etag(listed, fetched)
                 {
-                    return Err("it changed since it opened. Open the dataset again".to_string());
+                    return Err(gone);
                 }
                 Ok((got.into_stream(), None))
             };

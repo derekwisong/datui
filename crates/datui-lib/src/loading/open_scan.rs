@@ -436,7 +436,7 @@ impl App {
                 Ok(()) => true,
                 Err(e) => {
                     let applying = crate::view::view_apply::Applying::Restored(None);
-                    self.view_failed(&applying, &e.to_string());
+                    self.view_failed(&applying, &e.to_string(), None);
                     false
                 }
             };
@@ -486,34 +486,46 @@ impl App {
     /// included, and put back its place once read: the query, filters, sort, columns,
     /// reshape and sample as a view keeps them, the saved view marked applied, and the
     /// drill-down.
-    pub(crate) fn reopen_in_place(&mut self) -> Option<AppEvent> {
+    /// `asked` is the place the failed read was for (a query or view the user asked
+    /// for, not yet in effect), tried again in place of the one on screen.
+    pub(crate) fn reopen_in_place(
+        &mut self,
+        asked: Option<Box<loading::open_options::KeptPlace>>,
+    ) -> Option<AppEvent> {
         let (paths, options) = self.source.opened.clone()?;
         if self.query_prompt_mode().is_some() {
             self.close_query_prompt();
         }
-        let place = self.data_table_state.as_ref().map(|state| {
-            let mut settings = crate::view_settings_of(state);
-            settings.chart = self.saved_chart();
-            // Drilled in, the steps are the grouped view's, and so is the column order.
-            if let Some((order, locked)) = state.grouped_column_order() {
-                settings.column_order = order.to_vec();
-                settings.locked_columns_count = locked;
-            }
-            Arc::new(loading::open_options::KeptPlace {
-                settings,
-                active: self.views.active_id.clone(),
-                drill: state.drill_place().map(Box::new),
-            })
-        });
+        // What the question was asked over read the dataset being replaced.
+        self.close_overlays();
+        let place = asked.map(|asked| *asked).or_else(|| self.place_on_screen());
         let options = OpenOptions {
             view: None,
             prepared: None,
-            place,
+            place: place.map(Arc::new),
             ..options
         };
         self.set_loading_phase("Scanning input", 10);
         self.name_what_is_loading(paths[0].clone());
         Some(AppEvent::Open(paths, options))
+    }
+
+    /// Where the dataset on screen is, for a reopen to put back: its steps as a view keeps
+    /// them, the saved view marked applied and the drill-down.
+    pub(crate) fn place_on_screen(&self) -> Option<loading::open_options::KeptPlace> {
+        let state = self.data_table_state.as_ref()?;
+        let mut settings = crate::view_settings_of(state);
+        settings.chart = self.saved_chart();
+        // Drilled in, the steps are the grouped view's, and so is the column order.
+        if let Some((order, locked)) = state.grouped_column_order() {
+            settings.column_order = order.to_vec();
+            settings.locked_columns_count = locked;
+        }
+        Some(loading::open_options::KeptPlace {
+            settings,
+            active: self.views.active_id.clone(),
+            drill: state.drill_place().map(Box::new),
+        })
     }
 
     /// Enter the home screen, rebuilt, with the cursor on what is open, abandoning any

@@ -475,8 +475,15 @@ impl App {
         let mut settings = view.settings.clone();
         settings.sample = None;
         self.draw_table_sample(sample, saved.path, Some(settings), false, false);
-        if let crate::view::view_apply::Applying::Matched(why) = applying {
-            self.flash_view_applied(&view.name, *why);
+        match applying {
+            crate::view::view_apply::Applying::Matched(why) => {
+                self.flash_view_applied(&view.name, *why)
+            }
+            // A sample's rows are drawn afresh: the group drilled into may not be among them.
+            crate::view::view_apply::Applying::Restored(Some(_)) => {
+                self.flash_note("Reopened as a sample; the drill-down was not kept".to_string())
+            }
+            _ => {}
         }
         self.first_rows_settled();
         Ok(())

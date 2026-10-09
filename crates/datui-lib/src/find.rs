@@ -1155,7 +1155,7 @@ impl App {
         }
         self.status_message = None;
         self.prompt.find.read = None;
-        if message != CANCELLED {
+        if message != CANCELLED && !self.offer_reopen(message, None) {
             self.flash_note(format!("Find failed: {message}"));
         }
     }

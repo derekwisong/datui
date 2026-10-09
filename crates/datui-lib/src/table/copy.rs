@@ -129,19 +129,34 @@ impl DrillPlace {
 
     /// The group or value drilled into first, as `key = value` pairs.
     pub fn describe(&self) -> String {
-        let Some(keys) = self.steps.first() else {
-            return String::new();
-        };
-        keys.columns()
-            .iter()
-            .map(|c| {
-                let value = c.get(0).map(|v| crate::exact::str_value(&v).to_string());
-                format!("{} = {}", c.name(), value.unwrap_or_default())
-            })
-            .collect::<Vec<_>>()
-            .join(", ")
+        self.steps.first().map(describe).unwrap_or_default()
     }
 }
+
+/// A drill's keys as `key = value` pairs.
+fn describe(keys: &DataFrame) -> String {
+    keys.columns()
+        .iter()
+        .map(|c| {
+            let value = c.get(0).map(|v| crate::exact::str_value(&v).to_string());
+            format!("{} = {}", c.name(), value.unwrap_or_default())
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// A drill a reopen could not take again: the files no longer hold its group or
+/// value (`key = value`), or hold it as another type.
+#[derive(Debug)]
+pub struct DrillGone(pub String);
+
+impl std::fmt::Display for DrillGone {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "No rows with {} in the current files", self.0)
+    }
+}
+
+impl std::error::Error for DrillGone {}
 
 /// The view row index column a search for a group to drill into again reads.
 const GROUP_ROW: &str = "__datui_group_row";
@@ -274,21 +289,24 @@ impl DataTableState {
 
     /// What finding `place`'s group again reads: its first row in this view with the
     /// same keys, led by its position. `None` when its first drill was a value, which
-    /// needs no read. Run off this thread; [`Self::found_group`] reads the answer.
+    /// needs no read; [`DrillGone`] when a key is no longer a value of its column.
+    /// Run off this thread; [`Self::found_group`] reads the answer.
     pub fn find_group(&self, place: &DrillPlace) -> Option<Result<LazyFrame>> {
         let keys = place.steps.first().filter(|_| place.by_group)?;
         if !self.can_drill_down() {
             return Some(Err(color_eyre::eyre::eyre!("the view is not grouped")));
         }
-        let matches = keys.columns().iter().try_fold(lit(true), |all, key| {
-            let value = key.get(0)?.into_static();
-            let scalar = Scalar::new(key.dtype().clone(), value);
-            PolarsResult::Ok(all.and(col(key.name().clone()).eq_missing(lit(scalar))))
-        });
-        let matches = match matches {
-            Ok(matches) => matches,
-            Err(e) => return Some(Err(e.into())),
-        };
+        let mut matches = lit(true);
+        for key in keys.columns() {
+            let value = key.get(0).ok().map(|v| v.into_static());
+            let Some((dtype, value)) =
+                value.and_then(|v| self.value_in_column(key.name().as_str(), v))
+            else {
+                return Some(Err(DrillGone(place.describe()).into()));
+            };
+            let scalar = Scalar::new(dtype, value);
+            matches = matches.and(col(key.name().clone()).eq_missing(lit(scalar)));
+        }
         let columns = std::iter::once(GROUP_ROW.to_string()).chain(self.drill_columns());
         Some(Ok(self
             .visible_lf()
@@ -296,6 +314,25 @@ impl DataTableState {
             .filter(matches)
             .select(columns.map(|c| col(c.as_str())).collect::<Vec<_>>())
             .slice(0, 1)))
+    }
+
+    /// `value` as a value of `column` in this view, in the column's type: cast strictly
+    /// when its own type differs (a file rewritten since it was read). `None` when
+    /// there is no such column or the value is not one of its type.
+    fn value_in_column(
+        &self,
+        column: &str,
+        value: AnyValue<'static>,
+    ) -> Option<(DataType, AnyValue<'static>)> {
+        let dtype = self.view.schema.get(column)?.clone();
+        if value.dtype() == dtype || value.is_null() {
+            return Some((dtype, value));
+        }
+        let cast = Series::from_any_values(PlSmallStr::EMPTY, &[value], true)
+            .and_then(|s| s.strict_cast(&dtype))
+            .ok()?;
+        let value = cast.get(0).ok()?.into_static();
+        Some((dtype, value))
     }
 
     /// The group [`Self::find_group`] read: its view row and its row, or `None` when no
@@ -312,7 +349,9 @@ impl DataTableState {
         Ok(Some((index, read.drop(GROUP_ROW)?)))
     }
 
-    /// Take `place`'s drill-down again over this view: into the group `found` (from
+    /// Take `place`'s drill-down again over this view (as one transition: see
+    /// [`Self::try_transition`]), returning [`DrillGone`] when a value it narrowed to
+    /// is no longer one of its column's type: into the group `found` (from
     /// [`Self::find_group`]) or the first value, through each value narrowed to, then
     /// the filters, sort and column order inside it.
     pub fn redrill(&mut self, place: &DrillPlace, found: Option<(usize, DataFrame)>) -> Result<()> {
@@ -328,7 +367,11 @@ impl DataTableState {
             let Some(key) = keys.columns().first() else {
                 continue;
             };
-            self.drill_into_value(key.name().as_str(), key.get(0)?.into_static())?;
+            let column = key.name().as_str();
+            let Some((_, value)) = self.value_in_column(column, key.get(0)?.into_static()) else {
+                return Err(DrillGone(describe(keys)).into());
+            };
+            self.drill_into_value(column, value)?;
         }
         if !place.filters.is_empty() {
             self.filter(place.filters.clone());
@@ -863,12 +906,9 @@ impl DataTableState {
     /// drill: breadcrumb names the value, Esc returns. Inside a group, it narrows that group
     /// and Esc returns to the view it was drilled from.
     pub fn drill_into_value(&mut self, column: &str, value: AnyValue<'static>) -> Result<()> {
-        let dtype = self
-            .view
-            .schema
-            .get(column)
-            .cloned()
-            .ok_or_else(|| color_eyre::eyre::eyre!("no column {column}"))?;
+        let (dtype, value) = self
+            .value_in_column(column, value)
+            .ok_or_else(|| color_eyre::eyre::eyre!("{column} has no values of that type"))?;
         let label = crate::exact::str_value(&value).to_string();
         let mut steps = self.view_steps();
         steps.push(match crate::export::python_script::py_value(&value) {

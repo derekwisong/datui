@@ -433,16 +433,20 @@ impl App {
         if !self.spawn_async_collect(Self::APPLYING_VIEW) {
             // Nothing to read: the view has no rows. Applied on open, it was the open's last
             // step.
-            if let Some(QueryRun {
-                origin:
-                    RunOrigin::View {
-                        applying: Applying::Matched(why),
-                        ..
-                    },
-                ..
-            }) = &self.prompt.query_running
-            {
-                self.flash_view_applied(&view.name, *why);
+            match self.prompt.query_running.as_ref().map(|run| &run.origin) {
+                Some(RunOrigin::View {
+                    applying: Applying::Matched(why),
+                    ..
+                }) => self.flash_view_applied(&view.name, *why),
+                // No rows: the group or value drilled into is not among them.
+                Some(RunOrigin::View {
+                    applying: Applying::Restored(Some(drill)),
+                    ..
+                }) => {
+                    let gone = crate::table::DrillGone(drill.describe());
+                    self.flash_note(gone.to_string());
+                }
+                _ => {}
             }
             self.prompt.query_running = None;
             self.busy = false;
@@ -509,20 +513,41 @@ impl App {
     }
 
     /// A view's pivot could not be read or planned: the view before it stays.
-    pub(crate) fn view_pivot_failed(&mut self, applying: &Applying, message: &str) {
-        self.view_failed(applying, message);
+    /// `view` is kept for a reopen to try again when a file it read is gone.
+    pub(crate) fn view_pivot_failed(
+        &mut self,
+        view: &SavedView,
+        applying: &Applying,
+        message: &str,
+    ) {
+        let asked = crate::loading::open_options::KeptPlace {
+            settings: view.settings.clone(),
+            active: (!view.id.is_empty()).then(|| view.id.clone()),
+            drill: match applying {
+                Applying::Restored(drill) => drill.clone(),
+                _ => None,
+            },
+        };
+        self.view_failed(applying, message, Some(asked));
         self.read_after_view_rollback();
     }
 
-    /// Say why a view, or a reopened dataset's place, could not be applied.
-    pub(crate) fn view_failed(&mut self, applying: &Applying, message: &str) {
-        if matches!(applying, Applying::Restored(_)) {
-            self.read_failed(&format!(
+    /// Say why a view, or a reopened dataset's place, could not be applied. `asked`,
+    /// the place it was going to, is what a reopen tries.
+    pub(crate) fn view_failed(
+        &mut self,
+        applying: &Applying,
+        message: &str,
+        asked: Option<crate::loading::open_options::KeptPlace>,
+    ) {
+        let said = if matches!(applying, Applying::Restored(_)) {
+            format!(
                 "Reopened, but the query, filters and sort could not be applied again: {message}"
-            ));
+            )
         } else {
-            self.read_failed(&format!("Error applying view: {message}"));
-        }
+            format!("Error applying view: {message}")
+        };
+        self.read_failed_asking(&said, asked);
     }
 
     /// The view before a failed or cancelled one is back: read its rows if none are on

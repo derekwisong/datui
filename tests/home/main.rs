@@ -4765,6 +4765,66 @@ fn test_a_directory_found_to_be_separate_tables_stays_a_plain_directory() {
     );
 }
 
+/// A listing stats only the rows the index has a record of, and those take their
+/// remembered columns wherever they are listed: a filter finds a column off screen
+/// without a file read.
+#[test]
+fn a_listed_row_with_a_record_recalls_its_columns() {
+    use datui::cache::DatasetFacts;
+    use datui::home::{ListingRequest, build_listing};
+
+    let tmp = TempDir::new().unwrap();
+    for i in 0..50 {
+        touch(tmp.path(), &format!("f{i:02}.csv"));
+    }
+    let remembered = tmp.path().join("f42.csv");
+    let meta = fs::metadata(&remembered).unwrap();
+    let mtime = meta
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let known: std::collections::HashMap<_, _> = [(
+        remembered.clone(),
+        DatasetFacts {
+            mtime,
+            size: meta.len(),
+            columns: vec!["revenue".into()],
+            kind: Some(EntryKind::File),
+            classified_by: discover::CLASSIFIER_VERSION,
+            ..Default::default()
+        },
+    )]
+    .into_iter()
+    .collect();
+    let request = ListingRequest {
+        catalogs: Vec::new(),
+        recents: Vec::new(),
+        desktop_dirs: Vec::new(),
+        browsing: Some(tmp.path().to_path_buf()),
+        probes: Default::default(),
+        narrowed: None,
+        network_check: |_| false,
+        cloud: Vec::new(),
+        known: std::sync::Arc::new(known),
+        formats: Default::default(),
+    };
+    let rows: Vec<discover::Entry> = build_listing(&request)
+        .sections
+        .into_iter()
+        .flat_map(|s| s.rows)
+        .collect();
+    let row = rows.iter().find(|r| r.path == remembered).unwrap();
+    assert_eq!(row.columns, ["revenue"], "recalled");
+    assert!(
+        rows.iter()
+            .filter(|r| r.path != remembered)
+            .all(|r| r.modified.is_none()),
+        "no other row was stat'ed"
+    );
+}
+
 /// A directory whose footers said its files are separate tables still offers the row that
 /// reads them together.
 ///

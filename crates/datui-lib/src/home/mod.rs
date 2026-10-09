@@ -2773,7 +2773,14 @@ fn annotate(
                 row.cost.source = Some("cloud".to_string());
                 continue;
             }
-            apply_known_facts(row, known, network_check(&row.path));
+            let remote = network_check(&row.path);
+            // A listing stats nothing, but a row the index has a record of is stat'ed, so
+            // what an earlier run measured (its columns, which a filter matches) applies
+            // wherever the row is.
+            if !remote && discover::unstated(row) && known_facts(known, &row.path).is_some() {
+                discover::stat_row(row);
+            }
+            apply_known_facts(row, known, remote);
             row.cost.source = Some(mounts.describe(&row.path).fstype);
         }
         // The door reads where its directory is (the local glyph on local disk).

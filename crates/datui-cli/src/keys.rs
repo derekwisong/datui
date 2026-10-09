@@ -459,7 +459,7 @@ pub const SCREENS: &[Screen] = &[
             Group {
                 name: "Analyze",
                 keys: &[
-                    k("F", "Counts", "Value counts of the cursor's column; a number's as a histogram")
+                    k("F", "Counts", "Value counts of the column; a number as a histogram")
                         .more("Value counts of the cursor's column: each value's rows, percent and a bar, with a summary. A number column opens as a histogram; c there shows the list of its values"),
                     k("a", "Analysis", "Describe, distributions, correlation, quality")
                         .more("Open Analysis. In a Data Quality evidence drill a is disabled; Esc returns to the observation"),

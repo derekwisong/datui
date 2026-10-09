@@ -484,3 +484,23 @@ fn anything_else_is_said_as_polars_says_it() {
         user_message_from_polars(&err)
     );
 }
+
+/// A file the open listed and the store dropped since says so, named under the
+/// dataset, without the request's URL, timing and status.
+#[cfg(feature = "cloud")]
+#[test]
+fn a_file_gone_since_the_open_says_reopen() {
+    let key = "parquet/by_year/YEAR=2024/ELEMENT=TMAX/0499_0.snappy.parquet";
+    let err = PolarsError::from(polars::io::cloud::PolarsObjectStoreError {
+        base_url: "s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/".into(),
+        source: object_store::Error::NotFound {
+            path: key.to_string(),
+            source: "Server returned non-2xx status code: 404 Not Found".into(),
+        },
+    });
+    assert_eq!(
+        user_message_from_polars(&err),
+        "A file was removed or replaced after the dataset was opened: \
+         ELEMENT=TMAX/0499_0.snappy.parquet. Reopen the dataset to read the current files."
+    );
+}

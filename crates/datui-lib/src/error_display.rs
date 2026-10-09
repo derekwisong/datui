@@ -135,6 +135,33 @@ pub fn starts_with_a_key(what: &str) -> bool {
         || word.contains(|c: char| matches!(c, '.' | '_' | '=' | '"' | '`') || c.is_ascii_digit())
 }
 
+/// A file the open listed that the store no longer has: its publisher removed or
+/// replaced it (NOAA rewrites a year's partition under new names). The scan read the
+/// listing once, so only a reopen sees the new files.
+#[cfg(feature = "cloud")]
+fn gone_since_opened(err: &io::Error) -> Option<String> {
+    let store = err
+        .get_ref()?
+        .downcast_ref::<polars::io::cloud::PolarsObjectStoreError>()?;
+    let object_store::Error::NotFound { path, .. } = &store.source else {
+        return None;
+    };
+    // The file under the dataset, as the dataset's own folders name it.
+    let base = store.base_url.as_str();
+    let prefix = base
+        .split_once("://")
+        .and_then(|(_, rest)| rest.split_once('/'))
+        .map_or("", |(_, key)| key.trim_matches('/'));
+    let file = path
+        .strip_prefix(prefix)
+        .filter(|_| !prefix.is_empty())
+        .map_or(path.as_str(), |rest| rest.trim_start_matches('/'));
+    Some(format!(
+        "A file was removed or replaced after the dataset was opened: {file}. \
+         Reopen the dataset to read the current files."
+    ))
+}
+
 /// What an object store said about a file in it: a missing object, refused access, or
 /// the store's own words, each with what to check.
 #[cfg(feature = "cloud")]
@@ -592,6 +619,10 @@ pub fn user_message_from_io(err: &io::Error, context: Option<&str>) -> String {
 
     if held_by_another_program(err) {
         return held_message(None);
+    }
+    #[cfg(feature = "cloud")]
+    if let Some(gone) = gone_since_opened(err) {
+        return gone;
     }
     let base: String = match err.kind() {
         ErrorKind::NotFound => "File or directory not found.".to_string(),

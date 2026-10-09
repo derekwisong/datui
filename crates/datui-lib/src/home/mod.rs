@@ -1986,6 +1986,15 @@ fn measure_row(
     probe.modified = probe.modified.or(entry.modified);
 }
 
+/// How far a look into a row goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reads {
+    /// Its stat, what the index recalls, and its files: a row on screen.
+    Files,
+    /// Its stat and what the index recalls: a row a sort by size or time needs.
+    StatOnly,
+}
+
 /// Look into a batch of rows on a worker, passing each answer to `each` and caching
 /// what was learned. Shared by the measure and classify passes. Every row is
 /// classified before any is measured: a kind is one directory read, a count up to
@@ -1994,6 +2003,7 @@ pub fn look_into_batch(
     rows: Vec<Entry>,
     cache: &crate::cache::CacheManager,
     known: &std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
+    reads: Reads,
     mut each: impl FnMut(PathBuf, Measured),
 ) {
     let as_read = crate::formats::schema_union::ReadAs::default();
@@ -2017,7 +2027,7 @@ pub fn look_into_batch(
     let mut facts = Vec::new();
     for (mut probe, entry) in classified {
         // What the index recalled is not read again, nor recorded again.
-        if probe.rows.is_none() && probe.columns.is_empty() {
+        if reads == Reads::Files && probe.rows.is_none() && probe.columns.is_empty() {
             measure_row(&mut probe, &entry, &as_read, Some(cache));
             facts.extend(facts_for(&probe));
         }
@@ -5011,23 +5021,41 @@ impl HomeState {
     pub fn unmeasured_visible(&self, limit: usize) -> Vec<Entry> {
         let view = self.view();
         let mut out: Vec<Entry> = Vec::new();
-        let take = |entry: &Entry, out: &mut Vec<Entry>| {
+        for entry in self.entries_on_screen(&view) {
             if self.wants_measuring(entry) && !out.iter().any(|e| e.path == entry.path) {
+                out.push(entry.clone());
+                if out.len() >= limit {
+                    return out;
+                }
+            }
+        }
+        if self.sort == SortMode::Rows {
+            self.sorted_rest(&view, limit, &mut out);
+        }
+        out
+    }
+
+    /// Rows a sort by size or time lacks a stat for, up to `limit`: every row listed and
+    /// those a cut hides, which need their stat and nothing read.
+    pub fn unstated_for_sort(&self, limit: usize) -> Vec<Entry> {
+        let mut out = Vec::new();
+        if matches!(self.sort, SortMode::Size | SortMode::Modified) {
+            self.sorted_rest(&self.view(), limit, &mut out);
+        }
+        out
+    }
+
+    /// The rows the sort wants and lacks, listed or behind a cut, into `out`.
+    fn sorted_rest(&self, view: &View, limit: usize, out: &mut Vec<Entry>) {
+        let mut take = |entry: &Entry| {
+            if self.sort_wants(entry) && !out.iter().any(|e| e.path == entry.path) {
                 out.push(entry.clone());
             }
             out.len() >= limit
         };
-        for entry in self.entries_on_screen(&view) {
-            if take(entry, &mut out) {
-                return out;
-            }
-        }
-        if self.sort == SortMode::Natural {
-            return out;
-        }
         for entry in view.slots.iter().filter_map(|slot| self.entry_of(slot)) {
-            if take(entry, &mut out) {
-                return out;
+            if take(entry) {
+                return;
             }
         }
         for slot in &view.slots {
@@ -5040,12 +5068,11 @@ impl HomeState {
                 continue;
             };
             for entry in &self.sections[*section].rows {
-                if take(entry, &mut out) {
-                    return out;
+                if take(entry) {
+                    return;
                 }
             }
         }
-        out
     }
 
     /// Whether the sort orders by something `entry` lacks until measured.
@@ -6106,10 +6133,16 @@ mod look_into_batch_tests {
         }
 
         let mut sent = Vec::new();
-        look_into_batch(rows, &cache, &Default::default(), |path, m| {
-            let name = path.file_name().unwrap().to_string_lossy().into_owned();
-            sent.push((name, m.kind, m.rows));
-        });
+        look_into_batch(
+            rows,
+            &cache,
+            &Default::default(),
+            Reads::Files,
+            |path, m| {
+                let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                sent.push((name, m.kind, m.rows));
+            },
+        );
 
         let hive = Some(EntryKind::Hive);
         assert_eq!(

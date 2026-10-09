@@ -4721,11 +4721,17 @@ fn test_a_directory_found_to_be_separate_tables_stays_a_plain_directory() {
         assert!(row.modified.is_none(), "nor stats it");
         let cache = datui::CacheManager::with_dir(cache_dir.path().to_path_buf());
         let mut kind = row.kind;
-        datui::home::look_into_batch(vec![row], &cache, &known, |_, measured| {
-            if let Some(found) = measured.kind {
-                kind = found;
-            }
-        });
+        datui::home::look_into_batch(
+            vec![row],
+            &cache,
+            &known,
+            datui::home::Reads::Files,
+            |_, measured| {
+                if let Some(found) = measured.kind {
+                    kind = found;
+                }
+            },
+        );
         kind
     };
 
@@ -9638,6 +9644,37 @@ mod listing_work {
         home.apply_new_measurements();
         let _ = home.row_count();
         assert_eq!(home.rows_built(), built + 1, "sorted by rows, it moves");
+    }
+
+    /// Sorted by size or time, every row needs its stat and nothing more: those off
+    /// screen are stat'ed, never read.
+    #[test]
+    fn a_sort_by_size_stats_every_row_and_reads_none() {
+        let mut home = files(500);
+        home.sort = SortMode::Size;
+        assert!(home.unmeasured_visible(usize::MAX).len() <= 41);
+        assert_eq!(home.unstated_for_sort(usize::MAX).len(), 500);
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("big.parquet");
+        std::fs::write(&path, vec![b'x'; 4096]).unwrap();
+        let cache_dir = tempfile::TempDir::new().unwrap();
+        let cache = datui::CacheManager::with_dir(cache_dir.path().to_path_buf());
+        let mut answer = None;
+        datui::home::look_into_batch(
+            vec![file(path.to_string_lossy().into_owned())],
+            &cache,
+            &Default::default(),
+            datui::home::Reads::StatOnly,
+            |_, measured| answer = Some(measured),
+        );
+        let answer = answer.expect("answered");
+        assert_eq!(answer.size, Some(4096));
+        assert!(answer.modified.is_some());
+        assert!(
+            answer.rows.is_none() && answer.cost == Default::default(),
+            "nothing read"
+        );
     }
 
     /// The lines a list of rows falls on, a blank before every header but the first, as

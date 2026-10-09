@@ -114,12 +114,13 @@ fn look_and_answer(
     rows: Vec<discover::Entry>,
     cache: &CacheManager,
     known: &home::Known,
+    reads: home::Reads,
     tx: &std::sync::mpsc::Sender<AppEvent>,
     answer: impl Fn(Vec<(PathBuf, home::Measured)>, bool) -> AppEvent,
 ) {
     let mut held = Vec::new();
     let mut since = std::time::Instant::now();
-    home::look_into_batch(rows, cache, known, |path, measured| {
+    home::look_into_batch(rows, cache, known, reads, |path, measured| {
         // A row's later answer (its count after its kind) replaces one not yet sent.
         match held.iter().position(|(held, _)| *held == path) {
             Some(at) => held[at].1 = measured,
@@ -1296,7 +1297,14 @@ impl App {
         if self.home.measure_in_flight {
             return;
         }
-        let wanted = self.home.unmeasured_visible(MEASURE_BATCH);
+        // The rows on screen first; then, sorted by size or time, the stat of the rest.
+        let (wanted, reads) = match self.home.unmeasured_visible(MEASURE_BATCH) {
+            shown if !shown.is_empty() => (shown, home::Reads::Files),
+            _ => (
+                self.home.unstated_for_sort(MEASURE_BATCH),
+                home::Reads::StatOnly,
+            ),
+        };
         if wanted.is_empty() {
             return;
         }
@@ -1311,7 +1319,7 @@ impl App {
         });
         self.runtime.spawn_blocking(move || {
             owed.run(|| {
-                look_and_answer(wanted, &cache, &known, &tx, |measured, done| {
+                look_and_answer(wanted, &cache, &known, reads, &tx, |measured, done| {
                     AppEvent::HomeMeasured { measured, done }
                 })
             })
@@ -1408,13 +1416,18 @@ impl App {
             });
             std::thread::spawn(move || {
                 owed.run(|| {
-                    look_and_answer(wanted, &cache, &known, &tx, |measured, done| {
-                        AppEvent::HomeClassified {
+                    look_and_answer(
+                        wanted,
+                        &cache,
+                        &known,
+                        home::Reads::Files,
+                        &tx,
+                        |measured, done| AppEvent::HomeClassified {
                             pass: pass.clone(),
                             measured,
                             done,
-                        }
-                    })
+                        },
+                    )
                 })
             });
         }

@@ -1326,8 +1326,18 @@ impl App {
         let tx = self.events.clone();
         let cache = self.cache.clone();
         let known = self.home.known.clone();
+        // A batch whose worker dies is answered as looked at, so it is not asked again.
+        let stat_only = reads == home::Reads::StatOnly;
         let owed = self.owed_answer(AppEvent::HomeMeasured {
-            measured: Vec::new(),
+            measured: (wanted.iter())
+                .map(|entry| {
+                    let failed = home::Measured {
+                        stat_only,
+                        ..Default::default()
+                    };
+                    (entry.path.clone(), failed)
+                })
+                .collect(),
             done: true,
         });
         self.runtime.spawn_blocking(move || {
@@ -1423,9 +1433,12 @@ impl App {
             let tx = self.events.clone();
             let cache = self.cache.clone();
             let known = self.home.known.clone();
+            // A pass whose worker dies is answered as looked at, so it is not asked again.
             let owed = self.owed_answer(AppEvent::HomeClassified {
                 pass: pass.clone(),
-                measured: Vec::new(),
+                measured: (wanted.iter())
+                    .map(|entry| (entry.path.clone(), home::Measured::default()))
+                    .collect(),
                 done: true,
             });
             std::thread::spawn(move || {

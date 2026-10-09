@@ -4557,12 +4557,14 @@ impl App {
                 None
             }
             (
-                Job::Rows(_),
+                job @ Job::Rows(_),
                 Answer::RowsFailed {
                     message,
                     conversion,
                 },
             ) => {
+                // A failed read, answered rather than failed to carry its conversion.
+                self.ask_reopen_if_gone(&job, current, waited, &message);
                 self.rows_failed(current, waited, &message, conversion.as_deref());
                 None
             }
@@ -4611,7 +4613,7 @@ impl App {
                 }
                 None
             }
-            (Job::Pivot, Answer::Pivoted { spec, pivoted }) => {
+            (job @ Job::Pivot, Answer::Pivoted { spec, pivoted }) => {
                 // Superseded means something replaced the view, which owns the wait.
                 if !current {
                     return None;
@@ -4630,7 +4632,10 @@ impl App {
                         // The wait passes to the read of its rows.
                         self.spawn_async_collect(Self::LOADING_BUFFER);
                     }
-                    Some(Err(message)) => self.read_failed(&message),
+                    // A pivot that cannot be installed failed.
+                    Some(Err(message)) => {
+                        self.background_failed(&job, current, waited, &message, false);
+                    }
                     None => {}
                 }
                 None
@@ -4641,22 +4646,29 @@ impl App {
             }
             (Job::ViewPivot(pivot), Answer::ViewPivoted(pivoted)) => {
                 // Superseded: cancelled or replaced, and the replacement owns the wait.
-                let (view, applying) = *pivot;
                 if !current {
                     return None;
                 }
+                let settings = &pivot.0.settings;
                 let planned = self.data_table_state.as_mut().map(|state| {
                     // Nothing changed while the pivot was read, so earlier steps plan as before, now
                     // with the pivot in hand.
                     state
-                        .try_transition(|s| Self::replay_view(s, &view.settings, Some(pivoted)))
+                        .try_transition(|s| Self::replay_view(s, settings, Some(pivoted)))
                         .map(|(_, rollback)| rollback)
                         .map_err(|e| e.to_string())
                 });
                 match planned {
                     // The wait passes to the read of its rows.
-                    Some(Ok(rollback)) => self.view_planned(&view, rollback, applying),
-                    Some(Err(message)) => self.view_pivot_failed(&view, &applying, &message),
+                    Some(Ok(rollback)) => {
+                        let (view, applying) = *pivot;
+                        self.view_planned(&view, rollback, applying);
+                    }
+                    // A view whose pivot cannot be planned failed.
+                    Some(Err(message)) => {
+                        let job = Job::ViewPivot(pivot);
+                        self.background_failed(&job, current, waited, &message, false);
+                    }
                     None => {}
                 }
                 None
@@ -4881,9 +4893,11 @@ impl App {
         }
     }
 
-    /// Put down what a failed job started, and say why. [`Self::job_ended`] already
-    /// released its keys and line. Each arm clears only what that job started; most act
-    /// only when it is current, and the rest are judged by something of their own.
+    /// Put down what a failed job started, and say why: its worker failed, or its answer
+    /// could not be installed. [`Self::job_ended`] already released its keys and line.
+    /// A read of a file gone since the open is asked about first
+    /// ([`Self::ask_reopen_if_gone`]). Each arm clears only what that job started; most
+    /// act only when it is current, and the rest are judged by something of their own.
     fn background_failed(
         &mut self,
         job: &Job,
@@ -4900,6 +4914,8 @@ impl App {
                 format!("Could not {what}: {message}")
             }
         };
+        // Before the arms, which roll back the run the retried place is read from.
+        self.ask_reopen_if_gone(job, current, waited, message);
         match job {
             // Judged by the open: one put down or replaced is not the one waited on.
             Job::Load(load) | Job::OpenNamed(load) | Job::LookAtDirectory { load, .. } => {
@@ -4988,10 +5004,10 @@ impl App {
             }
             Job::Analysis(_) | Job::SampleRows => {
                 self.analysis_modal.computing = None;
-                self.read_failed(message);
+                self.say_read_failed(message);
             }
             // The form stays up with its spec, to be fixed.
-            Job::Pivot | Job::Copy => self.read_failed(message),
+            Job::Pivot | Job::Copy => self.say_read_failed(message),
             Job::HexOpen { .. } => {
                 self.error_modal.show(message.to_string());
             }
@@ -5000,10 +5016,10 @@ impl App {
                 Some(form) => form.error = Some(message.to_string()),
                 None => self.error_modal.show(message.to_string()),
             },
-            Job::ViewPivot(pivot) => self.view_pivot_failed(&pivot.0, &pivot.1, message),
+            Job::ViewPivot(pivot) => self.view_pivot_failed(&pivot.1, message),
             // The grouped view stays as it was.
             Job::DrillRow | Job::Regroup(_) => {
-                if !self.offer_reopen(message, None) {
+                if !self.asking_reopen(message) {
                     self.flash_note(could_not("drill in"));
                 }
             }
@@ -5032,16 +5048,15 @@ impl App {
                             row: *row,
                             message: could_not("read the field"),
                         });
-                    self.offer_reopen(message, None);
                 }
             }
             // The form comes back with the reason on its status line.
             Job::Export => {
                 self.export_progress = None;
                 self.export_modal.path_error = Some(message.to_string());
+                // Under a Reopen question, Close leaves the form with the reason; Reopen
+                // closes it.
                 self.open_over(|returns_to| Overlay::Export { returns_to });
-                // Close leaves the form with the reason; Reopen closes it.
-                self.offer_reopen(message, None);
             }
             Job::ChartExport { path, format } => {
                 self.finish_chart_export(path, *format, Err(message.to_string()));
@@ -5059,7 +5074,6 @@ impl App {
                         message.to_string()
                     };
                     self.value_counts.failed = Some((computing.column, why));
-                    self.offer_reopen(message, None);
                 }
             }
         }
@@ -5217,46 +5231,113 @@ impl App {
             }
         }
         self.first_rows_settled();
-        self.read_failed(message);
+        self.say_read_failed(message);
     }
 
-    /// A read of the dataset on screen failed with `message`. When it says a file the
-    /// open listed is gone, the question offers to reopen it; else the error modal says
-    /// why.
-    pub(crate) fn read_failed(&mut self, message: &str) {
-        self.read_failed_asking(message, None);
-    }
-
-    /// [`Self::read_failed`], where Reopen tries `asked` (what the failed read was
-    /// for) rather than the place on screen.
-    pub(crate) fn read_failed_asking(
-        &mut self,
-        message: &str,
-        asked: Option<loading::open_options::KeptPlace>,
-    ) {
-        if !self.offer_reopen(message, asked) {
-            self.error_modal.show(message.to_string());
+    /// Ask to reopen the dataset when `job`, current and reading it
+    /// ([`Job::reads_dataset`]), failed with `message` saying a file the open listed is
+    /// gone, and there is an open to reopen. The one place the question is asked; the
+    /// failure is still said where it was asked for (a pane, a form's status line),
+    /// and its error modal or flash gives way to the question ([`Self::asking_reopen`]).
+    fn ask_reopen_if_gone(&mut self, job: &Job, current: bool, waited: bool, message: &str) {
+        if !current
+            || !job.reads_dataset()
+            || !crate::error_display::says_gone_since_opened(message)
+            || self.source.opened.is_none()
+        {
+            return;
         }
-    }
-
-    /// Ask to reopen the dataset when `message` says a file it listed is gone and it
-    /// can be reopened; returns whether it asked. For a read whose failure is also said
-    /// where it was asked for (a pane, a form's status line, a flash).
-    pub(crate) fn offer_reopen(
-        &mut self,
-        message: &str,
-        asked: Option<loading::open_options::KeptPlace>,
-    ) -> bool {
-        if !crate::error_display::says_gone_since_opened(message) || self.source.opened.is_none() {
-            return false;
-        }
+        let Some((said, asked)) = self.read_that_failed(job, waited, message) else {
+            return;
+        };
         self.confirmation_modal.show_choice(
-            message.to_string(),
+            said,
             "Reopen",
             "Close",
             Confirm::Reopen(asked.map(Box::new)),
         );
-        true
+    }
+
+    /// For a failed read of the dataset by `job`: what the question says (the reason,
+    /// as the error modal would say it), and the place Reopen tries rather than the
+    /// one on screen. `None` when the failure is nobody's to hear: a load-ahead, a
+    /// field or count no longer asked for, a chart for a selection left.
+    fn read_that_failed(
+        &self,
+        job: &Job,
+        waited: bool,
+        message: &str,
+    ) -> Option<(String, Option<loading::open_options::KeptPlace>)> {
+        match job {
+            Job::Rows(_) | Job::OwedRows { .. } => {
+                let message = self.named_by_source(message);
+                let Some(run) = self.query_run() else {
+                    return waited.then_some((message, None));
+                };
+                // What the run asked for, before it is rolled back: a reopen tries it
+                // again.
+                let mut asked = self.place_on_screen();
+                match &run.origin {
+                    RunOrigin::Query(_) => Some((message, asked)),
+                    RunOrigin::View { applying, .. } => {
+                        // A reopened place's drill-down is taken once its view's rows are
+                        // in, so it is not on screen yet.
+                        if let (Some(asked), view::view_apply::Applying::Restored(Some(drill))) =
+                            (asked.as_mut(), applying)
+                        {
+                            asked.drill = Some(drill.clone());
+                        }
+                        Some((view::view_apply::view_failure(applying, &message), asked))
+                    }
+                }
+            }
+            Job::ViewPivot(pivot) => {
+                let (view, applying) = &**pivot;
+                let asked = loading::open_options::KeptPlace {
+                    settings: view.settings.clone(),
+                    active: (!view.id.is_empty()).then(|| view.id.clone()),
+                    drill: match applying {
+                        view::view_apply::Applying::Restored(drill) => drill.clone(),
+                        _ => None,
+                    },
+                };
+                Some((
+                    view::view_apply::view_failure(applying, message),
+                    Some(asked),
+                ))
+            }
+            Job::InspectRow { frame, row } => self
+                .inspector_modal
+                .read
+                .as_ref()
+                .is_some_and(|read| read.key() == (*frame, *row))
+                .then(|| (message.to_string(), None)),
+            Job::ValueCounts => self
+                .value_counts
+                .computing
+                .is_some()
+                .then(|| (message.to_string(), None)),
+            Job::ChartPrepare(prep) => {
+                let dataset = self.data_table_state.as_ref().map(|s| s.len_generation());
+                let stopped = prep.cancel.load(std::sync::atomic::Ordering::Relaxed);
+                (!stopped && dataset == prep.dataset).then(|| (message.to_string(), None))
+            }
+            _ => Some((message.to_string(), None)),
+        }
+    }
+
+    /// Whether the Reopen question is up for a failure saying `message`, which says it.
+    pub(crate) fn asking_reopen(&self, message: &str) -> bool {
+        let modal = &self.confirmation_modal;
+        modal.active && matches!(modal.asking, Some(Confirm::Reopen(_))) && modal.message == message
+    }
+
+    /// Say why a read of the dataset failed in the error modal, unless the Reopen
+    /// question already says it: Close would reveal it a second time.
+    pub(crate) fn say_read_failed(&mut self, message: &str) {
+        if !self.asking_reopen(message) {
+            self.error_modal.show(message.to_string());
+        }
     }
 
     /// Take a reopened dataset's drill-down again, now its grouped view's rows are in:

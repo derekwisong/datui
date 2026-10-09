@@ -302,3 +302,76 @@ fn reopen_closes_what_the_question_was_asked_over() {
     assert_eq!(app.error_message(), None);
     assert_eq!(ids(&app), [0, 1, 2, 3, 4, 5]);
 }
+
+/// `job` fails with `message`, as its worker says.
+fn job_fails(app: &mut App, job: Job, message: &str) {
+    let started = app.job_for_tests(job, Some("Reading"));
+    let ticket = started.ticket();
+    started.end(Outcome::Failed {
+        message: message.to_string(),
+        panicked: false,
+    });
+    app.event(AppEvent::JobEnded(ticket));
+}
+
+/// Close the question: nothing is left behind it, and nothing reopens.
+fn close_leaves_nothing(
+    app: &mut App,
+    rx: &mpsc::Receiver<AppEvent>,
+    tx: &mpsc::Sender<AppEvent>,
+    name: &str,
+) {
+    assert!(
+        app.confirmation_modal.active,
+        "{name}: the reopen is offered"
+    );
+    app.event(key(KeyCode::Right));
+    settle(app, rx, tx, key(KeyCode::Enter));
+    assert!(!app.confirmation_modal.active, "{name}");
+    assert_eq!(app.error_message(), None, "{name}: no error left behind");
+    assert_eq!(app.flash_message(), None, "{name}: nor a flash");
+    assert!(app.nothing_loading(), "{name}: nothing reopens");
+}
+
+/// The question says the failure once: Close reveals no error behind it.
+#[test]
+fn close_reveals_no_second_error() {
+    let jobs = [
+        Job::SampleRows,
+        Job::Analysis(Default::default()),
+        Job::Pivot,
+        Job::Copy,
+        Job::DrillRow,
+        Job::Export,
+    ];
+    for job in jobs {
+        let name = format!("{:?}", job.kind());
+        let (mut app, rx, tx, _dir, _path) = opened_app(4, &["k0"]);
+        job_fails(&mut app, job, GONE);
+        close_leaves_nothing(&mut app, &rx, &tx, &name);
+    }
+
+    // A view's failure is asked about as its error would say it.
+    let (mut app, rx, tx, _dir, _path) = opened_app(4, &["k0"]);
+    let view = app
+        .create_view_from_current_state("v".to_string(), None, Default::default())
+        .unwrap();
+    let applying = crate::view::view_apply::Applying::Asked;
+    job_fails(&mut app, Job::ViewPivot(Box::new((view, applying))), GONE);
+    assert_eq!(
+        app.confirmation_modal.message,
+        format!("Error applying view: {GONE}")
+    );
+    close_leaves_nothing(&mut app, &rx, &tx, "view");
+}
+
+/// A job that does not read the dataset's files (the Pivot & Melt preview, typed
+/// at) is not asked about, whatever its failure says.
+#[test]
+fn a_job_not_reading_the_dataset_is_not_asked_about() {
+    let (mut app, _rx, _tx, _dir, _path) = opened_app(4, &["k0"]);
+    let job = Job::ReshapePreview { epoch: 0, token: 0 };
+    assert!(!job.reads_dataset());
+    job_fails(&mut app, job, GONE);
+    assert!(!app.confirmation_modal.active);
+}

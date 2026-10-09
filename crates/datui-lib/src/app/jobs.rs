@@ -291,6 +291,50 @@ impl Job {
         }
     }
 
+    /// Whether this job reads the open dataset's files, so that its failure saying a
+    /// file is gone since the open is one a reopen fixes and the Reopen question is
+    /// asked. No for the open's own phases (the loader says those), home's looks, the
+    /// raw bytes the hex view maps, work on a value or a file already read, writes of
+    /// what is already in hand, side reads for the Info panel and the Notes, and the
+    /// Pivot & Melt preview, which runs while typing. No wildcard: a new job decides.
+    pub(crate) fn reads_dataset(&self) -> bool {
+        match self {
+            Job::Rows(_)
+            | Job::OwedRows { .. }
+            | Job::Analysis(_)
+            | Job::SampleRows
+            | Job::SampleDraw(_)
+            | Job::Pivot
+            | Job::ViewPivot(_)
+            | Job::DrillRow
+            | Job::Regroup(_)
+            | Job::InspectRow { .. }
+            | Job::Export
+            | Job::Copy
+            | Job::ChartPrepare(_)
+            | Job::Find(_)
+            | Job::ValueCounts => true,
+            Job::Load(_)
+            | Job::OpenNamed(_)
+            | Job::LookAtDirectory { .. }
+            | Job::Classify(_)
+            | Job::ReshapePreview { .. }
+            | Job::InspectJson { .. }
+            | Job::InspectPretty { .. }
+            | Job::InspectUnpack { .. }
+            | Job::OpenValue
+            | Job::QualityReport
+            | Job::FileFacts { .. }
+            | Job::ChartExport { .. }
+            | Job::HexOpen { .. }
+            | Job::HexFind(_)
+            | Job::UnfitCount { .. }
+            | Job::FootersJoin { .. }
+            | Job::JournalDetail { .. }
+            | Job::IndexLines { .. } => false,
+        }
+    }
+
     /// The open this job is a phase of, if it is one.
     pub(crate) fn load(&self) -> Option<LoadId> {
         match self {

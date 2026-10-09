@@ -2273,12 +2273,97 @@ fn an_answer_is_not_held_behind_keys_typed_ahead() {
     assert!(!p.app.home.listing_in_flight, "the answer is in");
     assert_eq!(
         p.app.debug.num_key_events,
-        keys + 1,
-        "and one key, one frame"
+        keys + 3,
+        "and the keys behind it, in one frame"
     );
+}
+
+/// Keys that arrive together and act at once are drawn once: a held-down key, or keys
+/// queued behind a slow frame, cost one frame, not one each.
+#[test]
+fn a_burst_of_keys_is_one_frame() {
+    let mut p = pump();
+    for _ in 0..10 {
+        p.send(terminal(plain(KeyCode::Down))).unwrap();
+    }
+    let keys = p.app.debug.num_key_events;
+    assert!(matches!(
+        p.drain().unwrap(),
+        Drained::Continue {
+            updated: true,
+            progress_only: false
+        }
+    ));
+    assert_eq!(p.app.debug.num_key_events, keys + 10, "every key, one pass");
+    assert!(matches!(
+        p.drain().unwrap(),
+        Drained::Continue { updated: false, .. }
+    ));
+}
+
+/// A long burst still draws as it goes, so a held key shows motion.
+#[test]
+fn a_long_burst_is_drawn_every_so_many_keys() {
+    let mut p = pump();
+    for _ in 0..KEYS_PER_FRAME + 5 {
+        p.send(terminal(plain(KeyCode::Down))).unwrap();
+    }
+    let keys = p.app.debug.num_key_events;
     p.drain().unwrap();
-    p.drain().unwrap();
-    assert_eq!(p.app.debug.num_key_events, keys + 3, "the rest, in turn");
+    let first = p.app.debug.num_key_events - keys;
+    assert!(
+        (1..=KEYS_PER_FRAME).contains(&first),
+        "{first} keys before the first frame"
+    );
+    while p.app.debug.num_key_events < keys + KEYS_PER_FRAME + 5 {
+        assert!(matches!(
+            p.drain().unwrap(),
+            Drained::Continue { updated: true, .. }
+        ));
+    }
+}
+
+/// A key whose work goes on in a follow-up is drawn before the follow-up runs and
+/// before the keys behind it, as each phase is shown.
+#[test]
+fn a_key_with_a_follow_up_gets_its_frame_first() {
+    let mut p = pump();
+    p.send(terminal(ctrl('q'))).unwrap();
+    p.send(terminal(plain(KeyCode::Down))).unwrap();
+    let keys = p.app.debug.num_key_events;
+    assert!(matches!(
+        p.drain().unwrap(),
+        Drained::Continue { updated: true, .. }
+    ));
+    assert_eq!(p.app.debug.num_key_events, keys + 1, "the Down waits");
+    assert!(matches!(p.drain().unwrap(), Drained::Exit));
+}
+
+/// In the run loop a burst is one frame: ten keys typed together, two frames in all
+/// (the first, and the burst's).
+#[test]
+fn the_run_loop_draws_a_burst_once() {
+    let mut p = pump();
+    long_flash(&mut p.app);
+    let tx = p.tx.clone();
+    let mut frames = 0;
+    let end = p
+        .run(|_app| {
+            frames += 1;
+            match frames {
+                1 => {
+                    for _ in 0..10 {
+                        tx.send(terminal(plain(KeyCode::Down))).unwrap();
+                    }
+                }
+                2 => tx.send(AppEvent::Exit).unwrap(),
+                _ => {}
+            }
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(end, Ended::Quit);
+    assert_eq!(frames, 2);
 }
 
 /// A worker that reports faster than the loop handles it still lets a typed key

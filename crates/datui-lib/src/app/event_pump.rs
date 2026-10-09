@@ -5,7 +5,8 @@
 //! loop sleeps until either arrives or a deadline passes ([`Pacer`]). Keys typed
 //! while busy are held in order and replayed one per iteration once idle, through
 //! the path a fresh key takes; a replayed key's follow-ups drain before the next is
-//! offered, so a queued Enter finishes its search first.
+//! offered, so a queued Enter finishes its search first. Keys that arrive together
+//! and act at once are drawn together ([`EventPump::burst_goes_on`]).
 
 use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
@@ -99,6 +100,24 @@ pub struct EventPump {
 
 /// The most channel events handled while a typed key waits; then the key is offered.
 const RESULTS_PER_KEY: usize = 64;
+
+/// The most keys of a burst handled before a frame shows them ([`EventPump::burst_goes_on`]).
+const KEYS_PER_FRAME: usize = 64;
+
+/// The longest a burst's keys are handled before a frame shows them. Tests count
+/// frames, and a loaded test machine must not split a burst.
+const BURST_FRAME: Duration = if cfg!(test) {
+    Duration::from_secs(10)
+} else {
+    Duration::from_millis(50)
+};
+
+/// The keys handled since the last frame, in one pass over the channel.
+#[derive(Default)]
+struct Burst {
+    started: Option<Instant>,
+    keys: usize,
+}
 
 impl EventPump {
     pub fn new(app: App, tx: Sender<AppEvent>, rx: Receiver<AppEvent>) -> Self {
@@ -406,6 +425,7 @@ impl EventPump {
     ) -> Result<Drained> {
         let mut updated = false;
         let mut progress_only = true;
+        let mut burst = Burst::default();
         loop {
             match next {
                 Ok((AppEvent::Exit, _)) => return Ok(Drained::Exit),
@@ -502,8 +522,6 @@ impl EventPump {
                     }
                     self.since_key = 0;
                     self.early = self.early.saturating_sub(1);
-                    // One key per frame: a key that acted is drawn before the next, and its
-                    // continuation gets its frame first.
                     let acted = match input {
                         Input::Key(key) => self.terminal_key(key)?,
                         Input::Mouse(mouse) => self.terminal_mouse(mouse)?,
@@ -511,7 +529,9 @@ impl EventPump {
                     if acted {
                         updated = true;
                         progress_only = false;
-                        break;
+                        if !self.burst_goes_on(&mut burst) {
+                            break;
+                        }
                     }
                 }
                 Err(TryRecvError::Disconnected) => return Ok(Drained::Exit),
@@ -522,6 +542,23 @@ impl EventPump {
             updated,
             progress_only: updated && progress_only,
         })
+    }
+
+    /// Whether the keys typed behind one that just acted are handled before the frame
+    /// showing it. A burst (key repeat, keys queued behind a slow frame) is drawn once:
+    /// redrawing for every key only sends frames the screen replaces at once. A key
+    /// that queued a follow-up gets its frame first (the follow-up shows its phase),
+    /// as does one that made the app busy (its spinner) or held keys, and a burst is
+    /// drawn every [`KEYS_PER_FRAME`] keys or [`BURST_FRAME`] so a held key shows
+    /// motion. A click waits for its frame anyway (see `drain_from`).
+    fn burst_goes_on(&self, burst: &mut Burst) -> bool {
+        let started = *burst.started.get_or_insert_with(Instant::now);
+        burst.keys += 1;
+        self.next_up.is_empty()
+            && self.held.is_empty()
+            && !self.app.is_busy()
+            && burst.keys < KEYS_PER_FRAME
+            && started.elapsed() < BURST_FRAME
     }
 
     /// The run loop: draw the first frame, then replay one held key, handle what has

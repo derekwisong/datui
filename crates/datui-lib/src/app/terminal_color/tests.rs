@@ -155,11 +155,43 @@ fn a_reply_split_after_its_esc_is_taken_too() {
     );
 }
 
-/// Unarmed, nothing is taken: the reply's keys reach the app as read.
+/// A reply after the question lapsed (a slow link, tmux, mosh) is still a reply, never
+/// typed into the filter, when its `ESC ]` arrived together. Unarmed, nothing else is
+/// held: a lone Esc, `]` (sort) and Alt+`]` followed by anything but a reply pass on.
 #[test]
-fn nothing_is_taken_when_no_question_is_out() {
+fn a_late_reply_is_taken_off_the_stream() {
     let reply = b"\x1b]11;rgb:ffff/ffff/ffff\x07";
-    assert_eq!(scan(crossterm_events(reply), false), keys(reply));
+    assert_eq!(
+        scan(crossterm_events(reply), false),
+        vec![Scanned::Background(Some(ThemeMode::Light))]
+    );
+    let mut typed = b"j".to_vec();
+    typed.extend_from_slice(reply);
+    typed.extend_from_slice(b"k");
+    let mut want = keys(b"j");
+    want.push(Scanned::Background(Some(ThemeMode::Light)));
+    want.extend(keys(b"k"));
+    assert_eq!(scan(crossterm_events(&typed), false), want);
+
+    for typed in [
+        &b"]"[..],
+        b"]11;rgb:0/0/0",
+        b"\x1b]j",
+        b"\x1b]12;rgb:0/0/0\x07",
+    ] {
+        assert_eq!(
+            scan(crossterm_events(typed), false),
+            keys(typed),
+            "{typed:?}"
+        );
+    }
+    let mut split = vec![Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))];
+    split.extend(crossterm_events(b"]"));
+    assert_eq!(
+        scan(split.clone(), false),
+        split.into_iter().map(Scanned::Event).collect::<Vec<_>>(),
+        "a lone Esc is not held unarmed"
+    );
 }
 
 /// Armed, keys that only start like a reply are passed on unchanged, in order:

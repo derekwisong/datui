@@ -2,7 +2,8 @@
 //! signals that end it, and handing a file to the system's opener.
 
 use crate::app::terminal::{
-    QuietTerminal, TakenTerminal, follow_focus, push_keyboard_flags, restore_terminal, take_screen,
+    QuietTerminal, TakenTerminal, bracket_pastes, follow_focus, push_keyboard_flags,
+    restore_terminal, take_screen,
 };
 use crate::config::AppConfig;
 use crate::render::context::Repaint;
@@ -264,6 +265,7 @@ fn run_impl(
     // stderr goes to the log until this drops, so nothing draws over the screen.
     let session = logging::TuiSession::begin(restore_terminal);
     push_keyboard_flags();
+    bracket_pastes(&mut std::io::stdout());
     // Asked before reading settings, so the answer is usually in by then; dropped under
     // an explicit `theme.mode`. The reader takes it off the input stream.
     let asked = terminal_color::supported()
@@ -343,6 +345,7 @@ fn run_impl(
             }
             Err(_) => {
                 terminal.draw(|frame| startup::draw_waiting(frame, waiting_on.as_deref()))?;
+                let _ = std::io::stdout().flush();
                 waiting_shown = true;
             }
         }
@@ -523,6 +526,7 @@ fn open_externally(
                 crossterm::cursor::Hide
             );
             push_keyboard_flags();
+            bracket_pastes(&mut std::io::stdout());
             pointer::capture(mouse, &mut std::io::stdout());
             if focus {
                 follow_focus(&mut std::io::stdout());

@@ -47,6 +47,7 @@ fn let_go(out: &mut impl std::io::Write) {
     let _ = crossterm::execute!(out, crossterm::event::DisableMouseCapture);
     // Focus reports, asked for under `theme.mode = "auto"`.
     let _ = crossterm::execute!(out, crossterm::event::DisableFocusChange);
+    let _ = crossterm::execute!(out, crossterm::event::DisableBracketedPaste);
     let _ = crossterm::execute!(out, crossterm::event::PopKeyboardEnhancementFlags);
 }
 
@@ -63,6 +64,13 @@ pub(crate) fn push_keyboard_flags() {
             crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
         )
     );
+}
+
+/// Ask the terminal to bracket a paste (`CSI ? 2004 h`), so it arrives as one event
+/// rather than as keys: one edit into the field, and a pasted line break is not Enter.
+/// Ignored where unsupported; [`restore_terminal`] and the panic hook turn it off.
+pub(crate) fn bracket_pastes(out: &mut impl std::io::Write) {
+    let _ = crossterm::execute!(out, crossterm::event::EnableBracketedPaste);
 }
 
 /// Ask for focus reports (`CSI ? 1004 h`) so the background is asked again on focus.
@@ -148,17 +156,23 @@ impl Drop for TakenTerminal {
 mod tests {
     use super::*;
 
-    /// Handing the terminal back turns off focus reports, which `auto` turns on.
+    /// Handing the terminal back turns off focus reports, which `auto` turns on, and
+    /// bracketed paste.
     #[test]
     fn letting_go_turns_off_focus_reports() {
         let mut out = Vec::new();
         let_go(&mut out);
         let out = String::from_utf8(out).unwrap();
         assert!(out.contains("\x1b[?1004l"), "{out:?}");
+        assert!(out.contains("\x1b[?2004l"), "{out:?}");
         assert!(out.contains("\x1b[<1u"), "{out:?}");
 
         let mut on = Vec::new();
         follow_focus(&mut on);
         assert_eq!(on, b"\x1b[?1004h");
+
+        let mut on = Vec::new();
+        bracket_pastes(&mut on);
+        assert_eq!(on, b"\x1b[?2004h");
     }
 }

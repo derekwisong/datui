@@ -16,6 +16,7 @@ use color_eyre::Result;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 
 use crate::app::jobs::Hold;
+use crate::app::keys::paste_keys::{self, PasteTarget};
 use crate::app::pointer::Pointer;
 use crate::{App, AppEvent};
 
@@ -38,11 +39,33 @@ enum Act {
     StopFind,
 }
 
-/// A key or mouse event read from the terminal, kept in arrival order.
-#[derive(Debug, Clone, Copy)]
+/// A key, mouse event or paste read from the terminal, kept in arrival order.
+#[derive(Debug, Clone)]
 enum Input {
     Key(KeyEvent),
     Mouse(MouseEvent),
+    Paste(String),
+}
+
+/// Typed input held while the app was busy, replayed in order once it is idle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Held {
+    Key(KeyEvent),
+    /// A paste, taken as one edit by whatever field types when it is replayed.
+    Paste(String),
+}
+
+impl Held {
+    fn key(&self) -> Option<&KeyEvent> {
+        match self {
+            Held::Key(key) => Some(key),
+            Held::Paste(_) => None,
+        }
+    }
+
+    fn is_navigation(&self) -> bool {
+        self.key().is_some_and(is_navigation)
+    }
 }
 
 /// What a pass over the channel found.
@@ -76,7 +99,7 @@ pub struct EventPump {
     pub app: App,
     tx: Sender<AppEvent>,
     rx: Receiver<AppEvent>,
-    held: VecDeque<KeyEvent>,
+    held: VecDeque<Held>,
     held_for: Screen,
     /// Continuations a handler returned, each holding the generation. Ahead of the
     /// channel: a follow-up is the rest of the event just handled. The hold covers the
@@ -150,6 +173,10 @@ impl EventPump {
                     self.typed.push_back(Input::Mouse(mouse));
                     self.early += 1;
                 }
+                AppEvent::Terminal(Event::Paste(text)) => {
+                    self.typed.push_back(Input::Paste(text));
+                    self.early += 1;
+                }
                 event => self.backlog.push_back(event),
             }
         }
@@ -160,9 +187,9 @@ impl EventPump {
         Ok(())
     }
 
-    /// The keys waiting for the app to go idle, oldest first.
+    /// The keys waiting for the app to go idle, oldest first (pastes left out).
     pub fn held_keys(&self) -> impl Iterator<Item = &KeyEvent> {
-        self.held.iter()
+        self.held.iter().filter_map(Held::key)
     }
 
     /// A key from the terminal, classified by `classify`: handled now, held behind
@@ -290,6 +317,33 @@ impl EventPump {
         }
     }
 
+    /// A paste, taken as one edit by the field that takes typed text
+    /// ([`App::paste_target`]); where nothing does, dropped, never read as keys. Typed
+    /// where a key would wait, it waits in its place, and goes to the field focused
+    /// when it is replayed. Returns whether the app changed.
+    pub fn terminal_paste(&mut self, text: String) -> Result<bool> {
+        self.discard_stale();
+        // Held keys (a `:` typed while busy) may open the field it is meant for.
+        if self.held.is_empty() && self.app.paste_target() == PasteTarget::Nowhere {
+            return Ok(false);
+        }
+        // Classified as the text's first character, typed.
+        let Some(first) = paste_keys::one_line(&text).chars().next() else {
+            return Ok(false);
+        };
+        match self.classify(&KeyEvent::new(KeyCode::Char(first), KeyModifiers::NONE)) {
+            Act::Now => {
+                self.offer(AppEvent::Paste(text))?;
+                Ok(true)
+            }
+            Act::Hold | Act::HoldAs(_) => {
+                self.hold_input(Held::Paste(text));
+                Ok(false)
+            }
+            Act::Drop | Act::StopFind => Ok(false),
+        }
+    }
+
     /// Press `keys` in order while each would act at once; the rest are dropped.
     fn press_now(&mut self, keys: impl IntoIterator<Item = KeyEvent>) -> Result<bool> {
         let mut acted = false;
@@ -340,7 +394,7 @@ impl EventPump {
             && key.code == KeyCode::Enter
             && self.app.in_normal_table_view()
             && self.app.enter_inspects()
-            && self.held.iter().all(is_navigation)
+            && self.held.iter().all(Held::is_navigation)
         {
             return Act::HoldAs(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
         }
@@ -369,13 +423,16 @@ impl EventPump {
         if self.app.is_busy() {
             return Ok(false);
         }
-        let Some(key) = self.held.pop_front() else {
+        let Some(input) = self.held.pop_front() else {
             return Ok(false);
         };
         if self.held.is_empty() {
             self.app.set_input_dropped(false);
         }
-        self.dispatch(key)?;
+        match input {
+            Held::Key(key) => self.dispatch(key)?,
+            Held::Paste(text) => self.offer(AppEvent::Paste(text))?,
+        }
         Ok(true)
     }
 
@@ -463,6 +520,12 @@ impl EventPump {
                     }
                     self.typed.push_back(Input::Mouse(mouse));
                 }
+                Ok((AppEvent::Terminal(Event::Paste(text)), _)) => {
+                    if self.typed.is_empty() {
+                        self.since_key = 0;
+                    }
+                    self.typed.push_back(Input::Paste(text));
+                }
                 Ok((AppEvent::Terminal(Event::Resize(cols, rows)), _)) => {
                     next = Ok((AppEvent::Resize(cols, rows), None));
                     continue;
@@ -512,8 +575,8 @@ impl EventPump {
                     };
                     // A drag reports every cell crossed; only the latest position matters.
                     while let (Input::Mouse(now), Some(Input::Mouse(next))) =
-                        (input, self.typed.front())
-                        && is_drag(&now)
+                        (&input, self.typed.front())
+                        && is_drag(now)
                         && is_drag(next)
                     {
                         input = Input::Mouse(*next);
@@ -525,6 +588,7 @@ impl EventPump {
                     let acted = match input {
                         Input::Key(key) => self.terminal_key(key)?,
                         Input::Mouse(mouse) => self.terminal_mouse(mouse)?,
+                        Input::Paste(text) => self.terminal_paste(text)?,
                     };
                     if acted {
                         updated = true;
@@ -629,18 +693,24 @@ impl EventPump {
     /// Offer one key to the app as the channel drain does, then reconcile the held keys
     /// with the screen it left.
     fn dispatch(&mut self, key: KeyEvent) -> Result<()> {
-        // The key may change the screen: a click waits for the frame that shows it.
+        self.offer(AppEvent::Key(key))
+    }
+
+    /// Offer typed input (a key or a paste) to the app, then reconcile the held keys
+    /// with the screen it left.
+    fn offer(&mut self, input: AppEvent) -> Result<()> {
+        // The input may change the screen: a click waits for the frame that shows it.
         self.app.pointer.changed();
         let gen_before = self.app.screen_generation();
-        match self.app.handle(AppEvent::Key(key)) {
+        match self.app.handle(input) {
             Ok(Some(follow_up)) => self.queue_continuation(follow_up),
             Ok(None) => {}
             // Only if the app went busy between check and call, which nothing on this thread
             // does; the key keeps its place either way.
-            Err(deferred) => self.held.push_front(deferred),
+            Err(deferred) => self.held.push_front(Held::Key(deferred)),
         }
         if self.app.screen_generation() != gen_before {
-            // This key left the view (home, a declined download): held keys were for that
+            // This input left the view (home, a declined download): held keys were for that
             // screen.
             self.held.clear();
             self.app.set_input_dropped(false);
@@ -660,31 +730,38 @@ impl EventPump {
     /// At the cap the newest is dropped and the user told; never the oldest, which may
     /// be the `/`.
     fn hold(&mut self, key: KeyEvent) {
-        if self.held.is_empty() {
-            self.held_for = Self::screen_of(&self.app);
-        }
         if is_navigation(&key)
             && !replays_each_press(&key)
-            && self.held.back() == Some(&key)
+            && self.held.back().and_then(Held::key) == Some(&key)
             && self.app.in_normal_table_view()
-            && self.held.iter().all(is_navigation)
+            && self.held.iter().all(Held::is_navigation)
         {
             return;
+        }
+        self.hold_input(Held::Key(key));
+    }
+
+    /// Hold typed input behind what is held, up to [`MAX_HELD_KEYS`].
+    fn hold_input(&mut self, input: Held) {
+        if self.held.is_empty() {
+            self.held_for = Self::screen_of(&self.app);
         }
         if self.held.len() >= MAX_HELD_KEYS {
             self.app.set_input_dropped(true);
             return;
         }
-        self.held.push_back(key);
+        self.held.push_back(input);
     }
 
     /// Drop the `n`/`N` held at the front among cursor moves; past any other key they
     /// are text or meant for what it opens.
     fn drop_held_finds(&mut self) {
-        let run = self.held.iter().take_while(|k| is_navigation(k)).count();
+        let run = self.held.iter().take_while(|k| k.is_navigation()).count();
         let rest = self.held.split_off(run);
-        self.held
-            .retain(|k| !matches!(k.code, KeyCode::Char('n' | 'N')));
+        self.held.retain(|k| {
+            !k.key()
+                .is_some_and(|k| matches!(k.code, KeyCode::Char('n' | 'N')))
+        });
         self.held.extend(rest);
         if self.held.is_empty() {
             self.app.set_input_dropped(false);

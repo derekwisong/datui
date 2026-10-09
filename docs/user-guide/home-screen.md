@@ -23,7 +23,8 @@ in the [keyboard reference](../reference/keyboard-shortcuts.md#home-screen).
 
 To type a path or URL, press <kbd>~</kbd> with the filter empty. The list
 shows the directory being typed, narrowed by the name after the last `/`, with
-the first name picked.
+the first name picked. A pasted path goes in whole; a line break in it is a
+space, so a paste never presses Enter.
 
 | Key at the `~` prompt | Does |
 |---|---|
@@ -42,7 +43,7 @@ row (`Open`, `Open all`, `Inside`, `Look`), what <kbd>Ctrl</kbd>+<kbd>D</kbd> do
 there (`^D Add` to `catalog.toml`, or `^D Forget` on its own rows), `^E Docs` on a
 catalog row, then `? keys` (`F1 keys` once a filter is typed, since <kbd>?</kbd>
 then types). Letters type into the filter, so
-<kbd>q</kbd> types `q`; <kbd>Ctrl</kbd>+<kbd>C</kbd> quits.
+<kbd>q</kbd> types `q`, and a paste goes into it whole; <kbd>Ctrl</kbd>+<kbd>C</kbd> quits.
 
 ## Sections
 

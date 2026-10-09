@@ -150,7 +150,8 @@ fn pass_on(tx: &Sender<AppEvent>, scanned: &mut Vec<Scanned>) -> Result<(), ()> 
 fn forward(tx: &Sender<AppEvent>, event: Event) -> Result<(), ()> {
     let event = match event {
         Event::Key(key) if !key.is_press() => return Ok(()),
-        Event::Key(_) | Event::Resize(..) => event,
+        // A paste arrives whole (bracketed paste, asked for by `run`).
+        Event::Key(_) | Event::Resize(..) | Event::Paste(_) => event,
         Event::Mouse(mouse) if crate::app::pointer::wanted(&mouse) => event,
         // The terminal is back in front: its scheme may have changed meanwhile.
         Event::FocusGained => return tx.send(AppEvent::TerminalFocused).map_err(|_| ()),

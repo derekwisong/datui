@@ -583,10 +583,10 @@ pub const SCREENS: &[Screen] = &[
                 name: "Find",
                 keys: &[
                     k("(type)", "Filter", "Narrow by name or column, fuzzy")
-                        .more("Narrow by name or column; fuzzy, so \"sal\" finds \"sales\". What you open often ranks first. Typing also searches below the directory you are inside and the listed bucket names; matches appear under \"Found\"")
+                        .more("Narrow by name or column; fuzzy, so \"sal\" finds \"sales\". What you open often ranks first. Typing also searches below the directory you are inside and the listed bucket names; matches appear under \"Found\". A paste goes in whole")
                         .no_run(),
                     k("~", "Path", "Type a path or URL (on an empty filter)")
-                        .more("While the filter is empty: type a path or URL by hand. The list shows the directory being typed, narrowed by the name after the last /. The prompt is a plain editor: characters, Backspace, Ctrl+U clears, The first name that matches is picked. Tab completes the one name left or what the names share, or a name picked further down; ↑ / ↓ pick a name, and ↑ from the first takes the path as typed; Enter opens the picked name or the typed path: a file opens, a directory is gone inside; Esc closes. s3://, gs:// and az:// complete from buckets and prefixes already known. With a filter typed, ~ types into it"),
+                        .more("While the filter is empty: type a path or URL by hand. The list shows the directory being typed, narrowed by the name after the last /. The prompt is a plain editor: characters, Backspace, Ctrl+U clears, The first name that matches is picked. Tab completes the one name left or what the names share, or a name picked further down; ↑ / ↓ pick a name, and ↑ from the first takes the path as typed; Enter opens the picked name or the typed path: a file opens, a directory is gone inside; Esc closes. A pasted path goes in whole, a line break in it as a space. s3://, gs:// and az:// complete from buckets and prefixes already known. With a filter typed, ~ types into it"),
                     k("Ctrl+U", "Clear", "Clear the filter or path input"),
                     k("Ctrl+R", "Refresh", "List again what is on screen"),
                 ],

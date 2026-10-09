@@ -149,6 +149,9 @@ pub enum AppEvent {
     /// A key taken as if typed (Enter on a help line). The pump runs it through
     /// `classify` like a typed key; outside the pump it is a `Key`.
     Press(KeyEvent),
+    /// Text the terminal pasted (bracketed paste), taken as one edit by the field that
+    /// takes typed text (`App::paste`).
+    Paste(String),
     /// Read from the terminal by [`app::terminal_input::TerminalInput`]. The
     /// [`app::event_pump::EventPump`] turns it into `Key`/`Resize`.
     Terminal(crossterm::event::Event),
@@ -3968,6 +3971,7 @@ impl App {
                 self.followed(&news);
                 None
             }
+            AppEvent::Paste(text) => self.paste(&text),
             AppEvent::TerminalBackground(mode) => {
                 self.terminal_answered(mode);
                 None

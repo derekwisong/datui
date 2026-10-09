@@ -3469,3 +3469,94 @@ fn a_spinner_nobody_waits_on_turns_slower() {
     assert_eq!(frames(true), 30);
     assert_eq!(frames(false), 10);
 }
+
+fn paste(text: &str) -> AppEvent {
+    AppEvent::Terminal(Event::Paste(text.to_string()))
+}
+
+/// A paste at home goes into the filter as one edit, in one frame; a kept filter is
+/// replaced, as typing replaces it.
+#[test]
+fn a_paste_at_home_types_into_the_filter() {
+    let mut p = pump();
+    p.app.enter_home();
+    p.send(paste("quarterly report\n")).unwrap();
+    assert!(matches!(
+        p.drain().unwrap(),
+        Drained::Continue { updated: true, .. }
+    ));
+    assert_eq!(p.app.home.filter, "quarterly report");
+    assert!(matches!(
+        p.drain().unwrap(),
+        Drained::Continue { updated: false, .. }
+    ));
+
+    p.app.home.filter_selected = true;
+    p.send(paste("sales")).unwrap();
+    p.drain().unwrap();
+    assert_eq!(p.app.home.filter, "sales");
+}
+
+/// A paste into the `~` prompt is the path, in one edit; a line break in it does not
+/// press Enter.
+#[test]
+fn a_paste_into_the_path_prompt_is_one_edit() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut p = pump();
+    p.app.enter_home();
+    p.send(terminal(plain(KeyCode::Char('~')))).unwrap();
+    p.drain().unwrap();
+    assert!(p.app.home.path_input_active);
+    let path = format!("{}/data\n", dir.path().display());
+    p.send(paste(&path)).unwrap();
+    p.drain().unwrap();
+    assert!(p.app.home.path_input_active, "not entered");
+    assert_eq!(p.app.home.path_input, path.trim_end());
+}
+
+/// In a text field a paste is typed, line breaks as spaces: nothing is submitted, and
+/// keys typed after it land after it.
+#[test]
+fn a_paste_into_the_command_line_is_typed_not_submitted() {
+    let (mut p, _dir) = loaded_pump();
+    p.send(terminal(plain(KeyCode::Char(':')))).unwrap();
+    p.send(paste("select age\nwhere age > 40")).unwrap();
+    p.send(terminal(plain(KeyCode::Char('!')))).unwrap();
+    settle(&mut p);
+    assert_eq!(p.app.input_mode, InputMode::Editing, "still typing");
+    assert_eq!(
+        p.app.prompt.query_input.value(),
+        "select age where age > 40!"
+    );
+}
+
+/// Where nothing takes text, a paste is dropped, never read as keys: `jjq` pasted at
+/// the table neither moves the cursor nor quits.
+#[test]
+fn a_paste_where_nothing_types_is_dropped() {
+    let (mut p, _dir) = loaded_pump();
+    let before = cell(&p);
+    p.send(paste("jjq")).unwrap();
+    assert!(matches!(
+        settle(&mut p),
+        Drained::Continue { updated: false, .. }
+    ));
+    assert!(p.app.at_table());
+    assert_eq!(cell(&p), before);
+}
+
+/// Typed while keys are held, a paste waits in its place, for the field the keys
+/// before it open.
+#[test]
+fn a_paste_while_keys_are_held_waits_its_turn() {
+    let (mut p, _dir) = loaded_pump();
+    p.app.busy = true;
+    type_keys(&mut p, ":ab");
+    p.send(paste("cd")).unwrap();
+    p.drain().unwrap();
+    assert_eq!(held(&p), [':', 'a', 'b'].map(KeyCode::Char).to_vec());
+    assert_eq!(p.held.len(), 4, "and the paste behind them");
+    p.app.busy = false;
+    settle(&mut p);
+    assert_eq!(p.app.prompt.query_input.value(), "abcd");
+}

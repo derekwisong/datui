@@ -6,6 +6,7 @@ pub(crate) mod editing_keys;
 pub(crate) mod hex_find;
 pub(crate) mod hex_keys;
 pub(crate) mod info_keys;
+pub(crate) mod paste_keys;
 pub(crate) mod picker_keys;
 pub(crate) mod pivot_melt_keys;
 pub(crate) mod retype_keys;

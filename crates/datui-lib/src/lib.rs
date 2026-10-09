@@ -567,10 +567,11 @@ enum RunOrigin {
     /// The query prompt: inline under it while open in this mode, else a dialog.
     Query(QueryMode),
     /// A view applied: a dialog on failure, and the previous view marked applied
-    /// again. `matched` says why it was applied for a match.
+    /// again. `applying` says why it was applied, and what follows its rows.
     View {
         previous: Option<String>,
-        matched: Option<(String, view::MatchReason)>,
+        name: String,
+        applying: view::view_apply::Applying,
     },
 }
 
@@ -2881,6 +2882,7 @@ impl App {
                 self.apply_sample(sample)
             }
             Confirm::OpenLink(url) => Some(AppEvent::Applied(Applied::OpenLink(url))),
+            Confirm::Reopen => Some(AppEvent::Applied(Applied::Reopen)),
             Confirm::ClearRecents => {
                 self.cache.clear_recents();
                 self.home_refresh();
@@ -4532,9 +4534,14 @@ impl App {
                         }
                         // Shown once the wait is over, or the spinner's message hides it.
                         Some(RunOrigin::View {
-                            matched: Some((name, why)),
+                            name,
+                            applying: view::view_apply::Applying::Matched(why),
                             ..
                         }) => self.flash_view_applied(&name, why),
+                        Some(RunOrigin::View {
+                            applying: view::view_apply::Applying::Restored(Some(drill)),
+                            ..
+                        }) => self.drill_again(*drill),
                         _ => {}
                     }
                 }
@@ -4614,7 +4621,7 @@ impl App {
                         // The wait passes to the read of its rows.
                         self.spawn_async_collect(Self::LOADING_BUFFER);
                     }
-                    Some(Err(message)) => self.error_modal.show(message),
+                    Some(Err(message)) => self.read_failed(&message),
                     None => {}
                 }
                 None
@@ -4625,7 +4632,7 @@ impl App {
             }
             (Job::ViewPivot(pivot), Answer::ViewPivoted(pivoted)) => {
                 // Superseded: cancelled or replaced, and the replacement owns the wait.
-                let (view, why) = *pivot;
+                let (view, applying) = *pivot;
                 if !current {
                     return None;
                 }
@@ -4639,8 +4646,8 @@ impl App {
                 });
                 match planned {
                     // The wait passes to the read of its rows.
-                    Some(Ok(rollback)) => self.view_planned(&view, rollback, why),
-                    Some(Err(message)) => self.view_pivot_failed(&message),
+                    Some(Ok(rollback)) => self.view_planned(&view, rollback, applying),
+                    Some(Err(message)) => self.view_pivot_failed(&applying, &message),
                     None => {}
                 }
                 None
@@ -4649,6 +4656,12 @@ impl App {
                 // Superseded means something replaced the view, which owns the wait.
                 if current {
                     self.drill_into(group_index, &row);
+                }
+                None
+            }
+            (Job::Regroup(place), Answer::Regrouped(found)) => {
+                if current {
+                    self.drilled_again(&place, found);
                 }
                 None
             }
@@ -4846,6 +4859,7 @@ impl App {
                 | Answer::Sample { .. }
                 | Answer::Pivoted { .. }
                 | Answer::DrillRow { .. }
+                | Answer::Regrouped(_)
                 | Answer::ValueWritten(_)
                 | Answer::Exported(_)
                 | Answer::Copied { .. }
@@ -4965,10 +4979,11 @@ impl App {
             }
             Job::Analysis(_) | Job::SampleRows => {
                 self.analysis_modal.computing = None;
-                self.error_modal.show(message.to_string());
+                self.read_failed(message);
             }
             // The form stays up with its spec, to be fixed.
-            Job::Pivot | Job::Copy | Job::HexOpen { .. } => {
+            Job::Pivot | Job::Copy => self.read_failed(message),
+            Job::HexOpen { .. } => {
                 self.error_modal.show(message.to_string());
             }
             // The dialog is still up, the reason on its status line under the path.
@@ -4976,9 +4991,9 @@ impl App {
                 Some(form) => form.error = Some(message.to_string()),
                 None => self.error_modal.show(message.to_string()),
             },
-            Job::ViewPivot(_) => self.view_pivot_failed(message),
+            Job::ViewPivot(pivot) => self.view_pivot_failed(&pivot.1, message),
             // The grouped view stays as it was.
-            Job::DrillRow => self.flash_note(could_not("drill in")),
+            Job::DrillRow | Job::Regroup(_) => self.flash_note(could_not("drill in")),
             Job::InspectJson { token } => {
                 let modal = &mut self.inspector_modal;
                 if let Some(wait) = modal.json_wait.take_if(|w| w.token == *token) {
@@ -5185,7 +5200,78 @@ impl App {
             }
         }
         self.first_rows_settled();
-        self.error_modal.show(message.to_string());
+        self.read_failed(message);
+    }
+
+    /// A read of the dataset on screen failed with `message`. When it says a file the
+    /// open listed is gone, the question offers to reopen it; else the error modal says
+    /// why.
+    pub(crate) fn read_failed(&mut self, message: &str) {
+        if crate::error_display::says_gone_since_opened(message) && self.source.opened.is_some() {
+            self.confirmation_modal.show_choice(
+                message.to_string(),
+                "Reopen",
+                "Close",
+                Confirm::Reopen,
+            );
+        } else {
+            self.error_modal.show(message.to_string());
+        }
+    }
+
+    /// Take a reopened dataset's drill-down again, now its grouped view's rows are in:
+    /// its group is found by its keys off this thread.
+    fn drill_again(&mut self, place: crate::table::DrillPlace) {
+        let Some(state) = self.data_table_state.as_ref() else {
+            return;
+        };
+        match state.find_group(&place) {
+            None => self.drilled_again(&place, None),
+            Some(Err(e)) => self.flash_note(format!(
+                "Could not drill in: {}",
+                crate::error_display::user_message_from_report(&e, None)
+            )),
+            Some(Ok(lf)) => {
+                let streaming = state.polars_streaming();
+                let job = Job::Regroup(Box::new(place));
+                self.spawn_job(job, Some(Self::READING_GROUP), move |_| {
+                    let read = crate::analysis::statistics::collect_lazy(lf, streaming)
+                        .map_err(|e| crate::error_display::user_message_from_polars(&e))?;
+                    let found = DataTableState::found_group(read)
+                        .map_err(|e| crate::error_display::user_message_from_report(&e, None))?;
+                    Ok(Answer::Regrouped(found))
+                });
+            }
+        }
+    }
+
+    /// The group a reopened dataset was drilled into is found (`found`), or gone: drill
+    /// in again, or say so and stay at the grouped view.
+    fn drilled_again(
+        &mut self,
+        place: &crate::table::DrillPlace,
+        found: Option<(usize, DataFrame)>,
+    ) {
+        if found.is_none() && place.by_group() {
+            self.flash_note(format!(
+                "No group {} in the current files",
+                place.describe()
+            ));
+            return;
+        }
+        let Some(state) = self.data_table_state.as_mut() else {
+            return;
+        };
+        match state.deferred(|s| s.redrill(place, found)) {
+            Ok(()) => {
+                self.sync_sort_filter_modal();
+                self.spawn_async_collect(Self::LOADING_BUFFER);
+            }
+            Err(e) => self.flash_note(format!(
+                "Could not drill in: {}",
+                crate::error_display::user_message_from_report(&e, None)
+            )),
+        }
     }
 
     /// `message` with the dataset's temp files (a download, a decompressed copy) named

@@ -346,6 +346,7 @@ impl App {
                 // Counted afresh by the next read.
                 tail: None,
                 prepared: None,
+                place: None,
                 ..options.clone()
             };
             (paths, options)
@@ -424,6 +425,22 @@ impl App {
         }
         self.status_message = Some(Self::LOADING_BUFFER.to_string());
 
+        // A reopen puts back where the dataset was, rather than what matches it.
+        if let Some(place) = options.place.as_deref() {
+            let restored = self.restore_place(
+                place.settings.clone(),
+                place.active.clone(),
+                place.drill.clone(),
+            );
+            return match restored {
+                Ok(()) => true,
+                Err(e) => {
+                    let applying = crate::view::view_apply::Applying::Restored(None);
+                    self.view_failed(&applying, &e.to_string());
+                    false
+                }
+            };
+        }
         // Where a view meets the dataset: `--view` names one for this first open only;
         // `[views] auto_apply` dresses every open with a matching view. A fresh dataset
         // starts with none applied, so the last file's view is not checked here.
@@ -463,6 +480,40 @@ impl App {
                 false
             }
         }
+    }
+
+    /// Read the dataset on screen again from what it was opened with, a new listing
+    /// included, and put back its place once read: the query, filters, sort, columns,
+    /// reshape and sample as a view keeps them, the saved view marked applied, and the
+    /// drill-down.
+    pub(crate) fn reopen_in_place(&mut self) -> Option<AppEvent> {
+        let (paths, options) = self.source.opened.clone()?;
+        if self.query_prompt_mode().is_some() {
+            self.close_query_prompt();
+        }
+        let place = self.data_table_state.as_ref().map(|state| {
+            let mut settings = crate::view_settings_of(state);
+            settings.chart = self.saved_chart();
+            // Drilled in, the steps are the grouped view's, and so is the column order.
+            if let Some((order, locked)) = state.grouped_column_order() {
+                settings.column_order = order.to_vec();
+                settings.locked_columns_count = locked;
+            }
+            Arc::new(loading::open_options::KeptPlace {
+                settings,
+                active: self.views.active_id.clone(),
+                drill: state.drill_place().map(Box::new),
+            })
+        });
+        let options = OpenOptions {
+            view: None,
+            prepared: None,
+            place,
+            ..options
+        };
+        self.set_loading_phase("Scanning input", 10);
+        self.name_what_is_loading(paths[0].clone());
+        Some(AppEvent::Open(paths, options))
     }
 
     /// Enter the home screen, rebuilt, with the cursor on what is open, abandoning any

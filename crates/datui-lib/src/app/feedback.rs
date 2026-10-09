@@ -86,6 +86,8 @@ pub(crate) enum Confirm {
     Copy(crate::clipboard::CopyFormat, bool),
     /// Download a remote file, or read a large one whole: the open in flight asks.
     Download,
+    /// Read the dataset again, where it was: a file it listed is gone.
+    Reopen,
     /// Stop a recording or keep it, on the way out; either choice leaves.
     Leave(crate::Leaving),
 }

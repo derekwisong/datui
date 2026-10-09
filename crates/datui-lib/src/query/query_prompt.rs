@@ -65,18 +65,22 @@ impl App {
         // be fixed. Sent any other way — a view applied — there is nothing to edit,
         // and the error modal says why.
         let mode = match origin {
-            RunOrigin::View { .. } => {
-                self.error_modal
-                    .show(format!("Error applying view: {message}"));
+            RunOrigin::View { applying, .. } => {
+                self.view_failed(&applying, message);
                 self.read_after_view_rollback();
                 return;
             }
             RunOrigin::Query(mode) if self.query_prompt_mode() == Some(mode) => mode,
             RunOrigin::Query(_) => {
-                self.error_modal.show(message.to_string());
+                self.read_failed(message);
                 return;
             }
         };
+        // A file gone since the open is no fault of the query: the reopen is offered over
+        // the prompt, which keeps the reason.
+        if crate::error_display::says_gone_since_opened(message) && self.source.opened.is_some() {
+            self.read_failed(message);
+        }
         let sql = mode == QueryMode::Sql;
         self.prompt.query_run_error = Some(match conversion {
             Some(failure) if sql => failure.sql_message(rows),

@@ -4455,3 +4455,6 @@ mod text_input_flows;
 
 /// Every confirmation's Yes, No and Esc.
 mod confirm_tests;
+
+/// A file gone since the open offers the reopen, which keeps the place (#830).
+mod reopen_tests;

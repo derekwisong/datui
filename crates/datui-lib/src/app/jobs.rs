@@ -118,14 +118,15 @@ pub(crate) enum Job {
     SampleDraw(Box<SampleDraw>),
     /// A pivot from the Pivot & Melt builder.
     Pivot,
-    /// A view's pivot, read before its rows: the view, and why it was applied for a
-    /// match.
-    ViewPivot(Box<(crate::view::SavedView, Option<crate::view::MatchReason>)>),
+    /// A view's pivot, read before its rows: the view, and why it is applied.
+    ViewPivot(Box<(crate::view::SavedView, crate::view::view_apply::Applying)>),
     /// The Pivot & Melt preview, request `token` of opening `epoch`; judged by those,
     /// not the generation. Nobody waits on it.
     ReshapePreview { epoch: u64, token: u64 },
     /// The group row Enter drills into, when the buffer did not hold it.
     DrillRow,
+    /// The group a reopened dataset was drilled into, found again by its keys.
+    Regroup(Box<crate::table::DrillPlace>),
     /// The inspector's fields of row `row` of frame `frame`, not in the buffer.
     InspectRow { frame: u64, row: usize },
     /// The inspector's text parsed as JSON to drill into; answers
@@ -267,7 +268,7 @@ impl Job {
             Job::Pivot => JobKind::Pivot,
             Job::ViewPivot(_) => JobKind::ViewPivot,
             Job::ReshapePreview { .. } => JobKind::ReshapePreview,
-            Job::DrillRow => JobKind::DrillRow,
+            Job::DrillRow | Job::Regroup(_) => JobKind::DrillRow,
             Job::InspectRow { .. } => JobKind::InspectRow,
             Job::InspectJson { .. } => JobKind::InspectJson,
             Job::InspectPretty { .. } => JobKind::InspectPretty,
@@ -410,6 +411,9 @@ pub(crate) enum Answer {
     },
     /// [`Job::DrillRow`]: the group row.
     DrillRow { group_index: usize, row: DataFrame },
+    /// [`Job::Regroup`]: the group's view row and row, or none when no group has its
+    /// keys now.
+    Regrouped(Option<(usize, DataFrame)>),
     /// [`Job::InspectRow`]: the fields read.
     FieldsRead(DataFrame),
     /// [`Job::InspectJson`]: the document.

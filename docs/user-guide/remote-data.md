@@ -322,6 +322,13 @@ The [formats table](../formats/index.md#how-each-format-is-read) has every
 format. Paging reads ahead of the screen; queries, sorting and analysis may
 read the whole input ([Large datasets](large-datasets.md)).
 
+A prefix or glob is listed once, when it is opened. If its publisher removes or
+replaces a file after that, the next read that needs it stops and says which
+file. **Reopen** reads the current listing and puts back the query, filters,
+sort, column changes, reshape, sample, saved view and drill-down; **Close**
+leaves the dataset as it was. If the group drilled down into is gone from the
+files, the grouped view shows instead, and the footer says so.
+
 ## Building without cloud support
 
 A build without the `cloud` and `http` features

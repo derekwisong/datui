@@ -498,9 +498,15 @@ fn a_file_gone_since_the_open_says_reopen() {
             source: "Server returned non-2xx status code: 404 Not Found".into(),
         },
     });
+    let message = user_message_from_polars(&err);
     assert_eq!(
-        user_message_from_polars(&err),
+        message,
         "A file was removed or replaced after the dataset was opened: \
          ELEMENT=TMAX/0499_0.snappy.parquet. Reopen the dataset to read the current files."
     );
+    // The app offers the reopen from this, however the message was framed.
+    assert!(says_gone_since_opened(&format!(
+        "Error applying view: {message}"
+    )));
+    assert!(!says_gone_since_opened("No object there. Check the URL."));
 }

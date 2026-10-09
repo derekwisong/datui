@@ -118,7 +118,7 @@ fn a_web_file_in_a_catalog_is_fetched_only_when_opened() {
             |row| matches!(row, datui::home::Row::Entry { entry, .. } if entry.name == "Foods"),
         )
     });
-    app.home.selected = app
+    let at = app
         .home
         .visible()
         .iter()
@@ -126,6 +126,7 @@ fn a_web_file_in_a_catalog_is_fetched_only_when_opened() {
             |row| matches!(row, datui::home::Row::Entry { entry, .. } if entry.name == "Foods"),
         )
         .unwrap();
+    app.home.select(at);
     assert_eq!(app.what_enter_does(), datui::WhatEnter::OpensFile);
     assert_eq!(
         requests.load(Ordering::SeqCst),
@@ -206,7 +207,7 @@ fn a_downloaded_dataset_comes_back_named_and_measured() {
         })
     };
     pump(&mut app, &rx, |app| named(app).is_some());
-    app.home.selected = named(&app).unwrap();
+    app.home.select(named(&app).unwrap());
     drive(&mut app, key(KeyCode::Enter));
     pump(&mut app, &rx, App::awaiting_open_confirmation);
     drive(&mut app, key(KeyCode::Enter));
@@ -306,7 +307,7 @@ fn an_unreachable_web_file_says_so_on_its_row_and_its_open() {
         )
     };
     pump(&mut app, &rx, |app| named(app).is_some());
-    app.home.selected = named(&app).unwrap();
+    app.home.select(named(&app).unwrap());
     let path = std::path::PathBuf::from(&url);
     pump(&mut app, &rx, |app| app.home.web_gone.contains_key(&path));
     let said = "returned 404: the file may have moved.";

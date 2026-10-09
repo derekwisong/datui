@@ -225,9 +225,11 @@ impl App {
                 n => format!("{} matches", crate::numfmt::group_chrome(n)),
             });
         }
+        // The order of the section the cursor is in, picked or resting.
         let in_recents = self
             .home
-            .selected_section()
+            .cursor_row()
+            .map(|row| row.section())
             .and_then(|i| self.home.sections.get(i))
             .is_some_and(|s| s.grouped_by_place);
         let waiting = self.home.listing_in_flight || self.home.awaiting_listing().is_some();

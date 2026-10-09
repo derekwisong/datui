@@ -3356,7 +3356,7 @@ fn a_file_datui_cannot_read_is_hidden_until_shown() {
         common::wait_for_event(&tx, &rx);
     }
     let model = row_of(&app, "model.onnx").expect("listed");
-    app.home.selected = model;
+    app.home.select(model);
     // Enter does nothing: the row is dimmed and its pane says why.
     app.home.status = None;
     assert!(app.event(key(KeyCode::Enter)).is_none(), "nothing opened");
@@ -3827,7 +3827,7 @@ fn test_enter_on_the_more_row_expands_recent() {
         .iter()
         .position(|r| matches!(r, datui::home::Row::More { .. }))
         .expect("the more row is listed");
-    app.home.selected = row;
+    app.home.select(row);
     app.event(key(KeyCode::Enter));
 
     assert_eq!(app.input_mode, InputMode::Home, "nothing was opened");
@@ -3879,21 +3879,24 @@ fn test_left_cuts_recent_back_from_a_place_past_the_cap() {
     };
     let shown = places(&app);
     assert!(shown < 12);
-    app.home.selected = app
+    let at = app
         .home
         .visible()
         .iter()
         .position(|r| matches!(r, datui::home::Row::More { places: 1.., .. }))
         .unwrap();
+    app.home.select(at);
     app.event(key(KeyCode::Right));
     assert_eq!(places(&app), 12, "→ on the more row shows every place");
 
-    app.home.selected = app
+    let at = app
         .home
         .visible()
         .iter()
         .rposition(|r| matches!(r, datui::home::Row::Place { .. }))
         .unwrap();
+
+    app.home.select(at);
     app.event(key(KeyCode::Left));
     assert_eq!(places(&app), shown, "cut back");
     assert!(matches!(
@@ -3902,12 +3905,13 @@ fn test_left_cuts_recent_back_from_a_place_past_the_cap() {
     ));
 
     app.event(key(KeyCode::Right));
-    app.home.selected = app
+    let at = app
         .home
         .visible()
         .iter()
         .position(|r| matches!(r, datui::home::Row::Place { .. }))
         .unwrap();
+    app.home.select(at);
     app.event(key(KeyCode::Left));
     assert!(app.home.is_collapsed(0), "← on a first place folds RECENT");
 }
@@ -3939,7 +3943,7 @@ fn test_a_delta_table_is_labelled_and_not_opened_as_one_table() {
         .iter()
         .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "orders"))
         .expect("the table is listed");
-    app.home.selected = row;
+    app.home.select(row);
     // A listing looks into nothing, so what this row is has to be found before it
     // can be acted on. In the app a background pass does it, highlighted row first;
     // here the same call does it on the spot.
@@ -4006,7 +4010,7 @@ fn test_a_sampled_column_count_is_marked_on_screen() {
         .iter()
         .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "events"))
         .expect("the directory is listed");
-    app.home.selected = row;
+    app.home.select(row);
 
     // As a directory past the footer budget comes back from measurement.
     for section in app.home.sections_mut().iter_mut() {
@@ -4069,7 +4073,7 @@ fn test_a_probe_answering_does_not_cancel_an_open_in_flight() {
         .iter()
         .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.path == table))
         .expect("the table is listed under Recent");
-    app.home.selected = row;
+    app.home.select(row);
 
     let mut follow = app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
@@ -4292,7 +4296,7 @@ fn test_enter_on_the_whole_directory_row_opens_rather_than_descending() {
         .iter()
         .position(|r| matches!(r, datui::home::Row::Door { .. }))
         .expect("every directory carries the row");
-    app.home.selected = row;
+    app.home.select(row);
 
     let was = app.home.browsing.clone();
 
@@ -4371,7 +4375,7 @@ fn test_a_directory_the_nesting_rule_turns_away_is_still_two_keys_from_one_table
         .iter()
         .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "sales"))
         .expect("the directory is listed");
-    app.home.selected = row;
+    app.home.select(row);
     app.home.classify_now(8);
     app.home.measure_now(8);
     assert_eq!(
@@ -4392,7 +4396,7 @@ fn test_a_directory_the_nesting_rule_turns_away_is_still_two_keys_from_one_table
         .iter()
         .position(|r| matches!(r, datui::home::Row::Door { .. }))
         .expect("the directory carries the row");
-    app.home.selected = row;
+    app.home.select(row);
     assert!(
         matches!(app.event(key(KeyCode::Enter)), Some(AppEvent::Open(..))),
         "the door opens what the rule declined to open in one key"
@@ -4747,7 +4751,7 @@ fn test_a_directory_of_files_written_without_extensions_still_opens() {
         .iter()
         .position(|r| matches!(r, datui::home::Row::Door { .. }))
         .expect("the directory carries the door");
-    home.home.selected = door;
+    home.home.select(door);
     assert!(
         matches!(home.event(key(KeyCode::Enter)), Some(AppEvent::Open(..))),
         "the door opens it"

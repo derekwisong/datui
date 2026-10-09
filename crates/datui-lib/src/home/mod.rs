@@ -1702,6 +1702,10 @@ pub struct HomeState {
     /// The cursor is where [`HomeState::select_first_entry`] put it and has not moved: a
     /// door the footers later turn down sends it to the first row.
     pub landing: bool,
+    /// No row is picked: datui opened here and nothing has been chosen. The cursor's
+    /// place is kept (where Enter and the first ↑ or ↓ go), but no row is marked and
+    /// nothing is read for one, so opening datui starts no reader.
+    pub resting: bool,
     /// The rows as last listed. See [`RowsCache`].
     pub rows_cache: RowsCache,
     /// The catalogs' places. See [`HomeState::set_catalogs`].
@@ -1861,6 +1865,7 @@ impl Default for HomeState {
             returning: None,
             returning_line: None,
             landing: false,
+            resting: false,
         }
     }
 }
@@ -3641,6 +3646,7 @@ impl HomeState {
 
     /// Move the cursor to the next (`delta` > 0) or previous section header, wrapping.
     pub fn jump_section(&mut self, delta: isize) {
+        self.resting = false;
         self.returning = None;
         self.landing = false;
         let headers = self.view().headers.clone();
@@ -4845,6 +4851,14 @@ impl HomeState {
 
     /// The highlighted row, whatever it is.
     pub fn selected_row(&self) -> Option<Row<'_>> {
+        if self.resting {
+            return None;
+        }
+        self.row_at(self.selected)
+    }
+
+    /// The row Enter and the first ↑ or ↓ take, picked or not.
+    pub fn cursor_row(&self) -> Option<Row<'_>> {
         self.row_at(self.selected)
     }
 
@@ -5494,6 +5508,10 @@ impl HomeState {
     pub fn select_first_entry(&mut self) {
         self.returning = None;
         self.landing = true;
+        // Narrowing picks the best match, as typing does.
+        if !self.filter.is_empty() {
+            self.resting = false;
+        }
         self.selected = self.landing_row();
     }
 
@@ -5535,6 +5553,7 @@ impl HomeState {
     /// Put the selection on row `index` of what is listed, as a click does.
     pub fn select(&mut self, index: usize) {
         if index < self.row_count() {
+            self.resting = false;
             self.returning = None;
             self.landing = false;
             self.selected = index;
@@ -5542,6 +5561,7 @@ impl HomeState {
     }
 
     pub fn move_selection(&mut self, delta: isize) {
+        self.resting = false;
         self.returning = None;
         self.landing = false;
         let n = self.row_count();
@@ -5556,6 +5576,7 @@ impl HomeState {
     /// Move the selection `delta` rows, stopping at the ends rather than wrapping (a
     /// wrapped page jump lands somewhere unexpected; single steps wrap).
     pub fn page_selection(&mut self, delta: isize) {
+        self.resting = false;
         self.returning = None;
         self.landing = false;
         let n = self.row_count();

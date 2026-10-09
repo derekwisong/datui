@@ -219,7 +219,7 @@ Right-click a cell: the cursor goes there and a menu lists the keys that act on 
 \fIExplore\fR
 .TP
 \fB\(ua / \(da\fR
-Move the selection (Ctrl+P / Ctrl+N too)
+Move the selection (Ctrl+P / Ctrl+N too). datui opens with no row picked, reading nothing; the first \(ua or \(da picks the top row, PgUp, PgDn, Home and End move from it, and typing picks the best match
 .TP
 \fBCtrl+\(ua / Ctrl+\(da\fR
 Previous or next section
@@ -242,7 +242,7 @@ Cycle the sort; the footer names the order in effect when it has room
 \fIGo\fR
 .TP
 \fBEnter\fR
-What the footer says on this row: "Open all" reads a whole directory as one table, "Inside" steps into it, "Open" loads a file, "Look" finds out first. A catalog bookmark, indented under its dataset, opens whole. On a section header, fold or unfold it; on a more row, show the rest; on `..`, go up a level; on the hidden-files row, show them
+What the footer says on this row: "Open all" reads a whole directory as one table, "Inside" steps into it, "Open" loads a file, "Look" finds out first. A catalog bookmark, indented under its dataset, opens whole. On a section header, fold or unfold it; on a more row, show the rest; on `..`, go up a level; on the hidden-files row, show them. With no row picked yet, the top row
 .TP
 \fBBackspace\fR
 Delete a filter character; on an empty filter, up a level (from a bucket, back to its cloud source; from the top of a catalog's remote dataset, back here)

@@ -454,7 +454,8 @@ pub enum WhatEnter {
 impl App {
     /// See [`WhatEnter`].
     pub fn what_enter_does(&self) -> WhatEnter {
-        let entry = match self.home.selected_row() {
+        // With no row picked, the one Enter takes.
+        let entry = match self.home.cursor_row() {
             // A place browses as `→` does; an HTTP place has no listing and says so.
             Some(home::Row::Place { path, .. }) => {
                 return if home::place_is_browsable(&path) {

@@ -1480,6 +1480,9 @@ impl App {
         // a new one, and `~` opens the path prompt.
         self.home.filter_selected = !self.home.filter.is_empty();
         self.home.folds_owed = true;
+        // With no dataset to come back to, no row is picked: nothing is read until one is.
+        // Coming back from one, the cursor lands on it, a row the user chose.
+        self.home.resting = self.path.is_none();
         self.home_app.left = self.path.clone();
         self.home_refresh();
         if let Some(open_path) = self.path.clone() {

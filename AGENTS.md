@@ -151,7 +151,9 @@ reader in `app/terminal_input.rs`), worker results and continuations all arrive 
 `AppEvent`s on one mpsc channel; `EventPump::run` sleeps on it until something
 arrives or a deadline passes (spinner, flash), with no polling tick, and
 `App::event` handles each. A key is offered once the results behind it are
-handled, one key per frame. Anything polled rather than sent must wake the loop
+handled; keys that arrive together and act at once share a frame, and a key
+that queues a follow-up gets its frame first (`EventPump::burst_goes_on`). A
+frame that changes nothing writes nothing. Anything polled rather than sent must wake the loop
 (`AppEvent::Wake`). Anything that touches data runs off the UI thread as a job
 of `jobs::Jobs` (`App::spawn_job`), which keeps one record per job: what it is
 (`Job`, carrying whatever the app needs of it), whether the user waits on it

@@ -2,9 +2,11 @@
 //! signals that end it, and handing a file to the system's opener.
 
 use crate::app::terminal::{
-    QuietTerminal, TakenTerminal, follow_focus, push_keyboard_flags, restore_terminal,
+    QuietTerminal, TakenTerminal, bracket_pastes, follow_focus, push_keyboard_flags,
+    restore_terminal, take_screen,
 };
 use crate::config::AppConfig;
+use crate::render::context::Repaint;
 use crate::view::Views;
 use crate::{
     App, AppEvent, RunInput, app::event_pump, app::pointer, app::startup, app::terminal_color,
@@ -233,7 +235,7 @@ fn run_impl(
         }
         _ => None,
     };
-    let mut terminal = match ratatui::try_init() {
+    let mut terminal = match take_screen() {
         Ok(terminal) => QuietTerminal::new(terminal),
         Err(e) => {
             // No screen to keep up: an unusable config or a missing named file is said first.
@@ -263,6 +265,7 @@ fn run_impl(
     // stderr goes to the log until this drops, so nothing draws over the screen.
     let session = logging::TuiSession::begin(restore_terminal);
     push_keyboard_flags();
+    bracket_pastes(&mut std::io::stdout());
     // Asked before reading settings, so the answer is usually in by then; dropped under
     // an explicit `theme.mode`. The reader takes it off the input stream.
     let asked = terminal_color::supported()
@@ -382,8 +385,8 @@ fn run_impl(
         .then(|| startup::take_answer(&rx, background, &mut backlog))
         .flatten();
     // Focus reports: under `auto` the background is asked again, and a frame back in
-    // focus is repainted whole, since a scroll moved by the terminal carries along
-    // whatever drifted on screen meanwhile.
+    // focus is repainted whole before the terminal next moves lines, since a move
+    // carries along whatever drifted on screen meanwhile.
     let focus_reports =
         (config.theme.follow && terminal_color::supported()) || config.display.scroll_region;
     if focus_reports {
@@ -460,11 +463,12 @@ fn run_impl(
         if app.take_background_query() && terminal_color::supported() {
             terminal_color::ask(&mut std::io::stdout());
         }
-        if app.take_repaint() {
-            terminal.repaint();
+        match app.take_repaint() {
+            Some(Repaint::Whole) => terminal.repaint(),
+            Some(Repaint::BeforeMoving) => terminal.repaint_before_moving(),
+            None => {}
         }
         terminal.draw(|frame| frame.render_widget(app, frame.area()))?;
-        let _ = std::io::stdout().flush();
         Ok(())
     })?;
     let result = conclude(end, &pump.app, capture, &mut reader, &mut screen);
@@ -522,6 +526,7 @@ fn open_externally(
                 crossterm::cursor::Hide
             );
             push_keyboard_flags();
+            bracket_pastes(&mut std::io::stdout());
             pointer::capture(mouse, &mut std::io::stdout());
             if focus {
                 follow_focus(&mut std::io::stdout());

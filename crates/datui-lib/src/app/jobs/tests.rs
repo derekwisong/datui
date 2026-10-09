@@ -159,7 +159,7 @@ fn a_cancel_supersedes_only_what_it_picks() {
         Job::Classify(Classify {
             path: PathBuf::from(path),
             browsing: None,
-            jump: false,
+            typed: None,
         })
     };
     let older = jobs.start(look("/a"), Some("Looking..."));

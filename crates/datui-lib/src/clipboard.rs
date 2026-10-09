@@ -10,7 +10,8 @@
 //! OSC 52, so payloads are capped first (configurable); table copies are read in batches
 //! up to the cap, without an HTML flavor.
 //!
-//! **auto**: native where it initializes, else osc52, decided at the first copy.
+//! **auto**: native where it initializes, else osc52, decided at the first copy; over
+//! SSH with no display forwarded, osc52 without asking.
 
 use polars::prelude::*;
 use std::io::Write as _;
@@ -175,16 +176,26 @@ pub fn destination(
     choice: BackendChoice,
     osc52_limit: usize,
 ) -> Result<Box<dyn Destination>, String> {
+    let terminal = || Box::new(Osc52 { limit: osc52_limit }) as Box<dyn Destination>;
     match choice {
         BackendChoice::Native => Native::new().map(|n| Box::new(n) as Box<dyn Destination>),
-        BackendChoice::Osc52 => Ok(Box::new(Osc52 { limit: osc52_limit })),
+        BackendChoice::Osc52 => Ok(terminal()),
+        BackendChoice::Auto if no_display_here(|name| std::env::var(name).ok()) => Ok(terminal()),
         BackendChoice::Auto => Ok(match Native::new() {
             Ok(native) => Box::new(native),
-            // No display server to talk to — an SSH session — is exactly
-            // what the escape-sequence path is for.
-            Err(_) => Box::new(Osc52 { limit: osc52_limit }),
+            // No display server to talk to is exactly what the escape-sequence path is
+            // for.
+            Err(_) => terminal(),
         }),
     }
+}
+
+/// Whether `auto` goes straight to the terminal: over SSH with no display forwarded,
+/// where no display server can answer, so none is asked. A forwarded display
+/// (`ssh -X`) is tried first, as anywhere else.
+pub(crate) fn no_display_here(env: impl Fn(&str) -> Option<String>) -> bool {
+    let set = |name: &str| env(name).is_some_and(|v| !v.trim().is_empty());
+    (set("SSH_CONNECTION") || set("SSH_TTY")) && !set("DISPLAY") && !set("WAYLAND_DISPLAY")
 }
 
 // ----- The shapes a copy takes -----

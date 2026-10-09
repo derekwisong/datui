@@ -191,8 +191,8 @@ pub(crate) struct Classify {
     /// opens nothing. Not `HomeApp::generation`: listings rebuild for unrelated reasons
     /// (another root's probe answering).
     pub(crate) browsing: Option<PathBuf>,
-    /// A path typed at `~` rather than a row already listed.
-    pub(crate) jump: bool,
+    /// The text typed at `~`, when the path came from there rather than a listed row.
+    pub(crate) typed: Option<String>,
 }
 
 /// A chart's data being prepared. One at a time, so a burst of selection changes

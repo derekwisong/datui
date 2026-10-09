@@ -488,7 +488,7 @@ struct Slot<T> {
 
 impl<T> Windows<T> {
     fn new(width: usize) -> Self {
-        let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+        let threads = crate::analysis::statistics::cores();
         Self {
             width,
             slots: (2 * threads).max(4),

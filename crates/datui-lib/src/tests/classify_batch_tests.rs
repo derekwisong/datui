@@ -49,7 +49,7 @@ fn only_one_classification_pass_is_out_at_a_time() {
 
     app.request_home_classifications();
     assert!(
-        app.home.classify_in_flight,
+        !app.home.classifying.is_empty(),
         "the first pass should have gone out"
     );
 
@@ -58,10 +58,11 @@ fn only_one_classification_pass_is_out_at_a_time() {
         looking_at(&mut app, row);
         app.request_home_classifications();
     }
-    assert!(app.home.classify_in_flight, "and still only the one");
+    assert!(!app.home.classifying.is_empty(), "and still only the one");
 
     // It lands, and what follows it is about where the viewport is now.
     app.event(AppEvent::HomeClassified {
+        pass: PathBuf::from("/"),
         measured: Vec::new(),
         done: true,
     });
@@ -80,14 +81,15 @@ fn only_one_classification_pass_is_out_at_a_time() {
 fn an_answered_pass_frees_the_slot() {
     let (tx, _rx) = mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
-    app.home.classify_in_flight = true;
+    app.home.classifying.insert(PathBuf::from("/"));
 
     app.event(AppEvent::HomeClassified {
+        pass: PathBuf::from("/"),
         measured: Vec::new(),
         done: true,
     });
 
-    assert!(!app.home.classify_in_flight);
+    assert!(app.home.classifying.is_empty());
 }
 
 /// A pass that lands after the listing was rebuilt still labels its row. A probe
@@ -100,11 +102,12 @@ fn a_pass_that_outlives_its_listing_still_counts() {
     let mut app = App::new(tx, crate::tests::test_runtime());
     app.home.apply_listing(unlooked_at(4));
     let path = PathBuf::from("/pretend/share/d0000");
-    app.home.classify_in_flight = true;
+    app.home.classifying.insert(PathBuf::from("/"));
 
     // What a rebuild does to the generation while the pass is out.
     app.home_app.generation = app.home_app.generation.wrapping_add(1);
     app.event(AppEvent::HomeClassified {
+        pass: PathBuf::from("/"),
         measured: vec![(
             path.clone(),
             home::Measured {
@@ -163,9 +166,10 @@ fn a_label_lands_before_its_batch_is_done() {
     let mut app = App::new(tx, crate::tests::test_runtime());
     app.home.apply_listing(unlooked_at(4));
     let path = PathBuf::from("/pretend/share/d0000");
-    app.home.classify_in_flight = true;
+    app.home.classifying.insert(PathBuf::from("/"));
 
     app.event(AppEvent::HomeClassified {
+        pass: PathBuf::from("/"),
         measured: vec![(
             path.clone(),
             home::Measured {
@@ -182,5 +186,5 @@ fn a_label_lands_before_its_batch_is_done() {
         _ => None,
     });
     assert_eq!(kind, Some(home::discover::EntryKind::Hive));
-    assert!(app.home.classify_in_flight, "the batch is still out");
+    assert!(!app.home.classifying.is_empty(), "the batch is still out");
 }

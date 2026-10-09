@@ -467,6 +467,30 @@ impl TextInput {
         }
     }
 
+    /// Insert pasted text at the cursor as one edit (one undo step), over the
+    /// selection, and over a proposed value as a typed key replaces it. A one-line
+    /// field takes it on one line ([`one_line`]); a multi-line or statement field
+    /// keeps its line breaks ([`as_lines`]). Returns whether the value changed.
+    pub fn insert_text(&mut self, text: &str) -> bool {
+        let text = if self.is_single_line() {
+            one_line(text)
+        } else {
+            as_lines(text)
+        };
+        if text.is_empty() {
+            return false;
+        }
+        if std::mem::take(&mut self.suggested) {
+            self.textarea.select_all();
+        }
+        let changed = self.textarea.insert_str(&text);
+        if changed {
+            self.history.reset_position();
+        }
+        self.sync();
+        changed
+    }
+
     fn submit(&mut self, cache: Option<&CacheManager>) -> TextInputEvent {
         self.textarea.cancel_selection();
         if let Some(cache) = cache {
@@ -505,6 +529,25 @@ impl Widget for &TextInput {
     fn render(self, area: Rect, buf: &mut Buffer) {
         (&self.textarea).render(area, buf);
     }
+}
+
+/// Pasted text for one line: a line break (CRLF, LF or CR) or a tab is a space, other
+/// control characters are left out, and line breaks at either end go.
+pub fn one_line(text: &str) -> String {
+    as_lines(text.trim_matches(['\r', '\n']))
+        .chars()
+        .map(|c| if c == '\n' || c == '\t' { ' ' } else { c })
+        .collect()
+}
+
+/// Pasted text for a field of lines: CRLF and CR are LF, and control characters
+/// other than LF and tab are left out.
+pub fn as_lines(text: &str) -> String {
+    text.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .chars()
+        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+        .collect()
 }
 
 /// Collapse line breaks so a single-line field stays on one line.

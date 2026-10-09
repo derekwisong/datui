@@ -18,7 +18,7 @@ use std::io;
 
 use ratatui::Frame;
 use ratatui::Terminal;
-use ratatui::backend::{Backend, ClearType};
+use ratatui::backend::Backend;
 use ratatui::buffer::{Buffer, Cell};
 
 /// A band of lines `top..bottom` that moved up (`up`) or down by `by` lines.
@@ -42,6 +42,9 @@ pub(crate) struct Drawer {
     changed: Vec<u32>,
     scroll: bool,
     repaint: bool,
+    /// What the terminal shows may have drifted from `shown` since the last whole
+    /// frame (it was out of focus): the next move repaints instead.
+    doubted: bool,
 }
 
 impl Drawer {
@@ -75,21 +78,37 @@ impl Drawer {
         self.repaint = true;
     }
 
+    /// Draw every cell with the next frame the terminal would move lines in, instead
+    /// of the move (the terminal back in focus: something may have written to it
+    /// meanwhile). Until then, frames are the plain diff, which leaves drift where it
+    /// landed, and a frame that changes nothing sends nothing.
+    pub(crate) fn repaint_before_moving(&mut self) {
+        self.doubted = true;
+    }
+
     fn forget(&mut self) {
         self.shown.reset();
         self.shown_lines.clear();
+        self.doubted = false;
     }
 
-    /// Render a frame and send what changed, as `Terminal::draw` does with no cursor.
+    /// Render a frame and send what changed, as `Terminal::draw` does with no cursor,
+    /// in one synchronized update flushed once. A frame that changes nothing on screen
+    /// writes nothing at all: no update brackets, colors or cursor.
     pub(crate) fn draw<B, F>(&mut self, terminal: &mut Terminal<B>, render: F) -> io::Result<()>
     where
         B: Backend<Error = io::Error> + io::Write,
         F: FnOnce(&mut Frame),
     {
-        crossterm::queue!(
-            terminal.backend_mut(),
-            crossterm::terminal::BeginSynchronizedUpdate
-        )?;
+        let asked = std::mem::take(&mut self.repaint);
+        // A repaint is asked for on a resize, whose clear `autoresize` writes: inside
+        // the update, so the cleared screen is never shown.
+        if asked {
+            crossterm::queue!(
+                terminal.backend_mut(),
+                crossterm::terminal::BeginSynchronizedUpdate
+            )?;
+        }
         // A new size clears the screen and resizes Ratatui's buffers.
         terminal.autoresize()?;
         render(&mut terminal.get_frame());
@@ -98,20 +117,41 @@ impl Drawer {
         if self.shown.area != area {
             self.shown = Buffer::empty(area);
             self.shown_lines.clear();
+            self.doubted = false;
         }
-        if std::mem::take(&mut self.repaint) {
-            terminal.backend_mut().clear_region(ClearType::All)?;
-            self.forget();
-        }
+        let mut moved = None;
         if self.scroll {
             line_hashes(&self.next, &mut self.next_lines);
-            if self.shown_lines.len() == self.next_lines.len()
-                && let Some(moved) =
+            if !asked
+                && self.shown_lines.len() == self.next_lines.len()
+                && let Some(band) =
                     find_move(&self.shown_lines, &self.next_lines, &mut self.changed)
-                && saves_bytes(&self.shown, &self.next, moved)
+                && saves_bytes(&self.shown, &self.next, band)
             {
-                match crossterm::queue!(terminal.backend_mut(), MoveLines(moved)) {
-                    Ok(()) => shift(&mut self.shown, moved),
+                moved = Some(band);
+            }
+        }
+        let repaint = asked || (moved.is_some() && self.doubted);
+        if repaint {
+            self.forget();
+            moved = None;
+        }
+        let changed =
+            repaint || moved.is_some() || self.shown.diff_iter(&self.next).next().is_some();
+        if changed {
+            let out = terminal.backend_mut();
+            if !asked {
+                crossterm::queue!(out, crossterm::terminal::BeginSynchronizedUpdate)?;
+            }
+            if repaint {
+                crossterm::queue!(
+                    out,
+                    crossterm::terminal::Clear(crossterm::terminal::ClearType::All)
+                )?;
+            }
+            if let Some(band) = moved {
+                match crossterm::queue!(out, MoveLines(band)) {
+                    Ok(()) => shift(&mut self.shown, band),
                     // A Windows console without ANSI: nothing was written.
                     Err(e) if e.kind() == io::ErrorKind::Unsupported => {
                         self.scroll = false;
@@ -120,16 +160,15 @@ impl Drawer {
                     Err(e) => return Err(e),
                 }
             }
+            out.draw(self.shown.diff_iter(&self.next))?;
+            // Queued, not `Terminal::hide_cursor`, which flushes mid-frame.
+            crossterm::queue!(
+                out,
+                crossterm::cursor::Hide,
+                crossterm::terminal::EndSynchronizedUpdate
+            )?;
+            Backend::flush(out)?;
         }
-        terminal
-            .backend_mut()
-            .draw(self.shown.diff_iter(&self.next))?;
-        terminal.hide_cursor()?;
-        crossterm::queue!(
-            terminal.backend_mut(),
-            crossterm::terminal::EndSynchronizedUpdate
-        )?;
-        Backend::flush(terminal.backend_mut())?;
         std::mem::swap(&mut self.shown, &mut self.next);
         std::mem::swap(&mut self.shown_lines, &mut self.next_lines);
         // The next frame renders into a blank buffer of the current size.

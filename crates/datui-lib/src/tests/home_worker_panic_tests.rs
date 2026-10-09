@@ -46,7 +46,8 @@ fn a_stale_listing_leaves_the_current_one_in_flight() {
     app.event(AppEvent::HomeListingReady {
         generation: stale,
         listing: Box::default(),
-        known: Default::default(),
+        known: None,
+        learned: Vec::new(),
         folds: None,
         visits: Default::default(),
         newest: None,
@@ -55,7 +56,8 @@ fn a_stale_listing_leaves_the_current_one_in_flight() {
     app.event(AppEvent::HomeListingReady {
         generation: app.home_app.generation,
         listing: Box::default(),
-        known: Default::default(),
+        known: None,
+        learned: Vec::new(),
         folds: None,
         visits: Default::default(),
         newest: None,
@@ -104,14 +106,22 @@ fn a_schema_read_that_dies_is_not_asked_for_again() {
     dies_once(&mut app, |e| matches!(e, AppEvent::HomeSchemaReady { .. }));
     let entry =
         home::discover::Entry::new(dir.path().join("a.csv"), home::discover::EntryKind::File);
+    app.home.apply_listing(home::Listing {
+        sections: vec![home::Section::titled("HERE", vec![entry.clone()])],
+        ..Default::default()
+    });
+    app.home.select(1);
+    app.request_home_schema();
     assert!(app.home_schema(&entry).is_none());
     assert!(app.home_schema_pending(&entry.path));
     pump(&mut app, &rx, |a| !a.home_schema_pending(&entry.path));
     assert!(app.home_schema(&entry).is_none());
+    app.request_home_schema();
     assert!(
         !app.home_schema_pending(&entry.path),
         "remembered as having none"
     );
+    assert_eq!(app.home_app.reads.schemas, 1);
 }
 
 #[test]
@@ -126,4 +136,39 @@ fn a_search_whose_walk_dies_ends() {
     assert!(!app.home.search.running);
     assert!(app.home.search.done);
     assert_eq!(app.home.search.limited.as_deref(), Some("partial · failed"));
+}
+
+/// A measuring batch whose worker dies answers its rows as looked at: they are not
+/// asked for again, so the pass does not loop on them.
+#[test]
+fn a_measuring_batch_that_dies_is_not_asked_for_again() {
+    let (mut app, rx, dir) = app();
+    app.home.rebuild(&[]);
+    app.home.view_height = 20;
+    dies_once(&mut app, |e| matches!(e, AppEvent::HomeMeasured { .. }));
+    app.request_home_measurements();
+    assert!(app.home.measure_in_flight);
+    pump(&mut app, &rx, |a| !a.home.measure_in_flight);
+    let row = dir.path().join("a.csv");
+    assert!(
+        app.home.enriched.contains_key(&row),
+        "answered as looked at"
+    );
+    app.request_home_measurements();
+    assert!(!app.home.measure_in_flight, "and not asked for again");
+}
+
+/// A classification pass whose worker dies answers its rows as looked at.
+#[test]
+fn a_classification_pass_that_dies_is_not_asked_for_again() {
+    let (mut app, rx, dir) = app();
+    std::fs::create_dir(dir.path().join("inner")).unwrap();
+    app.home.rebuild(&[]);
+    app.home.view_height = 20;
+    dies_once(&mut app, |e| matches!(e, AppEvent::HomeClassified { .. }));
+    app.request_home_classifications();
+    assert!(!app.home.classifying.is_empty());
+    pump(&mut app, &rx, |a| a.home.classifying.is_empty());
+    app.request_home_classifications();
+    assert!(app.home.classifying.is_empty(), "not asked for again");
 }

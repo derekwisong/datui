@@ -41,7 +41,7 @@ impl App {
 
     /// Rebuild the inspector's list for the row shown: Filled, Compare and the find
     /// depend on its values.
-    fn refresh_inspector_list(&mut self) {
+    pub(crate) fn refresh_inspector_list(&mut self) {
         if let Some(state) = self.data_table_state.as_ref() {
             let row = state.inspect_row();
             crate::widgets::inspector::refresh_list(&mut self.inspector_modal, state, row.as_ref());

@@ -536,7 +536,7 @@ impl Drop for TuiSession {
 }
 
 /// Wraps whatever hook is installed (color-eyre's, under ratatui's). Installed per
-/// session, above the hook `ratatui::try_init` adds each time.
+/// session, above the hook `take_screen` adds each time.
 fn install_panic_hook() {
     let tui_thread = std::thread::current().id();
     let previous = std::panic::take_hook();
@@ -568,10 +568,9 @@ fn install_panic_hook() {
         // from here, so an earlier session's hook further down the chain (the Python
         // binding, run from another thread) passes the report on instead of keeping it.
         TUI_ACTIVE.store(false, Ordering::SeqCst);
-        // The hooks below hand back the screen but not the mouse, whose reporting
-        // outlives the alternate screen: the shell would read every click as text.
-        // Unlike popping the keyboard flags, this is safe to repeat.
-        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
+        // The hooks below hand back the screen but not the reports that outlive the
+        // alternate screen: the mouse, focus and bracketed paste.
+        crate::app::terminal::release_modes(&mut std::io::stdout());
         BACKGROUND_PANIC
             .lock()
             .unwrap_or_else(|e| e.into_inner())

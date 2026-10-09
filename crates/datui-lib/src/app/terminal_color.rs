@@ -21,9 +21,9 @@ use crate::config::ThemeMode;
 /// does not take OSC at all does not beep.
 pub(crate) const QUERY: &[u8] = b"\x1b]11;?\x1b\\";
 
-/// How long after asking a reply is still taken off the input stream. Past it, keys
-/// that look like a reply are keys. Generous for a slow SSH link; a terminal that
-/// answers does so in milliseconds.
+/// How long after asking any reply is taken off the input stream, an ESC read on its
+/// own included. Past it, only a reply whose `ESC ]` arrived together is. Generous for
+/// a slow SSH link; a terminal that answers does so in milliseconds.
 pub(crate) const ARMED_FOR: Duration = Duration::from_secs(3);
 
 /// How long the reader holds the start of what may be a reply for the rest of it.
@@ -177,8 +177,8 @@ impl ReplyScanner {
         self.escaped = false;
     }
 
-    /// Take one event. `armed` says whether a reply is expected; when it is not, a
-    /// new reply is not looked for.
+    /// Take one event. `armed` says whether a reply is expected; when it is not, only a
+    /// reply starting with Alt+`]` is looked for.
     pub(crate) fn feed(&mut self, event: Event, armed: bool, out: &mut Vec<Scanned>) {
         let key = match &event {
             Event::Key(key) if key.is_press() => *key,
@@ -189,7 +189,9 @@ impl ReplyScanner {
             }
         };
         if self.held.is_empty() {
-            if armed && (is_esc(&key) || is_open(&key, true)) {
+            // A reply can come after the question lapsed (a slow link, tmux, mosh): one
+            // whose `ESC ]` arrived together, as Alt+`]`, is still looked for.
+            if (armed && (is_esc(&key) || is_open(&key, true))) || is_late_open(&key) {
                 self.started = !is_esc(&key);
                 self.held.push(event);
             } else {
@@ -266,6 +268,12 @@ impl ReplyScanner {
 
 fn is_esc(key: &KeyEvent) -> bool {
     key.code == KeyCode::Esc && key.modifiers.is_empty()
+}
+
+/// Alt+`]`: a reply's `ESC ]` read together, looked for even when no question is
+/// out. A typed Alt+`]` is held [`HOLD`] at most.
+fn is_late_open(key: &KeyEvent) -> bool {
+    key.code == KeyCode::Char(']') && key.modifiers == KeyModifiers::ALT
 }
 
 /// `]`: with Alt when `ESC ]` arrived together (or plain, when `alt_ok` allows it),

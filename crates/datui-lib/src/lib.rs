@@ -149,6 +149,9 @@ pub enum AppEvent {
     /// A key taken as if typed (Enter on a help line). The pump runs it through
     /// `classify` like a typed key; outside the pump it is a `Key`.
     Press(KeyEvent),
+    /// Text the terminal pasted (bracketed paste), taken as one edit by the field that
+    /// takes typed text (`App::paste`).
+    Paste(String),
     /// Read from the terminal by [`app::terminal_input::TerminalInput`]. The
     /// [`app::event_pump::EventPump`] turns it into `Key`/`Resize`.
     Terminal(crossterm::event::Event),
@@ -174,8 +177,11 @@ pub enum AppEvent {
     HomeListingReady {
         generation: u64,
         listing: Box<crate::home::Listing>,
-        /// What earlier runs measured, read from the cache with the listing.
-        known: std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
+        /// What earlier runs measured, when this listing read the cache's index: once a
+        /// session.
+        known: Option<crate::home::Known>,
+        /// Records read since for the dataset just left, which its open wrote.
+        learned: Vec<(PathBuf, crate::cache::DatasetFacts)>,
         /// How often and how lately each recent was opened.
         visits: std::collections::HashMap<PathBuf, crate::cache::Visits>,
         /// The recent opened last, where the cursor lands.
@@ -210,11 +216,10 @@ pub enum AppEvent {
     },
     /// A schema read off-thread for the highlighted dataset.
     HomeSchemaReady {
-        generation: u64,
         path: PathBuf,
         preview: Option<crate::home::discover::SchemaPreview>,
     },
-    /// Measurements for home rows, sent per row so a slow one holds back no other.
+    /// Measurements for home rows, a batch at a time (more often on a slow share).
     /// `done` ends the batch. No generation: a measurement is keyed by path and
     /// stays true whichever listing asked.
     HomeMeasured {
@@ -232,8 +237,10 @@ pub enum AppEvent {
         gone: crate::error_display::HttpGone,
     },
     /// What the rows on screen turned out to be; folded like
-    /// [`AppEvent::HomeMeasured`].
+    /// [`AppEvent::HomeMeasured`]. `pass` is the filesystem (its mount point) the
+    /// pass looked at.
     HomeClassified {
+        pass: PathBuf,
         measured: Vec<(PathBuf, crate::home::Measured)>,
         done: bool,
     },
@@ -364,8 +371,9 @@ pub enum AppEvent {
     /// open it. The filesystem calls can hang on a slow mount.
     ClassifyThenOpen {
         path: PathBuf,
-        /// A path typed at `~` rather than a listed row: Esc returns to the listing.
-        jump: bool,
+        /// The text typed at `~`, when the path came from there rather than a listed row:
+        /// Esc returns to the listing, and a typo comes back as typed.
+        typed: Option<String>,
     },
     /// A background job's outcome is in its record: `app::jobs::Jobs::end` takes it.
     JobEnded(Ticket),
@@ -2698,7 +2706,7 @@ impl App {
                         ..Default::default()
                     }),
                 background_query: false,
-                repaint: false,
+                repaint: None,
             },
             jobs,
             runtime,
@@ -2745,14 +2753,14 @@ impl App {
         if self.input_mode != InputMode::Home {
             return;
         }
-        if self.home_app.refresh_owed {
-            self.home_refresh();
-        }
+        self.take_listing_news();
         #[cfg(feature = "http")]
         self.size_selected_web_file();
         // Each pass asks for the rows still unknown, a batch at a time; not under the
         // path prompt, which hides the list.
         if !self.home.path_input_active {
+            self.request_selected_preview();
+            self.request_home_schema();
             self.request_home_measurements();
             self.request_home_classifications();
             #[cfg(feature = "cloud")]
@@ -3790,7 +3798,7 @@ impl App {
             }
             AppEvent::Resize(_cols, _rows) => {
                 // The next render sets visible_rows and needs_recollect; the main loop collects.
-                self.display.repaint = true;
+                self.display.repaint = Some(render::context::Repaint::Whole);
                 None
             }
             AppEvent::Collect => {
@@ -3900,7 +3908,7 @@ impl App {
             }
             AppEvent::ClassifyThenOpen {
                 path: looking,
-                jump,
+                typed,
             } => {
                 // A second Enter supersedes the first (home keys act while busy): the newer look
                 // is the one waited for, and refusing would let a dead share block every look.
@@ -3908,7 +3916,7 @@ impl App {
                 let look = Job::Classify(app::jobs::Classify {
                     path: looking.clone(),
                     browsing: self.home.browsing.clone(),
-                    jump,
+                    typed,
                 });
                 let name = looking
                     .file_name()
@@ -3916,14 +3924,19 @@ impl App {
                     .unwrap_or_else(|| looking.display().to_string());
                 // The home screen's own line, because the footer's is the table's.
                 self.home.status = Some(format!("Looking at {name}..."));
+                let formats = self.formats.clone();
                 self.spawn_job(look, Some(Self::LOOKING), move |_| {
                     // Each of these can hang on a share that went away; hence off the key thread.
-                    let found = if !looking.exists() {
-                        None
-                    } else if looking.is_dir() {
+                    let found = if looking.is_dir() {
                         Some(crate::home::discover::classify_directory(&looking))
-                    } else {
+                    } else if looking.exists()
+                        // A member of an archive, or a variant a spec reads from a file.
+                        || crate::formats::members::split(&looking).is_some()
+                        || crate::formats::members::split_variant(&looking, &formats).is_some()
+                    {
                         Some(crate::home::discover::EntryKind::File)
+                    } else {
+                        None
                     };
                     Ok(Answer::Kind(found))
                 });
@@ -3959,13 +3972,17 @@ impl App {
                 self.followed(&news);
                 None
             }
+            AppEvent::Paste(text) => self.paste(&text),
             AppEvent::TerminalBackground(mode) => {
                 self.terminal_answered(mode);
                 None
             }
             AppEvent::TerminalFocused => {
                 self.display.background_query |= self.app_config.theme.follow;
-                self.display.repaint = true;
+                self.display.repaint = self
+                    .display
+                    .repaint
+                    .max(Some(render::context::Repaint::BeforeMoving));
                 None
             }
             // Taken before here: a press becomes a key in `handle_event`; terminal, wake, exit,
@@ -4459,15 +4476,16 @@ impl App {
                 let path = asked.path;
                 let Some(kind) = found else {
                     self.home.status = Some(format!("No such path: {}", path.display()));
-                    if asked.jump {
-                        // A typo typed at `~` is worth another go without retyping it.
-                        self.home.path_input = path.display().to_string();
+                    if let Some(typed) = asked.typed {
+                        // A typo typed at `~` is worth another go without retyping it, as typed
+                        // (`~/dta`, not its expansion).
+                        self.home.path_input = typed;
                         self.home.path_input_active = true;
                         self.list_the_typed_directory();
                     }
                     return None;
                 };
-                self.open_what_it_is(path, kind, asked.jump)
+                self.open_what_it_is(path, kind, asked.typed.is_some())
             }
             (Job::Rows(inflight), Answer::Rows(result)) => {
                 // A stale page is dropped; the wait belongs to whatever replaced it.
@@ -5276,7 +5294,7 @@ impl App {
 
     /// Whether the next frame repaints every cell (after a resize, or when the
     /// terminal regains focus), for the run loop.
-    pub fn take_repaint(&mut self) -> bool {
+    pub fn take_repaint(&mut self) -> Option<render::context::Repaint> {
         std::mem::take(&mut self.display.repaint)
     }
 

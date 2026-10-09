@@ -62,6 +62,8 @@ fn meta_columns(entry: &Entry, unmeasured: bool, hint: Option<u64>, gone: Option
 
 pub fn render(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderContext) {
     Clear.render(area, buf);
+    // Set again below where this frame has room for the selected file's first rows.
+    app.home_app.preview_room = None;
 
     // One column of breathing room: vertical space is scarce.
     let padded = Rect {
@@ -146,7 +148,8 @@ fn render_rows_strip(
     let Some(entry) = app.home.selected_entry().cloned() else {
         return;
     };
-    let Some(preview) = app.home_preview_rows(&entry, screen_height) else {
+    app.home_app.preview_room = Some(screen_height);
+    let Some(preview) = app.home_preview_rows(&entry) else {
         return;
     };
     // A blank line between the list and the strip when there is one to spare.
@@ -460,46 +463,29 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
     // With room, a blank line before every header but the first (at most four); under
     // thirty lines the list is dense. Spacers come off the height RECENT's cap uses.
     let spaced = height >= SPACED_LIST_HEIGHT;
-    let headers = app.home.header_rows().into_iter().filter(|h| *h).count();
+    let headers = app.home.list_lines(spaced).headers();
     let spacers = if spaced { headers.saturating_sub(1) } else { 0 };
     // Height first: RECENT's cap is a share of it, and the cursor must be back on its
     // row before the scroll settles.
     app.home.set_view_height(height.saturating_sub(spacers));
     // Each row's line, spacers counted, so the scroll keeps the selected row on screen.
-    let row_lines: Vec<usize> = {
-        let mut line = 0;
-        app.home
-            .header_rows()
-            .into_iter()
-            .enumerate()
-            .map(|(i, header)| {
-                if spaced && i > 0 && header {
-                    line += 1;
-                }
-                let at = line;
-                line += 1;
-                at
-            })
-            .collect()
-    };
+    let row_lines = app.home.list_lines(spaced);
+    let line_of = |row: usize| (row < row_lines.rows()).then(|| row_lines.line_of(row));
     // The view stays where the last frame left it unless the cursor would leave it.
-    let total = row_lines.last().map_or(0, |line| line + 1);
+    let total = row_lines.total();
     let first_line = crate::home::settle_top(
-        row_lines.get(app.home.scroll).copied().unwrap_or(total),
-        row_lines.get(app.home.selected).copied().unwrap_or(0),
+        line_of(app.home.scroll).unwrap_or(total),
+        line_of(app.home.selected).unwrap_or(0),
         height,
         total,
     );
     // As a row index, for the look-into passes and the next frame; a view starting on a
     // spacer starts on the header below.
-    app.home.scroll = row_lines.partition_point(|line| *line < first_line);
-    let first_line = row_lines
-        .get(app.home.scroll)
-        .copied()
-        .unwrap_or(first_line);
+    app.home.scroll = row_lines.first_row_from(first_line);
+    let first_line = line_of(app.home.scroll).unwrap_or(first_line);
     // Which row each line of the list shows, for a click; a spacer shows none.
     let lines_drawn = (0..height)
-        .map(|dy| row_lines.binary_search(&(first_line + dy)).ok())
+        .map(|dy| row_lines.row_on(first_line + dy))
         .collect();
     app.pointer.home_list_drawn(area, lines_drawn);
 
@@ -515,9 +501,9 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
             None
         }
     };
-    let visible = app.home.visible();
+    let listed = row_lines.rows();
 
-    if let (Some(dir), Some(since), true) = (&awaiting, since, visible.is_empty()) {
+    if let (Some(dir), Some(since), true) = (&awaiting, since, listed == 0) {
         let spinner = glyphs::get().spinner;
         let mut spans = vec![
             Span::styled(
@@ -541,7 +527,7 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
         return area.height as usize;
     }
 
-    if app.home.listing_in_flight && visible.is_empty() {
+    if app.home.listing_in_flight && listed == 0 {
         Paragraph::new(Line::from(Span::styled(
             "Looking...",
             Style::default().fg(ctx.dimmed),
@@ -550,7 +536,7 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
         return area.height as usize;
     }
 
-    if visible.is_empty() && !app.home.filter.is_empty() {
+    if listed == 0 && !app.home.filter.is_empty() {
         // Browsing, the empty answer says where it looked, or a miss reads as a bug.
         let text = match &app.home.browsing {
             Some(dir) => format!("No match under {}.", crate::home::display_path(dir)),
@@ -607,13 +593,16 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
         frame: app.throbber_frame as usize,
     };
     let mut lines: Vec<Line> = Vec::new();
-    // Only rows on screen are drawn: a search may list thousands.
+    // Only rows on screen are built and drawn: a search may list thousands.
     let last_line = first_line + height;
-    for (idx, row) in visible.iter().enumerate() {
-        let at = row_lines.get(idx).copied().unwrap_or(usize::MAX);
+    for idx in app.home.scroll..listed {
+        let at = row_lines.line_of(idx);
         if at >= last_line {
             break;
         }
+        let Some(row) = app.home.row_at(idx) else {
+            break;
+        };
         let spacer = spaced && idx > 0 && matches!(row, crate::home::Row::Header { .. });
         if spacer && at > first_line {
             lines.push(Line::from(""));
@@ -622,7 +611,7 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
             continue;
         }
         let selected = idx == app.home.selected;
-        match row {
+        match &row {
             crate::home::Row::Header {
                 section,
                 matches,
@@ -2462,7 +2451,8 @@ fn render_preview(
 
     // Rows before the schema (real values say more than types), at most the block's own
     // rows.
-    if let Some(preview) = app.home_preview_rows(&entry, screen_height) {
+    app.home_app.preview_room = Some(screen_height);
+    if let Some(preview) = app.home_preview_rows(&entry) {
         let drawn: usize = lines.iter().map(|line| wrapped_rows(line, width)).sum();
         let room = (area.height as usize)
             .saturating_sub(drawn + 1)

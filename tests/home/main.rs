@@ -984,8 +984,9 @@ fn test_enrichment_is_capped_per_pass_and_reports_more_work() {
     assert!(!more, "nothing left to measure");
 }
 
-/// The rows near the screen are measured first, wherever the cursor is; then the rest
-/// of the listing, so a column name matches any row.
+/// The rows on the screen are measured, wherever the cursor is, and nothing far from
+/// it: a listing of thousands costs what is shown. Sorted by rows, every row is, since
+/// the order needs every count.
 #[test]
 fn test_rows_near_the_screen_are_measured_first_then_the_rest() {
     let tmp = TempDir::new().unwrap();
@@ -1015,7 +1016,16 @@ fn test_rows_near_the_screen_are_measured_first_then_the_rest() {
     );
 
     while home.measure_now(16) {}
-    assert_eq!(home.enriched.len(), 300, "then every row");
+    assert!(
+        home.enriched.len() <= 20 + 20 / 2 * 2 + 1,
+        "the screen and a little either side, not the listing: {}",
+        home.enriched.len()
+    );
+    assert!(!home.enriched.contains_key(&tmp.path().join("f000.parquet")));
+
+    home.sort = datui::home::SortMode::Rows;
+    while home.measure_now(16) {}
+    assert_eq!(home.enriched.len(), 300, "sorted by rows, every row");
 }
 
 /// `Found` is built again on every key and search batch from the walk's rows; what was
@@ -1830,7 +1840,7 @@ fn test_a_recent_opened_from_a_bucket_shows_what_the_open_learned() {
         narrowed: None,
         network_check: |_| true,
         cloud: Vec::new(),
-        known: cache.load_dataset_facts(),
+        known: cache.load_dataset_facts().into(),
         formats: Default::default(),
     });
     let mut home = HomeState {
@@ -1919,7 +1929,7 @@ fn test_a_recent_typed_through_a_named_source_finds_the_record_its_open_wrote() 
         narrowed: None,
         network_check: |_| true,
         cloud: Vec::new(),
-        known: cache.load_dataset_facts(),
+        known: cache.load_dataset_facts().into(),
         formats: Default::default(),
     });
     let mut home = HomeState {
@@ -1985,7 +1995,7 @@ fn test_a_place_label_is_held_to_the_directories_mtime() {
             narrowed: None,
             network_check: |_| false,
             cloud: Vec::new(),
-            known: cache.load_dataset_facts(),
+            known: cache.load_dataset_facts().into(),
             formats: Default::default(),
         });
         let mut home = HomeState::default();
@@ -2039,7 +2049,7 @@ fn test_a_place_row_says_nothing_it_does_not_know() {
         narrowed: None,
         network_check: |_| false,
         cloud: Vec::new(),
-        known: cache.load_dataset_facts(),
+        known: cache.load_dataset_facts().into(),
         formats: Default::default(),
     });
     let mut home = HomeState::default();
@@ -2127,7 +2137,7 @@ fn test_a_remote_row_uses_remembered_facts_without_a_stat() {
         narrowed: None,
         network_check: pretend_remote,
         cloud: Vec::new(),
-        known: cache.load_dataset_facts(),
+        known: cache.load_dataset_facts().into(),
         formats: Default::default(),
     });
 
@@ -2199,7 +2209,7 @@ fn test_a_changed_local_dataset_ignores_its_remembered_facts() {
         narrowed: None,
         network_check: |_| false,
         cloud: Vec::new(),
-        known: cache.load_dataset_facts(),
+        known: cache.load_dataset_facts().into(),
         formats: Default::default(),
     });
 
@@ -3998,6 +4008,8 @@ fn test_applying_a_measurement_puts_the_layout_on_the_row() {
             cols: Some(2),
             cols_sampled: false,
             size: Some(100),
+            modified: None,
+            stat_only: false,
             columns: vec!["a".into()],
             kind: None,
             holds: Default::default(),
@@ -4656,10 +4668,11 @@ fn test_azure_steps_through_account_container_and_directory() {
     assert_eq!(home.sections[0].title, "datalake001");
 }
 
-/// What a previous run found a directory to be is what the next run's listing goes on,
-/// since a listing looks into nothing itself. A directory whose footers said its files
-/// are separate tables must not be offered as one dataset again until those footers
-/// have been read a second time.
+/// What a previous run found a directory to be is what the next run goes on: the
+/// listing stats nothing, and the pass that looks at the rows shown stats the directory
+/// and recalls its kind before reading it. A directory whose footers said its files are
+/// separate tables must not be offered as one dataset again until those footers have
+/// been read a second time.
 ///
 /// The kind is the only thing carried over here: a directory has no size for the
 /// fingerprint that guards the rest, so this is checked against its modification time
@@ -4670,9 +4683,10 @@ fn test_a_directory_found_to_be_separate_tables_stays_a_plain_directory() {
     use datui::home::{ListingRequest, build_listing};
 
     let tmp = TempDir::new().unwrap();
+    let cache_dir = TempDir::new().unwrap();
     let directory = tmp.path().join("exports");
     fs::create_dir(&directory).unwrap();
-    // Two names that share an extension and nothing else, so the listing says `multi`.
+    // Two names that share an extension and nothing else, so a look says `multi`.
     touch(&directory, "circuits.parquet");
     touch(&directory, "drivers.parquet");
     let mtime = fs::metadata(&directory)
@@ -4683,7 +4697,8 @@ fn test_a_directory_found_to_be_separate_tables_stays_a_plain_directory() {
         .unwrap()
         .as_secs();
 
-    let listed = |known: Vec<(std::path::PathBuf, DatasetFacts)>| {
+    let looked = |known: Vec<(std::path::PathBuf, DatasetFacts)>| {
+        let known: std::collections::HashMap<_, _> = known.into_iter().collect();
         let request = ListingRequest {
             catalogs: Vec::new(),
             recents: Vec::new(),
@@ -4693,22 +4708,40 @@ fn test_a_directory_found_to_be_separate_tables_stays_a_plain_directory() {
             narrowed: None,
             network_check: |_| false,
             cloud: Vec::new(),
-            known: known.into_iter().collect(),
+            known: std::sync::Arc::new(known.clone()),
             formats: Default::default(),
         };
-        build_listing(&request)
+        let row = build_listing(&request)
             .sections
             .iter()
             .flat_map(|s| s.rows.iter())
             .find(|entry| entry.path == directory)
             .expect("the directory is listed")
-            .kind
+            .clone();
+        if known.is_empty() {
+            assert_eq!(row.kind, EntryKind::Unknown, "a listing looks into nothing");
+            assert!(row.modified.is_none(), "nor stats what has no record");
+        }
+        let cache = datui::CacheManager::with_dir(cache_dir.path().to_path_buf());
+        let mut kind = row.kind;
+        datui::home::look_into_batch(
+            vec![row],
+            &cache,
+            &known,
+            datui::home::Reads::Files,
+            |_, measured| {
+                if let Some(found) = measured.kind {
+                    kind = found;
+                }
+            },
+        );
+        kind
     };
 
     assert_eq!(
-        listed(Vec::new()),
-        EntryKind::Unknown,
-        "with nothing remembered, the listing says only that nothing has looked"
+        looked(Vec::new()),
+        EntryKind::MultiFile,
+        "with nothing remembered, the directory is looked into"
     );
 
     let facts = |mtime| DatasetFacts {
@@ -4724,14 +4757,74 @@ fn test_a_directory_found_to_be_separate_tables_stays_a_plain_directory() {
         cost: Default::default(),
     };
     assert_eq!(
-        listed(vec![(directory.clone(), facts(mtime))]),
+        looked(vec![(directory.clone(), facts(mtime))]),
         EntryKind::Directory,
-        "what the footers said survives the next listing"
+        "what the footers said survives into the next run"
     );
     assert_eq!(
-        listed(vec![(directory.clone(), facts(mtime - 1))]),
-        EntryKind::Unknown,
+        looked(vec![(directory.clone(), facts(mtime - 1))]),
+        EntryKind::MultiFile,
         "and a directory whose contents changed is looked into again rather than recalled"
+    );
+}
+
+/// A listing stats only the rows the index has a record of, and those take their
+/// remembered columns wherever they are listed: a filter finds a column off screen
+/// without a file read.
+#[test]
+fn a_listed_row_with_a_record_recalls_its_columns() {
+    use datui::cache::DatasetFacts;
+    use datui::home::{ListingRequest, build_listing};
+
+    let tmp = TempDir::new().unwrap();
+    for i in 0..50 {
+        touch(tmp.path(), &format!("f{i:02}.csv"));
+    }
+    let remembered = tmp.path().join("f42.csv");
+    let meta = fs::metadata(&remembered).unwrap();
+    let mtime = meta
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let known: std::collections::HashMap<_, _> = [(
+        remembered.clone(),
+        DatasetFacts {
+            mtime,
+            size: meta.len(),
+            columns: vec!["revenue".into()],
+            kind: Some(EntryKind::File),
+            classified_by: discover::CLASSIFIER_VERSION,
+            ..Default::default()
+        },
+    )]
+    .into_iter()
+    .collect();
+    let request = ListingRequest {
+        catalogs: Vec::new(),
+        recents: Vec::new(),
+        desktop_dirs: Vec::new(),
+        browsing: Some(tmp.path().to_path_buf()),
+        probes: Default::default(),
+        narrowed: None,
+        network_check: |_| false,
+        cloud: Vec::new(),
+        known: std::sync::Arc::new(known),
+        formats: Default::default(),
+    };
+    let rows: Vec<discover::Entry> = build_listing(&request)
+        .sections
+        .into_iter()
+        .flat_map(|s| s.rows)
+        .collect();
+    let row = rows.iter().find(|r| r.path == remembered).unwrap();
+    assert_eq!(row.columns, ["revenue"], "recalled");
+    assert!(
+        rows.iter()
+            .filter(|r| r.path != remembered)
+            .all(|r| r.modified.is_none()),
+        "no other row was stat'ed"
     );
 }
 
@@ -5398,7 +5491,7 @@ fn a_found_dataset_matches_by_its_remembered_columns() {
         filter: "revenue".into(),
         ..Default::default()
     };
-    home.known.insert(
+    std::sync::Arc::make_mut(&mut home.known).insert(
         buried.clone(),
         DatasetFacts {
             mtime,
@@ -5417,10 +5510,11 @@ fn a_found_dataset_matches_by_its_remembered_columns() {
     home.search.running = true;
 
     let mut walked = Vec::new();
-    datui::home::search::walk_with_specs(
+    datui::home::search::walk_recalling(
         tmp.path(),
         &datui::config::SearchConfig::default(),
         &datui::formats::Registry::default(),
+        &home.known,
         |batch, _| {
             walked.extend(batch);
             true
@@ -5722,11 +5816,17 @@ mod coming_back {
     /// in-flight flag alone: a superseded listing clears that flag as it is dropped.
     pub(super) fn go_into(app: &mut App, rx: &Receiver<AppEvent>, code: KeyCode, place: &Path) {
         let before = entries(app);
-        assert!(press(app, code).is_none(), "went inside, opened nothing");
-        assert_eq!(app.home.browsing.as_deref(), Some(place));
+        // A directory nothing has looked into is looked into on a worker first.
+        if let Some(next) = press(app, code) {
+            assert!(
+                matches!(next, AppEvent::ClassifyThenOpen { .. }),
+                "went inside, opened nothing"
+            );
+            crate::common::handle_chain(app, next);
+        }
         settle(app, rx, |app| {
             let now = entries(app);
-            !now.is_empty() && now != before
+            app.home.browsing.as_deref() == Some(place) && !now.is_empty() && now != before
         });
     }
 
@@ -6917,7 +7017,7 @@ mod landing {
         // passes done, every record is the measured one.
         settle(&mut app, &rx, |app| {
             !app.home.measure_in_flight
-                && !app.home.classify_in_flight
+                && app.home.classifying.is_empty()
                 && measured.iter().all(|d| app.home.enriched.contains_key(d))
         });
         (app, rx)
@@ -8134,14 +8234,16 @@ mod first_rows {
 
     /// Draw at `w`×`h` until the selected file's preview has landed.
     fn wait_for_rows(app: &mut datui::App, rx: &Receiver<AppEvent>, w: u16, h: u16) {
-        let entry = app.home.selected_entry().expect("a row selected").clone();
-        let stamp = Stamp::of_entry(&entry);
         render(app, w, h);
+        // The row as it is now: a listing leaves its size and mtime to the pass that
+        // measures what is shown.
         settle(app, rx, |app| {
-            app.home_app
-                .previews
-                .rows(&entry.path, stamp)
-                .is_some_and(|rows| rows.is_some())
+            app.home.selected_entry().is_some_and(|entry| {
+                app.home_app
+                    .previews
+                    .rows(&entry.path, Stamp::of_entry(entry))
+                    .is_some_and(|rows| rows.is_some())
+            })
         });
     }
 
@@ -8940,13 +9042,19 @@ mod path_prompt {
             app.home.picked_path(),
             Some(format!("{}/src/", tmp.path().display()))
         );
-        // Enter goes into the picked directory, as it does for one typed.
-        assert!(press(&mut app, KeyCode::Enter).is_none());
+        // Enter goes into the picked directory, as it does for one typed, once a worker
+        // has looked at it.
+        let next = press(&mut app, KeyCode::Enter);
+        assert!(matches!(next, Some(AppEvent::ClassifyThenOpen { .. })));
         assert!(!app.home.path_input_active);
-        assert_eq!(
-            app.home.browsing.as_deref(),
-            Some(tmp.path().join("src").as_path())
-        );
+        crate::common::handle_chain(&mut app, next.unwrap());
+        let src = tmp.path().join("src");
+        assert!(crate::common::handle_until(
+            &mut app,
+            &rx,
+            Duration::from_secs(30),
+            |app| app.home.browsing.as_deref() == Some(src.as_path())
+        ));
     }
 
     /// The first name that matches is picked as the list lands and stays picked
@@ -9485,4 +9593,455 @@ fn test_left_and_right_show_and_cut_a_big_directory() {
     assert!(app.home.is_collapsed(at), "← on a first row folds");
     press(&mut app, KeyCode::Right);
     assert_eq!(entries(&app), 60, "unfolded, still whole");
+}
+
+// ---------------------------------------------------------------------------
+// What a keystroke costs: the rows on screen, not the rows listed
+// ---------------------------------------------------------------------------
+
+mod listing_work {
+    use datui::home::discover::{Entry, EntryKind};
+    use datui::home::{HomeState, ListLines, Listing, Measured, Row, Section, SortMode};
+    use std::path::PathBuf;
+
+    /// A file row at `path`, as a listing names it.
+    fn file(path: String) -> Entry {
+        let mut entry = Entry::directory(std::path::Path::new(&path));
+        entry.kind = EntryKind::File;
+        entry
+    }
+
+    /// A directory of `n` files nothing has stat'ed or measured, as a listing leaves
+    /// them; none is on disk, so nothing here reads one.
+    fn files(n: usize) -> HomeState {
+        let rows = (0..n)
+            .map(|i| file(format!("/pretend/many/report_{i:05}.csv")))
+            .collect();
+        let mut home = HomeState::default();
+        home.apply_listing(Listing {
+            sections: vec![Section::titled("MANY", rows)],
+            ..Default::default()
+        });
+        home.view_height = 20;
+        home
+    }
+
+    /// Typing a filter over thousands of rows asks for the rows on screen, and a little
+    /// either side, never the listing: each keystroke's reads are bounded by the screen.
+    #[test]
+    fn a_filter_keystroke_measures_only_what_is_on_screen() {
+        let mut home = files(5_000);
+        for c in "repo9".chars() {
+            home.filter.push(c);
+            home.sync_search_section();
+            home.select_first_entry();
+            let wanted = home.unmeasured_visible(usize::MAX);
+            assert!(
+                !wanted.is_empty() && wanted.len() <= 20 + 2 * 10 + 1,
+                "{} rows asked for after {:?}",
+                wanted.len(),
+                home.filter
+            );
+        }
+    }
+
+    /// A column name matches the rows whose columns are known (read this session or
+    /// remembered by an earlier run), and nothing is read to find more.
+    #[test]
+    fn a_column_matches_the_rows_whose_columns_are_known() {
+        let mut home = files(3_000);
+        let far = PathBuf::from("/pretend/many/report_02999.csv");
+        home.record_measurement(
+            far.clone(),
+            Measured {
+                columns: vec!["revenue".into()],
+                ..Default::default()
+            },
+        );
+        home.apply_new_measurements();
+        home.filter = "revenue".into();
+        home.sync_search_section();
+        let matched: Vec<PathBuf> = (home.visible().into_iter())
+            .filter_map(|row| match row {
+                Row::Entry { entry, hit, .. } => {
+                    assert!(hit.column.is_some(), "by its column");
+                    Some(entry.path.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(matched, [far]);
+        assert!(home.unmeasured_visible(usize::MAX).len() <= 1);
+    }
+
+    /// An answer for a row that keeps its place leaves the list as built; one that moves
+    /// a row builds it again.
+    #[test]
+    fn an_answer_that_moves_nothing_does_not_rebuild_the_list() {
+        let mut home = files(2_000);
+        home.filter = "report".into();
+        home.sync_search_section();
+        let _ = home.row_count();
+        let built = home.rows_built();
+        let off_screen = PathBuf::from("/pretend/many/report_01500.csv");
+        let counted = Measured {
+            rows: Some(7),
+            size: Some(10),
+            ..Default::default()
+        };
+        home.record_measurement(off_screen.clone(), counted.clone());
+        home.apply_new_measurements();
+        let _ = home.row_count();
+        assert_eq!(home.rows_built(), built, "the list stands");
+        assert!(
+            home.visible().iter().any(|row| matches!(row,
+                Row::Entry { entry, .. } if entry.path == off_screen && entry.rows == Some(7))),
+            "and draws the answer"
+        );
+
+        home.sort = SortMode::Rows;
+        let _ = home.row_count();
+        let built = home.rows_built();
+        let other = PathBuf::from("/pretend/many/report_01501.csv");
+        home.record_measurement(other, counted);
+        home.apply_new_measurements();
+        let _ = home.row_count();
+        assert_eq!(home.rows_built(), built + 1, "sorted by rows, it moves");
+    }
+
+    /// Two answers before the list is read again both count: the second is scored for
+    /// the next build, not dropped because nothing is built.
+    #[test]
+    fn answers_between_builds_are_all_scored() {
+        let mut home = files(100);
+        home.filter = "revenue".into();
+        home.sync_search_section();
+        assert_eq!(home.row_count(), 0, "nothing matches yet");
+        // Moved since landing: no answer reads the list on its own.
+        home.landing = false;
+        let columns = || Measured {
+            columns: vec!["revenue".into()],
+            ..Default::default()
+        };
+        let first = PathBuf::from("/pretend/many/report_00010.csv");
+        let second = PathBuf::from("/pretend/many/report_00090.csv");
+        home.record_measurement(first.clone(), columns());
+        home.apply_new_measurements();
+        home.record_measurement(second.clone(), columns());
+        home.apply_new_measurements();
+        let matched: Vec<PathBuf> = (home.visible().into_iter())
+            .filter_map(|row| match row {
+                Row::Entry { entry, .. } => Some(entry.path.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(matched, [first, second]);
+    }
+
+    /// A root that went quiet and speaks again is listed again, no longer said not to
+    /// answer.
+    #[test]
+    fn a_root_that_answers_again_is_no_longer_not_answering() {
+        let root = PathBuf::from("/pretend/share");
+        let mut home = HomeState {
+            network_check: |_| true,
+            ..Default::default()
+        };
+        home.apply_listing(Listing {
+            sections: vec![Section {
+                root: Some(root.clone()),
+                remote_root: Some(root.clone()),
+                waiting: true,
+                ..Section::titled("/pretend/share", Vec::new())
+            }],
+            ..Default::default()
+        });
+        home.probes.go_silent(&root);
+        home.relist_remote(&root);
+        assert!(home.sections[0].unavailable && !home.sections[0].waiting);
+        assert_eq!(
+            home.sections[0].unavailable_note.as_deref(),
+            Some(datui::home::NOT_ANSWERING)
+        );
+
+        home.probes
+            .read(&root, &[file("/pretend/share/a.csv".into())]);
+        home.relist_remote(&root);
+        let section = &home.sections[0];
+        assert!(section.waiting, "listing again");
+        assert!(!section.unavailable && section.unavailable_note.is_none());
+        assert_eq!(section.rows.len(), 1);
+    }
+
+    fn stat(size: u64, secs: u64) -> Measured {
+        Measured {
+            size: Some(size),
+            modified: Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs)),
+            stat_only: true,
+            ..Default::default()
+        }
+    }
+
+    /// A stat a sort asked for is not a measurement: the row is still measured when it
+    /// comes on screen, whatever the sort is then.
+    #[test]
+    fn a_stat_for_a_sort_is_not_a_measurement() {
+        let mut home = files(10);
+        home.sort = SortMode::Size;
+        let path = PathBuf::from("/pretend/many/report_00003.csv");
+        home.record_measurement(path.clone(), stat(10, 1));
+        home.apply_new_measurements();
+        assert!(!home.enriched.contains_key(&path));
+        assert!(
+            !home
+                .unstated_for_sort(usize::MAX)
+                .iter()
+                .any(|e| e.path == path)
+        );
+        home.sort = SortMode::Natural;
+        assert!(
+            home.unmeasured_visible(usize::MAX)
+                .iter()
+                .any(|e| e.path == path),
+            "measured once shown"
+        );
+    }
+
+    /// Sorted by time, a directory not looked into is stat'ed too, or it would sort at
+    /// the epoch and jump once looked at; sorted by size it has none to give.
+    #[test]
+    fn a_time_sort_stats_directories_too() {
+        let mut home = HomeState::default();
+        let rows = (0..5)
+            .map(|i| {
+                let mut dir = Entry::directory(std::path::Path::new(&format!("/pretend/d/{i}")));
+                dir.kind = EntryKind::Unknown;
+                dir
+            })
+            .collect();
+        home.apply_listing(Listing {
+            sections: vec![Section::titled("D", rows)],
+            ..Default::default()
+        });
+        home.view_height = 20;
+        home.sort = SortMode::Modified;
+        assert_eq!(home.unstated_for_sort(usize::MAX).len(), 5);
+        home.sort = SortMode::Size;
+        assert!(home.unstated_for_sort(usize::MAX).is_empty());
+    }
+
+    /// After Ctrl+R the rows shown are stat'ed again: one rewritten since loses its
+    /// counts and is measured again; one unchanged keeps them.
+    #[test]
+    fn a_refresh_drops_the_counts_of_a_rewritten_file() {
+        let mut home = files(10);
+        let changed = PathBuf::from("/pretend/many/report_00001.csv");
+        let same = PathBuf::from("/pretend/many/report_00002.csv");
+        for path in [&changed, &same] {
+            home.record_measurement(
+                path.clone(),
+                Measured {
+                    rows: Some(5),
+                    stat_only: false,
+                    ..stat(10, 1)
+                },
+            );
+        }
+        home.apply_new_measurements();
+        assert!(home.unstated_for_sort(usize::MAX).is_empty(), "all stat'ed");
+
+        home.stat_epoch += 1;
+        let again = home.unstated_for_sort(usize::MAX);
+        assert!(
+            again
+                .iter()
+                .any(|e| e.path == changed && e.modified.is_none())
+        );
+        assert!(again.iter().any(|e| e.path == same));
+
+        home.record_measurement(changed.clone(), stat(20, 2));
+        home.record_measurement(same.clone(), stat(10, 1));
+        home.apply_new_measurements();
+        let row = |path: &PathBuf| {
+            home.sections[0]
+                .rows
+                .iter()
+                .find(|r| r.path == *path)
+                .cloned()
+                .unwrap()
+        };
+        let rewritten = row(&changed);
+        assert_eq!(
+            (rewritten.rows, rewritten.size),
+            (None, Some(20)),
+            "stale counts gone"
+        );
+        assert_eq!(row(&same).rows, Some(5), "unchanged keeps its counts");
+        let wanted = home.unmeasured_visible(usize::MAX);
+        assert!(wanted.iter().any(|e| e.path == changed), "measured again");
+        assert!(!wanted.iter().any(|e| e.path == same));
+        assert!(home.unstated_for_sort(usize::MAX).is_empty());
+    }
+
+    /// Sorted by rows, the `more` row stops saying `measuring` once every row behind it
+    /// is answered, even when the answers leave the order as it was.
+    #[test]
+    fn the_more_row_stops_measuring_when_the_rows_are_in() {
+        let mut home = HomeState::default();
+        let rows: Vec<Entry> = (0..40)
+            .map(|i| file(format!("/pretend/root/f{i:02}.csv")))
+            .collect();
+        let paths: Vec<PathBuf> = rows.iter().map(|r| r.path.clone()).collect();
+        home.apply_listing(Listing {
+            sections: vec![Section {
+                root: Some(PathBuf::from("/pretend/root")),
+                ..Section::titled("/pretend/root", rows)
+            }],
+            ..Default::default()
+        });
+        home.view_height = 20;
+        home.sort = SortMode::Rows;
+        let measuring = |home: &HomeState| {
+            home.visible().iter().any(|row| {
+                matches!(
+                    row,
+                    Row::More {
+                        measuring: true,
+                        ..
+                    }
+                )
+            })
+        };
+        assert!(measuring(&home));
+        for path in paths {
+            home.record_measurement(
+                path,
+                Measured {
+                    stat_only: false,
+                    ..stat(10, 1)
+                },
+            );
+        }
+        home.apply_new_measurements();
+        assert!(!measuring(&home), "nothing is being measured any more");
+    }
+
+    /// Sorted by size or time, every row needs its stat and nothing more: those off
+    /// screen are stat'ed, never read.
+    #[test]
+    fn a_sort_by_size_stats_every_row_and_reads_none() {
+        let mut home = files(500);
+        home.sort = SortMode::Size;
+        assert!(home.unmeasured_visible(usize::MAX).len() <= 41);
+        assert_eq!(home.unstated_for_sort(usize::MAX).len(), 500);
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("big.parquet");
+        std::fs::write(&path, vec![b'x'; 4096]).unwrap();
+        let cache_dir = tempfile::TempDir::new().unwrap();
+        let cache = datui::CacheManager::with_dir(cache_dir.path().to_path_buf());
+        let mut answer = None;
+        datui::home::look_into_batch(
+            vec![file(path.to_string_lossy().into_owned())],
+            &cache,
+            &Default::default(),
+            datui::home::Reads::StatOnly,
+            |_, measured| answer = Some(measured),
+        );
+        let answer = answer.expect("answered");
+        assert_eq!(answer.size, Some(4096));
+        assert!(answer.modified.is_some());
+        assert!(
+            answer.rows.is_none() && answer.cost == Default::default(),
+            "nothing read"
+        );
+    }
+
+    /// The lines a list of rows falls on, a blank before every header but the first, as
+    /// walking every row would place them.
+    #[test]
+    fn list_lines_place_rows_as_a_walk_would() {
+        let mut home = HomeState::default();
+        let section = |title: &str, n: usize| {
+            Section::titled(
+                title,
+                (0..n)
+                    .map(|i| file(format!("/pretend/{title}/{i}.csv")))
+                    .collect(),
+            )
+        };
+        home.apply_listing(Listing {
+            sections: vec![section("A", 3), section("B", 1), section("C", 5)],
+            ..Default::default()
+        });
+        for spaced in [false, true] {
+            let lines: ListLines = home.list_lines(spaced);
+            let rows = home.visible();
+            let mut line = 0;
+            let mut walked = Vec::new();
+            for (i, row) in rows.iter().enumerate() {
+                if spaced && i > 0 && matches!(row, Row::Header { .. }) {
+                    line += 1;
+                }
+                walked.push(line);
+                line += 1;
+            }
+            assert_eq!(lines.rows(), rows.len());
+            assert_eq!(lines.total(), line);
+            for (row, at) in walked.iter().enumerate() {
+                assert_eq!(lines.line_of(row), *at);
+                assert_eq!(lines.row_on(*at), Some(row));
+            }
+            let blanks: Vec<usize> = (0..line).filter(|l| !walked.contains(l)).collect();
+            assert_eq!(blanks.len(), if spaced { 2 } else { 0 });
+            for blank in blanks {
+                assert_eq!(lines.row_on(blank), None);
+                assert_eq!(
+                    lines.first_row_from(blank),
+                    walked.iter().position(|l| *l > blank).unwrap()
+                );
+            }
+        }
+    }
+
+    /// The `~` prompt scores a directory's names once per typed segment: asked again for
+    /// the same segment, it answers from what it kept.
+    #[test]
+    fn the_path_prompt_scores_a_segment_once() {
+        let mut home = HomeState::default();
+        home.path_input_active = true;
+        home.path_input = "/pretend/dir/rep".into();
+        home.path_listing = Some(datui::home::PathListing {
+            dir: "/pretend/dir/".into(),
+            names: (0..5_000)
+                .map(|i| datui::home::PathName {
+                    name: format!("report_{i:04}.csv"),
+                    dir: false,
+                })
+                .collect(),
+            ..Default::default()
+        });
+        let first: Vec<String> = home
+            .path_candidates()
+            .iter()
+            .map(|n| n.name.clone())
+            .collect();
+        assert_eq!(first.len(), 5_000);
+        let again: Vec<String> = home
+            .path_candidates()
+            .iter()
+            .map(|n| n.name.clone())
+            .collect();
+        assert_eq!(first, again);
+        home.path_input.push_str("ort_0042");
+        let narrowed: Vec<String> = home
+            .path_candidates()
+            .iter()
+            .map(|n| n.name.clone())
+            .collect();
+        assert_eq!(
+            narrowed.first().map(String::as_str),
+            Some("report_0042.csv")
+        );
+    }
 }

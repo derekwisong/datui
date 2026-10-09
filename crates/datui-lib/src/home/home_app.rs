@@ -26,6 +26,16 @@ pub struct HomeApp {
     /// removed for a root that does not answer: its thread is lost, and a retry would
     /// lose another.
     pub(crate) probes_inflight: Vec<PathBuf>,
+    /// When each listing out last sent news (began, or a page): one silent past
+    /// [`PROBE_PATIENCE`] is shown not answering rather than spun for all session.
+    pub(crate) probe_heard: HashMap<PathBuf, std::time::Instant>,
+    /// The wait before a silent listing is said not to answer, for tests.
+    #[cfg(test)]
+    pub(crate) probe_patience: Option<std::time::Duration>,
+    /// Held by a test, a lock every probe waits on before listing: a share that does
+    /// not answer.
+    #[cfg(test)]
+    pub(crate) probe_gate: Option<Arc<Mutex<()>>>,
     /// Each cloud listing's stop flag, by place: leaving the place stops it before its
     /// next page.
     pub(crate) listing_cancels: HashMap<PathBuf, Arc<std::sync::atomic::AtomicBool>>,
@@ -45,13 +55,27 @@ pub struct HomeApp {
     /// Why the last open failed, shown at home when the error is dismissed with nothing
     /// to fall back to.
     pub(crate) last_load_error: Option<String>,
-    /// Schema reads currently out, so the same one is not requested every frame.
-    pub(crate) schema_inflight: Vec<PathBuf>,
+    /// The screen's height when the last frame had room for the selected file's first
+    /// rows; `None` when it had none, and nothing is read for them.
+    pub preview_room: Option<u16>,
+    /// The schema reads out, by slot: one for local files (the empty path) and one for
+    /// each mount that can stall (its mount point), with the file each reads.
+    pub(crate) schema_reads: HashMap<PathBuf, PathBuf>,
     /// Invalidates listings and measurements from a request the user has moved past.
     pub(crate) generation: u64,
-    /// Rows arrived for a listing still being read; it is listed again before the next
-    /// frame.
-    pub(crate) refresh_owed: bool,
+    /// Places whose listing sent rows since the last frame; their sections are built
+    /// again from the rows before the next.
+    pub(crate) pages_owed: Vec<PathBuf>,
+    /// Directories the `~` prompt asked a worker to list, until each answers: typing
+    /// within one directory asks once.
+    pub(crate) path_listings_out: std::collections::HashSet<String>,
+    /// The cache's dataset index has been read this session; later listings use it
+    /// as kept, without a scan of the cache.
+    pub(crate) facts_read: bool,
+    /// The dataset left for home, whose open may have recorded facts the index lacks.
+    pub(crate) left: Option<PathBuf>,
+    /// Index records already dated as used this session: each is dated once.
+    pub(crate) facts_dated: Arc<Mutex<std::collections::HashSet<PathBuf>>>,
     /// Schema previews, memoized for the session only (persisted, they would go stale).
     pub(crate) schema_cache: HashMap<PathBuf, Option<discover::SchemaPreview>>,
     /// The home screen's `ROWS` previews, and the dataset the newest one built.
@@ -79,6 +103,41 @@ const PROBE_MEASURE_LIMIT: usize = 24;
 /// chosen from the viewport when this one lands. Small like [`MEASURE_BATCH`], so a
 /// screen fills in rather than going silent.
 pub(crate) const CLASSIFY_BATCH: usize = 16;
+
+/// How long answers wait to share an event: a batch of local files lands as one, and a
+/// slow share still shows its rows a few times a second.
+const ANSWER_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Look into `rows` on this thread, sending what was learned as `answer` events, the
+/// last one `done`. One event per batch where the batch is quick: each event is a pass
+/// of the event loop, and a frame.
+fn look_and_answer(
+    rows: Vec<discover::Entry>,
+    cache: &CacheManager,
+    known: &home::Known,
+    reads: home::Reads,
+    tx: &std::sync::mpsc::Sender<AppEvent>,
+    answer: impl Fn(Vec<(PathBuf, home::Measured)>, bool) -> AppEvent,
+) {
+    let mut held = Vec::new();
+    let mut since = std::time::Instant::now();
+    home::look_into_batch(rows, cache, known, reads, |path, measured| {
+        // A row's later answer (its count after its kind) replaces one not yet sent.
+        match held.iter().position(|(held, _)| *held == path) {
+            Some(at) => held[at].1 = measured,
+            None => held.push((path, measured)),
+        }
+        if since.elapsed() >= ANSWER_EVERY {
+            let _ = tx.send(answer(std::mem::take(&mut held), false));
+            since = std::time::Instant::now();
+        }
+    });
+    let _ = tx.send(answer(held, true));
+}
+
+/// How long a listing goes without a page or an answer before it is shown not
+/// answering: a dead share never answers, and its spinner would turn all session.
+const PROBE_PATIENCE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Probes allowed at once: a probe of a gone share holds its thread until exit.
 pub(crate) const MAX_CONCURRENT_PROBES: usize = 4;
@@ -229,20 +288,15 @@ fn summarize_cloud_failure(error: &str) -> (String, String) {
 }
 
 impl App {
-    /// Schema for a home entry, from Parquet metadata, memoized for the session. `None`
-    /// means not knowable without a scan, and the UI says so.
-    pub fn home_schema(&mut self, entry: &discover::Entry) -> Option<discover::SchemaPreview> {
-        // Previews read local files only: nothing in an object store is read before it is
-        // opened.
-        if home::is_cloud_place(&entry.path) || home::is_object_store_url(&entry.path) {
-            return None;
-        }
-        if let Some(cached) = self.home_app.schema_cache.get(&entry.path) {
-            return cached.clone();
-        }
-        // Opening a file, so requested from a worker; the frame never waits.
-        self.request_home_schema(entry.clone());
-        None
+    /// Schema for a home entry, from Parquet metadata or the preview's read, memoized for
+    /// the session. `None` until read, or when not knowable without a scan, and the UI
+    /// says so. Asked for by [`Self::request_home_schema`], never by a frame.
+    pub fn home_schema(&self, entry: &discover::Entry) -> Option<discover::SchemaPreview> {
+        self.home_app
+            .schema_cache
+            .get(&entry.path)
+            .cloned()
+            .flatten()
     }
 
     /// What a home-screen worker owes in place of its answer if it panics.
@@ -278,6 +332,9 @@ impl App {
             self.home.path_listing = Some(home::names_under(&dir, self.home.known_urls()));
             return;
         }
+        if !self.home_app.path_listings_out.insert(dir.clone()) {
+            return;
+        }
         // Off the UI thread: a typed path may name a dead mount.
         let tx = self.events.clone();
         let owed = self.owed_answer(AppEvent::HomePathListed {
@@ -285,6 +342,7 @@ impl App {
                 dir: dir.clone(),
                 names: Vec::new(),
                 failed: true,
+                matched: Default::default(),
             }),
         });
         std::thread::spawn(move || {
@@ -317,25 +375,40 @@ impl App {
     }
 
     /// A home file's first rows for its `ROWS` preview, read on a worker as its open
-    /// reads them. `None` until they land or when not previewed. `screen_height` sizes
-    /// the page to the table's.
+    /// reads them. `None` until they land or when not previewed. Asked for by
+    /// [`Self::request_selected_preview`], never by a frame.
     pub fn home_preview_rows(
-        &mut self,
+        &self,
         entry: &discover::Entry,
-        screen_height: u16,
     ) -> Option<Arc<crate::home::home_preview::PreviewRows>> {
+        let stamp = crate::home::home_preview::Stamp::of_entry(entry);
+        self.home_app.previews.rows(&entry.path, stamp).flatten()
+    }
+
+    /// Read the highlighted file's first rows when the last frame had room to show them
+    /// and nothing has: one read at a time, for the row the cursor is on when the last
+    /// one lands. `preview_room` is the screen's height, which sizes the page to the
+    /// table's.
+    pub(crate) fn request_selected_preview(&mut self) {
+        let Some(screen_height) = self.home_app.preview_room else {
+            return;
+        };
+        if self.home_app.previews.inflight.is_some() || self.home.path_input_active {
+            return;
+        }
+        let Some(entry) = self.home.selected_entry() else {
+            return;
+        };
         let max = self.app_config.home.preview_max.bytes();
         if !crate::home::home_preview::previewable(entry, max) {
-            return None;
+            return;
         }
         let stamp = crate::home::home_preview::Stamp::of_entry(entry);
-        if let Some(known) = self.home_app.previews.rows(&entry.path, stamp) {
-            return known;
+        if self.home_app.previews.rows(&entry.path, stamp).is_some() {
+            return;
         }
-        if self.home_app.previews.inflight.is_none() {
-            self.request_home_preview(entry.path.clone(), stamp, screen_height);
-        }
-        None
+        let path = entry.path.clone();
+        self.request_home_preview(path, stamp, screen_height);
     }
 
     /// Whether `entry` is one the preview reads, before its rows are in.
@@ -472,34 +545,70 @@ impl App {
 
     /// Whether a schema read is currently out for this path.
     pub fn home_schema_pending(&self, path: &Path) -> bool {
-        self.home_app.schema_inflight.iter().any(|p| p == path)
+        self.home_app.schema_reads.values().any(|p| p == path)
     }
 
-    /// Read the selected dataset's schema on a worker.
-    fn request_home_schema(&mut self, entry: discover::Entry) {
-        if self.home_app.schema_inflight.contains(&entry.path) {
+    /// Read the highlighted dataset's schema on a worker, when nothing has and no read
+    /// is out: one at a time, for the row the cursor is on when the last one lands, so
+    /// a held arrow key reads where it stops rather than every row it passes. A file
+    /// the preview reads gets its columns from that read instead.
+    pub(crate) fn request_home_schema(&mut self) {
+        if self.home.path_input_active {
             return;
         }
-        self.home_app.schema_inflight.push(entry.path.clone());
-
-        let generation = self.home_app.generation;
+        let Some(entry) = self.home.selected_entry() else {
+            return;
+        };
+        // Nothing in an object store is read before it is opened.
+        // A file whose first rows are shown brings its columns with them.
+        let previewed = self.home_app.preview_room.is_some()
+            && crate::home::home_preview::previewable(
+                entry,
+                self.app_config.home.preview_max.bytes(),
+            );
+        if home::is_cloud_place(&entry.path)
+            || home::is_object_store_url(&entry.path)
+            || self.home_app.schema_cache.contains_key(&entry.path)
+            || previewed
+        {
+            return;
+        }
+        // One read out for local files, and one for each mount that can stall: a share that
+        // stops answering holds up its own reads and no others.
+        let network = (self.home.network_check)(&entry.path) || home::could_block_path(&entry.path);
+        let slot = if network {
+            crate::home::locality::Mounts::cached().mount_point_for(&entry.path)
+        } else {
+            PathBuf::new()
+        };
+        if self.home_app.schema_reads.contains_key(&slot) {
+            return;
+        }
+        let entry = entry.clone();
+        (self.home_app.schema_reads).insert(slot, entry.path.clone());
+        self.home_app.reads.schemas += 1;
         let tx = self.events.clone();
         // Remembered as none on failure, so it is not asked again.
         let owed = self.owed_answer(AppEvent::HomeSchemaReady {
-            generation,
             path: entry.path.clone(),
             preview: None,
         });
-        self.runtime.spawn_blocking(move || {
+        let read = move || {
             owed.run(|| {
                 let preview = discover::schema_preview(&entry);
                 let _ = tx.send(AppEvent::HomeSchemaReady {
-                    generation,
                     path: entry.path,
                     preview,
                 });
             })
-        });
+        };
+        // A share that stops answering holds its thread: never one of the pool that loads
+        // data.
+        if network {
+            std::thread::spawn(read);
+        } else {
+            self.runtime.spawn_blocking(read);
+        }
     }
 
     /// Start listing network roots that have not answered yet. Never waits: a gone
@@ -523,6 +632,9 @@ impl App {
                 continue;
             }
             self.home_app.probes_inflight.push(root.clone());
+            (self.home_app.probe_heard).insert(root.clone(), std::time::Instant::now());
+            #[cfg(test)]
+            let gate = self.home_app.probe_gate.clone();
             let tx = self.events.clone();
             let cache = self.cache.clone();
             let owed = self.owed_answer(AppEvent::HomeProbeFailed {
@@ -545,6 +657,10 @@ impl App {
             // mount never returns, and must not eat the pool that loads data.
             std::thread::spawn(move || {
                 owed.run(|| {
+                    #[cfg(test)]
+                    if let Some(gate) = gate {
+                        let _held = gate.lock();
+                    }
                     // A bucket or prefix: listed with an object-store listing, not `read_dir` (which
                     // fails on `gs://`). Metadata only: names, sizes and times for one level; no
                     // footers, schemas or counts, which would cost a paid ranged read per row.
@@ -963,12 +1079,20 @@ impl App {
                 None => {}
             }
         }
+        // A listing that went silent is waited on again: its thread is still out, and a
+        // second on the same share would stick as it has.
+        for place in self.home.probes.silent_places() {
+            self.home.probes.forget(&place);
+            (self.home_app.probe_heard).insert(place, std::time::Instant::now());
+        }
         if let Some(dir) = self.home.browsing.clone() {
             // Its answer, not a listing still coming in.
             if self.home.probes.settled(&dir) {
                 self.home.probes.forget(&dir);
             }
         }
+        // The rows shown are stat'ed again, and a file rewritten since is measured again.
+        self.home.stat_epoch += 1;
         // Ctrl+R retries failed peeks and missing web files too.
         self.home.peek_failed.clear();
         for path in std::mem::take(&mut self.home.web_gone).into_keys() {
@@ -1006,6 +1130,7 @@ impl App {
         self.home_app.search_generation = generation;
         let tx = self.events.clone();
         let formats = self.formats.clone();
+        let known = self.home.known.clone();
         // Ended, with what the batches already found kept.
         let owed = self.owed_answer(AppEvent::HomeSearchDone {
             generation,
@@ -1020,10 +1145,11 @@ impl App {
                 let batch_tx = tx.clone();
                 let batch_gen = generation;
                 let batch_root = root.clone();
-                let outcome = crate::home::search::walk_with_specs(
+                let outcome = crate::home::search::walk_recalling(
                     &walk_root,
                     &config,
                     &formats,
+                    &known,
                     move |found, outcome| {
                         // Sent even when empty: it carries progress, and a failed send tells the walk
                         // nobody listens.
@@ -1083,7 +1209,6 @@ impl App {
 
     /// Rebuild the home listing from the filesystem.
     pub(crate) fn home_refresh(&mut self) {
-        self.home_app.refresh_owed = false;
         // Every way into a source comes through here: Enter, Backspace up from a bucket,
         // a jump, and rows arriving while it is open.
         #[cfg(feature = "cloud")]
@@ -1112,13 +1237,18 @@ impl App {
             network_check: self.home.network_check,
             cloud: self.home.cloud.clone(),
             catalogs: self.home.catalogs.clone(),
-            known: Default::default(),
+            known: self.home.known.clone(),
             formats: self.formats.clone(),
         };
         let read_folds = std::mem::take(&mut self.home.folds_owed);
         let desktop = self.app_config.home.desktop_recents;
         let cache = self.cache.clone();
         let writes = self.cache_writes.clone();
+        // The index is read until a listing brings it; then kept, with this session's
+        // measurements beside it, and only the dataset just left read again.
+        let read_facts = !self.home_app.facts_read;
+        let left = self.home_app.left.take().filter(|_| !read_facts);
+        let dated = self.home_app.facts_dated.clone();
 
         self.home.listing_in_flight = true;
         let tx = self.events.clone();
@@ -1131,26 +1261,40 @@ impl App {
                 let (recents, visits) = cache.load_recents_with_visits();
                 let newest = recents.first().cloned();
                 request.recents = crate::cache::by_frecency(recents, &visits);
-                request.known = cache.load_dataset_facts();
+                if read_facts {
+                    request.known = Arc::new(cache.load_dataset_facts());
+                }
+                // Read, which dates them: they are shown.
+                let learned: Vec<(PathBuf, crate::cache::DatasetFacts)> = (left.iter())
+                    .flat_map(|path| [path.clone(), home::index_key(path)])
+                    .filter_map(|key| Some((key.clone(), cache.dataset_facts(&key)?)))
+                    .collect();
                 if desktop {
                     request.desktop_dirs = home::desktop_recent_dirs();
                 }
-                let listing = home::build_listing(&request);
+                let mut listing = home::build_listing(&request);
+                listing.learn(&learned, request.network_check);
                 let mut visits = visits;
                 listing.alias_visits(&mut visits);
-                // A record shown is a record used: the ones eviction keeps.
-                let shown: Vec<PathBuf> = listing
-                    .sections
-                    .iter()
-                    .flat_map(|s| s.rows.iter().chain(&s.door))
-                    .flat_map(|row| [row.path.clone(), home::index_key(&row.path)])
-                    .filter(|key| request.known.contains_key(key))
-                    .collect();
+                // A record shown is a record used: the ones eviction keeps. Each is dated once
+                // a session, not at every listing.
+                let shown: Vec<PathBuf> = {
+                    let mut dated = dated.lock().unwrap_or_else(|e| e.into_inner());
+                    (listing.sections.iter())
+                        .flat_map(|s| s.rows.iter().chain(&s.door))
+                        .flat_map(|row| [row.path.clone(), home::index_key(&row.path)])
+                        .filter(|key| request.known.contains_key(key) && dated.insert(key.clone()))
+                        .collect()
+                };
                 cache.touch_dataset_facts(shown.iter().map(PathBuf::as_path));
+                let known = read_facts.then(|| request.known.clone());
+                // Not held past the answer: the screen adds to the index in place.
+                drop(request);
                 let _ = tx.send(AppEvent::HomeListingReady {
                     generation,
                     listing: Box::new(listing),
-                    known: request.known,
+                    known,
+                    learned,
                     visits,
                     newest,
                     folds: read_folds.then(|| cache.load_folds()),
@@ -1166,7 +1310,14 @@ impl App {
         if self.home.measure_in_flight {
             return;
         }
-        let wanted = self.home.unmeasured_visible(MEASURE_BATCH);
+        // The rows on screen first; then, sorted by size or time, the stat of the rest.
+        let (wanted, reads) = match self.home.unmeasured_visible(MEASURE_BATCH) {
+            shown if !shown.is_empty() => (shown, home::Reads::Files),
+            _ => (
+                self.home.unstated_for_sort(MEASURE_BATCH),
+                home::Reads::StatOnly,
+            ),
+        };
         if wanted.is_empty() {
             return;
         }
@@ -1174,17 +1325,27 @@ impl App {
         self.home.measure_in_flight = true;
         let tx = self.events.clone();
         let cache = self.cache.clone();
+        let known = self.home.known.clone();
+        // A batch whose worker dies is answered as looked at, so it is not asked again.
+        let stat_only = reads == home::Reads::StatOnly;
+        let owed = self.owed_answer(AppEvent::HomeMeasured {
+            measured: (wanted.iter())
+                .map(|entry| {
+                    let failed = home::Measured {
+                        stat_only,
+                        ..Default::default()
+                    };
+                    (entry.path.clone(), failed)
+                })
+                .collect(),
+            done: true,
+        });
         self.runtime.spawn_blocking(move || {
-            home::look_into_batch(wanted, &cache, |path, m| {
-                let _ = tx.send(AppEvent::HomeMeasured {
-                    measured: vec![(path, m)],
-                    done: false,
-                });
-            });
-            let _ = tx.send(AppEvent::HomeMeasured {
-                measured: Vec::new(),
-                done: true,
-            });
+            owed.run(|| {
+                look_and_answer(wanted, &cache, &known, reads, &tx, |measured, done| {
+                    AppEvent::HomeMeasured { measured, done }
+                })
+            })
         });
     }
 
@@ -1231,6 +1392,8 @@ impl App {
                 cols: entry.cols,
                 cols_sampled: entry.cols_sampled,
                 size: Some(size),
+                modified: None,
+                stat_only: false,
                 columns: entry.columns.clone(),
                 cost: entry.cost.clone(),
                 kind: None,
@@ -1249,29 +1412,52 @@ impl App {
     /// [`crate::home::HomeState::unmeasured_visible`] leaves alone since probes return them
     /// `Unknown`.
     pub(crate) fn request_home_classifications(&mut self) {
-        if self.home.classify_in_flight {
-            return;
-        }
-        let wanted = self.home.unclassified_visible(CLASSIFY_BATCH);
-        if wanted.is_empty() {
-            return;
-        }
-
-        self.home.classify_in_flight = true;
-        let tx = self.events.clone();
-        let cache = self.cache.clone();
-        std::thread::spawn(move || {
-            home::look_into_batch(wanted, &cache, |path, m| {
-                let _ = tx.send(AppEvent::HomeClassified {
-                    measured: vec![(path, m)],
-                    done: false,
+        // One pass per filesystem: a pass stuck on a share that stopped answering holds
+        // up that share's rows, which would stick too, and nothing else.
+        let mounts = crate::home::locality::Mounts::cached();
+        let place = |entry: &discover::Entry| mounts.mount_point_for(&entry.path);
+        loop {
+            let wanted = self
+                .home
+                .unclassified_visible_where(CLASSIFY_BATCH, |entry| {
+                    !self.home.classifying.contains(&place(entry))
                 });
-            });
-            let _ = tx.send(AppEvent::HomeClassified {
-                measured: Vec::new(),
+            let Some(first) = wanted.first() else {
+                return;
+            };
+            let pass = place(first);
+            let wanted: Vec<discover::Entry> = (wanted.into_iter())
+                .filter(|entry| place(entry) == pass)
+                .collect();
+            self.home.classifying.insert(pass.clone());
+            let tx = self.events.clone();
+            let cache = self.cache.clone();
+            let known = self.home.known.clone();
+            // A pass whose worker dies is answered as looked at, so it is not asked again.
+            let owed = self.owed_answer(AppEvent::HomeClassified {
+                pass: pass.clone(),
+                measured: (wanted.iter())
+                    .map(|entry| (entry.path.clone(), home::Measured::default()))
+                    .collect(),
                 done: true,
             });
-        });
+            std::thread::spawn(move || {
+                owed.run(|| {
+                    look_and_answer(
+                        wanted,
+                        &cache,
+                        &known,
+                        home::Reads::Files,
+                        &tx,
+                        |measured, done| AppEvent::HomeClassified {
+                            pass: pass.clone(),
+                            measured,
+                            done,
+                        },
+                    )
+                })
+            });
+        }
     }
 
     pub fn enter_home(&mut self) {
@@ -1294,15 +1480,17 @@ impl App {
         // a new one, and `~` opens the path prompt.
         self.home.filter_selected = !self.home.filter.is_empty();
         self.home.folds_owed = true;
+        self.home_app.left = self.path.clone();
         self.home_refresh();
         if let Some(open_path) = self.path.clone() {
-            let target =
-                crate::canonical::canonicalize(&open_path).unwrap_or_else(|_| open_path.clone());
-            if let Some(idx) = self.home.visible().iter().position(|row| match row {
+            // Rows are compared as listed (from canonical roots and canonical recents), so
+            // only the open path is resolved, once, and not on a share that may not answer.
+            let resolved = (!home::is_remote_path(&open_path))
+                .then(|| crate::canonical::canonicalize(&open_path).ok())
+                .flatten();
+            if let Some(idx) = self.home.position(|row| match row {
                 home::Row::Entry { entry, .. } => {
-                    crate::canonical::canonicalize(&entry.path)
-                        .unwrap_or_else(|_| entry.path.clone())
-                        == target
+                    entry.path == open_path || resolved.as_ref() == Some(&entry.path)
                 }
                 // Not the door: its path is the directory's, and would take the cursor from the
                 // file to the whole-directory row.
@@ -1454,9 +1642,10 @@ impl App {
                 };
                 Some((path.clone(), home::display_path(&path)))
             }
+            // A table inside a file is listed with its `table`: no stat asks it again, as
+            // this is asked every frame for the footer.
             home::Row::Entry { entry, .. } => (entry.table.is_none()
-                && !home::is_cloud_place(&entry.path)
-                && crate::formats::members::split(&entry.path).is_none())
+                && !home::is_cloud_place(&entry.path))
             .then(|| (entry.path.clone(), entry.name.clone())),
             home::Row::Header { section, .. } => {
                 let root = self.home.sections.get(section)?.root.clone()?;
@@ -2047,7 +2236,7 @@ impl App {
             // What Ctrl+A shows; the cursor goes to the first, where the hidden row stood.
             Some(home::Row::Hidden { .. }) => {
                 self.home.hide_unreadable = false;
-                if let Some(idx) = self.home.visible().iter().position(|row| {
+                if let Some(idx) = self.home.position(|row| {
                     matches!(row, home::Row::Entry { entry, .. }
                         if entry.hidden_by_default())
                 }) {
@@ -2126,18 +2315,19 @@ impl App {
             return Some(self.home_open_directory_as(directory, true, lake, reader));
         }
         // A row nothing has looked at is looked at first: `Unknown` is offered as openable,
-        // and a lake root would otherwise read as one table.
-        let mut entry = entry;
-        if entry.kind == discover::EntryKind::Unknown {
-            if self.looking_could_block(&entry.path) {
-                return Some(AppEvent::ClassifyThenOpen {
-                    path: entry.path,
-                    jump: false,
-                });
-            }
-            if entry.path.is_dir() {
-                entry.kind = discover::classify_directory(&entry.path);
-            }
+        // and a lake root would otherwise read as one table. On a worker: the directory is
+        // read, and any mount can stall.
+        if entry.kind == discover::EntryKind::Unknown
+            && !home::is_cloud_place(&entry.path)
+            && matches!(
+                source::input_source(&entry.path),
+                source::InputSource::Local(_)
+            )
+        {
+            return Some(AppEvent::ClassifyThenOpen {
+                path: entry.path,
+                typed: None,
+            });
         }
         // A database of several tables lists them; one not yet measured opens and lands on
         // its tables the same way.
@@ -2214,6 +2404,31 @@ impl App {
         AppEvent::Open(vec![path], options)
     }
 
+    /// Before a frame: build again the sections whose listings sent rows, and say which
+    /// listings out have gone silent past the wait.
+    pub(crate) fn take_listing_news(&mut self) {
+        for root in std::mem::take(&mut self.home_app.pages_owed) {
+            self.home.relist_remote(&root);
+        }
+        #[cfg(test)]
+        let patience = self.home_app.probe_patience.unwrap_or(PROBE_PATIENCE);
+        #[cfg(not(test))]
+        let patience = PROBE_PATIENCE;
+        let now = std::time::Instant::now();
+        let silent: Vec<PathBuf> = (self.home_app.probe_heard.iter())
+            .filter(|(root, heard)| {
+                now.duration_since(**heard) >= patience
+                    && self.home_app.probes_inflight.contains(root)
+                    && !self.home.probes.settled(root)
+            })
+            .map(|(root, _)| root.clone())
+            .collect();
+        for root in silent {
+            self.home.probes.go_silent(&root);
+            self.home.relist_remote(&root);
+        }
+    }
+
     /// The home screen's worker answers.
     pub(crate) fn home_event(&mut self, event: AppEvent) -> Option<AppEvent> {
         match event {
@@ -2221,6 +2436,7 @@ impl App {
                 generation,
                 listing,
                 known,
+                learned,
                 visits,
                 newest,
                 folds,
@@ -2232,7 +2448,13 @@ impl App {
                 }
                 // Read fresh from the cache, so true whichever listing carried them; only the
                 // first listing after entering home carries the folds.
-                self.home.known = known;
+                if let Some(known) = known {
+                    self.home.known = known;
+                    self.home_app.facts_read = true;
+                }
+                if !learned.is_empty() {
+                    std::sync::Arc::make_mut(&mut self.home.known).extend(learned);
+                }
                 self.home.set_visits(visits);
                 self.home.newest_recent = newest;
                 if let Some(folds) = folds {
@@ -2277,7 +2499,11 @@ impl App {
                 self.home.web_gone.insert(path, gone);
                 None
             }
-            AppEvent::HomeClassified { measured, done } => {
+            AppEvent::HomeClassified {
+                pass,
+                measured,
+                done,
+            } => {
                 // Kept even if the listing was rebuilt since: probes and peeks rebuild it often,
                 // and dropping answers would leave rows unlabeled.
                 for (path, m) in measured {
@@ -2287,12 +2513,13 @@ impl App {
                 // reshuffles under the cursor. Folded in at the next frame, as measurements.
                 // The next batch comes from the viewport as it is now, not the rows scrolled past.
                 if done {
-                    self.home.classify_in_flight = false;
+                    self.home.classifying.remove(&pass);
                     self.request_home_classifications();
                 }
                 None
             }
             AppEvent::HomePathListed { listing } => {
+                self.home_app.path_listings_out.remove(&listing.dir);
                 // Kept only for the directory still being typed.
                 if self.home.path_input_active
                     && home::typed_dir(&self.home.path_input) == listing.dir
@@ -2356,20 +2583,18 @@ impl App {
                 );
                 None
             }
-            AppEvent::HomeSchemaReady {
-                generation,
-                path,
-                preview,
-            } => {
-                self.home_app.schema_inflight.retain(|p| p != &path);
-                // A preview's columns are not taken back by a metadata read that had none.
+            AppEvent::HomeSchemaReady { path, preview } => {
+                self.home_app.schema_reads.retain(|_, read| *read != path);
+                // Kept whatever was listed since: a schema is the file's, and a finished read is
+                // never thrown away. A preview's columns are not taken back by a metadata read
+                // that had none.
                 let known = self
                     .home_app
                     .schema_cache
                     .get(&path)
                     .is_some_and(Option::is_some);
-                if generation == self.home_app.generation && (preview.is_some() || !known) {
-                    self.home_app.schema_cache.insert(path.clone(), preview);
+                if preview.is_some() || !known {
+                    self.home_app.schema_cache.insert(path, preview);
                 }
                 None
             }
@@ -2412,8 +2637,8 @@ impl App {
             }
             #[cfg(feature = "cloud")]
             AppEvent::HomeCloudSources { sources } => {
-                self.home.cloud = sources;
-                self.home_refresh();
+                // Only the sources' rows change: nothing else is listed again.
+                self.home.set_cloud(sources);
                 None
             }
             #[cfg(feature = "cloud")]
@@ -2446,7 +2671,8 @@ impl App {
                         }
                     }
                 }
-                self.home_refresh();
+                let cloud = std::mem::take(&mut self.home.cloud);
+                self.home.set_cloud(cloud);
                 None
             }
             AppEvent::HomeNarrowed {
@@ -2469,17 +2695,18 @@ impl App {
                     && !self.home.filter.is_empty();
                 if let (Some((rows, truncated)), true) = (listed, wanted) {
                     self.home.narrowed = Some(home::Narrowed {
-                        dir,
+                        dir: dir.clone(),
                         prefix,
                         rows,
                         truncated,
                     });
-                    self.home_refresh();
+                    self.home.relist_remote(&dir);
                 }
                 None
             }
             AppEvent::HomeProbeCancelled { root } => {
                 self.home_app.probes_inflight.retain(|p| p != &root);
+                self.home_app.probe_heard.remove(&root);
                 self.home_app.listing_cancels.remove(&root);
                 self.home.probes.stopped(&root);
                 // Come back to after it had stopped: listed afresh.
@@ -2490,6 +2717,7 @@ impl App {
             }
             AppEvent::HomeProbeFailed { root, message } => {
                 self.home_app.probes_inflight.retain(|p| p != &root);
+                self.home_app.probe_heard.remove(&root);
                 self.home_app.listing_cancels.remove(&root);
                 self.home.probe_failed(root, Some(message));
                 self.home_refresh();
@@ -2497,11 +2725,15 @@ impl App {
             }
             AppEvent::HomeProbeProgress { root, rows } => {
                 // Only while that listing is out: a late batch must not paint over the answer.
-                if self.home_app.probes_inflight.contains(&root) && !self.home.probes.settled(&root)
+                if self.home_app.probes_inflight.contains(&root)
+                    && self.home.probes.takes_pages(&root)
                 {
                     self.home.probes.read(&root, &rows);
+                    (self.home_app.probe_heard).insert(root.clone(), std::time::Instant::now());
                     // Listed once a frame, however many batches came in it.
-                    self.home_app.refresh_owed = true;
+                    if !self.home_app.pages_owed.contains(&root) {
+                        self.home_app.pages_owed.push(root);
+                    }
                 }
                 None
             }
@@ -2513,6 +2745,7 @@ impl App {
                 // Free the slot. The cap bounds threads wedged on dead mounts, which never send
                 // this; without freeing, probing stops after MAX_CONCURRENT_PROBES roots.
                 self.home_app.probes_inflight.retain(|p| p != &root);
+                self.home_app.probe_heard.remove(&root);
                 self.home_app.listing_cancels.remove(&root);
                 let landed = rows.is_some();
                 match rows {
@@ -2561,22 +2794,14 @@ impl App {
                     self.home.peeking.remove(&directory);
                     self.home.peek_failed.insert(directory);
                 }
-                let roots: Vec<PathBuf> = self
-                    .home
-                    .probes
-                    .answered()
-                    .map(|(root, _)| root.clone())
-                    .collect();
                 for (directory, kind) in kinds {
                     // Answered: out of `peeking` into the set rows are labeled from; every directory
                     // comes back, so none is asked twice.
                     self.home.peeking.remove(&directory);
                     self.home.cloud_kinds.insert(directory, kind);
                 }
-                for root in roots {
-                    self.home.apply_cloud_kinds(&root);
-                }
-                self.home_refresh();
+                // Into the rows as listed: nothing is read again for a label.
+                self.home.take_cloud_kinds();
                 None
             }
             _ => unreachable!("not a home event"),

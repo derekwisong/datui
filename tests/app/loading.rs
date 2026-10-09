@@ -3335,7 +3335,10 @@ fn a_file_datui_cannot_read_is_hidden_until_shown() {
     for c in dir.path().to_str().unwrap().chars() {
         app.event(key(KeyCode::Char(c)));
     }
-    app.event(key(KeyCode::Enter));
+    // A worker looks at the typed path; its answer goes inside.
+    if let Some(next) = app.event(key(KeyCode::Enter)) {
+        tx.send(next).unwrap();
+    }
     let ctrl_a = || AppEvent::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
     app.event(ctrl_a());
     assert!(app.home.filter.is_empty(), "Ctrl+A is not typed");
@@ -4032,8 +4035,11 @@ fn test_a_sampled_column_count_is_marked_on_screen() {
         screen.contains(&format!("? {times} 39+")),
         "the row's shape says the width is a floor: {screen}"
     );
+    // Its key column is as wide as the longest fact shown, which the row's stat adds to.
     assert!(
-        screen.contains("columns   39+"),
+        screen.lines().any(|line| line
+            .split_once("columns ")
+            .is_some_and(|(_, rest)| rest.trim_start().starts_with("39+"))),
         "and so does the details pane: {screen}"
     );
 }

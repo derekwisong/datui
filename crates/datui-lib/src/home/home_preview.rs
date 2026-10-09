@@ -140,6 +140,8 @@ pub struct ReadCounts {
     pub scans: usize,
     /// Pages of rows read for a dataset on screen.
     pub pages: usize,
+    /// Schemas read for the home screen's details pane.
+    pub schemas: usize,
 }
 
 impl Previews {

@@ -23,7 +23,9 @@ in the [keyboard reference](../reference/keyboard-shortcuts.md#home-screen).
 
 To type a path or URL, press <kbd>~</kbd> with the filter empty. The list
 shows the directory being typed, narrowed by the name after the last `/`, with
-the first name picked.
+the first name picked. A pasted path goes in whole; a line break in it is a
+space, so a paste never presses Enter. A path starting with `~` pasted on an
+empty filter opens the prompt with it.
 
 | Key at the `~` prompt | Does |
 |---|---|
@@ -42,7 +44,7 @@ row (`Open`, `Open all`, `Inside`, `Look`), what <kbd>Ctrl</kbd>+<kbd>D</kbd> do
 there (`^D Add` to `catalog.toml`, or `^D Forget` on its own rows), `^E Docs` on a
 catalog row, then `? keys` (`F1 keys` once a filter is typed, since <kbd>?</kbd>
 then types). Letters type into the filter, so
-<kbd>q</kbd> types `q`; <kbd>Ctrl</kbd>+<kbd>C</kbd> quits.
+<kbd>q</kbd> types `q`, and a paste goes into it whole; <kbd>Ctrl</kbd>+<kbd>C</kbd> quits.
 
 ## Sections
 
@@ -63,14 +65,19 @@ the list beside the other sections shows its first rows (about two fifths of the
 list's height) and `… 4,958 more`: <kbd>Enter</kbd> or <kbd>→</kbd> there
 shows them all. <kbd>←</kbd> on a row past the first ones cuts it back; on a first
 row it folds the section. Its heading counts every row, and a typed filter
-searches them all. Counts are read for the rows on screen and a page either
-way first, then for the rest of the rows listed. Sorted by rows, the rows past
-the cut are measured too, and the more row says `· measuring` until they are.
+searches them all by name. Size, time and counts are read for the rows on
+screen and half a page either way, as they come into view: listing or
+filtering a directory of 50,000 files reads only its names. Sorted by size or
+time, every row is stat'ed (nothing is read); sorted by rows, every row is
+measured, and the more row says `· measuring` until they are.
+<kbd>Ctrl</kbd>+<kbd>R</kbd> stats the rows shown again, and measures again any
+file changed since.
 
 Folds last between runs. A heading says why its section is listed and how it
 stands: `catalog.toml`, `catalog` or `built in` for a catalog; `nfs4`, `listing`
-(then `1,200 so far` as a slow share answers), `unavailable`, or `first 5,000`
-when a listing stops there.
+(then `1,200 so far` as a slow share answers), `unavailable`, `not answering ·
+Ctrl+R retries` after 30 seconds with nothing from a share or a bucket (the
+rows so far stay), or `first 5,000` when a listing stops there.
 
 ### Recent
 
@@ -111,7 +118,7 @@ background. `Found` lists matches by their path from there.
 
 | What | How |
 |---|---|
-| Matching | fzf-style: runs of characters, word starts and file names rank higher; matched characters are underlined. Known Parquet column names match too, after names: those of files measured so far, this session or an earlier one. What you open often ranks first, in every section |
+| Matching | fzf-style: runs of characters, word starts and file names rank higher; matched characters are underlined. Known Parquet column names match too, after names: those of files measured so far, this session or an earlier one; typing reads no file to find more. What you open often ranks first, in every section |
 | The walk | Once per directory, keeping every data file; each key narrows the last result |
 | Results | The best 1,000 (`[home.search] max_results`); the heading counts the rest and the entries read: `1,000 of 2,500 matches`, `23,041 searched` |
 | Cut short | The heading says `partial · out of time`, `· too many files` or `· too deep` |
@@ -460,6 +467,8 @@ dataset opens.
 cancels it. A file that fails to open shows the error here, and
 <kbd>Esc</kbd> returns to the dataset open before. A network location that
 does not answer reads `unavailable`; <kbd>Ctrl</kbd>+<kbd>R</kbd> tries again.
+A share or FUSE mount (sshfs, rclone, gcsfuse) is only ever read off the key
+thread, so one that stalls never freezes the screen.
 
 ## What datui remembers
 
@@ -487,7 +496,8 @@ datui cache clear --recents
 | Entries read to label a directory, or listed | 5,000 |
 | Subdirectories looked into per listing | 64 |
 | Files read for a preview count | 64 |
-| Datasets measured at once | 12, those on screen and a page either way first |
+| Datasets measured at once | 12, from the rows on screen and half a page either way |
+| Wait before a listing is `not answering` | 30 seconds without a page |
 | Network directories probed at once | 4 |
 | Search | Depth 8; 100,000 files kept; 1,000 matches listed; 1.5 seconds |
 

@@ -695,3 +695,34 @@ fn a_statement_wraps_where_a_line_would_scroll() {
     let lines = rendered(&input, 12, 2);
     assert_eq!(lines, ["SELECT a, b", "FROM df"]);
 }
+
+/// A paste is one edit: one line in a one-line field, its lines kept in a field of
+/// lines, over a proposed value, and one Ctrl+Z takes it back whole.
+#[test]
+fn a_paste_is_one_edit_shaped_by_the_field() {
+    let mut line = TextInput::new();
+    type_str(&mut line, "x ");
+    assert!(line.insert_text("a\r\nb\nc\rd\te\u{7}\n"));
+    assert_eq!(line.value(), "x a b c d e");
+    press_with(&mut line, KeyCode::Char('z'), KeyModifiers::CONTROL);
+    assert_eq!(line.value(), "x ", "undone in one step");
+
+    for mut lines in [TextInput::statement(), TextInput::multiline()] {
+        assert!(lines.insert_text("-- comment\r\nSELECT 1\rFROM t\u{1b}"));
+        assert_eq!(lines.value(), "-- comment\nSELECT 1\nFROM t");
+    }
+
+    let mut proposed = TextInput::new();
+    proposed.suggest("out.csv");
+    assert!(proposed.insert_text("data.parquet"));
+    assert_eq!(proposed.value(), "data.parquet", "the proposal is replaced");
+    assert!(!proposed.insert_text("\n"), "nothing to insert");
+}
+
+#[test]
+fn pasted_text_on_one_line_and_as_lines() {
+    assert_eq!(one_line("\n/data/x.csv\r\n"), "/data/x.csv");
+    assert_eq!(one_line("bell\u{7}less"), "bellless");
+    assert_eq!(one_line("  kept  "), "  kept  ");
+    assert_eq!(as_lines("a\r\nb\rc\td\u{0}"), "a\nb\nc\td");
+}

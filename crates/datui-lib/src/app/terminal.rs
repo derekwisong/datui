@@ -1,7 +1,34 @@
 //! The terminal while the TUI holds it: setting it up, handing it back, and letting
 //! it go quietly once it has gone.
 
+use std::io::{BufWriter, Stdout};
+
+use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
+
 use super::draw::Drawer;
+
+/// The terminal frames are drawn on: standard output behind a buffer a large frame
+/// fits in, so a frame goes out in one write. Standard output alone is line
+/// buffered (1 KiB), which cut a repaint into a write per KiB.
+pub(crate) type Screen = Terminal<CrosstermBackend<BufWriter<Stdout>>>;
+
+/// Room for a whole frame: a 200x50 repaint in truecolor is about 25 KB.
+const FRAME_BUFFER: usize = 64 << 10;
+
+/// Take the terminal as `ratatui::try_init` does (raw mode, the alternate screen, a
+/// panic hook that hands them back), drawing through [`Screen`]'s buffer.
+pub(crate) fn take_screen() -> std::io::Result<Screen> {
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        ratatui::restore();
+        hook(info);
+    }));
+    crossterm::terminal::enable_raw_mode()?;
+    crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen)?;
+    let out = BufWriter::with_capacity(FRAME_BUFFER, std::io::stdout());
+    Terminal::new(CrosstermBackend::new(out))
+}
 
 /// Undo `run`'s terminal setup: release the mouse, pop keyboard flags (harmless if never
 /// pushed or ignored), restore the screen. Reports failures on stderr without panicking:
@@ -17,10 +44,19 @@ pub(crate) fn restore_terminal() {
 /// Turn off what the session may have asked of the terminal, whether or not it did:
 /// a terminal ignores turning off what is not on.
 fn let_go(out: &mut impl std::io::Write) {
+    release_modes(out);
+    let _ = crossterm::execute!(out, crossterm::event::PopKeyboardEnhancementFlags);
+}
+
+/// Turn off the reports that outlive the alternate screen: the mouse (the shell would
+/// read every click as text), focus (every switch of window as `ESC [ I`) and bracketed
+/// paste (every paste wrapped in escapes). Safe to repeat, unlike popping the keyboard
+/// flags, so the panic hook calls it too.
+pub(crate) fn release_modes(out: &mut impl std::io::Write) {
     let _ = crossterm::execute!(out, crossterm::event::DisableMouseCapture);
     // Focus reports, asked for under `theme.mode = "auto"`.
     let _ = crossterm::execute!(out, crossterm::event::DisableFocusChange);
-    let _ = crossterm::execute!(out, crossterm::event::PopKeyboardEnhancementFlags);
+    let _ = crossterm::execute!(out, crossterm::event::DisableBracketedPaste);
 }
 
 /// Ask the terminal to tell Ctrl+Enter from Enter (identical bytes without the kitty
@@ -38,6 +74,13 @@ pub(crate) fn push_keyboard_flags() {
     );
 }
 
+/// Ask the terminal to bracket a paste (`CSI ? 2004 h`), so it arrives as one event
+/// rather than as keys: one edit into the field, and a pasted line break is not Enter.
+/// Ignored where unsupported; [`restore_terminal`] and the panic hook turn it off.
+pub(crate) fn bracket_pastes(out: &mut impl std::io::Write) {
+    let _ = crossterm::execute!(out, crossterm::event::EnableBracketedPaste);
+}
+
 /// Ask for focus reports (`CSI ? 1004 h`) so the background is asked again on focus.
 /// Ignored where unsupported; [`restore_terminal`] turns it off on every exit.
 pub(crate) fn follow_focus(out: &mut impl std::io::Write) {
@@ -47,10 +90,10 @@ pub(crate) fn follow_focus(out: &mut impl std::io::Write) {
 /// Ratatui's terminal, let go without its `Drop` when the terminal has gone. That
 /// `Drop` shows the cursor and `eprintln!`s a failure, which after a hangup panics,
 /// panics again in the panic hook, and aborts. Frames go through its [`Drawer`].
-pub(crate) struct QuietTerminal(pub(crate) Option<ratatui::DefaultTerminal>, Drawer);
+pub(crate) struct QuietTerminal(pub(crate) Option<Screen>, Drawer);
 
 impl QuietTerminal {
-    pub(crate) fn new(terminal: ratatui::DefaultTerminal) -> Self {
+    pub(crate) fn new(terminal: Screen) -> Self {
         // Off until the settings say otherwise.
         Self(Some(terminal), Drawer::new(false))
     }
@@ -66,9 +109,14 @@ impl QuietTerminal {
         self.1.clear(terminal)
     }
 
-    /// Draw every cell with the next frame (after a resize, or back in focus).
+    /// Draw every cell with the next frame (after a resize).
     pub(crate) fn repaint(&mut self) {
         self.1.repaint();
+    }
+
+    /// Draw every cell in place of the next move (back in focus).
+    pub(crate) fn repaint_before_moving(&mut self) {
+        self.1.repaint_before_moving();
     }
 
     /// `display.scroll_region`.
@@ -116,17 +164,32 @@ impl Drop for TakenTerminal {
 mod tests {
     use super::*;
 
-    /// Handing the terminal back turns off focus reports, which `auto` turns on.
+    /// Handing the terminal back turns off focus reports, which `auto` turns on, and
+    /// bracketed paste.
     #[test]
     fn letting_go_turns_off_focus_reports() {
         let mut out = Vec::new();
         let_go(&mut out);
         let out = String::from_utf8(out).unwrap();
         assert!(out.contains("\x1b[?1004l"), "{out:?}");
+        assert!(out.contains("\x1b[?2004l"), "{out:?}");
         assert!(out.contains("\x1b[<1u"), "{out:?}");
+
+        // What the panic hook turns off: everything but the keyboard flags.
+        let mut released = Vec::new();
+        release_modes(&mut released);
+        let released = String::from_utf8(released).unwrap();
+        for mode in ["\x1b[?1000l", "\x1b[?1004l", "\x1b[?2004l"] {
+            assert!(released.contains(mode), "{mode:?} in {released:?}");
+        }
+        assert!(!released.contains("\x1b[<1u"), "{released:?}");
 
         let mut on = Vec::new();
         follow_focus(&mut on);
         assert_eq!(on, b"\x1b[?1004h");
+
+        let mut on = Vec::new();
+        bracket_pastes(&mut on);
+        assert_eq!(on, b"\x1b[?2004h");
     }
 }

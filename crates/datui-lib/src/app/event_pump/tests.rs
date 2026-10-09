@@ -2273,12 +2273,142 @@ fn an_answer_is_not_held_behind_keys_typed_ahead() {
     assert!(!p.app.home.listing_in_flight, "the answer is in");
     assert_eq!(
         p.app.debug.num_key_events,
-        keys + 1,
-        "and one key, one frame"
+        keys + 3,
+        "and the keys behind it, in one frame"
+    );
+}
+
+/// Keys that arrive together and act at once are drawn once: a held-down key, or keys
+/// queued behind a slow frame, cost one frame, not one each.
+#[test]
+fn a_burst_of_keys_is_one_frame() {
+    let mut p = pump();
+    for _ in 0..10 {
+        p.send(terminal(plain(KeyCode::Down))).unwrap();
+    }
+    let keys = p.app.debug.num_key_events;
+    assert!(matches!(
+        p.drain().unwrap(),
+        Drained::Continue {
+            updated: true,
+            progress_only: false
+        }
+    ));
+    assert_eq!(p.app.debug.num_key_events, keys + 10, "every key, one pass");
+    assert!(matches!(
+        p.drain().unwrap(),
+        Drained::Continue { updated: false, .. }
+    ));
+}
+
+/// A long burst still draws as it goes, so a held key shows motion.
+#[test]
+fn a_long_burst_is_drawn_every_so_many_keys() {
+    let mut p = pump();
+    for _ in 0..KEYS_PER_FRAME + 5 {
+        p.send(terminal(plain(KeyCode::Down))).unwrap();
+    }
+    let keys = p.app.debug.num_key_events;
+    p.drain().unwrap();
+    let first = p.app.debug.num_key_events - keys;
+    assert!(
+        (1..=KEYS_PER_FRAME).contains(&first),
+        "{first} keys before the first frame"
+    );
+    while p.app.debug.num_key_events < keys + KEYS_PER_FRAME + 5 {
+        assert!(matches!(
+            p.drain().unwrap(),
+            Drained::Continue { updated: true, .. }
+        ));
+    }
+}
+
+/// A key that opens another screen ends the burst: the keys behind it read the layout
+/// that screen's first frame records (rows on screen, a panel's height).
+#[test]
+fn a_key_that_changes_the_screen_ends_the_burst() {
+    let (mut p, _dir) = loaded_pump();
+    for key in [plain(KeyCode::Char(':')), plain(KeyCode::Char('a'))] {
+        p.send(terminal(key)).unwrap();
+    }
+    let keys = p.app.debug.num_key_events;
+    p.drain().unwrap();
+    assert_eq!(p.app.debug.num_key_events, keys + 1, "the `:` alone");
+    assert_eq!(p.app.input_mode, InputMode::Editing);
+    p.drain().unwrap();
+    assert_eq!(p.app.debug.num_key_events, keys + 2);
+    assert_eq!(p.app.prompt.query_input.value(), "a");
+
+    p.send(terminal(plain(KeyCode::Esc))).unwrap();
+    p.send(terminal(plain(KeyCode::Char('i')))).unwrap();
+    p.send(terminal(plain(KeyCode::Down))).unwrap();
+    p.drain().unwrap();
+    assert!(
+        p.app.at_table(),
+        "Esc closed the prompt, and ended the burst"
     );
     p.drain().unwrap();
-    p.drain().unwrap();
-    assert_eq!(p.app.debug.num_key_events, keys + 3, "the rest, in turn");
+    assert_eq!(p.app.overlay, Overlay::Info, "`i` opened the panel alone");
+    assert_eq!(p.app.debug.num_key_events, keys + 4);
+}
+
+/// A burst has room for [`KEYS_PER_FRAME`] keys within [`BURST_FRAME`] of its first.
+#[test]
+fn a_burst_ends_at_its_key_or_time_budget() {
+    let start = Instant::now();
+    let mut burst = Burst::default();
+    assert!(burst.counted(start));
+    assert!(burst.counted(start + BURST_FRAME / 2));
+    assert!(!burst.counted(start + BURST_FRAME), "out of time");
+
+    let mut burst = Burst::default();
+    let counted = (0..KEYS_PER_FRAME)
+        .take_while(|_| burst.counted(start))
+        .count();
+    assert_eq!(counted, KEYS_PER_FRAME - 1, "the last key is drawn");
+}
+
+/// A key whose work goes on in a follow-up is drawn before the follow-up runs and
+/// before the keys behind it, as each phase is shown.
+#[test]
+fn a_key_with_a_follow_up_gets_its_frame_first() {
+    let mut p = pump();
+    p.send(terminal(ctrl('q'))).unwrap();
+    p.send(terminal(plain(KeyCode::Down))).unwrap();
+    let keys = p.app.debug.num_key_events;
+    assert!(matches!(
+        p.drain().unwrap(),
+        Drained::Continue { updated: true, .. }
+    ));
+    assert_eq!(p.app.debug.num_key_events, keys + 1, "the Down waits");
+    assert!(matches!(p.drain().unwrap(), Drained::Exit));
+}
+
+/// In the run loop a burst is one frame: ten keys typed together, two frames in all
+/// (the first, and the burst's).
+#[test]
+fn the_run_loop_draws_a_burst_once() {
+    let mut p = pump();
+    long_flash(&mut p.app);
+    let tx = p.tx.clone();
+    let mut frames = 0;
+    let end = p
+        .run(|_app| {
+            frames += 1;
+            match frames {
+                1 => {
+                    for _ in 0..10 {
+                        tx.send(terminal(plain(KeyCode::Down))).unwrap();
+                    }
+                }
+                2 => tx.send(AppEvent::Exit).unwrap(),
+                _ => {}
+            }
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(end, Ended::Quit);
+    assert_eq!(frames, 2);
 }
 
 /// A worker that reports faster than the loop handles it still lets a typed key
@@ -3383,4 +3513,180 @@ fn a_spinner_nobody_waits_on_turns_slower() {
     };
     assert_eq!(frames(true), 30);
     assert_eq!(frames(false), 10);
+}
+
+fn paste(text: &str) -> AppEvent {
+    AppEvent::Terminal(Event::Paste(text.to_string()))
+}
+
+/// A paste at home goes into the filter as one edit, in one frame; a kept filter is
+/// replaced, as typing replaces it.
+#[test]
+fn a_paste_at_home_types_into_the_filter() {
+    let mut p = pump();
+    p.app.enter_home();
+    p.send(paste("quarterly report\n")).unwrap();
+    assert!(matches!(
+        p.drain().unwrap(),
+        Drained::Continue { updated: true, .. }
+    ));
+    assert_eq!(p.app.home.filter, "quarterly report");
+    assert!(matches!(
+        p.drain().unwrap(),
+        Drained::Continue { updated: false, .. }
+    ));
+
+    p.app.home.filter_selected = true;
+    p.send(paste("sales")).unwrap();
+    p.drain().unwrap();
+    assert_eq!(p.app.home.filter, "sales");
+}
+
+/// A paste into the `~` prompt is the path, in one edit; a line break in it does not
+/// press Enter.
+#[test]
+fn a_paste_into_the_path_prompt_is_one_edit() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut p = pump();
+    p.app.enter_home();
+    p.send(terminal(plain(KeyCode::Char('~')))).unwrap();
+    p.drain().unwrap();
+    assert!(p.app.home.path_input_active);
+    let path = format!("{}/data\n", dir.path().display());
+    p.send(paste(&path)).unwrap();
+    p.drain().unwrap();
+    assert!(p.app.home.path_input_active, "not entered");
+    assert_eq!(p.app.home.path_input, path.trim_end());
+}
+
+/// A path starting with `~` pasted on an empty filter opens the path prompt with it,
+/// as `~` typed there does; on a typed filter it is filter text.
+#[test]
+fn a_pasted_home_path_opens_the_path_prompt() {
+    let mut p = pump();
+    p.app.enter_home();
+    p.send(paste("~/data/sales.csv")).unwrap();
+    p.drain().unwrap();
+    assert!(p.app.home.path_input_active);
+    assert_eq!(p.app.home.path_input, "~/data/sales.csv");
+    assert_eq!(p.app.home.filter, "");
+
+    let mut p = pump();
+    p.app.enter_home();
+    type_keys(&mut p, "x");
+    p.send(paste("~y")).unwrap();
+    p.drain().unwrap();
+    assert!(!p.app.home.path_input_active);
+    assert_eq!(p.app.home.filter, "x~y");
+}
+
+/// A space pasted into a picker narrows it: it neither chooses nor toggles, as Space
+/// typed there would.
+#[test]
+fn a_paste_into_a_picker_narrows_it() {
+    let (mut p, _dir) = loaded_pump();
+    p.terminal_key(plain(KeyCode::Char('s'))).unwrap();
+    assert_eq!(p.app.overlay, Overlay::SortFilter);
+    let theme = p.app.theme.clone();
+    p.app.sort_filter_modal.filter.open_editor(&theme, 10);
+    p.send(paste(" a\n")).unwrap();
+    p.drain().unwrap();
+    let editor = p
+        .app
+        .sort_filter_modal
+        .filter
+        .editor
+        .as_ref()
+        .expect("editing");
+    assert_eq!(
+        editor.step,
+        crate::app::modals::filter_modal::FilterEditStep::Column,
+        "nothing chosen"
+    );
+    assert_eq!(editor.column.filter, " a");
+}
+
+/// The SQL prompt keeps a pasted statement's lines: a comment stays on its line.
+#[cfg(feature = "sql")]
+#[test]
+fn a_paste_into_the_sql_prompt_keeps_its_lines() {
+    let (mut p, _dir) = loaded_pump();
+    p.app.app_config.query.default_mode = crate::QueryMode::Sql;
+    p.terminal_key(plain(KeyCode::Char(':'))).unwrap();
+    p.send(paste("-- people\r\nSELECT * FROM df")).unwrap();
+    p.drain().unwrap();
+    assert_eq!(p.app.input_mode, InputMode::Editing, "not run");
+    assert_eq!(
+        p.app.prompt.sql_input.value(),
+        "-- people\nSELECT * FROM df"
+    );
+}
+
+/// In a text field a paste is typed, line breaks as spaces: nothing is submitted, and
+/// keys typed after it land after it.
+#[test]
+fn a_paste_into_the_command_line_is_typed_not_submitted() {
+    let (mut p, _dir) = loaded_pump();
+    p.send(terminal(plain(KeyCode::Char(':')))).unwrap();
+    p.send(paste("select age\nwhere age > 40")).unwrap();
+    p.send(terminal(plain(KeyCode::Char('!')))).unwrap();
+    settle(&mut p);
+    assert_eq!(p.app.input_mode, InputMode::Editing, "still typing");
+    assert_eq!(
+        p.app.prompt.query_input.value(),
+        "select age where age > 40!"
+    );
+}
+
+/// Where nothing takes text, a paste is dropped, never read as keys: `jjq` pasted at
+/// the table neither moves the cursor nor quits.
+#[test]
+fn a_paste_where_nothing_types_is_dropped() {
+    let (mut p, _dir) = loaded_pump();
+    let before = cell(&p);
+    p.send(paste("jjq")).unwrap();
+    assert!(matches!(
+        settle(&mut p),
+        Drained::Continue { updated: false, .. }
+    ));
+    assert!(p.app.at_table());
+    assert_eq!(cell(&p), before);
+}
+
+/// Typed while keys are held, a paste waits in its place, for the field the keys
+/// before it open.
+#[test]
+fn a_paste_while_keys_are_held_waits_its_turn() {
+    let (mut p, _dir) = loaded_pump();
+    p.app.busy = true;
+    type_keys(&mut p, ":ab");
+    p.send(paste("cd")).unwrap();
+    p.drain().unwrap();
+    assert_eq!(held(&p), [':', 'a', 'b'].map(KeyCode::Char).to_vec());
+    assert_eq!(p.held.len(), 4, "and the paste behind them");
+    p.app.busy = false;
+    settle(&mut p);
+    assert_eq!(p.app.prompt.query_input.value(), "abcd");
+}
+
+/// Wherever a typed character would edit text, the paste finds that text, and
+/// nowhere else.
+#[test]
+fn the_focused_text_is_where_typing_goes() {
+    for opens in [":", "/", "g", "s", "i", ""] {
+        let (mut p, _dir) = loaded_pump();
+        type_keys(&mut p, opens);
+        let typing = p.app.text_field_focused();
+        assert_eq!(
+            p.app.focused_text_mut().is_some(),
+            typing,
+            "after {opens:?}"
+        );
+        if typing {
+            let before = rendered(&mut p.app);
+            p.send(paste("zz")).unwrap();
+            p.drain().unwrap();
+            assert_ne!(rendered(&mut p.app), before, "after {opens:?}: pasted");
+        }
+    }
 }

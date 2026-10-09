@@ -78,6 +78,13 @@ impl PickerState {
         self.settle();
     }
 
+    /// Pasted text, narrowing as typing it would, on one line.
+    pub fn type_text(&mut self, text: &str) {
+        self.filter
+            .push_str(&crate::widgets::text_input::one_line(text));
+        self.settle();
+    }
+
     pub fn backspace(&mut self) {
         self.filter.pop();
         self.settle();

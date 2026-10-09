@@ -177,6 +177,8 @@ impl<K: Kind> Store<K> {
     {
         let mut written = Vec::new();
         let mut bytes = 0u64;
+        // Made once a batch, not asked again per entry.
+        let mut made_dir = false;
         for (key, fingerprint, value) in entries {
             let file = self.file(key);
             let stored = (|| -> Result<()> {
@@ -189,7 +191,10 @@ impl<K: Kind> Store<K> {
                     touch(&file);
                     return Ok(());
                 }
-                fs::create_dir_all(self.dir())?;
+                if !made_dir {
+                    fs::create_dir_all(self.dir())?;
+                    made_dir = true;
+                }
                 atomic_write(&file, &frame)?;
                 bytes += frame.len() as u64;
                 Ok(())

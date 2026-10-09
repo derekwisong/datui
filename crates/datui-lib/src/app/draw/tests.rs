@@ -338,7 +338,7 @@ impl Backend for Resizable {
         self.inner.clear()
     }
 
-    fn clear_region(&mut self, clear_type: ClearType) -> std::io::Result<()> {
+    fn clear_region(&mut self, clear_type: ratatui::backend::ClearType) -> std::io::Result<()> {
         self.inner.clear_region(clear_type)
     }
 
@@ -432,6 +432,28 @@ fn a_new_size_is_drawn_whole() {
     let frame = numbered(16, 7, 2);
     draw(&mut terminal, &mut screen, &frame);
     assert_eq!(cells_of(&screen), redraw_of(&frame));
+}
+
+/// A frame that changes nothing on screen writes nothing: no update brackets, no
+/// color reset, no cursor. A repaint is written though nothing changed.
+#[test]
+fn an_unchanged_frame_writes_nothing() {
+    for scroll in [true, false] {
+        let mut driven = app(400);
+        let mut e = Emulated::new(scroll);
+        let frame = render(&mut driven);
+        assert!(!e.draw(&frame).is_empty());
+        assert_eq!(e.draw(&frame), b"", "scroll {scroll}");
+        press(&mut driven, KeyCode::Down);
+        let frame = render(&mut driven);
+        assert!(!e.draw(&frame).is_empty(), "a move is drawn");
+        assert_eq!(e.draw(&frame), b"");
+        e.drawer.repaint();
+        let out = e.draw(&frame);
+        assert!(out.starts_with(b"\x1b[?2026h"), "{out:?}");
+        assert!(out.ends_with(b"\x1b[?2026l"), "{out:?}");
+        assert_eq!(e.lines(), redrawn(&frame).lines());
+    }
 }
 
 /// Text the terminal shows that was never drawn (another program wrote it) goes
@@ -680,16 +702,51 @@ fn frames_reuse_their_buffers() {
     assert_eq!(moved, 20);
 }
 
-/// A resize, or the terminal back in focus, asks the run loop for a repaint.
+/// A resize asks the run loop for a repaint; the terminal back in focus for one
+/// before the next move, and a resize behind it still repaints at once.
 #[test]
 fn resize_and_focus_ask_for_a_repaint() {
+    use crate::render::context::Repaint;
     let mut driven = app(10);
-    assert!(!driven.app.take_repaint());
+    assert_eq!(driven.app.take_repaint(), None);
     driven.handle(AppEvent::TerminalFocused);
-    assert!(driven.app.take_repaint());
-    assert!(!driven.app.take_repaint());
+    assert_eq!(driven.app.take_repaint(), Some(Repaint::BeforeMoving));
+    assert_eq!(driven.app.take_repaint(), None);
     driven.handle(AppEvent::Resize(COLS, LINES));
-    assert!(driven.app.take_repaint());
+    driven.handle(AppEvent::TerminalFocused);
+    assert_eq!(driven.app.take_repaint(), Some(Repaint::Whole));
+}
+
+/// Back in focus, frames are the plain diff (nothing, when nothing changed) until the
+/// terminal would move lines: that frame repaints instead, over whatever drifted while
+/// it was away, and the moves after it are moves again.
+#[test]
+fn focus_repaints_in_place_of_the_next_move() {
+    let mut driven = app(400);
+    let mut e = Emulated::new(true);
+    let frame = render(&mut driven);
+    e.draw(&frame);
+    e.screen.process(b"\x1b[5;30Hstray");
+    e.drawer.repaint_before_moving();
+    assert_eq!(e.draw(&frame), b"", "nothing changed: nothing sent");
+
+    // Down a line at a time until the page scrolls: that frame is drawn whole.
+    let mut repainted = false;
+    while !repainted {
+        press(&mut driven, KeyCode::Down);
+        let frame = render(&mut driven);
+        let out = e.draw(&frame);
+        assert!(!moved_by_terminal(&out), "no move while in doubt");
+        repainted = find(&out, b"\x1b[2J").is_some();
+        if repainted {
+            assert_eq!(e.lines(), redrawn(&frame).lines(), "the stray text is gone");
+        }
+    }
+    press(&mut driven, KeyCode::Down);
+    assert!(
+        moved_by_terminal(&e.draw(&render(&mut driven))),
+        "moved again after the repaint"
+    );
 }
 
 /// The background of each table line, top to bottom, below the two header lines.

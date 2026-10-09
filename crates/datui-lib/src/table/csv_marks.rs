@@ -576,9 +576,7 @@ impl Counter {
     /// start at rows, so each is counted alone: a long seek's on several threads.
     fn chunker_agrees_on(&self, bytes: &[u8], points: &[(usize, usize)]) -> bool {
         let spans: Vec<_> = points.windows(2).map(|w| (w[0], w[1])).collect();
-        let threads = std::thread::available_parallelism()
-            .map_or(1, |n| n.get())
-            .min(8);
+        let threads = crate::analysis::statistics::cores().min(8);
         if spans.len() < 4 || threads < 2 {
             return spans
                 .iter()

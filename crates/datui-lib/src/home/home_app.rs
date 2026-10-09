@@ -1091,6 +1091,8 @@ impl App {
                 self.home.probes.forget(&dir);
             }
         }
+        // The rows shown are stat'ed again, and a file rewritten since is measured again.
+        self.home.stat_epoch += 1;
         // Ctrl+R retries failed peeks and missing web files too.
         self.home.peek_failed.clear();
         for path in std::mem::take(&mut self.home.web_gone).into_keys() {
@@ -1381,6 +1383,7 @@ impl App {
                 cols_sampled: entry.cols_sampled,
                 size: Some(size),
                 modified: None,
+                stat_only: false,
                 columns: entry.columns.clone(),
                 cost: entry.cost.clone(),
                 kind: None,

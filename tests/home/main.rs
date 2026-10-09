@@ -4009,6 +4009,7 @@ fn test_applying_a_measurement_puts_the_layout_on_the_row() {
             cols_sampled: false,
             size: Some(100),
             modified: None,
+            stat_only: false,
             columns: vec!["a".into()],
             kind: None,
             holds: Default::default(),
@@ -4717,8 +4718,10 @@ fn test_a_directory_found_to_be_separate_tables_stays_a_plain_directory() {
             .find(|entry| entry.path == directory)
             .expect("the directory is listed")
             .clone();
-        assert_eq!(row.kind, EntryKind::Unknown, "a listing looks into nothing");
-        assert!(row.modified.is_none(), "nor stats it");
+        if known.is_empty() {
+            assert_eq!(row.kind, EntryKind::Unknown, "a listing looks into nothing");
+            assert!(row.modified.is_none(), "nor stats what has no record");
+        }
         let cache = datui::CacheManager::with_dir(cache_dir.path().to_path_buf());
         let mut kind = row.kind;
         datui::home::look_into_batch(
@@ -9768,6 +9771,116 @@ mod listing_work {
         assert!(section.waiting, "listing again");
         assert!(!section.unavailable && section.unavailable_note.is_none());
         assert_eq!(section.rows.len(), 1);
+    }
+
+    fn stat(size: u64, secs: u64) -> Measured {
+        Measured {
+            size: Some(size),
+            modified: Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs)),
+            stat_only: true,
+            ..Default::default()
+        }
+    }
+
+    /// A stat a sort asked for is not a measurement: the row is still measured when it
+    /// comes on screen, whatever the sort is then.
+    #[test]
+    fn a_stat_for_a_sort_is_not_a_measurement() {
+        let mut home = files(10);
+        home.sort = SortMode::Size;
+        let path = PathBuf::from("/pretend/many/report_00003.csv");
+        home.record_measurement(path.clone(), stat(10, 1));
+        home.apply_new_measurements();
+        assert!(!home.enriched.contains_key(&path));
+        assert!(
+            !home
+                .unstated_for_sort(usize::MAX)
+                .iter()
+                .any(|e| e.path == path)
+        );
+        home.sort = SortMode::Natural;
+        assert!(
+            home.unmeasured_visible(usize::MAX)
+                .iter()
+                .any(|e| e.path == path),
+            "measured once shown"
+        );
+    }
+
+    /// Sorted by time, a directory not looked into is stat'ed too, or it would sort at
+    /// the epoch and jump once looked at; sorted by size it has none to give.
+    #[test]
+    fn a_time_sort_stats_directories_too() {
+        let mut home = HomeState::default();
+        let rows = (0..5)
+            .map(|i| {
+                let mut dir = Entry::directory(std::path::Path::new(&format!("/pretend/d/{i}")));
+                dir.kind = EntryKind::Unknown;
+                dir
+            })
+            .collect();
+        home.apply_listing(Listing {
+            sections: vec![Section::titled("D", rows)],
+            ..Default::default()
+        });
+        home.view_height = 20;
+        home.sort = SortMode::Modified;
+        assert_eq!(home.unstated_for_sort(usize::MAX).len(), 5);
+        home.sort = SortMode::Size;
+        assert!(home.unstated_for_sort(usize::MAX).is_empty());
+    }
+
+    /// After Ctrl+R the rows shown are stat'ed again: one rewritten since loses its
+    /// counts and is measured again; one unchanged keeps them.
+    #[test]
+    fn a_refresh_drops_the_counts_of_a_rewritten_file() {
+        let mut home = files(10);
+        let changed = PathBuf::from("/pretend/many/report_00001.csv");
+        let same = PathBuf::from("/pretend/many/report_00002.csv");
+        for path in [&changed, &same] {
+            home.record_measurement(
+                path.clone(),
+                Measured {
+                    rows: Some(5),
+                    stat_only: false,
+                    ..stat(10, 1)
+                },
+            );
+        }
+        home.apply_new_measurements();
+        assert!(home.unstated_for_sort(usize::MAX).is_empty(), "all stat'ed");
+
+        home.stat_epoch += 1;
+        let again = home.unstated_for_sort(usize::MAX);
+        assert!(
+            again
+                .iter()
+                .any(|e| e.path == changed && e.modified.is_none())
+        );
+        assert!(again.iter().any(|e| e.path == same));
+
+        home.record_measurement(changed.clone(), stat(20, 2));
+        home.record_measurement(same.clone(), stat(10, 1));
+        home.apply_new_measurements();
+        let row = |path: &PathBuf| {
+            home.sections[0]
+                .rows
+                .iter()
+                .find(|r| r.path == *path)
+                .cloned()
+                .unwrap()
+        };
+        let rewritten = row(&changed);
+        assert_eq!(
+            (rewritten.rows, rewritten.size),
+            (None, Some(20)),
+            "stale counts gone"
+        );
+        assert_eq!(row(&same).rows, Some(5), "unchanged keeps its counts");
+        let wanted = home.unmeasured_visible(usize::MAX);
+        assert!(wanted.iter().any(|e| e.path == changed), "measured again");
+        assert!(!wanted.iter().any(|e| e.path == same));
+        assert!(home.unstated_for_sort(usize::MAX).is_empty());
     }
 
     /// Sorted by size or time, every row needs its stat and nothing more: those off

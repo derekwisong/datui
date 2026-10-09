@@ -1287,8 +1287,12 @@ pub fn stat_row(entry: &mut Entry) -> bool {
 /// Whether a row on disk still lacks the size and mtime its listing left out: no URL,
 /// no table inside a file.
 pub fn unstated(entry: &Entry) -> bool {
-    entry.modified.is_none()
-        && entry.table.is_none()
+    entry.modified.is_none() && on_disk(entry)
+}
+
+/// Whether a row is a path on disk a stat answers for: no URL, no table inside a file.
+pub fn on_disk(entry: &Entry) -> bool {
+    entry.table.is_none()
         && !crate::home::is_cloud_place(&entry.path)
         && matches!(
             crate::cloud::source::input_source(&entry.path),

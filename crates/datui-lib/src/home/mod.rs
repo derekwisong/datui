@@ -1230,6 +1230,9 @@ pub struct Measured {
     pub size: Option<u64>,
     /// When it last changed, from the stat a listing leaves to the rows shown.
     pub modified: Option<std::time::SystemTime>,
+    /// A stat alone (`Reads::StatOnly`): its size and mtime, not a measurement, so the
+    /// row is still measured when it comes on screen.
+    pub stat_only: bool,
     /// Column names, when the format gave them up for free.
     pub columns: Vec<String>,
     /// What opening it costs: compression, layout, partitioning, carried to the screen
@@ -1645,6 +1648,14 @@ pub struct HomeState {
     /// Row and column counts already read, by path, so each dataset is measured once a
     /// session.
     pub enriched: std::collections::HashMap<PathBuf, Measured>,
+    /// Each row's latest stat this session, and the refresh it was taken in: a stat-only
+    /// answer lands here and not in `enriched`.
+    pub stated: std::collections::HashMap<PathBuf, Stated>,
+    /// Which refresh the stats are of: Ctrl+R moves it, and the rows shown are stat'ed
+    /// again, their counts dropped where the file changed.
+    pub stat_epoch: u64,
+    /// Rows whose counts went stale: the file changed since they were measured.
+    pub stale: std::collections::HashSet<PathBuf>,
     /// Paths recorded in `enriched` since the rows last took them in.
     pub unapplied: std::collections::HashSet<PathBuf>,
     /// Sections folded (`true`) or opened by the user, by title so it survives rebuilds
@@ -1836,6 +1847,9 @@ impl Default for HomeState {
             peek_failed: std::collections::HashSet::new(),
             waiting_since: None,
             enriched: std::collections::HashMap::new(),
+            stated: Default::default(),
+            stat_epoch: 0,
+            stale: Default::default(),
             unapplied: Default::default(),
             folds: std::collections::HashMap::new(),
             folds_owed: false,
@@ -1969,13 +1983,14 @@ fn stat_and_recall(
     probe: &mut Entry,
     known: &std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
 ) -> bool {
-    if !discover::unstated(probe) {
-        return true;
-    }
-    if !discover::stat_row(probe) {
+    if discover::unstated(probe) && !discover::stat_row(probe) {
         return false;
     }
-    apply_known_facts(probe, known, false);
+    // Stat'ed now or before (a sort's stat-only look): what the index has at that size
+    // and mtime is taken rather than read.
+    if probe.rows.is_none() && probe.columns.is_empty() && discover::on_disk(probe) {
+        apply_known_facts(probe, known, false);
+    }
     true
 }
 
@@ -2013,6 +2028,10 @@ pub fn look_into_batch(
     mut each: impl FnMut(PathBuf, Measured),
 ) {
     let as_read = crate::formats::schema_union::ReadAs::default();
+    let answer = |probe: &Entry, entry: &Entry| Measured {
+        stat_only: reads == Reads::StatOnly,
+        ..measured_from(probe, entry)
+    };
     let classified: Vec<(Entry, Entry)> = rows
         .into_iter()
         .map(|entry| {
@@ -2021,10 +2040,13 @@ pub fn look_into_batch(
             if !stat_and_recall(&mut probe, known) {
                 return (probe, entry);
             }
-            // A kind the index restored is not looked for again.
-            let probe = classify_row(&probe);
+            // A kind the index restored is not looked for again; a stat alone reads nothing.
+            let probe = match reads {
+                Reads::Files => classify_row(&probe),
+                Reads::StatOnly => probe,
+            };
             if probe.kind != entry.kind || probe.modified != entry.modified {
-                each(entry.path.clone(), measured_from(&probe, &entry));
+                each(entry.path.clone(), answer(&probe, &entry));
             }
             (probe, entry)
         })
@@ -2037,7 +2059,7 @@ pub fn look_into_batch(
             measure_row(&mut probe, &entry, &as_read, Some(cache));
             facts.extend(facts_for(&probe));
         }
-        each(entry.path.clone(), measured_from(&probe, &entry));
+        each(entry.path.clone(), answer(&probe, &entry));
     }
     // Cache what was learned; each record carries its size and mtime and invalidates
     // itself when they change.
@@ -2052,6 +2074,7 @@ pub fn measured_from(probe: &Entry, original: &Entry) -> Measured {
         cols_sampled: probe.cols_sampled,
         size: probe.size.or(original.size),
         modified: probe.modified.or(original.modified),
+        stat_only: false,
         columns: probe.columns.clone(),
         kind: (probe.kind != original.kind).then_some(probe.kind),
         holds: probe.holds.clone(),
@@ -2790,6 +2813,55 @@ fn annotate(
             door.cost.source = Some(mounts.describe(&door.path).fstype);
         }
     }
+}
+
+/// A row's stat as last taken this session, and the refresh it was taken in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stated {
+    pub size: Option<u64>,
+    pub modified: Option<std::time::SystemTime>,
+    /// [`HomeState::stat_epoch`] when it was taken.
+    pub epoch: u64,
+}
+
+/// Fold what this session learned of a row into it: counts gone stale dropped, its
+/// measurement, then its latest stat. Whether there was anything.
+fn fold_known(
+    row: &mut Entry,
+    enriched: &std::collections::HashMap<PathBuf, Measured>,
+    stated: &std::collections::HashMap<PathBuf, Stated>,
+    stale: &std::collections::HashSet<PathBuf>,
+) -> bool {
+    let mut any = false;
+    if stale.contains(&row.path) {
+        forget_counts(row);
+        any = true;
+    }
+    if let Some(m) = enriched.get(&row.path) {
+        fold_measured(row, m);
+        any = true;
+    }
+    if let Some(stat) = stated.get(&row.path) {
+        if stat.size.is_some() {
+            row.size = stat.size;
+        }
+        if stat.modified.is_some() {
+            row.modified = stat.modified;
+        }
+        any = true;
+    }
+    any
+}
+
+/// Drop what a row's file said of itself, which a rewrite has made stale; where it
+/// lives stays.
+fn forget_counts(row: &mut Entry) {
+    row.measured = false;
+    row.rows = None;
+    row.cols = None;
+    row.cols_sampled = false;
+    row.columns.clear();
+    take_cost(row, &discover::Cost::default());
 }
 
 /// What of a row decides where the list puts it, or whether it lists it at all: a
@@ -4006,9 +4078,7 @@ impl HomeState {
         // The walk's rows are snapshots: what this session measured of them is folded in
         // here, as nothing measures them again.
         for row in &mut rows {
-            if let Some(m) = self.enriched.get(&row.path) {
-                fold_measured(row, m);
-            }
+            fold_known(row, &self.enriched, &self.stated, &self.stale);
         }
 
         // Say an empty result when the walk stopped short: "no match" may be wrong then.
@@ -5048,12 +5118,27 @@ impl HomeState {
         out
     }
 
-    /// Rows a sort by size or time lacks a stat for, up to `limit`: every row listed and
-    /// those a cut hides, which need their stat and nothing read.
+    /// Rows that need a stat and nothing read, up to `limit`: those on screen stat'ed
+    /// before the last Ctrl+R, then, sorted by size or time, every row listed and those
+    /// a cut hides. Each goes with its stat cleared, so it is taken again.
     pub fn unstated_for_sort(&self, limit: usize) -> Vec<Entry> {
-        let mut out = Vec::new();
-        if matches!(self.sort, SortMode::Size | SortMode::Modified) {
-            self.sorted_rest(&self.view(), limit, &mut out);
+        let view = self.view();
+        let mut out: Vec<Entry> = Vec::new();
+        for entry in self.entries_on_screen(&view) {
+            let stale =
+                (self.stated.get(&entry.path)).is_some_and(|stated| stated.epoch < self.stat_epoch);
+            if stale && self.needs_stat(entry) && !out.iter().any(|e| e.path == entry.path) {
+                out.push(entry.clone());
+                if out.len() >= limit {
+                    break;
+                }
+            }
+        }
+        if out.len() < limit && matches!(self.sort, SortMode::Size | SortMode::Modified) {
+            self.sorted_rest(&view, limit, &mut out);
+        }
+        for entry in &mut out {
+            entry.modified = None;
         }
         out
     }
@@ -5088,15 +5173,27 @@ impl HomeState {
         }
     }
 
-    /// Whether the sort orders by something `entry` lacks until measured.
+    /// Whether the sort orders by something `entry` lacks until measured: its count, or
+    /// for size and time its stat alone (a directory's too, for time).
     fn sort_wants(&self, entry: &Entry) -> bool {
         match self.sort {
             SortMode::Natural => false,
             SortMode::Rows => self.wants_measuring(entry),
             SortMode::Size | SortMode::Modified => {
-                self.wants_measuring(entry) && entry.modified.is_none()
+                (self.sort == SortMode::Modified || entry.kind != EntryKind::Unknown)
+                    && self.needs_stat(entry)
             }
         }
+    }
+
+    /// Whether a local row lacks a stat of this refresh: never stat'ed, or stat'ed before
+    /// the last Ctrl+R.
+    fn needs_stat(&self, entry: &Entry) -> bool {
+        let due = match self.stated.get(&entry.path) {
+            Some(stated) => stated.epoch < self.stat_epoch,
+            None => entry.modified.is_none(),
+        };
+        due && discover::on_disk(entry) && !(self.network_check)(&entry.path)
     }
 
     /// Whether `entry` is a local row with no count yet that measuring would give, or
@@ -5108,6 +5205,7 @@ impl HomeState {
         // A directory not yet looked into is the classification pass's, which stats it.
         if entry.kind != EntryKind::Unknown
             && discover::unstated(entry)
+            && !self.stated.contains_key(&entry.path)
             && !(self.network_check)(&entry.path)
         {
             return true;
@@ -5249,7 +5347,28 @@ impl HomeState {
     /// fold into its rows.
     pub fn record_measurement(&mut self, path: PathBuf, measured: Measured) {
         self.unapplied.insert(path.clone());
-        self.enriched.insert(path, measured);
+        let before = self.stated.insert(
+            path.clone(),
+            Stated {
+                size: measured.size,
+                modified: measured.modified,
+                epoch: self.stat_epoch,
+            },
+        );
+        if !measured.stat_only {
+            self.stale.remove(&path);
+            self.enriched.insert(path, measured);
+            return;
+        }
+        // A file changed since it was measured: its counts are dropped, and measured again
+        // when shown.
+        let changed = before.is_some_and(|before| {
+            before.modified.is_some()
+                && (before.size, before.modified) != (measured.size, measured.modified)
+        });
+        if changed && self.enriched.remove(&path).is_some() {
+            self.stale.insert(path);
+        }
     }
 
     /// Record a size alone: a measurement that landed meanwhile keeps the rest.
@@ -5271,9 +5390,7 @@ impl HomeState {
             // The door too: it reads its directory's slot on purpose, showing numbers already
             // measured upstairs; nothing writes the door's answer.
             for row in section.rows.iter_mut().chain(section.door.iter_mut()) {
-                if let Some(m) = self.enriched.get(&row.path) {
-                    fold_measured(row, m);
-                }
+                fold_known(row, &self.enriched, &self.stated, &self.stale);
             }
             // The door's name says what it opens, and a measurement can change that: the
             // footers turn a directory of files down as one table, or name its keys.
@@ -5309,11 +5426,11 @@ impl HomeState {
         for (si, section) in self.sections.iter_mut().enumerate() {
             let mut here = false;
             for (i, row) in section.rows.iter_mut().enumerate() {
-                if new(&row.path)
-                    && let Some(m) = self.enriched.get(&row.path)
-                {
-                    let before = Standing::of(row, sort);
-                    fold_measured(row, m);
+                if !new(&row.path) {
+                    continue;
+                }
+                let before = Standing::of(row, sort);
+                if fold_known(row, &self.enriched, &self.stated, &self.stale) {
                     moved |= Standing::of(row, sort) != before;
                     touched.push((si, i));
                     here = true;
@@ -5321,10 +5438,8 @@ impl HomeState {
             }
             if let Some(door) = section.door.as_mut()
                 && new(&door.path)
-                && let Some(m) = self.enriched.get(&door.path)
             {
-                fold_measured(door, m);
-                here = true;
+                here |= fold_known(door, &self.enriched, &self.stated, &self.stale);
             }
             if here && let Some(door) = section.door.as_mut() {
                 door.name = door_name(door, &section.rows);

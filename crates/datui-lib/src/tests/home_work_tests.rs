@@ -346,3 +346,15 @@ fn a_schema_read_stuck_on_a_share_leaves_local_reads() {
         "the stuck one only holds its own slot"
     );
 }
+
+/// Ctrl+R moves the stats on: the rows shown are stat'ed again.
+#[test]
+fn ctrl_r_stats_the_rows_shown_again() {
+    let (mut app, _rx) = app();
+    assert_eq!(app.home.stat_epoch, 0);
+    app.event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('r'),
+        KeyModifiers::CONTROL,
+    )));
+    assert_eq!(app.home.stat_epoch, 1);
+}

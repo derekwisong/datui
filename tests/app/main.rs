@@ -1343,7 +1343,7 @@ fn app_with_recents_in_two_places(
         .iter()
         .position(|r| matches!(r, datui::home::Row::Place { path, .. } if *path == here))
         .expect("the directory two recents live in is a place row");
-    app.home.selected = row;
+    app.home.select(row);
     (app, recents, cache)
 }
 

@@ -610,7 +610,7 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
         if at < first_line {
             continue;
         }
-        let selected = idx == app.home.selected;
+        let selected = idx == app.home.selected && !app.home.resting;
         match &row {
             crate::home::Row::Header {
                 section,
@@ -719,6 +719,13 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                 show_meta,
                 ctx,
             )),
+        }
+        // No row picked yet: the one Enter takes is tinted, without the rail or the accent.
+        if idx == app.home.selected
+            && app.home.resting
+            && let Some(line) = lines.pop()
+        {
+            lines.push(line.patch_style(ctx.resting_style()));
         }
     }
 
@@ -2381,6 +2388,14 @@ fn render_preview(
         return;
     }
     let Some(entry) = app.home.selected_entry().cloned() else {
+        // No row picked yet: what the listing already says of the place, nothing read.
+        if app.home.resting
+            && let Some(lines) = here_details(app, width, ctx)
+        {
+            Paragraph::new(lines)
+                .wrap(ratatui::widgets::Wrap { trim: false })
+                .render(area, buf);
+        }
         return;
     };
     if crate::home::cloud_source_id(&entry.path).is_some() {
@@ -2889,6 +2904,47 @@ fn place_details(
         lines.extend(fact_lines(key, value, key_w, width, style, ctx));
     }
     lines
+}
+
+/// The place listed, before any row is picked: its name, where it lives and what its
+/// listing counted, from the rows in hand (nothing is read to say it).
+fn here_details(app: &crate::App, width: usize, ctx: &RenderContext) -> Option<Vec<Line<'static>>> {
+    let section = (app.home.sections.iter()).find(|s| s.root.is_some() && !s.grouped_by_place)?;
+    let path = section.root.as_deref()?;
+    let plain = Style::default().fg(ctx.text_secondary);
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| crate::home::display_path(path));
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(
+            name,
+            Style::default()
+                .fg(ctx.text_primary)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            glyphs::fit_start(&crate::home::display_path(path), width),
+            Style::default().fg(ctx.dimmed),
+        )),
+    ];
+    let count = |keep: &dyn Fn(&Entry) -> bool| section.rows.iter().filter(|r| keep(r)).count();
+    let datasets = count(&|r| r.kind.is_known_dataset() || r.kind.is_lake_table());
+    let directories = count(&|r| matches!(r.kind, EntryKind::Directory | EntryKind::Unknown));
+    let mut facts: Vec<(&str, String)> = Vec::new();
+    if let Some(source) = section.rows.first().and_then(|r| r.cost.source.clone()) {
+        facts.push(("storage", source));
+    }
+    facts.push(("datasets", crate::numfmt::group_chrome(datasets)));
+    facts.push(("directories", crate::numfmt::group_chrome(directories)));
+    if let Some(state) = &section.subtitle {
+        facts.push(("listing", state.clone()));
+    }
+    let key_w = key_column(facts.iter().map(|(k, _)| *k));
+    for (key, value) in facts {
+        lines.extend(fact_lines(key, value, key_w, width, plain, ctx));
+    }
+    Some(lines)
 }
 
 /// Whether a row's name gets a trailing slash, decided up front so it does not change

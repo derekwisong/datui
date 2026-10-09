@@ -717,7 +717,7 @@ fn test_right_goes_inside_a_local_multi_file_directory() {
         .iter()
         .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "sales"))
         .expect("the directory is listed");
-    app.home.selected = row;
+    app.home.select(row);
     // A listing looks into nothing, so what this row is has to be found before it
     // can be acted on. In the app a background pass does it, highlighted row first;
     // here the same call does it on the spot.
@@ -774,7 +774,7 @@ fn test_enter_on_a_place_row_browses_it() {
         .iter()
         .position(|r| matches!(r, datui::home::Row::Place { path, .. } if *path == here))
         .expect("back at the listing");
-    app.home.selected = row;
+    app.home.select(row);
     app.event(key(KeyCode::Right));
     assert_eq!(app.home.browsing.as_deref(), Some(here.as_path()));
 }
@@ -873,7 +873,7 @@ fn test_ctrl_d_adds_to_the_catalog_and_forgets() {
             |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.path == recents[2]),
         )
         .expect("the recent in the other place is listed");
-    app.home.selected = row;
+    app.home.select(row);
     app.event(ctrl('d'));
     assert!(listed(&recents[2]), "a file row adds the file");
 
@@ -888,7 +888,7 @@ fn test_ctrl_d_adds_to_the_catalog_and_forgets() {
                     && app.home.sections[*section].title == datui::home::HomeState::RECENT_SECTION)
         })
         .expect("the recent is still listed");
-    app.home.selected = row;
+    app.home.select(row);
     app.event(key(KeyCode::Delete));
     assert!(listed(&recents[2]), "the catalog keeps it");
 }
@@ -946,7 +946,7 @@ fn test_the_place_of_an_http_recent_says_it_cannot_be_browsed() {
         .iter()
         .position(|r| matches!(r, datui::home::Row::Place { path, .. } if *path == place))
         .expect("the URL's prefix is its place");
-    app.home.selected = row;
+    app.home.select(row);
 
     // The bar does not offer the door.
     let area = Rect::new(0, 0, 200, 24);
@@ -1063,7 +1063,7 @@ fn test_a_tall_list_spaces_its_sections_and_a_short_one_does_not() {
 
     // The last row on screen, selected: drawn, spacers and all.
     let last = app.home.visible().len() - 1;
-    app.home.selected = last;
+    app.home.select(last);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
     let screen = common::buffer_text(&buf);
@@ -1078,7 +1078,7 @@ fn test_a_tall_list_spaces_its_sections_and_a_short_one_does_not() {
 
     // Short: dense.
     let area = Rect::new(0, 0, 100, 24);
-    app.home.selected = 0;
+    app.home.select(0);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
     let rows = list_rows(&buf, area);
@@ -1119,7 +1119,7 @@ fn test_right_does_not_browse_from_an_ordinary_row() {
             |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "one.parquet"),
         )
         .expect("the file is listed");
-    app.home.selected = row;
+    app.home.select(row);
 
     // Wide on purpose: the bar is cut from the right, and this assertion is about
     // what the bar says, not about where the fitting loop stops.
@@ -1258,7 +1258,7 @@ fn test_right_goes_inside_a_lake_table() {
         .iter()
         .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "orders"))
         .expect("the table is listed");
-    app.home.selected = row;
+    app.home.select(row);
     // A listing looks into nothing, so what this row is has to be found before it
     // can be acted on. In the app a background pass does it, highlighted row first;
     // here the same call does it on the spot.
@@ -1318,7 +1318,7 @@ fn test_an_unexamined_lake_root_is_classified_before_it_is_opened() {
         .iter()
         .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "orders"))
         .expect("the table is listed");
-    app.home.selected = row;
+    app.home.select(row);
 
     // As a row restored from a cache this build will not take its kind from.
     for section in app.home.sections_mut().iter_mut() {
@@ -1374,7 +1374,7 @@ fn test_right_into_a_lake_table_says_why() {
         .iter()
         .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "orders"))
         .expect("the table is listed");
-    app.home.selected = row;
+    app.home.select(row);
     // A listing looks into nothing, so what this row is has to be found before it
     // can be acted on. In the app a background pass does it, highlighted row first;
     // here the same call does it on the spot.
@@ -1424,7 +1424,7 @@ fn test_an_unexamined_remote_lake_root_is_classified_off_the_event_thread() {
         .iter()
         .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.path == table))
         .expect("the table is listed under Recent");
-    app.home.selected = row;
+    app.home.select(row);
     assert_eq!(
         app.home.selected_entry().map(|e| e.kind),
         Some(datui::home::discover::EntryKind::Unknown),
@@ -1502,7 +1502,7 @@ fn test_a_hive_directory_from_home_still_opens_as_one_dataset() {
         .iter()
         .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "sales"))
         .expect("the directory is listed");
-    app.home.selected = row;
+    app.home.select(row);
     // A listing looks into nothing, so what this row is has to be found before it
     // can be acted on. In the app a background pass does it, highlighted row first;
     // here the same call does it on the spot.
@@ -1537,7 +1537,7 @@ fn test_a_hive_directory_from_home_still_opens_as_one_dataset() {
             |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "one.parquet"),
         )
         .expect("the file is listed");
-    app.home.selected = row;
+    app.home.select(row);
     match app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
@@ -1564,7 +1564,7 @@ fn test_a_hive_directory_from_home_still_opens_as_one_dataset() {
         .iter()
         .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.path == gone))
         .expect("the row is listed");
-    app.home.selected = row;
+    app.home.select(row);
     assert_eq!(
         app.home.selected_entry().map(|e| e.kind),
         Some(datui::home::discover::EntryKind::Hive),
@@ -1613,7 +1613,7 @@ fn test_both_doors_are_open_on_a_directory_datui_cannot_name() {
         .iter()
         .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "exports"))
         .expect("the directory is listed");
-    app.home.selected = row;
+    app.home.select(row);
     app.home.classify_now(8);
     assert_eq!(
         app.home.selected_entry().map(|e| e.label().to_string()),
@@ -1698,7 +1698,7 @@ fn test_the_door_into_a_lake_table_says_its_files_are_not_the_table() {
         .iter()
         .position(|r| matches!(r, datui::home::Row::Door { .. }))
         .expect("the directory carries the row");
-    app.home.selected = row;
+    app.home.select(row);
     assert_eq!(
         app.home.selected_entry().map(|e| e.kind),
         Some(datui::home::discover::EntryKind::Delta),
@@ -1743,7 +1743,7 @@ fn test_the_door_into_a_lake_table_says_its_files_are_not_the_table() {
         .iter()
         .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "events"))
         .expect("the directory is listed");
-    up.home.selected = row;
+    up.home.select(row);
     let follow = up.event(key(KeyCode::Enter));
     looked_at_on_a_worker(&mut up, &up_rx, follow);
     assert_eq!(up.home.browsing.as_deref(), Some(events.as_path()));
@@ -1775,7 +1775,7 @@ fn test_the_door_opens_a_directory_by_the_directory_route() {
         .iter()
         .position(|r| matches!(r, datui::home::Row::Door { .. }))
         .expect("the directory carries the row");
-    app.home.selected = row;
+    app.home.select(row);
 
     match app.event(key(KeyCode::Enter)) {
         Some(AppEvent::Open(paths, options)) => {
@@ -1815,7 +1815,7 @@ fn test_right_goes_inside_a_row_nothing_has_looked_into() {
         .iter()
         .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "archive"))
         .expect("the directory is listed");
-    app.home.selected = row;
+    app.home.select(row);
     // Deliberately not classified: this is what a listing hands over before anything
     // has looked into it, and what every row on a share looks like.
     assert_eq!(
@@ -1945,7 +1945,7 @@ fn test_the_cloud_door_reads_a_prefix_with_the_reader_its_listing_calls_for() {
             .iter()
             .position(|r| matches!(r, datui::home::Row::Door { .. }))
             .expect("the prefix carries the row");
-        app.home.selected = row;
+        app.home.select(row);
         let event = app.event(key(KeyCode::Enter));
         let options = match event {
             Some(AppEvent::Open(_, options)) => Some(options),
@@ -2120,7 +2120,7 @@ fn test_the_bar_says_what_enter_will_really_do() {
             .iter()
             .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == name))
             .unwrap_or_else(|| panic!("{name} is listed"));
-        app.home.selected = row;
+        app.home.select(row);
 
         let predicted = app.what_enter_does();
         assert_eq!(predicted, expected, "prediction for {name}");
@@ -2152,7 +2152,7 @@ fn test_the_bar_says_what_enter_will_really_do() {
         app.home.visible().iter().position(want)
     };
     if let Some(i) = at(&mut other, |r| matches!(r, datui::home::Row::Header { .. })) {
-        other.home.selected = i;
+        other.home.select(i);
         assert_eq!(
             other.what_enter_does(),
             datui::WhatEnter::FoldsSection,
@@ -2172,7 +2172,7 @@ fn test_the_bar_says_what_enter_will_really_do() {
         .iter()
         .position(|r| matches!(r, datui::home::Row::Door { .. }))
         .expect("the directory carries the door");
-    app.home.selected = door;
+    app.home.select(door);
     assert_eq!(app.what_enter_does(), datui::WhatEnter::OpensDirectory);
     assert!(matches!(
         app.event(key(KeyCode::Enter)),
@@ -2205,7 +2205,7 @@ fn test_a_place_row_says_inside_and_says_it_once() {
         .iter()
         .position(|r| matches!(r, datui::home::Row::Place { .. }))
         .expect("a recent under a place row");
-    app.home.selected = row;
+    app.home.select(row);
 
     assert_eq!(
         app.what_enter_does(),
@@ -2240,7 +2240,7 @@ fn test_the_pane_only_promises_a_door_that_exists() {
             .iter()
             .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == name))
             .unwrap_or_else(|| panic!("{name} is listed"));
-        app.home.selected = row;
+        app.home.select(row);
         let area = ratatui::layout::Rect::new(0, 0, 120, 24);
         let mut buf = ratatui::buffer::Buffer::empty(area);
         ratatui::widgets::Widget::render(&mut *app, area, &mut buf);

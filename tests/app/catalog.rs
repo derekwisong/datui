@@ -105,7 +105,7 @@ fn select(app: &mut App, name: &str) {
         .iter()
         .position(|row| matches!(row, datui::home::Row::Entry { entry, .. } if entry.name == name))
         .unwrap_or_else(|| panic!("{name} is not on screen"));
-    app.home.selected = index;
+    app.home.select(index);
 }
 
 /// The footer: the last line drawn.
@@ -655,7 +655,7 @@ fn ctrl_d_adds_a_row_to_catalog_toml_and_forgets_it() {
     let mut offered = [0; 3];
     let rows = app.home.visible().len();
     for row in 0..rows {
-        app.home.selected = row;
+        app.home.select(row);
         let line = footer(&mut app);
         for (i, text) in ["Enter", "^D", "^E", "? keys"].iter().enumerate() {
             if let Some(at) = column(&line, text) {
@@ -705,7 +705,7 @@ fn ctrl_d_adds_a_row_to_catalog_toml_and_forgets_it() {
         .iter()
         .position(|s| s.title == "Mine")
         .unwrap();
-    app.home.selected = app
+    let at = app
         .home
         .visible()
         .iter()
@@ -714,6 +714,7 @@ fn ctrl_d_adds_a_row_to_catalog_toml_and_forgets_it() {
                 if *section == mine_section && entry.name == "Lake")
         })
         .unwrap();
+    app.home.select(at);
     let line = footer(&mut app);
     assert!(line.contains("^D Forget"), "{line}");
     drive(&mut app, ctrl('d'));

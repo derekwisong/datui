@@ -454,7 +454,8 @@ pub enum WhatEnter {
 impl App {
     /// See [`WhatEnter`].
     pub fn what_enter_does(&self) -> WhatEnter {
-        let entry = match self.home.selected_row() {
+        // With no row picked, the one Enter takes.
+        let entry = match self.home.cursor_row() {
             // A place browses as `→` does; an HTTP place has no listing and says so.
             Some(home::Row::Place { path, .. }) => {
                 return if home::place_is_browsable(&path) {
@@ -1181,6 +1182,13 @@ impl App {
     #[doc(hidden)]
     pub fn pass_stdout_to(&mut self, out: impl std::io::Write + Send + 'static) {
         self.pipes.stdout_pass = Some(Box::new(out));
+    }
+
+    /// Wait up to `within` for closed datasets, dropped on threads of their own, to be
+    /// let go: their temp files are gone once this is true.
+    #[doc(hidden)]
+    pub fn releases_settled(within: std::time::Duration) -> bool {
+        crate::app::background::releases_settled(within)
     }
 
     /// The follow of the dataset on screen, while it is followed.

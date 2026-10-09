@@ -418,6 +418,7 @@ fn run_impl(
     let open = match input {
         // No paths: open the home screen instead of loading anything.
         RunInput::Paths(paths, _) if paths.is_empty() => {
+            app.rest_at_start();
             app.enter_home();
             None
         }

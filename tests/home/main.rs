@@ -5727,7 +5727,17 @@ mod coming_back {
     /// The home screen over `config`, its first listing landed. Its recents are its
     /// own: other tests in this binary open datasets, and a recent landing in the
     /// shared cache mid-test moved the rows a test was coming back to (#658).
-    pub(super) fn home_app(mut config: datui::config::AppConfig) -> (App, Receiver<AppEvent>) {
+    pub(super) fn home_app(config: datui::config::AppConfig) -> (App, Receiver<AppEvent>) {
+        let (mut app, rx) = home_app_at_rest(config, None);
+        crate::pick_a_row(&mut app);
+        (app, rx)
+    }
+
+    /// [`home_app`] as datui opens it, no row picked, browsing `place` when given.
+    pub(super) fn home_app_at_rest(
+        mut config: datui::config::AppConfig,
+        place: Option<&Path>,
+    ) -> (App, Receiver<AppEvent>) {
         config.home.desktop_recents = false;
         config.home.hide = vec!["examples".to_string()];
         // Whatever this machine is logged in to is not part of the test.
@@ -5747,6 +5757,8 @@ mod coming_back {
         CWD_HELD.with(|held| {
             held.borrow_mut().get_or_insert_with(super::hold_cwd);
         });
+        app.home.browsing = place.map(Path::to_path_buf);
+        app.rest_at_start();
         app.enter_home();
         settle(&mut app, &rx, |_| true);
         (app, rx)
@@ -6662,7 +6674,18 @@ fn listed(
         !app.home.listing_in_flight && done(app)
     });
     assert!(landed, "the listing never landed");
+    pick_a_row(app);
     cursor_line(app);
+}
+
+/// Pick the row the cursor rests on, as the first ↓ does: home opens with none picked.
+fn pick_a_row(app: &mut datui::App) {
+    if app.home.resting {
+        app.event(datui::AppEvent::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Down,
+            crossterm::event::KeyModifiers::NONE,
+        )));
+    }
 }
 
 /// Draw a frame at 80×24 and say which screen line the cursor is on.
@@ -8471,6 +8494,7 @@ mod catalog {
         app.use_cache(datui::CacheManager::with_dir(cache.path().to_path_buf()));
         app.enter_home();
         settle(&mut app, &rx, |_| true);
+        crate::pick_a_row(&mut app);
         (app, rx, cache)
     }
 
@@ -8513,7 +8537,7 @@ mod catalog {
                     if app.home.sections[*section].title == title)
             })
             .unwrap_or_else(|| panic!("a heading {title}: {:?}", titles(app)));
-        app.home.selected = index;
+        app.home.select(index);
     }
 
     /// The Example datasets heading says what they are, where they come from, and
@@ -8867,10 +8891,12 @@ mod frecency {
         let (mut app, _rx, often, last) = opened(&tmp, "sales_q1.csv", "sales_q2.csv");
         assert_eq!(recent_order(&app), [often, last.clone()]);
         app.home.select_first_entry();
-        assert_eq!(
-            app.home.selected_entry().map(|e| e.path.clone()),
-            Some(last)
-        );
+        // Not picked: home opens with no row picked, the cursor resting where Enter goes.
+        let rests_on = match app.home.cursor_row() {
+            Some(Row::Entry { entry, .. }) => Some(entry.path.clone()),
+            _ => None,
+        };
+        assert_eq!(rests_on, Some(last));
     }
 
     /// Of two files `sales` matches equally, the one opened most is first, in a
@@ -9553,22 +9579,24 @@ fn test_left_and_right_show_and_cut_a_big_directory() {
             .count()
     };
     let select = |app: &mut datui::App, name: &str| {
-        app.home.selected = app
+        let at = app
             .home
             .visible()
             .iter()
             .position(|r| matches!(r, Row::Entry { entry, .. } if entry.name == name))
             .unwrap();
+        app.home.select(at);
     };
     use crossterm::event::KeyCode;
     assert_eq!(entries(&app), 8);
 
-    app.home.selected = app
+    let more = app
         .home
         .visible()
         .iter()
         .position(|r| matches!(r, Row::More { section, .. } if *section == at))
         .unwrap();
+    app.home.select(more);
     press(&mut app, KeyCode::Right);
     assert_eq!(entries(&app), 60, "→ on the more row shows them all");
 
@@ -9926,6 +9954,42 @@ mod listing_work {
         assert!(!measuring(&home), "nothing is being measured any more");
     }
 
+    /// At rest, a listing landing keeps the cursor on the row it rests on, as it does a
+    /// picked one, rather than landing again somewhere else.
+    #[test]
+    fn a_resting_cursor_keeps_its_row_across_a_listing() {
+        let mut home = HomeState {
+            resting: true,
+            ..Default::default()
+        };
+        let listing = |names: &[&str]| Listing {
+            sections: vec![Section::titled(
+                "HERE",
+                names
+                    .iter()
+                    .map(|n| file(format!("/pretend/r/{n}")))
+                    .collect(),
+            )],
+            ..Default::default()
+        };
+        home.apply_listing(listing(&["b.csv", "c.csv"]));
+        home.view_height = 20;
+        let rests_on = |home: &HomeState| match home.cursor_row() {
+            Some(Row::Entry { entry, .. }) => Some(entry.name.clone()),
+            _ => None,
+        };
+        assert_eq!(rests_on(&home).as_deref(), Some("b.csv"));
+        home.apply_listing(listing(&["a.csv", "b.csv", "c.csv"]));
+        assert_eq!(
+            rests_on(&home).as_deref(),
+            Some("b.csv"),
+            "still on its row"
+        );
+        home.set_view_height(10);
+        assert_eq!(rests_on(&home).as_deref(), Some("b.csv"), "across a resize");
+        assert!(home.resting, "and still not picked");
+    }
+
     /// Sorted by size or time, every row needs its stat and nothing more: those off
     /// screen are stat'ed, never read.
     #[test]
@@ -10042,6 +10106,205 @@ mod listing_work {
         assert_eq!(
             narrowed.first().map(String::as_str),
             Some("report_0042.csv")
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Opening at rest: no row picked, nothing read, until one is chosen
+// ---------------------------------------------------------------------------
+
+mod at_rest {
+    use super::coming_back::{home_app_at_rest, press};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use datui::AppEvent;
+    use datui::home::Row;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    /// A directory of three small files, as datui opens on it.
+    fn opened() -> (TempDir, datui::App, std::sync::mpsc::Receiver<AppEvent>) {
+        let tmp = TempDir::new().unwrap();
+        for name in ["alpha.csv", "beta.csv", "gamma.csv"] {
+            std::fs::write(tmp.path().join(name), "a,b\n1,2\n").unwrap();
+        }
+        let (app, rx) = home_app_at_rest(Default::default(), Some(tmp.path()));
+        (tmp, app, rx)
+    }
+
+    fn screen(app: &mut datui::App) -> Vec<String> {
+        use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
+        let area = Rect::new(0, 0, 160, 30);
+        let mut buf = Buffer::empty(area);
+        Widget::render(&mut *app, area, &mut buf);
+        (0..area.height)
+            .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol()).collect())
+            .collect()
+    }
+
+    fn picked(app: &datui::App) -> Option<PathBuf> {
+        app.home.selected_entry().map(|e| e.path.clone())
+    }
+
+    /// The row the cursor rests on, picked or not: the directory's door here, as it
+    /// lands on one that reads as one table.
+    fn rests_on(app: &datui::App) -> Option<PathBuf> {
+        match app.home.cursor_row()? {
+            Row::Entry { entry, .. } | Row::Door { entry, .. } => Some(entry.path.clone()),
+            _ => None,
+        }
+    }
+
+    /// Opened, no row carries the rail and nothing is read for one: the pane describes
+    /// the directory from its listing.
+    #[test]
+    fn datui_opens_with_no_row_picked_and_reads_nothing() {
+        let (tmp, mut app, _rx) = opened();
+        assert!(app.home.resting);
+        assert_eq!(picked(&app), None);
+        let lines = screen(&mut app);
+        let rail = datui::glyphs::get().rail;
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.chars().take(3).collect::<String>().contains(rail)),
+            "no rail:\n{}",
+            lines.join("\n")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("datasets") && l.contains('3')),
+            "{lines:#?}"
+        );
+        app.frame_work();
+        assert_eq!(app.home_app.reads.previews, 0, "no preview read");
+        assert!(!app.home_schema_pending(&tmp.path().join("alpha.csv")));
+    }
+
+    /// ↓ picks the row the cursor rests on, without moving past it.
+    #[test]
+    fn down_picks_the_top_row() {
+        let (_tmp, mut app, _rx) = opened();
+        let top = rests_on(&app);
+        assert!(top.is_some());
+        press(&mut app, KeyCode::Down);
+        assert!(!app.home.resting);
+        assert_eq!(picked(&app), top, "picked where it rested, not moved");
+    }
+
+    /// Typing narrows and picks the best match, whose preview is read then.
+    #[test]
+    fn typing_picks_the_best_match() {
+        let (tmp, mut app, rx) = opened();
+        press(&mut app, KeyCode::Char('g'));
+        assert_eq!(picked(&app), Some(tmp.path().join("gamma.csv")));
+        // A frame with room for its first rows, then the work it asks for.
+        screen(&mut app);
+        let read =
+            crate::common::handle_until(&mut app, &rx, std::time::Duration::from_secs(30), |app| {
+                app.home_app.reads.previews == 1
+            });
+        assert!(read, "the picked file is previewed");
+    }
+
+    /// Enter opens the row the cursor rests on, as the footer names it.
+    #[test]
+    fn enter_opens_the_top_row() {
+        let (_tmp, mut app, _rx) = opened();
+        let top = rests_on(&app).unwrap();
+        match press(&mut app, KeyCode::Enter) {
+            Some(AppEvent::Open(paths, _)) => assert_eq!(paths, [top]),
+            _ => panic!("Enter opens the top row"),
+        }
+    }
+
+    /// A key that acts on a row does nothing until one is picked.
+    #[test]
+    fn keys_that_act_on_a_row_wait_for_one() {
+        let (_tmp, mut app, _rx) = opened();
+        let before = app.home.browsing.clone();
+        for key in [
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL),
+        ] {
+            assert!(app.event(AppEvent::Key(key)).is_none(), "{key:?}");
+            assert!(app.home.resting, "{key:?} picked nothing");
+            assert_eq!(app.home.browsing, before);
+            assert_eq!(app.home.status, None, "{key:?} said nothing");
+        }
+        assert!(
+            rests_on(&app).is_some(),
+            "the cursor still rests where it did"
+        );
+    }
+
+    /// Ctrl+A at rest shows or hides files around the cursor without moving it: Enter
+    /// still takes the row that is tinted.
+    #[test]
+    fn ctrl_a_at_rest_keeps_the_cursor_row() {
+        let (tmp, mut app, rx) = opened();
+        std::fs::write(tmp.path().join("aaa.bin"), b"x").unwrap();
+        app.event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('r'),
+            KeyModifiers::CONTROL,
+        )));
+        super::coming_back::settle(&mut app, &rx, |_| true);
+        let before = rests_on(&app);
+        app.event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('a'),
+            KeyModifiers::CONTROL,
+        )));
+        assert!(app.home.resting);
+        assert_eq!(rests_on(&app), before);
+    }
+
+    /// Resting is the session's start alone: once a row is picked, coming home again
+    /// (a failed open, a hex view left, Ctrl+O) keeps it picked.
+    #[test]
+    fn the_rest_is_once_a_session() {
+        let (_tmp, mut app, _rx) = opened();
+        press(&mut app, KeyCode::Down);
+        assert!(!app.home.resting);
+        app.enter_home();
+        assert!(!app.home.resting, "coming home keeps the pick");
+        app.rest_at_start();
+        assert!(!app.home.resting, "and the start is not made twice");
+    }
+
+    /// At rest the row Enter takes is tinted, without the rail.
+    #[test]
+    fn the_resting_row_is_tinted_without_the_rail() {
+        use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
+        let (_tmp, mut app, _rx) = opened();
+        let name = match app.home.cursor_row() {
+            Some(Row::Entry { entry, .. }) | Some(Row::Door { entry, .. }) => entry.name.clone(),
+            _ => panic!("the cursor rests on a row"),
+        };
+        let area = Rect::new(0, 0, 160, 30);
+        let mut buf = Buffer::empty(area);
+        Widget::render(&mut app, area, &mut buf);
+        let y = (0..area.height)
+            .find(|&y| {
+                let line: String = (0..area.width).map(|x| buf[(x, y)].symbol()).collect();
+                line.contains(&name)
+            })
+            .expect("the row is drawn");
+        let rail = datui::glyphs::get().rail;
+        assert!((0..3).all(|x| buf[(x, y)].symbol() != rail), "no rail");
+        // The theme's tint, or dimmed where the theme has none (this test's).
+        assert!(
+            (0..area.width).any(|x| {
+                let cell = &buf[(x, y)];
+                cell.bg != ratatui::style::Color::Reset
+                    || cell.modifier.contains(ratatui::style::Modifier::DIM)
+            }),
+            "tinted"
         );
     }
 }

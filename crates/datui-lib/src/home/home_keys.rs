@@ -142,6 +142,28 @@ impl App {
             }
         }
 
+        // No row picked yet (as datui opens): ↑ or ↓ picks the row the cursor rests on, a
+        // page or an end key moves from it, Enter opens it; a key that acts on a row waits
+        // for one to be picked.
+        if self.home.resting {
+            match event.code {
+                KeyCode::Up | KeyCode::Down if !ctrl => {
+                    self.home.resting = false;
+                    return None;
+                }
+                KeyCode::Char('n' | 'p') if ctrl => {
+                    self.home.resting = false;
+                    return None;
+                }
+                KeyCode::Enter => self.home.resting = false,
+                KeyCode::Left | KeyCode::Right => return None,
+                KeyCode::Delete if !event.modifiers.contains(KeyModifiers::SHIFT) => return None,
+                KeyCode::Char('x' | 'd' | 'e') if ctrl => return None,
+                KeyCode::Char(' ') if self.home.filter.is_empty() => return None,
+                _ => {}
+            }
+        }
+
         // Every plain character types into the filter ("json" must not move on "j");
         // navigation is arrows and Ctrl chords.
         match event.code {

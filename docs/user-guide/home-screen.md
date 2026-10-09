@@ -15,6 +15,20 @@ the filter and selects the first dataset; <kbd>Enter</kbd> does what the footer
 names for the row. Every key is
 in the [keyboard reference](../reference/keyboard-shortcuts.md#home-screen).
 
+datui opens with no row picked: the details pane describes the directory, and
+nothing is read until you choose a row. The row it lands on (the file opened
+last, else the first dataset or a directory's all-files row) is tinted, without
+the rail: it is what the first key below takes.
+
+| Key, with no row picked | Does |
+|---|---|
+| <kbd>↑</kbd> <kbd>↓</kbd> | Picks the row datui landed on, and its details and first rows show |
+| <kbd>PgUp</kbd> <kbd>PgDn</kbd> <kbd>Home</kbd> <kbd>End</kbd> <kbd>Ctrl</kbd>+<kbd>↑</kbd> <kbd>Ctrl</kbd>+<kbd>↓</kbd>, the wheel | Move from it |
+| A click | Picks the row clicked |
+| (type) | Narrows the list and picks the best match |
+| <kbd>Enter</kbd> | Opens the row datui landed on, as the footer names it |
+| <kbd>←</kbd> <kbd>→</kbd> <kbd>Space</kbd> <kbd>Delete</kbd> <kbd>Ctrl</kbd>+<kbd>D</kbd> <kbd>Ctrl</kbd>+<kbd>E</kbd> <kbd>Ctrl</kbd>+<kbd>X</kbd> | Nothing until a row is picked |
+
 ## Open a file or directory
 
 1. Type part of a name to narrow the list.

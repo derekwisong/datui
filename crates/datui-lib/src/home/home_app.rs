@@ -58,8 +58,9 @@ pub struct HomeApp {
     /// The screen's height when the last frame had room for the selected file's first
     /// rows; `None` when it had none, and nothing is read for them.
     pub preview_room: Option<u16>,
-    /// The schema read out, if any: one at a time.
-    pub(crate) schema_inflight: Option<PathBuf>,
+    /// The schema reads out, by slot: one for local files (the empty path) and one for
+    /// each mount that can stall (its mount point), with the file each reads.
+    pub(crate) schema_reads: HashMap<PathBuf, PathBuf>,
     /// Invalidates listings and measurements from a request the user has moved past.
     pub(crate) generation: u64,
     /// Places whose listing sent rows since the last frame; their sections are built
@@ -544,7 +545,7 @@ impl App {
 
     /// Whether a schema read is currently out for this path.
     pub fn home_schema_pending(&self, path: &Path) -> bool {
-        self.home_app.schema_inflight.as_deref() == Some(path)
+        self.home_app.schema_reads.values().any(|p| p == path)
     }
 
     /// Read the highlighted dataset's schema on a worker, when nothing has and no read
@@ -552,7 +553,7 @@ impl App {
     /// a held arrow key reads where it stops rather than every row it passes. A file
     /// the preview reads gets its columns from that read instead.
     pub(crate) fn request_home_schema(&mut self) {
-        if self.home_app.schema_inflight.is_some() || self.home.path_input_active {
+        if self.home.path_input_active {
             return;
         }
         let Some(entry) = self.home.selected_entry() else {
@@ -572,9 +573,19 @@ impl App {
         {
             return;
         }
-        let entry = entry.clone();
+        // One read out for local files, and one for each mount that can stall: a share that
+        // stops answering holds up its own reads and no others.
         let network = (self.home.network_check)(&entry.path) || home::could_block_path(&entry.path);
-        self.home_app.schema_inflight = Some(entry.path.clone());
+        let slot = if network {
+            crate::home::locality::Mounts::cached().mount_point_for(&entry.path)
+        } else {
+            PathBuf::new()
+        };
+        if self.home_app.schema_reads.contains_key(&slot) {
+            return;
+        }
+        let entry = entry.clone();
+        (self.home_app.schema_reads).insert(slot, entry.path.clone());
         self.home_app.reads.schemas += 1;
         let tx = self.events.clone();
         // Remembered as none on failure, so it is not asked again.
@@ -2557,9 +2568,7 @@ impl App {
                 None
             }
             AppEvent::HomeSchemaReady { path, preview } => {
-                if self.home_app.schema_inflight.as_ref() == Some(&path) {
-                    self.home_app.schema_inflight = None;
-                }
+                self.home_app.schema_reads.retain(|_, read| *read != path);
                 // Kept whatever was listed since: a schema is the file's, and a finished read is
                 // never thrown away. A preview's columns are not taken back by a metadata read
                 // that had none.

@@ -320,3 +320,29 @@ fn the_cloud_sources_answer_relists_only_their_section() {
     let titles: Vec<&str> = app.home.sections.iter().map(|s| s.title.as_str()).collect();
     assert_eq!(titles, ["HERE", home::HomeState::CLOUD_SECTION]);
 }
+
+/// A schema read stuck on a share holds up that share's reads and no others: a local
+/// file under the cursor is still read.
+#[test]
+fn a_schema_read_stuck_on_a_share_leaves_local_reads() {
+    let (mut app, rx) = app();
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("p.parquet");
+    std::fs::write(&local, b"not really").unwrap();
+    app.home
+        .apply_listing(listing_of(vec![file(local.clone())]));
+    app.home.select(1);
+    // A read on a dead share that never answers.
+    let stuck = std::path::PathBuf::from("/mnt/dead/q.parquet");
+    (app.home_app.schema_reads).insert("/mnt/dead".into(), stuck.clone());
+
+    app.request_home_schema();
+    assert!(app.home_schema_pending(&local), "the local read goes out");
+    until(&mut app, &rx, "the local read lands", |app| {
+        app.home_app.schema_cache.contains_key(&local)
+    });
+    assert!(
+        app.home_schema_pending(&stuck),
+        "the stuck one only holds its own slot"
+    );
+}

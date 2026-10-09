@@ -720,6 +720,13 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                 ctx,
             )),
         }
+        // No row picked yet: the one Enter takes is tinted, without the rail or the accent.
+        if idx == app.home.selected
+            && app.home.resting
+            && let Some(line) = lines.pop()
+        {
+            lines.push(line.patch_style(ctx.resting_style()));
+        }
     }
 
     let mut body: Vec<Line> = lines;

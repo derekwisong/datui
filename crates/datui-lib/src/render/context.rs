@@ -119,6 +119,15 @@ impl RenderContext {
         }
     }
 
+    /// Style of a row the cursor rests on without it being picked (selection that is
+    /// not focused): the theme's tint alone, or dimmed when the theme reverses instead.
+    pub fn resting_style(&self) -> ratatui::style::Style {
+        match self.table_selected {
+            Some(bg) => ratatui::style::Style::default().bg(bg),
+            None => ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::DIM),
+        }
+    }
+
     /// Style of the column cursor's cells, from the theme's helper.
     pub fn column_cursor_style(&self) -> ratatui::style::Style {
         crate::config::column_cursor_style(self.column_cursor)

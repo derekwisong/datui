@@ -438,7 +438,7 @@ impl App {
         if message == sampling::CANCELLED {
             self.flash_note("Sample stopped".to_string());
         } else {
-            self.error_modal.show(message.to_string());
+            self.read_failed(message);
         }
     }
 
@@ -449,7 +449,7 @@ impl App {
         &mut self,
         view: &crate::view::SavedView,
         saved: &crate::view::SavedSample,
-        why: Option<crate::view::MatchReason>,
+        applying: &crate::view::view_apply::Applying,
     ) -> color_eyre::Result<()> {
         let sample = saved.sample()?;
         let through = saved.through.as_deref();
@@ -471,20 +471,19 @@ impl App {
         self.data_table_state = Some(source);
         replayed?;
         self.sample_changed();
-        if let Some(path) = &self.path {
-            use crate::logging::LogFailure;
-            self.views
-                .manager
-                .record_use(&view.id, path)
-                .or_log("record a view's use");
-        }
-        self.views.active_id = Some(view.id.clone());
-        self.restore_view_chart(view.settings.chart.as_ref());
+        self.mark_view_applied(view, applying);
         let mut settings = view.settings.clone();
         settings.sample = None;
         self.draw_table_sample(sample, saved.path, Some(settings), false, false);
-        if let Some(why) = why {
-            self.flash_view_applied(&view.name, why);
+        match applying {
+            crate::view::view_apply::Applying::Matched(why) => {
+                self.flash_view_applied(&view.name, *why)
+            }
+            // A sample's rows are drawn afresh: the group drilled into may not be among them.
+            crate::view::view_apply::Applying::Restored(Some(_)) => {
+                self.flash_note("Reopened as a sample; the drill-down was not kept".to_string())
+            }
+            _ => {}
         }
         self.first_rows_settled();
         Ok(())

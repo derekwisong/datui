@@ -18,6 +18,19 @@ pub struct SavedViews {
     pub(crate) active_id: Option<String>, // ID of currently applied view
 }
 
+/// Why a view is applied, which decides what is recorded and said for it.
+#[derive(Debug, Clone)]
+pub(crate) enum Applying {
+    /// Asked for: recorded as a use.
+    Asked,
+    /// Its criteria fit the dataset: recorded, and a flash names it and why once its
+    /// rows are in.
+    Matched(view::MatchReason),
+    /// The place a reopen keeps, recorded nowhere; the drill-down is taken again once
+    /// its rows are in.
+    Restored(Option<Box<crate::table::DrillPlace>>),
+}
+
 impl SavedViews {
     /// A new dataset is on screen with no view applied.
     pub(crate) fn reset_for_dataset(&mut self) {
@@ -326,7 +339,7 @@ impl App {
     /// background and the view installed when in; a failure there restores the
     /// previous view.
     pub(crate) fn apply_view(&mut self, view: &SavedView) -> Result<()> {
-        self.apply_view_with(view, None)
+        self.apply_view_with(view, Applying::Asked)
     }
 
     /// [`Self::apply_view`] for a view applied because its criteria fit (`why`): a flash
@@ -336,20 +349,43 @@ impl App {
         view: &SavedView,
         why: view::MatchReason,
     ) -> Result<()> {
-        self.apply_view_with(view, Some(why))
+        self.apply_view_with(view, Applying::Matched(why))
     }
 
-    fn apply_view_with(&mut self, view: &SavedView, why: Option<view::MatchReason>) -> Result<()> {
+    /// Put back `place`, the steps a dataset showed before it was reopened, and then its
+    /// drill-down: as a view applies, with `active` (the saved view it showed, if any)
+    /// marked applied again.
+    pub(crate) fn restore_place(
+        &mut self,
+        place: view::ViewSettings,
+        active: Option<String>,
+        drill: Option<Box<crate::table::DrillPlace>>,
+    ) -> Result<()> {
+        let view = SavedView {
+            id: active.unwrap_or_default(),
+            name: String::new(),
+            description: None,
+            created: std::time::SystemTime::now(),
+            last_used: None,
+            usage_count: 0,
+            last_matched_file: None,
+            match_criteria: view::MatchCriteria::default(),
+            settings: place,
+        };
+        self.apply_view_with(&view, Applying::Restored(drill))
+    }
+
+    fn apply_view_with(&mut self, view: &SavedView, applying: Applying) -> Result<()> {
         self.jobs.supersede(|job| matches!(job, Job::ViewPivot(_)));
         if let Some(saved) = &view.settings.sample {
-            return self.apply_sampled_view(view, saved, why);
+            return self.apply_sampled_view(view, saved, &applying);
         }
         let Some(state) = self.data_table_state.as_mut() else {
             return Ok(());
         };
         match state.try_transition(|s| Self::replay_view(s, &view.settings, None))? {
             (Replayed::Planned, rollback) => {
-                self.view_planned(view, rollback, why);
+                self.view_planned(view, rollback, applying);
                 Ok(())
             }
             (Replayed::Pivot(job), rollback) => {
@@ -358,7 +394,7 @@ impl App {
                 // Past any load-ahead for the view on screen, whose rows must not land in its
                 // replacement.
                 self.jobs.try_advance();
-                let pivot_view = Job::ViewPivot(Box::new((view.clone(), why)));
+                let pivot_view = Job::ViewPivot(Box::new((view.clone(), applying)));
                 self.spawn_job(pivot_view, Some(Self::APPLYING_VIEW), move |_| {
                     let pivoted = job
                         .run()
@@ -377,24 +413,17 @@ impl App {
         &mut self,
         view: &SavedView,
         rollback: crate::table::ViewRollback,
-        why: Option<view::MatchReason>,
+        applying: Applying,
     ) {
-        if let Some(path) = &self.path {
-            use crate::logging::LogFailure;
-            self.views
-                .manager
-                .record_use(&view.id, path)
-                .or_log("record a view's use");
-        }
-        let previous = self.views.active_id.replace(view.id.clone());
-        self.restore_view_chart(view.settings.chart.as_ref());
+        let previous = self.mark_view_applied(view, &applying);
         let Some(state) = self.data_table_state.as_ref() else {
             return;
         };
         self.prompt.query_running = Some(QueryRun {
             origin: RunOrigin::View {
                 previous,
-                matched: why.map(|why| (view.name.clone(), why)),
+                name: view.name.clone(),
+                applying,
             },
             frame: state.len_generation(),
             rollback,
@@ -404,14 +433,50 @@ impl App {
         if !self.spawn_async_collect(Self::APPLYING_VIEW) {
             // Nothing to read: the view has no rows. Applied on open, it was the open's last
             // step.
-            if let Some(why) = why {
-                self.flash_view_applied(&view.name, why);
+            match self.prompt.query_running.as_ref().map(|run| &run.origin) {
+                Some(RunOrigin::View {
+                    applying: Applying::Matched(why),
+                    ..
+                }) => self.flash_view_applied(&view.name, *why),
+                // No rows: the group or value drilled into is not among them.
+                Some(RunOrigin::View {
+                    applying: Applying::Restored(Some(drill)),
+                    ..
+                }) => {
+                    let gone = crate::table::DrillGone(drill.describe());
+                    self.flash_note(gone.to_string());
+                }
+                _ => {}
             }
             self.prompt.query_running = None;
             self.busy = false;
             self.status_message = None;
             self.first_rows_settled();
         }
+    }
+
+    /// Record `view`'s use, unless it is a place put back, and mark it applied (none for
+    /// a place that showed no saved view); its chart comes back. Returns the view
+    /// marked applied before.
+    pub(crate) fn mark_view_applied(
+        &mut self,
+        view: &SavedView,
+        applying: &Applying,
+    ) -> Option<String> {
+        if !matches!(applying, Applying::Restored(_))
+            && let Some(path) = &self.path
+        {
+            use crate::logging::LogFailure;
+            self.views
+                .manager
+                .record_use(&view.id, path)
+                .or_log("record a view's use");
+        }
+        self.restore_view_chart(view.settings.chart.as_ref());
+        std::mem::replace(
+            &mut self.views.active_id,
+            (!view.id.is_empty()).then(|| view.id.clone()),
+        )
     }
 
     /// Whether a view is being applied at the table (its pivot or first rows are read).
@@ -448,10 +513,41 @@ impl App {
     }
 
     /// A view's pivot could not be read or planned: the view before it stays.
-    pub(crate) fn view_pivot_failed(&mut self, message: &str) {
-        self.error_modal
-            .show(format!("Error applying view: {message}"));
+    /// `view` is kept for a reopen to try again when a file it read is gone.
+    pub(crate) fn view_pivot_failed(
+        &mut self,
+        view: &SavedView,
+        applying: &Applying,
+        message: &str,
+    ) {
+        let asked = crate::loading::open_options::KeptPlace {
+            settings: view.settings.clone(),
+            active: (!view.id.is_empty()).then(|| view.id.clone()),
+            drill: match applying {
+                Applying::Restored(drill) => drill.clone(),
+                _ => None,
+            },
+        };
+        self.view_failed(applying, message, Some(asked));
         self.read_after_view_rollback();
+    }
+
+    /// Say why a view, or a reopened dataset's place, could not be applied. `asked`,
+    /// the place it was going to, is what a reopen tries.
+    pub(crate) fn view_failed(
+        &mut self,
+        applying: &Applying,
+        message: &str,
+        asked: Option<crate::loading::open_options::KeptPlace>,
+    ) {
+        let said = if matches!(applying, Applying::Restored(_)) {
+            format!(
+                "Reopened, but the query, filters and sort could not be applied again: {message}"
+            )
+        } else {
+            format!("Error applying view: {message}")
+        };
+        self.read_failed_asking(&said, asked);
     }
 
     /// The view before a failed or cancelled one is back: read its rows if none are on

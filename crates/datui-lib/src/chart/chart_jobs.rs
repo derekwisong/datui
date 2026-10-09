@@ -710,6 +710,10 @@ impl App {
         if dataset != prep.dataset {
             return;
         }
+        if let Err(message) = &outcome {
+            // Said in the chart's own pane too; Close leaves it there.
+            self.offer_reopen(message, None);
+        }
         let outcome = outcome.map(|(prepared, colors)| {
             if let Some(colors) = colors {
                 self.chart.cache.hold_colors(colors.clone());

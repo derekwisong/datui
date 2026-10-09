@@ -57,6 +57,23 @@ impl App {
         conversion: Option<&crate::error_display::ConversionFailure>,
     ) {
         let rows = run.rows;
+        // What was asked for, before it is rolled back: a reopen for a file gone since
+        // the open tries it again.
+        let mut asked = crate::error_display::says_gone_since_opened(message)
+            .then(|| self.place_on_screen())
+            .flatten();
+        // A reopened place's drill-down is taken once its view's rows are in, so it is
+        // not on screen yet.
+        if let (
+            Some(asked),
+            RunOrigin::View {
+                applying: crate::view::view_apply::Applying::Restored(Some(drill)),
+                ..
+            },
+        ) = (asked.as_mut(), &run.origin)
+        {
+            asked.drill = Some(drill.clone());
+        }
         let origin = self.roll_back_query_run(run);
         self.first_rows_settled();
         self.status_message = None;
@@ -65,18 +82,20 @@ impl App {
         // be fixed. Sent any other way — a view applied — there is nothing to edit,
         // and the error modal says why.
         let mode = match origin {
-            RunOrigin::View { .. } => {
-                self.error_modal
-                    .show(format!("Error applying view: {message}"));
+            RunOrigin::View { applying, .. } => {
+                self.view_failed(&applying, message, asked);
                 self.read_after_view_rollback();
                 return;
             }
             RunOrigin::Query(mode) if self.query_prompt_mode() == Some(mode) => mode,
             RunOrigin::Query(_) => {
-                self.error_modal.show(message.to_string());
+                self.read_failed_asking(message, asked);
                 return;
             }
         };
+        // A file gone since the open is no fault of the query: the reopen is offered over
+        // the prompt, which keeps the reason.
+        self.offer_reopen(message, asked);
         let sql = mode == QueryMode::Sql;
         self.prompt.query_run_error = Some(match conversion {
             Some(failure) if sql => failure.sql_message(rows),

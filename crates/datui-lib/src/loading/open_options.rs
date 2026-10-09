@@ -186,6 +186,17 @@ pub struct OpenOptions {
     pub prepared: Option<crate::home::home_preview::Handoff>,
     /// A file of the built-in catalog: downloaded without asking when it is small.
     pub download_unasked: Option<UnaskedDownload>,
+    /// What a reopen puts back once the dataset is read again, in place of a matching
+    /// view. For this open only.
+    pub place: Option<Arc<KeptPlace>>,
+}
+
+/// Where a dataset was when it was reopened: its steps as a view keeps them, the
+/// saved view marked applied, and the drill-down. See [`crate::App::reopen_in_place`].
+pub struct KeptPlace {
+    pub(crate) settings: crate::view::ViewSettings,
+    pub(crate) active: Option<String>,
+    pub(crate) drill: Option<Box<crate::table::DrillPlace>>,
 }
 
 /// A remote file downloaded without asking: one the built-in catalog lists, at most
@@ -273,6 +284,7 @@ impl OpenOptions {
             force: false,
             prepared: None,
             download_unasked: None,
+            place: None,
         }
     }
 }

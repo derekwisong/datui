@@ -567,10 +567,11 @@ enum RunOrigin {
     /// The query prompt: inline under it while open in this mode, else a dialog.
     Query(QueryMode),
     /// A view applied: a dialog on failure, and the previous view marked applied
-    /// again. `matched` says why it was applied for a match.
+    /// again. `applying` says why it was applied, and what follows its rows.
     View {
         previous: Option<String>,
-        matched: Option<(String, view::MatchReason)>,
+        name: String,
+        applying: view::view_apply::Applying,
     },
 }
 
@@ -2881,6 +2882,7 @@ impl App {
                 self.apply_sample(sample)
             }
             Confirm::OpenLink(url) => Some(AppEvent::Applied(Applied::OpenLink(url))),
+            Confirm::Reopen(asked) => Some(AppEvent::Applied(Applied::Reopen(asked))),
             Confirm::ClearRecents => {
                 self.cache.clear_recents();
                 self.home_refresh();
@@ -4521,18 +4523,32 @@ impl App {
                 // Rows a follow counted while these were read are shown next.
                 self.catch_up_follow();
                 // The query's first rows are in: it stands.
-                let ran = self.take_query_run();
+                let mut ran = self.take_query_run().map(|run| run.origin);
+                // A reopened dataset's drill-down is taken again whoever waited on its rows.
+                if let Some(RunOrigin::View {
+                    applying: view::view_apply::Applying::Restored(drill),
+                    ..
+                }) = ran.as_mut()
+                    && let Some(drill) = drill.take()
+                {
+                    if waited {
+                        self.first_rows_settled();
+                    }
+                    self.drill_again(*drill);
+                    return None;
+                }
                 // A load-ahead's end is nobody's wait ending: whatever else is under
                 // way meanwhile keeps its spinner and its message.
                 if waited {
                     self.first_rows_settled();
-                    match ran.map(|run| run.origin) {
+                    match ran {
                         Some(RunOrigin::Query(mode)) if self.query_prompt_mode() == Some(mode) => {
                             self.leave_query_prompt_after_run();
                         }
                         // Shown once the wait is over, or the spinner's message hides it.
                         Some(RunOrigin::View {
-                            matched: Some((name, why)),
+                            name,
+                            applying: view::view_apply::Applying::Matched(why),
                             ..
                         }) => self.flash_view_applied(&name, why),
                         _ => {}
@@ -4614,7 +4630,7 @@ impl App {
                         // The wait passes to the read of its rows.
                         self.spawn_async_collect(Self::LOADING_BUFFER);
                     }
-                    Some(Err(message)) => self.error_modal.show(message),
+                    Some(Err(message)) => self.read_failed(&message),
                     None => {}
                 }
                 None
@@ -4625,7 +4641,7 @@ impl App {
             }
             (Job::ViewPivot(pivot), Answer::ViewPivoted(pivoted)) => {
                 // Superseded: cancelled or replaced, and the replacement owns the wait.
-                let (view, why) = *pivot;
+                let (view, applying) = *pivot;
                 if !current {
                     return None;
                 }
@@ -4639,8 +4655,8 @@ impl App {
                 });
                 match planned {
                     // The wait passes to the read of its rows.
-                    Some(Ok(rollback)) => self.view_planned(&view, rollback, why),
-                    Some(Err(message)) => self.view_pivot_failed(&message),
+                    Some(Ok(rollback)) => self.view_planned(&view, rollback, applying),
+                    Some(Err(message)) => self.view_pivot_failed(&view, &applying, &message),
                     None => {}
                 }
                 None
@@ -4649,6 +4665,12 @@ impl App {
                 // Superseded means something replaced the view, which owns the wait.
                 if current {
                     self.drill_into(group_index, &row);
+                }
+                None
+            }
+            (Job::Regroup(place), Answer::Regrouped(found)) => {
+                if current {
+                    self.drilled_again(&place, found);
                 }
                 None
             }
@@ -4846,6 +4868,7 @@ impl App {
                 | Answer::Sample { .. }
                 | Answer::Pivoted { .. }
                 | Answer::DrillRow { .. }
+                | Answer::Regrouped(_)
                 | Answer::ValueWritten(_)
                 | Answer::Exported(_)
                 | Answer::Copied { .. }
@@ -4965,10 +4988,11 @@ impl App {
             }
             Job::Analysis(_) | Job::SampleRows => {
                 self.analysis_modal.computing = None;
-                self.error_modal.show(message.to_string());
+                self.read_failed(message);
             }
             // The form stays up with its spec, to be fixed.
-            Job::Pivot | Job::Copy | Job::HexOpen { .. } => {
+            Job::Pivot | Job::Copy => self.read_failed(message),
+            Job::HexOpen { .. } => {
                 self.error_modal.show(message.to_string());
             }
             // The dialog is still up, the reason on its status line under the path.
@@ -4976,9 +5000,13 @@ impl App {
                 Some(form) => form.error = Some(message.to_string()),
                 None => self.error_modal.show(message.to_string()),
             },
-            Job::ViewPivot(_) => self.view_pivot_failed(message),
+            Job::ViewPivot(pivot) => self.view_pivot_failed(&pivot.0, &pivot.1, message),
             // The grouped view stays as it was.
-            Job::DrillRow => self.flash_note(could_not("drill in")),
+            Job::DrillRow | Job::Regroup(_) => {
+                if !self.offer_reopen(message, None) {
+                    self.flash_note(could_not("drill in"));
+                }
+            }
             Job::InspectJson { token } => {
                 let modal = &mut self.inspector_modal;
                 if let Some(wait) = modal.json_wait.take_if(|w| w.token == *token) {
@@ -5004,6 +5032,7 @@ impl App {
                             row: *row,
                             message: could_not("read the field"),
                         });
+                    self.offer_reopen(message, None);
                 }
             }
             // The form comes back with the reason on its status line.
@@ -5011,6 +5040,8 @@ impl App {
                 self.export_progress = None;
                 self.export_modal.path_error = Some(message.to_string());
                 self.open_over(|returns_to| Overlay::Export { returns_to });
+                // Close leaves the form with the reason; Reopen closes it.
+                self.offer_reopen(message, None);
             }
             Job::ChartExport { path, format } => {
                 self.finish_chart_export(path, *format, Err(message.to_string()));
@@ -5028,6 +5059,7 @@ impl App {
                         message.to_string()
                     };
                     self.value_counts.failed = Some((computing.column, why));
+                    self.offer_reopen(message, None);
                 }
             }
         }
@@ -5185,7 +5217,108 @@ impl App {
             }
         }
         self.first_rows_settled();
-        self.error_modal.show(message.to_string());
+        self.read_failed(message);
+    }
+
+    /// A read of the dataset on screen failed with `message`. When it says a file the
+    /// open listed is gone, the question offers to reopen it; else the error modal says
+    /// why.
+    pub(crate) fn read_failed(&mut self, message: &str) {
+        self.read_failed_asking(message, None);
+    }
+
+    /// [`Self::read_failed`], where Reopen tries `asked` (what the failed read was
+    /// for) rather than the place on screen.
+    pub(crate) fn read_failed_asking(
+        &mut self,
+        message: &str,
+        asked: Option<loading::open_options::KeptPlace>,
+    ) {
+        if !self.offer_reopen(message, asked) {
+            self.error_modal.show(message.to_string());
+        }
+    }
+
+    /// Ask to reopen the dataset when `message` says a file it listed is gone and it
+    /// can be reopened; returns whether it asked. For a read whose failure is also said
+    /// where it was asked for (a pane, a form's status line, a flash).
+    pub(crate) fn offer_reopen(
+        &mut self,
+        message: &str,
+        asked: Option<loading::open_options::KeptPlace>,
+    ) -> bool {
+        if !crate::error_display::says_gone_since_opened(message) || self.source.opened.is_none() {
+            return false;
+        }
+        self.confirmation_modal.show_choice(
+            message.to_string(),
+            "Reopen",
+            "Close",
+            Confirm::Reopen(asked.map(Box::new)),
+        );
+        true
+    }
+
+    /// Take a reopened dataset's drill-down again, now its grouped view's rows are in:
+    /// its group is found by its keys off this thread.
+    fn drill_again(&mut self, place: crate::table::DrillPlace) {
+        let Some(state) = self.data_table_state.as_ref() else {
+            return;
+        };
+        match state.find_group(&place) {
+            None => self.drilled_again(&place, None),
+            Some(Err(e)) => self.drill_not_taken(&e),
+            Some(Ok(lf)) => {
+                let streaming = state.polars_streaming();
+                let job = Job::Regroup(Box::new(place));
+                self.spawn_job(job, Some(Self::READING_GROUP), move |_| {
+                    let read = crate::analysis::statistics::collect_lazy(lf, streaming)
+                        .map_err(|e| crate::error_display::user_message_from_polars(&e))?;
+                    let found = DataTableState::found_group(read)
+                        .map_err(|e| crate::error_display::user_message_from_report(&e, None))?;
+                    Ok(Answer::Regrouped(found))
+                });
+            }
+        }
+    }
+
+    /// The group a reopened dataset was drilled into is found (`found`), or gone: drill
+    /// in again, or say so and stay at the grouped view.
+    fn drilled_again(
+        &mut self,
+        place: &crate::table::DrillPlace,
+        found: Option<(usize, DataFrame)>,
+    ) {
+        if found.is_none() && place.by_group() {
+            self.flash_note(crate::table::DrillGone(place.describe()).to_string());
+            return;
+        }
+        let Some(state) = self.data_table_state.as_mut() else {
+            return;
+        };
+        // All of it or none: a step that fails leaves the grouped view as it was.
+        match state.try_transition(|s| s.redrill(place, found)) {
+            Ok(_) => {
+                self.sync_sort_filter_modal();
+                self.spawn_async_collect(Self::LOADING_BUFFER);
+            }
+            Err(e) => {
+                self.drill_not_taken(&e);
+                self.spawn_async_collect(Self::LOADING_BUFFER);
+            }
+        }
+    }
+
+    /// Say why a reopened dataset's drill-down was not taken again.
+    fn drill_not_taken(&mut self, e: &color_eyre::Report) {
+        let said = match e.downcast_ref::<crate::table::DrillGone>() {
+            Some(gone) => gone.to_string(),
+            None => format!(
+                "Could not drill in: {}",
+                crate::error_display::user_message_from_report(e, None)
+            ),
+        };
+        self.flash_note(said);
     }
 
     /// `message` with the dataset's temp files (a download, a decompressed copy) named

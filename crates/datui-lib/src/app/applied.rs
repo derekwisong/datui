@@ -54,6 +54,9 @@ pub enum Applied {
     DoChartExport(ChartExportRequest),
     /// A confirmed documentation link, checked by `app::link_open::checked_url`.
     OpenLink(String),
+    /// Read the dataset on screen again, keeping its place. See
+    /// [`App::reopen_in_place`].
+    Reopen(Option<Box<crate::loading::open_options::KeptPlace>>),
 }
 
 impl From<Applied> for AppEvent {
@@ -229,6 +232,7 @@ impl App {
                 });
                 None
             }
+            Applied::Reopen(asked) => self.reopen_in_place(asked),
             Applied::OpenLink(url) => {
                 // Not waited on; a browser that will not start gets a flash, not an error.
                 if app::link_open::open(&url).is_err() {

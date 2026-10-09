@@ -25,7 +25,7 @@ const ROWS: usize = 5_000;
 
 /// `FILES` Parquet objects under `events/`, `ROWS` each: an id, an event time every
 /// 37 minutes, a received time 40 seconds later, a region and an amount with gaps.
-fn remote_events() -> BTreeMap<String, Vec<u8>> {
+pub(crate) fn remote_events() -> BTreeMap<String, Vec<u8>> {
     let minute = 60_000_000i64;
     let start = 1_704_067_200_000_000i64;
     let datetime = DataType::Datetime(TimeUnit::Microseconds, None);
@@ -717,7 +717,7 @@ fn a_failed_fetch_leaves_no_copy() {
 
 /// An object rewritten at the same size after the open answers with another ETag
 /// than the listing's: the fetch fails rather than copy a dataset not on screen,
-/// and nothing is left.
+/// offers the reopen, and nothing is left.
 #[test]
 fn an_object_rewritten_since_open_fails_the_fetch() {
     let s3 = FakeS3::serve("lake", remote_events());
@@ -733,8 +733,15 @@ fn an_object_rewritten_since_open_fails_the_fetch() {
     assert_eq!(reads, [QualityStage::CopyingSource]);
     until_the_worker_exits(&mut app, &rx);
     assert!(app.modal_showing(), "the failure is shown");
-    let text = screen(&mut app);
-    assert!(text.contains("part-1.parquet: it changed"), "{text}");
+    // A file changed since the open: the reopen is offered.
+    assert!(app.confirmation_modal.active);
+    let asked = &app.confirmation_modal.message;
+    assert!(
+        asked.contains(
+            "part-1.parquet: A file was removed or replaced after the dataset was opened"
+        ),
+        "{asked}"
+    );
     assert!(app.analysis_modal.quality.results.is_none());
     assert!(copies(cache.path()).is_empty());
     assert_eq!(app.quality_copy_bytes(), 0);

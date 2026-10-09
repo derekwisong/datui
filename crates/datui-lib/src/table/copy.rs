@@ -33,6 +33,9 @@ pub(super) struct GroupedView {
     selected: Option<usize>,
     /// Drilled into from Value Counts rather than from a grouped row.
     by_value: bool,
+    /// Each drill that led here, as its key columns and values in one row: the group
+    /// (or value) drilled into, then each value it was narrowed to. See [`DrillPlace`].
+    steps: Vec<DataFrame>,
     /// How `base_lf` was built, for Copy as Python.
     base_steps: Vec<Step>,
     lineage: Lineage,
@@ -100,6 +103,63 @@ pub enum NullKind {
     Absent,
     Conflict,
 }
+
+/// A drill-down as the drills that reached it and what was done inside, to take
+/// again over a new read of the same data (a reopen). A group is found again by its
+/// keys, since its row's position or lists may have changed.
+#[derive(Debug, Clone)]
+pub struct DrillPlace {
+    /// Whether the first step is a grouped row, found by reading the grouped view,
+    /// rather than a value from Value Counts.
+    by_group: bool,
+    /// Each drill's key columns and values, as one row.
+    steps: Vec<DataFrame>,
+    filters: Vec<FilterStatement>,
+    sort_columns: Vec<String>,
+    sort_descending: Vec<bool>,
+    column_order: Vec<String>,
+    locked_columns_count: usize,
+}
+
+impl DrillPlace {
+    /// Whether its first drill is into a grouped row, found again by reading.
+    pub fn by_group(&self) -> bool {
+        self.by_group
+    }
+
+    /// The group or value drilled into first, as `key = value` pairs.
+    pub fn describe(&self) -> String {
+        self.steps.first().map(describe).unwrap_or_default()
+    }
+}
+
+/// A drill's keys as `key = value` pairs.
+fn describe(keys: &DataFrame) -> String {
+    keys.columns()
+        .iter()
+        .map(|c| {
+            let value = c.get(0).map(|v| crate::exact::str_value(&v).to_string());
+            format!("{} = {}", c.name(), value.unwrap_or_default())
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// A drill a reopen could not take again: the files no longer hold its group or
+/// value (`key = value`), or hold it as another type.
+#[derive(Debug)]
+pub struct DrillGone(pub String);
+
+impl std::fmt::Display for DrillGone {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "No rows with {} in the current files", self.0)
+    }
+}
+
+impl std::error::Error for DrillGone {}
+
+/// The view row index column a search for a group to drill into again reads.
+const GROUP_ROW: &str = "__datui_group_row";
 
 /// The row a drill into a group reads, from [`DataTableState::drill_row`].
 pub enum DrillRow {
@@ -205,6 +265,133 @@ impl DataTableState {
             .as_deref()
             .unwrap_or_default();
         Some((columns, values))
+    }
+
+    /// The drill-down on screen, to take again over a new read; `None` when not drilled.
+    pub fn drill_place(&self) -> Option<DrillPlace> {
+        let grouped = self.view.grouped.as_ref()?;
+        Some(DrillPlace {
+            by_group: !grouped.by_value,
+            steps: grouped.steps.clone(),
+            filters: self.view.filters.clone(),
+            sort_columns: self.view.sort_columns.clone(),
+            sort_descending: self.view.sort_descending.clone(),
+            column_order: self.view.column_order.clone(),
+            locked_columns_count: self.view.locked_columns_count,
+        })
+    }
+
+    /// The column order and locked count of the view a drill-down left, while drilled.
+    pub fn grouped_column_order(&self) -> Option<(&[String], usize)> {
+        let grouped = self.view.grouped.as_ref()?;
+        Some((&grouped.column_order, grouped.locked_columns_count))
+    }
+
+    /// What finding `place`'s group again reads: its first row in this view with the
+    /// same keys, led by its position. `None` when its first drill was a value, which
+    /// needs no read; [`DrillGone`] when a key is no longer a value of its column.
+    /// Run off this thread; [`Self::found_group`] reads the answer.
+    pub fn find_group(&self, place: &DrillPlace) -> Option<Result<LazyFrame>> {
+        let keys = place.steps.first().filter(|_| place.by_group)?;
+        if !self.can_drill_down() {
+            return Some(Err(color_eyre::eyre::eyre!("the view is not grouped")));
+        }
+        let mut matches = lit(true);
+        for key in keys.columns() {
+            let value = key.get(0).ok().map(|v| v.into_static());
+            let Some((dtype, value)) =
+                value.and_then(|v| self.value_in_column(key.name().as_str(), v))
+            else {
+                return Some(Err(DrillGone(place.describe()).into()));
+            };
+            let scalar = Scalar::new(dtype, value);
+            matches = matches.and(col(key.name().clone()).eq_missing(lit(scalar)));
+        }
+        let columns = std::iter::once(GROUP_ROW.to_string()).chain(self.drill_columns());
+        Some(Ok(self
+            .visible_lf()
+            .with_row_index(GROUP_ROW, None)
+            .filter(matches)
+            .select(columns.map(|c| col(c.as_str())).collect::<Vec<_>>())
+            .slice(0, 1)))
+    }
+
+    /// `value` as a value of `column` in this view, in the column's type: cast strictly
+    /// when its own type differs (a file rewritten since it was read). `None` when
+    /// there is no such column or the value is not one of its type.
+    fn value_in_column(
+        &self,
+        column: &str,
+        value: AnyValue<'static>,
+    ) -> Option<(DataType, AnyValue<'static>)> {
+        let dtype = self.view.schema.get(column)?.clone();
+        if value.dtype() == dtype || value.is_null() {
+            return Some((dtype, value));
+        }
+        let cast = Series::from_any_values(PlSmallStr::EMPTY, &[value], true)
+            .and_then(|s| s.strict_cast(&dtype))
+            .ok()?;
+        let value = cast.get(0).ok()?.into_static();
+        Some((dtype, value))
+    }
+
+    /// The group [`Self::find_group`] read: its view row and its row, or `None` when no
+    /// group has those keys now.
+    pub fn found_group(read: DataFrame) -> Result<Option<(usize, DataFrame)>> {
+        if read.height() == 0 {
+            return Ok(None);
+        }
+        let index = read
+            .column(GROUP_ROW)?
+            .get(0)?
+            .extract::<usize>()
+            .ok_or_else(|| color_eyre::eyre::eyre!("no row position"))?;
+        Ok(Some((index, read.drop(GROUP_ROW)?)))
+    }
+
+    /// Take `place`'s drill-down again over this view (as one transition: see
+    /// [`Self::try_transition`]), returning [`DrillGone`] when a value it narrowed to
+    /// is no longer one of its column's type: into the group `found` (from
+    /// [`Self::find_group`]) or the first value, through each value narrowed to, then
+    /// the filters, sort and column order inside it.
+    pub fn redrill(&mut self, place: &DrillPlace, found: Option<(usize, DataFrame)>) -> Result<()> {
+        let mut steps = place.steps.iter();
+        if place.by_group {
+            steps.next();
+            let Some((index, row)) = found else {
+                return Ok(());
+            };
+            self.drill_down_with_row(index, &row)?;
+        }
+        for keys in steps {
+            let Some(key) = keys.columns().first() else {
+                continue;
+            };
+            let column = key.name().as_str();
+            let Some((_, value)) = self.value_in_column(column, key.get(0)?.into_static()) else {
+                return Err(DrillGone(describe(keys)).into());
+            };
+            self.drill_into_value(column, value)?;
+        }
+        if !place.filters.is_empty() {
+            self.filter(place.filters.clone());
+        }
+        if !place.sort_columns.is_empty() {
+            self.sort_by(place.sort_columns.clone(), place.sort_descending.clone());
+        }
+        if let Some(error) = self.error().cloned() {
+            return Err(color_eyre::eyre::eyre!("{error}"));
+        }
+        let shown: HashSet<&str> = self.view.schema.iter_names().map(|n| n.as_str()).collect();
+        if place
+            .column_order
+            .iter()
+            .all(|c| shown.contains(c.as_str()))
+        {
+            self.set_column_order(place.column_order.clone());
+            self.set_locked_columns(place.locked_columns_count);
+        }
+        Ok(())
     }
 
     /// The columns and types of `df`, the table SQL runs against, from the known schema; a
@@ -711,19 +898,17 @@ impl DataTableState {
                 .filter(|(name, _)| keys.contains(&name.as_str()))
                 .unzip();
         }
-        self.enter_group(group, group_index, false)
+        let keys = row.select(group.key_columns.iter().map(String::as_str))?;
+        self.enter_group(group, group_index, false, keys)
     }
 
     /// Show the view's rows with `value` in `column` (null matches null), like a group
     /// drill: breadcrumb names the value, Esc returns. Inside a group, it narrows that group
     /// and Esc returns to the view it was drilled from.
     pub fn drill_into_value(&mut self, column: &str, value: AnyValue<'static>) -> Result<()> {
-        let dtype = self
-            .view
-            .schema
-            .get(column)
-            .cloned()
-            .ok_or_else(|| color_eyre::eyre::eyre!("no column {column}"))?;
+        let (dtype, value) = self
+            .value_in_column(column, value)
+            .ok_or_else(|| color_eyre::eyre::eyre!("{column} has no values of that type"))?;
         let label = crate::exact::str_value(&value).to_string();
         let mut steps = self.view_steps();
         steps.push(match crate::export::python_script::py_value(&value) {
@@ -735,6 +920,14 @@ impl DataTableState {
                 "drilled down to the rows where {column} is {label}, a value of a type not written as Python"
             )),
         });
+        let keys = DataFrame::new(
+            1,
+            vec![Column::new_scalar(
+                column.into(),
+                Scalar::new(dtype.clone(), value.clone()),
+                1,
+            )],
+        )?;
         let matches = col(column).eq_missing(lit(Scalar::new(dtype, value)));
         let group = GroupRows {
             lf: self.visible_lf().filter(matches),
@@ -746,7 +939,7 @@ impl DataTableState {
         };
         if !self.is_drilled_down() {
             let index = self.view.start_row + self.table_state.selected().unwrap_or(0);
-            return self.enter_group(group, index, true);
+            return self.enter_group(group, index, true, keys);
         }
         let schema = group.lf.clone().collect_schema()?;
         let order = std::mem::take(&mut self.view.column_order);
@@ -755,6 +948,9 @@ impl DataTableState {
         }
         if let Some(values) = self.view.drilled_down_group_key.as_mut() {
             values.extend(group.key_values);
+        }
+        if let Some(grouped) = self.view.grouped.as_mut() {
+            grouped.steps.push(keys);
         }
         // The group's filters and sort are in the frame now.
         self.view.filters.clear();
@@ -781,7 +977,13 @@ impl DataTableState {
 
     /// Show `group`, the group on row `group_index` of the view, keeping the view to
     /// come back to.
-    fn enter_group(&mut self, group: GroupRows, group_index: usize, by_value: bool) -> Result<()> {
+    fn enter_group(
+        &mut self,
+        group: GroupRows,
+        group_index: usize,
+        by_value: bool,
+        keys: DataFrame,
+    ) -> Result<()> {
         let schema = group.lf.clone().collect_schema()?;
         self.view.drilled_down_group_key = Some(group.key_values);
         self.view.drilled_down_group_key_columns = Some(group.key_columns);
@@ -809,6 +1011,7 @@ impl DataTableState {
             cursor_column: self.view.cursor_column.clone(),
             selected: self.table_state.selected(),
             by_value,
+            steps: vec![keys],
             base_steps: std::mem::take(&mut self.view.base_steps),
             lineage: self.view.lineage.clone(),
         });

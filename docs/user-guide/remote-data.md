@@ -322,6 +322,24 @@ The [formats table](../formats/index.md#how-each-format-is-read) has every
 format. Paging reads ahead of the screen; queries, sorting and analysis may
 read the whole input ([Large datasets](large-datasets.md)).
 
+A prefix or glob is listed once, when it is opened. If its publisher removes or
+replaces a file after that, the next read that needs it stops, names the file
+and asks:
+
+| Choice | Does |
+|---|---|
+| **Reopen** | Lists the files again and puts back the query, filters, sort, column changes, reshape, sample, saved view and drill-down. A query or view that met the gone file is run again |
+| **Close** | Leaves the dataset as it was |
+
+The question comes from the table's rows, a query, a view, Sort & Filter, a
+drill-down, Pivot & Melt, Analysis and Data Quality, Value Counts, find, a
+chart, the inspector, a sample, copy and export. The Pivot & Melt preview
+says it in its own pane and does not ask.
+
+If the group or value drilled down into is gone from the files, or is no longer
+a value of its column's type, the grouped view shows instead, and the footer
+says so. A dataset reopened as a sample does not keep its drill-down.
+
 ## Building without cloud support
 
 A build without the `cloud` and `http` features

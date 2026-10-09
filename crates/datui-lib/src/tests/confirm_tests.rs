@@ -80,6 +80,7 @@ fn questions() -> Vec<(&'static str, Asks)> {
         ("export", || Confirm::Export(Box::new(export_request()))),
         ("copy", || Confirm::Copy(Default::default(), true)),
         ("download", || Confirm::Download),
+        ("reopen", || Confirm::Reopen(None)),
     ]
 }
 
@@ -152,6 +153,13 @@ fn yes_carries_on_with_what_was_asked() {
             header: false,
             ..
         }))
+    ));
+
+    app.confirmation_modal
+        .show("?".into(), Confirm::Reopen(None));
+    assert!(matches!(
+        yes(&mut app),
+        Some(AppEvent::Applied(crate::Applied::Reopen(None)))
     ));
     assert!(!app.confirmation_modal.active);
 }

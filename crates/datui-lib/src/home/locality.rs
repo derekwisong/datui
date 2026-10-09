@@ -23,6 +23,8 @@ pub const NETWORK_FILESYSTEMS: &[&str] = &[
     "fuse.rclone",
     "fuse.s3fs",
     "fuse.davfs",
+    "fuse.gcsfuse",
+    "fuse.juicefs",
     "davfs",
     "ftpfs",
     // An automount point that has not been triggered yet blocks on first access,
@@ -236,8 +238,9 @@ impl Mounts {
     }
 
     /// Whether a call on `path` can hang: a network filesystem, or any FUSE one, whose
-    /// answers come from a process that may be waiting on a network (gcsfuse, juicefs,
-    /// a stalled sshfs) or on nothing at all.
+    /// answers come from a process that may be waiting on a network or on nothing at
+    /// all. For what stays off the key thread; a local FUSE layer (mergerfs, gocryptfs)
+    /// is listed, measured and previewed as the disk it is.
     pub fn could_block(&self, path: &Path) -> bool {
         let source = self.describe(path);
         source.network() || source.fstype.starts_with("fuse.")

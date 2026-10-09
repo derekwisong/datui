@@ -573,7 +573,7 @@ impl App {
             return;
         }
         let entry = entry.clone();
-        let network = (self.home.network_check)(&entry.path);
+        let network = (self.home.network_check)(&entry.path) || home::could_block_path(&entry.path);
         self.home_app.schema_inflight = Some(entry.path.clone());
         self.home_app.reads.schemas += 1;
         let tx = self.events.clone();

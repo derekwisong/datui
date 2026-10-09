@@ -205,8 +205,8 @@ fn test_callers_in_the_same_moment_get_the_same_mount_table() {
 }
 
 /// Any FUSE filesystem can stall a call (its answers come from a process, often one
-/// waiting on a network), so home never touches one on the key thread; its row still
-/// names what it is rather than calling it a network share.
+/// waiting on a network), so nothing of one is read on the key thread. Only the remote
+/// ones are shares, though: a local layer is listed and measured as a disk.
 #[test]
 fn test_any_fuse_filesystem_could_block() {
     let m = Mounts::parse(
@@ -215,15 +215,18 @@ fn test_any_fuse_filesystem_could_block() {
 81 1 0:61 / /mnt/gcs rw - fuse.gcsfuse bucket rw
 82 1 0:62 / /mnt/jfs rw - fuse.juicefs redis rw
 83 1 8:17 / /mnt/usb rw - fuseblk /dev/sdb1 rw
+84 1 0:63 / /srv/pool rw - fuse.mergerfs a:b rw
 ",
     );
     for path in ["/mnt/gcs/a.parquet", "/mnt/jfs/b.csv"] {
         assert!(m.could_block(Path::new(path)), "{path}");
-        assert!(
-            !m.is_network(Path::new(path)),
-            "{path} is not called a share"
-        );
+        assert!(m.is_network(Path::new(path)), "{path} is a share");
     }
+    assert!(m.could_block(Path::new("/srv/pool/c.csv")));
+    assert!(
+        !m.is_network(Path::new("/srv/pool/c.csv")),
+        "a local FUSE layer is listed as a disk"
+    );
     assert!(!m.could_block(Path::new("/home/a.csv")));
     assert!(
         !m.could_block(Path::new("/mnt/usb/c.csv")),

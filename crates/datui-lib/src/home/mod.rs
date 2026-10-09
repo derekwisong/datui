@@ -769,11 +769,17 @@ pub fn is_remote_path(path: &Path) -> bool {
         || is_network_path(path)
 }
 
-/// Whether `path` is on a filesystem a call can hang on, by the mount table (longest
-/// matching mount point): a network one, or any FUSE one. False where the table is
-/// unavailable: a hint, never a gate. Uses
+/// Whether `path` is on a network filesystem by the mount table (longest matching
+/// mount point). False where the table is unavailable: a hint, never a gate. Uses
 /// [`crate::home::locality::Mounts::cached`], since this is asked per row per frame.
 pub fn is_network_path(path: &Path) -> bool {
+    crate::home::locality::Mounts::cached().is_network(path)
+}
+
+/// Whether a call on `path` can hang: a network filesystem or any FUSE one. What keeps
+/// a read off the threads that must not wait; see
+/// [`crate::home::locality::Mounts::could_block`].
+pub fn could_block_path(path: &Path) -> bool {
     crate::home::locality::Mounts::cached().could_block(path)
 }
 

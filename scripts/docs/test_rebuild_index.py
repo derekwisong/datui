@@ -162,8 +162,11 @@ class LandingPageTests(unittest.TestCase):
         # The count lives on the Formats pages, not in the pitch.
         self.assertNotRegex(content, r"\d+ formats")
         self.assertNotIn("{{", content)
-        for channel in ["script", "winget", "brew", "pip", "cargo", "aur", "apt", "binaries"]:
-            self.assertIn(f'id="install-{channel}"', content)
+        for tab in ["macos", "linux", "windows", "python", "rust", "binaries"]:
+            self.assertIn(f'id="install-{tab}"', content)
+        for command in ["install.sh | sh", "winget install", "brew install", "pip install",
+                        "cargo install", "yay -S", "apt install", "dnf install"]:
+            self.assertIn(command, content)
         pres = re.findall(r"<pre\b[^>]*>", content)
         self.assertTrue(pres)
         for pre in pres:

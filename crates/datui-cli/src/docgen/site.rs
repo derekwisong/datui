@@ -41,8 +41,10 @@ fn html(text: &str) -> String {
 struct Channel {
     id: String,
     label: String,
+    name: String,
     link: Option<String>,
-    os: Vec<String>,
+    tabs: Vec<String>,
+    lead: Vec<String>,
     lang: String,
     command: Option<String>,
     anchor: Option<String>,
@@ -62,19 +64,23 @@ fn channels(read: &dyn Fn(&str) -> String) -> Vec<Channel> {
     list.iter()
         .map(|c| {
             let s = |key: &str| c.get(key).and_then(|v| v.as_str()).map(str::to_string);
-            let channel = Channel {
-                id: s("id").expect("install.toml: a channel without `id`"),
-                label: s("label").expect("install.toml: a channel without `label`"),
-                link: s("link"),
-                os: c
-                    .get("os")
+            let list = |key: &str| -> Vec<String> {
+                c.get(key)
                     .and_then(|v| v.as_array())
                     .map(|a| {
                         a.iter()
                             .filter_map(|o| o.as_str().map(str::to_string))
                             .collect()
                     })
-                    .unwrap_or_default(),
+                    .unwrap_or_default()
+            };
+            let channel = Channel {
+                id: s("id").expect("install.toml: a channel without `id`"),
+                label: s("label").expect("install.toml: a channel without `label`"),
+                name: s("name").expect("install.toml: a channel without `name`"),
+                link: s("link"),
+                tabs: list("tabs"),
+                lead: list("lead"),
                 lang: s("lang").unwrap_or_else(|| "bash".into()),
                 command: s("command"),
                 anchor: s("anchor"),
@@ -168,29 +174,49 @@ pub fn docs_install_table(read: &dyn Fn(&str) -> String) -> String {
     table(read, "")
 }
 
-/// The landing page's install panels: one per channel, all shown without
-/// JavaScript; the page's script makes them tabs and picks one for the visitor's
-/// system.
+/// The landing page's install tabs, by id (a system's matches the page script's
+/// guess at the visitor's) and label.
+const TABS: [(&str, &str); 6] = [
+    ("macos", "macOS"),
+    ("linux", "Linux"),
+    ("windows", "Windows"),
+    ("python", "Python"),
+    ("rust", "Rust"),
+    ("binaries", "Binaries"),
+];
+
+/// The landing page's install panels: one per tab, listing its channels, all
+/// shown without JavaScript; the page's script makes them tabs and opens the
+/// visitor's system.
 pub fn landing_install(read: &dyn Fn(&str) -> String) -> String {
+    let all = channels(read);
     let mut out = String::from("<div class=\"install-panels\" id=\"install-panels\">\n");
-    for c in channels(read) {
+    for (tab, label) in TABS {
         out.push_str(&format!(
-            "  <section class=\"install-panel\" id=\"install-{}\" data-label=\"{}\" data-os=\"{}\">\n    <h3>{}</h3>\n",
-            html(&c.id),
-            html(&c.label),
-            html(&c.os.join(" ")),
-            html(&c.label),
+            "  <section class=\"install-panel\" id=\"install-{tab}\" data-label=\"{label}\" data-os=\"{tab}\">\n    <h3>{label}</h3>\n",
         ));
-        match &c.command {
-            Some(cmd) => out.push_str(&format!(
-                "    <pre data-example=\"{},install\"><code>{}</code></pre>\n",
-                html(&c.lang),
-                html(cmd)
-            )),
-            None => out.push_str(&format!(
-                "    <p>{}</p>\n",
-                c.html.as_deref().unwrap_or_default()
-            )),
+        let mut listed: Vec<&Channel> = all
+            .iter()
+            .filter(|c| c.tabs.iter().any(|t| t == tab))
+            .collect();
+        listed.sort_by_key(|c| !c.lead.iter().any(|l| l == tab));
+        for c in listed {
+            out.push_str(&format!(
+                "    <div class=\"install-option\">\n      <h4>{}</h4>\n",
+                html(&c.name)
+            ));
+            match &c.command {
+                Some(cmd) => out.push_str(&format!(
+                    "      <pre data-example=\"{},install\"><code>{}</code></pre>\n",
+                    html(&c.lang),
+                    html(cmd)
+                )),
+                None => out.push_str(&format!(
+                    "      <p>{}</p>\n",
+                    c.html.as_deref().unwrap_or_default()
+                )),
+            }
+            out.push_str("    </div>\n");
         }
         out.push_str("  </section>\n");
     }
@@ -245,10 +271,27 @@ mod tests {
         let root = super::super::repo_root();
         let all = channels(&|p| super::super::read_file(&root, p));
         assert_eq!(all.iter().filter(|c| !c.table).count(), 1);
-        for os in ["linux", "macos", "windows"] {
+        for c in &all {
+            assert!(!c.tabs.is_empty(), "`{}` is under no tab", c.id);
+            for tab in &c.tabs {
+                assert!(
+                    TABS.iter().any(|(t, _)| t == tab),
+                    "`{}` names an unknown tab {tab}",
+                    c.id
+                );
+            }
+            for lead in &c.lead {
+                assert!(
+                    c.tabs.contains(lead),
+                    "`{}` leads {lead} but is not under it",
+                    c.id
+                );
+            }
+        }
+        for (tab, label) in TABS {
             assert!(
-                all.iter().any(|c| c.os.iter().any(|o| o == os)),
-                "no channel shown first on {os}"
+                all.iter().any(|c| c.tabs.iter().any(|t| t == tab)),
+                "no channel under {label}"
             );
         }
     }

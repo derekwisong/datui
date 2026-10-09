@@ -75,6 +75,8 @@
     .install-panel { padding: 0; border: 0; }
     .install-panel h3 { font-size: 14px; color: var(--muted); font-weight: 600; }
     .install-panel p { font-size: 15px; }
+    .install-option + .install-option { margin-top: 18px; }
+    .install-option h4 { font-size: 14px; font-weight: 600; margin: 0 0 6px; }
     .js .install-panels { display: block; }
     .js .install-panel h3 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
     .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
@@ -133,9 +135,8 @@
     </header>
     <main id="main">
       <div class="hero">
-        <p class="eyebrow">A terminal UI for tabular data</p>
         <h1>Explore tabular data in your terminal.</h1>
-        <p class="lead">Parquet, CSV, JSON, Excel, SQLite, logs and more, from your disk, S3, GCS, Azure, HTTP(S), a pipe or Python. Query with SQL or q, chart, reshape and export.</p>
+        <p class="lead">Parquet, CSV, JSON, Excel, SQLite, logs and more, on disk, in S3, GCS or Azure, over HTTP(S), from a pipe or from Python. Query with SQL, then chart, reshape and export.</p>
         <pre data-example="bash,network"><code>datui s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/   # 38M rows, no login</code></pre>
         <div class="actions">
           <a class="primary" href="#install">Install</a>
@@ -155,63 +156,77 @@
       <section id="install" aria-labelledby="install-title">
         <p class="eyebrow">Get started</p>
         <h2 id="install-title">Install</h2>
-        <p class="section-lead">Every method installs the same <code>datui</code>. Check it with <code>datui --version</code>.</p>
 {# generated: install #}
 <div class="install-panels" id="install-panels">
-  <section class="install-panel" id="install-script" data-label="Linux, macOS" data-os="linux macos">
-    <h3>Linux, macOS</h3>
-    <pre data-example="bash,install"><code>curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh</code></pre>
+  <section class="install-panel" id="install-macos" data-label="macOS" data-os="macos">
+    <h3>macOS</h3>
+    <div class="install-option">
+      <h4>Homebrew</h4>
+      <pre data-example="bash,install"><code>brew tap derekwisong/datui &amp;&amp; brew trust derekwisong/datui &amp;&amp; brew install datui</code></pre>
+    </div>
+    <div class="install-option">
+      <h4>Install script</h4>
+      <pre data-example="bash,install"><code>curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh</code></pre>
+    </div>
   </section>
-  <section class="install-panel" id="install-winget" data-label="Windows, WinGet" data-os="windows">
-    <h3>Windows, WinGet</h3>
-    <pre data-example="powershell,install"><code>winget install derekwisong.datui</code></pre>
-  </section>
-  <section class="install-panel" id="install-brew" data-label="macOS, Linux, Homebrew" data-os="">
-    <h3>macOS, Linux, Homebrew</h3>
-    <pre data-example="bash,install"><code>brew tap derekwisong/datui &amp;&amp; brew trust derekwisong/datui &amp;&amp; brew install datui</code></pre>
-  </section>
-  <section class="install-panel" id="install-pip" data-label="Python, PyPI" data-os="">
-    <h3>Python, PyPI</h3>
-    <pre data-example="bash,install"><code>pip install datui</code></pre>
-  </section>
-  <section class="install-panel" id="install-cargo" data-label="Rust, crates.io" data-os="">
-    <h3>Rust, crates.io</h3>
-    <pre data-example="bash,install"><code>cargo install datui --locked</code></pre>
-  </section>
-  <section class="install-panel" id="install-aur" data-label="Arch Linux, AUR" data-os="">
-    <h3>Arch Linux, AUR</h3>
-    <pre data-example="bash,install"><code>yay -S datui-bin   # or: paru -S datui-bin</code></pre>
-  </section>
-  <section class="install-panel" id="install-apt" data-label="Debian, Ubuntu" data-os="">
-    <h3>Debian, Ubuntu</h3>
-    <pre data-example="bash,install"><code>curl -fsSL https://derekwisong.github.io/datui-apt/public.key | sudo gpg --dearmor -o /usr/share/keyrings/datui-archive-keyring.gpg
+  <section class="install-panel" id="install-linux" data-label="Linux" data-os="linux">
+    <h3>Linux</h3>
+    <div class="install-option">
+      <h4>Install script</h4>
+      <pre data-example="bash,install"><code>curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh</code></pre>
+    </div>
+    <div class="install-option">
+      <h4>Debian, Ubuntu (apt)</h4>
+      <pre data-example="bash,install"><code>curl -fsSL https://derekwisong.github.io/datui-apt/public.key | sudo gpg --dearmor -o /usr/share/keyrings/datui-archive-keyring.gpg
 echo &quot;deb [signed-by=/usr/share/keyrings/datui-archive-keyring.gpg] https://derekwisong.github.io/datui-apt/ ./&quot; | sudo tee /etc/apt/sources.list.d/datui.list
 sudo apt update
 sudo apt install datui</code></pre>
-  </section>
-  <section class="install-panel" id="install-dnf" data-label="Fedora, RHEL" data-os="">
-    <h3>Fedora, RHEL</h3>
-    <pre data-example="bash,install"><code>sudo curl -fsSL -o /etc/yum.repos.d/datui.repo https://derekwisong.github.io/datui-apt/rpm/datui.repo
+    </div>
+    <div class="install-option">
+      <h4>Fedora, RHEL (dnf)</h4>
+      <pre data-example="bash,install"><code>sudo curl -fsSL -o /etc/yum.repos.d/datui.repo https://derekwisong.github.io/datui-apt/rpm/datui.repo
 sudo dnf install datui</code></pre>
+    </div>
+    <div class="install-option">
+      <h4>Arch Linux (AUR)</h4>
+      <pre data-example="bash,install"><code>yay -S datui-bin   # or: paru -S datui-bin</code></pre>
+    </div>
+    <div class="install-option">
+      <h4>Homebrew</h4>
+      <pre data-example="bash,install"><code>brew tap derekwisong/datui &amp;&amp; brew trust derekwisong/datui &amp;&amp; brew install datui</code></pre>
+    </div>
   </section>
-  <section class="install-panel" id="install-binaries" data-label="Binaries" data-os="">
+  <section class="install-panel" id="install-windows" data-label="Windows" data-os="windows">
+    <h3>Windows</h3>
+    <div class="install-option">
+      <h4>WinGet</h4>
+      <pre data-example="powershell,install"><code>winget install derekwisong.datui</code></pre>
+    </div>
+  </section>
+  <section class="install-panel" id="install-python" data-label="Python" data-os="python">
+    <h3>Python</h3>
+    <div class="install-option">
+      <h4>Python (pip)</h4>
+      <pre data-example="bash,install"><code>pip install datui</code></pre>
+    </div>
+  </section>
+  <section class="install-panel" id="install-rust" data-label="Rust" data-os="rust">
+    <h3>Rust</h3>
+    <div class="install-option">
+      <h4>Rust (cargo)</h4>
+      <pre data-example="bash,install"><code>cargo install datui --locked</code></pre>
+    </div>
+  </section>
+  <section class="install-panel" id="install-binaries" data-label="Binaries" data-os="binaries">
     <h3>Binaries</h3>
-    <p>Linux (x86_64, arm64), macOS (Intel, Apple silicon) and Windows binaries, plus <code>.deb</code>, <code>.rpm</code> and Arch tarballs, are on the <a href="https://github.com/derekwisong/datui/releases/latest">latest release</a>.</p>
+    <div class="install-option">
+      <h4>Binaries</h4>
+      <p>Linux (x86_64, arm64), macOS (Intel, Apple silicon) and Windows binaries, plus <code>.deb</code>, <code>.rpm</code> and Arch tarballs, are on the <a href="https://github.com/derekwisong/datui/releases/latest">latest release</a>.</p>
+    </div>
   </section>
 </div>
 {# end generated: install #}
         <p class="install-after">More ways to install, and how to uninstall: <a href="{{ guide('getting-started/installation') }}">Installation guide</a> · <a href="{{ repo }}/releases/latest">Latest release</a></p>
-      </section>
-
-      <section aria-labelledby="proof-title">
-        <h2 id="proof-title">How it stays fast</h2>
-        <ul class="section-lead">
-          <li>Rust on Polars. Every table is a <code>LazyFrame</code> until it is drawn.</li>
-          <li>Only the rows on screen and a lookahead buffer are collected. Sort, filter and query build on the lazy plan.</li>
-          <li>A Parquet file in S3, GCS or Azure is read in place: footers for the schema and row count, then only the row groups the screen needs.</li>
-          <li>The row count runs in the background; the table is usable before it is done.</li>
-        </ul>
-        <p>First rows in milliseconds on local files, under a second from S3. <a href="{{ guide('reference/performance') }}">Performance</a> has the numbers.</p>
       </section>
 
       <section aria-labelledby="features-title">
@@ -219,41 +234,41 @@ sudo dnf install datui</code></pre>
         <div class="features">
           <div>
             {% if shots['excel-tables'] %}<img src="{{ shots['excel-tables'] }}" alt="The worksheet picker over an Excel workbook opened by URL: three worksheets, each with its range and size" width="1376" height="788" loading="lazy">{% endif %}
-            <h3>Formats, and yours</h3>
-            <p>From Parquet, CSV, Arrow and JSON to SQLite, GGUF, audio and flight logs. A TOML format spec describes your own binary or delimited format; any file opens in the hex view.</p>
+            <h3>File formats</h3>
+            <p>Parquet, CSV, JSON, Arrow, Excel, SQLite and more. For a format datui does not know, describe its layout in a TOML format spec; any other file opens in the hex view.</p>
             <a href="{{ guide('formats/index') }}">Formats →</a> · <a href="{{ guide('formats/format-specs') }}">Format specs →</a>
           </div>
           <div>
             {% if shots['home-details'] %}<img src="{{ shots['home-details'] }}" alt="The home screen: Example datasets, NOAA daily weather selected, its publisher, license and column notes beside it" width="1376" height="788" loading="lazy">{% endif %}
-            <h3>Cloud or home</h3>
-            <p>Local files, directories, globs, S3, GCS, Azure and HTTP(S). Hive-partitioned folders read as one table. The home screen lists your catalogs, the cloud accounts it finds logins for, and Example datasets that need no login.</p>
+            <h3>Local or in the cloud</h3>
+            <p>Open files, directories and globs on disk, or data in S3, GCS, Azure and over HTTP(S). A Hive-partitioned directory opens as one table. The home screen lists your catalogs, the cloud accounts you are logged in to, and Example datasets that need no login.</p>
             <a href="{{ guide('user-guide/home-screen') }}">Home screen →</a> · <a href="{{ guide('user-guide/remote-data') }}">Cloud storage →</a>
           </div>
           <div>
             {% if shots['query-carriers'] %}<img src="{{ shots['query-carriers'] }}" alt="A SQL GROUP BY over NYC flights: mean arrival delay per carrier, F9 latest, AS early" width="1376" height="788" loading="lazy">{% endif %}
             <h3>Query and find</h3>
-            <p><kbd>:</kbd> runs SQL or q; <kbd>/</kbd> finds text, a regex or letters in order. <kbd>[</kbd> <kbd>]</kbd> sort by the cursor's column, <kbd>+</kbd> <kbd>-</kbd> keep or drop its value, and <kbd>v</kbd> saves the steps as a view for the next file.</p>
+            <p><kbd>:</kbd> runs a query in SQL or q. <kbd>/</kbd> finds text, a regex or letters in order. <kbd>[</kbd> and <kbd>]</kbd> sort by the column under the cursor, <kbd>+</kbd> and <kbd>-</kbd> keep or drop the rows with its value, and <kbd>v</kbd> saves the steps as a view to use on the next file.</p>
             <a href="{{ guide('user-guide/querying-data') }}">Query data →</a>
           </div>
           <div>
             {% if shots['chart-color-origin'] %}<img src="{{ shots['chart-color-origin'] }}" alt="A line chart of mean departure delay by hour, one line per New York airport, over all 336,776 rows" width="1376" height="788" loading="lazy">{% endif %}
             <h3>Chart</h3>
-            <p><kbd>c</kbd> charts the column under the cursor: line, scatter, bar, histogram, box, KDE or heatmap, of the rows the query and filters leave. <kbd>e</kbd> exports it to PNG, SVG or PDF.</p>
+            <p><kbd>c</kbd> charts the column under the cursor as a line, scatter, bar, histogram, box, KDE or heatmap, over the rows your query and filters keep. <kbd>e</kbd> exports the chart to PNG, SVG or PDF.</p>
             <a href="{{ guide('user-guide/charting') }}">Charts →</a>
           </div>
           <div>
             {% if shots['pivot-builder'] %}<img src="{{ shots['pivot-builder'] }}" alt="The Pivot & Melt builder with its live preview: three names as columns, one row per year" width="1376" height="788" loading="lazy">{% endif %}
             <h3>Reshape and retype</h3>
-            <p>Pivot or melt (<kbd>p</kbd>) with a live preview. Change a column's type from the Info panel's Schema tab or a right click on a cell.</p>
+            <p><kbd>p</kbd> pivots or melts the table, with a live preview. Change a column's type from the Schema tab in Info, or right-click a cell.</p>
             <a href="{{ guide('user-guide/reshaping') }}">Reshaping →</a> · <a href="{{ guide('user-guide/dataset-info') }}">Column types →</a>
           </div>
           <div>
             <h3>Pipes and Python</h3>
-            <p>Pipe a command's output in, follow a file as it grows, or call <code>datui.view()</code> on a Polars frame.</p>
+            <p>Pipe in a command's output, follow a file as it grows, or call <code>datui.view()</code> on a Polars frame.</p>
             <a href="{{ guide('user-guide/pipes-and-follow') }}">Pipes →</a> · <a href="{{ guide('user-guide/python-module') }}">Python →</a>
           </div>
         </div>
-        <p class="small">Also: catalogs of your own datasets with a Documentation view (<kbd>Ctrl+E</kbd>), themes (<code>datui theme list</code>), the mouse, and copy over SSH through OSC 52. <a href="{{ guide('reference/keyboard-shortcuts') }}">Every key</a></p>
+        <p class="small">Also: catalogs of your own datasets, each with a Documentation view (<kbd>Ctrl+E</kbd>); themes (<code>datui theme list</code>); mouse support; and copying over SSH through OSC 52. <a href="{{ guide('reference/keyboard-shortcuts') }}">Every key →</a></p>
         {% if gallery %}
         <figure class="gallery">
           <img src="{{ gallery }}" alt="One NYC flights view in four themes: night-market, day-market, gruvbox-dark and high-contrast" width="2752" height="1576" loading="lazy">
@@ -264,7 +279,7 @@ sudo dnf install datui</code></pre>
 
       <section aria-labelledby="formats-title">
         <h2 id="formats-title">Formats</h2>
-        <p class="section-lead">Each one reads from disk, HTTP(S) or a bucket. <a href="{{ guide('formats/index') }}">The formats table</a> says which read lazily and which read compressed.</p>
+        <p class="section-lead">Each of these opens from disk, HTTP(S) or a cloud bucket. <a href="{{ guide('formats/index') }}">The formats table</a> shows which are read lazily and which open compressed.</p>
 {# generated: formats #}
 <dl class="format-families">
   <div><dt><a href="{{ guide('formats/columnar-and-json') }}">Columnar and JSON</a></dt><dd>Parquet · JSON · NDJSON · Arrow IPC · Avro · ORC · Excel</dd></div>
@@ -277,12 +292,23 @@ sudo dnf install datui</code></pre>
 {# end generated: formats #}
       </section>
 
+      <section aria-labelledby="proof-title">
+        <h2 id="proof-title">How it stays fast</h2>
+        <ul class="section-lead">
+          <li>Written in Rust on Polars. Every table stays a <code>LazyFrame</code> until it is drawn, and only the rows on screen, plus a buffer ahead, are collected.</li>
+          <li>Sorts, filters and queries add steps to the lazy plan; they do not copy the data.</li>
+          <li>Parquet in S3, GCS or Azure is read in place: the footers for the schema and row count, then only the row groups the screen needs.</li>
+          <li>Rows are counted in the background, so you can scroll before the count is done.</li>
+        </ul>
+        <p>First rows in milliseconds on local files, under a second from S3. <a href="{{ guide('reference/performance') }}">Performance</a> has the numbers.</p>
+      </section>
+
       <section aria-labelledby="try-title">
         <h2 id="try-title">Try it</h2>
         <div class="paths">
           <div>
             <h3>In your terminal</h3>
-            <pre data-example="bash,network"><code>datui     # home screen: your files, and Example datasets to open with no login
+            <pre data-example="bash,network"><code>datui     # the home screen: your files, and Example datasets that need no login
 datui https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins.csv</code></pre>
             <pre data-example="bash"><code>printf 'id,amount\n1,9.50\n2,3.25\n' | datui</code></pre>
             <p class="small">Press <kbd>?</kbd> for the keys on any screen; <kbd>Ctrl+Q</kbd> quits. <a href="{{ guide('getting-started/quick-start') }}">Quick start</a> · <a href="{{ guide('reference/keyboard-shortcuts') }}">Keys</a></p>
@@ -302,8 +328,8 @@ datui.view(pl.scan_csv(url))</code></pre>
       <section aria-labelledby="not-title">
         <h2 id="not-title">What it is not</h2>
         <ul class="section-lead">
-          <li>An editor: cells cannot be changed, and datui does not write to the files it opens unless you export over one. Results leave as an export or a copy.</li>
-          <li>A service: no telemetry, no update check. datui connects only to the data and the cloud accounts you open or browse.</li>
+          <li>An editor. Cells cannot be changed, and datui never writes to a file it opened unless you export over it. Results leave as an export or a copy.</li>
+          <li>A service. No telemetry and no update check: datui connects only to the data and cloud accounts you open or browse.</li>
         </ul>
       </section>
 

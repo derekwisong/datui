@@ -459,8 +459,8 @@ pub const SCREENS: &[Screen] = &[
             Group {
                 name: "Analyze",
                 keys: &[
-                    k("F", "Counts", "Value counts of the cursor's column")
-                        .more("Value counts of the cursor's column: each value's rows, percent and a bar, with a summary"),
+                    k("F", "Counts", "Value counts of the cursor's column; a number's as a histogram")
+                        .more("Value counts of the cursor's column: each value's rows, percent and a bar, with a summary. A number column opens as a histogram; c there shows the list of its values"),
                     k("a", "Analysis", "Describe, distributions, correlation, quality")
                         .more("Open Analysis. In a Data Quality evidence drill a is disabled; Esc returns to the observation"),
                     k("c", "Chart", "Chart the view"),
@@ -862,9 +862,9 @@ pub const SCREENS: &[Screen] = &[
                     .also(&["Rows"])
                         .more("The rows holding the value, as a drill-down; Esc there comes back here"),
                     k("s", "Sort", "Sort by count or by value"),
-                    k("c", "Histogram", "A number's histogram, or its counts")
-                    .also(&["Counts"])
-                        .more("Between a number column's histogram, binned from the counts, and the listing of its values. A number opens as its histogram"),
+                    k("c", "Histogram", "A number's histogram, or the list of its values")
+                    .also(&["List"])
+                        .more("Between a number column's histogram, binned from the counts, and the list of its values. A number opens as its histogram; the header says which is shown"),
                     k("a", "All rows", "Count every row, when the counts are of a sample"),
                     k("t", "New rows", "Count again with the rows that arrived")
                     .also(&["Refresh"])

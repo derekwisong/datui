@@ -65,7 +65,17 @@ pub fn draw(
         }
         None => "counting".to_string(),
     };
-    let mut header = format!("Value Counts {} {column} {} {read}", g.middot, g.middot);
+    // A number shows as a histogram or a list; the header says which, as the
+    // footer's `c` names the other.
+    let view = match counts.as_ref().and_then(|c| c.histogram.as_ref()) {
+        Some(_) if !modal.shows_histogram() => format!(" {} List", g.middot),
+        Some(h) => format!(" {} Histogram, {} bins", g.middot, h.bins.len()),
+        None => String::new(),
+    };
+    let mut header = format!(
+        "Value Counts {} {column}{view} {} {read}",
+        g.middot, g.middot
+    );
     if counts.is_some() && modal.counting() {
         header.push_str(&format!(" {} {spinner} counting every row", g.middot));
     }
@@ -553,6 +563,32 @@ mod tests {
 
     /// A least or greatest value over several lines reads as a table cell does,
     /// its breaks marked in the glyph set it is drawn with, and a huge one is cut.
+    #[test]
+    fn the_header_names_a_numbers_view() {
+        let mut modal = counted(df!("pay" => [1i64, 1, 2, 5]).unwrap(), "pay");
+        let header = |modal: &mut ValueCountsModal| screen(modal, 80, 12).remove(0);
+        let dot = crate::glyphs::get().middot;
+        let shown = header(&mut modal);
+        assert!(shown.contains(&format!("pay {dot} Histogram, ")), "{shown}");
+        assert!(
+            shown.contains(&format!(" bins {dot} all 4 rows")),
+            "{shown}"
+        );
+        modal.toggle_view();
+        let shown = header(&mut modal);
+        assert!(
+            shown.contains(&format!("pay {dot} List {dot} all 4 rows")),
+            "{shown}"
+        );
+
+        let mut words = counted(df!("tag" => ["a", "b"]).unwrap(), "tag");
+        let shown = header(&mut words);
+        assert!(
+            !shown.contains("List") && !shown.contains("Histogram"),
+            "{shown}"
+        );
+    }
+
     #[test]
     fn a_multi_line_min_is_marked_and_cut() {
         let ctx = RenderContext::for_test();

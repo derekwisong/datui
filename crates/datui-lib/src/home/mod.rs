@@ -3495,10 +3495,11 @@ impl HomeState {
         }
     }
 
-    /// What the cursor is on, as something that survives the rows changing.
+    /// What the cursor is on, picked or resting, as something that survives the rows
+    /// changing: where it is put back after a listing, a resize or a fold.
     pub fn selected_key(&self) -> Option<RowKey> {
         let title = |section: usize| self.sections.get(section).map(|s| s.title.clone());
-        Some(match self.selected_row()? {
+        Some(match self.cursor_row()? {
             Row::Header { section, .. } => RowKey::Header(title(section)?),
             Row::More { section, .. } => RowKey::More(title(section)?),
             Row::Hidden { section, .. } => RowKey::Hidden(title(section)?),

@@ -9954,6 +9954,42 @@ mod listing_work {
         assert!(!measuring(&home), "nothing is being measured any more");
     }
 
+    /// At rest, a listing landing keeps the cursor on the row it rests on, as it does a
+    /// picked one, rather than landing again somewhere else.
+    #[test]
+    fn a_resting_cursor_keeps_its_row_across_a_listing() {
+        let mut home = HomeState {
+            resting: true,
+            ..Default::default()
+        };
+        let listing = |names: &[&str]| Listing {
+            sections: vec![Section::titled(
+                "HERE",
+                names
+                    .iter()
+                    .map(|n| file(format!("/pretend/r/{n}")))
+                    .collect(),
+            )],
+            ..Default::default()
+        };
+        home.apply_listing(listing(&["b.csv", "c.csv"]));
+        home.view_height = 20;
+        let rests_on = |home: &HomeState| match home.cursor_row() {
+            Some(Row::Entry { entry, .. }) => Some(entry.name.clone()),
+            _ => None,
+        };
+        assert_eq!(rests_on(&home).as_deref(), Some("b.csv"));
+        home.apply_listing(listing(&["a.csv", "b.csv", "c.csv"]));
+        assert_eq!(
+            rests_on(&home).as_deref(),
+            Some("b.csv"),
+            "still on its row"
+        );
+        home.set_view_height(10);
+        assert_eq!(rests_on(&home).as_deref(), Some("b.csv"), "across a resize");
+        assert!(home.resting, "and still not picked");
+    }
+
     /// Sorted by size or time, every row needs its stat and nothing more: those off
     /// screen are stat'ed, never read.
     #[test]
@@ -10206,6 +10242,26 @@ mod at_rest {
             rests_on(&app).is_some(),
             "the cursor still rests where it did"
         );
+    }
+
+    /// Ctrl+A at rest shows or hides files around the cursor without moving it: Enter
+    /// still takes the row that is tinted.
+    #[test]
+    fn ctrl_a_at_rest_keeps_the_cursor_row() {
+        let (tmp, mut app, rx) = opened();
+        std::fs::write(tmp.path().join("aaa.bin"), b"x").unwrap();
+        app.event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('r'),
+            KeyModifiers::CONTROL,
+        )));
+        super::coming_back::settle(&mut app, &rx, |_| true);
+        let before = rests_on(&app);
+        app.event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('a'),
+            KeyModifiers::CONTROL,
+        )));
+        assert!(app.home.resting);
+        assert_eq!(rests_on(&app), before);
     }
 
     /// Resting is the session's start alone: once a row is picked, coming home again

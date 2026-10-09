@@ -215,10 +215,16 @@ pub fn pump_open_until_loaded(
             Some(event) => next = app.event(event),
             None => match next_event(app, rx) {
                 Some(event) => next = Some(event),
-                None => return,
+                None => break,
             },
         }
     }
+    // A dataset this open replaced is dropped on a thread of its own, its temp files
+    // with it.
+    assert!(
+        App::releases_settled(HANG_GUARD),
+        "a replaced dataset was never dropped"
+    );
 }
 
 /// A scratch directory named at random and kept for the life of the process.

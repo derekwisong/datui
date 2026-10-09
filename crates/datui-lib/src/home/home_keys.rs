@@ -81,7 +81,10 @@ impl App {
                     // prompt to be fixed in place.
                     self.home.path_input.clear();
                     self.home.path_input_active = false;
-                    return Some(AppEvent::ClassifyThenOpen { path, jump: true });
+                    return Some(AppEvent::ClassifyThenOpen {
+                        path,
+                        typed: Some(raw),
+                    });
                 }
                 KeyCode::Backspace => {
                     self.home.path_input.pop();

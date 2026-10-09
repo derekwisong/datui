@@ -2299,7 +2299,7 @@ impl App {
         {
             return Some(AppEvent::ClassifyThenOpen {
                 path: entry.path,
-                jump: false,
+                typed: None,
             });
         }
         // A database of several tables lists them; one not yet measured opens and lands on

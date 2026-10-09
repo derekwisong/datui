@@ -1651,12 +1651,12 @@ fn a_dead_frames_failed_count_leaves_this_frames_question_mark_alone() {
 fn a_look_is_out(
     app: &mut crate::App,
     path: &std::path::Path,
-    jump: bool,
+    typed: Option<String>,
 ) -> crate::app::jobs::Started {
     let look = crate::Job::Classify(crate::app::jobs::Classify {
         path: path.to_path_buf(),
         browsing: app.home.browsing.clone(),
-        jump,
+        typed,
     });
     app.job_for_tests(look, Some(crate::App::LOOKING))
 }
@@ -1724,7 +1724,7 @@ fn a_classify_answer_nobody_is_waiting_for_leaves_the_right_busy_behind() {
         let mut app = App::new(tx, crate::tests::test_runtime());
         app.enter_home();
         let path = std::path::PathBuf::from("/mnt/share/orders");
-        let look = a_look_is_out(&mut app, &path, false);
+        let look = a_look_is_out(&mut app, &path, None);
 
         moved_on(&mut app);
         let moved_to = app.home.browsing.clone();
@@ -1767,13 +1767,13 @@ fn a_newer_look_replaces_an_older_one() {
     let mut app = App::new(tx, crate::tests::test_runtime());
     app.enter_home();
     let first = std::path::PathBuf::from("/mnt/share/aaa");
-    let look = a_look_is_out(&mut app, &first, false);
+    let look = a_look_is_out(&mut app, &first, None);
 
     // A second Enter, at a row the user moved to while the first was out.
     let second = std::path::PathBuf::from("/mnt/share/bbb");
     let _ = app.event(AppEvent::ClassifyThenOpen {
         path: second.clone(),
-        jump: false,
+        typed: None,
     });
     assert_eq!(
         a_look_waits(&app),
@@ -1809,7 +1809,7 @@ fn going_home_does_not_wait_on_a_look_that_may_never_answer() {
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
     app.enter_home();
-    let _look = a_look_is_out(&mut app, std::path::Path::new("/mnt/gone/orders"), false);
+    let _look = a_look_is_out(&mut app, std::path::Path::new("/mnt/gone/orders"), None);
     app.home.status = Some("Looking at orders...".to_string());
 
     app.enter_home();
@@ -1823,7 +1823,7 @@ fn going_home_does_not_wait_on_a_look_that_may_never_answer() {
 }
 
 /// A typed path the worker could not find comes back to the prompt with the text in
-/// it, the way a local one never left.
+/// it as typed: `~/dta`, not its expansion.
 #[test]
 fn a_typed_path_that_is_not_there_comes_back_to_the_prompt() {
     use crate::App;
@@ -1831,8 +1831,9 @@ fn a_typed_path_that_is_not_there_comes_back_to_the_prompt() {
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
     app.enter_home();
-    let path = std::path::PathBuf::from("/mnt/share/nope");
-    let look = a_look_is_out(&mut app, &path, true);
+    let typed = "~/nope-dta".to_string();
+    let path = crate::home::expand_user_path(&typed);
+    let look = a_look_is_out(&mut app, &path, Some(typed.clone()));
 
     let follow = the_look_answers(&mut app, look, None);
 
@@ -1847,9 +1848,8 @@ fn a_typed_path_that_is_not_there_comes_back_to_the_prompt() {
     );
     assert!(app.home.path_input_active, "and the prompt is back");
     assert_eq!(
-        app.home.path_input,
-        path.display().to_string(),
-        "with the path still in it"
+        app.home.path_input, typed,
+        "with the text still in it, as typed"
     );
 }
 
@@ -2740,7 +2740,7 @@ fn a_failure_leaves_other_work_alone() {
         Job::Classify(crate::app::jobs::Classify {
             path: PathBuf::from(path),
             browsing: None,
-            jump: false,
+            typed: None,
         })
     };
     let older = app.job_for_tests(look("/older"), None);

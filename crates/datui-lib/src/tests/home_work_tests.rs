@@ -242,7 +242,7 @@ fn enter_on_a_directory_not_looked_into_asks_a_worker() {
         KeyModifiers::NONE,
     )));
     assert!(
-        matches!(next, Some(AppEvent::ClassifyThenOpen { ref path, jump: false }) if *path == inner),
+        matches!(next, Some(AppEvent::ClassifyThenOpen { ref path, typed: None }) if *path == inner),
         "a look on a worker, not an answer on this thread"
     );
 }

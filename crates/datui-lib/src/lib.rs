@@ -371,8 +371,9 @@ pub enum AppEvent {
     /// open it. The filesystem calls can hang on a slow mount.
     ClassifyThenOpen {
         path: PathBuf,
-        /// A path typed at `~` rather than a listed row: Esc returns to the listing.
-        jump: bool,
+        /// The text typed at `~`, when the path came from there rather than a listed row:
+        /// Esc returns to the listing, and a typo comes back as typed.
+        typed: Option<String>,
     },
     /// A background job's outcome is in its record: `app::jobs::Jobs::end` takes it.
     JobEnded(Ticket),
@@ -3907,7 +3908,7 @@ impl App {
             }
             AppEvent::ClassifyThenOpen {
                 path: looking,
-                jump,
+                typed,
             } => {
                 // A second Enter supersedes the first (home keys act while busy): the newer look
                 // is the one waited for, and refusing would let a dead share block every look.
@@ -3915,7 +3916,7 @@ impl App {
                 let look = Job::Classify(app::jobs::Classify {
                     path: looking.clone(),
                     browsing: self.home.browsing.clone(),
-                    jump,
+                    typed,
                 });
                 let name = looking
                     .file_name()
@@ -4475,15 +4476,16 @@ impl App {
                 let path = asked.path;
                 let Some(kind) = found else {
                     self.home.status = Some(format!("No such path: {}", path.display()));
-                    if asked.jump {
-                        // A typo typed at `~` is worth another go without retyping it.
-                        self.home.path_input = path.display().to_string();
+                    if let Some(typed) = asked.typed {
+                        // A typo typed at `~` is worth another go without retyping it, as typed
+                        // (`~/dta`, not its expansion).
+                        self.home.path_input = typed;
                         self.home.path_input_active = true;
                         self.list_the_typed_directory();
                     }
                     return None;
                 };
-                self.open_what_it_is(path, kind, asked.jump)
+                self.open_what_it_is(path, kind, asked.typed.is_some())
             }
             (Job::Rows(inflight), Answer::Rows(result)) => {
                 // A stale page is dropped; the wait belongs to whatever replaced it.

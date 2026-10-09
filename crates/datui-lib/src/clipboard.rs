@@ -10,8 +10,8 @@
 //! OSC 52, so payloads are capped first (configurable); table copies are read in batches
 //! up to the cap, without an HTML flavor.
 //!
-//! **auto**: osc52 over SSH; elsewhere native where it initializes, else osc52,
-//! decided at the first copy.
+//! **auto**: native where it initializes, else osc52, decided at the first copy; over
+//! SSH with no display forwarded, osc52 without asking.
 
 use polars::prelude::*;
 use std::io::Write as _;
@@ -180,7 +180,7 @@ pub fn destination(
     match choice {
         BackendChoice::Native => Native::new().map(|n| Box::new(n) as Box<dyn Destination>),
         BackendChoice::Osc52 => Ok(terminal()),
-        BackendChoice::Auto if over_ssh(|name| std::env::var(name).ok()) => Ok(terminal()),
+        BackendChoice::Auto if no_display_here(|name| std::env::var(name).ok()) => Ok(terminal()),
         BackendChoice::Auto => Ok(match Native::new() {
             Ok(native) => Box::new(native),
             // No display server to talk to is exactly what the escape-sequence path is
@@ -190,13 +190,12 @@ pub fn destination(
     }
 }
 
-/// Whether datui runs over SSH, where `auto` copies through the terminal: the
-/// clipboard wanted is the one at the keyboard, and a forwarded display (`ssh -X`)
-/// is the remote one, reached in round trips over the link on every copy.
-pub(crate) fn over_ssh(env: impl Fn(&str) -> Option<String>) -> bool {
-    ["SSH_CONNECTION", "SSH_TTY"]
-        .iter()
-        .any(|name| env(name).is_some_and(|v| !v.trim().is_empty()))
+/// Whether `auto` goes straight to the terminal: over SSH with no display forwarded,
+/// where no display server can answer, so none is asked. A forwarded display
+/// (`ssh -X`) is tried first, as anywhere else.
+pub(crate) fn no_display_here(env: impl Fn(&str) -> Option<String>) -> bool {
+    let set = |name: &str| env(name).is_some_and(|v| !v.trim().is_empty());
+    (set("SSH_CONNECTION") || set("SSH_TTY")) && !set("DISPLAY") && !set("WAYLAND_DISPLAY")
 }
 
 // ----- The shapes a copy takes -----

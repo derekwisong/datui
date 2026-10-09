@@ -182,7 +182,7 @@ lives, imports, the theme and troubleshooting.
 
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
-| `clipboard.backend` | auto \| native \| osc52 | `"auto"` |  | auto: osc52 over SSH; elsewhere the display server where one answers, else osc52. osc52 is an escape sequence the terminal applies. |
+| `clipboard.backend` | auto \| native \| osc52 | `"auto"` |  | auto: the display server where one answers, osc52 elsewhere (SSH). osc52 is an escape sequence the terminal applies. |
 | `clipboard.osc52_limit` | size | `"100KiB"` |  | Longest osc52 copy to attempt, as base64. Terminals cap what they accept. |
 
 ## Formats

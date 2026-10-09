@@ -396,9 +396,11 @@ fn a_capped_destination_takes_text_only() {
     );
 }
 
-/// Over SSH `auto` copies through the terminal, without asking a (forwarded) display.
+/// Over SSH with no display forwarded, `auto` copies through the terminal without
+/// asking a display server; a forwarded display (`ssh -X`) is tried first, as is a
+/// local one.
 #[test]
-fn auto_copies_through_the_terminal_over_ssh() {
+fn auto_goes_to_the_terminal_over_ssh_without_a_display() {
     let env = |vars: &'static [(&'static str, &'static str)]| {
         move |name: &str| {
             vars.iter()
@@ -406,13 +408,24 @@ fn auto_copies_through_the_terminal_over_ssh() {
                 .map(|(_, v)| v.to_string())
         }
     };
-    assert!(over_ssh(env(&[(
+    assert!(no_display_here(env(&[(
         "SSH_CONNECTION",
         "10.0.0.2 5 10.0.0.1 22"
     )])));
-    assert!(over_ssh(env(&[("SSH_TTY", "/dev/pts/3")])));
-    assert!(!over_ssh(env(&[("SSH_TTY", " "), ("DISPLAY", ":0")])));
-    assert!(!over_ssh(env(&[])));
+    assert!(no_display_here(env(&[
+        ("SSH_TTY", "/dev/pts/3"),
+        ("DISPLAY", " ")
+    ])));
+    assert!(!no_display_here(env(&[
+        ("SSH_TTY", "/dev/pts/3"),
+        ("DISPLAY", "localhost:10.0")
+    ])));
+    assert!(!no_display_here(env(&[
+        ("SSH_TTY", "/dev/pts/3"),
+        ("WAYLAND_DISPLAY", "wayland-1")
+    ])));
+    assert!(!no_display_here(env(&[("DISPLAY", ":0")])));
+    assert!(!no_display_here(env(&[])));
 }
 
 #[test]

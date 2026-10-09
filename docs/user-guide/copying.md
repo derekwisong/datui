@@ -216,14 +216,12 @@ chooses the mechanism:
 
 | Backend | How |
 |---|---|
-| `auto` (default) | `osc52` over SSH; elsewhere `native` where a display server answers, `osc52` otherwise |
+| `auto` (default) | `native` where a display server answers, `osc52` elsewhere |
 | `native` | The display server (Wayland, X11, macOS, Windows), with the HTML flavor |
 | `osc52` | An escape sequence the terminal applies to the system clipboard |
 
 `osc52` is what works over SSH: no display server is involved, the terminal
-you are sitting at does the copy. Under SSH (`SSH_CONNECTION` or `SSH_TTY` set)
-`auto` takes it even when a display is forwarded (`ssh -X`), whose clipboard is
-the remote one. Caveats terminals impose:
+you are sitting at does the copy. Caveats terminals impose:
 
 - tmux needs `set-clipboard on` to pass the sequence through.
 - Terminals cap the sequence length; datui refuses payloads above

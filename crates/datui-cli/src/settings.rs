@@ -337,7 +337,7 @@ pub const SETTINGS: &[Setting] = &[
     // [views]
     s("views.auto_apply", Bool, Value("false"), "Apply the best-matching view when a file opens."),
     // [clipboard]
-    s("clipboard.backend", Choice(&["auto", "native", "osc52"]), Value("\"auto\""), "auto: osc52 over SSH; elsewhere the display server where one answers, else osc52. osc52 is an escape sequence the terminal applies."),
+    s("clipboard.backend", Choice(&["auto", "native", "osc52"]), Value("\"auto\""), "auto: the display server where one answers, osc52 elsewhere (SSH). osc52 is an escape sequence the terminal applies."),
     s("clipboard.osc52_limit", Size, Value("\"100KiB\""), "Longest osc52 copy to attempt, as base64. Terminals cap what they accept."),
     // [formats]
     s("formats.path", List, Value("[]"), "Directories of format specs and dictionaries, searched after ~/.config/datui/formats and $DATUI_FORMATS_PATH. Adds up across imports."),

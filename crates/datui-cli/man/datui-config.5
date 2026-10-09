@@ -257,7 +257,7 @@ Apply the best-matching view when a file opens. Default: \fBfalse\fR.
 How the copy dialog (\fBy\fR) reaches the system clipboard.
 .TP
 \fBclipboard.backend\fR (\fIauto | native | osc52\fR)
-auto: osc52 over SSH; elsewhere the display server where one answers, else osc52. osc52 is an escape sequence the terminal applies. Default: \fB"auto"\fR.
+auto: the display server where one answers, osc52 elsewhere (SSH). osc52 is an escape sequence the terminal applies. Default: \fB"auto"\fR.
 .TP
 \fBclipboard.osc52_limit\fR (\fIsize\fR)
 Longest osc52 copy to attempt, as base64. Terminals cap what they accept. Default: \fB"100KiB"\fR.

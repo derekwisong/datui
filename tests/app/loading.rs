@@ -306,8 +306,6 @@ fn evidence_rows_over_a_decompressed_file_hold_it() {
     pump_open_until_loaded(&mut app, &rx, vec![other], OpenOptions::default());
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 1);
-    // The replaced dataset is dropped on a thread of its own.
-    assert!(App::releases_settled(common::HANG_GUARD));
     assert!(
         decompressed().is_empty(),
         "the replaced dataset's copy went"

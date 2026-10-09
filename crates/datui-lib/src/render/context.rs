@@ -13,9 +13,19 @@ pub struct DisplaySettings {
     pub(crate) number_format: NumberFormatSettings,
     /// The terminal should be asked for its background before the next frame.
     pub(crate) background_query: bool,
-    /// The next frame repaints every cell: the terminal was resized or came back to
-    /// the front, and what it shows may have drifted from what was drawn.
-    pub(crate) repaint: bool,
+    /// The next frame repaints: the terminal was resized or came back to the front,
+    /// and what it shows may have drifted from what was drawn.
+    pub(crate) repaint: Option<Repaint>,
+}
+
+/// How much of the screen the next frame redraws whole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Repaint {
+    /// Every cell, in the next frame the terminal would move lines in (back in focus):
+    /// a move would carry along whatever drifted on screen meanwhile.
+    BeforeMoving,
+    /// Every cell (resized).
+    Whole,
 }
 
 /// The theme's colors and the display settings, handed to every widget a frame draws

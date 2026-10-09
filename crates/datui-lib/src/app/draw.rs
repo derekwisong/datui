@@ -42,6 +42,9 @@ pub(crate) struct Drawer {
     changed: Vec<u32>,
     scroll: bool,
     repaint: bool,
+    /// What the terminal shows may have drifted from `shown` since the last whole
+    /// frame (it was out of focus): the next move repaints instead.
+    doubted: bool,
 }
 
 impl Drawer {
@@ -75,9 +78,18 @@ impl Drawer {
         self.repaint = true;
     }
 
+    /// Draw every cell with the next frame the terminal would move lines in, instead
+    /// of the move (the terminal back in focus: something may have written to it
+    /// meanwhile). Until then, frames are the plain diff, which leaves drift where it
+    /// landed, and a frame that changes nothing sends nothing.
+    pub(crate) fn repaint_before_moving(&mut self) {
+        self.doubted = true;
+    }
+
     fn forget(&mut self) {
         self.shown.reset();
         self.shown_lines.clear();
+        self.doubted = false;
     }
 
     /// Render a frame and send what changed, as `Terminal::draw` does with no cursor,
@@ -105,6 +117,7 @@ impl Drawer {
         if self.shown.area != area {
             self.shown = Buffer::empty(area);
             self.shown_lines.clear();
+            self.doubted = false;
         }
         let mut moved = None;
         if self.scroll {
@@ -118,9 +131,10 @@ impl Drawer {
                 moved = Some(band);
             }
         }
-        let repaint = asked;
+        let repaint = asked || (moved.is_some() && self.doubted);
         if repaint {
             self.forget();
+            moved = None;
         }
         let changed =
             repaint || moved.is_some() || self.shown.diff_iter(&self.next).next().is_some();

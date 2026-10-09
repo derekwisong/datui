@@ -5,6 +5,7 @@ use crate::app::terminal::{
     QuietTerminal, TakenTerminal, follow_focus, push_keyboard_flags, restore_terminal, take_screen,
 };
 use crate::config::AppConfig;
+use crate::render::context::Repaint;
 use crate::view::Views;
 use crate::{
     App, AppEvent, RunInput, app::event_pump, app::pointer, app::startup, app::terminal_color,
@@ -381,8 +382,8 @@ fn run_impl(
         .then(|| startup::take_answer(&rx, background, &mut backlog))
         .flatten();
     // Focus reports: under `auto` the background is asked again, and a frame back in
-    // focus is repainted whole, since a scroll moved by the terminal carries along
-    // whatever drifted on screen meanwhile.
+    // focus is repainted whole before the terminal next moves lines, since a move
+    // carries along whatever drifted on screen meanwhile.
     let focus_reports =
         (config.theme.follow && terminal_color::supported()) || config.display.scroll_region;
     if focus_reports {
@@ -459,8 +460,10 @@ fn run_impl(
         if app.take_background_query() && terminal_color::supported() {
             terminal_color::ask(&mut std::io::stdout());
         }
-        if app.take_repaint() {
-            terminal.repaint();
+        match app.take_repaint() {
+            Some(Repaint::Whole) => terminal.repaint(),
+            Some(Repaint::BeforeMoving) => terminal.repaint_before_moving(),
+            None => {}
         }
         terminal.draw(|frame| frame.render_widget(app, frame.area()))?;
         Ok(())

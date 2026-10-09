@@ -93,9 +93,14 @@ impl QuietTerminal {
         self.1.clear(terminal)
     }
 
-    /// Draw every cell with the next frame (after a resize, or back in focus).
+    /// Draw every cell with the next frame (after a resize).
     pub(crate) fn repaint(&mut self) {
         self.1.repaint();
+    }
+
+    /// Draw every cell in place of the next move (back in focus).
+    pub(crate) fn repaint_before_moving(&mut self) {
+        self.1.repaint_before_moving();
     }
 
     /// `display.scroll_region`.

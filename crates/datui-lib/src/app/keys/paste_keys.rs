@@ -292,7 +292,9 @@ impl App {
         }
     }
 
-    /// As the home screen's character keys do, once for the whole text.
+    /// As the home screen's character keys do, once for the whole text. On an empty
+    /// filter a path starting with `~` opens the path prompt with it, as `~` typed
+    /// there does.
     fn paste_at_home(&mut self, text: &str) {
         if text.is_empty() {
             return;
@@ -304,6 +306,12 @@ impl App {
             self.home.filter.clear();
             self.home.sync_search_section();
             self.home.select_first_entry();
+        }
+        if !self.home.path_input_active && self.home.filter.is_empty() && text.starts_with('~') {
+            self.home.path_input_active = true;
+            self.home.path_input.clear();
+            self.home.path_listing = None;
+            self.home.path_pick = None;
         }
         if self.home.path_input_active {
             self.home.path_input.push_str(text);

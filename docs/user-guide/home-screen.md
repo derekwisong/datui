@@ -24,7 +24,8 @@ in the [keyboard reference](../reference/keyboard-shortcuts.md#home-screen).
 To type a path or URL, press <kbd>~</kbd> with the filter empty. The list
 shows the directory being typed, narrowed by the name after the last `/`, with
 the first name picked. A pasted path goes in whole; a line break in it is a
-space, so a paste never presses Enter.
+space, so a paste never presses Enter. A path starting with `~` pasted on an
+empty filter opens the prompt with it.
 
 | Key at the `~` prompt | Does |
 |---|---|

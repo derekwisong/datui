@@ -3559,6 +3559,27 @@ fn a_paste_into_the_path_prompt_is_one_edit() {
     assert_eq!(p.app.home.path_input, path.trim_end());
 }
 
+/// A path starting with `~` pasted on an empty filter opens the path prompt with it,
+/// as `~` typed there does; on a typed filter it is filter text.
+#[test]
+fn a_pasted_home_path_opens_the_path_prompt() {
+    let mut p = pump();
+    p.app.enter_home();
+    p.send(paste("~/data/sales.csv")).unwrap();
+    p.drain().unwrap();
+    assert!(p.app.home.path_input_active);
+    assert_eq!(p.app.home.path_input, "~/data/sales.csv");
+    assert_eq!(p.app.home.filter, "");
+
+    let mut p = pump();
+    p.app.enter_home();
+    type_keys(&mut p, "x");
+    p.send(paste("~y")).unwrap();
+    p.drain().unwrap();
+    assert!(!p.app.home.path_input_active);
+    assert_eq!(p.app.home.filter, "x~y");
+}
+
 /// A space pasted into a picker narrows it: it neither chooses nor toggles, as Space
 /// typed there would.
 #[test]

@@ -1,8 +1,8 @@
 # Value counts
 
 <kbd>F</kbd> at the table counts the rows holding each value of the column
-cursor's column, with a summary of the column above them. <kbd>Esc</kbd> goes
-back.
+cursor's column, with a summary of the column above them. A number column
+opens as a histogram. <kbd>Esc</kbd> goes back.
 
 Move the cursor with <kbd>h</kbd> <kbd>l</kbd> or <kbd>g</kbd>. <kbd>←</kbd>
 <kbd>→</kbd> on the counts move to the previous or next column, and the
@@ -32,12 +32,13 @@ comes back to the counts.
 counts, under a summary that answers whether the column can be added up:
 
 ```text
+Value Counts · flight · Histogram, 40 bins · all 336,776 rows
  Rows 336776   Distinct 3844   Nulls 0   Sum 664096549   Mean 1971.9236   Min 1
  Max 8500
 ```
 
-<kbd>c</kbd> turns a number's histogram into the listing of its values, and
-back.
+<kbd>c</kbd> turns a number's histogram into the list of its values, and
+back; the header says `List` then.
 
 ## Histogram
 
@@ -46,14 +47,14 @@ the greatest, or a bin per value when an integer column spans fewer than 40.
 When the tails reach ten times past the 1st to 99th percentile, the bins span
 that range instead and the values outside it are counted under the plot:
 `1,207 values outside p1-p99`. The bins are made from the counts, so they are
-exact wherever the counts are. <kbd>c</kbd> shows the listing; another column
+exact wherever the counts are. <kbd>c</kbd> shows the list; another column
 opens as its own type says.
 
 ## What the screen shows
 
 | Part | What it says |
 |---|---|
-| Header | The column, and what was counted: `all 336,776 rows`, or `sample of 100,000 of 657,752 rows` |
+| Header | The column; for a number, `Histogram, 40 bins` or `List`; and what was counted: `all 336,776 rows`, or `sample of 100,000 of 657,752 rows` |
 | Summary | `Rows`, `Distinct` (null not among them) and `Nulls`; `Sum`, `Mean`, `Min` and `Max` for numbers; `Min` and `Max` for dates and times. A sample has no `Sum` |
 | Rows | Each value's rows, its percent of all of them, the running percent, and a bar beside the most common value's |
 | `∅` | The nulls, on a row of their own: ranked by their rows when sorted by count, last when sorted by value |
@@ -72,7 +73,7 @@ here too.
 | <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Previous or next column; a column counted before shows at once |
 | <kbd>Enter</kbd> | The rows holding the value, as a drill-down. <kbd>Esc</kbd> there comes back |
 | <kbd>s</kbd> | Sort by count or by value; the header's mark says which |
-| <kbd>c</kbd> | A number's histogram, or the listing of its values |
+| <kbd>c</kbd> | A number's histogram, or the list of its values |
 | <kbd>a</kbd> | Count every row, when the counts are of a sample |
 | <kbd>y</kbd> | [Copy](copying.md) the counts as TSV: every value with its count, percent and cumulative percent |
 | <kbd>e</kbd> | [Export](exporting-data.md) the same table to a file |

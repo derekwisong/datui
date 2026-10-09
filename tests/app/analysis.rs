@@ -697,7 +697,7 @@ fn test_value_counts_histogram_toggle() {
         "{screen}"
     );
     assert!(!screen.contains("Cum %"), "{screen}");
-    assert!(screen.contains("c Counts"), "{screen}");
+    assert!(screen.contains("c List"), "{screen}");
     press_and_send(&mut app, &tx, KeyCode::Char('c'));
     let screen = counts_screen(&mut app, 80, 24);
     assert!(screen.contains("Cum %"), "{screen}");

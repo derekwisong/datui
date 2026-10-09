@@ -80,7 +80,7 @@ Where a dataset opens.
 
 | Key | Action |
 |---|---|
-| `F` | Value counts of the cursor's column: each value's rows, percent and a bar, with a summary |
+| `F` | Value counts of the cursor's column: each value's rows, percent and a bar, with a summary. A number column opens as a histogram; c there shows the list of its values |
 | `a` | Open Analysis. In a Data Quality evidence drill a is disabled; Esc returns to the observation |
 | `c` | Chart the view |
 | `i` | Open the Info panel (tabs: Schema, Resources, Partitions, Notes). H on its Schema tab reads a CSV's first row as data, or as column names |
@@ -358,7 +358,7 @@ Where a dataset opens.
 | `← / → (h/l)` | The previous or next column; the table's column cursor moves with it |
 | `Enter` | The rows holding the value, as a drill-down; Esc there comes back here |
 | `s` | Sort by count or by value |
-| `c` | Between a number column's histogram, binned from the counts, and the listing of its values. A number opens as its histogram |
+| `c` | Between a number column's histogram, binned from the counts, and the list of its values. A number opens as its histogram; the header says which is shown |
 | `a` | Count every row, when the counts are of a sample |
 | `t` | While following a file, count again with the rows that arrived since; the bar says how many |
 

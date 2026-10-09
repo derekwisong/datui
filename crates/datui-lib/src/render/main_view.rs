@@ -863,7 +863,7 @@ fn value_counts_control_keys(app: &crate::App) -> Vec<Hint> {
         }
         if counts.histogram.is_some() {
             keys.push(if modal.shows_histogram() {
-                say("c", "Counts")
+                say("c", "List")
             } else {
                 key("c")
             });

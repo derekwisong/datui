@@ -1812,6 +1812,13 @@ pub fn enrich_tables(entry: &mut Entry) {
         return;
     }
     let named = data_format(&entry.path);
+    // A name that says a format holding no tables settles it, past no compression
+    // suffix (an archive may hold anything): no file is opened to ask.
+    if named.is_some_and(|f| !f.holds_tables())
+        && crate::CompressionFormat::from_extension(&entry.path).is_none()
+    {
+        return;
+    }
     if !is_regular_file(&entry.path) {
         return;
     }

@@ -1530,13 +1530,17 @@ fn rank_correlation_matrix(
     (rho, p_values)
 }
 
+/// How many threads this machine runs at once, asked once: the standard library reads
+/// the cgroup files again on every ask, and a CSV page asks.
+pub(crate) fn cores() -> usize {
+    static CORES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CORES.get_or_init(|| std::thread::available_parallelism().map_or(1, usize::from))
+}
+
 /// Runs `work` on every item, the items dealt out across threads in turn. A worker's
 /// panic is raised again here rather than leaving its items undone.
 fn across_threads<T: Send>(items: Vec<T>, work: impl Fn(T) + Sync) {
-    let threads = std::thread::available_parallelism()
-        .map_or(1, usize::from)
-        .min(items.len())
-        .max(1);
+    let threads = cores().min(items.len()).max(1);
     let mut shares: Vec<Vec<T>> = (0..threads).map(|_| Vec::new()).collect();
     for (k, item) in items.into_iter().enumerate() {
         shares[k % threads].push(item);

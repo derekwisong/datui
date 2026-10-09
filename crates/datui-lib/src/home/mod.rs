@@ -2679,7 +2679,12 @@ pub fn facts_for(entry: &Entry) -> Option<(PathBuf, crate::cache::DatasetFacts)>
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?
         .as_secs();
-    if entry.rows.is_none() && entry.columns.is_empty() && entry.cost == Default::default() {
+    // Where it lives is not learned: it is never recorded.
+    let cost = crate::home::discover::Cost {
+        source: None,
+        ..entry.cost.clone()
+    };
+    if entry.rows.is_none() && entry.columns.is_empty() && cost == Default::default() {
         return None; // Nothing learned worth keeping.
     }
     Some((

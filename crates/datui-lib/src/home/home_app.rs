@@ -1454,9 +1454,10 @@ impl App {
                 };
                 Some((path.clone(), home::display_path(&path)))
             }
+            // A table inside a file is listed with its `table`: no stat asks it again, as
+            // this is asked every frame for the footer.
             home::Row::Entry { entry, .. } => (entry.table.is_none()
-                && !home::is_cloud_place(&entry.path)
-                && crate::formats::members::split(&entry.path).is_none())
+                && !home::is_cloud_place(&entry.path))
             .then(|| (entry.path.clone(), entry.name.clone())),
             home::Row::Header { section, .. } => {
                 let root = self.home.sections.get(section)?.root.clone()?;

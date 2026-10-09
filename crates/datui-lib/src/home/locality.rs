@@ -104,9 +104,9 @@ impl Source {
 }
 
 /// How long a mount-table read is reused by [`Mounts::cached`]: mounts change on a human
-/// timescale and answers are hints, so half a second is unnoticeable yet covers a
-/// listing's burst of per-row questions.
-const MOUNTS_TTL: Duration = Duration::from_millis(500);
+/// timescale and answers are hints, so a few seconds is unnoticeable, and keystrokes
+/// that ask per row do not read `/proc` each.
+const MOUNTS_TTL: Duration = Duration::from_secs(5);
 
 /// The last read of the mount table, and when it was taken.
 static CACHED_MOUNTS: Mutex<Option<(Instant, Arc<Mounts>)>> = Mutex::new(None);

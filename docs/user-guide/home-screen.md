@@ -66,9 +66,11 @@ shows them all. <kbd>←</kbd> on a row past the first ones cuts it back; on a f
 row it folds the section. Its heading counts every row, and a typed filter
 searches them all by name. Size, time and counts are read for the rows on
 screen and half a page either way, as they come into view: listing or
-filtering a directory of 50,000 files reads only its names. Sorted by size,
-time or rows, every row is measured, and the more row says `· measuring` until
-they are.
+filtering a directory of 50,000 files reads only its names. Sorted by size or
+time, every row is stat'ed (nothing is read); sorted by rows, every row is
+measured, and the more row says `· measuring` until they are.
+<kbd>Ctrl</kbd>+<kbd>R</kbd> stats the rows shown again, and measures again any
+file changed since.
 
 Folds last between runs. A heading says why its section is listed and how it
 stands: `catalog.toml`, `catalog` or `built in` for a catalog; `nfs4`, `listing`

@@ -67,7 +67,7 @@ pub fn home_pending(app: &App) -> String {
         search.limited,
         home.returning,
         home.measure_in_flight,
-        home.classify_in_flight,
+        home.classifying.len(),
         home.peeking.len(),
         app.is_busy(),
     )

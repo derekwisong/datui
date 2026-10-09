@@ -77,28 +77,11 @@ impl App {
                         return self.open_what_it_is(path, discover::EntryKind::File, true);
                     }
                     // Existence, directory-ness and kind are filesystem calls, and a typed path may
-                    // name a dead mount: a worker does them when the mount might not answer.
-                    if self.looking_could_block(&path) {
-                        self.home.path_input.clear();
-                        self.home.path_input_active = false;
-                        return Some(AppEvent::ClassifyThenOpen { path, jump: true });
-                    }
-                    // Before the prompt closes, so a typo is fixed in place.
-                    if !path.exists()
-                        && crate::formats::members::split(&path).is_none()
-                        && crate::formats::members::split_variant(&path, &self.formats).is_none()
-                    {
-                        self.home.status = Some(format!("No such path: {}", path.display()));
-                        return None;
-                    }
+                    // name a mount that stalls: a worker does them. A typo comes back to the
+                    // prompt to be fixed in place.
                     self.home.path_input.clear();
                     self.home.path_input_active = false;
-                    let kind = if path.is_dir() {
-                        discover::classify_directory(&path)
-                    } else {
-                        discover::EntryKind::File
-                    };
-                    return self.open_what_it_is(path, kind, true);
+                    return Some(AppEvent::ClassifyThenOpen { path, jump: true });
                 }
                 KeyCode::Backspace => {
                     self.home.path_input.pop();

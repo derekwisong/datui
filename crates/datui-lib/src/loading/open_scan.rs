@@ -500,17 +500,6 @@ impl App {
         self.screen_generation = self.screen_generation.wrapping_add(1);
     }
 
-    /// Whether finding out what a path is could hang on an unresponsive mount: only a
-    /// local path on what home calls a network mount. URLs are the scan's business,
-    /// and plain local paths answer at once.
-    pub(crate) fn looking_could_block(&self, path: &Path) -> bool {
-        // `cloud://<id>` is a place: `input_source` calls it local, `is_remote_path`
-        // remote, and a worker stat would report "No such path".
-        !home::is_cloud_place(path)
-            && matches!(source::input_source(path), source::InputSource::Local(_))
-            && (self.home.network_check)(path)
-    }
-
     /// Browse into a path, report it as a lake table, or open it, as its kind calls for.
     /// `jump` (a path typed at `~`) starts a new browse so Esc returns to the listing.
     pub(crate) fn open_what_it_is(

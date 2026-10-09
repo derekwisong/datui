@@ -1260,9 +1260,40 @@ pub struct Scan {
     pub truncated: bool,
 }
 
-/// [`scan_dir_progressive`], also naming sniffed files by `formats`' magic.
+/// One local directory level as home lists it, naming sniffed files by `formats`'
+/// magic. Names and kinds only, from the directory itself: no stat per entry, so a
+/// directory of fifty thousand files costs its reads, not fifty thousand more. Size
+/// and mtime come with [`stat_row`] for the rows shown, or every row when a sort
+/// needs them.
 pub fn scan_dir_specs(dir: &Path, formats: &crate::formats::Registry) -> Scan {
-    scan_dir_with(dir, formats, |_| {})
+    scan_dir_with(dir, formats, false, |_| {})
+}
+
+/// Fill in a row's size and mtime, which a local listing leaves to the rows shown:
+/// one stat, not following a link (a listing leaves links out). Whether it is there.
+pub fn stat_row(entry: &mut Entry) -> bool {
+    match std::fs::symlink_metadata(&entry.path) {
+        Ok(meta) => {
+            if meta.is_file() {
+                entry.size = Some(meta.len());
+            }
+            entry.modified = meta.modified().ok();
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Whether a row on disk still lacks the size and mtime its listing left out: no URL,
+/// no table inside a file.
+pub fn unstated(entry: &Entry) -> bool {
+    entry.modified.is_none()
+        && entry.table.is_none()
+        && !crate::home::is_cloud_place(&entry.path)
+        && matches!(
+            crate::cloud::source::input_source(&entry.path),
+            crate::cloud::source::InputSource::Local(_)
+        )
 }
 
 /// How often a listing still being read shows what it has so far.
@@ -1275,12 +1306,15 @@ const LISTING_PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_mi
 /// the rows read since the last call, every `LISTING_PROGRESS_EVERY`, so a slow share
 /// shows rows as they arrive.
 pub fn scan_dir_progressive(dir: &Path, progress: impl FnMut(&[Entry])) -> Scan {
-    scan_dir_with(dir, &crate::formats::Registry::default(), progress)
+    scan_dir_with(dir, &crate::formats::Registry::default(), true, progress)
 }
 
+/// List `dir`; with `stat`, each entry's size and mtime too (a share's probe, whose
+/// rows nothing on the UI's side may stat later).
 fn scan_dir_with(
     dir: &Path,
     formats: &crate::formats::Registry,
+    stat: bool,
     mut progress: impl FnMut(&[Entry]),
 ) -> Scan {
     let Ok(iter) = std::fs::read_dir(dir) else {
@@ -1315,16 +1349,31 @@ fn scan_dir_with(
             continue;
         }
 
-        let Ok(meta) = dir_entry.metadata() else {
-            continue;
+        let meta = if stat {
+            match dir_entry.metadata() {
+                Ok(meta) => Some(meta),
+                Err(_) => continue,
+            }
+        } else {
+            None
+        };
+        // The directory's own word for the type (`d_type`), unless already stat'ed; a
+        // filesystem that does not say is stat'ed by `file_type` itself. Links are not
+        // followed, so they are left out as before.
+        let file_type = match &meta {
+            Some(meta) => meta.file_type(),
+            None => match dir_entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(_) => continue,
+            },
         };
 
         let mut spec = None;
-        let kind = if meta.is_dir() {
+        let kind = if file_type.is_dir() {
             EntryKind::Unknown
-        } else if meta.is_file() && is_data_file(&path) {
+        } else if file_type.is_file() && is_data_file(&path) {
             EntryKind::File
-        } else if spend_sniff(&mut sniffs_left, meta.is_file(), &path) {
+        } else if spend_sniff(&mut sniffs_left, file_type.is_file(), &path) {
             match sniff_listed(&path, formats) {
                 Some(Sniffed::Format) => EntryKind::File,
                 Some(Sniffed::Spec(found)) => {
@@ -1333,14 +1382,17 @@ fn scan_dir_with(
                 }
                 None => EntryKind::Other,
             }
-        } else if meta.is_file() {
+        } else if file_type.is_file() {
             EntryKind::Other
         } else {
             // Not a directory or regular file: a FIFO named `x.parquet` must never be offered.
             continue;
         };
 
-        let mut entry = Entry::new(path, kind).with_fs_metadata(&meta);
+        let mut entry = Entry::new(path, kind);
+        if let Some(meta) = &meta {
+            entry = entry.with_fs_metadata(meta);
+        }
         if let Some(spec) = spec {
             name_spec_file(&mut entry, &spec);
         }

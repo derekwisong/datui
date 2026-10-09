@@ -4392,6 +4392,10 @@ mod home_worker_panic_tests;
 
 mod classify_batch_tests;
 
+/// What the home screen reads, and when: batched answers, a place
+/// that stops answering, one schema read, the cache index read once.
+mod home_work_tests;
+
 mod quality_sample_tests;
 
 mod chart_prepare_tests;

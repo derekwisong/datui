@@ -66,7 +66,23 @@ pub fn walk_with_specs<F>(
 where
     F: FnMut(Vec<Entry>, Outcome) -> bool,
 {
-    walk_inner(root, config, MAX_INDEXED, formats, emit)
+    walk_recalling(root, config, formats, &Default::default(), emit)
+}
+
+/// [`walk_with_specs`], stat'ing the files `known` has a record of, so what an earlier
+/// run measured (their columns, which the filter matches) fills them in: the rest are
+/// stat'ed only when shown.
+pub fn walk_recalling<F>(
+    root: &Path,
+    config: &SearchConfig,
+    formats: &crate::formats::Registry,
+    known: &std::collections::HashMap<std::path::PathBuf, crate::cache::DatasetFacts>,
+    emit: F,
+) -> Outcome
+where
+    F: FnMut(Vec<Entry>, Outcome) -> bool,
+{
+    walk_inner(root, config, MAX_INDEXED, formats, known, emit)
 }
 
 /// [`walk_with_specs`] with no specs, keeping at most `cap` files.
@@ -79,6 +95,7 @@ where
         config,
         cap,
         &crate::formats::Registry::default(),
+        &Default::default(),
         emit,
     )
 }
@@ -88,6 +105,7 @@ fn walk_inner<F>(
     config: &SearchConfig,
     cap: usize,
     formats: &crate::formats::Registry,
+    known: &std::collections::HashMap<std::path::PathBuf, crate::cache::DatasetFacts>,
     mut emit: F,
 ) -> Outcome
 where
@@ -207,7 +225,15 @@ where
         if let Some(spec) = spec {
             crate::home::discover::name_spec_file(&mut entry, &spec);
         }
-        if let Ok(meta) = dir_entry.metadata() {
+        // No stat: of thousands found, the few shown are stat'ed when they are
+        // (`discover::stat_row`), as a listing's rows are. A file with a record is,
+        // since its record holds only at the size and mtime it was taken at.
+        let recorded =
+            || known.contains_key(path) || known.contains_key(&crate::home::index_key(path));
+        if !known.is_empty()
+            && recorded()
+            && let Ok(meta) = dir_entry.metadata()
+        {
             entry = entry.with_fs_metadata(&meta);
         }
         entry.cost.source = Some(if config.cross_filesystems {

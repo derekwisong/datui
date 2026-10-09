@@ -203,7 +203,7 @@ fn home_busy(app: &App) -> bool {
         || home.search.running
         || home.search.scoring
         || home.measure_in_flight
-        || home.classify_in_flight
+        || !home.classifying.is_empty()
         || !home.peeking.is_empty()
 }
 

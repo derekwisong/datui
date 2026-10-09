@@ -62,6 +62,8 @@ fn meta_columns(entry: &Entry, unmeasured: bool, hint: Option<u64>, gone: Option
 
 pub fn render(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderContext) {
     Clear.render(area, buf);
+    // Set again below where this frame has room for the selected file's first rows.
+    app.home_app.preview_room = None;
 
     // One column of breathing room: vertical space is scarce.
     let padded = Rect {
@@ -146,7 +148,8 @@ fn render_rows_strip(
     let Some(entry) = app.home.selected_entry().cloned() else {
         return;
     };
-    let Some(preview) = app.home_preview_rows(&entry, screen_height) else {
+    app.home_app.preview_room = Some(screen_height);
+    let Some(preview) = app.home_preview_rows(&entry) else {
         return;
     };
     // A blank line between the list and the strip when there is one to spare.
@@ -2448,7 +2451,8 @@ fn render_preview(
 
     // Rows before the schema (real values say more than types), at most the block's own
     // rows.
-    if let Some(preview) = app.home_preview_rows(&entry, screen_height) {
+    app.home_app.preview_room = Some(screen_height);
+    if let Some(preview) = app.home_preview_rows(&entry) {
         let drawn: usize = lines.iter().map(|line| wrapped_rows(line, width)).sum();
         let room = (area.height as usize)
             .saturating_sub(drawn + 1)

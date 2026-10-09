@@ -203,3 +203,34 @@ fn test_callers_in_the_same_moment_get_the_same_mount_table() {
         "two reads in the same moment should share one parsed table"
     );
 }
+
+/// Any FUSE filesystem can stall a call (its answers come from a process, often one
+/// waiting on a network), so home never touches one on the key thread; its row still
+/// names what it is rather than calling it a network share.
+#[test]
+fn test_any_fuse_filesystem_could_block() {
+    let m = Mounts::parse(
+        "\
+40 1 259:2 / / rw,relatime - btrfs /dev/nvme0n1p2 rw
+81 1 0:61 / /mnt/gcs rw - fuse.gcsfuse bucket rw
+82 1 0:62 / /mnt/jfs rw - fuse.juicefs redis rw
+83 1 8:17 / /mnt/usb rw - fuseblk /dev/sdb1 rw
+",
+    );
+    for path in ["/mnt/gcs/a.parquet", "/mnt/jfs/b.csv"] {
+        assert!(m.could_block(Path::new(path)), "{path}");
+        assert!(
+            !m.is_network(Path::new(path)),
+            "{path} is not called a share"
+        );
+    }
+    assert!(!m.could_block(Path::new("/home/a.csv")));
+    assert!(
+        !m.could_block(Path::new("/mnt/usb/c.csv")),
+        "a local disk through FUSE's block driver"
+    );
+    assert_eq!(
+        m.mount_point_for(Path::new("/mnt/gcs/a.parquet")),
+        Path::new("/mnt/gcs")
+    );
+}

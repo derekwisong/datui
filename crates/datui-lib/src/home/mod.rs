@@ -769,11 +769,12 @@ pub fn is_remote_path(path: &Path) -> bool {
         || is_network_path(path)
 }
 
-/// Whether `path` is on a network filesystem by the mount table (longest matching
-/// mount point). False where the table is unavailable: a hint, never a gate. Uses
+/// Whether `path` is on a filesystem a call can hang on, by the mount table (longest
+/// matching mount point): a network one, or any FUSE one. False where the table is
+/// unavailable: a hint, never a gate. Uses
 /// [`crate::home::locality::Mounts::cached`], since this is asked per row per frame.
 pub fn is_network_path(path: &Path) -> bool {
-    crate::home::locality::Mounts::cached().is_network(path)
+    crate::home::locality::Mounts::cached().could_block(path)
 }
 
 /// The mount-table logic against a fixture, for tests (e.g. an NFS share shadowing
@@ -1221,6 +1222,8 @@ pub struct Measured {
     /// Whether `cols` is a floor rather than a total. See [`crate::home::discover::Entry`].
     pub cols_sampled: bool,
     pub size: Option<u64>,
+    /// When it last changed, from the stat a listing leaves to the rows shown.
+    pub modified: Option<std::time::SystemTime>,
     /// Column names, when the format gave them up for free.
     pub columns: Vec<String>,
     /// What opening it costs: compression, layout, partitioning, carried to the screen
@@ -1623,9 +1626,10 @@ pub struct HomeState {
     pub listing_in_flight: bool,
     /// True while a measurement batch is out, so only one is in flight at a time.
     pub measure_in_flight: bool,
-    /// A classification batch is out. One at a time, each chosen from the viewport then,
-    /// so fast paging does not queue every row it passed.
-    pub classify_in_flight: bool,
+    /// The filesystems (by mount point) with a classification pass out. One pass per
+    /// filesystem, each chosen from the viewport then, so fast paging does not queue
+    /// every row it passed and a share that stopped answering stops only its own rows.
+    pub classifying: std::collections::HashSet<PathBuf>,
     /// Cloud directories with a peek out, kept apart from [`Self::cloud_kinds`] so no
     /// answer is claimed before the request returns.
     pub peeking: std::collections::HashSet<PathBuf>,
@@ -1647,8 +1651,9 @@ pub struct HomeState {
     /// Datasets found by walking below the working directory.
     pub search: SearchState,
     /// What earlier runs measured, by path: the index the listing was annotated from,
-    /// kept so search results fill in the same way (the filter matches columns).
-    pub known: std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
+    /// kept so search results fill in the same way (the filter matches columns). Read
+    /// once a session; what this session measures is in [`Self::enriched`].
+    pub known: Known,
     /// Cloud sources found on this machine or in the config, with their buckets. Empty
     /// without cloud credentials, which is normal.
     pub cloud: Vec<CloudSource>,
@@ -1817,7 +1822,7 @@ impl Default for HomeState {
             sort: SortMode::default(),
             listing_in_flight: false,
             measure_in_flight: false,
-            classify_in_flight: false,
+            classifying: Default::default(),
             peeking: std::collections::HashSet::new(),
             probes: Probes::default(),
             narrowed: None,
@@ -1840,6 +1845,10 @@ impl Default for HomeState {
     }
 }
 
+/// The dataset index as read from the cache, by path; shared, never copied, with the
+/// listing workers.
+pub type Known = std::sync::Arc<std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>>;
+
 /// Everything [`build_listing`] needs, gathered on the UI thread so the worker never
 /// reaches into the app.
 #[derive(Debug, Clone)]
@@ -1858,7 +1867,7 @@ pub struct ListingRequest {
     pub catalogs: Vec<ShownCatalog>,
     /// What earlier runs measured: a row whose size and mtime still match is filled in
     /// from here before anything is read.
-    pub known: std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
+    pub known: Known,
     /// The format specs on the search path: a file one reads as several variants is a
     /// place listing its variants.
     pub formats: std::sync::Arc<crate::formats::Registry>,
@@ -1873,6 +1882,25 @@ pub struct Listing {
 }
 
 impl Listing {
+    /// Fill in rows from records read since the index was: the dataset just left,
+    /// whose open recorded what it found.
+    pub fn learn(
+        &mut self,
+        learned: &[(PathBuf, crate::cache::DatasetFacts)],
+        network_check: fn(&Path) -> bool,
+    ) {
+        if learned.is_empty() {
+            return;
+        }
+        let learned: std::collections::HashMap<PathBuf, crate::cache::DatasetFacts> =
+            learned.iter().cloned().collect();
+        for row in self.sections.iter_mut().flat_map(|s| s.rows.iter_mut()) {
+            if known_facts(&learned, &row.path).is_some() {
+                apply_known_facts(row, &learned, network_check(&row.path));
+            }
+        }
+    }
+
     /// Add each row's own path to `visits` where its canonical path has visits: recents
     /// are keyed canonically, catalogs spell paths as written (`/var/…` vs
     /// `/private/var/…` on macOS, short names on Windows). Canonicalizing touches the
@@ -1928,6 +1956,23 @@ fn classify_row(entry: &Entry) -> Entry {
     probe
 }
 
+/// A row as far as a stat and the dataset index tell, before anything is read: its
+/// size and mtime when its listing left them out, then what an earlier run recorded
+/// for it at that size and mtime. Whether it is there.
+fn stat_and_recall(
+    probe: &mut Entry,
+    known: &std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
+) -> bool {
+    if !discover::unstated(probe) {
+        return true;
+    }
+    if !discover::stat_row(probe) {
+        return false;
+    }
+    apply_known_facts(probe, known, false);
+    true
+}
+
 /// The second half of [`look_into_as`]: what is in it, from the files or from what an
 /// open kept in `remembered`.
 fn measure_row(
@@ -1948,14 +1993,21 @@ fn measure_row(
 pub fn look_into_batch(
     rows: Vec<Entry>,
     cache: &crate::cache::CacheManager,
+    known: &std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
     mut each: impl FnMut(PathBuf, Measured),
 ) {
     let as_read = crate::formats::schema_union::ReadAs::default();
     let classified: Vec<(Entry, Entry)> = rows
         .into_iter()
         .map(|entry| {
-            let probe = classify_row(&entry);
-            if probe.kind != entry.kind {
+            let mut probe = entry.clone();
+            // Gone since it was listed: said as measured, so it is not asked again.
+            if !stat_and_recall(&mut probe, known) {
+                return (probe, entry);
+            }
+            // A kind the index restored is not looked for again.
+            let probe = classify_row(&probe);
+            if probe.kind != entry.kind || probe.modified != entry.modified {
                 each(entry.path.clone(), measured_from(&probe, &entry));
             }
             (probe, entry)
@@ -1964,8 +2016,11 @@ pub fn look_into_batch(
 
     let mut facts = Vec::new();
     for (mut probe, entry) in classified {
-        measure_row(&mut probe, &entry, &as_read, Some(cache));
-        facts.extend(facts_for(&probe));
+        // What the index recalled is not read again, nor recorded again.
+        if probe.rows.is_none() && probe.columns.is_empty() {
+            measure_row(&mut probe, &entry, &as_read, Some(cache));
+            facts.extend(facts_for(&probe));
+        }
         each(entry.path.clone(), measured_from(&probe, &entry));
     }
     // Cache what was learned; each record carries its size and mtime and invalidates
@@ -1980,6 +2035,7 @@ pub fn measured_from(probe: &Entry, original: &Entry) -> Measured {
         cols: probe.cols,
         cols_sampled: probe.cols_sampled,
         size: probe.size.or(original.size),
+        modified: probe.modified.or(original.modified),
         columns: probe.columns.clone(),
         kind: (probe.kind != original.kind).then_some(probe.kind),
         holds: probe.holds.clone(),
@@ -2005,7 +2061,13 @@ pub enum Probe {
     },
     /// Did not answer, with why when the service said.
     Unreachable(Option<String>),
+    /// Still out, but nothing has come for longer than a listing is waited on: the rows
+    /// so far stand, the spinner stops, and Ctrl+R waits again. A page revives it.
+    Silent(Vec<Entry>),
 }
+
+/// What a section says of a place whose listing stopped answering.
+pub const NOT_ANSWERING: &str = "not answering · Ctrl+R retries";
 
 /// Every probe, by the place it lists.
 #[derive(Debug, Clone, Default)]
@@ -2028,12 +2090,47 @@ impl Probes {
         }
     }
 
-    /// Answered, or written off: nothing more to ask.
+    /// Answered, written off, or gone silent: nothing more to wait for.
     pub fn settled(&self, place: &Path) -> bool {
         matches!(
             self.0.get(place),
-            Some(Probe::Listed { .. } | Probe::Unreachable(_))
+            Some(Probe::Listed { .. } | Probe::Unreachable(_) | Probe::Silent(_))
         )
+    }
+
+    /// Whether a listing still out has gone without news past the wait.
+    pub fn silent(&self, place: &Path) -> bool {
+        matches!(self.0.get(place), Some(Probe::Silent(_)))
+    }
+
+    /// The places whose listings went silent.
+    pub fn silent_places(&self) -> Vec<PathBuf> {
+        (self.0.iter())
+            .filter(|(_, probe)| matches!(probe, Probe::Silent(_)))
+            .map(|(place, _)| place.clone())
+            .collect()
+    }
+
+    /// Whether pages of a listing of `place` are still news: nothing has settled it, or
+    /// it only went silent.
+    pub fn takes_pages(&self, place: &Path) -> bool {
+        matches!(
+            self.0.get(place),
+            None | Some(Probe::Listing(_) | Probe::Silent(_))
+        )
+    }
+
+    /// Say the listing of `place` has gone without news too long, keeping its rows.
+    pub fn go_silent(&mut self, place: &Path) {
+        let rows = match self.0.remove(place) {
+            Some(Probe::Listing(rows) | Probe::Silent(rows)) => rows,
+            None => Vec::new(),
+            Some(settled) => {
+                self.0.insert(place.to_path_buf(), settled);
+                return;
+            }
+        };
+        self.0.insert(place.to_path_buf(), Probe::Silent(rows));
     }
 
     pub fn cut_short(&self, place: &Path) -> bool {
@@ -2063,7 +2160,7 @@ impl Probes {
     fn rows(&self, place: &Path) -> Vec<Entry> {
         match self.0.get(place) {
             Some(Probe::Listed { rows, .. }) => rows.to_vec(),
-            Some(Probe::Listing(rows)) => {
+            Some(Probe::Listing(rows) | Probe::Silent(rows)) => {
                 let mut rows = rows.clone();
                 if is_object_store_url(place) {
                     rows.sort_by_key(|row| row.kind != EntryKind::Directory);
@@ -2094,11 +2191,14 @@ impl Probes {
 
     /// Rows read since the last batch, while the listing is still out.
     pub fn read(&mut self, place: &Path, rows: &[Entry]) {
-        if let Probe::Listing(so_far) = self
-            .0
+        let probe = (self.0)
             .entry(place.to_path_buf())
-            .or_insert(Probe::Listing(Vec::new()))
-        {
+            .or_insert(Probe::Listing(Vec::new()));
+        // A page from a listing that went silent: it is answering again.
+        if let Probe::Silent(so_far) = probe {
+            *probe = Probe::Listing(std::mem::take(so_far));
+        }
+        if let Probe::Listing(so_far) = probe {
             so_far.extend_from_slice(rows);
         }
     }
@@ -2114,7 +2214,7 @@ impl Probes {
 
     /// Forget a listing still being read: it was stopped.
     pub fn stopped(&mut self, place: &Path) {
-        if let Some(Probe::Listing(_)) = self.0.get(place) {
+        if let Some(Probe::Listing(_) | Probe::Silent(_)) = self.0.get(place) {
             self.0.remove(place);
         }
     }
@@ -2163,25 +2263,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
 
     // Inside a cloud source: its buckets, and nothing else.
     if let Some(id) = browsing.as_deref().and_then(cloud_source_id) {
-        let source = cloud.iter().find(|s| s.id == id);
-        let rows = source
-            .map(|s| s.buckets.iter().map(|b| bucket_entry(b)).collect())
-            .unwrap_or_default();
-        let failure = source.and_then(|s| match &s.status {
-            CloudStatus::Failed { short, .. } => Some(short.clone()),
-            _ => None,
-        });
-        sections.push(Section {
-            subtitle: source.map(|s| s.note.clone()).filter(|n| !n.is_empty()),
-            unavailable: source.is_none() || failure.is_some(),
-            unavailable_note: if source.is_none() {
-                Some("source not found".to_string())
-            } else {
-                failure
-            },
-            waiting: source.is_some_and(|s| s.busy()),
-            ..Section::titled(source.map(|s| s.label.clone()).unwrap_or(id), rows)
-        });
+        sections.push(source_section(&id, cloud));
         annotate(&mut sections, known, network_check, &mounts);
         return Listing {
             sections,
@@ -2191,123 +2273,18 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
 
     // Descended into a directory: show only that.
     if let Some(dir) = browsing.clone() {
-        // A remote directory is never read here (that freezes the UI): rows come from the
-        // background probe, and the section is empty until it answers.
         let remote = network_check(&dir);
-        // A remote listing still being read shows what it has, and says so.
-        let so_far = remote && probes.so_far(&dir).is_some();
-        // A SQLite database is a place too, whose rows are its tables.
-        let database = !remote && dir.is_file();
-        let (mut rows, truncated) = if remote {
-            (probes.rows(&dir), probes.cut_short(&dir))
-        } else if database {
-            let tables = discover::database_rows(&dir);
-            let rows = if tables.is_empty() {
-                discover::variant_rows(&dir, formats)
-            } else {
-                tables
-            };
-            (rows, false)
-        } else {
-            let scan = discover::scan_dir_specs(&dir, formats);
-            // A Hugging Face cache's splits, before the files they are made of.
-            let mut rows = discover::split_rows(&dir);
-            rows.extend(scan.entries);
-            (rows, scan.truncated)
-        };
-        // A cut-short level holds the names a filter asked the server for, beside the first
-        // of the rest.
-        let narrowed = narrowed
-            .as_ref()
-            .filter(|n| remote && truncated && n.dir == dir);
-        if let Some(narrowed) = narrowed {
-            let listed: std::collections::HashSet<PathBuf> =
-                rows.iter().map(|row| row.path.clone()).collect();
-            rows.extend(
-                narrowed
-                    .rows
-                    .iter()
-                    .filter(|row| !listed.contains(&row.path))
-                    .cloned(),
-            );
-        }
-        // Otherwise a directory cut at the cap looks like one holding exactly that many.
-        let subtitle = if so_far {
-            Some(format!(
-                "{} so far",
-                crate::numfmt::group_chrome(rows.len())
-            ))
-        } else if truncated {
-            let first = format!(
-                "first {}",
-                crate::numfmt::group_chrome(discover::MAX_ENTRIES_PER_DIR)
-            );
-            Some(match narrowed {
-                Some(n) => format!(
-                    "{first} + {}{} {}*",
-                    crate::numfmt::group_chrome(n.rows.len()),
-                    if n.truncated { "+" } else { "" },
-                    n.prefix
-                ),
-                None => first,
-            })
-        } else {
-            None
-        };
-        let unavailable = remote && probes.unreachable(&dir);
-        // The first row inside any directory opens all of it, since `Enter` below opens one
-        // file: the other door.
-        let mut door = (!database)
-            .then(|| whole_directory_row(&dir, &rows, remote))
-            .flatten();
-        // What an earlier run's footers made of this directory, as for its row upstairs
-        // (fingerprinted by its mtime), so a directory of separate tables reads the same in
-        // both places.
-        if !remote
-            && let Some(door) = door.as_mut()
-            && let Ok(meta) = std::fs::metadata(&dir)
-        {
-            door.modified = meta.modified().ok();
-            apply_known_facts(door, known, false);
-            door.modified = None;
-            door.name = door_name(door, &rows);
-        }
-        // The URL without a source id (the trail names the source); an Azure account or
-        // container by name, not its long URL.
-        let title = {
-            let text = dir.to_string_lossy();
-            if let Some(dataset) = catalogs
-                .iter()
-                .flat_map(|c| c.datasets.iter())
-                .find(|d| is_object_store_url(&d.location) && same_place(&d.location, &dir))
-            {
-                dataset.name.clone()
-            } else if let Some((_, account)) = cloud_account(&dir) {
-                account
-            } else if let Some((_, container, key)) = crate::cloud::source::azure_parts(&text) {
-                format!("{container}/{}", key.trim_matches('/'))
-                    .trim_end_matches('/')
-                    .to_string()
-            } else {
-                match crate::cloud::source::split_source_id(&text) {
-                    (Some(_), plain) => plain.into_owned(),
-                    (None, _) => display_path(&dir),
-                }
-            }
-        };
-        sections.push(Section {
-            subtitle,
-            root: Some(dir.clone()),
-            unavailable,
-            // A browsed remote place that did not answer has nothing to add; a refused listing
-            // says why.
-            unavailable_note: probes.error(&dir).map(str::to_string),
-            // Its wait replaces the whole list until rows arrive (`awaiting_listing`), then sits
-            // on the heading; no `remote_root`.
-            waiting: so_far,
-            door,
-            ..Section::titled(title, rows)
-        });
+        sections.push(browsed_section(
+            &dir,
+            remote,
+            &Listed {
+                probes,
+                narrowed: narrowed.as_ref(),
+                catalogs,
+                known,
+                formats,
+            },
+        ));
         annotate(&mut sections, known, network_check, &mounts);
         return Listing {
             sections,
@@ -2409,7 +2386,8 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         }
         // An unreadable root stays: a dead share is what the section heading reports.
         let unreachable = root.network && probes.unreachable(&root.path);
-        let waiting = root.network && !unreachable && probes.listed(&root.path).is_none();
+        let silent = root.network && probes.silent(&root.path);
+        let waiting = root.network && !probes.settled(&root.path);
         // Flag a network root, the one that will be slow or stop answering, by its
         // filesystem (nfs4, cifs, fuse.sshfs fail differently) when the mount table agrees
         // it is remote; otherwise just "network", rather than lose the warning.
@@ -2437,7 +2415,8 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
                 subtitle: (!state.is_empty()).then(|| crate::glyphs::dotted(&state.join(" · "))),
                 origin: Some(root.origin.note()),
                 root: Some(root.path.clone()),
-                unavailable: !root.available || unreachable,
+                unavailable: !root.available || unreachable || silent,
+                unavailable_note: silent.then(|| NOT_ANSWERING.to_string()),
                 remote_root: root.network.then(|| root.path.clone()),
                 waiting,
                 ..Section::titled(display_path(&root.path), rows)
@@ -2483,12 +2462,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
 
     // One section for all cloud sources, each a row to step into; buckets are listed
     // one level down, once per session.
-    if !cloud.is_empty() {
-        sections.push(Section::titled(
-            HomeState::CLOUD_SECTION.to_string(),
-            cloud.iter().map(source_entry).collect(),
-        ));
-    }
+    sections.extend(cloud_section(cloud));
 
     // Catalogs in order: yours, the listed files, then the bundled one.
     let mut missing = std::collections::HashSet::new();
@@ -2522,6 +2496,184 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
     annotate(&mut sections, known, network_check, &mounts);
 
     Listing { sections, missing }
+}
+
+/// The section of a cloud source's buckets, browsed into. Built from what the source
+/// listing said, so on any thread.
+fn source_section(id: &str, cloud: &[CloudSource]) -> Section {
+    let source = cloud.iter().find(|s| s.id == id);
+    let rows = source
+        .map(|s| s.buckets.iter().map(|b| bucket_entry(b)).collect())
+        .unwrap_or_default();
+    let failure = source.and_then(|s| match &s.status {
+        CloudStatus::Failed { short, .. } => Some(short.clone()),
+        _ => None,
+    });
+    Section {
+        subtitle: source.map(|s| s.note.clone()).filter(|n| !n.is_empty()),
+        unavailable: source.is_none() || failure.is_some(),
+        unavailable_note: if source.is_none() {
+            Some("source not found".to_string())
+        } else {
+            failure
+        },
+        waiting: source.is_some_and(|s| s.busy()),
+        ..Section::titled(
+            source.map_or_else(|| id.to_string(), |s| s.label.clone()),
+            rows,
+        )
+    }
+}
+
+/// The listing's section of cloud sources, when there are any.
+fn cloud_section(cloud: &[CloudSource]) -> Option<Section> {
+    (!cloud.is_empty()).then(|| {
+        Section::titled(
+            HomeState::CLOUD_SECTION.to_string(),
+            cloud.iter().map(source_entry).collect(),
+        )
+    })
+}
+
+/// What a listing is built from beside the places themselves, borrowed so a
+/// remote place's section can be built again on the UI thread as its pages arrive.
+pub(crate) struct Listed<'a> {
+    pub probes: &'a Probes,
+    pub narrowed: Option<&'a Narrowed>,
+    pub catalogs: &'a [ShownCatalog],
+    pub known: &'a std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
+    pub formats: &'a crate::formats::Registry,
+}
+
+/// The section of a browsed directory. A `remote` one is built from its probe alone,
+/// touching nothing, so it can be built on any thread; a local one is read here.
+fn browsed_section(dir: &Path, remote: bool, listed: &Listed) -> Section {
+    let Listed {
+        probes,
+        narrowed,
+        catalogs,
+        known,
+        formats,
+    } = *listed;
+    let dir = dir.to_path_buf();
+
+    // A remote directory is never read here (that freezes the UI): rows come from the
+    // background probe, and the section is empty until it answers.
+    // A remote listing still being read shows what it has, and says so.
+    let so_far = remote && probes.so_far(&dir).is_some();
+    // A SQLite database is a place too, whose rows are its tables.
+    let database = !remote && dir.is_file();
+    let (mut rows, truncated) = if remote {
+        (probes.rows(&dir), probes.cut_short(&dir))
+    } else if database {
+        let tables = discover::database_rows(&dir);
+        let rows = if tables.is_empty() {
+            discover::variant_rows(&dir, formats)
+        } else {
+            tables
+        };
+        (rows, false)
+    } else {
+        let scan = discover::scan_dir_specs(&dir, formats);
+        // A Hugging Face cache's splits, before the files they are made of.
+        let mut rows = discover::split_rows(&dir);
+        rows.extend(scan.entries);
+        (rows, scan.truncated)
+    };
+    // A cut-short level holds the names a filter asked the server for, beside the first
+    // of the rest.
+    let narrowed = narrowed.filter(|n| remote && truncated && n.dir == dir);
+    if let Some(narrowed) = narrowed {
+        let listed: std::collections::HashSet<PathBuf> =
+            rows.iter().map(|row| row.path.clone()).collect();
+        rows.extend(
+            narrowed
+                .rows
+                .iter()
+                .filter(|row| !listed.contains(&row.path))
+                .cloned(),
+        );
+    }
+    // Otherwise a directory cut at the cap looks like one holding exactly that many.
+    let subtitle = if so_far {
+        Some(format!(
+            "{} so far",
+            crate::numfmt::group_chrome(rows.len())
+        ))
+    } else if truncated {
+        let first = format!(
+            "first {}",
+            crate::numfmt::group_chrome(discover::MAX_ENTRIES_PER_DIR)
+        );
+        Some(match narrowed {
+            Some(n) => format!(
+                "{first} + {}{} {}*",
+                crate::numfmt::group_chrome(n.rows.len()),
+                if n.truncated { "+" } else { "" },
+                n.prefix
+            ),
+            None => first,
+        })
+    } else {
+        None
+    };
+    let unavailable = remote && (probes.unreachable(&dir) || probes.silent(&dir));
+    // The first row inside any directory opens all of it, since `Enter` below opens one
+    // file: the other door.
+    let mut door = (!database)
+        .then(|| whole_directory_row(&dir, &rows, remote))
+        .flatten();
+    // What an earlier run's footers made of this directory, as for its row upstairs
+    // (fingerprinted by its mtime), so a directory of separate tables reads the same in
+    // both places.
+    if !remote
+        && let Some(door) = door.as_mut()
+        && let Ok(meta) = std::fs::metadata(&dir)
+    {
+        door.modified = meta.modified().ok();
+        apply_known_facts(door, known, false);
+        door.modified = None;
+        door.name = door_name(door, &rows);
+    }
+    // The URL without a source id (the trail names the source); an Azure account or
+    // container by name, not its long URL.
+    let title = {
+        let text = dir.to_string_lossy();
+        if let Some(dataset) = catalogs
+            .iter()
+            .flat_map(|c| c.datasets.iter())
+            .find(|d| is_object_store_url(&d.location) && same_place(&d.location, &dir))
+        {
+            dataset.name.clone()
+        } else if let Some((_, account)) = cloud_account(&dir) {
+            account
+        } else if let Some((_, container, key)) = crate::cloud::source::azure_parts(&text) {
+            format!("{container}/{}", key.trim_matches('/'))
+                .trim_end_matches('/')
+                .to_string()
+        } else {
+            match crate::cloud::source::split_source_id(&text) {
+                (Some(_), plain) => plain.into_owned(),
+                (None, _) => display_path(&dir),
+            }
+        }
+    };
+    Section {
+        subtitle,
+        root: Some(dir.clone()),
+        unavailable,
+        // A browsed remote place that did not answer has nothing to add; a refused listing
+        // says why, and one gone quiet says so.
+        unavailable_note: probes
+            .error(&dir)
+            .map(str::to_string)
+            .or_else(|| probes.silent(&dir).then(|| NOT_ANSWERING.to_string())),
+        // Its wait replaces the whole list until rows arrive (`awaiting_listing`), then sits
+        // on the heading; no `remote_root`.
+        waiting: so_far,
+        door,
+        ..Section::titled(title, rows)
+    }
 }
 
 /// The key a record about `path` is filed under in the dataset index. Opens record
@@ -2617,6 +2769,35 @@ fn annotate(
     }
 }
 
+/// What of a row decides where the list puts it, or whether it lists it at all: a
+/// measurement that changes none of this leaves the list as built.
+#[derive(PartialEq)]
+struct Standing {
+    hidden: bool,
+    dataset: bool,
+    /// The value the sort orders by, when it orders by something measured.
+    sorted_by: Option<u64>,
+}
+
+impl Standing {
+    fn of(row: &Entry, sort: SortMode) -> Self {
+        Standing {
+            hidden: row.hidden_by_default(),
+            dataset: row.kind.is_dataset() || row.kind.is_lake_table(),
+            sorted_by: match sort {
+                SortMode::Size => Some(row.size.unwrap_or(0)),
+                SortMode::Rows => Some(row.rows.unwrap_or(0) as u64),
+                SortMode::Modified => Some(
+                    (row.modified)
+                        .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map_or(0, |d| d.as_secs()),
+                ),
+                SortMode::Natural => None,
+            },
+        }
+    }
+}
+
 /// Write a measurement into its row.
 fn fold_measured(row: &mut Entry, m: &Measured) {
     row.measured = true;
@@ -2628,6 +2809,9 @@ fn fold_measured(row: &mut Entry, m: &Measured) {
     }
     if m.size.is_some() {
         row.size = m.size;
+    }
+    if m.modified.is_some() {
+        row.modified = m.modified;
     }
     if !m.columns.is_empty() && row.columns != m.columns {
         row.columns.clone_from(&m.columns);
@@ -2971,17 +3155,124 @@ impl HomeState {
 
     /// Install a listing built elsewhere, keeping the cursor on whatever it was on.
     pub fn apply_listing(&mut self, listing: Listing) {
-        let returning = self.returning.take();
-        let previous = returning.clone().or_else(|| self.selected_key());
-        // Rows landing above the cursor move the list, not the cursor.
-        let line = self.selected.saturating_sub(self.scroll);
         let mut listing = listing;
         for section in &mut listing.sections {
             name_by_spec(&self.formats, &mut section.rows);
         }
-        self.sections = listing.sections;
-        self.changed();
         self.missing = listing.missing;
+        self.replace_sections(|home| home.sections = listing.sections);
+    }
+
+    /// Build again, from its probe alone, the section showing the remote place `root`:
+    /// the browsed directory or a network root. Pages of a listing land several times a
+    /// second; this touches no file and leaves every other section as it is.
+    pub fn relist_remote(&mut self, root: &Path) {
+        let browsed = self.browsing.as_deref() == Some(root)
+            && (self.network_check)(root)
+            && cloud_source_id(root).is_none();
+        let at = (self.sections.iter()).position(|s| {
+            s.root.as_deref() == Some(root) && (browsed || s.remote_root.as_deref() == Some(root))
+        });
+        let Some(at) = at else {
+            return;
+        };
+        let mut section = if browsed {
+            browsed_section(
+                root,
+                true,
+                &Listed {
+                    probes: &self.probes,
+                    narrowed: self.narrowed.as_ref(),
+                    catalogs: &self.catalogs,
+                    known: &self.known,
+                    formats: &self.formats,
+                },
+            )
+        } else {
+            Section::titled("", self.probes.rows(root))
+        };
+        let mounts = crate::home::locality::Mounts::cached();
+        annotate(
+            std::slice::from_mut(&mut section),
+            &self.known,
+            self.network_check,
+            &mounts,
+        );
+        name_by_spec(&self.formats, &mut section.rows);
+        let silent = self.probes.silent(root);
+        let waiting = !self.probes.settled(root);
+        self.replace_sections(|home| {
+            if browsed {
+                home.sections[at] = section;
+                return;
+            }
+            // A root keeps its heading; its rows and its wait are the probe's.
+            let shown = &mut home.sections[at];
+            shown.rows = section.rows;
+            shown.waiting = waiting;
+            if silent {
+                shown.unavailable = true;
+                shown.unavailable_note = Some(NOT_ANSWERING.to_string());
+            }
+        });
+    }
+
+    /// Show `cloud` as the cloud sources: the Cloud section, or the browsed source's
+    /// buckets, built again in place. Nothing else changes, so nothing is read.
+    pub fn set_cloud(&mut self, cloud: Vec<CloudSource>) {
+        self.cloud = cloud;
+        let mounts = crate::home::locality::Mounts::cached();
+        let annotated = |home: &Self, mut section: Section| {
+            annotate(
+                std::slice::from_mut(&mut section),
+                &home.known,
+                home.network_check,
+                &mounts,
+            );
+            section
+        };
+        match self.browsing.as_deref().map(cloud_source_id) {
+            Some(Some(id)) => {
+                let section = annotated(self, source_section(&id, &self.cloud));
+                self.replace_sections(|home| home.sections = vec![section]);
+            }
+            Some(None) => {}
+            None => {
+                let section = cloud_section(&self.cloud).map(|s| annotated(self, s));
+                self.replace_sections(|home| {
+                    let at = (home.sections.iter()).position(|s| s.title == Self::CLOUD_SECTION);
+                    match (at, section) {
+                        (Some(at), Some(section)) => home.sections[at] = section,
+                        (Some(at), None) => {
+                            home.sections.remove(at);
+                        }
+                        // Below the places, above the catalogs, as a listing puts it.
+                        (None, Some(section)) => {
+                            let at = (home.sections.iter())
+                                .position(|s| {
+                                    s.origin.is_some_and(is_catalog_origin)
+                                        || s.title == "Elsewhere"
+                                        || s.title == Self::SEARCH_SECTION
+                                })
+                                .unwrap_or(home.sections.len());
+                            home.sections.insert(at, section);
+                        }
+                        (None, None) => {}
+                    }
+                });
+            }
+        }
+    }
+
+    /// Change the sections through `change`, then put back what rides on them: the search
+    /// results, this session's measurements, and the cursor on whatever it was on.
+    fn replace_sections(&mut self, change: impl FnOnce(&mut Self)) {
+        let returning = self.returning.take();
+        let previous = returning.clone().or_else(|| self.selected_key());
+        // Rows landing above the cursor move the list, not the cursor.
+        let line = self.selected.saturating_sub(self.scroll);
+        change(self);
+        self.changed();
         // Browsing, the first section is the directory browsed.
         if let (Some(browsing), Some((dir, format))) = (&self.browsing, &self.lake_here)
             && browsing == dir
@@ -4246,10 +4537,9 @@ impl HomeState {
             } else {
                 Vec::new()
             };
-            // Sorted by rows, rows past the cut are measured too, or the biggest shown would pass
-            // for the biggest of all.
-            let measuring = self.sort == SortMode::Rows
-                && rest.iter().any(|(i, _)| self.wants_measuring(entry(*i)));
+            // Sorted by something measured, rows past the cut are measured too, or the biggest
+            // shown would pass for the biggest of all.
+            let measuring = rest.iter().any(|(i, _)| self.sort_wants(entry(*i)));
             if section.grouped_by_place {
                 self.slots_by_place(si, section, &matched, &mut out);
             } else {
@@ -4361,21 +4651,17 @@ impl HomeState {
             return Vec::new();
         };
         let segment = &self.path_input[listing.dir.len()..];
-        let mut matched: Vec<(&PathName, i32)> = listing
-            .names
-            .iter()
-            .filter(|n| !n.name.starts_with('.') || segment.starts_with('.'))
-            .filter_map(|n| {
-                if segment.is_empty() {
-                    return Some((n, 0));
-                }
-                // Prefix matches first, as a shell completes; then fuzzy matches.
-                let prefix = n.name.starts_with(segment) as i32 * 1_000_000;
-                fuzzy_score(segment, &n.name).map(|score| (n, prefix + score))
-            })
-            .collect();
-        matched.sort_by(|(a, sa), (b, sb)| sb.cmp(sa).then_with(|| a.name.cmp(&b.name)));
-        matched.into_iter().map(|(n, _)| n).collect()
+        let mut memo = (listing.matched.0.lock()).unwrap_or_else(|e| e.into_inner());
+        let at = match memo.as_ref() {
+            Some((typed, at)) if typed == segment => at.clone(),
+            _ => {
+                let at = path_matches(&listing.names, segment);
+                *memo = Some((segment.to_string(), at.clone()));
+                at
+            }
+        };
+        drop(memo);
+        at.iter().map(|&i| &listing.names[i]).collect()
     }
 
     /// Put the `~` prompt's pick on the first match, or none, so the list always shows
@@ -4594,6 +4880,41 @@ impl HomeState {
         self.apply_cloud_kinds(&root);
     }
 
+    /// Label every listed row a peek answered, in place: the probes' rows, then the
+    /// sections showing them (a remote place's built again from its probe, Recent's
+    /// rows directly). No listing is read again.
+    pub fn take_cloud_kinds(&mut self) {
+        let roots: Vec<PathBuf> = (self.probes.answered())
+            .map(|(root, _)| root.clone())
+            .collect();
+        for root in &roots {
+            self.apply_cloud_kinds(root);
+        }
+        let mut labeled = false;
+        for section in &mut self.sections {
+            for row in &mut section.rows {
+                if row.kind == EntryKind::Directory
+                    && let Some((kind, holds)) = self.cloud_kinds.get(&row.path)
+                {
+                    row.kind = *kind;
+                    if !holds.is_empty() {
+                        row.holds = holds.clone();
+                    }
+                    labeled = true;
+                }
+            }
+        }
+        if labeled {
+            self.changed();
+        }
+        // A browsed directory's door is judged from its rows' kinds.
+        if let Some(dir) = self.browsing.clone()
+            && roots.contains(&dir)
+        {
+            self.relist_remote(&dir);
+        }
+    }
+
     /// Label the rows of a cloud listing with what peeking inside them found.
     pub fn apply_cloud_kinds(&mut self, root: &Path) {
         let Some(rows) = self.probes.listed_mut(root) else {
@@ -4671,37 +4992,44 @@ impl HomeState {
         let more = self.unmeasured_visible(limit + 1).len() > wanted.len();
         for entry in wanted {
             let mut probe = entry.clone();
-            discover::enrich(&mut probe);
+            stat_and_recall(&mut probe, &self.known);
+            if probe.rows.is_none() && probe.columns.is_empty() {
+                discover::enrich(&mut probe);
+            }
             self.record_measurement(entry.path.clone(), measured_from(&probe, &entry));
         }
         self.apply_new_measurements();
         more
     }
 
-    /// Rows not yet measured, up to `limit`: those on or near the screen first (see
-    /// [`HomeState::entries_near_cursor`]), so what is shown is measured before the rest;
-    /// then the rest of the rows listed, from the top, so a column name matches any of
-    /// them; sorted by rows, then the rows a cut hides.
+    /// Rows not yet measured, up to `limit`: the screen and a little either side of it
+    /// (see [`HomeState::entries_on_screen`]), the highlighted row first. Nothing off
+    /// screen is read for a keystroke, so a filter typed over thousands of files costs
+    /// what it shows; a column name matches the rows whose columns are known, read here
+    /// or remembered from an earlier run. Sorted by rows, the order needs every count, so
+    /// then every row listed and those a cut hides: the sort asked for them.
     pub fn unmeasured_visible(&self, limit: usize) -> Vec<Entry> {
         let view = self.view();
         let mut out: Vec<Entry> = Vec::new();
-        let listed = view.slots.iter().filter_map(|slot| self.entry_of(slot));
-        // Before the first frame there is no screen: the top of the list.
-        let near: Box<dyn Iterator<Item = &Entry>> = if self.view_height == 0 {
-            Box::new(std::iter::empty())
-        } else {
-            Box::new(self.entries_near_cursor(&view, limit))
-        };
-        for entry in near.chain(listed) {
+        let take = |entry: &Entry, out: &mut Vec<Entry>| {
             if self.wants_measuring(entry) && !out.iter().any(|e| e.path == entry.path) {
                 out.push(entry.clone());
-                if out.len() >= limit {
-                    return out;
-                }
+            }
+            out.len() >= limit
+        };
+        for entry in self.entries_on_screen(&view) {
+            if take(entry, &mut out) {
+                return out;
             }
         }
-        // Sorted by rows, rows past a cut are measured after those on screen: the sort needs
-        // every count.
+        if self.sort == SortMode::Natural {
+            return out;
+        }
+        for entry in view.slots.iter().filter_map(|slot| self.entry_of(slot)) {
+            if take(entry, &mut out) {
+                return out;
+            }
+        }
         for slot in &view.slots {
             let Slot::Plain(Row::More {
                 section,
@@ -4712,20 +5040,39 @@ impl HomeState {
                 continue;
             };
             for entry in &self.sections[*section].rows {
-                if self.wants_measuring(entry) && !out.iter().any(|e| e.path == entry.path) {
-                    out.push(entry.clone());
-                    if out.len() >= limit {
-                        return out;
-                    }
+                if take(entry, &mut out) {
+                    return out;
                 }
             }
         }
         out
     }
 
-    /// Whether `entry` is a local dataset with no count yet that measuring would give.
+    /// Whether the sort orders by something `entry` lacks until measured.
+    fn sort_wants(&self, entry: &Entry) -> bool {
+        match self.sort {
+            SortMode::Natural => false,
+            SortMode::Rows => self.wants_measuring(entry),
+            SortMode::Size | SortMode::Modified => {
+                self.wants_measuring(entry) && entry.modified.is_none()
+            }
+        }
+    }
+
+    /// Whether `entry` is a local row with no count yet that measuring would give, or
+    /// with no size and mtime yet, which a listing leaves to the rows shown.
     fn wants_measuring(&self, entry: &Entry) -> bool {
-        if entry.rows.is_some() || entry.measured || self.enriched.contains_key(&entry.path) {
+        if entry.measured || self.enriched.contains_key(&entry.path) {
+            return false;
+        }
+        // A directory not yet looked into is the classification pass's, which stats it.
+        if entry.kind != EntryKind::Unknown
+            && discover::unstated(entry)
+            && !(self.network_check)(&entry.path)
+        {
+            return true;
+        }
+        if entry.rows.is_some() {
             return false;
         }
         // The kind settles it before the mount table: this runs per row per frame, and the
@@ -4748,7 +5095,9 @@ impl HomeState {
         let wanted = self.unclassified_visible(limit);
         let more = self.unclassified_visible(limit + 1).len() > wanted.len();
         for entry in wanted {
-            let probe = look_into_as(&entry, &Default::default());
+            let mut stated = entry.clone();
+            stat_and_recall(&mut stated, &self.known);
+            let probe = look_into_as(&stated, &Default::default());
             self.record_measurement(entry.path.clone(), measured_from(&probe, &entry));
         }
         self.apply_new_measurements();
@@ -4761,13 +5110,25 @@ impl HomeState {
     /// reach the cursor): the highlighted row first (about to be acted on), then the
     /// screen, the screen below, the screen above.
     pub fn unclassified_visible(&self, limit: usize) -> Vec<Entry> {
+        self.unclassified_visible_where(limit, |_| true)
+    }
+
+    /// [`HomeState::unclassified_visible`], of the rows `keep` takes.
+    pub fn unclassified_visible_where(
+        &self,
+        limit: usize,
+        keep: impl Fn(&Entry) -> bool,
+    ) -> Vec<Entry> {
         if limit == 0 {
             return Vec::new();
         }
         let view = self.view();
         let mut out: Vec<Entry> = Vec::new();
         for entry in self.entries_near_cursor(&view, limit) {
-            if entry.kind != EntryKind::Unknown || self.missing.contains(&entry.path) {
+            if entry.kind != EntryKind::Unknown
+                || self.missing.contains(&entry.path)
+                || !keep(entry)
+            {
                 continue;
             }
             // Already looked into, even if that settled nothing: re-asking would stat per frame.
@@ -4789,6 +5150,27 @@ impl HomeState {
             }
         }
         out
+    }
+
+    /// The entry rows on screen: the highlighted one, the screen, then half a screen
+    /// below and above it, so a step or a short scroll finds its rows already read.
+    fn entries_on_screen<'a>(&'a self, view: &'a View) -> impl Iterator<Item = &'a Entry> + 'a {
+        // Before the first frame there is no screen: the list from the top, as far as the
+        // caller takes it.
+        let height = if self.view_height == 0 {
+            usize::MAX / 4
+        } else {
+            self.view_height
+        };
+        let rows = view.slots.len();
+        let top = self.scroll.min(rows);
+        let reach = height / 2;
+        let bottom = top.saturating_add(height + reach).min(rows);
+        let above = top.saturating_sub(reach);
+        std::iter::once(self.selected)
+            .chain(top..bottom)
+            .chain(above..top)
+            .filter_map(|i| self.entry_of(view.slots.get(i)?))
     }
 
     /// The entry rows near the cursor: the highlighted one, the screen, the screen below,
@@ -4882,13 +5264,17 @@ impl HomeState {
         };
         let mut touched: Vec<(usize, usize)> = Vec::new();
         let mut any = false;
+        let mut moved = false;
+        let sort = self.sort;
         for (si, section) in self.sections.iter_mut().enumerate() {
             let mut here = false;
             for (i, row) in section.rows.iter_mut().enumerate() {
                 if new(&row.path)
                     && let Some(m) = self.enriched.get(&row.path)
                 {
+                    let before = Standing::of(row, sort);
                     fold_measured(row, m);
+                    moved |= Standing::of(row, sort) != before;
                     touched.push((si, i));
                     here = true;
                 }
@@ -4905,10 +5291,29 @@ impl HomeState {
             }
             any |= here;
         }
-        if any {
-            self.rows_changed(&touched);
-            self.land_again();
+        if !any {
+            return;
         }
+        // The rows are drawn from the sections as they are now; the list is built again
+        // only when a row moves, comes or goes, which is rare once the first answers are in.
+        if moved || !self.hits_hold(&touched) {
+            self.rows_changed(&touched);
+        }
+        self.land_again();
+    }
+
+    /// Whether the built list still answers the filter the same way for `touched` rows
+    /// (section, index), so it stands as built. No list built: nothing to keep.
+    fn hits_hold(&self, touched: &[(usize, usize)]) -> bool {
+        let built = self.rows_cache.built.borrow();
+        let Some(view) = built.as_ref().filter(|view| view.key.matches(self)) else {
+            return true;
+        };
+        let needle = Needle::new(&self.filter);
+        touched.iter().all(|&(si, i)| {
+            let was = view.hits.sections.get(si).and_then(|s| s.as_ref()?.get(i));
+            was == Some(&needle.hit(&self.sections[si].rows[i]))
+        })
     }
 
     /// Landed on a door the footers have since turned down, and not moved: the cursor
@@ -5204,6 +5609,46 @@ pub struct PathListing {
     pub names: Vec<PathName>,
     /// Reading the directory failed: there is nothing to list, and the prompt says so.
     pub failed: bool,
+    /// The names the last typed segment matched, best first.
+    pub matched: SegmentMatches,
+}
+
+/// Which of a [`PathListing`]'s names a typed segment matches, kept for that segment:
+/// each frame and key asks, and scoring thousands of names each time is what a
+/// keystroke must not cost. A memo, so not part of the listing's value.
+#[derive(Debug, Default)]
+pub struct SegmentMatches(std::sync::Mutex<Option<(String, std::sync::Arc<[usize]>)>>);
+
+impl Clone for SegmentMatches {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl PartialEq for SegmentMatches {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for SegmentMatches {}
+
+/// Which of `names` the typed `segment` matches, best first: prefix matches, as a shell
+/// completes, then fuzzy ones; hidden names only after a typed dot.
+fn path_matches(names: &[PathName], segment: &str) -> std::sync::Arc<[usize]> {
+    let mut matched: Vec<(usize, i32)> = (names.iter().enumerate())
+        .filter(|(_, n)| !n.name.starts_with('.') || segment.starts_with('.'))
+        .filter_map(|(i, n)| {
+            if segment.is_empty() {
+                return Some((i, 0));
+            }
+            let prefix = n.name.starts_with(segment) as i32 * 1_000_000;
+            fuzzy_score(segment, &n.name).map(|score| (i, prefix + score))
+        })
+        .collect();
+    matched
+        .sort_by(|(a, sa), (b, sb)| sb.cmp(sa).then_with(|| names[*a].name.cmp(&names[*b].name)));
+    matched.into_iter().map(|(i, _)| i).collect()
 }
 
 /// The most names a typed directory lists: a prompt finds one name by typing.
@@ -5250,6 +5695,7 @@ pub fn list_typed_dir(dir: &str) -> PathListing {
             dir: dir.to_string(),
             names: Vec::new(),
             failed: true,
+            matched: Default::default(),
         };
     };
     let mut names: Vec<PathName> = entries
@@ -5268,6 +5714,7 @@ pub fn list_typed_dir(dir: &str) -> PathListing {
         dir: dir.to_string(),
         names,
         failed: false,
+        matched: Default::default(),
     }
 }
 
@@ -5309,6 +5756,7 @@ pub fn names_under(dir: &str, urls: impl IntoIterator<Item = String>) -> PathLis
         dir: dir.to_string(),
         names,
         failed: false,
+        matched: Default::default(),
     }
 }
 
@@ -5658,7 +6106,7 @@ mod look_into_batch_tests {
         }
 
         let mut sent = Vec::new();
-        look_into_batch(rows, &cache, |path, m| {
+        look_into_batch(rows, &cache, &Default::default(), |path, m| {
             let name = path.file_name().unwrap().to_string_lossy().into_owned();
             sent.push((name, m.kind, m.rows));
         });

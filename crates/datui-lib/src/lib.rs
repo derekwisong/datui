@@ -174,8 +174,11 @@ pub enum AppEvent {
     HomeListingReady {
         generation: u64,
         listing: Box<crate::home::Listing>,
-        /// What earlier runs measured, read from the cache with the listing.
-        known: std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
+        /// What earlier runs measured, when this listing read the cache's index: once a
+        /// session.
+        known: Option<crate::home::Known>,
+        /// Records read since for the dataset just left, which its open wrote.
+        learned: Vec<(PathBuf, crate::cache::DatasetFacts)>,
         /// How often and how lately each recent was opened.
         visits: std::collections::HashMap<PathBuf, crate::cache::Visits>,
         /// The recent opened last, where the cursor lands.
@@ -210,11 +213,10 @@ pub enum AppEvent {
     },
     /// A schema read off-thread for the highlighted dataset.
     HomeSchemaReady {
-        generation: u64,
         path: PathBuf,
         preview: Option<crate::home::discover::SchemaPreview>,
     },
-    /// Measurements for home rows, sent per row so a slow one holds back no other.
+    /// Measurements for home rows, a batch at a time (more often on a slow share).
     /// `done` ends the batch. No generation: a measurement is keyed by path and
     /// stays true whichever listing asked.
     HomeMeasured {
@@ -232,8 +234,10 @@ pub enum AppEvent {
         gone: crate::error_display::HttpGone,
     },
     /// What the rows on screen turned out to be; folded like
-    /// [`AppEvent::HomeMeasured`].
+    /// [`AppEvent::HomeMeasured`]. `pass` is the filesystem (its mount point) the
+    /// pass looked at.
     HomeClassified {
+        pass: PathBuf,
         measured: Vec<(PathBuf, crate::home::Measured)>,
         done: bool,
     },
@@ -2745,14 +2749,14 @@ impl App {
         if self.input_mode != InputMode::Home {
             return;
         }
-        if self.home_app.refresh_owed {
-            self.home_refresh();
-        }
+        self.take_listing_news();
         #[cfg(feature = "http")]
         self.size_selected_web_file();
         // Each pass asks for the rows still unknown, a batch at a time; not under the
         // path prompt, which hides the list.
         if !self.home.path_input_active {
+            self.request_selected_preview();
+            self.request_home_schema();
             self.request_home_measurements();
             self.request_home_classifications();
             #[cfg(feature = "cloud")]
@@ -3916,14 +3920,19 @@ impl App {
                     .unwrap_or_else(|| looking.display().to_string());
                 // The home screen's own line, because the footer's is the table's.
                 self.home.status = Some(format!("Looking at {name}..."));
+                let formats = self.formats.clone();
                 self.spawn_job(look, Some(Self::LOOKING), move |_| {
                     // Each of these can hang on a share that went away; hence off the key thread.
-                    let found = if !looking.exists() {
-                        None
-                    } else if looking.is_dir() {
+                    let found = if looking.is_dir() {
                         Some(crate::home::discover::classify_directory(&looking))
-                    } else {
+                    } else if looking.exists()
+                        // A member of an archive, or a variant a spec reads from a file.
+                        || crate::formats::members::split(&looking).is_some()
+                        || crate::formats::members::split_variant(&looking, &formats).is_some()
+                    {
                         Some(crate::home::discover::EntryKind::File)
+                    } else {
+                        None
                     };
                     Ok(Answer::Kind(found))
                 });

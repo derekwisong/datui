@@ -170,6 +170,18 @@ impl Mounts {
     /// The filesystem covering `path`: the deepest mount, and at one point the last listed
     /// (a later mount shadows an earlier one, as NFS automounted over its autofs entry).
     pub fn fstype_for(&self, path: &Path) -> Option<&str> {
+        self.covering(path).map(|(_, fstype)| fstype)
+    }
+
+    /// Where the filesystem covering `path` is mounted; empty when nothing covers it.
+    pub fn mount_point_for(&self, path: &Path) -> std::path::PathBuf {
+        self.covering(path)
+            .map(|(point, _)| std::path::PathBuf::from(point))
+            .unwrap_or_default()
+    }
+
+    /// The mount covering `path`, as (mount point, filesystem type).
+    fn covering(&self, path: &Path) -> Option<(&str, &str)> {
         // Mount points are absolute: join a relative path to the working directory (string
         // work, unlike canonicalizing, which would touch the filesystem).
         let joined;
@@ -187,17 +199,16 @@ impl Mounts {
             }
         };
 
-        let mut best: Option<(usize, &str)> = None;
+        let mut best: Option<(&str, &str)> = None;
         for (point, fstype) in &self.entries {
             if !path.starts_with(point) {
                 continue;
             }
-            let len = point.len();
-            if best.is_none_or(|(n, _)| len >= n) {
-                best = Some((len, fstype));
+            if best.is_none_or(|(at, _)| point.len() >= at.len()) {
+                best = Some((point, fstype));
             }
         }
-        best.map(|(_, f)| f)
+        best
     }
 
     /// How `path` is reached.
@@ -222,6 +233,14 @@ impl Mounts {
 
     pub fn is_network(&self, path: &Path) -> bool {
         self.describe(path).network()
+    }
+
+    /// Whether a call on `path` can hang: a network filesystem, or any FUSE one, whose
+    /// answers come from a process that may be waiting on a network (gcsfuse, juicefs,
+    /// a stalled sshfs) or on nothing at all.
+    pub fn could_block(&self, path: &Path) -> bool {
+        let source = self.describe(path);
+        source.network() || source.fstype.starts_with("fuse.")
     }
 }
 

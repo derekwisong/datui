@@ -46,7 +46,8 @@ fn a_stale_listing_leaves_the_current_one_in_flight() {
     app.event(AppEvent::HomeListingReady {
         generation: stale,
         listing: Box::default(),
-        known: Default::default(),
+        known: None,
+        learned: Vec::new(),
         folds: None,
         visits: Default::default(),
         newest: None,
@@ -55,7 +56,8 @@ fn a_stale_listing_leaves_the_current_one_in_flight() {
     app.event(AppEvent::HomeListingReady {
         generation: app.home_app.generation,
         listing: Box::default(),
-        known: Default::default(),
+        known: None,
+        learned: Vec::new(),
         folds: None,
         visits: Default::default(),
         newest: None,
@@ -104,14 +106,22 @@ fn a_schema_read_that_dies_is_not_asked_for_again() {
     dies_once(&mut app, |e| matches!(e, AppEvent::HomeSchemaReady { .. }));
     let entry =
         home::discover::Entry::new(dir.path().join("a.csv"), home::discover::EntryKind::File);
+    app.home.apply_listing(home::Listing {
+        sections: vec![home::Section::titled("HERE", vec![entry.clone()])],
+        ..Default::default()
+    });
+    app.home.select(1);
+    app.request_home_schema();
     assert!(app.home_schema(&entry).is_none());
     assert!(app.home_schema_pending(&entry.path));
     pump(&mut app, &rx, |a| !a.home_schema_pending(&entry.path));
     assert!(app.home_schema(&entry).is_none());
+    app.request_home_schema();
     assert!(
         !app.home_schema_pending(&entry.path),
         "remembered as having none"
     );
+    assert_eq!(app.home_app.reads.schemas, 1);
 }
 
 #[test]

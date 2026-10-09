@@ -139,7 +139,8 @@ fn without_cloud_a_bucket_says_it_cannot_be_listed() {
 }
 
 /// Batches of rows add to what was read, and however many arrive before a frame, the
-/// place is listed once for it.
+/// place's section is built again once for it, from the rows in hand: no listing is
+/// read again for a page.
 #[test]
 fn batches_read_before_a_frame_are_listed_once() {
     let (tx, _rx) = mpsc::channel();
@@ -150,6 +151,8 @@ fn batches_read_before_a_frame_are_listed_once() {
     app.home.browsing = Some(dir.clone());
     app.home_app.probes_inflight = vec![dir.clone()];
     let row = |name: &str| home::discover::Entry::directory(&dir.join(name));
+    // What the first listing shows while the place is read: its section, waiting.
+    app.home.rebuild(&[]);
 
     let generation = app.home_app.generation;
     for name in ["a", "b", "c"] {
@@ -173,7 +176,15 @@ fn batches_read_before_a_frame_are_listed_once() {
     assert_eq!(names, ["a", "b", "c"]);
 
     app.request_what_the_frame_needs();
-    assert_eq!(app.home_app.generation, generation.wrapping_add(1));
-    app.request_what_the_frame_needs();
-    assert_eq!(app.home_app.generation, generation.wrapping_add(1));
+    let shown: Vec<String> = (app.home.sections[0].rows.iter())
+        .map(|row| row.name.clone())
+        .collect();
+    assert_eq!(shown, ["a", "b", "c"], "the pages are on screen");
+    assert_eq!(app.home.sections[0].subtitle.as_deref(), Some("3 so far"));
+    assert_eq!(
+        app.home_app.generation, generation,
+        "nothing was listed again"
+    );
+    assert!(!app.home.listing_in_flight);
+    assert!(app.home_app.pages_owed.is_empty());
 }

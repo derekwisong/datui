@@ -5,9 +5,12 @@
 # fails while a copy differs. test-install.yml installs the commands.
 #
 # id       a short name; the landing page's tab id
-# label    the platform, as the tables and tabs name it
+# label    the platform, as the tables name it
+# name     the method, as the landing page names it under a tab
 # link     the package's page, linked from the label in the tables
-# os       the landing page shows this channel first on these systems: linux, macos, windows
+# tabs     the landing page's tabs it is listed under: macos, linux, windows,
+#          python, rust, binaries; the visitor's system opens first
+# lead     the tabs it heads, ahead of the channels before it in this file
 # lang     the shell the command runs in
 # command  what to type; several lines are shown whole on the landing page and
 #          linked from the tables to `anchor` in installation.md
@@ -18,7 +21,8 @@
 [[channel]]
 id = "script"
 label = "Linux, macOS"
-os = ["linux", "macos"]
+name = "Install script"
+tabs = ["linux", "macos"]
 lang = "bash"
 command = "curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh"
 table = false
@@ -26,41 +30,16 @@ table = false
 [[channel]]
 id = "winget"
 label = "Windows, WinGet"
-os = ["windows"]
+name = "WinGet"
+tabs = ["windows"]
 lang = "powershell"
 command = "winget install derekwisong.datui"
 
 [[channel]]
-id = "brew"
-label = "macOS, Linux, Homebrew"
-link = "https://github.com/derekwisong/homebrew-datui"
-lang = "bash"
-command = "brew tap derekwisong/datui && brew trust derekwisong/datui && brew install datui"
-
-[[channel]]
-id = "pip"
-label = "Python, PyPI"
-link = "https://pypi.org/project/datui/"
-lang = "bash"
-command = "pip install datui"
-
-[[channel]]
-id = "cargo"
-label = "Rust, crates.io"
-link = "https://crates.io/crates/datui"
-lang = "bash"
-command = "cargo install datui --locked"
-
-[[channel]]
-id = "aur"
-label = "Arch Linux, AUR"
-link = "https://aur.archlinux.org/packages/datui-bin"
-lang = "bash"
-command = "yay -S datui-bin   # or: paru -S datui-bin"
-
-[[channel]]
 id = "apt"
 label = "Debian, Ubuntu"
+name = "Debian, Ubuntu (apt)"
+tabs = ["linux"]
 lang = "bash"
 anchor = "apt-repository"
 command = """
@@ -72,6 +51,8 @@ sudo apt install datui"""
 [[channel]]
 id = "dnf"
 label = "Fedora, RHEL"
+name = "Fedora, RHEL (dnf)"
+tabs = ["linux"]
 lang = "bash"
 anchor = "dnf-repository"
 command = """
@@ -79,7 +60,46 @@ sudo curl -fsSL -o /etc/yum.repos.d/datui.repo https://derekwisong.github.io/dat
 sudo dnf install datui"""
 
 [[channel]]
+id = "aur"
+label = "Arch Linux, AUR"
+name = "Arch Linux (AUR)"
+link = "https://aur.archlinux.org/packages/datui-bin"
+tabs = ["linux"]
+lang = "bash"
+command = "yay -S datui-bin   # or: paru -S datui-bin"
+
+[[channel]]
+id = "brew"
+label = "macOS, Linux, Homebrew"
+name = "Homebrew"
+link = "https://github.com/derekwisong/homebrew-datui"
+tabs = ["macos", "linux"]
+lead = ["macos"]
+lang = "bash"
+command = "brew tap derekwisong/datui && brew trust derekwisong/datui && brew install datui"
+
+[[channel]]
+id = "pip"
+label = "Python, PyPI"
+name = "Python (pip)"
+tabs = ["python"]
+link = "https://pypi.org/project/datui/"
+lang = "bash"
+command = "pip install datui"
+
+[[channel]]
+id = "cargo"
+label = "Rust, crates.io"
+name = "Rust (cargo)"
+tabs = ["rust"]
+link = "https://crates.io/crates/datui"
+lang = "bash"
+command = "cargo install datui --locked"
+
+[[channel]]
 id = "binaries"
 label = "Binaries"
+name = "Binaries"
+tabs = ["binaries"]
 text = "Linux, macOS and Windows binaries, `.deb`, `.rpm` and Arch tarballs on the [latest release](https://github.com/derekwisong/datui/releases/latest)"
 html = "Linux (x86_64, arm64), macOS (Intel, Apple silicon) and Windows binaries, plus <code>.deb</code>, <code>.rpm</code> and Arch tarballs, are on the <a href=\"https://github.com/derekwisong/datui/releases/latest\">latest release</a>."

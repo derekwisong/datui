@@ -142,6 +142,41 @@ struct Burst {
     keys: usize,
 }
 
+impl Burst {
+    /// Count a key handled at `now`; whether the burst has room for another before a
+    /// frame.
+    fn counted(&mut self, now: Instant) -> bool {
+        let started = *self.started.get_or_insert(now);
+        self.keys += 1;
+        self.keys < KEYS_PER_FRAME && now.saturating_duration_since(started) < BURST_FRAME
+    }
+}
+
+/// What the keys after one read from the last frame: the screen and what is over it.
+/// A key that changes it ends a burst, so the next key meets the new layout drawn.
+#[derive(Debug, PartialEq, Eq)]
+struct Layout {
+    overlay: std::mem::Discriminant<crate::Overlay>,
+    input_mode: std::mem::Discriminant<crate::InputMode>,
+    help: bool,
+    modal: bool,
+    menu: bool,
+    generation: u64,
+}
+
+impl Layout {
+    fn of(app: &App) -> Self {
+        Self {
+            overlay: std::mem::discriminant(&app.overlay),
+            input_mode: std::mem::discriminant(&app.input_mode),
+            help: app.help.is_open(),
+            modal: app.modal_showing(),
+            menu: app.context_menu.is_some(),
+            generation: app.screen_generation(),
+        }
+    }
+}
+
 impl EventPump {
     pub fn new(app: App, tx: Sender<AppEvent>, rx: Receiver<AppEvent>) -> Self {
         let held_for = Self::screen_of(&app);
@@ -585,6 +620,7 @@ impl EventPump {
                     }
                     self.since_key = 0;
                     self.early = self.early.saturating_sub(1);
+                    let layout = Layout::of(&self.app);
                     let acted = match input {
                         Input::Key(key) => self.terminal_key(key)?,
                         Input::Mouse(mouse) => self.terminal_mouse(mouse)?,
@@ -593,7 +629,7 @@ impl EventPump {
                     if acted {
                         updated = true;
                         progress_only = false;
-                        if !self.burst_goes_on(&mut burst) {
+                        if !self.burst_goes_on(&mut burst, &layout) {
                             break;
                         }
                     }
@@ -612,17 +648,17 @@ impl EventPump {
     /// showing it. A burst (key repeat, keys queued behind a slow frame) is drawn once:
     /// redrawing for every key only sends frames the screen replaces at once. A key
     /// that queued a follow-up gets its frame first (the follow-up shows its phase),
-    /// as does one that made the app busy (its spinner) or held keys, and a burst is
+    /// as does one that made the app busy (its spinner) or held keys, and one that
+    /// changed the screen (`before`, its [`Layout`] before the key): the keys behind it
+    /// read the layout the frame records (rows on screen, a panel's height). A burst is
     /// drawn every [`KEYS_PER_FRAME`] keys or [`BURST_FRAME`] so a held key shows
     /// motion. A click waits for its frame anyway (see `drain_from`).
-    fn burst_goes_on(&self, burst: &mut Burst) -> bool {
-        let started = *burst.started.get_or_insert_with(Instant::now);
-        burst.keys += 1;
-        self.next_up.is_empty()
+    fn burst_goes_on(&self, burst: &mut Burst, before: &Layout) -> bool {
+        burst.counted(Instant::now())
+            && self.next_up.is_empty()
             && self.held.is_empty()
             && !self.app.is_busy()
-            && burst.keys < KEYS_PER_FRAME
-            && started.elapsed() < BURST_FRAME
+            && Layout::of(&self.app) == *before
     }
 
     /// The run loop: draw the first frame, then replay one held key, handle what has

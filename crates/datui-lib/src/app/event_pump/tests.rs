@@ -2323,6 +2323,51 @@ fn a_long_burst_is_drawn_every_so_many_keys() {
     }
 }
 
+/// A key that opens another screen ends the burst: the keys behind it read the layout
+/// that screen's first frame records (rows on screen, a panel's height).
+#[test]
+fn a_key_that_changes_the_screen_ends_the_burst() {
+    let (mut p, _dir) = loaded_pump();
+    for key in [plain(KeyCode::Char(':')), plain(KeyCode::Char('a'))] {
+        p.send(terminal(key)).unwrap();
+    }
+    let keys = p.app.debug.num_key_events;
+    p.drain().unwrap();
+    assert_eq!(p.app.debug.num_key_events, keys + 1, "the `:` alone");
+    assert_eq!(p.app.input_mode, InputMode::Editing);
+    p.drain().unwrap();
+    assert_eq!(p.app.debug.num_key_events, keys + 2);
+    assert_eq!(p.app.prompt.query_input.value(), "a");
+
+    p.send(terminal(plain(KeyCode::Esc))).unwrap();
+    p.send(terminal(plain(KeyCode::Char('i')))).unwrap();
+    p.send(terminal(plain(KeyCode::Down))).unwrap();
+    p.drain().unwrap();
+    assert!(
+        p.app.at_table(),
+        "Esc closed the prompt, and ended the burst"
+    );
+    p.drain().unwrap();
+    assert_eq!(p.app.overlay, Overlay::Info, "`i` opened the panel alone");
+    assert_eq!(p.app.debug.num_key_events, keys + 4);
+}
+
+/// A burst has room for [`KEYS_PER_FRAME`] keys within [`BURST_FRAME`] of its first.
+#[test]
+fn a_burst_ends_at_its_key_or_time_budget() {
+    let start = Instant::now();
+    let mut burst = Burst::default();
+    assert!(burst.counted(start));
+    assert!(burst.counted(start + BURST_FRAME / 2));
+    assert!(!burst.counted(start + BURST_FRAME), "out of time");
+
+    let mut burst = Burst::default();
+    let counted = (0..KEYS_PER_FRAME)
+        .take_while(|_| burst.counted(start))
+        .count();
+    assert_eq!(counted, KEYS_PER_FRAME - 1, "the last key is drawn");
+}
+
 /// A key whose work goes on in a follow-up is drawn before the follow-up runs and
 /// before the keys behind it, as each phase is shown.
 #[test]

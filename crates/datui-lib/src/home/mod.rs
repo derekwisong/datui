@@ -5330,11 +5330,12 @@ impl HomeState {
     }
 
     /// Whether the built list still answers the filter the same way for `touched` rows
-    /// (section, index), so it stands as built. No list built: nothing to keep.
+    /// (section, index), so it stands as built. With no list built for the rows as they
+    /// are, the hits kept for the next build are rescored instead.
     fn hits_hold(&self, touched: &[(usize, usize)]) -> bool {
         let built = self.rows_cache.built.borrow();
         let Some(view) = built.as_ref().filter(|view| view.key.matches(self)) else {
-            return true;
+            return false;
         };
         let needle = Needle::new(&self.filter);
         touched.iter().all(|&(si, i)| {

@@ -9646,6 +9646,35 @@ mod listing_work {
         assert_eq!(home.rows_built(), built + 1, "sorted by rows, it moves");
     }
 
+    /// Two answers before the list is read again both count: the second is scored for
+    /// the next build, not dropped because nothing is built.
+    #[test]
+    fn answers_between_builds_are_all_scored() {
+        let mut home = files(100);
+        home.filter = "revenue".into();
+        home.sync_search_section();
+        assert_eq!(home.row_count(), 0, "nothing matches yet");
+        // Moved since landing: no answer reads the list on its own.
+        home.landing = false;
+        let columns = || Measured {
+            columns: vec!["revenue".into()],
+            ..Default::default()
+        };
+        let first = PathBuf::from("/pretend/many/report_00010.csv");
+        let second = PathBuf::from("/pretend/many/report_00090.csv");
+        home.record_measurement(first.clone(), columns());
+        home.apply_new_measurements();
+        home.record_measurement(second.clone(), columns());
+        home.apply_new_measurements();
+        let matched: Vec<PathBuf> = (home.visible().into_iter())
+            .filter_map(|row| match row {
+                Row::Entry { entry, .. } => Some(entry.path.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(matched, [first, second]);
+    }
+
     /// Sorted by size or time, every row needs its stat and nothing more: those off
     /// screen are stat'ed, never read.
     #[test]

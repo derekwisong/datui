@@ -568,12 +568,9 @@ fn install_panic_hook() {
         // from here, so an earlier session's hook further down the chain (the Python
         // binding, run from another thread) passes the report on instead of keeping it.
         TUI_ACTIVE.store(false, Ordering::SeqCst);
-        // The hooks below hand back the screen but not the mouse, whose reporting
-        // outlives the alternate screen: the shell would read every click as text; nor
-        // bracketed paste, which would wrap every paste at the prompt in escapes.
-        // Unlike popping the keyboard flags, these are safe to repeat.
-        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
-        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
+        // The hooks below hand back the screen but not the reports that outlive the
+        // alternate screen: the mouse, focus and bracketed paste.
+        crate::app::terminal::release_modes(&mut std::io::stdout());
         BACKGROUND_PANIC
             .lock()
             .unwrap_or_else(|e| e.into_inner())

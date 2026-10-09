@@ -44,11 +44,19 @@ pub(crate) fn restore_terminal() {
 /// Turn off what the session may have asked of the terminal, whether or not it did:
 /// a terminal ignores turning off what is not on.
 fn let_go(out: &mut impl std::io::Write) {
+    release_modes(out);
+    let _ = crossterm::execute!(out, crossterm::event::PopKeyboardEnhancementFlags);
+}
+
+/// Turn off the reports that outlive the alternate screen: the mouse (the shell would
+/// read every click as text), focus (every switch of window as `ESC [ I`) and bracketed
+/// paste (every paste wrapped in escapes). Safe to repeat, unlike popping the keyboard
+/// flags, so the panic hook calls it too.
+pub(crate) fn release_modes(out: &mut impl std::io::Write) {
     let _ = crossterm::execute!(out, crossterm::event::DisableMouseCapture);
     // Focus reports, asked for under `theme.mode = "auto"`.
     let _ = crossterm::execute!(out, crossterm::event::DisableFocusChange);
     let _ = crossterm::execute!(out, crossterm::event::DisableBracketedPaste);
-    let _ = crossterm::execute!(out, crossterm::event::PopKeyboardEnhancementFlags);
 }
 
 /// Ask the terminal to tell Ctrl+Enter from Enter (identical bytes without the kitty
@@ -166,6 +174,15 @@ mod tests {
         assert!(out.contains("\x1b[?1004l"), "{out:?}");
         assert!(out.contains("\x1b[?2004l"), "{out:?}");
         assert!(out.contains("\x1b[<1u"), "{out:?}");
+
+        // What the panic hook turns off: everything but the keyboard flags.
+        let mut released = Vec::new();
+        release_modes(&mut released);
+        let released = String::from_utf8(released).unwrap();
+        for mode in ["\x1b[?1000l", "\x1b[?1004l", "\x1b[?2004l"] {
+            assert!(released.contains(mode), "{mode:?} in {released:?}");
+        }
+        assert!(!released.contains("\x1b[<1u"), "{released:?}");
 
         let mut on = Vec::new();
         follow_focus(&mut on);

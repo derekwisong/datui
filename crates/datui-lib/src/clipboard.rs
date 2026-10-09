@@ -10,7 +10,8 @@
 //! OSC 52, so payloads are capped first (configurable); table copies are read in batches
 //! up to the cap, without an HTML flavor.
 //!
-//! **auto**: native where it initializes, else osc52, decided at the first copy.
+//! **auto**: osc52 over SSH; elsewhere native where it initializes, else osc52,
+//! decided at the first copy.
 
 use polars::prelude::*;
 use std::io::Write as _;
@@ -175,16 +176,27 @@ pub fn destination(
     choice: BackendChoice,
     osc52_limit: usize,
 ) -> Result<Box<dyn Destination>, String> {
+    let terminal = || Box::new(Osc52 { limit: osc52_limit }) as Box<dyn Destination>;
     match choice {
         BackendChoice::Native => Native::new().map(|n| Box::new(n) as Box<dyn Destination>),
-        BackendChoice::Osc52 => Ok(Box::new(Osc52 { limit: osc52_limit })),
+        BackendChoice::Osc52 => Ok(terminal()),
+        BackendChoice::Auto if over_ssh(|name| std::env::var(name).ok()) => Ok(terminal()),
         BackendChoice::Auto => Ok(match Native::new() {
             Ok(native) => Box::new(native),
-            // No display server to talk to — an SSH session — is exactly
-            // what the escape-sequence path is for.
-            Err(_) => Box::new(Osc52 { limit: osc52_limit }),
+            // No display server to talk to is exactly what the escape-sequence path is
+            // for.
+            Err(_) => terminal(),
         }),
     }
+}
+
+/// Whether datui runs over SSH, where `auto` copies through the terminal: the
+/// clipboard wanted is the one at the keyboard, and a forwarded display (`ssh -X`)
+/// is the remote one, reached in round trips over the link on every copy.
+pub(crate) fn over_ssh(env: impl Fn(&str) -> Option<String>) -> bool {
+    ["SSH_CONNECTION", "SSH_TTY"]
+        .iter()
+        .any(|name| env(name).is_some_and(|v| !v.trim().is_empty()))
 }
 
 // ----- The shapes a copy takes -----

@@ -396,6 +396,25 @@ fn a_capped_destination_takes_text_only() {
     );
 }
 
+/// Over SSH `auto` copies through the terminal, without asking a (forwarded) display.
+#[test]
+fn auto_copies_through_the_terminal_over_ssh() {
+    let env = |vars: &'static [(&'static str, &'static str)]| {
+        move |name: &str| {
+            vars.iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, v)| v.to_string())
+        }
+    };
+    assert!(over_ssh(env(&[(
+        "SSH_CONNECTION",
+        "10.0.0.2 5 10.0.0.1 22"
+    )])));
+    assert!(over_ssh(env(&[("SSH_TTY", "/dev/pts/3")])));
+    assert!(!over_ssh(env(&[("SSH_TTY", " "), ("DISPLAY", ":0")])));
+    assert!(!over_ssh(env(&[])));
+}
+
 #[test]
 fn html_escapes_markup_in_values() {
     let df = df!("x" => ["<b>&"]).unwrap();

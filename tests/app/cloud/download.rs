@@ -83,6 +83,14 @@ fn settle(app: &mut App, rx: &mpsc::Receiver<AppEvent>) {
     );
 }
 
+/// How long a slowed store holds each GET. The stall is the subject of the tests that
+/// stop a download in it, so it is long beside [`STOPPED_WITHIN`]: a loaded runner
+/// gets well past the few hundred milliseconds a stop takes before either is near.
+const STORE_STALL_MS: u64 = 30_000;
+
+/// A stop that came in under this did not wait for the stalled store to answer.
+const STOPPED_WITHIN: Duration = Duration::from_secs(15);
+
 fn files_in(dir: &Path) -> Vec<PathBuf> {
     std::fs::read_dir(dir)
         .unwrap()
@@ -90,10 +98,10 @@ fn files_in(dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Polls until `dir` holds `count` files, failing the test after a generous guard.
+/// Polls until `dir` holds `count` files, failing the test after the hang guard.
 #[track_caller]
 fn wait_for_files(dir: &Path, count: usize) {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + HANG_GUARD;
     while files_in(dir).len() != count {
         assert!(
             Instant::now() < deadline,
@@ -208,7 +216,7 @@ fn exit_removes_the_download() {
 #[test]
 fn quitting_mid_download_removes_the_partial_file_before_exit() {
     let s3 = serve(csv(1_000));
-    s3.slow_gets(5_000);
+    s3.slow_gets(STORE_STALL_MS);
     let (mut app, rx) = app(&s3);
     let dir = tempfile::tempdir().unwrap();
     open_and_confirm(&mut app, &rx, dir.path());
@@ -223,7 +231,7 @@ fn quitting_mid_download_removes_the_partial_file_before_exit() {
         "the partial file is gone as the session ends"
     );
     assert!(
-        began.elapsed() < Duration::from_secs(4),
+        began.elapsed() < STOPPED_WITHIN,
         "nor did it wait for the store, after {:?}",
         began.elapsed()
     );
@@ -301,7 +309,7 @@ fn an_object_that_will_not_read_is_named_by_its_url() {
 #[test]
 fn an_abandoned_download_stops_and_leaves_no_file() {
     let s3 = serve(csv(1_000));
-    s3.slow_gets(5_000);
+    s3.slow_gets(STORE_STALL_MS);
     let (mut app, rx) = app(&s3);
     let dir = tempfile::tempdir().unwrap();
     open_and_confirm(&mut app, &rx, dir.path());
@@ -313,7 +321,7 @@ fn an_abandoned_download_stops_and_leaves_no_file() {
     );
     wait_for_files(dir.path(), 0);
     assert!(
-        began.elapsed() < Duration::from_secs(4),
+        began.elapsed() < STOPPED_WITHIN,
         "stopped before the store answered, after {:?}",
         began.elapsed()
     );
@@ -321,7 +329,7 @@ fn an_abandoned_download_stops_and_leaves_no_file() {
     // is waiting on.
     loop {
         let event = rx
-            .recv_timeout(Duration::from_secs(30))
+            .recv_timeout(HANG_GUARD)
             .expect("the stopped download reports");
         let failed = matches!(event, AppEvent::JobEnded(t) if t.kind() == JobKind::Load);
         chain(&mut app, event);
@@ -343,7 +351,7 @@ fn an_abandoned_download_stops_and_leaves_no_file() {
 #[test]
 fn an_open_replacing_a_download_stops_it_and_leaves_no_file() {
     let s3 = serve(csv(1_000));
-    s3.slow_gets(5_000);
+    s3.slow_gets(STORE_STALL_MS);
     let (mut app, rx) = app(&s3);
     let dir = tempfile::tempdir().unwrap();
     open_and_confirm(&mut app, &rx, dir.path());
@@ -359,12 +367,12 @@ fn an_open_replacing_a_download_stops_it_and_leaves_no_file() {
     );
     wait_for_files(dir.path(), 0);
     assert!(
-        began.elapsed() < Duration::from_secs(4),
+        began.elapsed() < STOPPED_WITHIN,
         "stopped before the store answered, after {:?}",
         began.elapsed()
     );
     // The stopped worker's failure arrives for an open nobody is waiting on.
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + HANG_GUARD;
     while app.background_work_in_flight() || app.is_busy() {
         assert!(
             Instant::now() < deadline,

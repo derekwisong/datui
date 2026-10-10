@@ -2139,9 +2139,11 @@ fn the_bar_says_loading_only_once_a_fetch_takes_a_while() {
     let (mut p, _dir) = numbered_pump(200);
     let dataset = table(&p).len_generation();
     let columns = crate::InflightCollect::columns_of(table(&p));
+    // Begun a minute from now, so a runner slow to draw the frame below cannot make
+    // the fetch look long already.
     let _read = p.app.job_for_tests(
         crate::Job::Rows(crate::InflightCollect {
-            began: std::time::Instant::now(),
+            began: std::time::Instant::now() + Duration::from_secs(60),
             files: None,
             dataset,
             columns,
@@ -2157,7 +2159,7 @@ fn the_bar_says_loading_only_once_a_fetch_takes_a_while() {
         .jobs
         .current_mut(|job| matches!(job, crate::Job::Rows(_)))
     {
-        inflight.began -= Duration::from_secs(1);
+        inflight.began = std::time::Instant::now() - Duration::from_secs(1);
     }
     assert!(rendered(&mut p.app).contains("Loading buffer"));
 }
@@ -3466,8 +3468,9 @@ fn mouse_actions_while_busy_obey_the_key_rules() {
 }
 
 /// With the user idle, the loop draws a background count's spinner at the idle cadence,
-/// not the waited-on one: frames the loop drew in one second. Only a ceiling holds on a
-/// slow machine, whose late wakeups draw fewer frames, never more;
+/// not the waited-on one: frames the loop drew in about a second. Only a ceiling holds
+/// on a slow machine, whose late wakeups draw fewer frames, never more; it is taken
+/// over the time the loop really ran, since the exit can come late too.
 /// `a_spinner_nobody_waits_on_turns_slower` pins both rates.
 #[test]
 fn a_background_count_redraws_at_the_idle_cadence() {
@@ -3482,6 +3485,7 @@ fn a_background_count_redraws_at_the_idle_cadence() {
         let _ = tx.send(AppEvent::Exit);
     });
     let mut drawn = 0;
+    let began = std::time::Instant::now();
     assert_eq!(
         p.run(|_| {
             drawn += 1;
@@ -3490,8 +3494,15 @@ fn a_background_count_redraws_at_the_idle_cadence() {
         .unwrap(),
         Ended::Quit
     );
-    // The first frame, ten turns, and one for the exit; never the waited-on thirty.
-    assert!((1..=13).contains(&drawn), "{drawn} frames idle");
+    // The sleep above is the subject, but a loaded runner wakes it late: the loop then
+    // runs longer and turns more. Ten turns a second, one more for a partial tenth, the
+    // first frame and one for the exit; never the waited-on thirty.
+    let tenths = began.elapsed().as_millis() / 100;
+    let most = tenths + 3;
+    assert!(
+        (1..=most).contains(&drawn),
+        "{drawn} frames idle in {tenths} tenths of a second"
+    );
 }
 
 /// A spinner for work nobody waits on, a count say, turns about ten times a second:

@@ -7,9 +7,18 @@ use clap::Parser;
 fn a_silent_terminal_does_not_hold_the_first_frame() {
     let (tx, rx) = std::sync::mpsc::channel::<AppEvent>();
     let mut backlog = Vec::new();
-    let started = std::time::Instant::now();
-    assert_eq!(take_answer(&rx, None, &mut backlog), None);
-    assert!(started.elapsed() < Duration::from_millis(20));
+    // Not waiting takes microseconds, and a wait for the answer at least the grace.
+    // The fastest of a few tries is taken: a loaded runner can deschedule one of them,
+    // but a wait would be in every one.
+    let fastest = (0..5)
+        .map(|_| {
+            let started = std::time::Instant::now();
+            assert_eq!(take_answer(&rx, None, &mut backlog), None);
+            started.elapsed()
+        })
+        .min()
+        .unwrap();
+    assert!(fastest < Duration::from_millis(20), "{fastest:?}");
     assert!(backlog.is_empty());
     drop(tx);
 }

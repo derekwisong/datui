@@ -5386,7 +5386,9 @@ fn an_unasked_download_past_its_limit_asks_once() {
 fn an_abandoned_http_download_stops_while_the_server_is_silent() {
     use std::time::{Duration, Instant};
     common::isolate_cache();
-    let quiet = Duration::from_secs(20);
+    // The silence is the subject: long beside the stop, so a loaded runner reaching
+    // the first KiB late still stops well inside it.
+    let quiet = Duration::from_secs(60);
     let mut body = b"id,name\n".to_vec();
     body.resize(64 * 1024, b'x');
     let (url, _) = serve_over_http_stalling("stalled.csv", body, Some((1024, quiet)));
@@ -5407,7 +5409,7 @@ fn an_abandoned_http_download_stops_while_the_server_is_silent() {
 
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + common::HANG_GUARD;
     let mut next = Some(AppEvent::Open(vec![PathBuf::from(&url)], options));
     while files() != [1024] {
         assert!(Instant::now() < deadline, "the first KiB never landed");
@@ -5435,7 +5437,7 @@ fn an_abandoned_http_download_stops_while_the_server_is_silent() {
     // The stopped worker reports, for a load nobody is waiting on.
     loop {
         let event = rx
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(common::HANG_GUARD)
             .expect("the stopped download reports");
         let failed = matches!(event, AppEvent::JobEnded(t) if t.kind() == JobKind::Load);
         let mut next = Some(event);
@@ -5462,7 +5464,8 @@ fn quitting_mid_http_download_removes_the_partial_file() {
     let (url, _) = serve_over_http_stalling(
         "quit_mid_download.csv",
         body,
-        Some((1024, Duration::from_secs(20))),
+        // Silent long beside the quit, which must not wait for it.
+        Some((1024, Duration::from_secs(60))),
     );
     let dir = tempfile::tempdir().unwrap();
     let options = OpenOptions {
@@ -5479,7 +5482,7 @@ fn quitting_mid_http_download_removes_the_partial_file() {
     };
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + common::HANG_GUARD;
     let mut next = Some(AppEvent::Open(vec![PathBuf::from(&url)], options));
     while files() != [1024] {
         assert!(Instant::now() < deadline, "the first KiB never landed");

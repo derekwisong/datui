@@ -95,7 +95,7 @@ only on a file with several tables; on any other file, <kbd>T</kbd> says
 | Under a sort or a filter | The row's own number, which moves with it |
 | A query, pivot or group's rows | Their place in the result, which stands for no row of the source |
 
-`display.row_numbers` turns them on or off for every format (`true`, `false`),
+`display.row_numbers` turns them on or off for every table (`true`, `false`),
 or leaves them to the format (`"auto"`). `display.row_numbers_start` sets the
 first row's number. A sorted or filtered view of a scanned file numbers its
 rows only while <kbd>#</kbd> is on, because numbering the rows stops the filter

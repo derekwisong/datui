@@ -168,7 +168,7 @@ focus, so you cannot type a tab there; pick TSV instead.
 
 The **Format** row lists the formats, with the chosen one highlighted. The
 rows under it hold that format's options, and they change as <kbd>←</kbd>
-<kbd>→</kbd> change the format. When the row is too narrow for every format,
+<kbd>→</kbd> change the format. When the row is too narrow to list them all,
 it shows only the chosen one, `‹ TSV ›`. A click on a format
 chooses it.
 

@@ -19,7 +19,7 @@ that explains it.
 
 | Problem | What to do |
 |---|---|
-| datui asks before reading a file into memory | JSON, Avro, ORC, Excel and some others are read whole, and datui asks first when that would pass `read.memory_warning` (1 GiB). Parquet, CSV and Arrow IPC are read lazily. [How each format is read](../formats/index.md#how-each-format-is-read) covers every format |
+| datui asks before reading a file into memory | JSON, Avro, ORC, Excel and some others are read whole, and datui asks first when that would pass `read.memory_warning` (1 GiB). Parquet, CSV and Arrow IPC are read lazily. [How each format is read](../formats/index.md#how-each-format-is-read) covers each one |
 | datui asks before downloading | A web file, or a bucket object in a format that cannot be read in place, is copied to the temp directory first: [How each format is read](../formats/index.md#how-each-format-is-read) |
 | A sort, query or analysis is slow on a large file | It reads every row the operation needs, not just the screen: [Large datasets](../user-guide/large-datasets.md) |
 | A CSV's first row is data but is read as the header, or the other way around | `--no-header`, or <kbd>H</kbd> on the Info panel's Schema tab: [Delimited text](../formats/delimited-text.md) |

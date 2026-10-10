@@ -722,7 +722,7 @@ When two specs match the same way, the first on the search path reads the file. 
 .PP
 On a file of several record types, \fBT\fR lists the whole file, then each type with its column count. Picking one opens it (\fBday.itch/add\fR) and clears the query, filters and sort.
 .PP
-\fBb\fR on the table picks another spec and reads the file again with it, clearing the query, filters and sort. The list starts with the spec the file was read with, then the others that matched it the same way, then every other binary spec on the search path with the same \fBlayout\fR: records in one file, or a directory of column files. The Notes tab of \fBi\fR says which spec read the file and why (\fBmatched by magic L2FD \(pc version 3\fR), the header's values, and any bytes left out.
+\fBb\fR on the table picks another spec and reads the file again with it, clearing the query, filters and sort. The list starts with the spec the file was read with, then the others that matched it the same way, then every other format spec on the search path with the same \fBlayout\fR: records in one file, or a directory of column files. The Notes tab of \fBi\fR says which spec read the file and why (\fBmatched by magic L2FD \(pc version 3\fR), the header's values, and any bytes left out.
 .PP
 The home screen and its search identify a file the same way. A file whose name says nothing (no extension, or \fB.bin\fR) is matched by magic and \fBwhere\fR against its first 4 KiB, which the listing reads anyway, for up to 256 files per directory. Nothing more is read. Its row shows the spec's name, and its details show:
 .TP

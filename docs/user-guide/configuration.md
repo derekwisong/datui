@@ -254,7 +254,7 @@ On a light terminal seen for the first time, that is one dark frame before the
 light theme.
 
 Under `auto`, datui asks again each time the terminal window regains focus, and
-switches between `theme.dark` and `theme.light` if the color scheme changed.
+switches between `theme.dark` and `theme.light` if the terminal's background changed.
 This needs a terminal that reports focus. In tmux, turn on
 `set -g focus-events on`.
 
@@ -372,7 +372,7 @@ The imported file may set any section, not only `[theme.colors]`.
 ### Omarchy
 
 [Omarchy](https://omarchy.org/) renders per-app theme files from templates when
-you switch themes. datui ships a template for it. These steps need an Omarchy system.
+you switch themes. datui ships one. These steps need an Omarchy system.
 
 1. Install the template from the repository:
 

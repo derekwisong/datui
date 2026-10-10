@@ -173,8 +173,8 @@ the query, filters and sort.
 
 <kbd>b</kbd> on the table picks another spec and reads the file again with it,
 clearing the query, filters and sort. The list starts with the spec the file
-was read with, then the others that matched it the same way, then every other
-binary spec on the search path with the same `layout`: records in one file, or
+was read with, then the others that matched it the same way, then every other format spec
+on the search path with the same `layout`: records in one file, or
 a directory of column files.
 The Notes tab of <kbd>i</kbd> says which spec read the file and why (`matched by
 magic L2FD · version 3`), the header's values, and any bytes left out.

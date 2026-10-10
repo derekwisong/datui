@@ -161,7 +161,7 @@ match = { glob = "*.l2", magic = "L2FD", where = { "header.version" = 3 } }
 
 
 When two specs match the same way, the first on the search path reads the file.
-The bar shows `2 formats match`, and the Notes tab names the others. A file no
+The footer shows `2 formats match`, and the Notes tab names the others. A file no
 spec matches opens as it would without specs. A local file that no reader takes
 either opens in the [hex view](../user-guide/hex-view.md), where <kbd>B</kbd>
 reads it with a spec and <kbd>r</kbd> lines up the bytes in records while you

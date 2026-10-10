@@ -869,7 +869,7 @@ pub const SCREENS: &[Screen] = &[
                     k("a", "All rows", "Count every row, when the counts are of a sample"),
                     k("t", "New rows", "Count again with the rows that arrived")
                     .also(&["Refresh"])
-                        .more("While following a file, count again with the rows that arrived since; the bar says how many"),
+                        .more("While following a file, count again with the rows that arrived since; the footer says how many"),
                 ],
             },
             Group {
@@ -1036,7 +1036,7 @@ pub const SCREENS: &[Screen] = &[
                         .more("Export the chart to PNG, SVG or PDF, with a title, notes and source. Needs the chart's shelves filled first"),
                     k("t", "New rows", "Draw again with the rows that arrived")
                     .also(&["Refresh"])
-                        .more("While following a file, draw again with the rows that arrived since; the bar says how many"),
+                        .more("While following a file, draw again with the rows that arrived since; the footer says how many"),
                 ],
             },
             Group {

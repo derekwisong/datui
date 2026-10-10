@@ -360,7 +360,7 @@ Where a dataset opens.
 | `s` | Sort by count or by value |
 | `c` | Switch a number column between its histogram, binned from the counts, and the list of its values. A number column opens as its histogram; the header says which is shown |
 | `a` | Count every row, when the counts are of a sample |
-| `t` | While following a file, count again with the rows that arrived since; the bar says how many |
+| `t` | While following a file, count again with the rows that arrived since; the footer says how many |
 
 ### Value counts · Output
 
@@ -467,7 +467,7 @@ Where a dataset opens.
 |---|---|
 | `x` | Line and Scatter: the plot takes the keys, and a crosshair reads out x and every series' value under the plot. ← / → (h/l) step to the next point or column, Home/End go to the ends; x, Tab or Esc hand the keys back to the panel. A click on the plot puts the crosshair there |
 | `e` | Export the chart to PNG, SVG or PDF, with a title, notes and source. Needs the chart's shelves filled first |
-| `t` | While following a file, draw again with the rows that arrived since; the bar says how many |
+| `t` | While following a file, draw again with the rows that arrived since; the footer says how many |
 
 ### Chart · Crosshair
 

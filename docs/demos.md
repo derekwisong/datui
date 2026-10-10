@@ -40,7 +40,7 @@ Do it yourself: [Connect to cloud storage](user-guide/remote-data.md#examples-on
 | Which species is heaviest? | Palmer penguins | [Quick start](getting-started/quick-start.md) |
 | Which airlines arrive late, and where does AS fly? | NYC flights (2013) | [Query data](user-guide/querying-data.md#run-a-query) |
 | Which matches had the most goals? | Premier League (2020-21) | [Dates and messy text](user-guide/querying-data.md#dates-and-messy-text) |
-| The heaviest chicken dishes | Food nutrition (fast food) | [Sort, filter and arrange columns](user-guide/filtering-sorting.md) |
+| The highest-calorie chicken dishes | Food nutrition (fast food) | [Sort, filter and arrange columns](user-guide/filtering-sorting.md) |
 | Emma, Jennifer and Olivia by year | US baby names (1880-2017) | [Pivot and melt](user-guide/reshaping.md#pivot) |
 | Every chart on the built-in data | Several | [Make a chart](user-guide/charting.md#examples-on-the-built-in-datasets) |
 | One query, two years of weather | NOAA daily weather (GHCN-D) | [Save and apply views](user-guide/views.md) |

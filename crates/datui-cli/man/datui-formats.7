@@ -615,7 +615,7 @@ Reads it with the spec whose \fBmatch\fR it fits, from the search path
 \fBdatui formats\fR
 Lists the specs and dictionaries on the search path
 .PP
-A spec reads fixed-size records, records that carry their length, several message types in one stream, or compressed blocks; a \fBkind = "delimited"\fR spec reads CSV-like text with lines above its header. Specs are data: no scripts or expressions, and every size read from a file is bounded. \fB\-\-format\fR also takes a spec's \fBhttp(s)://\fR, \fBs3://\fR, \fBgs://\fR or \fBaz://\fR URL, fetched once as the open starts; a spec file is at most 1 MiB.
+A spec reads fixed-size records, records that carry their length, several message types in one stream, or compressed blocks; a \fBkind = "delimited"\fR spec reads CSV-like text with lines above its header. Specs are data, with no scripts or expressions, and every size read from a file is bounded. \fB\-\-format\fR also takes a spec's \fBhttp(s)://\fR, \fBs3://\fR, \fBgs://\fR or \fBaz://\fR URL, which is fetched once when the open starts. A spec file is at most 1 MiB.
 .SS "A spec"
 \fBl2feed.toml\fR above is a whole spec. Its table has the columns \fBts\fR (a datetime), \fBsymbol\fR, \fBside\fR and \fBprice\fR (a decimal with four places, null where the field holds its largest value), one row per record. Format spec reference lists every field type and key.
 .TP
@@ -632,13 +632,13 @@ An \fBhttps://\fR link to the format's own documentation, for the Documentation 
 Which files are this format: \fBglob\fR (a pattern or a list), \fBmagic\fR (a string or a list of bytes) at \fBmagic_offset\fR (default 0), \fBwhere\fR (header values)
 .TP
 \fBendian\fR
-\fBle\fR (default), \fBbe\fR, or \fBauto\fR: big-endian when the magic (at least two bytes) reads reversed. For fields without their own suffix
+Byte order of fields without their own suffix: \fBle\fR (default), \fBbe\fR, or \fBauto\fR, which is big-endian when the magic (at least two bytes) reads reversed
 .TP
 \fBlayout\fR
 \fBrows\fR (default): one file of records. \fBcolumns\fR: a directory with one file per field
 .TP
 \fB[header] fields\fR
-Fields read once from the start of the file. Later parts refer to them
+Fields read once from the start of the file. Later parts of the spec refer to them
 .TP
 \fB[header] size\fR
 The header's size when it is more than its fields; a number or a header field
@@ -692,7 +692,7 @@ More directories. Lists add up across imported config files
 .PP
 \fBdatui formats\fR lists each spec, what it matches (\fBmagic L2FD \(pc version 3 \(pc glob *.l2\fR, or \fBno match\fR), the file it came from, any copy of the same name it overrides, and the files that could not be read, with the line and column of each problem. The same places hold FIX log dictionaries: QuickFIX XML files and TOML files of \fBkind = "fix"\fR, listed after the specs.
 .PP
-\fBdatui formats check SPEC [FILE]\fR checks one spec, by name or file. With a file, it prints the warnings and the first ten rows. Given a QuickFIX dictionary, it checks that, and with a FIX log says how many messages it matches and which of its tags they hold. It exits non-zero on an error, so a repository of specs can run it in CI.
+\fBdatui formats check SPEC [FILE]\fR checks one spec, by name or file. With a file, it prints the warnings and the first ten rows. Given a QuickFIX dictionary, it checks the dictionary, and with a FIX log it also says how many messages the dictionary matches and which of its tags they hold. It exits non-zero on an error, so a repository of specs can run it in CI.
 .SS "Which spec reads a file"
 .TP
 \fB\-\-format FILE\fR: a path (it has a \fB/\fR or ends \fB.toml\fR), or an \fBhttp(s)://\fR, \fBs3://\fR, \fBgs://\fR or \fBaz://\fR URL fetched once as the open starts
@@ -702,7 +702,7 @@ That spec, whatever the file is called
 The spec of that name
 .TP
 A name datui already reads (\fB.csv\fR, \fB.parquet\fR)
-Read as it is, as before, unless a delimited spec matches a \fB.csv\fR, \fB.tsv\fR or \fB.psv\fR
+Read by its own reader, unless a delimited spec matches a \fB.csv\fR, \fB.tsv\fR or \fB.psv\fR
 .TP
 A \fBglob\fR matches
 That spec
@@ -718,13 +718,13 @@ match = { glob = "*.l2", magic = "L2FD", where = { "header.version" = 3 } }
 .EE
 .RE
 .PP
-When two specs match the same way, the first on the search path reads the file. The bar shows \fB2 formats match\fR, and the Notes tab names the others. A file no spec matches opens as it does without specs; a local file no reader takes either opens in the hex view, where \fBB\fR reads it with a spec and \fBr\fR lines the bytes up in records while you write one.
+When two specs match the same way, the first on the search path reads the file. The footer shows \fB2 formats match\fR, and the Notes tab names the others. A file no spec matches opens as it would without specs. A local file that no reader takes either opens in the hex view, where \fBB\fR reads it with a spec and \fBr\fR lines up the bytes in records while you write one.
 .PP
-\fBT\fR on a file of several record types lists the whole file, then each type with its column count, and opens the one picked (\fBday.itch/add\fR), clearing the query, filters and sort.
+On a file of several record types, \fBT\fR lists the whole file, then each type with its column count. Picking one opens it (\fBday.itch/add\fR) and clears the query, filters and sort.
 .PP
-\fBb\fR on the table picks another spec and reads the file again with it, clearing the query, filters and sort. The list starts with the spec the file was read with, then the others that matched it the same way, then every other spec on the search path for a file (or for a directory of column files). The Notes tab of \fBi\fR says which spec read the file and why (\fBmatched by magic L2FD \(pc version 3\fR), the header's values, and any bytes left out.
+\fBb\fR on the table picks another spec and reads the file again with it, clearing the query, filters and sort. The list starts with the spec the file was read with, then the others that matched it the same way, then every other binary spec on the search path with the same \fBlayout\fR: records in one file, or a directory of column files. The Notes tab of \fBi\fR says which spec read the file and why (\fBmatched by magic L2FD \(pc version 3\fR), the header's values, and any bytes left out.
 .PP
-The home screen and its search name a file the same way. A file whose name says nothing (no extension, or \fB.bin\fR) is matched by magic and \fBwhere\fR against the first 4 KiB the listing reads from it anyway, up to 256 files a directory; nothing more is read. Its row reads the spec's name, and its details:
+The home screen and its search identify a file the same way. A file whose name says nothing (no extension, or \fB.bin\fR) is matched by magic and \fBwhere\fR against its first 4 KiB, which the listing reads anyway, for up to 256 files per directory. Nothing more is read. Its row shows the spec's name, and its details show:
 .TP
 \fBkind\fR
 \fBacme.l2feed file\fR
@@ -741,7 +741,7 @@ What named the file, a chip per condition: \fB[magic L2FD] [version 3]\fR when t
 \fBrecords\fR
 For a spec with variants: \fB2 types (spec)\fR and each record type's column count (\fBadd 5 \(pc cancel 3\fR). \(-> lists the record types
 .PP
-A chip with several values (\fB[glob *.l2 *.lvl2]\fR) takes any of them. The listing names a file by its glob without reading it, so a glob-named row shows no \fBwhere\fR values; the open still checks them. Chips are drawn without brackets where the header tint shows. Text values are quoted where it does not (\fB[kind "A"]\fR), and a magic that is not text is hex (\fB7f 45 4c 46\fR).
+A chip with several values (\fB[glob *.l2 *.lvl2]\fR) matches any of them. The listing matches a file by its glob without reading it, so a row matched by glob shows no \fBwhere\fR values; opening the file still checks them. Chips are drawn without brackets where the header tint shows; where it does not, text values are quoted (\fB[kind "A"]\fR). A magic that is not text is shown in hex (\fB7f 45 4c 46\fR).
 .SS "Delimited text"
 Loggers and instruments write a metadata line and a units line above a padded header. A spec of \fBkind = "delimited"\fR holds the CSV options for such a family of files, so they open with no flags: from the command line, from the home screen, compressed, or as a directory.
 .PP
@@ -806,7 +806,7 @@ Lines that start with it are skipped wherever they are
 What joins the pieces of a name from several lines
 .TP
 \fBmetadata_line\fR
-A line of \fBkey="value"\fR or \fBkey=value\fR pairs, separated by commas, for the Info panel. It must not be data: above the last header line, within \fBskip_lines\fR, or a comment line
+A line of \fBkey="value"\fR or \fBkey=value\fR pairs, separated by commas, for the Info panel. It must not be a data line: it is above the last header line, within \fBskip_lines\fR, or a comment line
 .TP
 \fBnull_values\fR
 A value, or a list, read as null: \fB"NA"\fR, or \fB"COL=\-999"\fR for one column
@@ -817,11 +817,11 @@ Lines to pass over before the header
 \fB[columns]\fR
 Column types and derived columns, below, and what columns mean: \fBdescription\fR and \fBunit\fR
 .PP
-Lines count from 1 at the top of the file. Each option the spec sets replaces the config's; a flag typed on the command line (\fB\-\-delimiter\fR, \fB\-\-comment\fR, \fB\-\-skip\-initial\-space\fR, \fB\-\-header\-rows\fR, \fB\-\-skip\-lines\fR) wins over the spec. The options the spec does not set keep theirs. \fBdatui \-\-delimiter ';' formats check SPEC FILE\fR reads the file as an open with those flags would, and names the flags that override the spec. The header lines and the metadata line are the only lines read apart from the CSV reader.
+Lines count from 1 at the top of the file. Each option the spec sets replaces the config's, and a flag typed on the command line (\fB\-\-delimiter\fR, \fB\-\-comment\fR, \fB\-\-skip\-initial\-space\fR, \fB\-\-header\-rows\fR, \fB\-\-skip\-lines\fR) wins over the spec. Options the spec does not set keep their config values. \fBdatui \-\-delimiter ';' formats check SPEC FILE\fR reads the file as an open with those flags would, and names the flags that override the spec. Apart from the CSV reader, datui reads only the header lines and the metadata line.
 .PP
 \fBUnits\fR
 .PP
-A unit sits beside its column's type on the table's type row (\fBf64 \(pc deg F\fR), in a \fBUnit\fR column on the Info panel's Schema tab, and in chart axis titles (\fBT1 Temp (deg F)\fR). A filter, sort or drill keeps them, and so does a query, pivot or melt for each column it carries unchanged, renamed or not. A column a query computes has no unit, even under the name of one that had.
+A unit sits beside its column's type on the table's type row (\fBf64 \(pc deg F\fR), in a \fBUnit\fR column on the Info panel's Schema tab, and in chart axis titles (\fBT1 Temp (deg F)\fR). Units survive a filter, sort or drill-down. A query, pivot or melt keeps the unit of each column it carries over unchanged, even when it renames the column. A column a query computes has no unit, even if it takes the name of a column that had one.
 .PP
 \fBMetadata\fR
 .PP
@@ -889,7 +889,7 @@ With \fBformat\fR, a strftime format; without, the format is inferred
 \fBduration\fR
 \fB1d\fR, \fB2h30m\fR, \fB\-1w2d\fR
 .PP
-Use \fBi64\fR and \fBf64\fR unless a narrower type is wanted for an export or to hold values to a range. A value is trimmed first, and one that does not fit the type, or is out of an integer type's range, is null. The first time the Info panel opens, one pass counts them, and the Notes tab says how many per column: \fBRPM: 2 values out of range for u8, read as null\fR. A typed column the file does not have is a note, not an error, since the files of a family differ. A typed column is the same type in every file read together, and \fBread.infer_types\fR leaves it alone. \fBtype\fR beside \fBfrom\fR or \fBas\fR is refused: a derived column takes its type from \fBas\fR. The same types, and the derived columns, are on hand in the table: Column types.
+Use \fBi64\fR and \fBf64\fR unless you want a narrower type for an export or to limit values to a range. A value is trimmed first, and one that does not fit the type, or is out of an integer type's range, is null. The first time the Info panel opens, one pass counts them, and the Notes tab says how many per column: \fBRPM: 2 values out of range for u8, read as null\fR. A typed column the file does not have is a note, not an error, since the files of a family differ. A typed column is the same type in every file read together, and \fBread.infer_types\fR leaves it alone. \fBtype\fR beside \fBfrom\fR or \fBas\fR is refused: a derived column takes its type from \fBas\fR. The same types, and the derived columns, are also available from the table: Column types.
 .PP
 \fBDerived columns\fR
 .TP
@@ -910,11 +910,11 @@ Column: A time of day
 .PP
 A column of the file takes \fBdescription\fR and \fBunit\fR alone (\fBbus1volts = { description = "Main bus voltage" }\fR), and a derived one takes them beside \fBfrom\fR and \fBas\fR. They show in the Documentation view. A \fBunit\fR there is documentation only: the type row shows the units line's.
 .PP
-\fBformat = "%Y\-%m\-%d %H:%M:%S"\fR gives the strftime format of the text, a date and a time joined with a space; without it the format is inferred. A value that does not parse is null. The column goes before the first column it is made from, which stays; one named after a column it is made from replaces that column, and its unit. There is no expression language: anything more is a query.
+\fBformat = "%Y\-%m\-%d %H:%M:%S"\fR gives the strftime format of the text, a date and a time joined with a space; without it the format is inferred. A value that does not parse is null. The derived column goes before the first column it is made from, which is kept. A derived column named after one of its source columns replaces that column and its unit. There is no expression language: anything more is a query.
 .PP
 \fBMatching\fR
 .PP
-A delimited spec matches a file whose name says no format datui reads, or says \fB.csv\fR, \fB.tsv\fR or \fB.psv\fR, compressed or not. A directory, or a glob such as \fB'logs/log_*.csv'\fR, is read through the spec its first file with text matches. \fBH\fR on the Info panel's Schema tab reads the file without a header, and without its derived columns.
+A delimited spec matches a file whose name says no format datui reads, or says \fB.csv\fR, \fB.tsv\fR or \fB.psv\fR, compressed or not. A directory, or a glob such as \fB'logs/log_*.csv'\fR, is read with the spec that its first text file matches. \fBH\fR on the Info panel's Schema tab reads the file without a header, and without its derived columns.
 .PP
 \fBSeveral files\fR
 .PP
@@ -935,11 +935,11 @@ The column is text
 Files give a column different units
 The first file's unit; a note lists the units seen
 .PP
-The Notes tab lists the columns not every file has. Columns keep the order the files first have them in.
+The Notes tab lists the columns not every file has. Columns keep the order in which they first appear across the files.
 .SS "Garmin TXi logs"
 Garmin and TXi are trademarks of Garmin Ltd. or its subsidiaries; datui is not affiliated with or endorsed by Garmin.
 .PP
-The repository's \fBcontrib/\:formats/\:garmin\-txi.\:toml\fR reads the data logs a Garmin TXi writes: the airframe line as metadata, the units line, \fBtime\fR in UTC, and each column typed. Copy it into \fB~/.config/datui/formats/\fR to open the logs, or a directory of them, with no flags. A twin fills the \fBE2\fR columns and a single leaves them blank. A log written before a GPS fix has blank date and GPS cells.
+The repository's \fBcontrib/\:formats/\:garmin\-txi.\:toml\fR reads the data logs a Garmin TXi writes: the airframe line as metadata, the units line, \fBtime\fR in UTC, and each column typed. Copy it into \fB~/.config/datui/formats/\fR to open the logs, or a directory of them, with no flags. A twin-engine aircraft fills the \fBE2\fR columns; a single leaves them blank. A log written before a GPS fix has blank date and GPS cells.
 .PP
 \fB\fBgarmin\-log.csv\fR\fR
 .PP
@@ -1240,7 +1240,7 @@ A field name two variants share is one column, so it must be the same field in b
 .PP
 \fBdatui \-\-table add day.ord\fR opens one variant as its own table: only its records and its columns.
 .PP
-On the home screen, each variant of a file a spec reads is a record type: its details read \fBrecords  2 types (spec)\fR and each type's column count (\fBadd 5 \(pc exec 4\fR). Enter opens every record; \(-> lists the record types, one row each at \fBday.ord/add\fR, and Enter on one opens it alone. That path opens the record type on the command line too, and is what recents record.
+On the home screen, each variant of a file a spec reads is a record type: its details read \fBrecords  2 types (spec)\fR and each type's column count (\fBadd 5 \(pc exec 4\fR). Enter opens every record; \(-> lists the record types, one row each at \fBday.ord/add\fR, and Enter on one opens it alone. That path also opens the record type from the command line, and it is what the recents list keeps.
 .SS "Documentation"
 A spec says what its files mean with the words a catalog uses. \fBCtrl\fR+\fBE\fR on a file the spec reads, and the Info panel's Documentation tab once it is open, show it in the Documentation view. None of it changes how a file is read.
 .PP
@@ -1293,7 +1293,7 @@ Where: A record field
 .br
 Says: Its codes and labels are the column's value legend
 .PP
-A flattened field's note goes to each of its columns, \fBbid_0\fR, \fBbid_1\fR and on. Named \fB[header]\fR and \fB[footer]\fR fields with a \fBdescription\fR or \fBunit\fR are listed in sections of their own.
+A flattened field's description and unit go to each of its columns, \fBbid_0\fR, \fBbid_1\fR and on. Named \fB[header]\fR and \fB[footer]\fR fields with a \fBdescription\fR or \fBunit\fR are listed in sections of their own.
 .PP
 A delimited spec takes \fBdescription\fR and \fBunit\fR in \fB[columns]\fR, for a column of the file or a derived one: \fBtemp = { description = "Air temperature", unit = "deg F" }\fR. A column's declared \fBtype\fR shows beside its unit: \fBLatitude  f64 \(pc deg  GPS latitude\fR.
 .PP
@@ -1397,7 +1397,7 @@ fields = [{ name = "price", type = "f8" }, { name = "size", type = "s8" }]
 .EE
 .RE
 .PP
-With it, \fBdatui \-\-format kdb.trades db/trades/\fR reads \fBdb/trades/price\fR and \fBdb/trades/size\fR as two columns of one table, as kdb+ splays a table. A \fB[header]\fR describes the start of each file. A glob in a columns spec matches the directory.
+With this spec, \fBdatui \-\-format kdb.trades db/trades/\fR reads \fBdb/trades/price\fR and \fBdb/trades/size\fR as two columns of one table, as kdb+ splays a table. A \fB[header]\fR describes the start of each file. A glob in a columns spec matches the directory.
 .PP
 When the header lists where each column starts in one file, every field gives \fBoffset\fR and the spec reads that one file:
 .PP

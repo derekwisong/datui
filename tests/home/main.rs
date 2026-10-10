@@ -3776,7 +3776,9 @@ fn test_a_parquet_footer_yields_what_the_file_will_weigh_open() {
     // The single most useful number the footer carries, and the one nothing else on
     // screen implies: compressed bytes on disk say nothing about bytes in memory.
     common::ensure_sample_data();
-    let path = std::path::Path::new("tests/sample-data/charting_demo.parquet");
+    // Absolute: other tests here move the working directory.
+    let path = &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/sample-data/charting_demo.parquet");
     let mut entry = datui::home::discover::Entry::for_test(path, "charting_demo.parquet");
     entry.size = std::fs::metadata(path).ok().map(|m| m.len());
     datui::home::discover::enrich(&mut entry);

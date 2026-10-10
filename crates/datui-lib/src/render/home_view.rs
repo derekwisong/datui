@@ -399,11 +399,10 @@ fn render_prompt(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderCon
         (g.prompt, home.filter.as_str(), "narrow and search")
     };
 
+    // The box always has the typing keys, so it is drawn focused, in the accent.
     let mut spans = vec![Span::styled(
         glyph,
-        Style::default()
-            .fg(ctx.keybind_hints)
-            .add_modifier(Modifier::BOLD),
+        Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD),
     )];
     // A filter kept from before is shown selected: typing replaces it.
     let value_style = if !home.path_input_active && home.filter_selected {
@@ -412,15 +411,25 @@ fn render_prompt(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderCon
         Style::default().fg(ctx.text_primary)
     };
     spans.push(Span::styled(value, value_style));
-    spans.push(Span::styled(
-        g.cursor,
-        Style::default().fg(ctx.keybind_hints),
-    ));
-    if value.is_empty() {
-        spans.push(Span::styled(
-            format!("  {hint}"),
-            Style::default().fg(ctx.dimmed),
-        ));
+    spans.push(Span::styled(g.cursor, Style::default().fg(ctx.accent)));
+    // No row picked yet: no row is marked, so the box names the one Enter takes; the
+    // footer names what Enter does there.
+    let resting = match home.cursor_row() {
+        Some(crate::home::Row::Entry { entry, .. } | crate::home::Row::Door { entry, .. })
+            if home.resting && !home.path_input_active =>
+        {
+            Some(entry.name.as_str())
+        }
+        _ => None,
+    };
+    let note = match (value.is_empty(), resting) {
+        (true, Some(name)) => Some(format!("  {hint} · Enter: {name}")),
+        (true, None) => Some(format!("  {hint}")),
+        (false, Some(name)) => Some(format!("  Enter: {name}")),
+        (false, None) => None,
+    };
+    if let Some(note) = note {
+        spans.push(Span::styled(note, Style::default().fg(ctx.dimmed)));
     }
     if let Some(status) = &home.status {
         // Keep the tail ("\"<long path>\": <reason>"): the reason matters; the row shows the
@@ -719,13 +728,6 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                 show_meta,
                 ctx,
             )),
-        }
-        // No row picked yet: the one Enter takes is tinted, without the rail or the accent.
-        if idx == app.home.selected
-            && app.home.resting
-            && let Some(line) = lines.pop()
-        {
-            lines.push(line.patch_style(ctx.resting_style()));
         }
     }
 

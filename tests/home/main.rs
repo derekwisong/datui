@@ -10277,9 +10277,10 @@ mod at_rest {
         assert!(!app.home.resting, "and the start is not made twice");
     }
 
-    /// At rest the row Enter takes is tinted, without the rail.
+    /// At rest no row is marked: the search box, which has the keys, names the row
+    /// Enter takes.
     #[test]
-    fn the_resting_row_is_tinted_without_the_rail() {
+    fn at_rest_the_box_names_the_row_enter_takes() {
         use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
         let (_tmp, mut app, _rx) = opened();
         let name = match app.home.cursor_row() {
@@ -10289,22 +10290,38 @@ mod at_rest {
         let area = Rect::new(0, 0, 160, 30);
         let mut buf = Buffer::empty(area);
         Widget::render(&mut app, area, &mut buf);
-        let y = (0..area.height)
-            .find(|&y| {
-                let line: String = (0..area.width).map(|x| buf[(x, y)].symbol()).collect();
-                line.contains(&name)
-            })
-            .expect("the row is drawn");
+        let lines: Vec<String> = (0..area.height)
+            .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol()).collect())
+            .collect();
+        assert!(
+            lines.iter().any(|l| l.contains(&format!("Enter: {name}"))),
+            "the box names the row: {lines:#?}"
+        );
+        let y = lines
+            .iter()
+            .position(|l| l.contains(&name) && !l.contains("Enter:"))
+            .expect("the row is drawn") as u16;
         let rail = datui::glyphs::get().rail;
         assert!((0..3).all(|x| buf[(x, y)].symbol() != rail), "no rail");
-        // The theme's tint, or dimmed where the theme has none (this test's).
         assert!(
-            (0..area.width).any(|x| {
+            (0..area.width).all(|x| {
                 let cell = &buf[(x, y)];
-                cell.bg != ratatui::style::Color::Reset
-                    || cell.modifier.contains(ratatui::style::Modifier::DIM)
+                cell.bg == ratatui::style::Color::Reset
+                    && !cell.modifier.contains(ratatui::style::Modifier::DIM)
+                    && !cell.modifier.contains(ratatui::style::Modifier::REVERSED)
             }),
-            "tinted"
+            "no row is marked"
+        );
+        press(&mut app, KeyCode::Down);
+        let mut buf = Buffer::empty(area);
+        Widget::render(&mut app, area, &mut buf);
+        let text: String = (0..area.height)
+            .flat_map(|y| (0..area.width).map(move |x| (x, y)))
+            .map(|(x, y)| buf[(x, y)].symbol().to_string())
+            .collect();
+        assert!(
+            !text.contains("Enter: "),
+            "a picked row is marked by the rail instead"
         );
     }
 }

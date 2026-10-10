@@ -625,12 +625,15 @@ impl App {
         let settle = match self.chart.asked.take() {
             Some((asked, until)) if asked == request => until,
             Some((asked, _)) if request.steps_aggregate_from(&asked) => {
+                // The Wake must come no sooner than the settle ends, or the wait is never
+                // seen to end: a sleep begun before the deadline was taken could.
+                let until = std::time::Instant::now() + CHART_AGGREGATE_SETTLE;
                 let tx = self.events.clone();
                 std::thread::spawn(move || {
-                    std::thread::sleep(CHART_AGGREGATE_SETTLE);
+                    std::thread::sleep(until.saturating_duration_since(std::time::Instant::now()));
                     let _ = tx.send(AppEvent::Wake);
                 });
-                Some(std::time::Instant::now() + CHART_AGGREGATE_SETTLE)
+                Some(until)
             }
             _ => None,
         };

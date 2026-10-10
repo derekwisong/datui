@@ -1,18 +1,18 @@
 # Data quality metrics
 
 What each Data Quality finding, count and measure means, and what an exported
-report holds. [Check data quality](../user-guide/data-quality.md) is the guide;
-the sample every run reads is in [Analysis](../user-guide/analysis-features.md#sampling),
-and its keys in [Keyboard shortcuts](keyboard-shortcuts.md#analysis-data-quality).
+report holds. For a walkthrough, see [Check data quality](../user-guide/data-quality.md).
+The sample every run reads is described in [Analysis](../user-guide/analysis-features.md#sampling),
+and the keys in [Keyboard shortcuts](keyboard-shortcuts.md#analysis-data-quality).
 
 ## Findings
 
-A problem is above every note; a column with neither is clean.
+Problems are listed above notes. A column with neither is clean.
 
 | Finding | Tier | Means |
 |---|---|---|
 | NaN or infinite | Problem | Float values that are NaN or ±infinity; one NaN makes a sum or mean NaN |
-| Empty text / Blank text | Problem | Text that is `""` or only whitespace: looks filled in, carries nothing |
+| Empty text / Blank text | Problem | Text that is `""` or only whitespace: it looks filled in but carries nothing |
 | Mixed spellings | Problem | Values equal after trimming and lowercasing, such as `"West"` and `"west "` |
 | Duplicate rows | Problem | Rows identical in every column |
 | Always missing | Problem | A column with no value in any row checked |
@@ -22,7 +22,7 @@ A problem is above every note; a column with neither is clean.
 | Missing values | Note | Nulls, as one finding with each column's rate inside it, highest first |
 | Numbers as text / Dates as text | Note | At least 95% of a text column parses as numbers or ISO dates |
 | Codes as text | Note | Whole numbers with leading zeros or a fixed width: a code, fine as text |
-| Nearly unique | Note | A whole-number or text column at least 95% unique whose values still repeat; a duplicate if it is a key |
+| Nearly unique | Note | A whole-number or text column at least 95% unique whose values still repeat; if it is meant to be a key, the repeats are duplicates |
 | Clipping | Problem | Audio: runs of 3 or more samples at full scale, the waveform cut flat at the limit |
 | Runs of zeros | Note | Audio: runs of exact zeros 10 ms or longer (16 samples at least): dropouts, or digital silence at the ends |
 | DC offset | Note | Audio: a channel whose mean is 1% of full scale or more from zero |
@@ -37,10 +37,10 @@ A problem is above every note; a column with neither is clean.
 
 ### What a finding counts
 
-<kbd>Enter</kbd> on a finding opens these rows. A finding over several columns
-counts `Rows with any of them`: the largest column's count when that is all of
-them, otherwise a range from it to their sum. **Missing together** columns are
-null on the same rows, so their count is the rows.
+<kbd>Enter</kbd> on a finding opens the rows below. A finding over several
+columns counts `Rows with any of them`: the largest column's count when that
+covers them all, otherwise a range from that count to their sum. **Missing
+together** columns are null on the same rows, so their count is exact.
 
 | Finding | Rows it opens | Count shown | Examples in the detail |
 |---|---|---|---|
@@ -55,11 +55,11 @@ null on the same rows, so their count is the rows.
 
 ## Coverage
 
-Under the verdict, every report says how far it reaches:
+Under the verdict, every report says what it covered:
 
 | Coverage line | Says |
 |---|---|
-| Checks | The ten checks, and Column intent when any is declared, by what they read: `exact` (every row in scope), `sampled` (the sample), `metadata` (file footers); then `skipped`, with nothing in the data to look at (no float column, one file), and `unavailable`, which apply but this run could not answer (values not read, no rows in the scope, or a sample where the answer needs every row). A scope with no rows calls no column clean: its verdict is `No rows to check` |
+| Checks | The ten checks, plus Column intent when any is declared, grouped by what they read: `exact` (every row in scope), `sampled` (the sample) or `metadata` (file footers). Then `skipped`: checks with nothing in the data to look at (no float column, one file). Then `unavailable`: checks that apply but this run could not answer (values not read, no rows in the scope, or a sample where the answer needs every row). A scope with no rows calls no column clean; its verdict is `No rows to check` |
 | Rows | Rows read of the total: `100,000 of 36,839,175 sampled (0.27%)`, `all 1,204 read, exact`, `none: the scope has no rows`, or `none read, file metadata only`; `up to 500 per value` for an Equal per value sample; then the rows the run's reads passed through, summed over every pass, when the reads counted them: `36,839,175 traversed`, `at least …` when some read could not count, `no source read` when the run used rows already read; and `passes read a local copy, fetched once (16.5 MiB)` or `… fetched earlier` when a full scan read one |
 | Limits | Why each unavailable check did not run; segments with fewer than 30 sampled rows (`4 of 31 segments under 30 sampled rows`); segments the scope has rows in and the sample drew none of (`3 segments with rows, none sampled`); `footers of 200 of 5,000 files read` on a dataset too large to read every footer, where the file checks cover only those; `time roles form no interval`; `key repeats among 10,000 sampled rows only` for a declared key on a sample; `intent on code: not in scope` |
 
@@ -82,8 +82,8 @@ Under the verdict, every report says how far it reaches:
 | Type conflicts | Rows held by files that store the column in a type the scan cannot read ÷ rows in the loaded source; read from footers, not values |
 | Clipping, runs of zeros, DC offset | Audio files only, on a full run over the whole source or an untouched view: one more pass reads every sample of the file. A run at full scale is 3 or more samples at the most positive or negative value the valid bits allow, or at ±1.0 for float; a run of zeros is 10 ms or longer and at least 16 samples; the offset is the channel's mean ÷ full scale |
 | Segment null rate | Null cells ÷ (evaluated rows × profiled logical columns) in that segment |
-| Trend bar rate | Σ count ÷ Σ denominator over the bar's segments with sampled rows; rows per segment is Σ rows ÷ segments, a segment the sample missed counting zero sampled rows |
-| 95% interval | Wilson score interval at z = 1.96 on a bar's count of its denominator: centre (p + z²/2n) ÷ (1 + z²/n), half-width z·√(p(1−p)/n + z²/4n²) ÷ (1 + z²/n). It assumes a simple random sample; seeded runs of one file are clustered, so read it as a floor on the uncertainty there |
+| Trend bar rate | Σ count ÷ Σ denominator over the bar's segments with sampled rows; rows per segment is Σ rows ÷ segments, where a segment the sample missed counts as zero sampled rows |
+| 95% interval | Wilson score interval at z = 1.96 on a bar's count of its denominator: center (p + z²/2n) ÷ (1 + z²/n), half-width z·√(p(1−p)/n + z²/4n²) ÷ (1 + z²/n). It assumes a simple random sample; seeded runs of one file are clustered, so read it as a floor on the uncertainty there |
 | Bar change | Against the previous bar, or the baseline's: clear at 1 pp or more and, on a sample, the two-proportion z-test at 4 or more standard errors; a distinct share is shown, not judged, as on Segments |
 | Largest change | Against the compared segment: a row count that halved or doubled, else the biggest percentage-point move in any column's null, empty, blank or NaN rate, named when it reaches 1 pp and, on a sample, when a two-proportion z-test puts it at 4 or more standard errors; on an exact profile with no such move, the first column whose minimum or maximum moved |
 | Lifecycle latency | End role timestamp − start role timestamp per row, on rows with both ends present and read; each end's missing count is of all rows (a row can miss both, so both ends is counted, not derived), text the format does not read is counted apart from missing, and negative values are retained |
@@ -114,8 +114,8 @@ that repeats ten times in a billion rows is unique in every sample of it.
 | Column intent | What columns must hold: the key, and per column required, allowed values, a range, or text read as a number. See [Column intent](#column-intent) |
 | Grain | Whole dataset; by file, when the dataset has several; by each partition column; by hour, day, week or month of any date or time column, or text read as time (hours only where there are times); or in chunks of 100,000 or 1,000,000 rows |
 | Expected | With a time-window grain: none, every window, or weekdays only (hours and days); From and Before, a date or UTC timestamp each, blank for the first and last window found. See [Expected windows and gaps](#expected-windows-and-gaps) |
-| Compare | None, the segment before (partitions and files in the order their names count), or a baseline segment |
-| Values | Read, or metadata only (footers, no values); whether a read is sampled or every row is the sample's method |
+| Compare | None, the segment before (partitions and files in name order, with numbers in names compared as numbers), or a baseline segment |
+| Values | Read, or metadata only (footers, no values). Whether a read is sampled or reads every row is set by the sample's method |
 | Latency over | None, 1 hour, 1 day or 1 week; offered once there is an interval. A breach is `duration > threshold`, strictly |
 | Window by | With a time-window grain and an interval: the grain's column, each interval's start, or each interval's end, which puts a delay across midnight on the day it ended |
 
@@ -124,7 +124,7 @@ that repeats ten times in a billion rows is unique in every sample of it.
 | | |
 |---|---|
 | Valid from to valid to | A validity period: a missing end is **open**, and an end before its start **ends first**. Overlaps and gaps between periods need an entity key and consecutive rows, which a sample does not hold, so they are not counted |
-| Window by | Only with a time-window grain. By their start or end, intervals are grouped once per column they start or end on; on a full scan each grouping is a pass, and Read says how many before Run |
+| Window by | Only with a time-window grain. Windowed by start or end, intervals are grouped once for each column they start or end on. On a full scan each grouping is a pass, and the Read line says how many before Run |
 | Time zones | A datetime with a zone, or text read with an offset, is its instant in UTC. A date or datetime with no zone is read as if it were UTC, and Setup says so when it meets a zoned one. Windows start on UTC boundaries |
 
 ### Text as time
@@ -164,8 +164,8 @@ windows are checked; a longer range is refused whole. Windows are cut in UTC.
 
 | Gap | When |
 |---|---|
-| empty | Not among the run's segment counts: no rows in the scope. Only where the counts are exact: every row read, or every window counted |
-| not sampled | The count has rows in it and the sample drew none; the rows are given. With no count, every window without a sampled row is this, said as not counted |
+| empty | The run's segment counts have no rows in the scope for it. Reported only where the counts are exact: every row read, or every window counted |
+| not sampled | The window's count has rows but the sample drew none; the row count is given. With no count, every window without a sampled row is not sampled, marked as not counted |
 | out of scope | The scope is a time range on the grain's column, and the window is not wholly inside it |
 
 ## Read plans
@@ -215,7 +215,7 @@ cache directory and makes every pass over that copy when all of these hold:
 |---|---|
 | Requests | One GET per object, streamed to disk; no list or head |
 | Disk | The objects' listed sizes, under `quality-copies` in the cache directory |
-| Kept | For later full scans of the dataset: any edit, a new role or grain included, reads the copy and nothing from the source |
+| Kept | For later full scans of the dataset: after any edit, including a new role or grain, a run reads the copy and nothing from the source |
 | Released | By <kbd>d</kbd> in Setup (the Read rule names it, as `local copy · 16.5 MiB`), by opening the dataset again or another one, and when datui exits. A run still reading the copy keeps it until the run ends |
 | Cancel or failure | The fetch stops at its next chunk, and the objects copied so far are removed |
 | Left behind | A copy left by a datui that did not exit cleanly, or quit while a run read it, is removed by the next copy any datui makes |
@@ -314,11 +314,12 @@ data that has not changed.
 ## Missing columns and type conflicts
 
 Absent columns and type conflicts come from the footers datui read when the
-dataset opened, not from values, so they are reported whatever the sample
-reads, even with values not read, and counted over the whole loaded source.
-The finding names the files by number, as the Sample form's Files list numbers
-them, and <kbd>Enter</kbd> opens the rows those files contributed. Where footers were sampled, both counts are a floor, and the measured
-fact says how many footers were read. A full scan also reads the first five
+dataset opened, not from values. So they are reported whatever the sample
+reads, even when values are not read, and they are counted over the whole
+loaded source. The finding names the files by number, as the Sample form's
+Files list numbers them, and <kbd>Enter</kbd> opens the rows those files
+contributed. Where footers were sampled, both counts are a floor, and the
+finding says how many footers were read. A full scan also reads the first five
 values each conflicting file holds at the type it wrote; the access plan's
 Conflict values row states how many extra reads that costs. The
 [Info panel](../user-guide/dataset-info.md#notes) notes report the same facts at open time

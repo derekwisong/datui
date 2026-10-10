@@ -1,7 +1,7 @@
 # Query syntax
 
-The grammar of q on the command line (<kbd>:</kbd>, then `q:`): a subset of the
-q language, evaluated right to left. [Query data](../user-guide/querying-data.md)
+The grammar of q, typed on the command line (<kbd>:</kbd>, then `q:`). datui's
+q is a subset of the q language and evaluates right to left. [Query data](../user-guide/querying-data.md)
 walks through it. Every example below runs on the public dataset its block
 names; open that dataset from **Example datasets** on the home screen.
 
@@ -89,7 +89,7 @@ See [Where clause](#where-clause--and-).
 
 ## By clause (grouping and aggregation)
 
-- `by origin, dest` — group by those columns; non-group columns become list columns, and the UI supports drill-down
+- `by origin, dest` — group by those columns; the other columns become list columns, and <kbd>Enter</kbd> on a row drills down
 - `by carrier, long: distance > 1000` — group by a column and a computed expression
 - `select avg dep_delay, min dep_delay by carrier` — aggregations per group; <kbd>Enter</kbd> on a row drills down to the rows behind it
 

@@ -19,8 +19,8 @@ and the systemd journal.
 
 [How each format is read](index.md#how-each-format-is-read) says what lazy scan,
 converted to Arrow and in memory mean. A file of several tables opens the home
-screen inside it, a row per table; downloaded or piped in, it is refused with
-the tables' names, and `--table` picks one.
+screen inside it, with a row per table. If such a file is downloaded or piped
+in, it is refused with its tables' names; `--table` picks one.
 
 ## Audio
 
@@ -52,7 +52,7 @@ datui -c read.audio_float=true take.wav
 
 An uncompressed audio file opens as a table with one row per sample frame:
 `frame`, `seconds` from the start, and one column per channel.
-The file is mapped and only the frames on screen are decoded, so a recording
+The file is memory-mapped and only the frames on screen are decoded, so a recording
 of many gigabytes opens at once and scrolls to any point as fast as to the
 first. The row count comes from the file's size.
 
@@ -66,8 +66,8 @@ first. The row count comes from the file's size.
 - Integer samples stay integer: 24-bit is `i32`, and 8-bit WAV, stored
   unsigned, is shown signed. `[read] audio_float` shows them as `f32` in [-1, 1];
   float samples are never rescaled.
-- A data size of 0 or a placeholder, as a recorder writes until it stops, is
-  read as everything to the end of the file. A size past the end of the file
+- A data size of 0 or a placeholder, which a recorder writes until it stops,
+  is read as everything to the end of the file. A size past the end of the file
   is cut to what the file holds, and the Audio tab says so. A plain WAV past
   4 GiB, whose 32-bit data size wrapped, is read to its whole length.
 - Files are recognized by their first bytes too, so a WAV or AIFF with any
@@ -114,15 +114,15 @@ file order.
 - Meta text is read as UTF-8, or as Latin-1 when it is not.
 - Files are recognized by their first bytes too, so a MIDI file with any name
   opens, and so does one in a RIFF MIDI (`.rmi`) wrapper.
-- A track that runs past the end of the file, an event cut short, or fewer
-  tracks than the header says is refused with an error. Of a directory, a file
+- A file with a track that runs past its end, an event cut short, or fewer
+  tracks than the header says is refused with an error. In a directory, a file
   that cannot be read is left out; the Notes tab says so and the MIDI tab lists
   each one with why.
 - `channel`, `note`, `velocity` and `controller` are `u8`, `track` is `u16`,
   and `value` is `i32`.
 - A file over 64 MiB (`midi_bytes` in `[limits]`) is refused, or left out of a
-  directory. An open of more than 10 million events in all (`midi_events`) is
-  refused.
+  directory. An open of more than 10 million events in total (`midi_events`)
+  is refused.
 - A real-time byte in a track keeps running status, as on the wire; a sysex,
   meta or system common message cancels it, as the specification says.
 
@@ -158,8 +158,9 @@ b0010 "
 datui counter.vcd
 ```
 
-A VCD file from an HDL simulator or logic analyzer opens as a long table, one row
-per value change of each signal, read once into a temporary Arrow IPC file.
+A VCD file from an HDL simulator or logic analyzer opens as a long table, with
+one row per value change of each signal. It is read once into a temporary Arrow
+IPC file.
 
 | Column | Holds |
 |---|---|
@@ -179,10 +180,10 @@ per value change of each signal, read once into a temporary Arrow IPC file.
 - A token is at most 1 MiB, and a header holds at most 1,048,576 signals
   (`vcd_signals` in `[limits]`), 256 scopes deep.
 
-The wide table, one row per time and one column per signal, each carried
-forward from its last change, is this SQL query on `counter.vcd` above; for
+For a wide table, with one row per time and one column per signal that holds
+its value from its last change, run this SQL query on `counter.vcd` above. For
 another dump, replace the signal names `tb.clk` and `tb.count[3:0]` and the
-columns named for them. It runs on a copy shipped with the docs,
+columns named for them. The query runs on a copy shipped with the docs,
 [`counter.vcd`](../examples/counter.vcd):
 
 ```sql,dataset=counter
@@ -248,18 +249,20 @@ datui ride.gpx
 ```
 
 An NMEA 0183 log or a GPX file is read once into a temporary Arrow IPC file,
-then scanned; memory stays at one batch of rows however long the log. Several logs, named together or as a directory of
-them, open as one table with a `file` column first; a column one file lacks is
-null in its rows, and the Notes tab counts across the files. A file with another name, such as `capture.log`,
-opens when its first complete line is an NMEA sentence or its first element is `<gpx`.
-`.nmea.gz` and the other compressions are read as they are decompressed.
+then scanned, so memory use stays at one batch of rows however long the log is.
+Several logs, named together or as a directory, open as one table with a `file`
+column first. A column one file lacks is null in its rows, and the Notes tab
+counts across all the files. A file with another name, such as `capture.log`,
+opens when its first complete line is an NMEA sentence or its first element is
+`<gpx`. A compressed log (`.nmea.gz` and the like) is decompressed as it is
+read.
 
 **NMEA** opens as one row per fix, merged from each second's GGA, RMC, VTG and
 GLL sentences:
 
 | Column | Holds |
 |---|---|
-| `time` | UTC. NMEA dates only RMC and ZDA; every other time of day takes the last date, a day on when it passes midnight |
+| `time` | UTC. Only RMC and ZDA sentences carry a date; any other time of day takes the last date, moved a day on when the time passes midnight |
 | `lat`, `lon` | Decimal degrees, negative south and west |
 | `alt` | Meters above mean sea level (GGA) |
 | `speed`, `course` | Meters per second; degrees true |
@@ -330,9 +333,9 @@ datui <LOG>.ulg --table vehicle_status
 datui <LOG>.BIN/GPS
 ```
 
-Both formats describe their own messages; no format spec is needed. One pass
-indexes the log, then each table is decoded from a map of the file where it is
-shown. <kbd>q</kbd> at a table comes back to the log's list of tables without
+Both formats describe their own messages, so no format spec is needed. One pass
+indexes the log, then each table is decoded from the memory-mapped file as it is
+shown. <kbd>q</kbd> at a table goes back to the log's list of tables without
 reading the log again.
 
 | PX4 ULog (`.ulg`) | |
@@ -349,11 +352,11 @@ reading the log again.
 | `c`, `C`, `e`, `E` | Hundredths, as a float |
 | `L` | Degrees (latitude, longitude), as a float |
 | `a` | An Array of 32 `i16` |
-| Units | From `FMTU` and `UNIT`, on the Info panel's Schema tab; an integer field `FMTU` gives a multiplier (`MULT`) is scaled by it |
+| Units | From `FMTU` and `UNIT`, on the Info panel's Schema tab; an integer field with a multiplier (`MULT`) in `FMTU` is scaled by it |
 | Info tab | Message types and their record counts, formats and lengths |
 
 - A ULog file is known by its first bytes. A DataFlash log is known by its first
-  record, an `FMT` that defines `FMT`, whatever it is called.
+  record, an `FMT` record that defines `FMT`, whatever the file is called.
 - A damaged stretch is passed over to the next ULog sync marker or DataFlash
   record header; a log cut off mid-message keeps what it holds. The Notes tab
   says how many bytes were passed over.
@@ -385,7 +388,7 @@ datui candump.log
 datui candump.log --dict vehicle.dbc --table Engine
 ```
 
-One pass indexes the log, then each frame is read from its line where it is
+One pass indexes the log, then each frame is read from its line when it is
 shown. A `candump` log opens by its content, whatever it is called:
 `(1706689000.123456) can0 123#DEADBEEF` as `candump -l` and `-L` write it (`##`
 for CAN FD, `#R` for a remote request), or `can0  123   [4]  DE AD BE EF` as
@@ -403,8 +406,8 @@ for CAN FD, `#R` for a remote request), or `can0  123   [4]  DE AD BE EF` as
 | `kind` | `data`, `remote` or `error` |
 
 With a dictionary that names the log's messages, the log opens the home screen
-inside it, like a directory: a table per message with frames, `frames`, and
-`signals`.
+inside it, like a directory. It lists a table for each message that has frames,
+then `frames` and `signals`.
 
 | Table | Columns |
 |---|---|
@@ -419,9 +422,10 @@ Extended multiplexing (`SG_MUL_VAL_`) is not; the Notes tab says so.
 
 DBC dictionaries are found where [format specs](format-specs.md) are: the `formats`
 directory of the config directory, `$DATUI_FORMATS_PATH`, and `[formats] path`.
-A DBC dictionary there applies to every interface. A TOML file names one for an
-interface: replace `<DBC_FILE>` with the dictionary's name, beside the TOML
-file or a full path, and `<INTERFACE>` with the interface:
+A DBC dictionary there applies to every interface. To apply one to a single
+interface, add a TOML file there that names it. Replace `<DBC_FILE>` with the
+dictionary's file name (relative to the TOML file) or a full path, and
+`<INTERFACE>` with the interface:
 
 ```toml,template
 kind = "dbc"
@@ -430,8 +434,8 @@ file = "<DBC_FILE>"
 interface = "<INTERFACE>"
 ```
 
-They are read in that order, then `--dict FILE`; where two name a message of the
-same id, the later one is read. Press <kbd>i</kbd> for the CAN tab: frames,
+Dictionaries are read in that order, then `--dict FILE`. When two define a
+message with the same id, the later one wins. Press <kbd>i</kbd> for the CAN tab: frames,
 interfaces, the dictionaries read and the frames none of them names, and each
 message's id, frames, signals and comment.
 
@@ -448,8 +452,9 @@ message's id, frames, signals and comment.
 datui session.log
 ```
 
-A log of FIX `tag=value` messages, delimited by SOH, `|` or `^A`, opens as one row
-per message, read once into a temporary Arrow IPC file. A file of any name opens
+A log of FIX `tag=value` messages, delimited by SOH, `|` or `^A`, opens with
+one row per message. It is read once into a temporary Arrow IPC file. A file of
+any name opens
 when a line in its first 4 KiB holds `8=FIX`, a delimiter and `9=`; messages may
 be one per line or back to back.
 
@@ -464,14 +469,15 @@ be one per line or back to back.
 | `body_length_ok` | Tag 9 matches the message's length; null for a message cut short of tag 10 |
 | `checksum_ok` | Tag 10 matches the message's checksum; null for a message cut short |
 
-- Prices, quantities and amounts are numbers, integers and sequence numbers
-  `i64`, UTC timestamps (`52`, `60`) datetimes, dates dates and `Y`/`N` booleans,
-  when every value of the tag reads as one; otherwise text.
+- When every value of a tag reads as its type, the column takes that type:
+  prices, quantities and amounts are numbers, integers and sequence numbers
+  `i64`, UTC timestamps (`52`, `60`) datetimes, dates dates, and `Y`/`N`
+  booleans. Otherwise the column is text.
 - A length-tagged value (`95`/`96` RawData, `90`/`91`, `93`/`89`, `212`/`213`
   XmlData and the encoded text fields) is read by its length, so it may hold
   the delimiter or a newline.
-- A bad message stays: its checks are false, and the Notes tab counts them, the
-  lines with no message, and messages cut short.
+- A bad message is kept, with its checks false. The Notes tab counts bad
+  messages, lines with no message, and messages cut short.
 - A message is at most 1 MiB and holds at most 4,096 fields (`fix_fields` in
   `[limits]`); at most 4,096 tags become columns (`fix_tags`).
 - Press <kbd>i</kbd> for the FIX tab: messages per BeginString, the dictionaries
@@ -481,9 +487,9 @@ be one per line or back to back.
 
 ### FIX log dictionaries
 
-The built-in dictionary is FIX 4.2, 4.4 and 5.0 SP2 together, the newest
-version's names winning. Venues and brokers add their own tags (5000-9999 and
-10000 up), so dictionaries can be added: on the
+The built-in dictionary combines FIX 4.2, 4.4 and 5.0 SP2; where they differ,
+the newest version's names win. Venues and brokers add their own tags (5000-9999
+and 10000 up), so you can add dictionaries: on the
 [format search path](format-specs.md#where-specs-live), or with
 `--dict FILE`.
 
@@ -516,10 +522,10 @@ datui --dict broker.toml session.log
 | `tags` | Tag number to a name, or to `name`, `type` (`int`, `float`, `price`, `qty`, `string`, `char`, `timestamp`, `date`, `bool`, `length`, `data`), `enum` (code to name) and, for a length tag, `data` (the tag it sizes) |
 
 The built-in dictionary comes first, then each matching dictionary on the search
-path in order, then `--dict`; a later one renames a tag or adds to its enums.
-One log can hold two counterparties that name tag 9001 differently: each
-message is read with its own, the column falls back to the tag number, and the
-FIX tab shows both names. `datui formats` lists dictionaries beside the
+path in order, then `--dict`. A later dictionary renames a tag or adds to its
+enums. When one log holds two counterparties that name tag 9001 differently,
+each message is read with its own dictionary, the column is named by the tag
+number, and the FIX tab shows both names. `datui formats` lists dictionaries beside the
 format specs, and `datui formats check NAME [LOG]` checks one, and with a log
 says how many messages it matches and which of its tags they hold.
 
@@ -534,8 +540,9 @@ datui https://raw.githubusercontent.com/rdkit/rdkit/bfc98b529561d11e4a20a64f272c
 ```
 
 An SDF (structure-data) file of molecules, as PubChem, ChEMBL and screening
-libraries publish them, opens as one row per record (`$$$$`), read once into a
-temporary Arrow IPC file. The atom and bond blocks are passed over, never held.
+libraries publish them, opens with one row per record (`$$$$`). It is read once
+into a temporary Arrow IPC file. The atom and bond blocks are skipped, never
+held.
 
 | Column | Holds |
 |---|---|
@@ -610,9 +617,9 @@ journalctl -o json -f | datui -f -
 | `time` | `__REALTIME_TIMESTAMP` as a UTC datetime |
 | `level` | `PRIORITY` as `emerg`, `alert`, `crit`, `err`, `warning`, `notice`, `info`, `debug`, ordered by severity: `select where level <= "err"` keeps errors and worse, and a sort puts `emerg` first |
 | `_SYSTEMD_UNIT` | The unit, or `SYSLOG_IDENTIFIER` when no entry has one |
-| `_PID`, `MESSAGE` | Then the rest of the fields as they came, and bookkeeping (`__CURSOR`, `__SEQNUM`, `_BOOT_ID`, ...) last |
+| `_PID`, `MESSAGE` | The process id and message; then the other fields in the order they came, with bookkeeping fields (`__CURSOR`, `__SEQNUM`, `_BOOT_ID`, ...) last |
 
-- Every field is a column, one first seen late in the journal included. Values
+- Every field is a column, including one first seen late in the journal. Values
   stay text as journalctl writes them; `PRIORITY` is kept beside `level`.
 - A `MESSAGE` journalctl wrote as bytes (not UTF-8, or with control
   characters) is shown as text, lossily; the Info panel says how many.

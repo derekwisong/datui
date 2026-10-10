@@ -1,7 +1,7 @@
 # Model files
 
-A SafeTensors or GGUF file opens as a table of its tensors, one row each, read
-from its header without reading the weights.
+A SafeTensors or GGUF file opens as a table of its tensors, one row each. The
+table comes from the file's header; the weights are never read.
 
 **`make_tiny_safetensors.py`**
 
@@ -34,7 +34,7 @@ datui https://huggingface.co/Qwen/Qwen2.5-7B/resolve/main/model.safetensors.inde
 | Extensions | `.safetensors`, `model.safetensors.index.json` | `.gguf` |
 | Columns | `name`, `dtype`, `shape`, `params`, `bytes`, `offset_start`, `offset_end` | `name`, `type`, `shape`, `params`, `bytes`, `offset` |
 | Rows | In data order | In file order |
-| Read | [in memory](index.md#how-each-format-is-read), from the header; never asked about | the same |
+| Read | [in memory](index.md#how-each-format-is-read), from the header, without the memory warning | the same |
 | Info tab | Model | Model |
 
 - `shape` is a list; `params` is its product.
@@ -61,10 +61,10 @@ downloaded.
 
 | Source | Read |
 |---|---|
-| An HTTP(S) URL, or an S3, GCS or Azure object | SafeTensors: the first 64 KiB, which holds most headers whole, then the rest of a longer one. GGUF: growing ranges until the tensor list ends |
+| An HTTP(S) URL, or an S3, GCS or Azure object | SafeTensors: the first 64 KiB, which holds most headers whole, then the rest of a longer one. GGUF: larger and larger ranges until the whole tensor list is read |
 | `model.safetensors.index.json` | The index, then each shard's header beside it, eight shards at a time |
-| An S3, GCS or Azure prefix | Every SafeTensors or GGUF file directly under it, as a directory on disk. The listing stops at 10,000 objects; the Notes tab says when it did |
+| An S3, GCS or Azure prefix | Every SafeTensors or GGUF file directly under it, like a directory on disk. The listing stops at 10,000 objects; the Notes tab says when it did |
 
-A server that sends no byte ranges gets the download question instead, which
-says why, and the file is downloaded whole. Shards named by an index cannot be
-downloaded this way, and the open says so.
+If a server does not support byte ranges, datui asks whether to download the
+whole file instead, and says why. Shards named by an index cannot be downloaded
+this way, and the open says so.

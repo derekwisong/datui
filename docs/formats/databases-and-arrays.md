@@ -1,7 +1,7 @@
 # Databases and arrays
 
-SQLite databases and NumPy arrays are read where they are, a page of rows at a
-time, and a file of several tables lists them like a directory.
+SQLite databases and NumPy arrays are read in place, a page of rows at a time.
+A file that holds several tables lists them like a directory.
 
 ## SQLite
 
@@ -38,7 +38,7 @@ datui shop.db
 | Extensions | `.db`, `.sqlite`, `.sqlite3`, `.db3`; any other name by its first bytes, `SQLite format 3` |
 | Read | [lazy](index.md#how-each-format-is-read), in place; downloaded first from a bucket or over HTTP(S) |
 | `--table` | A table or view by name, or `shop.db/orders` |
-| Info tab | SQLite: page size, schema and user versions, text encoding, and each table's columns and the rows `ANALYZE` stored. No table is counted |
+| Info tab | SQLite: page size, schema and user versions, text encoding, and each table's columns and the row count `ANALYZE` stored. No table is counted |
 | Not read | A compressed database (`shop.db.gz`): decompress it first |
 
 | The database | What happens |
@@ -52,24 +52,24 @@ tables, a full-text index's shadow tables) are hidden until
 <kbd>Ctrl</kbd>+<kbd>A</kbd>; `--table` opens them by name. The home screen
 labels a database with its tables (`3 tables`).
 
-<kbd>T</kbd> at the table lists the database's tables and views, each with its
-kind, columns and the rows `ANALYZE` stored, and opens another; so does
-<kbd>Enter</kbd> on a table of the SQLite tab. Nothing is counted to list them.
+At the table, <kbd>T</kbd> lists the database's tables and views, each with its
+kind, columns and the row count `ANALYZE` stored, and opens the one you pick.
+<kbd>Enter</kbd> on a table in the SQLite tab does the same. Listing them counts
+nothing.
 
 A table is read in place; nothing is copied.
 
 | | How |
 |---|---|
-| The rows on screen | Read from SQLite a page at a time, by the table's rowid (or primary key), so the first rows show at once and <kbd>End</kbd> costs what the top does |
+| The rows on screen | Read from SQLite a page at a time, by the table's rowid (or primary key), so the first rows show at once and <kbd>End</kbd> is as fast as the top |
 | Row count | SQLite's `count(*)`, in the background |
 | Sort and filters from the sidebar | Run in SQLite as `ORDER BY` and `WHERE`, so an index on the column serves them. Ties keep the table's order and nulls sort last, as for any other file |
-| A query, analysis, Data Quality, a chart, an export | Read the columns they use from SQLite a batch at a time; what they hold is in memory, as for a JSON or Excel file. A query's simple comparisons run in SQLite |
+| A query, analysis, Data Quality, a chart, an export | Read the columns they use from SQLite a batch at a time and hold them in memory, as for a JSON or Excel file. A query's simple comparisons run in SQLite |
 | Leaving the table (<kbd>Ctrl</kbd>+<kbd>O</kbd>, quit) | Stops whatever SQLite is running for it |
 
-A view is paged by position and cannot be reversed with <kbd>r</kbd> in SQLite
-(Polars does it). A sort on a column without an index has SQLite sort the
-rows for each page; SQLite may use temporary files in the temp directory to do
-so.
+A view is paged by position, so SQLite cannot reverse it for <kbd>r</kbd>;
+Polars does that instead. A sort on a column without an index makes SQLite sort
+the rows for each page, which may use temporary files in the temp directory.
 
 Columns are typed by what they declare:
 
@@ -81,11 +81,11 @@ Columns are typed by what they declare:
 | `BLOB` | `binary` |
 | nothing, `NUMERIC`, `DECIMAL`, `BOOLEAN`, `DATE` | by the values in the first 1,000 rows: whole numbers `i64`, numbers `f64`, blobs `binary`, text `str` |
 
-SQLite lets a column hold values of any type. A column whose first 1,000 rows
-hold values of several types is read as text, numbers as SQLite writes them and
-blobs as `X'0A1B'`. After the open, one pass over the table checks the rest: a
-value further on that is not a number, in a number column, reads as null, and
-the Info panel's Notes tab says how many. Dates stay text, as SQLite stores
+SQLite lets a column hold values of any type. If a column's first 1,000 rows
+hold values of several types, it is read as text: numbers as SQLite writes them,
+and blobs as `X'0A1B'`. After the open, one pass over the table checks the
+remaining rows. In a number column, a later value that is not a number reads as
+null, and the Info panel's Notes tab says how many. Dates stay text, as SQLite stores
 them.
 
 The database is only read:
@@ -97,7 +97,7 @@ The database is only read:
 | A WAL database without a `-wal` file | Read as the file stands (SQLite's `immutable`), writing nothing and taking no lock. A program that starts writing it during the read can make the read fail or come out wrong |
 | A `-wal` without its `-shm`, in a directory datui cannot write to | An error: read without the WAL, it would lack what was committed there |
 | A `-journal` left by a program that stopped mid-write | An error: datui does not roll it back. Opening the database once with the `sqlite3` tool does |
-| A program writing the database meanwhile | datui waits up to 2 seconds for its lock. Without WAL, the program cannot commit while datui reads, which is a page at a time except for a whole-table read |
+| A program writing the database meanwhile | datui waits up to 2 seconds for its lock. Without WAL, the program cannot commit while datui reads. datui reads a page at a time, except when it reads the whole table |
 | Not a SQLite database, or damaged | An error |
 
 ## NumPy
@@ -154,13 +154,13 @@ datui run.npz/weights
 | Extensions | `.npy`, `.npz`; any other name by its first bytes, `\x93NUMPY` |
 | Read | [lazy](index.md#how-each-format-is-read), from a map of the file. An array saved with `np.savez_compressed` is decompressed to the temp directory first, and removed when the dataset closes |
 | `--table` | An array of an `.npz` archive by name, or `run.npz/weights` |
-| Several arrays | `datui run.npz` opens the home screen inside the archive, a row per array in the order saved. Downloaded or piped in, it is refused with the arrays' names |
+| Several arrays | `datui run.npz` opens the home screen inside the archive, a row per array in the order saved. An archive downloaded or piped in is refused, with the arrays' names |
 | Info tab | NumPy: shape, type, order and format version, and each field's type and offset |
 
 | The array | Columns |
 |---|---|
 | 1-D | One, named for the file (`prices.npy` is `prices`) or the archive's array |
-| 2-D | One per index, `0` to `n-1`; more than 1,024 make one Array column, `values` |
+| 2-D | One per column index, `0` to `n-1`; more than 1,024 columns make one Array column, `values` |
 | Structured (`[('ts', '<u8'), ('px', '<f8')]`) | One per field; a nested field is `outer.inner`, a subarray field an Array column |
 | 0-D | One row |
 | 3-D or more | An error that gives the shape |
@@ -183,11 +183,10 @@ datui run.npz/weights
 | `O` | An error: Python objects are pickled, and datui does not unpickle |
 
 - `NaT` is null.
-- Big-endian (`>i4`) and little-endian fields mix in one array.
+- Big-endian (`>i4`) and little-endian fields can be mixed in one array.
 - Fortran (column-major) order reads the same as C order.
 - Padding fields (`align=True`) are left out, and fields at offsets
   (`offsets`, `itemsize`) are read where they are.
-- A file shorter than its shape says shows the rows it holds; the Notes tab
-  says so.
-- A file named without `.npy` is known by its first bytes, `\x93NUMPY`.
+- A file shorter than its shape says opens with the rows it holds; the Notes
+  tab says so.
 - A header over 4 MiB (`npy_header_bytes` in `[limits]`) is refused.

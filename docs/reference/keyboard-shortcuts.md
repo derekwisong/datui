@@ -724,7 +724,7 @@ Data Quality in the Analysis sidebar.
 | `Tab / Shift+Tab (↑ / ↓)` | Next or previous row |
 | `← / →` | The previous or next scope, column or format (h/l too); on Header: toggle |
 | `Space` | On Scope or Format: the next value, wrapping. On Column: open its picker. On Header: toggle |
-| `Enter` | Copy, from anywhere in the form. On the Cell scope with no column picked, Enter re-accents the spec line instead of copying |
+| `Enter` | Copy, from anywhere in the form. On the Cell scope with no column picked, Enter copies nothing and shows pick a column to copy in the warning color |
 | `Esc` | Close a picker, then the dialog, without copying |
 
 ### Copy · Picker

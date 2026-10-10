@@ -326,7 +326,7 @@ pub struct Args {
     )]
     pub footer_rows: Option<usize>,
 
-    /// Skip this many rows at the start; the header is read after them. Quote-aware, unlike --skip-lines
+    /// Skip this many rows before the header (with --header-rows, after it). Quote-aware, unlike --skip-lines
     #[arg(long = "skip-rows", value_name = "N", help_heading = "Delimited text")]
     pub skip_rows: Option<usize>,
 

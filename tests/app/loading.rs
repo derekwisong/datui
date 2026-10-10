@@ -7275,3 +7275,31 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
         "{made:?} {derived:?}"
     );
 }
+
+/// `--skip-rows` skips rows before the header; with `--header-rows`, whose lines are
+/// counted from the top, it skips data rows after that header instead.
+#[test]
+fn skip_rows_is_before_the_header_unless_header_rows_name_it() {
+    common::isolate_cache();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let csv = tmp.path().join("notes.csv");
+    std::fs::write(&csv, "exported by a logger\nid,name\n1,ann\n2,bob\n3,cid\n").unwrap();
+
+    let opts = options_as_the_binary_does(&["datui", "x", "--skip-rows", "1"], "");
+    let (_, df) = open_and_collect(vec![csv.clone()], opts);
+    assert_eq!(
+        names(&df),
+        ["id", "name"],
+        "the header is read after the skip"
+    );
+    assert_eq!(df.height(), 3);
+
+    let opts = options_as_the_binary_does(
+        &["datui", "x", "--header-rows", "2", "--skip-rows", "1"],
+        "",
+    );
+    let (_, df) = open_and_collect(vec![csv], opts);
+    assert_eq!(names(&df), ["id", "name"]);
+    assert_eq!(df.height(), 2, "the first data row is skipped");
+    assert_eq!(df.column("id").unwrap().i64().unwrap().get(0), Some(2));
+}

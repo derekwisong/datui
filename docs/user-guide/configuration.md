@@ -161,8 +161,9 @@ exclude_columns = ["year", "*_id", "zip"]
 
 `floats` groups float columns too. `float_precision` rounds them; leave it out
 to keep the file's own decimals. `exclude_columns` takes glob patterns for
-columns that are never grouped, such as numbers that are labels. Every value in
-a grouped column is grouped. Formatting changes only the display: exports,
+columns that are never grouped, such as numbers that are labels. Grouping
+applies to every value in a column, however short, so a year column reads
+`2,024` unless it is excluded. Formatting changes only the display: exports,
 queries, filters and views use the raw values.
 
 ## Themes

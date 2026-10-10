@@ -1379,7 +1379,7 @@ pub const SCREENS: &[Screen] = &[
                     .also(&["Toggle", "Pick"])
                         .more("On Scope or Format: the next value, wrapping. On Column: open its picker. On Header: toggle"),
                     k("Enter", "Copy", "Copy, from anywhere in the form")
-                        .more("Copy, from anywhere in the form. On the Cell scope with no column picked, Enter re-accents the spec line instead of copying"),
+                        .more("Copy, from anywhere in the form. On the Cell scope with no column picked, Enter copies nothing and shows pick a column to copy in the warning color"),
                     k("Esc", "Cancel", "Close a picker, then the dialog")
                         .more("Close a picker, then the dialog, without copying"),
                 ],

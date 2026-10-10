@@ -40,7 +40,7 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 | `--no-header` | Read the first row as data; columns are named column_1, column_2, ... |
 | `--header-rows <N[,M...]>` | The line holding the header, or several lines separated by commas, counted from 1 before anything is skipped. Several lines are joined per column ([csv] header_join), and the data starts after the last |
 | `--footer-rows <N>` | Skip this many rows at the end, such as a footer. Reads the whole file to count rows |
-| `--skip-rows <N>` | Skip this many rows at the start; the header is read after them. Quote-aware, unlike --skip-lines |
+| `--skip-rows <N>` | Skip this many rows before the header (with --header-rows, after it). Quote-aware, unlike --skip-lines |
 | `--skip-lines <N>` | Skip this many raw lines at the start. Every newline ends a line, even one inside quotes |
 | `--comment <PREFIX>` | Lines starting with this are comments, before the header and among the data. [config: csv.comment] |
 | `--skip-initial-space[=<BOOL>]` | Ignore the spaces after a delimiter, so padded numbers are numbers and a cell of spaces is null. [config: csv.skip_initial_space] |

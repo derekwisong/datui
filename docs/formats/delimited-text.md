@@ -34,7 +34,7 @@ The options apply to TSV and PSV too. Set defaults under
 | `--delimiter ';'` | | Column separator: one character, `tab`, `\t` or a code such as `0x1f` |
 | `--no-header` | | The first row is data; columns are `column_1`, `column_2`, … |
 | `--skip-lines N` | | Skip N raw lines at the top, split on newlines alone |
-| `--skip-rows N` | | Skip N rows at the top, quote-aware; the header is read after them |
+| `--skip-rows N` | | Skip N rows before the header, counting quoted line breaks as part of a row. With `--header-rows`, skip N data rows after the header instead |
 | `--footer-rows N` | | Skip N rows at the end. Every row is counted first, so a directory in a bucket downloads every file before the table opens |
 | `--null NA`, `--null amount=` | `csv.null_values` | Values read as null, in every column or in one (`COL=VAL`). Repeatable; replaces the config's list |
 | `--comment '#'` | `csv.comment` | Skip lines that start with this character, above the header and among the data |
@@ -77,8 +77,8 @@ datui --header-rows 3 log.csv
 
 - `--header-rows` counts lines from the top of the file, before anything is
   skipped. A header line that starts with the comment character has it
-  removed. `--skip-lines` also counts from the top; `--skip-rows` counts data
-  rows after the header.
+  removed. `--skip-lines` also counts from the top. With `--header-rows`, `--skip-rows`
+  skips data rows after the header rather than rows before it.
 - Padded numbers read as numbers with or without `--skip-initial-space`, unless
   `--infer-types=off`. With `--skip-initial-space`, cells of only spaces are
   null in text columns too, and `--null` matches a value without its padding.

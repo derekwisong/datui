@@ -96,7 +96,7 @@ character's code (`ord(";")`).
 | `no_header` | bool | `--no-header` | Read the first row as data; columns are named column_1, column_2, ... |
 | `header_rows` | list | `--header-rows` | The line holding the header, or several lines separated by commas, counted from 1 before anything is skipped. Several lines are joined per column ([csv] header_join), and the data starts after the last |
 | `footer_rows` | integer | `--footer-rows` | Skip this many rows at the end, such as a footer. Reads the whole file to count rows |
-| `skip_rows` | integer | `--skip-rows` | Skip this many rows at the start; the header is read after them. Quote-aware, unlike --skip-lines |
+| `skip_rows` | integer | `--skip-rows` | Skip this many rows before the header (with --header-rows, after it). Quote-aware, unlike --skip-lines |
 | `skip_lines` | integer | `--skip-lines` | Skip this many raw lines at the start. Every newline ends a line, even one inside quotes |
 | `infer_types` | bool \| list of columns | `--infer-types` | Read string columns as dates, times, durations or numbers where every value parses, after trimming: true for all, false for none, or a list of columns. CSV, and dates in JSON. A column with a leading zero (02134) stays text; a later value that does not parse is null, and the Notes tab counts them. |
 | `parquet_schema` | union \| first | `-c read.parquet_schema=...` | The schema of a partitioned Parquet dataset: union takes every column any file has, from their footers; first lets Polars take one file's schema. |

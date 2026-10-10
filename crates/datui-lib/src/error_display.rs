@@ -155,17 +155,13 @@ fn gone_since_opened(err: &io::Error) -> Option<String> {
     let object_store::Error::NotFound { path, .. } = &store.source else {
         return None;
     };
-    // The file under the dataset, as the dataset's own folders name it.
+    // Named by its whole URL: the store's base URL is whichever path first built the
+    // store Polars caches per bucket, so only its scheme and bucket say this dataset's.
     let base = store.base_url.as_str();
-    let prefix = base
-        .split_once("://")
-        .and_then(|(_, rest)| rest.split_once('/'))
-        .map_or("", |(_, key)| key.trim_matches('/'));
-    let file = path
-        .strip_prefix(prefix)
-        .filter(|_| !prefix.is_empty())
-        .map_or(path.as_str(), |rest| rest.trim_start_matches('/'));
-    Some(gone_since_opened_message(file))
+    let (scheme, rest) = base.split_once("://")?;
+    let bucket = rest.split('/').next().unwrap_or(rest);
+    let file = format!("{scheme}://{bucket}/{}", path.trim_start_matches('/'));
+    Some(gone_since_opened_message(&file))
 }
 
 /// What a read says of `file`, listed by the open and gone or changed since.

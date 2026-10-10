@@ -144,6 +144,8 @@ fn not_copied(object: &RemoteObject, error: StreamError) -> color_eyre::Report {
     let url = &object.url;
     match error {
         StreamError::Write(report) => report,
+        // Already names the file and what to do.
+        StreamError::Open(e) if crate::error_display::says_gone_since_opened(&e) => eyre!(e),
         StreamError::Open(e) | StreamError::Read(e) => eyre!("Could not copy {url}: {e}"),
         StreamError::Short { got, .. } => changed(object, got),
         StreamError::Cut => eyre!(crate::analysis::sampling::CANCELLED),

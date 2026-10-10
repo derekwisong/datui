@@ -70,7 +70,8 @@ fn reopen(app: &mut App, rx: &mpsc::Receiver<AppEvent>, s3: &FakeS3) {
     assert!(asked.active, "the reopen is offered");
     assert!(
         asked.message.starts_with(
-            "A file was removed or replaced after the dataset was opened: part-1.parquet."
+            "A file was removed or replaced after the dataset was opened: \
+             s3://lake/events/part-1.parquet."
         ),
         "{}",
         asked.message

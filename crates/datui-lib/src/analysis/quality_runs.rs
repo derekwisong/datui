@@ -952,7 +952,7 @@ impl App {
             let (_, key) = Self::cloud_bucket_and_key(url).map_err(StreamError::Write)?;
             let path = crate::cloud::cloud_browse::object_path(&key);
             let listed = object.etag.clone();
-            let gone = crate::error_display::gone_since_opened_message(&key);
+            let gone = crate::error_display::gone_since_opened_message(url);
             let open = async move {
                 let got = store.get(&path).await.map_err(|e| match e {
                     object_store::Error::NotFound { .. } => gone.clone(),

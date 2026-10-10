@@ -6,7 +6,7 @@
 Parquet, CSV, JSON, Arrow, Excel, SQLite, logs, audio, model files and more, including binary formats you describe in a format spec.
 <!-- end generated: pitch -->
 
-From local disk, S3, GCS, Azure or HTTP(S), a pipe, or a Polars frame in Python.
+Open it from local disk, S3, GCS, Azure, HTTP(S), a pipe, or a Polars frame in Python.
 
 [![Release](https://img.shields.io/github/v/release/derekwisong/datui?style=flat-square)](https://github.com/derekwisong/datui/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/derekwisong/datui/ci.yml?branch=main&style=flat-square)](https://github.com/derekwisong/datui/actions)
@@ -54,9 +54,10 @@ More ways to install, and how to uninstall: the [installation guide][install-gui
 - Rust on [Polars](https://pola.rs). Every table is a `LazyFrame` until it is drawn.
 - Only the rows on screen and a lookahead buffer are collected. Sort, filter
   and query build on the lazy plan.
-- A Parquet file in S3, GCS or Azure is read in place: footers for the schema
-  and row count, then only the row groups the screen needs.
-- The row count runs in the background; the table is usable before it is done.
+- A Parquet file in S3, GCS or Azure is read in place. datui reads the footers
+  for the schema and row count, then only the row groups the screen needs.
+- Rows are counted in the background, so you can use the table before the
+  count is done.
 
 First rows in milliseconds on local files, under a second from S3.
 [Performance][performance] has the numbers.
@@ -117,8 +118,8 @@ if result is not None:
 
 ## What it is not
 
-- An editor: cells cannot be changed, and datui does not write to the files it
-  opens unless you export over one. Results leave as an export or a copy.
+- An editor: you cannot change cells, and datui does not write to the files it
+  opens unless you export over one. To keep a result, export or copy it.
 - A service: no telemetry, no update check. datui connects only to the data
   and the cloud accounts you open or browse.
 

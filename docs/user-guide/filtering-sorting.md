@@ -3,10 +3,10 @@
 <kbd>s</kbd> opens the **Sort & Filter** sidebar, where you sort, filter,
 hide, move, freeze and size columns.
 
-It opens on what is in effect: the [sort and the filters](#sort--filter-tab),
-one row each. The [Columns tab](#columns-tab) beside it lists every column.
-The tab bar is the first row: <kbd>←</kbd> <kbd>→</kbd> there switch tabs.
-The sidebar takes the keys every [dialog](../reference/dialogs.md) takes:
+It opens on the [sort and the filters](#sort--filter-tab) in effect, one row
+each. The [Columns tab](#columns-tab) beside it lists every column. The tab bar
+is the first row; <kbd>←</kbd> <kbd>→</kbd> there switch tabs. The sidebar uses
+the same keys as every [dialog](../reference/dialogs.md):
 
 | Key | Does |
 |---|---|
@@ -18,7 +18,7 @@ The sidebar takes the keys every [dialog](../reference/dialogs.md) takes:
 
 Open **Food nutrition (fast food)** from **Example datasets**: 515 menu items
 from eight chains, nutrients per item. Find the chicken dishes with at least
-40 g of protein, heaviest first:
+40 g of protein, highest in calories first:
 
 1. Press <kbd>/</kbd> to find, then <kbd>Ctrl</kbd>+<kbd>T</kbd> for letters
    in order. Type `chicken` and press <kbd>Ctrl</kbd>+<kbd>G</kbd> to keep the
@@ -49,12 +49,13 @@ cross.
 | <kbd>+</kbd> | Keep the rows whose value in this column is the cell's; on a null cell, keep the nulls |
 | <kbd>-</kbd> | Drop those rows; on a null cell, drop the nulls |
 
-Each press adds a filter to the [Sort & Filter tab](#sort--filter-tab), joined to the others
-with **and**, so you can edit or delete it there and <kbd>R</kbd> clears it. The
-value is the cell's exactly as stored: a float to its last digit, so `0.1 + 0.2`
-and `0.3` are two values even where the table draws both as `0.3`, and a date
-and time to its last fraction of a second, in its zone. A list, struct or
-binary cell has no value to compare; the bar says so.
+Each press adds a filter to the [Sort & Filter tab](#sort--filter-tab), joined
+to the others with **and**. You can edit or delete it there, and <kbd>R</kbd>
+clears it. The filter compares the cell's value exactly as stored: a float to
+its last digit, so `0.1 + 0.2` and `0.3` are different values even where the
+table draws both as `0.3`; a date and time to its last fraction of a second, in
+its time zone. A list, struct or binary cell has no value to compare, and the
+footer says so.
 
 ## Apply or cancel changes
 
@@ -67,27 +68,28 @@ binary cell has no value to compare; the bar says so.
 
 Sidebar filters and sort apply to the current query or reshape result. Running
 a new query clears them, so apply the query first and the sidebar settings
-afterward. The footer names the filters and the sort, and counts the rows kept
-beside the cursor's: `1 / 30`. **Info** shows the dataset's total.
-Canceling the sidebar discards whatever was staged; reopening it shows what
-is actually applied.
+afterward. The footer names the filters and the sort, and shows the cursor's row and
+the number of rows kept: `1 / 30`. **Info** shows the dataset's total.
+Canceling the sidebar discards your staged changes; reopening it shows what is
+applied.
 
 ## Columns tab
 
 ![The Sort & Filter sidebar on its Columns tab, find vit, vit_a and vit_c hidden (⊘); behind it the 30 chicken dishes with 40 g of protein or more, the footer reading has letters "chicken" · protein >= 40 · calories ▼](../demos/screenshots/sort-filter-columns.png)
 
-Which chicken dishes have the most protein, heaviest first? The
-[five steps above](#filter-sort-and-hide-columns): 30 of 515, McDonald's 20
-piece Buttermilk Crispy Chicken Tenders first. <kbd>s</kbd> again,
-<kbd>↑</kbd> <kbd>→</kbd> to **Columns**, <kbd>↓</kbd> and `vit` show the two
-hidden columns.
+Which chicken dishes have at least 40 g of protein? The
+[five steps above](#filter-sort-and-hide-columns) keep 30 of 515, led by
+McDonald's 20 piece Buttermilk Crispy Chicken Tenders. Then <kbd>s</kbd> again,
+<kbd>↑</kbd> <kbd>→</kbd> to **Columns**, and <kbd>↓</kbd> and `vit` show the
+two hidden columns.
 
-One row per column, with its lock, its place and direction in the sort
-(`1▲`, `2▼`), a width set by hand, and a `⊘` when it is hidden. Each sorted column's header in the
-table carries its own direction mark (▲/▼), so the sort and <kbd>r</kbd>
-reversing it are visible at a glance. <kbd>↓</kbd> from the tab bar reaches
-the find field; type in it to narrow the list, and <kbd>↓</kbd> again goes to
-the list, on the table's column cursor (or the first match), then:
+The tab has one row per column. A row shows the column's lock, its place and
+direction in the sort (`1▲`, `2▼`), any width set by hand, and `⊘` when it is
+hidden. In the table, each sorted column's header carries its direction
+(▲/▼), so you can see the sort, and <kbd>r</kbd> reversing it, at a glance.
+<kbd>↓</kbd> from the tab bar reaches the find field; type in it to narrow the
+list. <kbd>↓</kbd> again moves into the list, starting on the table's column
+cursor (or the first match):
 
 | Key | Action |
 |---|---|
@@ -119,7 +121,7 @@ long text there shows more of each value. A number column, which sits flush
 right, and a width set by hand keep their width.
 
 A number is cut only when it is the first scrolling column and has no room;
-otherwise it waits, whole, for the scroll.
+otherwise it stays off screen until a scroll brings it in whole.
 
 A query, a pivot or melt, drilling down or back up, a new sort, <kbd>r</kbd>
 and a new filter change the rows, so automatic widths are learned again from
@@ -172,14 +174,14 @@ and that cell are drawn reversed.
 | <kbd>g</kbd> | The cursor to a column you name: type to narrow the list, <kbd>Enter</kbd> goes |
 
 - <kbd>Shift</kbd>+<kbd>→</kbd> starts the next page at the first column not shown whole, so
-  a column cut at the edge is read whole there. A column wider than the
+  a column cut off at the edge shows whole on the next page. A column wider than the
   window still moves one at a time.
 - The last page is full: it ends with the last column.
 - <kbd>Shift</kbd>+<kbd>←</kbd> right after <kbd>Shift</kbd>+<kbd>→</kbd> goes back to the page it left;
-  otherwise it ends the page before with the column left of the first one
-  shown.
-- <kbd>g</kbd> leaves a column already whole on screen where it is; another
-  becomes the first after the frozen ones, or lands on the last page.
+  otherwise it shows the previous page, ending with the column just left of
+  the first one shown.
+- <kbd>g</kbd> does not scroll to a column already whole on screen. Any other
+  column becomes the first after the frozen ones, or shows on the last page.
 - Frozen columns stay put, and the cursor walks them too: <kbd>h</kbd> from
   the first scrolling column goes to the last frozen one, and <kbd>l</kbd>
   back goes to the first scrolling column, scrolling back to it.
@@ -193,9 +195,9 @@ and that cell are drawn reversed.
   columns are not listed: show them with <kbd>v</kbd> on the Columns tab. A
   frozen column is on screen already, so choosing it moves nothing.
 
-<kbd>H</kbd> and <kbd>L</kbd> move the cursor's column itself one place left
-or right, the cursor with it: the same column order the Columns tab's
-<kbd>+</kbd> <kbd>-</kbd> set, and <kbd>R</kbd> puts it back. A frozen column
+<kbd>H</kbd> and <kbd>L</kbd> move the cursor's column one place left or
+right, and the cursor moves with it. They change the same column order as
+<kbd>+</kbd> <kbd>-</kbd> on the Columns tab, and <kbd>R</kbd> puts it back. A frozen column
 moves among the frozen ones, and a scrolling column among the scrolling ones.
 
 The keys that act on one column act on the cursor's:
@@ -211,16 +213,16 @@ The keys that act on one column act on the cursor's:
 | <kbd>/</kbd> | <kbd>Ctrl</kbd>+<kbd>L</kbd> in the prompt [finds](finding.md) in it alone; a match moves the cursor to its column |
 
 Once the column cursor moves, the footer offers those keys: `+/- Filter  [/] Sort
-F Counts`. It says where the cursor is too: `col 43/300` before the row, while
-there is room. It counts the columns the table shows, frozen first; hidden
-columns are not counted.
+F Counts`. It also shows the cursor's column, `col 43/300`, before the row, while there
+is room. The count covers the columns the table shows, frozen ones first;
+hidden columns are not counted.
 
 ## Sort & Filter tab
 
-What is in effect, under two rules: **Sort**, one row per key in order
-(`1 ▲ restaurant`), then `add sort…`; **Filters**, one row per filter
-(column, operator, value, and how it joins the row above: **and**/**or**),
-then `add filter…`.
+This tab shows what is in effect, in two sections. **Sort** has one row per
+sort key, in order (`1 ▲ restaurant`), then `add sort…`. **Filters** has one
+row per filter (column, operator, value, and how it joins the row above:
+**and**/**or**), then `add filter…`.
 
 | Key | On a sort | On a filter |
 |---|---|---|
@@ -235,11 +237,10 @@ the last key, ascending. <kbd>Space</kbd> on `add filter…` starts a new
 filter on the column cursor's column. <kbd>C</kbd> removes every sort and
 filter. While something is staged, the footer's `Apply` is in the accent.
 
-Editing a filter walks three steps on the row: pick the column (type to narrow,
-<kbd>↑</kbd> <kbd>↓</kbd> move, <kbd>Enter</kbd> chooses), pick the operator
-the same way, then type the value — <kbd>Enter</kbd> saves the row, and
-<kbd>Esc</kbd> abandons the edit and only the edit. Then <kbd>Enter</kbd>
-applies.
+Editing a filter takes three steps on the row: pick the column (type to
+narrow, <kbd>↑</kbd> <kbd>↓</kbd> move, <kbd>Enter</kbd> chooses), pick the
+operator the same way, then type the value. <kbd>Enter</kbd> saves the row;
+<kbd>Esc</kbd> discards only that edit. Then <kbd>Enter</kbd> again applies.
 
 | Operator | Meaning |
 |---|---|
@@ -264,10 +265,10 @@ numeric comparison and `>= 2024-01-01` on a date column compares dates:
 | Duration | `1d 2h 30m`, `90s`, `1500ms`, `-5m`: whole numbers of `d` `h` `m` `s` `ms` `us` `ns` |
 | Decimal | `1.5`, read at the column's scale, so it is `1.50` |
 
-A value the column cannot read keeps the sidebar open, and the line above the
-keys says why, such as `day: "2024-13-01" is not a date written YYYY-MM-DD`. A
-clock a time zone skips or repeats (the night clocks change) asks for its
-offset. Filters stay in place while you chart, analyze or export, and are
+If the column cannot read a value, the sidebar stays open and the line above
+the keys says why, such as `day: "2024-13-01" is not a date written YYYY-MM-DD`.
+A local time that the time zone skips or repeats (on the night the clocks
+change) needs an offset. Filters stay in place while you chart, analyze or export, and are
 saved in [views](views.md).
 
 ## From the command line

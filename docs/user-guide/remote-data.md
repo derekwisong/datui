@@ -18,14 +18,15 @@ datui https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_month.csv
 | HTTP(S) | `https://...` | [None](#http-and-https) |
 | Public buckets | Any of the above | [None](#public-data) |
 
-One remote path opens per run; a directory, prefix or glob can hold many
-files. This page is the one home for cloud logins; the variables are listed in
-[Environment variables](../reference/environment.md#cloud-logins).
+datui opens one remote path per run, but a directory, prefix or glob can hold
+many files. This page covers every cloud login;
+[Environment variables](../reference/environment.md#cloud-logins) lists the
+variables.
 
 ## Amazon S3
 
-The examples below use your names: replace `<PROFILE>`, `<BUCKET>` and
-`<PREFIX>` with yours.
+In the examples below, replace `<PROFILE>`, `<BUCKET>` and `<PREFIX>` with
+your own.
 
 ```bash,template
 AWS_PROFILE=<PROFILE> datui s3://<BUCKET>/<PREFIX>/
@@ -38,7 +39,7 @@ AWS_PROFILE=<PROFILE> datui s3://<BUCKET>/<PREFIX>/
 | A task role | ECS, Lambda and EKS roles are used as found. An EC2 instance role needs `[cloud] instance_identity = true` |
 | None | Requests go unsigned, which reaches public buckets |
 
-Each bucket's region is found on its own.
+datui finds each bucket's region by itself.
 
 ### AWS profiles
 
@@ -51,12 +52,13 @@ tools would.
 | `credential_process` | Runs it (aws-vault, granted, 1Password and the like) |
 | `sso_session`, `role_arn`, `credential_source` or `web_identity_token_file` | Runs `aws configure export-credentials --profile <name>`; needs the AWS CLI |
 
-The files are `AWS_CONFIG_FILE` and `AWS_SHARED_CREDENTIALS_FILE`, else
-`~/.aws/config` and `~/.aws/credentials`. A profile's `region` and
-`endpoint_url` (or an `s3` `endpoint_url` under its `services` section) apply,
-after `AWS_ENDPOINT_URL_S3` and `AWS_ENDPOINT_URL`. Every other profile that can
-log in is a source of its own on the home screen, `aws-<profile>`; one with an
-endpoint is S3-compatible, and its URLs are `s3://aws-<profile>@bucket/key`.
+The files are `AWS_CONFIG_FILE` and `AWS_SHARED_CREDENTIALS_FILE`, or
+`~/.aws/config` and `~/.aws/credentials` when those are unset. A profile's
+`region` and `endpoint_url` (or an `s3` `endpoint_url` under its `services`
+section) apply, but `AWS_ENDPOINT_URL_S3` and `AWS_ENDPOINT_URL` take
+precedence. Every other profile that can log in is its own source on the home
+screen, `aws-<profile>`. A profile with an endpoint is S3-compatible, and its
+URLs are `s3://aws-<profile>@bucket/key`.
 
 ## S3-compatible storage (MinIO, R2, Ceph)
 
@@ -68,8 +70,8 @@ AWS_ENDPOINT_URL=http://localhost:9000 AWS_ACCESS_KEY_ID=<KEY_ID> AWS_SECRET_ACC
 ```
 
 The endpoint is the first of `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL` and
-`AWS_ENDPOINT` that is set. There are no flags or config keys for keys: on the
-command line they show in `ps` and the shell history.
+`AWS_ENDPOINT` that is set. There are no flags or config keys for the access
+keys, because keys on the command line show in `ps` and the shell history.
 
 ### Several stores at once
 
@@ -109,8 +111,8 @@ datui s3://lab@<BUCKET>/<KEY>
   s3cmd need no config: they are the sources `mc-<alias>` and `s3cfg`.
 - A connection of `kind = "s3"` without `endpoint_url` is a second AWS login;
   its URLs stay `s3://bucket/key`.
-- A [catalog](../reference/catalogs.md) keeps a dataset of one of these
-  stores on the home screen with `connection = "onprem"`.
+- To keep a dataset from one of these stores on the home screen, add it to a
+  [catalog](../reference/catalogs.md) with `connection = "onprem"`.
 - [Cloud connections](../reference/cloud-sources.md) has every field.
 
 ## Google Cloud Storage
@@ -131,7 +133,7 @@ datui gs://<BUCKET>/<KEY>
 
 Every project the login can see is listed on the home screen. A project named
 in `DATUI_GCP_PROJECT` or `GOOGLE_CLOUD_PROJECT` is listed first, and is the
-one listed when the login cannot search for projects.
+only one listed when the login cannot search for projects.
 
 ## Azure Blob Storage
 
@@ -162,13 +164,13 @@ With Azure tools installed and nobody signed in, the Azure row says
 signed in already; the install script puts datui in `~/.local/bin` there
 ([without root](../getting-started/installation.md#without-root)).
 
-Reading blobs as a sign-in needs the *Storage Blob Data Reader* role; Owner or
-Contributor on the subscription is not enough, except on an account with
-hierarchical namespace where your login owns the container. When a read is
-refused for that reason and the login may fetch the account's keys, datui reads
-with the key instead, as the Azure Portal does; the details pane says
-`access key`, and the key stays in memory. An account with shared-key access
-disabled is never read that way. To read only as your sign-in:
+Reading blobs as a signed-in user needs the *Storage Blob Data Reader* role;
+Owner or Contributor on the subscription is not enough, except on an account
+with hierarchical namespace where your login owns the container. When a read is
+refused for that reason and the login is allowed to fetch the account's keys,
+datui reads with the key instead, as the Azure Portal does. The details pane
+then says `access key`, and the key is kept only in memory. datui never reads
+that way from an account with shared-key access disabled. To read only as your sign-in:
 
 ```toml
 [cloud]
@@ -195,9 +197,9 @@ datui abfss://release@overturemapswestus2.dfs.core.windows.net/
 | A login | Signs with it. If refused, tries once more unsigned, and remembers for the session which worked (Azure refuses a public container to a login from another tenant) |
 
 The home screen's [Example datasets](home-screen.md#example-datasets) lists
-public data with publishers and licenses. A
-[catalog](../reference/catalogs.md) of your own reads its datasets with no
-login, even on a machine that has one, with `auth = "anonymous"`. GBIF's
+public data with publishers and licenses. In a
+[catalog](../reference/catalogs.md) of your own, `auth = "anonymous"` reads a
+dataset with no login, even on a machine that has one. GBIF's
 occurrence snapshots are CC BY-NC 4.0 (<https://www.gbif.org/terms>):
 
 ```toml,catalog
@@ -230,9 +232,10 @@ names.
 
 ![datui on NOAA's S3 bucket: Central Park's daily highs charted by year, then YEAR=2024 typed as a path with ~, opened as one table of 38,466,379 rows and scrolled to 2024-12-31](../demos/noaa-cloud.gif)
 
-Central Park from the catalog's bookmark, then <kbd>q</kbd>, <kbd>~</kbd>, the
-path, <kbd>Enter</kbd> twice and <kbd>G</kbd>. Recorded on a wired home
-connection with a cold cache; the waits are real.
+Central Park opens from the catalog's bookmark. Then <kbd>q</kbd>,
+<kbd>~</kbd>, the path, <kbd>Enter</kbd> twice and <kbd>G</kbd> open 2024 and go
+to its last row. Recorded on a wired home connection with a cold cache; the
+waits are real.
 
 The most common measurements:
 
@@ -248,8 +251,8 @@ stations, then `SNOW`, `TMAX` and `TMIN`. The query reads every file.
 
 ![The ELEMENT counts for NOAA 2024: PRCP first with 11,456,946 observations from 42,758 stations, then SNOW, TMAX and TMIN](../demos/screenshots/remote-noaa-elements.png)
 
-Which measurements are most common in 2024? <kbd>:</kbd>, the query,
-<kbd>Enter</kbd>: 74 elements, `PRCP` first.
+Which measurements are most common in 2024? Press <kbd>:</kbd>, type the query
+and press <kbd>Enter</kbd>: 74 elements, `PRCP` first.
 
 In `ELEMENT=TMAX`, `USW00094728` is Central Park and `DATA_VALUE` is tenths
 of a degree Celsius:
@@ -281,8 +284,9 @@ GROUP BY month
 ORDER BY month
 ```
 
-12 rows, 4,179 to 4,761 blocks a month. The table opens before every footer
-is read; the bar counts them, `Reading footers: …`, while you work.
+12 rows, 4,179 to 4,761 blocks a month. The table opens before every Parquet
+footer is read, and datui's footer counts them (`Reading footers: …`) while you
+work.
 
 ## HTTP and HTTPS
 
@@ -292,8 +296,8 @@ datui --format csv 'https://earthquake.usgs.gov/fdsnws/event/1/query?format=csv&
 ```
 
 The file is downloaded to the temp directory (`--temp-dir`), then opened;
-`--format` names a format the URL does not. The copy is removed when datui
-exits, a quit mid-download included ([temporary files](open-files.md#temporary-files)).
+use `--format` when the URL does not show the format. The copy is removed when
+datui exits, even after a quit mid-download ([temporary files](open-files.md#temporary-files)).
 A model file's header is read by range instead ([Model files](../formats/model-files.md)).
 
 Every request datui makes, to a web server or a cloud store, sends
@@ -304,8 +308,8 @@ its version, nothing about you or the machine. `http.user_agent` replaces it:
 datui -c 'http.user_agent=<NAME/VERSION (CONTACT)>' <URL>
 ```
 
-A file that is not there (404) or a host that does not answer says so on its home
-row, in place of the size, before you open it.
+If a file is missing (404) or its host does not answer, its row on the home
+screen says so in place of the size, before you open it.
 
 ## What gets read
 
@@ -331,7 +335,7 @@ and asks:
 | **Reopen** | Lists the files again and puts back the query, filters, sort, column changes, reshape, sample, saved view and drill-down. A query or view that met the gone file is run again |
 | **Close** | Leaves the dataset as it was |
 
-The question comes from the table's rows, a query, a view, Sort & Filter, a
+Any of these can ask: the table's rows, a query, a view, Sort & Filter, a
 drill-down, Pivot & Melt, Analysis and Data Quality, Value Counts, find, a
 chart, the inspector, a sample, copy and export. The Pivot & Melt preview
 says it in its own pane and does not ask.

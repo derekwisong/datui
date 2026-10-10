@@ -8,25 +8,25 @@ data.
 datui
 ```
 
-<kbd>Ctrl</kbd>+<kbd>O</kbd> returns here from anywhere, on the dataset you
-left. A filter typed before comes back selected: typing replaces it, and
-<kbd>~</kbd> opens the path prompt. Typing narrows the list; <kbd>Esc</kbd> clears
-the filter and selects the first dataset; <kbd>Enter</kbd> does what the footer
-names for the row. Every key is
+<kbd>Ctrl</kbd>+<kbd>O</kbd> returns here from anywhere, with the dataset you
+left selected. A filter you typed earlier comes back selected: typing replaces
+it, and <kbd>~</kbd> opens the path prompt. Typing narrows the list,
+<kbd>Esc</kbd> clears the filter and selects the first dataset, and
+<kbd>Enter</kbd> does what the footer names for the selected row. Every key is
 in the [keyboard reference](../reference/keyboard-shortcuts.md#home-screen).
 
-datui opens with no row picked: the details pane describes the directory, and
-nothing is read until you choose a row. The row it lands on (the file opened
-last, else the first dataset or a directory's all-files row) is tinted, without
-the rail: it is what the first key below takes.
+datui starts with no row picked: the details pane describes the directory, and
+nothing is read until you choose a row. The starting row (the file opened last,
+else the first dataset or a directory's all-files row) is tinted, without the
+rail; the keys below act on it.
 
 | Key, with no row picked | Does |
 |---|---|
-| <kbd>↑</kbd> <kbd>↓</kbd> | Picks the row datui landed on, and its details and first rows show |
+| <kbd>↑</kbd> <kbd>↓</kbd> | Picks the starting row and shows its details and first rows |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> <kbd>Home</kbd> <kbd>End</kbd> <kbd>Ctrl</kbd>+<kbd>↑</kbd> <kbd>Ctrl</kbd>+<kbd>↓</kbd>, the wheel | Move from it |
 | A click | Picks the row clicked |
 | (type) | Narrows the list and picks the best match |
-| <kbd>Enter</kbd> | Opens the row datui landed on, as the footer names it |
+| <kbd>Enter</kbd> | Opens the starting row, as the footer names it |
 | <kbd>←</kbd> <kbd>→</kbd> <kbd>Space</kbd> <kbd>Delete</kbd> <kbd>Ctrl</kbd>+<kbd>D</kbd> <kbd>Ctrl</kbd>+<kbd>E</kbd> <kbd>Ctrl</kbd>+<kbd>X</kbd> | Nothing until a row is picked |
 
 ## Open a file or directory
@@ -36,29 +36,30 @@ the rail: it is what the first key below takes.
 3. To browse a directory rather than read it as one table, press <kbd>→</kbd>.
 
 To type a path or URL, press <kbd>~</kbd> with the filter empty. The list
-shows the directory being typed, narrowed by the name after the last `/`, with
-the first name picked. A pasted path goes in whole; a line break in it is a
-space, so a paste never presses Enter. A path starting with `~` pasted on an
-empty filter opens the prompt with it.
+shows the directory you are typing, narrowed by the name after the last `/`,
+with the first name picked. A pasted path goes in whole, and a line break in it
+becomes a space, so a paste never presses Enter. Pasting a path that starts
+with `~` into an empty filter opens the prompt with that path.
 
 | Key at the `~` prompt | Does |
 |---|---|
-| <kbd>Tab</kbd> | Completes the one name left, with `/` for a directory, or what the names share; a name picked further down, that name |
+| <kbd>Tab</kbd> | Completes the only name left (with `/` for a directory), or the part the names share. With a name picked further down, completes that name |
 | <kbd>↑</kbd> <kbd>↓</kbd> | Picks a name from the list; <kbd>↑</kbd> from the first takes the path as typed |
-| <kbd>Enter</kbd> | Opens the picked name, or the path as typed: a file opens, a directory is gone inside as <kbd>→</kbd> does |
+| <kbd>Enter</kbd> | Opens the picked name, or the path as typed: a file opens, and a directory is entered, as <kbd>→</kbd> does |
 | <kbd>Esc</kbd> | Closes the prompt |
 
 `s3://`, `gs://` and `az://` complete from names datui already knows (listed
 sources and prefixes, recents, the example datasets); nothing is asked of the
 store, so `s3://noaa` <kbd>Tab</kbd> gives `s3://noaa-ghcn-pds/`.
 
-The footer names where the list is, how many rows the filter matches and the
-order, and at the right <kbd>Enter</kbd>, named for what it does on the selected
-row (`Open`, `Open all`, `Inside`, `Look`), what <kbd>Ctrl</kbd>+<kbd>D</kbd> does
-there (`^D Add` to `catalog.toml`, or `^D Forget` on its own rows), `^E Docs` on a
-catalog row, then `? keys` (`F1 keys` once a filter is typed, since <kbd>?</kbd>
-then types). Letters type into the filter, so
-<kbd>q</kbd> types `q`, and a paste goes into it whole; <kbd>Ctrl</kbd>+<kbd>C</kbd> quits.
+The footer shows where the list is, how many rows match the filter, and the
+sort order. At the right it shows <kbd>Enter</kbd>, named for what it does on
+the selected row (`Open`, `Open all`, `Inside`, `Look`); what
+<kbd>Ctrl</kbd>+<kbd>D</kbd> does there (`^D Add` to `catalog.toml`, or
+`^D Forget` on that file's own rows); `^E Docs` on a catalog row; then `? keys`
+(`F1 keys` once a filter is typed, since <kbd>?</kbd> then types a `?`). Letters
+type into the filter, so <kbd>q</kbd> types `q`, and a paste goes into it whole;
+<kbd>Ctrl</kbd>+<kbd>C</kbd> quits.
 
 ## Sections
 
@@ -74,34 +75,36 @@ then types). Letters type into the filter, so
 | `Found` | [Search](#search-below-the-current-directory) results, while you type |
 
 A directory's section starts with `..`: <kbd>Enter</kbd> on it goes up a
-level, as <kbd>Backspace</kbd> does inside a directory. A directory too big for
-the list beside the other sections shows its first rows (about two fifths of the
-list's height) and `… 4,958 more`: <kbd>Enter</kbd> or <kbd>→</kbd> there
-shows them all. <kbd>←</kbd> on a row past the first ones cuts it back; on a first
-row it folds the section. Its heading counts every row, and a typed filter
-searches them all by name. Size, time and counts are read for the rows on
-screen and half a page either way, as they come into view: listing or
-filtering a directory of 50,000 files reads only its names. Sorted by size or
-time, every row is stat'ed (nothing is read); sorted by rows, every row is
-measured, and the more row says `· measuring` until they are.
+level, as <kbd>Backspace</kbd> does inside a directory. When a directory is
+too big to list beside the other sections, it shows its first rows (about two
+fifths of the list's height) and `… 4,958 more`; <kbd>Enter</kbd> or
+<kbd>→</kbd> there shows them all. <kbd>←</kbd> on a row past the first ones
+cuts the list back; on one of the first rows, it folds the section. The
+section's heading counts every row, and a typed filter searches them all by
+name. Size, time and counts are read only for the rows on screen and half a
+page either way, as they come into view, so listing or filtering a directory of
+50,000 files reads only its names. Sorting by size or time stats every row
+(without reading any data); sorting by rows measures every row, and the
+`… more` row says `· measuring` until that is done.
 <kbd>Ctrl</kbd>+<kbd>R</kbd> stats the rows shown again, and measures again any
 file changed since.
 
-Folds last between runs. A heading says why its section is listed and how it
-stands: `catalog.toml`, `catalog` or `built in` for a catalog; `nfs4`, `listing`
-(then `1,200 so far` as a slow share answers), `unavailable`, `not answering ·
-Ctrl+R retries` after 30 seconds with nothing from a share or a bucket (the
-rows so far stay), or `first 5,000` when a listing stops there.
+A section stays folded or unfolded between runs. Each heading says why its section
+is listed and what state it is in: `catalog.toml`, `catalog` or `built in` for a
+catalog; `nfs4`, `listing` (then `1,200 so far` as a slow share answers),
+`unavailable`, `not answering · Ctrl+R retries` after 30 seconds with no answer
+from a share or a bucket (the rows so far stay), or `first 5,000` when a
+listing stops there.
 
 ### Recent
 
-Recent ranks datasets by frecency, as zoxide ranks directories: an open counts
-four times within the hour, twice within the day, half within the week and a
-quarter after. A place (a directory) ranks with its best dataset, and
+Recent ranks datasets by frecency (how often and how recently you opened
+them), as zoxide ranks directories. An open counts four times within the hour,
+twice within the day, half within the week, and a quarter after that. A place (a directory) ranks with its best dataset, and
 entering it shows all its files, opened or not. The cursor starts on the
-dataset opened last, so <kbd>Enter</kbd> reopens it. Places fill up to a third
-of the list at first; `… more in … places` shows the rest, and <kbd>←</kbd>
-on a place past the first ones cuts it back, as in a directory's section.
+dataset opened last, so <kbd>Enter</kbd> reopens it. At first, places take up
+to a third of the list; `… more in … places` shows the rest, and <kbd>←</kbd>
+on a place past the first ones cuts the list back, as in a directory's section.
 
 ### Add to your catalog
 
@@ -111,7 +114,7 @@ on a place past the first ones cuts it back, as in a directory's section.
 Opening a dataset adds its directory to Recent. To keep a dataset or a
 directory on the home screen, press <kbd>Ctrl</kbd>+<kbd>D</kbd> on its row: it
 goes into `catalog.toml`, listed under `MY DATASETS`. <kbd>Ctrl</kbd>+<kbd>D</kbd>
-again on that row forgets it. A directory there is a row to step into.
+again on that row forgets it. A directory there is a row you can step into.
 
 | Row | <kbd>Ctrl</kbd>+<kbd>D</kbd> adds |
 |---|---|
@@ -132,8 +135,8 @@ background. `Found` lists matches by their path from there.
 
 | What | How |
 |---|---|
-| Matching | fzf-style: runs of characters, word starts and file names rank higher; matched characters are underlined. Known Parquet column names match too, after names: those of files measured so far, this session or an earlier one; typing reads no file to find more. What you open often ranks first, in every section |
-| The walk | Once per directory, keeping every data file; each key narrows the last result |
+| Matching | fzf-style: runs of characters, word starts and file names rank higher, and matched characters are underlined. Parquet column names datui already knows match too, ranked after file names: the columns of files measured so far, in this session or an earlier one. Typing never reads a file to find more. What you open often ranks first, in every section |
+| The walk | Each directory is walked once, keeping every data file; each key you type narrows the last result |
 | Results | The best 1,000 (`[home.search] max_results`); the heading counts the rest and the entries read: `1,000 of 2,500 matches`, `23,041 searched` |
 | Cut short | The heading says `partial · out of time`, `· too many files` or `· too deep` |
 | Skipped | Hidden directories (`.git`, `.venv`), build and dependency directories (`node_modules`, `target`, `build`, `dist`, `vendor`, `site-packages`, `__pycache__`, `venv`, `env`), other file systems, symlinks. `.gitignore` is not read |
@@ -146,14 +149,14 @@ and automounts.
 
 ![The home screen with NOAA daily weather (GHCN-D) selected: the details pane gives its kind, storage, publisher, license, links, and the first COLUMNS notes, with 6 more](../demos/screenshots/home-details.png)
 
-What is NOAA daily weather, and who publishes it? <kbd>↓</kbd> to it: an S3
-dataset from NOAA, CC0, no login, with notes on its columns.
+What is NOAA daily weather, and who publishes it? Press <kbd>↓</kbd> to it: an
+S3 dataset from NOAA, CC0, no login, with notes on its columns.
 <kbd>Ctrl</kbd>+<kbd>E</kbd> shows them all.
 
 | Field | Says |
 |---|---|
 | Kind, storage | The format, and the file system or object store. A file a [format spec](../formats/format-specs.md#which-spec-reads-a-file) reads, by its glob or its magic, says `acme.l2feed file` |
-| Spec, match | For a spec's file: the spec's file, cut in the middle to fit, and what named the file, a chip per condition: `[magic L2FD] [version 3]`, drawn without brackets where the header tint shows ([format specs](../formats/format-specs.md#which-spec-reads-a-file)) |
+| Spec, match | For a file a spec reads: the spec's file (shortened in the middle to fit), and the conditions that matched the file, one chip each: `[magic L2FD] [version 3]`, drawn without brackets where the header tint shows ([format specs](../formats/format-specs.md#which-spec-reads-a-file)) |
 | Read | How a file opens: `lazy scan`, `decompressed copy`, `converted to Arrow`, `in memory`, or `download →` one of those ([formats](../formats/index.md#how-each-format-is-read)) |
 | Contains | Files by format, directories and partitions |
 | Rows × columns | Known counts; blank when finding them would read the data. Parquet counts come from footers, up to 64 files; past that, `? × 39+` |
@@ -164,15 +167,15 @@ dataset from NOAA, CC0, no login, with notes on its columns.
 | Records | For a file a format spec reads as several record types: `2 types (spec)`, then each type and its column count (`add 5 · cancel 3`) |
 | `▲ footer unreadable` | A Parquet file whose footer could not be read; opening it will most likely fail too |
 | Enter, `→` | What <kbd>Enter</kbd> and <kbd>→</kbd> do on a directory, a door, a file of tables or a file of record types: `all partitions as one table`, `step in · first row opens all`, `its tables`, `every record` and `its record types` |
-| `COLUMNS` | What each column means, for a catalog dataset or bookmark with column notes, or a file a format spec documents: the catalog's description, unit and legend each over the spec's, as in the [Documentation view](#documentation-view), or `2 values` for a legend alone; `… 4 more` when the pane is short. <kbd>Ctrl</kbd>+<kbd>E</kbd> shows the whole page |
+| `COLUMNS` | What each column means, for a catalog dataset or bookmark with column notes, or a file a format spec documents. The catalog's description, unit and legend each take precedence over the spec's, as in the [Documentation view](#documentation-view); a legend alone shows as `2 values`. `… 4 more` when the pane is short. <kbd>Ctrl</kbd>+<kbd>E</kbd> shows the whole page |
 | `ROWS` | The first eight rows of a local CSV, TSV, PSV, NDJSON, Arrow IPC or Parquet file, read when the row is selected. <kbd>Enter</kbd> opens the file on those rows, so they are read once. `[home] preview_max` sets the largest file read; `0` turns it off. Network shares and object stores are not read before opening |
 
-Below about 100 columns the pane hides, and the first rows show in a strip at
-the bottom when the list leaves four lines free.
+When the terminal is narrower than about 100 columns, the pane hides, and the
+first rows show in a strip at the bottom if the list leaves four lines free.
 
 ### What a row's label says
 
-A row reads its name, `/` for a directory, two spaces, and a label:
+A row shows its name (with `/` for a directory), two spaces, and a label:
 `data/  3 dirs`, `events/  hive`, `Palmer penguins  csv`.
 
 | Label | Means |
@@ -183,21 +186,21 @@ A row reads its name, `/` for a directory, two spaces, and a label:
 | `3 safetensors`, `2 gguf` | A model: weight files with only JSON beside them; opens as one table |
 | `3 tables` | A file that holds tables: SQLite, NumPy `.npz`, a flight or CAN log, a workbook, an NMEA log, an ELF file. See [Info panel](dataset-info.md#file-format-tabs) |
 | `mixed` | Several formats |
-| `3 dirs`, `dir`, `dir+` | Only directories; nothing; the listing was cut short |
+| `3 dirs`, `dir`, `dir+` | Only directories; empty; the listing was cut short |
 | `bucket`, `container` | The top of an object store |
-| `…`, a spinner, `?` | Not looked at yet, being looked at, failed |
+| `…`, a spinner, `?` | Not checked yet; being checked; failed |
 
-A SQLite database with several tables lists them inside, a row each. A
-workbook, an NMEA log or an ELF file opens its first worksheet, fixes or
-symbols on <kbd>Enter</kbd>, and a file a [format spec](../formats/format-specs.md)
+A SQLite database with several tables lists them inside, one row each. On
+<kbd>Enter</kbd>, a workbook opens its first worksheet, an NMEA log its fixes,
+and an ELF file its symbols. A file a [format spec](../formats/format-specs.md)
 reads as several record types opens whole; <kbd>→</kbd> lists the record types,
 and <kbd>Enter</kbd> on one opens it alone. A Hugging Face cache lists its splits,
 as tables, above its files.
 
-Names starting `_` or `.` and `_$folder$` markers are passed over, except
+Names starting with `_` or `.`, and `_$folder$` markers, are skipped, except
 partitions such as `_date=2025-01-01`.
 
-A file not read lazily says how, dim beside its name:
+A file that is not read with a lazy scan says how it is read, dimmed beside its name:
 
 | Marker | Opening it |
 |---|---|
@@ -206,8 +209,8 @@ A file not read lazily says how, dim beside its name:
 | `in memory` | Reads it whole into memory: JSON, NDJSON, systemd journal, Avro, ORC, Excel, MIDI, ELF; SafeTensors and GGUF read only their header |
 | `downloads` | Downloads it first |
 
-The `… files with no reader` row, or <kbd>Ctrl</kbd>+<kbd>A</kbd>, shows files
-no reader takes, dimmed; `[home] show_unreadable = true` shows them always.
+The `… files with no reader` row, or <kbd>Ctrl</kbd>+<kbd>A</kbd>, shows the files
+datui has no reader for, dimmed; `[home] show_unreadable = true` shows them always.
 <kbd>Enter</kbd> on a local one, or <kbd>Ctrl</kbd>+<kbd>X</kbd> on any local
 file, shows its bytes in the [hex view](hex-view.md). Inside a SQLite database
 the same row shows its internal tables.
@@ -216,7 +219,7 @@ the same row shows its internal tables.
 
 <a id="two-doors-into-every-directory"></a>
 
-<kbd>→</kbd> always goes inside. <kbd>Enter</kbd> does what the bar says:
+<kbd>→</kbd> always goes inside. <kbd>Enter</kbd> does what the footer says:
 `Open all` (one table), `Inside`, `Open` (a file), or `Look` (find out first).
 Inside, the first row reads the directory as one table and says how:
 
@@ -252,8 +255,9 @@ and old versions may show. How files combine is in
 
 <a id="collections"></a>
 
-A catalog is a file of named datasets, local and remote, shown as a section
-under its label: `catalog.toml` (`MY DATASETS`), each file in `catalogs/` or listed in `catalogs`, and
+A catalog is a file of named datasets, local and remote. Each catalog is a
+section of the home screen, under its label: `catalog.toml` (`MY DATASETS`),
+each file in `catalogs/` or listed in the `catalogs` setting, and
 `EXAMPLE DATASETS`. [Catalogs](../reference/catalogs.md) has the keys.
 
 ```text
@@ -271,7 +275,7 @@ under its label: `catalog.toml` (`MY DATASETS`), each file in `catalogs/` or lis
 | A local directory | Goes inside | What is inside |
 | A local path with nothing there | Says so | `missing` |
 | A directory in an object store | Goes inside; <kbd>Backspace</kbd> at its top comes back | `dataset` |
-| A remote file | Opens it | Its format, and its size: `~16.1 KiB`, the catalog's word for it, until a `HEAD` sent when the row is selected measures it |
+| A remote file | Opens it | Its format and size: `~16.1 KiB` is the catalog's figure, until a `HEAD` request, sent when the row is selected, measures it |
 
 Nothing else remote is asked for until you open or enter a dataset. Inside one,
 the title reads `My datasets › Weather › by_year`, and the pane gives its
@@ -281,14 +285,14 @@ description, publisher, license, homepage, URL and login.
 
 <kbd>Ctrl</kbd>+<kbd>E</kbd> on a catalog row, on a place inside one, or on a
 file whose [format spec documents it](../reference/format-specs.md#documentation),
-shows what the catalog and the spec say of it, full screen. The Info panel's
+shows what the catalog and the spec say about it, full screen. The Info panel's
 Documentation tab shows the same page for the open dataset.
 
 ![The Documentation view of NOAA daily weather: catalog, publisher, license, url, links, and the COLUMNS notes, ELEMENT's legend open: PRCP precipitation in tenths of mm, SNOW, SNWD, TMAX, TMIN, TAVG](../demos/screenshots/home-docs.png)
 
-What does `ELEMENT` hold? <kbd>Ctrl</kbd>+<kbd>E</kbd> on NOAA daily weather,
-<kbd>↓</kbd> to `ELEMENT`, <kbd>Enter</kbd>: `TMAX` is the maximum temperature
-in tenths of a degree C.
+What does `ELEMENT` hold? Press <kbd>Ctrl</kbd>+<kbd>E</kbd> on NOAA daily
+weather, <kbd>↓</kbd> to `ELEMENT`, and <kbd>Enter</kbd>: `TMAX` is the maximum
+temperature in tenths of a degree C.
 
 | Line | Says |
 |---|---|
@@ -303,11 +307,11 @@ in tenths of a degree C.
 | `FOOTER` | A spec's named `[footer]` fields that have a description or unit, with them |
 | `BOOKMARKS` | The places to start from, and their paths |
 
-When a catalog lists a file a spec documents, the catalog's description and
-`documentation` link stand. Where both note a column, the catalog's
-description, unit and legend each stand when it gives one, and the spec's fill
-the rest: a catalog description of `price` keeps the spec's unit. The columns
-only the spec notes, and its record types, stay.
+When a catalog lists a file that a spec documents, the catalog's description
+and `documentation` link win. Where both describe a column, the catalog's
+description, unit and legend each win when the catalog gives one, and the spec
+fills in the rest: a catalog description of `price` keeps the spec's unit.
+Columns only the spec describes, and its record types, are kept.
 
 | Key | Does |
 |---|---|
@@ -318,9 +322,9 @@ only the spec notes, and its record types, stay.
 | <kbd>Esc</kbd> | Back to the list |
 
 <kbd>o</kbd> opens only the page's links (`homepage`, `documentation`,
-`url`), and only `http://` and `https://` ones, without a user name or
-password. It first asks `Open <URL>?` with the whole URL, a host that is not
-ASCII in its `xn--` form; <kbd>Enter</kbd> opens it, <kbd>Esc</kbd> does not.
+`url`), and only `http://` and `https://` links without a user name or
+password. It first asks `Open <URL>?` with the whole URL, showing a non-ASCII
+host in its `xn--` form; <kbd>Enter</kbd> opens it, <kbd>Esc</kbd> does not.
 Over SSH, or on Linux and the BSDs without `DISPLAY` or `WAYLAND_DISPLAY`,
 the browser would not open in front of you, so <kbd>o</kbd> is not offered:
 <kbd>y</kbd> copies the link.
@@ -330,8 +334,8 @@ filter has no cursor, and is edited at its end.
 
 ### Example datasets
 
-Don't want them? `[home] hide = ["examples"]` in `config.toml` hides them for
-good; <kbd>Delete</kbd> on the heading hides them until `datui cache clear`; an
+To hide them for good, set `[home] hide = ["examples"]` in `config.toml`.
+<kbd>Delete</kbd> on the heading hides them until `datui cache clear`. An
 `examples.toml` of your own, in `catalogs/`, replaces them.
 
 `Example datasets` is the catalog that comes with datui: data its publishers
@@ -357,8 +361,7 @@ heading of your own catalog shows its file and its `[home] hide` id.
 | Overture Maps | Places, buildings, addresses, roads and boundaries, by release | ODbL; places CDLA Permissive 2.0 and Apache 2.0 |
 
 - A web file's row gives its format and size, `~` until measured. One under 50 MiB downloads
-  without a question; if it passes 50 MiB while downloading, it stops and
-  asks once. A URL typed at <kbd>~</kbd> is always asked about.
+  without asking; if a download passes 50 MiB, it stops and asks once. A URL typed at <kbd>~</kbd> is always asked about.
 - Once opened, a dataset comes back under Recent by its catalog name.
 - The pane gives the publisher, license and homepage; check the license
   before you use the data.
@@ -431,9 +434,9 @@ listed, and no credential command (`aws`, `gcloud`, `az`, a
 | Every source on screen | <kbd>Ctrl</kbd>+<kbd>R</kbd> |
 | Every source at launch | `[cloud] list_on_start = true` |
 
-A slow endpoint holds up only its own row. A level lists 1,000 names at a
-time (`3,000 so far`) and stops at 5,000 (`first 5,000`); typing past them
-asks the bucket for the names the filter starts, and the heading adds
+A slow endpoint holds up only its own row. Each level lists 1,000 names at a
+time (`3,000 so far`) and stops at 5,000 (`first 5,000`). After that, typing a
+filter asks the bucket for the names that start with it, and the heading adds
 `+ 1,907 STATION=USW*`. <kbd>Backspace</kbd> or <kbd>Esc</kbd> stops a
 listing. Typing also matches bucket names listed before, from every source.
 
@@ -477,19 +480,19 @@ dataset opens.
 
 ## Loading
 
-<kbd>Enter</kbd> shows the load's progress; <kbd>Ctrl</kbd>+<kbd>O</kbd>
-cancels it. A file that fails to open shows the error here, and
+After <kbd>Enter</kbd>, the loading screen shows the load's progress;
+<kbd>Ctrl</kbd>+<kbd>O</kbd> cancels it. A file that fails to open shows the error here, and
 <kbd>Esc</kbd> returns to the dataset open before. A network location that
 does not answer reads `unavailable`; <kbd>Ctrl</kbd>+<kbd>R</kbd> tries again.
-A share or FUSE mount (sshfs, rclone, gcsfuse) is only ever read off the key
-thread, so one that stalls never freezes the screen.
+A share or FUSE mount (sshfs, rclone, gcsfuse) is always read in the
+background, so one that stalls never freezes the screen.
 
 ## What datui remembers
 
 The cache holds recent paths, how often and how lately each was opened, what
 was measured (counts, column names, size, modification time), query history,
-section folds, bucket listings, hidden cloud sources and each terminal's last
-answer about its background, never the data. Your
+section folds, bucket listings, hidden cloud sources and whether each terminal
+last reported a dark or light background. It never holds the data. Your
 catalog is in the config directory, not the cache. Local facts are measured again when a file's size or time changes.
 
 | Command | Removes |

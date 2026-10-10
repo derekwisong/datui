@@ -1,18 +1,18 @@
 # Query data
 
-<kbd>:</kbd> opens the command line in the footer: a row number, or a query in
-SQL or q over the table. The prefix says what <kbd>Enter</kbd> will do: `row:`
-while the line is digits alone, else `sql:` or `q:`.
-<kbd>Ctrl</kbd>+<kbd>T</kbd> switches between SQL and q, keeping what is typed,
-and the line opens in that language next time. With a query in effect the line
-opens on its text, in its language, selected: typing replaces it, the arrows
-edit it.
+<kbd>:</kbd> opens the command line in the footer, where you type a row number
+or a query in SQL or q. The prefix shows what <kbd>Enter</kbd> will do: `row:`
+while the line holds only digits, otherwise `sql:` or `q:`.
+<kbd>Ctrl</kbd>+<kbd>T</kbd> switches between SQL and q, keeping what you typed,
+and the command line opens in that language next time. With a query in effect,
+the line opens on that query's text, in its language, selected: typing replaces
+it, and the arrow keys edit it.
 
 | Prefix | What you type | Example, on NYC flights (2013) |
 |---|---|---|
 | `row:` | A row number | `1200` |
 | `sql:` | SQL over the table named `df` | `SELECT carrier, COUNT(*) AS flights FROM df GROUP BY carrier ORDER BY flights DESC` |
-| `q:` | Datui's short language, a subset of q, described below | `select flights: count flight by carrier` |
+| `q:` | A subset of the q language, [described below](#q) | `select flights: count flight by carrier` |
 
 | Key | Action |
 |---|---|
@@ -29,9 +29,9 @@ Running a query, or clearing one, starts a fresh view: sidebar filters, sort,
 frozen columns and pivot/melt are dropped. Apply them after the query. A SQL
 `ORDER BY` on columns marks their headers `▲` or `▼`, as a sort does, until a
 sort from the sidebar replaces it. The
-command line stays open until the query's first rows are in. A query that fails on
-the data is not applied: the reason shows under it, the table keeps what it
-showed, and the query stays to fix.
+command line stays open until the query's first rows arrive. If a query fails on
+the data, it is not applied: the reason shows under it, the table is unchanged,
+and the query stays in the line for you to fix.
 
 To start in q, set [`query.default_mode`](../reference/settings.md#query):
 
@@ -57,10 +57,10 @@ GROUP BY hour
 ORDER BY hour
 ```
 
-Statements are split over lines here to read; type them on one line, or press
-<kbd>Alt</kbd>+<kbd>Enter</kbd> for a new line. 19 rows, one per scheduled
-hour. The mean delay climbs from 0.5 minutes at 5:00 to 26.1 at 21:00. In
-q the same query is one line:
+Statements are split over several lines here to make them easier to read;
+type them on one line, or press <kbd>Alt</kbd>+<kbd>Enter</kbd> for a new line.
+The result has 19 rows, one per scheduled hour. The mean delay climbs from 0.5
+minutes at 5:00 to 26.1 at 21:00. The same query is shorter in q:
 
 ```q,dataset=flights,network,rows=19
 select mean_delay: avg dep_delay, flights: count dep_delay by hour where origin = "JFK"
@@ -82,12 +82,13 @@ F9 is last at +21.9 minutes; AS, at −9.9, arrives early on average. Press
 ![The carrier ranking: F9 first at 21.92 minutes late on average, AS last at −9.93, with the cursor on AS](../demos/screenshots/query-carriers.png)
 
 Which airlines arrive late? F9, by 21.9 minutes on average; AS arrives early.
-<kbd>:</kbd>, the query, <kbd>Enter</kbd>, then <kbd>G</kbd> to AS.
+Press <kbd>:</kbd>, type the query and press <kbd>Enter</kbd>, then <kbd>G</kbd>
+to go to AS.
 
 ![AS drilled down: Group: carrier=AS, 714 flights, origin EWR and dest SEA on every row](../demos/screenshots/query-drill.png)
 
-Where does AS fly? <kbd>Enter</kbd> on AS: its 714 flights, Newark (`EWR`) to
-Seattle (`SEA`). <kbd>Esc</kbd> goes back.
+Where does AS fly? Press <kbd>Enter</kbd> on AS: its 714 flights all go from
+Newark (`EWR`) to Seattle (`SEA`). <kbd>Esc</kbd> goes back.
 
 ## SQL
 
@@ -104,12 +105,12 @@ not the full SQL standard. A statement reads one table, `df`:
 Sidebar filters and sort are not part of `df`, and neither is the previous
 statement's result: each statement starts from `df` again.
 
-A statement's rows come back in one order on every read: joins, unions,
+A statement's rows come back in the same order on every read. Joins, unions,
 `DISTINCT` and groupings keep the order of the rows they read (a grouping that
 [drills down](#drill-down-a-group-by), with no `ORDER BY` or `LIMIT`, is sorted by
-its keys instead), and rows that an `ORDER BY` ranks equal keep the order they
-come in. Paging through the result never repeats a row or skips one, and a
-`LIMIT` without `ORDER BY` keeps the same rows.
+its keys instead), and rows that an `ORDER BY` ranks equal keep their input
+order. So paging through the result never repeats or skips a row, and a
+`LIMIT` without `ORDER BY` always returns the same rows.
 
 ## Write SQL
 
@@ -158,8 +159,9 @@ Liverpool on 2020-10-04 and Manchester Utd 9–0 Southampton on 2021-02-02.
 
 ![Premier League 2020-21 matches by goals: Aston Villa against Liverpool on 2020-10-04 and Manchester Utd against Southampton on 2021-02-02 lead with 9](../demos/screenshots/query-goals.png)
 
-Which matches had the most goals? <kbd>:</kbd>, the query, <kbd>Enter</kbd>:
-`match_date` is a date and `goals` a number, two nine-goal matches first.
+Which matches had the most goals? Press <kbd>:</kbd>, type the query and press
+<kbd>Enter</kbd>. `match_date` is a date and `goals` a number, with the two
+nine-goal matches first.
 
 NYC flights has a `time_hour` timestamp, but it is in UTC, so a late-evening
 departure lands on the next day. The local date is in `year`, `month` and `day`:
@@ -199,11 +201,10 @@ such as pandas' `Timestamp.max`:
 ## Drill down a GROUP BY
 
 Press <kbd>Enter</kbd> on a row of a `GROUP BY` result to see the rows behind
-it: the rows of `df` that passed the `WHERE` and share the row's keys, with
-every column of `df`, a key that is a column first. A null key shows the rows
-whose key is null.
-<kbd>Esc</kbd> comes back to the grouped rows, cursor and frozen columns as
-they were.
+it: the rows of `df` that passed the `WHERE` and share the row's keys. They
+show every column of `df`, with any key that is a plain column first. A null
+key shows the rows whose key is null. <kbd>Esc</kbd> goes back to the grouped
+rows, with the cursor and frozen columns as they were.
 
 On **NYC yellow taxis (January 2025)**, 3.5 million trips, group by a
 computed key:
@@ -227,9 +228,9 @@ ORDER BY pickup_hour
 
 Where a statement does not drill, <kbd>Enter</kbd>
 [inspects the row](inspecting-rows.md) instead. Where it drills, the footer
-says `Enter Drill`. A result that drills has the
-keys that lead it frozen, as a q `by` does. Without `ORDER BY` or `LIMIT` it comes back sorted by its keys,
-since Polars returns groups in no fixed order.
+says `Enter Drill`. A result that drills has its
+leading key columns frozen, as a q `by` does. Without `ORDER BY` or `LIMIT`, it
+is sorted by its keys, because Polars returns groups in no fixed order.
 
 ## q
 
@@ -243,7 +244,7 @@ q is a subset of the q language, not a complete q or q-sql, and it
 | NYC yellow taxis | `select trips: count VendorID by tpep_pickup_datetime.hour` | `SELECT EXTRACT(HOUR FROM tpep_pickup_datetime) AS hour, COUNT(VendorID) AS trips FROM df GROUP BY hour` |
 | US baby names | `select total: sum n by name where name in ["Emma", "Jennifer", "Olivia"]` | `SELECT name, SUM(n) AS total FROM df WHERE name IN ('Emma', 'Jennifer', 'Olivia') GROUP BY name` |
 
-`from df` is optional and accepted after the columns and `by`, as in q and like SQL's `FROM df`:
+`from df` is optional. It goes after the columns and `by`, as in q:
 `select mean_delay: avg dep_delay by hour from df where origin = "JFK"`.
 
 Right to left means `a * b + c` is `a * (b + c)`, and `(a + b) * 2 > 100` is
@@ -253,10 +254,10 @@ and more examples on the built-in datasets.
 
 A `by` clause without aggregates gives one row per group; with aggregates,
 one summary row per group. Press <kbd>Enter</kbd> on a group to drill down to
-its rows; a row above the table names the group, and <kbd>Esc</kbd> comes back.
-A group without aggregates shows the columns you selected; an aggregated one shows
-every column of the rows behind it, after the query's `where`, key columns first.
-The cursor, frozen columns and column order come back with <kbd>Esc</kbd>.
+its rows; a row above the table names the group. A group without aggregates
+shows the columns you selected; an aggregated group shows every column of the
+rows behind it that pass the query's `where`, key columns first. <kbd>Esc</kbd>
+goes back, restoring the cursor, frozen columns and column order.
 
 ## Save a query
 

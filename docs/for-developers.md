@@ -1,9 +1,9 @@
 # Development overview
 
-datui is Rust: [Ratatui](https://github.com/ratatui/ratatui) draws it,
-[Polars](https://github.com/pola-rs/polars) reads and computes, the book is
-[mdBook](https://rust-lang.github.io/mdBook) and the demos are recorded with
-[VHS](https://github.com/charmbracelet/vhs).
+datui is written in Rust. [Ratatui](https://github.com/ratatui/ratatui) draws
+the interface and [Polars](https://github.com/pola-rs/polars) reads and
+computes. The book is built with [mdBook](https://rust-lang.github.io/mdBook),
+and the demos are recorded with [VHS](https://github.com/charmbracelet/vhs).
 
 ```bash,repo
 git clone https://github.com/derekwisong/datui.git
@@ -13,8 +13,8 @@ cargo run -- --help
 ```
 
 `cargo build` writes the debug binary to `target/debug/datui`;
-`cargo build --release` builds the one that is packaged, slower to build and
-faster to run. Install Rust with [rustup](https://rustup.rs/).
+`cargo build --release` builds the binary that is packaged; it takes longer to
+build and runs faster. Install Rust with [rustup](https://rustup.rs/).
 
 ## Workspace
 

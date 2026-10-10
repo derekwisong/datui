@@ -1,7 +1,7 @@
 # Glossary
 
-One word per concept, in the interface, the help (`?`), these docs, the
-command line, the config file and Python.
+datui uses one word per concept everywhere: in the interface, the help (`?`),
+these docs, the command line, the config file and Python.
 
 | Use | Not | Means |
 |---|---|---|
@@ -13,11 +13,11 @@ command line, the config file and Python.
 | **filter** | narrow, search | Keep only the matching rows: Sort & Filter (`s`), `+` `-` on a cell, a find kept with `Ctrl+G`, a query |
 | **narrow** | filter | Shrink a picker or a list by typing: pickers, the home screen's filter |
 | **search** | find | On the home screen only: look below the current directory for files |
-| **catalog** | collection, sources, remembered directory | A file of named datasets the home screen lists as a section: `catalog.toml` (yours; <kbd>Ctrl</kbd>+<kbd>D</kbd> adds to it), the files in `catalogs/` and those `catalogs` lists, and the **Example datasets** |
+| **catalog** | collection, sources, remembered directory | A file of named datasets the home screen lists as a section: `catalog.toml` (yours; <kbd>Ctrl</kbd>+<kbd>D</kbd> adds to it), the files in `catalogs/` and those the `catalogs` setting lists, and the **Example datasets** |
 | **Example datasets** | Public datasets, public catalog | The catalog that comes with datui, id `examples`: data its publishers host, read with no login. An `examples.toml` of your own replaces it |
 | **theme** | color scheme | A named set of colors, one per slot: `night-market`, `day-market`, or a file in `themes/`; `theme.dark` and `theme.light` pick one per mode |
 | **bookmark** | suggested place | A place inside a catalog dataset to start from: `bookmarks."Name" = "path/"` |
-| **documentation** | codebook, data dictionary, column notes | What a catalog says of its dataset and its columns, or a format spec of its files: `documentation`, `columns`, a field's `description` and `unit`; the details pane's `COLUMNS` notes on the home screen, the Documentation view (<kbd>Ctrl</kbd>+<kbd>E</kbd>) and Info's Documentation tab |
+| **documentation** | codebook, data dictionary, column notes | What a catalog says about a dataset and its columns, or a format spec about its files: `documentation`, `columns`, a field's `description` and `unit`; the details pane's `COLUMNS` notes on the home screen, the Documentation view (<kbd>Ctrl</kbd>+<kbd>E</kbd>) and Info's Documentation tab |
 | **Info** (the Info panel) | Dataset Info | `i`: facts about the dataset |
 | **inspector** | row inspector, detail | One row's values (`Space`) |
 | **byte inspector** | inspector | The hex view's decoder of the bytes at the cursor |
@@ -25,7 +25,7 @@ command line, the config file and Python.
 | **format spec** | binary spec, spec file | A TOML file that describes a format (`--format`) |
 | **record type** | table | One layout of a format spec's records, a `[[variants]]` table in the spec: "2 types" on the home screen; `--table NAME` opens one |
 | **dictionary** | dict, DBC file, FIX dictionary | Field or signal definitions a log is decoded with (`--dict`), in QuickFIX XML, DBC or TOML |
-| **home screen** | browse files, start screen | Where `datui` with no path, `q` and `Ctrl+O` go |
+| **home screen** | browse files, start screen | The screen that `datui` with no path, `q` and `Ctrl+O` open |
 | **cloud source** | cloud browser, remote | A store listed on the home screen. *Remote* only as an adjective for files not on this machine |
 | **recent** | history | A dataset opened before. *History* is only the prompts' history |
 | **sample** | limit, row limit | The rows an analysis reads from a larger table |
@@ -52,7 +52,7 @@ these terms and no others:
 
 ## Pane wording
 
-A pane or status line is a `label  value` pair: the value is a term or a
-number, not a clause. The only free-standing line is a one-line callout behind
-`▲` (ASCII `!`) for something that will surprise, such as `▲ footer unreadable`.
-Why something is so belongs in these docs.
+Each line of a pane or status line is a `label  value` pair, where the value is
+a term or a number, not a clause. The one exception is a one-line callout after
+`▲` (ASCII `!`) for something surprising, such as `▲ footer unreadable`.
+Explanations of why belong in these docs.

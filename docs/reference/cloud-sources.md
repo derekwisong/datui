@@ -1,10 +1,10 @@
 # Cloud connections
 
-The `[cloud]` settings and the `[[cloud.connections]]` tables: which stores the
-home screen lists and how each logs in. Logging in is in
-[Connect to cloud storage](../user-guide/remote-data.md); named lists of datasets
-are [catalogs](catalogs.md); every `[cloud]` key and its default is in
-[Settings](settings.md#cloud).
+The `[cloud]` settings and `[[cloud.connections]]` tables decide which stores the
+home screen lists and how each one logs in. For a guide to logging in, see
+[Connect to cloud storage](../user-guide/remote-data.md). Named lists of datasets
+are [catalogs](catalogs.md). [Settings](settings.md#cloud) lists every `[cloud]`
+key and its default.
 
 ```toml
 [cloud]
@@ -13,15 +13,16 @@ discover = ["s3", "gcs"]
 list_on_start = false
 ```
 
-An S3-compatible endpoint, its keys and region come from `AWS_*` variables or a
-connection below, never from keys in this file.
+An S3-compatible endpoint, its keys and its region come from `AWS_*` variables or
+a connection (below), never from keys in this file.
 
 ## Connections
 
-Add one `[[cloud.connections]]` table per account or endpoint. Each is a row under
-`CLOUD`, and a dataset in a [catalog](catalogs.md) can name one with
+Add one `[[cloud.connections]]` table per account or endpoint. Each appears as a row
+under `CLOUD`, and a dataset in a [catalog](catalogs.md) can name one with
 `connection`. Replace `<ENDPOINT>` with your server's URL and `<BUCKET>` with a
-bucket the keys can read; the keys come from the variables named:
+bucket the keys can read. The keys come from the environment variables the entry
+names:
 
 ```toml,template
 [[cloud.connections]]
@@ -48,8 +49,8 @@ buckets = ["<BUCKET>"]
 | `access_key_id_env`, `secret_access_key_env`, `session_token_env` | s3 | Names of the environment variables holding the keys |
 | `profile` | s3 | An AWS profile to take the keys, endpoint and region from, instead of the `*_env` keys |
 | `account` | azure | Required, except with `connection_string_env`. The storage account |
-| `account_key_env`, `sas_env`, `connection_string_env` | azure | The environment variable holding the account key, a SAS token, or a connection string. At most one; with none, `az` or Azure PowerShell signs in |
-| `secret_command` | s3, azure | A program that prints the secret: the S3 secret access key (with `access_key_id_env`), or the Azure account key (with `account`). Instead of `secret_access_key_env` or `account_key_env` |
+| `account_key_env`, `sas_env`, `connection_string_env` | azure | The environment variable holding the account key, a SAS token, or a connection string. Set at most one. With none, `az` or Azure PowerShell signs in |
+| `secret_command` | s3, azure | A program that prints the secret: the S3 secret access key (with `access_key_id_env`), or the Azure account key (with `account`). Use it instead of `secret_access_key_env` or `account_key_env` |
 | `credentials_file` | gcs | A service account key or application-default login file, absolute or under `~`. Its project is listed first |
 | `configuration` | gcs | A `gcloud` configuration whose login to use. Without it, the application-default login |
 | `project` | gcs | The project listed first, and the one listed when projects cannot be searched |
@@ -76,33 +77,35 @@ kind = "gcs"
 credentials_file = "<KEY_FILE>"
 ```
 
-`secret_command` runs the program directly, split into arguments like a shell would
-but with no shell, so `|`, `$VAR` and globs mean nothing. It runs once, the first
+`secret_command` splits the command into arguments as a shell would, but runs the
+program directly with no shell, so `|`, `$VAR` and globs have no special meaning. It runs once, the first
 time the source is used, with a 30-second limit. What it prints is kept in memory
-for the session and never written, logged or shown; when it fails, only its error
+for the session and never written, logged or shown. When it fails, only its error
 output is reported. On Windows, a `.cmd` or `.bat` wrapper works.
 
-`env_files` reads variables from files such as a project's `.env`, relative to the
-directory datui starts in (or under `~`). Only cloud variable names are taken: the
-`AWS_*`, `GOOGLE_*` and `AZURE_*` ones datui reads, `MC_HOST_<alias>`, and the
-names `[[cloud.connections]]` point at with `*_env`. Anything else in the file, a
-database password for one, is ignored. A variable already set in the environment
-wins, and nothing is exported, so no program datui starts sees them. No `.env` file is read unless it is listed in `env_files`.
+`env_files` reads variables from files such as a project's `.env`. A path is
+relative to the directory datui starts in, or can start with `~`. Only cloud
+variables are read: the `AWS_*`, `GOOGLE_*` and `AZURE_*` ones datui uses,
+`MC_HOST_<alias>`, and the names `[[cloud.connections]]` entries point at with
+`*_env`. Anything else in the file, such as a database password, is ignored. A
+variable already set in the environment wins. Nothing is exported, so programs
+datui starts do not see these variables. No `.env` file is read unless it is listed in `env_files`.
 
 The [home screen](../user-guide/home-screen.md#which-sources-appear) says what
 `discover` and `list_on_start` change there. `-c cloud.discover=none` overrides
 `discover` for one run.
 
 `instance_identity = true` lets datui ask the cloud VM it runs on for credentials:
-an EC2 instance role, a GCE service account, an Azure VM's managed identity. Off by default: outside those VMs the metadata request waits for a timeout. Cloud Run and Cloud Functions, and
-Azure App Service, Functions and Container Apps, set variables that say an identity
-is there (`K_SERVICE`, `IDENTITY_ENDPOINT`, `MSI_ENDPOINT`), and are used without
-the setting.
+an EC2 instance role, a GCE service account, an Azure VM's managed identity. It is off by default because outside those VMs the metadata request waits for a
+timeout. Cloud Run and Cloud Functions, and Azure App Service, Functions and
+Container Apps, set variables that show an identity is available (`K_SERVICE`,
+`IDENTITY_ENDPOINT`, `MSI_ENDPOINT`), so datui uses those identities without the
+setting.
 
 A secret written directly into a source (`secret_access_key = "..."`) is refused,
-and so is any key datui does not recognize, with the key named. A variable that is
-named but not set is reported when the source is used; the source never falls back
-to other keys in the environment.
+and so is any key datui does not recognize; the error names the key. A variable
+that is named but not set is reported when the source is used. The source never
+falls back to other keys in the environment.
 
 ## Detected sources
 
@@ -127,19 +130,19 @@ To show only some kinds of login found on the machine, or none:
 |---|---|---|
 | unset, `true` or `"all"` | `all` | Every login found |
 | `false` or `"none"` | `none` | None |
-| `["gcs"]`, `"s3,azure"` | `gcs`, `s3,azure` | Those kinds. `s3` covers AWS profiles, `mc`, s3cmd, and `s3-default` its keys from `AWS_*` |
+| `["gcs"]`, `"s3,azure"` | `gcs`, `s3,azure` | Those kinds. `s3` covers AWS profiles, `mc`, s3cmd, and `s3-default` with its keys from `AWS_*` |
 
-`[[cloud.connections]]` entries appear whatever it says.
+`[[cloud.connections]]` entries appear whatever `discover` says.
 
-A source in the config with the same name as one of these replaces it. The same
-server with the same key found in several places is one row; its note lists
-every place. `mc`'s placeholder aliases and its public `play` server are left
+A connection in the config with the same name as a detected source replaces it.
+When the same server and key are found in several places, they share one row,
+and its note lists every place. `mc`'s placeholder aliases and its public `play` server are left
 out. [Connect to cloud storage](../user-guide/remote-data.md#several-stores-at-once)
 has worked examples of `[[cloud.connections]]`.
 
-Google Cloud lists every project the login can find, the one named in the
-environment or the active `gcloud` configuration first — and alone when
-searching for projects is refused. A profile that needs the AWS CLI shows
+Google Cloud lists every project the login can find. The project named in the
+environment or the active `gcloud` configuration comes first, and is the only
+one listed when searching for projects is refused. A profile that needs the AWS CLI shows
 `needs the AWS CLI` when it is not installed, and an expired SSO login shows
 the CLI's message; see [AWS profiles](../user-guide/remote-data.md#aws-profiles). A cloud
-VM's identity is not discovered unless `[cloud] instance_identity = true`, above.
+VM's identity is discovered only with `[cloud] instance_identity = true` (above).

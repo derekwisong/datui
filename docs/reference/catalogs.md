@@ -1,8 +1,8 @@
 # Catalogs
 
-A catalog is one TOML file of named datasets, local or remote. The home screen
-lists each catalog as a section under its label, one row per dataset, wherever
-the data lives. Logins are in [Cloud connections](cloud-sources.md).
+A catalog is a TOML file that lists named datasets, local or remote. The home
+screen shows each catalog as a section under its label, with one row per
+dataset. Logins are set up in [Cloud connections](cloud-sources.md).
 
 ```bash,expect=exit
 datui catalog show examples
@@ -11,21 +11,21 @@ datui catalog show examples
 | Catalog | File | Written by |
 |---|---|---|
 | Yours, `My datasets` | `catalog.toml` in the config directory | You, and <kbd>Ctrl</kbd>+<kbd>D</kbd> on the home screen |
-| A team's or a project's | Any `*.toml` in `catalogs/` in the config directory, or a file elsewhere that `catalogs` in the config lists | You; datui only reads it |
+| A team's or a project's | Any `*.toml` in `catalogs/` in the config directory, or a file elsewhere listed by `catalogs` in the config | You; datui only reads it |
 | `Example datasets` | Comes with datui; `datui catalog show examples` prints it | datui |
 
 | Command | Does |
 |---|---|
 | `datui catalog show` | List the catalogs: id, label, datasets, where each comes from, and its file |
 | `datui catalog show NAME` | Print a catalog's file: `mine`, `examples`, or another catalog's file name |
-| `datui catalog check FILE` | Check a file and list its datasets; a mistake is named by its line, with the fix |
+| `datui catalog check FILE` | Check a file and list its datasets. A mistake is reported with its line and the fix |
 | `datui config init` | Write the config file, an empty `catalog.toml` and the `catalogs/` directory; an existing `catalog.toml` is kept |
 
 ## A catalog file
 
-The top level holds `label` and `description`. Every other table is one
-dataset: its key is a short id (lowercase letters, digits and `-`), and `name`
-is its row:
+The top level holds `label` and `description`. Every other table is a
+dataset. Its key is a short id (lowercase letters, digits and `-`), and `name`
+is the name its row shows:
 
 ```toml,catalog
 label = "My datasets"
@@ -54,7 +54,7 @@ path = "/mnt/nas/data"
 ```
 
 A dataset in a private store names the
-[connection](cloud-sources.md#connections) that reads it; replace `<BUCKET>`
+[connection](cloud-sources.md#connections) to read it with. Replace `<BUCKET>`
 and `<CONNECTION>` with yours:
 
 ```toml,template
@@ -78,7 +78,7 @@ connection = "<CONNECTION>"
 | `connection` | Object-store `url` only: the [`[[cloud.connections]]`](cloud-sources.md#connections) entry whose login reads it |
 | `description`, `publisher`, `license` | Shown in the details pane and the Documentation view |
 | `homepage`, `documentation` | Links: the dataset's page, and an `https://` link to the publisher's documentation of its columns |
-| `size` | HTTP(S) `url` only: about how many bytes the file is, shown as `~33 MiB` until datui measures it |
+| `size` | HTTP(S) `url` only: the file's approximate size in bytes, shown as `~33 MiB` until datui measures it |
 | `columns.NAME` | What a column means; see [Columns](#columns) |
 | `bookmarks."Name"` | A place inside a directory to start from, relative to the dataset's `path` or object-store `url` |
 
@@ -91,21 +91,21 @@ share a name or a location.
 | Local directory | Steps inside | |
 | Object-store file | Opens it | `auth` or `connection` |
 | Object-store directory | Steps inside. <kbd>Backspace</kbd> at its top comes back to the list | `auth` or `connection` |
-| HTTP(S) file | Downloads it, after asking, and opens it; a `public` file under 50 MiB is downloaded without asking, and asks if it passes 50 MiB | No login |
+| HTTP(S) file | Asks, then downloads and opens it. An Example datasets file under 50 MiB downloads without asking, and asks if the download passes 50 MiB | No login |
 
 | Reading | Means |
 |---|---|
-| `auth = "auto"` | As the URL typed at <kbd>~</kbd> would be: the login found for that cloud, unsigned when there is none or it is refused |
+| `auth = "auto"` | As the same URL typed at <kbd>~</kbd> would be: with the login found for that cloud, or unsigned when there is none or it is refused |
 | `auth = "anonymous"` | No credentials and no signature, whatever login the machine has |
 | `connection = "<name>"` | That connection's login and nothing else. Its `kind` must match the URL, and an Azure connection's `account` the URL's account |
 
-HTTP(S) is always read with no login, and its URL must name a file datui reads:
-a web server has no listing to browse. Name a connection with `connection`, not
-in the URL: `s3://onprem@bucket/` is refused.
+HTTP(S) is always read with no login, and its URL must name a file datui can
+read, since a web server has no listing to browse. Name a connection with the
+`connection` key, not in the URL: `s3://onprem@bucket/` is refused.
 
-A catalog holds references, not data. Nothing is read until a dataset is opened
-or entered, so a remote directory's row says `dataset` until then; a web file's
-row sends one `HEAD` when it is selected, to show its real size. A local path
+A catalog holds references, not data. Nothing is read until you open or enter a
+dataset, so a remote directory's row says `dataset` until then. A web file's
+row sends one `HEAD` request when selected, to show the file's real size. A local path
 with nothing there stays listed and says `missing`.
 
 <a id="codebooks"></a>
@@ -117,8 +117,8 @@ A dataset can say what its columns mean. The home screen's details pane lists
 them, <kbd>Ctrl</kbd>+<kbd>E</kbd> shows them in the
 [Documentation view](../user-guide/home-screen.md#documentation-view), and once
 the data is open the [Info panel](../user-guide/dataset-info.md) and the
-[inspector](../user-guide/inspecting-rows.md) explain each one. Write a column
-on one line; give a long legend a table of its own:
+[inspector](../user-guide/inspecting-rows.md) explain each one. Write each column
+on one line, and give a long list of values a table of its own:
 
 ```toml,catalog
 [weather]
@@ -139,24 +139,25 @@ S = "failed spatial consistency check"
 |---|---|
 | `description` | What the column holds. Shown in Info's `About` column and under the inspector's value |
 | `unit` | Its unit or format, shown after the description: `tenths of mm`, `YYYYMMDD` |
-| `values` | Code to meaning. The inspector shows the meaning of the value under the cursor; `""` is what a blank or null value means. Codes match exactly, case included |
+| `values` | A map from code to meaning. The inspector shows the meaning of the value under the cursor; `""` is what a blank or null value means. Codes match exactly, case included |
 
-A column with its own `[id.columns.NAME.values]` table is written with dotted
-keys, `columns.NAME.description = "..."`. Written as an inline table,
-`columns.NAME = { ... }`, TOML closes it, and the `values` table after it is an
-error; `datui catalog check` names the line and the fix.
+A column with its own `[id.columns.NAME.values]` table must use dotted keys,
+`columns.NAME.description = "..."`. TOML closes an inline table,
+`columns.NAME = { ... }`, so a `values` table after it is an error.
+`datui catalog check` names the line and the fix.
 
-A bookmark is listed under its dataset. <kbd>Enter</kbd> on it opens the place
-whole, as one table; <kbd>→</kbd> steps inside.
+A bookmark is listed under its dataset. <kbd>Enter</kbd> on a bookmark opens
+the whole place as one table, and <kbd>→</kbd> steps inside.
 
 ## Your catalog
 
-<kbd>Ctrl</kbd>+<kbd>D</kbd> on a home row adds it to `catalog.toml`: a file, a
-directory, an object-store place, or a heading's directory, under the row's
-name, with an id made from the name. A row from another catalog is copied with
-its location, login and description. <kbd>Ctrl</kbd>+<kbd>D</kbd> or
-<kbd>Delete</kbd> on a row of `catalog.toml` forgets it: its table, and the
-tables under it, go; the rest of the file, comments included, stays as written.
+<kbd>Ctrl</kbd>+<kbd>D</kbd> on a home row adds it to `catalog.toml`. The row can
+be a file, a directory, an object-store place, or a heading's directory. It is
+saved under the row's name, with an id made from the name. A row from another
+catalog is copied with its location, login and description.
+<kbd>Ctrl</kbd>+<kbd>D</kbd> or <kbd>Delete</kbd> on a row from `catalog.toml`
+forgets it: its table and the tables under it are removed, and the rest of the
+file, comments included, stays as written.
 datui never writes any other catalog file.
 
 Directories that <kbd>Ctrl</kbd>+<kbd>D</kbd> kept before 0.4.0 move into
@@ -170,17 +171,17 @@ Drop a catalog file into `catalogs/` in the config directory
 (`~/.config/datui/catalogs/` on Linux, beside `catalog.toml`): every `*.toml`
 there is a catalog, read in file-name order, and other files are ignored.
 
-A catalog file elsewhere, such as a team's on a share, is listed in the config;
-a relative path is relative to the config file that lists it, so a team's
-shared config can list its catalog beside it. Replace `<CATALOG_FILE>` with the
+List a catalog file stored elsewhere, such as a team's on a shared drive, in
+the config. A relative path is relative to the config file that lists it, so a
+team's shared config can list a catalog stored next to it. Replace `<CATALOG_FILE>` with the
 file's path:
 
 ```toml,template
 catalogs = ["<CATALOG_FILE>"]
 ```
 
-A file you cannot rename or edit is listed as a table, `path` and an `id` or a
-`label` of its own. Replace `<CATALOG_FILE>` with the file's path:
+To give a file you cannot rename or edit an id or label of its own, list it as a
+table with `path` and an `id` or `label`. Replace `<CATALOG_FILE>` with the file's path:
 
 ```toml,template
 catalogs = [{ path = "<CATALOG_FILE>", id = "acme", label = "ACME" }]
@@ -189,32 +190,34 @@ catalogs = [{ path = "<CATALOG_FILE>", id = "acme", label = "ACME" }]
 | Key | Meaning |
 |---|---|
 | `path` | Required. The file |
-| `id` | The catalog's id, in place of the file's name: what `[home] hide` names, and what decides a `public` catalog |
+| `id` | The catalog's id, in place of the file's name. `[home] hide` names catalogs by id, and the id `examples` replaces the Example datasets |
 | `label` | The section's title, in place of the file's own `label` |
 
-A catalog file's name, without `.toml`, is its id. A listed file that is not
-there is skipped with a warning, as a missing import is.
+A catalog file's name, without `.toml`, is its id. A listed file that does not
+exist is skipped with a warning, as a missing import is.
 
-A catalog file with a mistake, `catalog.toml` included, is left out rather than
-stopping datui: its `file:line: message` goes to standard error and the log, and
-its section on the home screen reads `▲ acme.toml:3 ...` in place of its rows.
-Two files of one id, wherever they are, or one named `mine.toml`, are such a
-mistake, naming both. <kbd>Ctrl</kbd>+<kbd>D</kbd> never writes a `catalog.toml`
-it cannot read; `datui catalog check` names the mistake and exits non-zero.
-`catalogs` adds up across
+A catalog file with a mistake, `catalog.toml` included, is left out instead of
+stopping datui. Its `file:line: message` goes to standard error and the log, and
+its section on the home screen shows `▲ acme.toml:3 ...` instead of its rows.
+Two files with the same id, wherever they are, are such a mistake, and so is a
+file named `mine.toml`; the message names both files.
+<kbd>Ctrl</kbd>+<kbd>D</kbd> never writes to a `catalog.toml` it cannot read,
+and `datui catalog check` names the mistake and exits non-zero.
+
+`catalogs` lists combine across
 [imported files](../user-guide/configuration.md#importing-other-config-files),
-imports first. The sections follow `My datasets`: `catalogs/` in file-name
+imports first. The sections come after `My datasets`: `catalogs/` in file-name
 order, then the listed files, then `Example datasets`.
 
 | To | Do |
 |---|---|
 | Replace the example datasets | A catalog file named `examples.toml`, in `catalogs/` or listed: it replaces the whole catalog; nothing bundled is merged in |
-| Rename a catalog you cannot edit | List it as `{ path = "...", id = "acme", label = "ACME" }`: a shared `catalog.toml` or `examples.toml` then takes neither role |
-| Hide a catalog, or one entry | `[home] hide = ["acme", "examples/nyc-taxis"]`: a catalog by its id, an entry as `catalog/id`; hides add up across files, and a name that hides nothing is warned about (`public`, the id before 0.4.0, says it is now `examples`). `datui catalog show` marks a hidden catalog `(hidden by home.hide)` |
-| Edit the example datasets | `datui catalog show examples > examples.toml`, move `examples.toml` into the config directory's `catalogs/` (`~/.config/datui/catalogs/` on Linux), then edit it. Written there directly, the shell empties the file before datui reads it |
+| Rename a catalog you cannot edit | List it as `{ path = "...", id = "acme", label = "ACME" }`: a shared `catalog.toml` or `examples.toml` then no longer acts as yours or as the examples |
+| Hide a catalog, or one entry | `[home] hide = ["acme", "examples/nyc-taxis"]`: a catalog by its id, an entry as `catalog/id`; hides combine across files, and a name that hides nothing is warned about (`public`, the id before 0.4.0, says it is now `examples`). `datui catalog show` marks a hidden catalog `(hidden by home.hide)` |
+| Edit the example datasets | `datui catalog show examples > examples.toml`, move `examples.toml` into the config directory's `catalogs/` (`~/.config/datui/catalogs/` on Linux), then edit it. Don't redirect straight into `catalogs/`: the shell empties the file before datui reads it |
 
-Catalogs are apart from `RECENT`. Whatever you open goes into `RECENT` whether
-or not a catalog names it.
+Catalogs are separate from `RECENT`. Everything you open goes into `RECENT`,
+whether or not a catalog lists it.
 
 ## The example datasets
 

@@ -1,7 +1,7 @@
 # Manual pages
 
-datui's manual pages, as `man` shows them once datui is installed from a
-package or the release archive. After `cargo install`, `datui man` shows them,
+These are datui's manual pages, as `man` shows them when datui is installed
+from a package or the release archive. After `cargo install`, `datui man` shows them,
 and `datui man --dir ~/.local/share/man` installs them where `man` finds them.
 
 <!-- generated: pages -->

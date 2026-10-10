@@ -3,8 +3,8 @@
 <kbd>y</kbd> copies a cell, a row, the view, the table or a Python script
 that rebuilds it to the system clipboard.
 
-The dialog picks a scope and a format; the last choices are kept, so repeating
-a copy is <kbd>y</kbd> <kbd>Enter</kbd>.
+In the dialog you pick a scope and a format. It remembers your last choices,
+so repeating a copy is <kbd>y</kbd> <kbd>Enter</kbd>.
 
 ## Copy a table into a note
 
@@ -25,11 +25,8 @@ ORDER BY avg_calories DESC
 
 ![The Copy dialog over the restaurant summary, Scope Table and Format Markdown: Copy all 8 rows as Markdown](../demos/screenshots/copy-markdown.png)
 
-Which chain's menu is heaviest, in a note? <kbd>y</kbd>, **Table**,
-**Markdown**: the dialog says what <kbd>Enter</kbd> copies, all 8 rows,
-Mcdonalds first at 640 calories.
-
-Paste into a note:
+The dialog says what <kbd>Enter</kbd> copies: all 8 rows. Paste them into a
+note:
 
 ```text
 | restaurant  | avg_calories | avg_protein | items |
@@ -52,10 +49,10 @@ rows; **View** includes only the rows on screen.
 
 | Scope | What it copies |
 |---|---|
-| Cell | The current row's value in one column, as plain text: the column cursor's, unless you pick another |
+| Cell | The current row's value in one column, as plain text. The column is the column cursor's unless you pick another |
 | Row | The current row |
 | View | The rows on screen, with every displayed column |
-| Table | Everything the view holds, as an export would: rows and columns as queried, filtered and sorted |
+| Table | Everything in the view, as an export would write it: all rows and columns as queried, filtered and sorted |
 | Python (Polars) | The view as a Python script that rebuilds it; see [below](#copy-the-view-as-python) |
 
 | Format | Details |
@@ -64,32 +61,35 @@ rows; **View** includes only the rows on screen.
 | CSV | Comma-separated |
 | Markdown | A pipe table, padded and aligned, numeric columns right-aligned |
 
-A TSV or CSV copy to the `native` clipboard also carries an HTML table flavor,
-so a paste into a spreadsheet or an email keeps its columns while a paste into
-a terminal stays plain text. Values are raw, like an export: display formatting
-is not applied, a float is copied as stored rather than as the table rounds it,
-and a null is an empty field. List and struct cells are JSON,
+A TSV or CSV copy to the `native` clipboard also carries an HTML table, so a
+paste into a spreadsheet or an email keeps its columns, while a paste into a
+terminal is plain text.
+
+Values are copied raw, as in an export: display formatting is not applied, a
+float is copied as stored rather than rounded as on screen, and a null is an
+empty field. List and struct cells are JSON,
 as in a [CSV export](exporting-data.md#lists-and-structs), and a duration is
 [ISO 8601](exporting-data.md#durations) text such as `PT3723.004S`. A binary column is
-[base64](exporting-data.md#binary) in a Table copy; Cell, Row and View copies
-hold the `‹binary›` placeholder, since the screen never reads the bytes. The **Header**
-toggle is on for View and Table and off for Row; a Markdown table always keeps
-its header. The **Header** row leaves the dialog for the Cell and Python
-scopes and the Markdown format, and **Format** for the Python scope, where
-they mean nothing.
+[base64](exporting-data.md#binary) in a Table copy. Cell, Row and View copies
+hold the `‹binary›` placeholder, because the screen never reads the bytes.
+
+The **Header** toggle is on for View and Table and off for Row, and a Markdown
+table always has its header. The dialog hides **Header** for the Cell and
+Python scopes and the Markdown format, and hides **Format** for the Python
+scope, since they do not apply there.
 
 To copy one field of the current row, including a hidden or binary one,
 press <kbd>Space</kbd> to [inspect the row](inspecting-rows.md), move to the
 field and press <kbd>y</kbd>.
 
-A large Table copy asks first, counting binary at its base64 size. A binary
-column's size comes from the Parquet footers read to open a local directory of
-Parquet files or a single Parquet object in cloud storage. A copy whose size is
-not known asks too: the row count is still being read, or no footer gave a
-binary column's size, as for a single local file.
-Above 200 MiB the copy is refused with a pointer to
+A large Table copy asks you to confirm first, counting a binary column at its
+base64 size. datui learns a binary column's size from the Parquet footers it
+reads to open a local directory of Parquet files or a single Parquet object in
+cloud storage. A copy also asks when its size is not known: the row count is
+still being read, or no footer gave a binary column's size, as for a single
+local file. A copy over 200 MiB is refused, and the message points to
 [export](exporting-data.md). An `osc52` copy asks only when its cap is over
-10 MiB, since it never holds more than the cap.
+10 MiB, since it never copies more than the cap.
 
 ## Copy the view as Python
 
@@ -108,12 +108,12 @@ df = (
 )
 ```
 
-`df` is a LazyFrame; `df.collect()` reads it. The steps come in the order
-they were applied:
+`df` is a LazyFrame, and `df.collect()` reads it. The steps come in the order
+you applied them:
 
 | In datui | In the script |
 |---|---|
-| The file | The reader below, with the reader options datui used (delimiter, header, comment lines, skipped lines and rows, null values), then the column names it trimmed and the text columns it read as numbers or dates; a directory or bucket prefix as a glob |
+| The file | The reader from the table below, with the options datui used (delimiter, header, comment lines, skipped lines and rows, null values). Then the column names datui trimmed, and the text columns it read as numbers or dates. A directory or bucket prefix becomes a glob |
 | Query | `.filter`, `.group_by().agg()` ordered by the keys, `.select`, `.unique` |
 | SQL | `.sql(..., table_name="df")` |
 | A find kept with <kbd>Ctrl</kbd>+<kbd>G</kbd> | `.filter` on each column as text, `pl.any_horizontal` across them |
@@ -122,9 +122,9 @@ they were applied:
 | Filters, sort, <kbd>r</kbd> | `.filter`, `.sort(..., nulls_last=True, maintain_order=True)`, `.reverse()` |
 | Hidden and moved columns | `.select([...])` |
 
-The reader is the one for the format datui read the data as, which a file
-known by its bytes rather than its name (a `.bin` log, a Parquet part file
-with no extension) is read as too:
+The reader matches the format datui read the data as, including for a file it
+recognized by its contents rather than its name (a `.bin` log, a Parquet part
+file with no extension):
 
 | Format | Reader |
 |---|---|
@@ -156,20 +156,20 @@ with no extension) is read as too:
 | text | `pl.LazyFrame` |
 | systemd journal | `pl.scan_ndjson` |
 
-A reader that is not a scan reads the file whole and ends in `.lazy()`; so
-does an Arrow IPC stream, read with `pl.read_ipc_stream`. A SQLite table is
-read with `SELECT *` through Python's `sqlite3`, the one table of a database
-opened without `--table` included. A NumPy array is loaded with `np.load`,
-an archive's by its name, and named as datui names its columns. Where datui
-read the data lazily and the script reads it whole, a comment says so in the
-words of the Info panel's `Read:` line: `# Read: lazy in datui; pl.read_database
+A reader that is not a scan reads the whole file and ends in `.lazy()`. So
+does an Arrow IPC stream, which is read with `pl.read_ipc_stream`. A SQLite
+table is read with `SELECT *` through Python's `sqlite3`, including the one
+table of a database opened without `--table`. A NumPy array is loaded with
+`np.load` (by its name, from an archive), and its columns get the names datui
+gives them. When datui read the data lazily but the script reads it whole, a
+comment says so, in the words of the Info panel's `Read:` line: `# Read: lazy in datui; pl.read_database
 reads the file whole into memory.`
 
-These start from `df = ...` for you to fill in, with a comment naming the
-file and the table on screen (`flight.bin --table GPS`):
+In these cases the script starts with `df = ...` for you to fill in, and a
+comment names the file and the table on screen (`flight.bin --table GPS`):
 
-- Data piped in on standard input; recorded with `--tee FILE`, it is read
-  from FILE instead
+- Data piped in on standard input. If you recorded it with `--tee FILE`, the
+  script reads FILE instead
 - A format with `df = ...` above, or a read through a
   [format spec](../formats/format-specs.md)
 - A file compressed with bzip2 or xz
@@ -177,22 +177,23 @@ file and the table on screen (`flight.bin --table GPS`):
   `--comment` longer than five characters
 
 A step the script cannot repeat, such as a drill-down into a group whose rows are
-lists, is a comment, and the steps after it are commented out.
+lists, becomes a comment, and the steps after it are commented out.
 
-A file in an object store is read where datui read it, with `storage_options`
-saying what datui read it with that is not a secret:
+A file in an object store is read from the same place, with `storage_options`
+holding the settings datui used that are not secret:
 
 | Store | `storage_options` |
 |---|---|
-| S3 | The endpoint and region in effect, a named source's own for `s3://<source>@bucket` |
+| S3 | The endpoint and region in effect; for `s3://<source>@bucket`, the named source's own |
 | Azure | The account an `abfss://` URL names |
 | Any, read with no signature | `skip_signature` |
 
-Credentials never go in: give Polars yours where it looks for them, such as
-the provider's environment variables. `pl.read_json`, `pl.read_avro` and
-`pl.read_excel` read no object store; the script says to download the file.
-A user and password in a URL, and an HTTP URL's query string (where a signed
-URL keeps its signature), are left out, with a comment saying so.
+Credentials are never included. Give Polars yours where it looks for them,
+such as the provider's environment variables. `pl.read_json`, `pl.read_avro`
+and `pl.read_excel` cannot read from an object store, so the script says to
+download the file. A user name and password in a URL, and an HTTP URL's query
+string (where a signed URL keeps its signature), are left out, and a comment
+says so.
 
 ## Keys
 
@@ -220,18 +221,18 @@ chooses the mechanism:
 | `native` | The display server (Wayland, X11, macOS, Windows), with the HTML flavor |
 | `osc52` | An escape sequence the terminal applies to the system clipboard |
 
-`osc52` is what works over SSH: no display server is involved, the terminal
-you are sitting at does the copy. Caveats terminals impose:
+`osc52` works over SSH because no display server is involved: the terminal you
+are sitting at does the copy. Terminals limit it:
 
 - tmux needs `set-clipboard on` to pass the sequence through.
-- Terminals cap the sequence length; datui refuses payloads above
-  `osc52_limit` (default 100 KiB) rather than sending a copy that arrives
-  truncated. A Table copy is read in batches and stops at the first one over
-  the cap, so a copy too large is refused without reading the whole table.
+- Terminals cap the sequence length, so datui refuses a copy larger than
+  `osc52_limit` (default 100 KiB) rather than send one that arrives cut short.
+  A Table copy is read in batches and stops at the first batch over the cap,
+  so a copy that is too large is refused without reading the whole table.
   The clipboard keeps what it held. Some terminals disable OSC 52 writes
   entirely by default.
 - No HTML flavor: the terminal takes plain text only.
 
-A `native` copy on Wayland or X11 belongs to the datui process: quitting can
-drop it unless a clipboard manager keeps copies. datui holds the offer for as
-long as it runs.
+On Wayland and X11, a `native` copy belongs to the datui process. It stays on
+the clipboard while datui runs, but quitting can drop it unless a clipboard
+manager keeps a copy.

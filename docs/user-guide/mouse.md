@@ -1,7 +1,7 @@
 # The mouse
 
-Every mouse action is a shortcut to keys: a click or a drag does what the keys
-it stands for do, and nothing the mouse does needs it.
+The mouse is a shortcut for the keys. Each click or drag does what a key does,
+so everything works without a mouse.
 
 ## At the table
 

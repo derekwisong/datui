@@ -274,5 +274,5 @@ saved in [views](views.md).
 ## From the command line
 
 For anything more involved, a SQL `WHERE` or the `where` clause of a
-[q query](../reference/query-syntax.md#where-clause--and-) takes
+[q query](../reference/query-syntax.md#where-clause) takes
 expressions, `OR` groups and date arithmetic.

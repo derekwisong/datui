@@ -24,10 +24,7 @@ pub fn run(query: &str) {
         Ok(q) => {
             // Touch the results so the parse cannot be optimised away, and so the
             // expression trees are actually walked.
-            let _ = q.cols.len()
-                + q.group_by.len()
-                + q.group_by_names.len()
-                + usize::from(q.filter.is_some());
+            let _ = q.cols.len() + q.group_by.len() + q.group_by_names.len() + q.filters.len();
         }
         // Every error message reaches the user through this, so it has to survive
         // whatever the parser and Polars put into it.

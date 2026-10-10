@@ -30,7 +30,6 @@ enum Token {
     RBracket,
     Comma,
     Colon,
-    Pipe,
     Dot,
     Select,
     Where,
@@ -123,10 +122,6 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
                 tokens.push(Token::Colon);
                 chars.next();
             }
-            '|' => {
-                tokens.push(Token::Pipe);
-                chars.next();
-            }
             '(' => {
                 tokens.push(Token::LParen);
                 chars.next();
@@ -196,8 +191,8 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
                 }
                 tokens.push(Token::String(string_val));
             }
-            '^' => {
-                tokens.push(Token::Op("^".to_string()));
+            '^' | '&' | '|' => {
+                tokens.push(Token::Op(c.to_string()));
                 chars.next();
             }
             '+' | '-' | '*' | '%' | '/' | '=' | '<' | '>' | '!' => {
@@ -331,7 +326,6 @@ fn token_text(token: &Token) -> String {
         Token::RBracket => "]".to_string(),
         Token::Comma => ",".to_string(),
         Token::Colon => ":".to_string(),
-        Token::Pipe => "|".to_string(),
         Token::Dot => ".".to_string(),
         Token::Select => "select".to_string(),
         Token::Where => "where".to_string(),
@@ -414,8 +408,9 @@ fn strip_from(body: &[Token]) -> Result<Vec<Token>, String> {
 }
 
 /// Infix operators spelled as words (q's); ordinary identifiers elsewhere, so a column
-/// named `in` or `mod` still works at an expression's start or after `.`.
-const WORD_OPS: [&str; 5] = ["in", "like", "xbar", "mod", "wavg"];
+/// named `in` or `mod` still works at an expression's start or after `.`. `and` and
+/// `or` are `&` and `|`.
+const WORD_OPS: [&str; 7] = ["in", "like", "xbar", "mod", "wavg", "and", "or"];
 
 /// The infix operator at `tokens[i]`, if there is one: a symbol, or an operator
 /// word that has an operand before it.
@@ -480,8 +475,15 @@ pub(crate) enum BinOp {
     Gt,
     LtEq,
     GtEq,
+    /// Logical and, Kleene: `false` with a null is `false`, `true` with a null null.
     And,
+    /// Logical or, Kleene: `true` with a null is `true`, `false` with a null null.
     Or,
+    /// q's `&` (Lesser) on anything but two booleans: the smaller, nulls skipped as
+    /// Polars' `min_horizontal` does. See [`Node::resolve_logic`].
+    Lesser,
+    /// q's `|` (Greater) on anything but two booleans: the larger, nulls skipped.
+    Greater,
 }
 
 /// A method applied to one expression.
@@ -660,6 +662,11 @@ impl Node {
                     BinOp::GtEq => left.gt_eq(right),
                     BinOp::And => left.and(right),
                     BinOp::Or => left.or(right),
+                    // Two inputs, so never the empty-input error.
+                    BinOp::Lesser => polars::lazy::dsl::min_horizontal([left, right])
+                        .expect("min_horizontal of two expressions"),
+                    BinOp::Greater => polars::lazy::dsl::max_horizontal([left, right])
+                        .expect("max_horizontal of two expressions"),
                 }
             }
             Node::Coalesce(left, right) => coalesce(&[left.to_expr(), right.to_expr()]),
@@ -796,6 +803,77 @@ impl Node {
         false
     }
 
+    /// Whether the node is boolean by its form, whatever the data: a test, a logical
+    /// operation or a boolean literal.
+    fn is_boolean(&self) -> bool {
+        match self {
+            Node::Bool(_) => true,
+            Node::Bin(op, ..) => matches!(
+                op,
+                BinOp::Eq
+                    | BinOp::Neq
+                    | BinOp::Lt
+                    | BinOp::Gt
+                    | BinOp::LtEq
+                    | BinOp::GtEq
+                    | BinOp::And
+                    | BinOp::Or
+            ),
+            Node::Op(_, op) => matches!(
+                op,
+                Op::Not
+                    | Op::IsNull
+                    | Op::IsNotNull
+                    | Op::StartsWith(_)
+                    | Op::EndsWith(_)
+                    | Op::ContainsLiteral(_)
+                    | Op::ContainsRegex(_)
+            ),
+            Node::Alias(inner, _) => inner.is_boolean(),
+            _ => false,
+        }
+    }
+
+    /// Settle each `&` and `|` the parser could not by form ([`BinOp::Lesser`],
+    /// [`BinOp::Greater`]) by the operands' types over `schema`, as q does: two
+    /// booleans are and/or (Polars' Kleene logic, so a null decides only when the
+    /// other side does not); a boolean with a number is min/max with the boolean as
+    /// 0/1; anything else stays min/max. Inner operations settle first, so an outer
+    /// one sees their types.
+    pub(crate) fn resolve_logic(&mut self, schema: &Schema) {
+        match self {
+            Node::Bin(_, left, right) | Node::Coalesce(left, right) | Node::Filter(left, right) => {
+                left.resolve_logic(schema);
+                right.resolve_logic(schema);
+            }
+            Node::When(c, t, o) => {
+                c.resolve_logic(schema);
+                t.resolve_logic(schema);
+                o.resolve_logic(schema);
+            }
+            Node::Op(inner, _) | Node::Alias(inner, _) => inner.resolve_logic(schema),
+            _ => {}
+        }
+        let Node::Bin(op @ (BinOp::Lesser | BinOp::Greater), left, right) = self else {
+            return;
+        };
+        let boolean = |node: &Node| {
+            node.is_boolean() || node.dtype(schema).is_some_and(|t| t == DataType::Boolean)
+        };
+        match (boolean(left), boolean(right)) {
+            (true, true) => {
+                *op = if *op == BinOp::Lesser {
+                    BinOp::And
+                } else {
+                    BinOp::Or
+                };
+            }
+            (true, false) => cast_whole(left),
+            (false, true) => cast_whole(right),
+            (false, false) => {}
+        }
+    }
+
     /// The type the expression has over `schema`, when Polars can say.
     fn dtype(&self, schema: &Schema) -> Option<DataType> {
         DataFrame::empty_with_schema(schema)
@@ -849,6 +927,9 @@ impl Node {
                     py_str(zone)
                 ))
             ),
+            Node::Bin(op @ (BinOp::Lesser | BinOp::Greater), left, right) => {
+                format!("pl.{}({}, {})", op.python(), left.python(), right.python())
+            }
             Node::Bin(op, left, right) => {
                 // A literal on the right stays bare (`pl.col("a") > 1.0`); Python's
                 // operators turn it into one.
@@ -887,10 +968,17 @@ impl Node {
     /// would otherwise bind to part of it.
     fn python_operand(&self) -> String {
         match self {
+            Node::Bin(BinOp::Lesser | BinOp::Greater, ..) => self.python(),
             Node::Bin(..) => format!("({})", self.python()),
             _ => self.python(),
         }
     }
+}
+
+/// The boolean as 0/1, for min/max with a number.
+fn cast_whole(node: &mut Box<Node>) {
+    let inner = std::mem::replace(node.as_mut(), Node::Null);
+    **node = inner.op(Op::Cast(CastTo::Int64));
 }
 
 fn time_unit_name(unit: TimeUnit) -> &'static str {
@@ -918,6 +1006,8 @@ impl BinOp {
             BinOp::GtEq => ">=",
             BinOp::And => "&",
             BinOp::Or => "|",
+            BinOp::Lesser => "min_horizontal",
+            BinOp::Greater => "max_horizontal",
         }
     }
 }
@@ -1312,6 +1402,13 @@ fn apply_op(left: Node, op: &str, right: Node) -> Result<Node, String> {
         "<=" => BinOp::LtEq,
         ">=" => BinOp::GtEq,
         "<>" | "!=" => BinOp::Neq,
+        // q's Lesser and Greater: and/or on two booleans, min/max otherwise. Two
+        // tests or other boolean forms are known here; columns wait for the schema
+        // (`Node::resolve_logic`).
+        "&" | "and" if left.is_boolean() && right.is_boolean() => BinOp::And,
+        "|" | "or" if left.is_boolean() && right.is_boolean() => BinOp::Or,
+        "&" | "and" => BinOp::Lesser,
+        "|" | "or" => BinOp::Greater,
         _ => return Err(format!("Unknown operator: {}", op)),
     };
     Ok(left.bin(op, right))
@@ -1760,7 +1857,11 @@ fn parse_term(tokens: &[Token]) -> Result<(Node, &[Token]), String> {
             if depth > 0 {
                 return Err("Unmatched parenthesis".to_string());
             }
-            let inner = parse_node(&tokens[1..i - 1])?;
+            let inner = &tokens[1..i - 1];
+            if split_tokens(inner, &Token::Comma).len() > 1 {
+                return Err(PAREN_COMMA.to_string());
+            }
+            let inner = parse_node(inner)?;
             let (expr, remaining) = parse_accessors(inner, &tokens[i..], None)?;
             Ok((expr, remaining))
         }
@@ -1772,6 +1873,10 @@ fn parse_term(tokens: &[Token]) -> Result<(Node, &[Token]), String> {
         )),
     }
 }
+
+/// A list in parentheses: q's join, or several where conditions grouped.
+const PAREN_COMMA: &str = "`,` inside parentheses joins lists in q, which datui does not \
+     support; combine conditions with `&` or `|`";
 
 /// Deepest nesting the recursive-descent parser follows, so a long chain (`------x`,
 /// `((((x))))`) errors instead of overflowing the stack (found by the `parse_query`
@@ -1915,8 +2020,9 @@ fn parse_node(tokens: &[Token]) -> Result<Node, String> {
 pub struct ParsedQuery {
     /// The select list; empty means every column.
     pub cols: Vec<Expr>,
-    /// The where clause, its terms ANDed.
-    pub filter: Option<Expr>,
+    /// The where clause's conditions, applied as successive filters: each one over
+    /// the rows the ones before it kept, so an aggregate in a later one sees only those.
+    pub filters: Vec<Expr>,
     /// The by expressions.
     pub group_by: Vec<Expr>,
     /// Names of the by columns that have one (a plain column or an alias).
@@ -1933,7 +2039,7 @@ impl ParsedQuery {
         let guard = |e: Expr| crate::past_calendar::guard_expr(e, schema);
         Self {
             cols: self.cols.into_iter().map(guard).collect(),
-            filter: self.filter.map(guard),
+            filters: self.filters.into_iter().map(guard).collect(),
             group_by: self.group_by.into_iter().map(guard).collect(),
             ..self
         }
@@ -1968,7 +2074,8 @@ pub fn sanitize_query_error(msg: &str) -> String {
 #[derive(Debug, Default)]
 pub(crate) struct QueryNodes {
     pub cols: Vec<Node>,
-    pub filter: Option<Node>,
+    /// The where clause's conditions, in order; see [`ParsedQuery::filters`].
+    pub filters: Vec<Node>,
     pub group_by: Vec<Node>,
     pub group_by_names: Vec<String>,
     pub distinct: bool,
@@ -1979,7 +2086,7 @@ impl QueryNodes {
         let lower = |nodes: Vec<Node>| nodes.iter().map(Node::to_expr).collect();
         ParsedQuery {
             cols: lower(self.cols),
-            filter: self.filter.as_ref().map(Node::to_expr),
+            filters: lower(self.filters),
             group_by: lower(self.group_by),
             group_by_names: self.group_by_names,
             distinct: self.distinct,
@@ -1992,7 +2099,7 @@ impl QueryNodes {
         let nodes = self
             .cols
             .iter_mut()
-            .chain(self.filter.iter_mut())
+            .chain(self.filters.iter_mut())
             .chain(self.group_by.iter_mut());
         for node in nodes {
             node.resolve_division(schema);
@@ -2005,10 +2112,23 @@ impl QueryNodes {
         let nodes = self
             .cols
             .iter_mut()
-            .chain(self.filter.iter_mut())
+            .chain(self.filters.iter_mut())
             .chain(self.group_by.iter_mut());
         for node in nodes {
             node.resolve_time_zones(schema);
+        }
+    }
+
+    /// Each `&` and `|` settled by its operands' types in `schema`; see
+    /// [`Node::resolve_logic`].
+    pub(crate) fn resolve_logic(&mut self, schema: &Schema) {
+        let nodes = self
+            .cols
+            .iter_mut()
+            .chain(self.filters.iter_mut())
+            .chain(self.group_by.iter_mut());
+        for node in nodes {
+            node.resolve_logic(schema);
         }
     }
 
@@ -2017,22 +2137,24 @@ impl QueryNodes {
     fn check_quoted_temporal(&self, schema: &Schema) -> Result<(), String> {
         self.cols
             .iter()
-            .chain(self.filter.iter())
+            .chain(self.filters.iter())
             .chain(self.group_by.iter())
             .try_for_each(|node| node.check_quoted_temporal(schema))
     }
 
-    /// The where clause as a Python `.filter(...)` call, if there is one.
-    pub(crate) fn python_filter(&self) -> Option<String> {
-        self.filter
-            .as_ref()
+    /// The where clause as Python: one `.filter(...)` per condition, in order, as
+    /// datui runs them.
+    pub(crate) fn python_filters(&self) -> Vec<String> {
+        self.filters
+            .iter()
             .map(|f| format!(".filter({})", f.python()))
+            .collect()
     }
 
     /// Python calls doing what `DataTableState::query` does: the where clause, then the
     /// grouping (ordered by keys named `key_names`) or the select list, then `distinct`.
     pub(crate) fn python_steps(&self, key_names: &[String]) -> Vec<String> {
-        let mut steps: Vec<String> = self.python_filter().into_iter().collect();
+        let mut steps = self.python_filters();
         if !self.group_by.is_empty() {
             let keys = python_list(&self.group_by);
             let aggs = if !self.cols.is_empty() {
@@ -2087,6 +2209,7 @@ pub fn parse_query_over(query: &str, schema: Option<&Schema>) -> Result<ParsedQu
     if let Some(schema) = schema {
         nodes.resolve_time_zones(schema);
         nodes.check_quoted_temporal(schema)?;
+        nodes.resolve_logic(schema);
     }
     Ok(nodes.into_parsed())
 }
@@ -2122,7 +2245,8 @@ pub(crate) fn parse_nodes(query: &str) -> Result<QueryNodes, String> {
     };
     if !parts.is_empty() {
         return Err(
-            "Unexpected second 'where': combine conditions with ',' (and) or '|' (or)".to_string(),
+            "Unexpected second 'where': list the conditions after one where, separated by ','"
+                .to_string(),
         );
     }
 
@@ -2304,35 +2428,20 @@ pub(crate) fn parse_nodes(query: &str) -> Result<QueryNodes, String> {
         }
     }
 
-    let mut filter: Option<Node> = None;
+    // q splits where only on its top-level commas, into conditions applied in turn;
+    // each is an ordinary expression (`&` and `|` are operators like any other).
+    let mut filters = Vec::new();
     if let Some(wt) = where_tokens {
         for chunk in split_tokens(&wt, &Token::Comma) {
-            if chunk.is_empty() {
-                continue;
-            }
-            let mut or_expr: Option<Node> = None;
-            for or_chunk in split_tokens(&chunk, &Token::Pipe) {
-                if or_chunk.is_empty() {
-                    continue;
-                }
-                let e = parse_node(&or_chunk)?;
-                or_expr = match or_expr {
-                    Some(curr) => Some(curr.bin(BinOp::Or, e)),
-                    None => Some(e),
-                };
-            }
-            if let Some(e) = or_expr {
-                filter = match filter {
-                    Some(curr) => Some(curr.bin(BinOp::And, e)),
-                    None => Some(e),
-                };
+            if !chunk.is_empty() {
+                filters.push(parse_node(&chunk)?);
             }
         }
     }
 
     Ok(QueryNodes {
         cols,
-        filter,
+        filters,
         group_by: group_by_cols,
         group_by_names: group_by_col_names,
         distinct,

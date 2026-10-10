@@ -424,6 +424,7 @@ impl Step {
                 Ok(mut nodes) => {
                     nodes.resolve_division(input);
                     nodes.resolve_time_zones(input);
+                    nodes.resolve_logic(input);
                     nodes.python_steps(keys)
                 }
                 Err(e) => vec![py_comment(&format!("the query did not parse: {e}"))],
@@ -432,7 +433,8 @@ impl Step {
                 Ok(mut nodes) => {
                     nodes.resolve_division(input);
                     nodes.resolve_time_zones(input);
-                    nodes.python_filter().into_iter().collect()
+                    nodes.resolve_logic(input);
+                    nodes.python_filters()
                 }
                 Err(e) => vec![py_comment(&format!("the query did not parse: {e}"))],
             },

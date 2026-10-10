@@ -76,7 +76,7 @@ fn test_parse_complex_expr() {
 fn test_parse_not_function() {
     let query = "select a where not[a = b]";
 
-    let filter = parse_query(query).unwrap().filter;
+    let filter = only(parse_query(query).unwrap().filters);
 
     assert_eq!(filter, Some(col("a").eq(col("b")).not()));
 }
@@ -90,11 +90,11 @@ fn test_parse_not_equivalent_to_neq() {
 
     let query3 = "select a where not a = b";
 
-    let filter1 = parse_query(query1).unwrap().filter;
+    let filter1 = only(parse_query(query1).unwrap().filters);
 
-    let filter2 = parse_query(query2).unwrap().filter;
+    let filter2 = only(parse_query(query2).unwrap().filters);
 
-    let filter3 = parse_query(query3).unwrap().filter;
+    let filter3 = only(parse_query(query3).unwrap().filters);
 
     // All should produce equivalent expressions
 
@@ -138,11 +138,13 @@ fn test_parse_string_literal() {
 fn test_parse_string_in_where() {
     let query = "select a where name=\"george\", age > 7";
 
-    let filter = parse_query(query).unwrap().filter;
+    let filters = parse_query(query).unwrap().filters;
 
-    // Should have name="george" AND age > 7
-
-    assert!(filter.is_some());
+    // name = "george", then age > 7
+    assert_eq!(
+        filters,
+        vec![col("name").eq(lit("george")), col("age").gt(lit(7.0))]
+    );
 }
 
 #[test]
@@ -176,7 +178,8 @@ fn test_parse_col_syntax_with_alias() {
 fn test_parse_col_syntax_with_string_literal() {
     let query = "select col[\"first name\"]:\"derek\", foo where foo > 7";
 
-    let ParsedQuery { cols, filter, .. } = parse_query(query).unwrap();
+    let ParsedQuery { cols, filters, .. } = parse_query(query).unwrap();
+    let filter = only(filters);
 
     assert_eq!(cols.len(), 2);
 
@@ -192,7 +195,7 @@ fn test_parse_col_syntax_with_string_literal() {
 fn test_parse_string_escape_sequences() {
     let query = "select a where name=\"george\\\"s name\"";
 
-    let filter = parse_query(query).unwrap().filter;
+    let filter = only(parse_query(query).unwrap().filters);
 
     // Should parse escaped quote correctly
 
@@ -204,7 +207,7 @@ fn test_parse_string_escape_sequences() {
 fn test_parse_query_simple_where() {
     let query = "select a where a > 10";
 
-    let filter = parse_query(query).unwrap().filter;
+    let filter = only(parse_query(query).unwrap().filters);
 
     assert_eq!(filter, Some(col("a").gt(lit(10.0))));
 }
@@ -213,7 +216,8 @@ fn test_parse_query_simple_where() {
 fn test_parse_query_unary_minus_in_where() {
     // Minus next to literal with operator on other side: -0.5+discount → (-0.5)+discount
     let query = "select sum total-1 by product where 0<-0.5+discount";
-    let ParsedQuery { cols, filter, .. } = parse_query(query).unwrap();
+    let ParsedQuery { cols, filters, .. } = parse_query(query).unwrap();
+    let filter = only(filters);
     assert_eq!(cols.len(), 1);
     assert!(filter.is_some());
     // Filter: 0 < (-0.5) + discount
@@ -224,7 +228,7 @@ fn test_parse_query_unary_minus_in_where() {
 #[test]
 fn test_parse_query_negative_literal_where() {
     let query = "select where 0<-0.1+discount";
-    let filter = parse_query(query).unwrap().filter;
+    let filter = only(parse_query(query).unwrap().filters);
     let expected = lit(0.0).lt(lit(0).sub(lit(0.1)).add(col("discount")));
     assert_eq!(filter, Some(expected));
 }
@@ -251,14 +255,15 @@ fn test_parse_query_alias() {
 
 #[test]
 
-fn test_parse_query_and_or() {
+fn test_parse_query_where_commas_are_successive_conditions() {
+    // Strict q: `|` is Greater, right to left like any operator, so this is
+    // a > (10 | (a < 5)), not (a > 10) or (a < 5). The comma separates conditions.
     let query = "select a where a > 10 | a < 5, b = 2";
 
-    let filter = parse_query(query).unwrap().filter;
+    let filters = parse_query(query).unwrap().filters;
 
-    let expected = (col("a").gt(lit(10.0)).or(col("a").lt(lit(5.0)))).and(col("b").eq(lit(2.0)));
-
-    assert_eq!(filter, Some(expected));
+    let greater = polars::lazy::dsl::max_horizontal([lit(10.0), col("a").lt(lit(5.0))]).unwrap();
+    assert_eq!(filters, vec![col("a").gt(greater), col("b").eq(lit(2.0))]);
 }
 
 #[test]
@@ -266,7 +271,7 @@ fn test_parse_query_and_or() {
 fn test_parse_query_neq() {
     let query = "select a where a != 10";
 
-    let filter = parse_query(query).unwrap().filter;
+    let filter = only(parse_query(query).unwrap().filters);
 
     assert_eq!(filter, Some(col("a").neq(lit(10.0))));
 }
@@ -276,7 +281,7 @@ fn test_parse_query_neq() {
 fn test_parse_query_gte() {
     let query = "select a where a >= 10";
 
-    let filter = parse_query(query).unwrap().filter;
+    let filter = only(parse_query(query).unwrap().filters);
 
     assert_eq!(filter, Some(col("a").gt_eq(lit(10.0))));
 }
@@ -286,7 +291,7 @@ fn test_parse_query_gte() {
 fn test_parse_query_lte() {
     let query = "select a where a <= 10";
 
-    let filter = parse_query(query).unwrap().filter;
+    let filter = only(parse_query(query).unwrap().filters);
 
     assert_eq!(filter, Some(col("a").lt_eq(lit(10.0))));
 }
@@ -296,7 +301,8 @@ fn test_parse_query_lte() {
 fn test_empty_query() {
     let query = "select";
 
-    let ParsedQuery { cols, filter, .. } = parse_query(query).unwrap();
+    let ParsedQuery { cols, filters, .. } = parse_query(query).unwrap();
+    let filter = only(filters);
 
     assert!(cols.is_empty());
 
@@ -308,7 +314,8 @@ fn test_empty_query() {
 fn test_select_all_implicit() {
     let query = "select where a > 1";
 
-    let ParsedQuery { cols, filter, .. } = parse_query(query).unwrap();
+    let ParsedQuery { cols, filters, .. } = parse_query(query).unwrap();
+    let filter = only(filters);
 
     assert!(cols.is_empty());
 
@@ -328,7 +335,7 @@ fn test_parse_right_to_left_operator_precedence() {
     // c>c%n should be parsed as c > (c % n), not (c > c) % n
     let query = "select t, v where c>c%n";
 
-    let filter = parse_query(query).unwrap().filter;
+    let filter = only(parse_query(query).unwrap().filters);
 
     // Should parse as c > (c % n)
     let expected = col("c").gt(col("c").div(col("n")));
@@ -412,7 +419,7 @@ fn test_parse_query_select_col_with_accessor() {
 #[test]
 fn test_parse_query_where_with_date_accessor() {
     let query = "select where created_at.month = 12";
-    let filter = parse_query(query).unwrap().filter;
+    let filter = only(parse_query(query).unwrap().filters);
     assert_eq!(
         filter,
         Some(
@@ -428,7 +435,7 @@ fn test_parse_query_where_with_date_accessor() {
 #[test]
 fn test_parse_query_where_dow() {
     let query = "select where event_ts.dow = 1";
-    let filter = parse_query(query).unwrap().filter;
+    let filter = only(parse_query(query).unwrap().filters);
     assert_eq!(
         filter,
         Some(
@@ -485,7 +492,7 @@ fn test_parse_date_literal() {
 #[test]
 fn test_parse_query_where_date_literal() {
     let query = "select where dt_col.date > 2021.01.01";
-    let filter = parse_query(query).unwrap().filter;
+    let filter = only(parse_query(query).unwrap().filters);
     assert!(filter.is_some());
     // Verify the filter parses without error (date literal 2021.01.01 -> ISO 2021-01-01)
 }
@@ -520,9 +527,9 @@ fn test_parse_timestamp_literal() {
 
 #[test]
 fn test_parse_null_and_not_null() {
-    let f1 = parse_query("select where null col1").unwrap().filter;
+    let f1 = only(parse_query("select where null col1").unwrap().filters);
     assert!(f1.is_some());
-    let f2 = parse_query("select where not null col1").unwrap().filter;
+    let f2 = only(parse_query("select where not null col1").unwrap().filters);
     assert!(f2.is_some());
 }
 
@@ -543,9 +550,11 @@ fn test_parse_first_last_aggregation() {
 
 #[test]
 fn test_parse_string_accessors() {
-    let filter = parse_query("select where city_name.ends_with[\"lanta\"]")
-        .unwrap()
-        .filter;
+    let filter = only(
+        parse_query("select where city_name.ends_with[\"lanta\"]")
+            .unwrap()
+            .filters,
+    );
     assert!(filter.is_some());
     let cols = parse_query("select name.len, name.upper").unwrap().cols;
     assert_eq!(cols.len(), 2);
@@ -682,7 +691,7 @@ fn test_slash_right_to_left() {
 #[test]
 fn test_slash_in_where_clause() {
     // Same shape as the existing % test: c>c/n is c > (c/n).
-    let filter = parse_query("select t, v where c>c/n").unwrap().filter;
+    let filter = only(parse_query("select t, v where c>c/n").unwrap().filters);
     assert_eq!(filter, Some(col("c").gt(col("c").div(col("n")))));
 }
 
@@ -739,7 +748,7 @@ fn test_trailing_garbage_in_select_errors() {
     assert!(err.contains("Unexpected 'b' after the expression"), "{err}");
 
     let err = parse_query("select (a, b)").unwrap_err();
-    assert!(err.contains("Unexpected ',' after the expression"), "{err}");
+    assert!(err.contains("joins lists in q"), "{err}");
 }
 
 #[test]
@@ -801,13 +810,13 @@ fn test_deeply_nested_expression_is_rejected_not_crashed() {
 fn eval(query: &str, df: &DataFrame) -> DataFrame {
     let ParsedQuery {
         cols,
-        filter,
+        filters,
         group_by: by,
         distinct,
         ..
     } = parse_query_over(query, Some(df.schema().as_ref())).unwrap();
     let mut lf = df.clone().lazy();
-    if let Some(f) = filter {
+    for f in filters {
         lf = lf.filter(f);
     }
     if !by.is_empty() {
@@ -841,6 +850,12 @@ fn values(df: &DataFrame, name: &str) -> Vec<String> {
             v => v.to_string(),
         })
         .collect()
+}
+
+/// The one where condition, if any; fails on several.
+fn only(filters: Vec<Expr>) -> Option<Expr> {
+    assert!(filters.len() <= 1, "{filters:?}");
+    filters.into_iter().next()
 }
 
 fn parse_err(query: &str) -> String {
@@ -955,7 +970,7 @@ fn a_timestamp_literal_takes_the_zone_of_its_column() {
     let schema = zoned("America/New_York").schema().clone();
     let mut nodes = parse_nodes("select where t > 2013.01.15T14:30:00").unwrap();
     nodes.resolve_time_zones(&schema);
-    let python = nodes.python_filter().unwrap();
+    let python = nodes.python_filters().concat();
     assert!(
         python.contains("time_zone=\"America/New_York\", ambiguous=\"earliest\""),
         "{python}"
@@ -1160,9 +1175,11 @@ fn test_string_pieces_auto_alias() {
 
 #[test]
 fn test_in_parses_to_equalities() {
-    let filter = parse_query("select where name in [\"a\", \"b\"]")
-        .unwrap()
-        .filter;
+    let filter = only(
+        parse_query("select where name in [\"a\", \"b\"]")
+            .unwrap()
+            .filters,
+    );
     assert_eq!(
         filter,
         Some(col("name").eq(lit("a")).or(col("name").eq(lit("b"))))
@@ -1625,14 +1642,16 @@ fn test_from_column_names_and_values() {
     let ParsedQuery { group_by, .. } = parse_query("select n: count a by from").unwrap();
     assert_eq!(group_by, vec![col("from")]);
     assert_eq!(
-        parse_query("select where from = \"df\"").unwrap().filter,
+        only(parse_query("select where from = \"df\"").unwrap().filters),
         Some(col("from").eq(lit("df")))
     );
     assert_eq!(
-        parse_query("select where from in [1, 2]").unwrap().filter,
-        parse_query("select where col[\"from\"] in [1, 2]")
-            .unwrap()
-            .filter
+        only(parse_query("select where from in [1, 2]").unwrap().filters),
+        only(
+            parse_query("select where col[\"from\"] in [1, 2]")
+                .unwrap()
+                .filters
+        )
     );
     // Names that contain the word, and values that are it.
     assert_eq!(
@@ -1640,9 +1659,11 @@ fn test_from_column_names_and_values() {
         vec![col("from_city"), col("datefrom")]
     );
     assert_eq!(
-        parse_query("select from df where city = \"from df\"")
-            .unwrap()
-            .filter,
+        only(
+            parse_query("select from df where city = \"from df\"")
+                .unwrap()
+                .filters
+        ),
         Some(col("city").eq(lit("from df")))
     );
     // A column named df is still a column.
@@ -1856,11 +1877,12 @@ fn a_whole_query_reads_as_python_steps() {
     };
     assert_eq!(
         steps(
-            "select name, pay: salary * 1.1 where dept = \"Sales\", age > 30 | senior",
+            "select name, pay: salary * 1.1 where dept = \"Sales\", (age > 30) | not senior",
             &[]
         ),
         vec![
-            ".filter((pl.col(\"dept\") == \"Sales\") & ((pl.col(\"age\") > 30.0) | pl.col(\"senior\")))",
+            ".filter(pl.col(\"dept\") == \"Sales\")",
+            ".filter((pl.col(\"age\") > 30.0) | pl.col(\"senior\").not_())",
             ".select(\"name\", (pl.col(\"salary\") * 1.1).alias(\"pay\"))",
         ]
     );
@@ -1880,4 +1902,199 @@ fn a_whole_query_reads_as_python_steps() {
         ]
     );
     assert!(steps("", &[]).is_empty());
+}
+
+// --- q's `&` and `|`, and successive where conditions ---
+
+/// One expression's node, as parsed.
+fn node(expr: &str) -> Node {
+    parse_node(&tokenize(expr).unwrap()).unwrap()
+}
+
+fn c(name: &str) -> Node {
+    Node::Col(name.to_string())
+}
+
+#[test]
+fn and_and_or_parse_right_to_left_like_every_operator() {
+    let a_gt_5 = c("a").bin(BinOp::Gt, Node::Num(5.0));
+    let b_lt_3 = c("b").bin(BinOp::Lt, Node::Num(3.0));
+    let c_eq_1 = c("c").bin(BinOp::Eq, Node::Num(1.0));
+    // a > (5 & (b < 3)): the leftmost operator is the root.
+    let strict = c("a").bin(BinOp::Gt, Node::Num(5.0).bin(BinOp::Lesser, b_lt_3.clone()));
+    assert_eq!(node("a > 5 & b < 3"), strict);
+    assert_eq!(node("a > 5 and b < 3"), strict);
+    // Parenthesize the left comparison for the logical and.
+    let both = a_gt_5.clone().bin(BinOp::And, b_lt_3.clone());
+    assert_eq!(node("(a > 5) & b < 3"), both);
+    assert_eq!(node("(a>5) and b<3"), both);
+    // (a > 5) or ((b < 3) and (c = 1)).
+    let either = a_gt_5
+        .clone()
+        .bin(BinOp::Or, b_lt_3.clone().bin(BinOp::And, c_eq_1.clone()));
+    assert_eq!(node("(a>5) | (b<3) & c=1"), either);
+    assert_eq!(node("(a>5) or (b<3) and c=1"), either);
+    // Numbers, or a column whose type the parser does not know, are min/max.
+    assert_eq!(node("a & 3"), c("a").bin(BinOp::Lesser, Node::Num(3.0)));
+    assert_eq!(node("0 | x"), Node::Num(0.0).bin(BinOp::Greater, c("x")));
+    // A column named `and` or `or` still reads as one where an operand goes.
+    assert_eq!(node("or"), c("or"));
+    assert_eq!(node("and + 1"), c("and").bin(BinOp::Add, Node::Num(1.0)));
+}
+
+#[test]
+fn not_takes_everything_to_its_right() {
+    let a_gt_5 = c("a").bin(BinOp::Gt, Node::Num(5.0));
+    let b_lt_3 = c("b").bin(BinOp::Lt, Node::Num(3.0));
+    assert_eq!(node("not a > 5"), a_gt_5.clone().op(Op::Not));
+    assert_eq!(
+        node("not (a > 5) & b < 3"),
+        a_gt_5.clone().bin(BinOp::And, b_lt_3.clone()).op(Op::Not)
+    );
+    assert_eq!(
+        node("(not a > 5) & b < 3"),
+        a_gt_5.op(Op::Not).bin(BinOp::And, b_lt_3)
+    );
+}
+
+#[test]
+fn and_or_are_logical_on_booleans_and_min_max_on_numbers() {
+    let df = df!(
+        "a" => &[Some(1i64), Some(4), Some(6), None, Some(8)],
+        "b" => &[2i64, 1, 9, 5, 3],
+        "f" => &[Some(true), None, Some(false), Some(true), None],
+    )
+    .unwrap();
+    let ints = |out: &DataFrame, name: &str| values(out, name);
+    // Numbers: elementwise min and max; a null is skipped, as Polars'
+    // min_horizontal and max_horizontal do (q would keep it).
+    let out = eval("select lo: a & b, hi: a or b, floor: 0 | a - 5", &df);
+    assert_eq!(ints(&out, "lo"), ["1", "1", "6", "5", "3"]);
+    assert_eq!(ints(&out, "hi"), ["2", "4", "9", "5", "8"]);
+    assert_eq!(ints(&out, "floor"), ["0.0", "0.0", "1.0", "0.0", "3.0"]);
+    // A boolean with a number is 0/1 with it.
+    let out = eval("select m: (a > 3) & 5, x: 0 | b > 2", &df);
+    assert_eq!(ints(&out, "m"), ["0.0", "1.0", "1.0", "5.0", "1.0"]);
+    assert_eq!(ints(&out, "x"), ["0.0", "0.0", "1.0", "1.0", "1.0"]);
+    // Two booleans, a column among them, are and/or: Kleene, so a null decides
+    // only when the other side does not.
+    let out = eval("select a, b where f & b > 1", &df);
+    assert_eq!(ints(&out, "b"), ["2", "5"]);
+    let out = eval("select b where f | b > 2", &df);
+    assert_eq!(ints(&out, "b"), ["2", "9", "5", "3"]);
+    let out = eval("select b, k: f and b > 4", &df);
+    assert_eq!(
+        ints(&out, "k"),
+        ["false", "false", "false", "true", "false"]
+    );
+    // `not` composes: not (f and (b > 4)).
+    let out = eval("select b where not f & b > 4", &df);
+    assert_eq!(ints(&out, "b"), ["2", "1", "9", "3"]);
+}
+
+#[test]
+fn a_comparison_left_of_or_reads_strictly() {
+    let df = df!("a" => &[1i64, 3, 7, 12]).unwrap();
+    // a > (10 | (a < 5)) is a > 10.
+    assert_eq!(
+        values(&eval("select a where a > 10 | a < 5", &df), "a"),
+        ["12"]
+    );
+    // Parenthesized, the left comparison is its own operand.
+    assert_eq!(
+        values(&eval("select a where (a > 10) | a < 5", &df), "a"),
+        ["1", "3", "12"]
+    );
+}
+
+#[test]
+fn where_conditions_run_in_turn() {
+    let df = df!(
+        "price" => &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        "size" => &[100i64, 1, 1, 1, 1, 10],
+    )
+    .unwrap();
+    // The second average is over the rows the first condition kept: sizes 1, 1, 10.
+    let out = eval("select price where price > avg price, size > avg size", &df);
+    assert_eq!(values(&out, "price"), ["6.0"]);
+    // One condition sees every row: the average size is 19.
+    let out = eval(
+        "select price where (price > avg price) & size > avg size",
+        &df,
+    );
+    assert_eq!(out.height(), 0);
+    assert_eq!(
+        parse_query("select where price > avg price, size > avg size")
+            .unwrap()
+            .filters
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn a_comma_in_parentheses_is_an_error() {
+    let expected = "`,` inside parentheses joins lists in q, which datui does not support; \
+                    combine conditions with `&` or `|`";
+    assert_eq!(parse_err("select where (a > 1, b < 2)"), expected);
+    assert_eq!(parse_err("select where c = 1, (a > 1, b < 2)"), expected);
+    assert_eq!(parse_err("select x: (a, b)"), expected);
+    // Brackets keep their commas.
+    assert!(parse_query("select where (a in [1, 2]) & b < 3").is_ok());
+}
+
+#[test]
+fn and_or_read_as_python_polars() {
+    assert_eq!(
+        py("(a > 5) & b < 3"),
+        "(pl.col(\"a\") > 5.0) & (pl.col(\"b\") < 3.0)"
+    );
+    assert_eq!(
+        py("(a>5) | (b<3) & c=1"),
+        "(pl.col(\"a\") > 5.0) | ((pl.col(\"b\") < 3.0) & (pl.col(\"c\") == 1.0))"
+    );
+    assert_eq!(py("a & 3"), "pl.min_horizontal(pl.col(\"a\"), pl.lit(3.0))");
+    assert_eq!(
+        py("0 | x - 5"),
+        "pl.max_horizontal(pl.lit(0.0), pl.col(\"x\") - 5.0)"
+    );
+    assert_eq!(
+        py("not (a > 5) & b < 3"),
+        "((pl.col(\"a\") > 5.0) & (pl.col(\"b\") < 3.0)).not_()"
+    );
+    // Over the data's types: a boolean column settles to `&`, a boolean with a
+    // number to 0/1.
+    let schema = Schema::from_iter([
+        Field::new("f".into(), DataType::Boolean),
+        Field::new("a".into(), DataType::Int64),
+    ]);
+    let typed = |expr: &str| {
+        let mut node = node(expr);
+        node.resolve_logic(&schema);
+        node.python()
+    };
+    assert_eq!(typed("f & a > 1"), "pl.col(\"f\") & (pl.col(\"a\") > 1.0)");
+    assert_eq!(
+        typed("a > 5 & a < 3"),
+        "pl.col(\"a\") > pl.min_horizontal(pl.lit(5.0), (pl.col(\"a\") < 3.0).cast(pl.Int64, strict=False))"
+    );
+    assert_eq!(
+        typed("a | 0"),
+        "pl.max_horizontal(pl.col(\"a\"), pl.lit(0.0))"
+    );
+}
+
+#[test]
+fn successive_conditions_read_as_one_python_filter_each() {
+    let steps = parse_nodes("select price where price > avg price, size > avg size")
+        .unwrap()
+        .python_steps(&[]);
+    assert_eq!(
+        steps,
+        vec![
+            ".filter(pl.col(\"price\") > pl.col(\"price\").mean().alias(\"avg_price\"))",
+            ".filter(pl.col(\"size\") > pl.col(\"size\").mean().alias(\"avg_size\"))",
+            ".select(\"price\")",
+        ]
+    );
 }

@@ -1696,7 +1696,21 @@ fn test_copy_as_python_scripts_compute_the_rows_datui_shows() {
                 s.query(
                     "select up: customer.upper, m: day.month, a: amount.round[1], \
                      b: 5 xbar order_id, w: qty mod 3, c: amount ^ 0 \
-                     where customer like \"*d*\" | region in [\"east\", \"west\"], day >= 2024.02.01"
+                     where (customer like \"*d*\") | region in [\"east\", \"west\"], day >= 2024.02.01"
+                        .into(),
+                )
+            }),
+        ),
+        (
+            "where conditions in turn, the second an aggregate",
+            Box::new(|s| s.query("select where amount > avg amount, qty > avg qty".into())),
+        ),
+        (
+            "& and | as min and max on numbers, and on booleans",
+            Box::new(|s| {
+                s.query(
+                    "select order_id, lo: amount & 40, hi: 0 | qty - 3, m: (qty > 2) & 5 \
+                     where (qty > 1) & not region = \"east\""
                         .into(),
                 )
             }),
@@ -1775,6 +1789,17 @@ fn test_copy_as_python_scripts_compute_the_rows_datui_shows() {
                 s.sort_by(vec!["amount".into()], vec![false]);
                 s.drill_into_value("region", AnyValue::StringOwned("south".into()))
                     .unwrap();
+            }),
+        ),
+        (
+            "a drill into a group of a query with conditions in turn",
+            Box::new(|s| {
+                s.query(
+                    "select total: sum amount by region where amount > avg amount, qty > avg qty"
+                        .into(),
+                );
+                s.drill_down_into_group(1).unwrap();
+                s.sort_by(vec!["order_id".into()], vec![true]);
             }),
         ),
         (

@@ -14,8 +14,8 @@ datui\-query \- the q syntax of the datui command line
 select [cols] [by groups] [where conds]
 Each part optional
 .TP
-select a, b where a > 10, b < 5
-In where, , is and; | is or
+select a, b where a > 10, (b < 5) | c
+Conditions filter in turn; & is and, | is or
 .TP
 select avg price, n:count id by region
 Aggregate by group
@@ -92,6 +92,8 @@ There is no operator precedence. Expressions are parsed right-to-left: the leftm
 \fBa * b + c\fR \(-> \fBa * (b + c)\fR, not \fB(a * b) + c\fR
 .IP \(bu 4
 \fB(a + b) * 2 > 100\fR \(-> \fB(a + b) * (2 > 100)\fR; write the comparison first, \fB100 < (a + b) * 2\fR
+.IP \(bu 4
+\fBa > 5 & b < 3\fR \(-> \fBa > (5 & (b < 3))\fR; parenthesize the left comparison, \fB(a > 5) & b < 3\fR
 .PP
 Put the operation you want done first on the right, or use \fB()\fR to override grouping:
 .PP
@@ -100,11 +102,51 @@ On the \fBflights\fR dataset (see DATASETS):
 .RS 4
 .EX
 select gain: (dep_delay \- arr_delay) * 60
-select carrier, flight where (dep_delay > 60) | (arr_delay > 60)
+select carrier, flight where (dep_delay > 60) | arr_delay > 60
+.EE
+.RE
+.SH "AND, OR"
+\fB&\fR (or the word \fBand\fR) and \fB|\fR (or \fBor\fR) are operators like \fB+\fR or \fB>\fR: no precedence, right to left, in select, by and where. Only the rightmost comparison can go without parentheses.
+.TP
+\fB(a > 5) & b < 3\fR
+\fB(a > 5)\fR and \fB(b < 3)\fR
+.TP
+\fBa > 5 & b < 3\fR
+\fBa > (5 & (b < 3))\fR
+.TP
+\fB(a > 5) | (b < 3) & c = 1\fR
+\fB(a > 5)\fR or (\fB(b < 3)\fR and \fB(c = 1)\fR)
+.TP
+\fBnot (a > 5) & b < 3\fR
+not (\fB(a > 5)\fR and \fB(b < 3)\fR)
+.PP
+On two booleans they are and and or. On numbers they are q's lesser and greater: \fB&\fR is the smaller of the two, \fB|\fR the larger, row by row. A boolean with a number counts as 0 or 1.
+.TP
+Two booleans
+x & y: And
+.br
+x | y: Or
+.br
+A null: Decides only when the other side does not: \fBfalse & null\fR is \fBfalse\fR, \fBtrue & null\fR null; \fBtrue | null\fR is \fBtrue\fR
+.TP
+Numbers, or a boolean with a number
+x & y: Smaller
+.br
+x | y: Larger
+.br
+A null: Skipped: \fBnull & 3\fR is \fB3\fR
+.PP
+On the \fBflights\fR dataset (see DATASETS):
+.PP
+.RS 4
+.EX
+select carrier, flight where (origin = "JFK") & dep_delay > 60
+select carrier, flight where (dep_delay > 60) or (arr_delay > 60) and distance > 1000
+select flight, late: 0 | dep_delay, capped: 120 & arr_delay
 .EE
 .RE
 .PP
-Parentheses also matter for \fB,\fR and \fB|\fR in where: splitting on comma and pipe respects nesting, so you can wrap ORs in \fB()\fR and combine them with commas. See Where clause.
+\fB0 | dep_delay\fR floors early departures at 0; \fB120 & arr_delay\fR caps delays at two hours.
 .SH "SELECT CLAUSE"
 .IP \(bu 4
 \fBselect\fR \(em all columns, no expressions
@@ -125,33 +167,36 @@ Parentheses also matter for \fB,\fR and \fB|\fR in where: splitting on comma and
 By uses the same comma-separated list and \fBname : expression\fR rules as select. Aggregation functions (\fBavg\fR, \fBmin\fR, \fBmax\fR, \fBcount\fR, \fBsum\fR, \fBstd\fR, \fBmed\fR, \fBnunique\fR, \fBvar\fR, \fBdev\fR) can be written \fBfn[expr]\fR or \fBfn expr\fR; brackets are optional. \fBwavg\fR goes between its operands: \fBw wavg x\fR.
 .PP
 An unaliased aggregate of a single column is named \fB{fn}_{column}\fR, so \fBselect avg dep_delay, max dep_delay by carrier\fR yields \fBavg_dep_delay\fR and \fBmax_dep_delay\fR; an explicit alias (\fBtotal: sum[distance]\fR) overrides it.
-.SH "WHERE CLAUSE: , AND |"
-The where clause combines conditions with two separators:
-.IP \(bu 4
-\fB,\fR \(em AND. Each comma-separated segment is one ANDed condition.
-.IP \(bu 4
-\fB|\fR \(em OR. Within one segment, \fB|\fR separates alternatives that are ORed.
-.PP
-The where part is split on \fB,\fR first (respecting \fB()\fR and \fB[]\fR), then each segment on \fB|\fR, so \fB,\fR has broader scope than \fB|\fR:
+.SH "WHERE CLAUSE"
+The where clause is a list of conditions separated by \fB,\fR. Each one filters the rows the ones before it kept, in order, so an aggregate in a later condition is over those rows only. Within a condition, combine tests with \fB&\fR and \fB|\fR (above).
 .TP
 \fBwhere a > 10, b < 2\fR
-\fB(a > 10) AND (b < 2)\fR
+Rows with \fBa > 10\fR, then of those, rows with \fBb < 2\fR
+.TP
+\fBwhere (a > 10) | a < 5\fR
+\fB(a > 10)\fR or \fB(a < 5)\fR
 .TP
 \fBwhere a > 10 | a < 5\fR
-\fB(a > 10) OR (a < 5)\fR
+\fBa > (10 | (a < 5))\fR, which is \fBa > 10\fR
 .TP
-\fBwhere a > 10 | a < 5, b = 2\fR
-\fB(a > 10 OR a < 5) AND (b = 2)\fR
-.TP
-\fBA, B | C\fR
-\fBA AND (B OR C)\fR
-.TP
-\fBA | B, C | D\fR
-\fB(A OR B) AND (C OR D)\fR
+\fBwhere (a > 10) | a < 5, b = 2\fR
+(\fB(a > 10)\fR or \fB(a < 5)\fR), then \fBb = 2\fR
+.PP
+Flights later than average, then of those, longer than their average:
+.PP
+On the \fBflights\fR dataset (see DATASETS):
+.PP
+.RS 4
+.EX
+select carrier, flight, dep_delay, distance where dep_delay > avg dep_delay, distance > avg distance
+.EE
+.RE
+.PP
+The second \fBavg distance\fR is over the late flights only. Written as one condition, \fB(dep_delay > avg dep_delay) & distance > avg distance\fR, both averages are over every row.
+.PP
+A \fB,\fR inside parentheses is an error: in q it joins lists, which datui does not support. Combine the conditions with \fB&\fR or \fB|\fR instead.
 .PP
 The where clause takes conditions only: no \fBname: expression\fR assignment.
-.PP
-For more complex logic, wrap OR subexpressions in \fB()\fR \(em parentheses keep \fB|\fR inside one AND term \(em and separate the groups with \fB,\fR.
 .SH "OPERATORS AND LITERALS"
 .TP
 Arithmetic
@@ -162,6 +207,9 @@ Equal, not equal
 .TP
 Ordering
 \fB<\fR \fB>\fR \fB<=\fR \fB>=\fR
+.TP
+And, or
+\fB&\fR \fBand\fR, \fB|\fR \fBor\fR: and/or on booleans, smaller/larger on numbers; see And, or
 .TP
 Coalesce
 \fB^\fR \(em first non-null, left to right; \fBa^b^c\fR = coalesce(a, b, c), binding right-to-left as \fBa^(b^c)\fR
@@ -213,7 +261,7 @@ Example: \fBselect delay: distance wavg arr_delay by carrier\fR
 .PP
 Because evaluation is right-to-left, \fBx mod 2 in [1]\fR is \fBx mod (2 in [1])\fR. Write \fB(x mod 2) in [1]\fR or \fB1 = x mod 2\fR. \fBnot name in ["Mary"]\fR negates the whole test.
 .PP
-The words are operators only between two operands. A column named \fBin\fR or \fBmod\fR still works on its own or at the start of an expression, and \fBcol["in"]\fR always does.
+The words are operators only between two operands. A column named \fBin\fR, \fBmod\fR, \fBand\fR or \fBor\fR still works on its own or at the start of an expression, and \fBcol["in"]\fR always does.
 .SH "DATE AND DATETIME ACCESSORS"
 For columns of type Date or Datetime (with or without timezone), dot notation extracts components: \fBcolumn_ref.accessor\fR.
 .TP

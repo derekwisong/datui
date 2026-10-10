@@ -938,7 +938,7 @@ impl DataTableState {
         match parsed {
             Ok(ParsedQuery {
                 cols,
-                filter,
+                filters,
                 group_by: group_by_cols,
                 group_by_names: group_by_col_names,
                 distinct,
@@ -965,7 +965,9 @@ impl DataTableState {
                     Some(Arc::new(kept))
                 };
 
-                if let Some(f) = filter {
+                // Successive filters, as q runs where: an aggregate in a later
+                // condition is over the rows the earlier ones kept.
+                for f in filters {
                     lf = lf.filter(f);
                 }
                 // What a drill-down into one of the groups shows.
@@ -1040,6 +1042,8 @@ impl DataTableState {
                 let python_keys: Vec<Option<String>> = match crate::query::parse_nodes(&query) {
                     Ok(mut nodes) => {
                         nodes.resolve_division(&input);
+                        nodes.resolve_time_zones(&input);
+                        nodes.resolve_logic(&input);
                         nodes
                             .group_by
                             .iter()

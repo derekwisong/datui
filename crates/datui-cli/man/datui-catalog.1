@@ -12,11 +12,11 @@ datui\-catalog \- show the catalogs of named datasets on the home screen, or che
 .SH DESCRIPTION
 Show the catalogs of named datasets on the home screen, or check a catalog file.
 .PP
-A catalog is one TOML file of named datasets, local or remote, that the home screen lists as a section under its label. \fICONFIG\fR/catalog.toml is yours, and Ctrl+D on a home row adds to it; every \fICONFIG\fR/catalogs/*.toml is a catalog, named by its file, and \fBcatalogs\fR in the config lists files elsewhere; examples ships with datui, and a catalogs/examples.toml replaces it. A catalog's top level holds \fBlabel\fR and \fBdescription\fR; every other table is a dataset, keyed by a short id of lowercase letters, digits and \fB\-\fR. A dataset's keys: \fBname\fR (its row), \fBpath\fR or \fBurl\fR, \fBauth\fR (\fBauto\fR or \fBanonymous\fR) or \fBconnection\fR (a \fB[[cloud.connections]]\fR name), \fBdescription\fR, \fBpublisher\fR, \fBlicense\fR, \fBhomepage\fR, \fBdocumentation\fR (an https link), \fBsize\fR (a web file's bytes, shown until measured), \fBcolumns.NAME = { description, unit, values = { CODE = "meaning" } }\fR and \fBbookmarks."Name" = "path/"\fR. A long legend is a \fB[id.columns.NAME.values]\fR table, with the column's other keys written as dotted keys. \fBdatui catalog show examples\fR prints a worked example.
+A catalog is one TOML file of named datasets, local or remote, that the home screen lists as a section under its label. \fICONFIG\fR/catalog.toml is yours, and Ctrl+D on a home row adds to it. Every \fICONFIG\fR/catalogs/*.toml is a catalog, named by its file, and \fBcatalogs\fR in the config lists files elsewhere. The examples catalog ships with datui; a catalogs/examples.toml replaces it. A catalog's top level holds \fBlabel\fR and \fBdescription\fR; every other table is a dataset, keyed by a short id of lowercase letters, digits and \fB\-\fR. A dataset's keys: \fBname\fR (its row), \fBpath\fR or \fBurl\fR, \fBauth\fR (\fBauto\fR or \fBanonymous\fR) or \fBconnection\fR (a \fB[[cloud.connections]]\fR name), \fBdescription\fR, \fBpublisher\fR, \fBlicense\fR, \fBhomepage\fR, \fBdocumentation\fR (an https link), \fBsize\fR (a web file's bytes, shown until measured), \fBcolumns.NAME = { description, unit, values = { CODE = "meaning" } }\fR and \fBbookmarks."Name" = "path/"\fR. A long legend is a \fB[id.columns.NAME.values]\fR table, with the column's other keys written as dotted keys. \fBdatui catalog show examples\fR prints a worked example.
 .SH COMMANDS
 .TP
 \fBdatui catalog show\fR
-With NAME, print that catalog's file (examples is the one datui ships); without, list the catalogs: id, label, datasets and file.
+Print catalog NAME's file (examples is the one datui ships). Without NAME, list the catalogs: id, label, datasets and file.
 .RS
 .TP
 \fINAME\fR
@@ -24,7 +24,7 @@ The catalog's id: mine (catalog.toml), examples, or a listed file's name.
 .RE
 .TP
 \fBdatui catalog check\fR
-Check a catalog file and list its datasets; a mistake is named by its line, with the fix, and exits non-zero.
+Check a catalog file and list its datasets. A mistake is reported with its line and the fix, and the command exits non-zero.
 .RS
 .TP
 \fIFILE\fR
@@ -33,7 +33,7 @@ The catalog file.
 .SH OPTIONS
 .TP
 \fB\-c\fR, \fB\-\-config\fR \fIKEY=VALUE\fR
-Set a config key for this run, as in the file: \-c display.\:row_numbers=true. Repeatable; a flag of the key's own still wins. \fBdatui config keys\fR lists them.
+Set a config key for this run, written as in the file: \-c display.\:row_numbers=true. Repeatable; the key's own flag, where it has one, still wins. \fBdatui config keys\fR lists the keys.
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help.
@@ -69,7 +69,7 @@ Saved views: see datui-views(1).
 \fICONFIG\fR/formats/
 Format specs and dictionaries, searched first: see datui-formats(7).
 .SH EXAMPLES
-Print the catalog datui ships, the worked example of the format.
+Print the catalog datui ships, a worked example of the catalog format.
 .PP
 .RS 4
 .EX

@@ -21,7 +21,7 @@ Write the default config file, every key commented out at its default.
 .RS
 .TP
 \fB\-\-force\fR
-Replace a config file that is there.
+Replace an existing config file.
 .RE
 .TP
 \fBdatui config path\fR
@@ -32,7 +32,7 @@ List every key: its type, default, the value in effect and what set it.
 .SH OPTIONS
 .TP
 \fB\-c\fR, \fB\-\-config\fR \fIKEY=VALUE\fR
-Set a config key for this run, as in the file: \-c display.\:row_numbers=true. Repeatable; a flag of the key's own still wins. \fBdatui config keys\fR lists them.
+Set a config key for this run, written as in the file: \-c display.\:row_numbers=true. Repeatable; the key's own flag, where it has one, still wins. \fBdatui config keys\fR lists the keys.
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help.
@@ -52,7 +52,7 @@ A usage error: an unknown option or command, or a value an option does not take.
 The config directory, in place of the platform's (\fB~/.config/datui\fR on Linux). Saved views and format specs live there too.
 .TP
 \fBDATUI_LOG\fR
-The log level: \fBerror\fR, \fBwarn\fR, \fBinfo\fR, \fBdebug\fR, \fBtrace\fR or \fBoff\fR. Beats \fBlog.level\fR in a file; \fB\-c\fR and \fB\-\-log\-level\fR beat it.
+The log level: \fBerror\fR, \fBwarn\fR, \fBinfo\fR, \fBdebug\fR, \fBtrace\fR or \fBoff\fR. Overrides \fBlog.level\fR in a config file; \fB\-c\fR and \fB\-\-log\-level\fR override it.
 .SH FILES
 \fICONFIG\fR is \fB$DATUI_CONFIG_DIR\fR when it is set, else \fB$XDG_CONFIG_HOME/datui\fR (\fB~/.config/datui\fR) on Linux, \fB~/Library/Application Support/datui\fR on macOS and \fB%APPDATA%\edatui\fR on Windows.
 .TP

@@ -21,7 +21,7 @@
 
 [[example]]
 command = "datui"
-description = "Open the home screen. Example datasets lists the catalog that comes with datui"
+description = "Open the home screen, where Example datasets lists the catalog that comes with datui"
 test = "run"
 
 [[example]]
@@ -96,7 +96,7 @@ pages = ["datui.1", "datui-man.1", "datui-keys.7"]
 
 [[example]]
 command = "datui catalog show examples"
-description = "Print the catalog datui ships, the worked example of the format"
+description = "Print the catalog datui ships, a worked example of the catalog format"
 expect = "exit"
 test = "run"
 pages = ["datui.1", "datui-catalog.1"]

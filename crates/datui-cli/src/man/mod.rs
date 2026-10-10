@@ -361,7 +361,7 @@ fn files(out: &mut String, which: Files) {
         ("CACHE/*_history.txt", "The prompts' history"),
         (
             "CACHE/shapes/, CACHE/facts/, CACHE/cloud_listings/",
-            "What the home screen has measured of datasets and listed of cloud sources, so it can show rows, columns and sizes without reading them again",
+            "What the home screen has measured of datasets, and its listings of cloud sources, so it can show rows, columns and sizes without reading them again",
         ),
         (
             "CACHE/datui.log",
@@ -489,7 +489,7 @@ fn render_datui(page: &Page, read: Read) -> String {
     );
     para(
         &mut out,
-        "A file is scanned where it is wherever its format allows, and only the rows on screen are read; sorting, queries and analysis read what they need. datui-formats(7) says how each format is read. On any screen, `?` shows its keys; datui-keys(7) lists them all.",
+        "Where its format allows, a file is scanned in place and only the rows on screen are read; sorting, queries and analysis read what they need. datui-formats(7) says how each format is read. On any screen, `?` shows its keys; datui-keys(7) lists them all.",
     );
 
     out.push_str(".SH OPTIONS\n");
@@ -618,10 +618,10 @@ fn render_command(page: &Page, read: Read, name: &str) -> String {
     let extra = match name {
         "config" => "The file's keys are in datui-config(5).",
         "catalog" => {
-            "A catalog is one TOML file of named datasets, local or remote, that the home screen lists as a section under its label. *CONFIG*/catalog.toml is yours, and Ctrl+D on a home row adds to it; every *CONFIG*/catalogs/*.toml is a catalog, named by its file, and `catalogs` in the config lists files elsewhere; examples ships with datui, and a catalogs/examples.toml replaces it. A catalog's top level holds `label` and `description`; every other table is a dataset, keyed by a short id of lowercase letters, digits and `-`. A dataset's keys: `name` (its row), `path` or `url`, `auth` (`auto` or `anonymous`) or `connection` (a `[[cloud.connections]]` name), `description`, `publisher`, `license`, `homepage`, `documentation` (an https link), `size` (a web file's bytes, shown until measured), `columns.NAME = { description, unit, values = { CODE = \"meaning\" } }` and `bookmarks.\"Name\" = \"path/\"`. A long legend is a `[id.columns.NAME.values]` table, with the column's other keys written as dotted keys. `datui catalog show examples` prints a worked example."
+            "A catalog is one TOML file of named datasets, local or remote, that the home screen lists as a section under its label. *CONFIG*/catalog.toml is yours, and Ctrl+D on a home row adds to it. Every *CONFIG*/catalogs/*.toml is a catalog, named by its file, and `catalogs` in the config lists files elsewhere. The examples catalog ships with datui; a catalogs/examples.toml replaces it. A catalog's top level holds `label` and `description`; every other table is a dataset, keyed by a short id of lowercase letters, digits and `-`. A dataset's keys: `name` (its row), `path` or `url`, `auth` (`auto` or `anonymous`) or `connection` (a `[[cloud.connections]]` name), `description`, `publisher`, `license`, `homepage`, `documentation` (an https link), `size` (a web file's bytes, shown until measured), `columns.NAME = { description, unit, values = { CODE = \"meaning\" } }` and `bookmarks.\"Name\" = \"path/\"`. A long legend is a `[id.columns.NAME.values]` table, with the column's other keys written as dotted keys. `datui catalog show examples` prints a worked example."
         }
         "theme" => {
-            "A theme is a set of colors, one per slot. night-market (dark) and day-market (light) are built in; every *CONFIG*/themes/*.toml is a theme, named by its file. A theme file holds `theme.colors` slots, plus `extends` (the theme its unset slots come from; without it, the built-in for the mode it is used in) and `description`. `theme.dark` and `theme.light` in the config pick the theme for each mode, and `theme.colors` lies over whichever is in use. A file with a mistake is left out with a warning, and its mode uses the built-in."
+            "A theme is a set of colors, one per slot. night-market (dark) and day-market (light) are built in; every *CONFIG*/themes/*.toml is a theme, named by its file. A theme file holds `theme.colors` slots, plus `extends` (the theme its unset slots come from; without it, the built-in for the mode it is used in) and `description`. `theme.dark` and `theme.light` in the config pick the theme for each mode, and `theme.colors` overrides whichever is in use. A file with a mistake is left out with a warning, and its mode uses the built-in."
         }
         "cache" => {
             "The cache holds nothing datui cannot rebuild; clearing it loses the recents' order and the prompts' history."
@@ -636,7 +636,7 @@ fn render_command(page: &Page, read: Read, name: &str) -> String {
             "The script completes datui's options, commands and their values. Print it into the directory your shell loads completions from."
         }
         "man" => {
-            "With no option, prints the page, or shows it with man(1) when standard output is a terminal; where man(1) is missing, as plain text through a pager: `$PAGER`, else less(1) or more(1). `--dir` writes every page, so `man datui` finds them; a package or the release archive installs them already. *PAGE* is a page's name with or without `datui-`, and `.5` or `.7` for the file and topic pages when a command shares the name."
+            "With no option, prints the page. When standard output is a terminal, it shows the page with man(1) instead, or, where man(1) is missing, as plain text through a pager: `$PAGER`, else less(1) or more(1). `--dir` writes every page where `man datui` finds them; a package or the release archive already installs them. *PAGE* is a page's name with or without `datui-`, and `.5` or `.7` for the file and topic pages when a command shares the name."
         }
         _ => "",
     };

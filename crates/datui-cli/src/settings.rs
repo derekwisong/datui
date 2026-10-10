@@ -233,7 +233,7 @@ pub const SECTIONS: &[Section] = &[
     Section {
         name: "limits",
         title: "Limits",
-        intro: "The most of a file some readers take in. Past one, the rest is left out or the file refused, and the note or error names the key that raises it.",
+        intro: "How much of a file some readers take in. Past a limit, the rest is left out or the file is refused, and the note or error names the key that raises the limit.",
     },
     Section {
         name: "log",
@@ -248,7 +248,7 @@ pub const SECTIONS: &[Section] = &[
     Section {
         name: "theme.colors",
         title: "Colors",
-        intro: "Each slot takes a name (`red`, `bright_blue`, `default`), `#rrggbb` or `indexed(0-255)`. They lie over the theme in use, `theme.dark` or `theme.light`, in either mode; a whole theme of your own goes in a file in `themes/`.",
+        intro: "Each slot takes a name (`red`, `bright_blue`, `default`), `#rrggbb` or `indexed(0-255)`. They override the theme in use, `theme.dark` or `theme.light`, in either mode; a whole theme of your own goes in a file in `themes/`.",
     },
     Section {
         name: "glyphs",
@@ -264,11 +264,11 @@ pub const SETTINGS: &[Setting] = &[
     s("catalogs", Toml("list of path \\| { path, id, label }"), Value("[]"), "Catalog files elsewhere, listed on the home screen after catalog.toml and the config directory's catalogs/*.toml, each a section; see Catalogs. Each is a path, or { path, id, label } to give it another id or label. Paths may be relative to this file. Adds up across imports."),
     // [read]
     s("read.infer_types", Toml("bool \\| list of columns"), Value("true"), "Read string columns as dates, times, durations or numbers where every value parses, after trimming: true for all, false for none, or a list of columns. CSV, and dates in JSON. A column with a leading zero (02134) stays text; a later value that does not parse is null, and the Notes tab counts them.").flag("infer-types").kwarg("infer_types"),
-    s("read.parquet_schema", Choice(&["union", "first"]), Value("\"union\""), "A partitioned Parquet dataset's schema: union is every column any file has, from their footers; first lets Polars take one file's.").kwarg("parquet_schema"),
+    s("read.parquet_schema", Choice(&["union", "first"]), Value("\"union\""), "The schema of a partitioned Parquet dataset: union takes every column any file has, from their footers; first lets Polars take one file's schema.").kwarg("parquet_schema"),
     s("read.decompress_in_memory", Bool, Value("false"), "Decompress a compressed CSV, TSV or PSV into memory instead of to a temp file.").kwarg("decompress_in_memory"),
-    s("read.temp_dir", Path, Unset("\"/tmp\""), "Directory for decompression temp files. Unset: the system's.").flag("temp-dir").kwarg("temp_dir"),
-    s("read.follow_interval", Duration, Value("\"250ms\""), "With --follow, how often the file is checked for new rows, or on Linux the least time between two reads, 10ms to 1m. Appends within one interval are one refresh."),
-    s("read.exact_count_files", Count, Value("50000"), "A dataset of more files than this shows a row count estimated from a sample of its footers until c in the Info panel counts it; 0 always counts."),
+    s("read.temp_dir", Path, Unset("\"/tmp\""), "Directory for decompression temp files. Unset, the system's temp directory.").flag("temp-dir").kwarg("temp_dir"),
+    s("read.follow_interval", Duration, Value("\"250ms\""), "With --follow, how often the file is checked for new rows (on Linux, the shortest time between two reads), from 10ms to 1m. Rows appended within one interval arrive in one refresh."),
+    s("read.exact_count_files", Count, Value("50000"), "A dataset of more files than this shows a row count estimated from a sample of its footers, until c in the Info panel counts exactly; 0 always counts exactly."),
     s("read.memory_warning", Size, Value("\"1GiB\""), "Ask before reading more than this of a file whole into memory (JSON, Avro, ORC, Excel and the other formats read in memory); 0 never asks."),
     s("read.audio_float", Bool, Value("false"), "Show integer audio samples as float in [-1, 1].").kwarg("audio_float"),
     // [csv]
@@ -280,15 +280,15 @@ pub const SETTINGS: &[Setting] = &[
     s("csv.ignore_errors", Bool, Value("false"), "Skip rows that do not parse instead of failing.").flag("ignore-errors").kwarg("ignore_errors"),
     // [display]
     s("display.unicode", Choice(&["auto", "always", "never"]), Value("\"auto\""), "Box-drawing and arrow glyphs, or plain ASCII. auto uses them when the locale is UTF-8, or on Windows when no locale is set."),
-    s("display.row_numbers", Toml("\"auto\" \\| bool"), Value("\"auto\""), "Number rows on the left by their place in the source, kept through a sort or filter (# toggles). auto: for text and logs; true or false: for all of them.").flag("row-numbers").kwarg("row_numbers"),
+    s("display.row_numbers", Toml("\"auto\" \\| bool"), Value("\"auto\""), "Number rows on the left by their place in the source; a row keeps its number through a sort or filter (# toggles). auto numbers text and logs; true or false turns them on or off for every table.").flag("row-numbers").kwarg("row_numbers"),
     s("display.row_numbers_start", Count, Value("1"), "The number of the source's first row.").kwarg("row_numbers_start"),
     s("display.cell_padding", Toml("\"comfortable\" \\| \"compact\" \\| integer"), Value("\"comfortable\""), "Space between columns: comfortable (2 cells), compact (1) or a number of cells."),
     s("display.column_colors", Bool, Value("true"), "Color cells by column type.").kwarg("column_colors"),
     s("display.type_row", Bool, Value("true"), "A second header row naming each column's type (D toggles)."),
     s("display.notes_accent", Bool, Value("true"), "Accent the i key when datui has noticed something about the data."),
-    s("display.mouse", Bool, Value("true"), "Take the mouse: the wheel scrolls, a click selects. false leaves it to the terminal.").flag("mouse"),
-    s("display.scroll_region", Bool, Value("true"), "Move lines within the terminal when the screen scrolls, so a scroll writes the new lines, not the page. false redraws every line that moved, for a terminal that mishandles the move."),
-    s("display.sidebar_width", Count, Unset("70"), "Width of every sidebar, in cells. Unset: each sidebar's own."),
+    s("display.mouse", Bool, Value("true"), "Use the mouse: the wheel scrolls and a click selects. false leaves the mouse to the terminal.").flag("mouse"),
+    s("display.scroll_region", Bool, Value("true"), "Scroll by moving lines within the terminal, so a scroll writes only the new lines, not the whole page. false redraws every line that moved, for a terminal that mishandles the move."),
+    s("display.sidebar_width", Count, Unset("70"), "Width of every sidebar, in cells. Unset, each sidebar uses its own width."),
     s("display.right_align_numbers", Bool, Value("true"), "Right-align numeric columns and their headers.").kwarg("right_align_numbers"),
     s("display.number_format", Toml("preset \\| table"), Value("\"none\""), "Digit grouping: none, thousands, european, si, swiss, indian, underscore or system, or a [display.number_format] table (, toggles).").flag("number-format").kwarg("number_format"),
     // [performance]
@@ -297,17 +297,17 @@ pub const SETTINGS: &[Setting] = &[
     s("performance.max_buffered_rows", Count, Value("100000"), "Most rows the table buffers between reads; 0 for no limit.").kwarg("max_buffered_rows"),
     s("performance.max_buffered", Size, Value("\"512MiB\""), "Most memory the buffered rows may take, estimated from the schema; 0 for no limit. Rounded up to whole MiB.").kwarg("max_buffered"),
     s("performance.streaming", Bool, Value("true"), "Use the Polars streaming engine where it applies.").kwarg("streaming"),
-    s("performance.threads", Count, Value("0"), "Most threads Polars computes with; 0 for every core. It caps speed, not memory; POLARS_MAX_THREADS, when set, wins. The datui command only: the Python module runs its own Polars, which POLARS_MAX_THREADS sizes when it first computes."),
+    s("performance.threads", Count, Value("0"), "Most threads Polars computes with; 0 for every core. It limits speed, not memory. POLARS_MAX_THREADS, when set, wins. Applies to the datui command only: the Python module runs its own Polars, sized by POLARS_MAX_THREADS when it first computes."),
     // [analysis]
-    s("analysis.sample_rows", Count, Value("100000"), "Rows an analysis samples from a larger table, spread across all of it; 0 reads every row.").flag("sample-rows").kwarg("sample_rows"),
-    s("analysis.chart_rows", Count, Value("10000"), "Rows a chart reads; a larger table is sampled across all of it."),
+    s("analysis.sample_rows", Count, Value("100000"), "Rows an analysis samples from a larger table, spread across the whole table; 0 reads every row.").flag("sample-rows").kwarg("sample_rows"),
+    s("analysis.chart_rows", Count, Value("10000"), "Rows a chart reads; a larger table is sampled across its whole length."),
     s("analysis.chart_grid", Bool, Value("false"), "Start charts with a grid at the major ticks (g toggles)."),
-    s("analysis.quality_local_copy", Size, Value("\"2GiB\""), "Most a Data Quality full scan of a remote dataset copies into the cache to read once; 0 never copies."),
-    s("analysis.sample_memory_limit", Size, Unset("\"8GiB\""), "Most memory a view's sample may take. Unset: the memory available now decides; 0 never warns or stops."),
+    s("analysis.quality_local_copy", Size, Value("\"2GiB\""), "Largest remote dataset a Data Quality full scan copies into the cache, so it is fetched once and every pass reads the copy; 0 never copies."),
+    s("analysis.sample_memory_limit", Size, Unset("\"8GiB\""), "Most memory a view's sample may take. Unset, the memory available now decides; 0 never warns or stops."),
     s("chart.export_recipe", Bool, Value("true"), "Embed how an exported chart was made (source path, query, chart, sample) in its PNG, SVG or PDF. The export dialog's Recipe row starts from it."),
     // [home]
     s("home.desktop_recents", Bool, Value("true"), "Also list directories from the desktop's recently-used files; never the file names."),
-    s("home.wordmark", Bool, Value("true"), "Show the datui wordmark at the top of the home screen; off, the one-line title bar."),
+    s("home.wordmark", Bool, Value("true"), "Show the datui wordmark at the top of the home screen; false shows a one-line title bar instead."),
     s("home.show_unreadable", Bool, Value("false"), "List files datui cannot read, dimmed (Ctrl+A toggles)."),
     s("home.hide", List, Value("[]"), "Catalogs not shown, by id: mine (catalog.toml), examples, or a listed file's name; one entry as catalog/id, such as examples/nyc-taxis. Adds up across imports."),
     s("home.preview_max", Size, Value("\"64MiB\""), "Largest local file whose first rows the home screen previews; 0 turns the preview off."),
@@ -333,11 +333,11 @@ pub const SETTINGS: &[Setting] = &[
     // [query]
     s("query.history_limit", Count, Value("1000"), "Queries remembered."),
     s("query.history", Bool, Value("true"), "Remember queries."),
-    s("query.default_mode", Choice(&["sql", "q"]), Value("\"sql\""), "The language : starts in, until Ctrl+T picks another."),
+    s("query.default_mode", Choice(&["sql", "q"]), Value("\"sql\""), "The language the : command line starts in, until Ctrl+T picks another."),
     // [views]
     s("views.auto_apply", Bool, Value("false"), "Apply the best-matching view when a file opens."),
     // [clipboard]
-    s("clipboard.backend", Choice(&["auto", "native", "osc52"]), Value("\"auto\""), "auto: the display server where one answers, osc52 elsewhere (SSH). osc52 is an escape sequence the terminal applies."),
+    s("clipboard.backend", Choice(&["auto", "native", "osc52"]), Value("\"auto\""), "auto uses the display server where one answers, and osc52 elsewhere (SSH). osc52 is an escape sequence that asks the terminal to copy."),
     s("clipboard.osc52_limit", Size, Value("\"100KiB\""), "Longest osc52 copy to attempt, as base64. Terminals cap what they accept."),
     // [formats]
     s("formats.path", List, Value("[]"), "Directories of format specs and dictionaries, searched after ~/.config/datui/formats and $DATUI_FORMATS_PATH. Adds up across imports."),
@@ -354,8 +354,8 @@ pub const SETTINGS: &[Setting] = &[
     s("limits.fix_fields", Count, Value("4096"), "Most fields read from one FIX message."),
     s("limits.gpx_fields", Count, Value("256"), "Most extension fields read from a GPX file, each a column."),
     s("limits.npy_header_bytes", Size, Value("\"4MiB\""), "Largest NumPy header read; a file with a larger one is refused."),
-    s("log.file", Path, Unset("\"~/datui.log\""), "Where the log goes. Unset: datui.log in the cache directory.").flag("log-file"),
-    s("log.level", Choice(&["error", "warn", "info", "debug", "trace", "off"]), Unset("\"warn\""), "How much the log says (default warn). DATUI_LOG beats a config file's; -c and --log-level beat DATUI_LOG.").flag("log-level"),
+    s("log.file", Path, Unset("\"~/datui.log\""), "Where the log is written. Unset, datui.log in the cache directory.").flag("log-file"),
+    s("log.level", Choice(&["error", "warn", "info", "debug", "trace", "off"]), Unset("\"warn\""), "How much the log records (default warn). DATUI_LOG overrides the config file; -c and --log-level override DATUI_LOG.").flag("log-level"),
     // [theme]
     s("theme.mode", Choice(&["auto", "dark", "light"]), Unset("\"auto\""), "Which mode's theme to use: theme.dark or theme.light. auto follows the terminal's answer about its background, else its last answer, then COLORFGBG, then dark; it asks again when the terminal regains focus."),
     s("theme.dark", Text, Value("\"night-market\""), "The theme used when the terminal is dark: night-market, day-market, or a file's name in the config directory's themes/. A name that cannot be used falls back to night-market, with a warning when dark is in use."),
@@ -536,7 +536,7 @@ pub const ENVIRONMENT: &[EnvVar] = &[
     env(
         &["DATUI_LOG"],
         EnvGroup::Datui,
-        "The log level: `error`, `warn`, `info`, `debug`, `trace` or `off`. Beats `log.level` in a file; `-c` and `--log-level` beat it",
+        "The log level: `error`, `warn`, `info`, `debug`, `trace` or `off`. Overrides `log.level` in a config file; `-c` and `--log-level` override it",
     ),
     env(
         &["DATUI_DEBUG"],
@@ -546,22 +546,22 @@ pub const ENVIRONMENT: &[EnvVar] = &[
     env(
         &["DATUI_GCP_PROJECT"],
         EnvGroup::Datui,
-        "The Google Cloud project to list when projects cannot be searched, as `GOOGLE_CLOUD_PROJECT`",
+        "The Google Cloud project to list when projects cannot be searched. Like `GOOGLE_CLOUD_PROJECT`, but read first",
     ),
     env(
         &["DATUI_TRACE_FIRST_ROWS"],
         EnvGroup::Datui,
-        "A file to write the time to, in Unix nanoseconds, once the first rows are drawn. For benchmarks",
+        "A file to write the time (in Unix nanoseconds) to once the first rows are drawn. For benchmarks",
     ),
     env(
         &["NO_COLOR"],
         EnvGroup::Terminal,
-        "Set to anything: no colors, the terminal's own for everything",
+        "Set to anything to turn off colors: the terminal's own are used for everything",
     ),
     env(
         &["COLORTERM", "TERM", "FORCE_COLOR"],
         EnvGroup::Terminal,
-        "How many colors the terminal draws: 24-bit, 256 or 16. Theme colors are brought down to fit",
+        "How many colors the terminal draws: 24-bit, 256 or 16. Theme colors are reduced to fit",
     ),
     env(
         &["COLORFGBG"],
@@ -571,12 +571,12 @@ pub const ENVIRONMENT: &[EnvVar] = &[
     env(
         &["TERM_PROGRAM"],
         EnvGroup::Terminal,
-        "With `theme.mode = \"auto\"`, names the terminal whose last answer about its background picks the first frame's theme; `TERM` when unset",
+        "With `theme.mode = \"auto\"`, identifies the terminal, so its last answer about its background picks the first frame's theme; `TERM` is used when it is unset",
     ),
     env(
         &["LC_ALL", "LC_CTYPE", "LANG"],
         EnvGroup::Terminal,
-        "With `display.unicode = \"auto\"`, the first one set says whether the terminal takes UTF-8; when it does not, glyphs are ASCII. With none set, Windows draws Unicode and other systems ASCII",
+        "With `display.unicode = \"auto\"`, the first one set says whether the terminal takes UTF-8; if it does not, glyphs are ASCII. With none set, Windows gets Unicode and other systems ASCII",
     ),
     env(
         &["VISUAL", "EDITOR", "PAGER"],

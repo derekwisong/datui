@@ -16,7 +16,7 @@ Format specs are TOML files that describe a binary format, or a family of delimi
 .SH COMMANDS
 .TP
 \fBdatui formats check\fR
-Check a format spec or a dictionary (QuickFIX XML, DBC or TOML), by name or by file; with FILE, print its first decoded rows, or what a dictionary names in the log. Exits non-zero on an error.
+Check a format spec or a dictionary (QuickFIX XML, DBC or TOML), by name or by file. With FILE, print the first rows it decodes, or what the dictionary names in that log. Exits non-zero on an error.
 .RS
 .TP
 \fISPEC\fR
@@ -28,7 +28,7 @@ A file (or directory of column files) to read with it.
 .SH OPTIONS
 .TP
 \fB\-c\fR, \fB\-\-config\fR \fIKEY=VALUE\fR
-Set a config key for this run, as in the file: \-c display.\:row_numbers=true. Repeatable; a flag of the key's own still wins. \fBdatui config keys\fR lists them.
+Set a config key for this run, written as in the file: \-c display.\:row_numbers=true. Repeatable; the key's own flag, where it has one, still wins. \fBdatui config keys\fR lists the keys.
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help.

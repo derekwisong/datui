@@ -31,8 +31,8 @@ Parquet, CSV, JSON, Arrow, Excel, SQLite, logs, audio, model files and more, inc
 
 ## Help while you work
 
-Press <kbd>?</kbd> for the current screen's keys. The footer says what is in
-effect, and the keys of whatever mode is active. <kbd>Esc</kbd> backs out; <kbd>Ctrl</kbd>+<kbd>Q</kbd> quits.
+Press <kbd>?</kbd> for the current screen's keys. The footer shows what is in
+effect and the keys for the active mode. <kbd>Esc</kbd> backs out; <kbd>Ctrl</kbd>+<kbd>Q</kbd> quits.
 The search button above searches this manual.
 
 [Choose another version](https://derekwisong.github.io/datui/#versions), [watch the demos](demos.md), or

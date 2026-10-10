@@ -145,8 +145,8 @@ records and its columns.
 On the home screen, each variant of a file a spec reads is a record type: its
 details read `records  2 types (spec)` and each type's column count
 (`add 5 · exec 4`). Enter opens every record; → lists the record types, one row
-each at `day.ord/add`, and Enter on one opens it alone. That path opens the
-record type on the command line too, and is what recents record.
+each at `day.ord/add`, and Enter on one opens it alone. That path also opens the
+record type from the command line, and it is what the recents list keeps.
 
 ## Documentation
 
@@ -190,7 +190,8 @@ fields = [
 | `unit` | A field | The column's, or the header or footer field's, unit |
 | `enum` | A record field | Its codes and labels are the column's value legend |
 
-A flattened field's note goes to each of its columns, `bid_0`, `bid_1` and on.
+A flattened field's description and unit go to each of its columns, `bid_0`,
+`bid_1` and on.
 Named `[header]` and `[footer]` fields with a `description` or `unit` are listed
 in sections of their own.
 
@@ -307,7 +308,7 @@ endian = "be"
 fields = [{ name = "price", type = "f8" }, { name = "size", type = "s8" }]
 ```
 
-With it, `datui --format kdb.trades db/trades/` reads `db/trades/price` and
+With this spec, `datui --format kdb.trades db/trades/` reads `db/trades/price` and
 `db/trades/size` as two columns of one table, as kdb+ splays a table. A
 `[header]` describes the start of each file. A glob in a columns spec matches
 the directory.

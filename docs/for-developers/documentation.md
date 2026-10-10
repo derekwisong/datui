@@ -75,9 +75,9 @@ cargo run -p datui-cli --bin gen_docs -- write
 | `reference/manual-pages.md`, region `pages` | The list of manpages, `PAGES` in `crates/datui-cli/src/man/mod.rs` |
 | `crates/datui-cli/man/*` (the manpages) | All of the above, plus `long_about.txt`, `query-syntax.md`, `formats/index.md` and the format-spec pages ([Build and publish packages](packaging.md#manpages-and-completions)) |
 
-`GENERATED` in `crates/datui-cli/src/docgen.rs` lists them. A region sits
-between two comments, which mdBook and GitHub hide; the text around it is
-written by hand:
+`GENERATED` in `crates/datui-cli/src/docgen.rs` lists them. A generated region
+sits between two comments, which mdBook and GitHub hide. The text outside the
+region is written by hand:
 
 ```text
 <!-- generated: keys -->
@@ -87,15 +87,16 @@ written by hand:
 In the landing page the comments are Jinja's, `{# generated: NAME #}`; in TOML,
 Ruby and desktop files, `# generated: NAME`.
 
-`the_generated_docs_are_current` (`scripts/dev/test.sh cli`) fails while a
-committed copy differs. `gen_docs` with no argument prints the command-line
-reference; with `settings`, `environment` or `keys`, that page.
+`the_generated_docs_are_current` (`scripts/dev/test.sh cli`) fails when a
+committed copy differs from what `gen_docs` writes. `gen_docs` with no argument
+prints the command-line reference; with `settings`, `environment` or `keys`, it
+prints that page.
 
 ## Code blocks
 
 Every fenced block in `docs/`, the READMEs and the next release's notes is one
-of three kinds, named in its info string. On the landing page every `<pre>`
-names it in `data-example` (`<pre data-example="bash,network">`), and the runner
+of three kinds, named in its info string. On the landing page, each `<pre>`
+names its kind in `data-example` (`<pre data-example="bash,network">`), and the runner
 checks and runs those the same way:
 
 | Kind | Info string | Checked |
@@ -110,22 +111,22 @@ attributes go after the language, comma-separated:
 | Attribute | Means |
 |---|---|
 | `network` | Reads public data; runs in the Nightly job |
-| `interactive` | Its producer never ends; stopped once the first rows show |
+| `interactive` | The command piping into datui never ends; the runner stops it once the first rows show |
 | `continue` | Runs in the directory the page's previous block ran in |
-| `expect=rows`, `screen` or `exit` | What its datui command must do: show rows (the default with a path), stay up (the home screen, the hex view), or print and exit |
+| `expect=rows`, `screen` or `exit` | What its datui command must do: show rows (the default with a path), stay open (the home screen, the hex view), or print and exit |
 | `spec` | A TOML format spec, checked with `datui formats check` |
 | `catalog` | A catalog file, checked with `datui catalog check` |
 | `dataset=NAME` | A `sql` or `q` block's data, from `scripts/docs/doc_datasets.toml` |
 | `rows=N` | The rows a `sql` or `q` block returns |
-| `repo` | Run from a checkout of this repository; its `scripts/` paths must exist, and it is not run |
+| `repo` | Meant for a checkout of this repository. Not run, but its `scripts/` paths must exist |
 | `install` | Installs datui; `test-install.yml` covers it |
-| `file=NAME` | A file the page's next runnable block uses by name; written into its directory before it runs, not run itself |
+| `file=NAME` | A file the page's next runnable block uses by name. Not run; the runner writes it into that block's directory first |
 
 A runnable block stands alone: it uses the built-in catalog's public data,
 real commands (`seq`, `printf`, `journalctl`), or the file blocks above it.
 Files an example needs are titled file blocks, never heredocs; sample-data
-generators are readable scripts. Each file is its own block, its name in bold
-on the line above, and the command block runs it by name:
+generators are readable scripts. Each file is its own block, with its name in
+bold on the line above, and the command block uses it by name:
 
 ````markdown
 **`make_day_l2.py`**
@@ -140,24 +141,28 @@ datui day.l2
 ```
 ````
 
-The lint fails a heredoc or a `python -c` in a shell block, and a file block
-the next runnable block does not name. A binary generator lays out its records
-with `ctypes.LittleEndianStructure` (`_pack_ = 1`, `_layout_ = "ms"`), a field
-per field of the format. A `bash` or `toml` block never starts a line
-with a `# comment`; say it in the text, or at the end of a command.
+The lint fails on a heredoc or a `python -c` in a shell block, and on a file
+block that the next runnable block does not name. A binary generator lays out
+its records with `ctypes.LittleEndianStructure` (`_pack_ = 1`,
+`_layout_ = "ms"`), one field per field of the format. No line in a `bash` or
+`toml` block starts with a `# comment`; put the comment in the text, or at the
+end of a command.
 
-The examples `datui --help`, the manpages and the command-line reference show
-are `crates/datui-cli/examples.toml`: each entry's `command`, `description`,
-`test` (`run`, `network` or `interactive`), an optional `expect`, and the
-`pages` whose EXAMPLES show it (`datui.1` when not given; `datui COMMAND --help`
-shows those of `datui-COMMAND.1`). Every command page needs one. Files a command reads are a `files` list (`[{ name, text }]`): the runner writes them and the pages show each under its name, never a `printf` into a file. Each runs with
-`HOME` set to its own directory, so an example may install into `~`.
+The examples that `datui --help`, the manpages and the command-line reference
+show come from `crates/datui-cli/examples.toml`. Each entry has a `command`, a
+`description`, a `test` (`run`, `network` or `interactive`), an optional
+`expect`, and the `pages` whose EXAMPLES section shows it (`datui.1` when not
+given; `datui COMMAND --help` shows the examples of `datui-COMMAND.1`). Every
+command page needs one. Files a command reads go in a `files` list
+(`[{ name, text }]`): the runner writes them, and the pages show each under its
+name, never as a `printf` into a file. Each example runs with `HOME` set to its
+own directory, so it may install into `~`.
 
 ### Run the checks
 
-`./scripts/dev/test.sh docs` runs what CI's Python job checks without a
+`./scripts/dev/test.sh docs` runs the checks from CI's Python job that need no
 binary: `lint_docs.py`, `doc_examples.py --lint`, `lint_manpages.py` and the
-docs and demo scripts' unit tests. Each, and the rest:
+unit tests of the docs and demo scripts. These and the other checks:
 
 | Command | Checks |
 |---|---|
@@ -165,8 +170,8 @@ docs and demo scripts' unit tests. Each, and the rest:
 | `.venv/bin/python scripts/docs/doc_examples.py --bin target/debug/datui` | Runs the runnable shell and TOML blocks, and `examples.toml`'s entries, that need no network |
 | `... --bin target/debug/datui --network` | The network ones instead |
 | `.venv/bin/python scripts/docs/doc_examples.py --python` | The `python` blocks, with the wheel installed ([Build Python bindings](python-bindings.md)) |
-| `... -k quick-start` | Only the blocks whose `file:line` or text holds the word |
-| `scripts/dev/test.sh unit doc_queries` | Every `q` block parses; `sql` and `q` blocks on data that ships with the docs run |
+| `... -k quick-start` | Only the blocks whose `file:line` or text contains the word |
+| `scripts/dev/test.sh unit doc_queries` | Every `q` block parses, and the `sql` and `q` blocks on data that ships with the docs run |
 | `python3 scripts/docs/lint_docs.py` | H1s against `SUMMARY.md`, headings in sentence case, links, redirects |
 | `python3 scripts/docs/lint_manpages.py` | The manpages: no `mandoc -T lint` or `groff -ww` warning at 78 or 60 columns, and a NAME line `lexgrog` reads. Skips a tool that is missing; CI passes `--require` |
 | `./scripts/docs/check_doc_links.sh book/preview` | Every link in the built book, with [lychee](https://github.com/lycheeverse/lychee); `--online` adds external URLs |
@@ -177,7 +182,7 @@ runs datui on a pseudo-terminal, passes once the table shows rows, answers a
 download question, and otherwise fails with the screen's last text. A failure
 names the file and line.
 
-The queries on public data run once the datasets are downloaded:
+To run the queries on public data, download the datasets first:
 
 ```bash,repo
 .venv/bin/python scripts/docs/doc_examples.py --fetch-datasets ~/tmp/doc-data
@@ -201,7 +206,7 @@ network blocks, the network Python blocks and the queries on public data.
 
 A branch build writes the command-line reference into a temporary copy; a tag
 build uses the one committed with the tag. The landing page lists release and
-development books. It stays a landing page; it does not redirect into a book.
+development books. It never redirects into a book.
 Check it in light and dark, at phone and desktop widths, with the keyboard and
 with JavaScript off.
 

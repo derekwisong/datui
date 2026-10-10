@@ -3,45 +3,47 @@
 <kbd>i</kbd> at the table opens the Info panel: the dataset's schema, what its
 format records, how it is stored and read, and what datui noticed about it.
 <kbd>i</kbd> or <kbd>Esc</kbd> closes it. While the dataset has unread notes,
-<kbd>i</kbd> opens on the Notes tab; after that, on Model, Audio, MIDI or VCD
-for those files, and on Schema for anything else.
+<kbd>i</kbd> opens on the Notes tab. Otherwise it opens on the Model, Audio,
+MIDI or VCD tab for those files, and on Schema for anything else.
 
 The panel's footer names the keys that work now. <kbd>←</kbd> <kbd>→</kbd>
 (or <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd>) switch tabs from anywhere,
-and the body always has the keys: the rail marks the schema's current row.
+and the other keys go to the body, where the rail marks the schema's current
+row.
 When the schema is taller than the panel, the footer counts the columns out of
 view.
 
 | Tab | Shows |
 |---|---|
-| **Schema** | Row and column counts, column types, schema source, file coverage, and a Parquet file's per-column compression. A column's unit, when a delimited format spec read a unit row or the file names one (DataFlash, a DBC dictionary). A dataset a [catalog](../reference/catalogs.md#columns) documents adds what each column means (`About`), the selected column's note and codes below, and the documentation's link |
-| **Documentation** | A dataset a [catalog](../reference/catalogs.md) lists, or one inside it, or a file whose [format spec](../reference/format-specs.md#documentation) documents it: the page <kbd>Ctrl</kbd>+<kbd>E</kbd> shows on the home screen ([Documentation view](home-screen.md#documentation-view)). <kbd>↑</kbd> <kbd>↓</kbd> move, <kbd>Enter</kbd> opens a column's legend, <kbd>o</kbd> opens a link in the browser after asking ([how](home-screen.md#documentation-view)), <kbd>y</kbd> copies a line's link or value |
+| **Schema** | Row and column counts, column types, schema source, file coverage, and a Parquet file's per-column compression. A column's unit, when a delimited format spec read a unit row or the file names one (DataFlash, a DBC dictionary). For a dataset a [catalog](../reference/catalogs.md#columns) documents, it adds what each column means (`About`), the selected column's note and codes below, and the link to the documentation |
+| **Documentation** | For a dataset a [catalog](../reference/catalogs.md) lists (or one inside it), or a file a [format spec](../reference/format-specs.md#documentation) documents: the same page <kbd>Ctrl</kbd>+<kbd>E</kbd> shows on the home screen ([Documentation view](home-screen.md#documentation-view)). <kbd>↑</kbd> <kbd>↓</kbd> move, <kbd>Enter</kbd> opens a column's legend, <kbd>o</kbd> opens a link in the browser after asking ([how](home-screen.md#documentation-view)), <kbd>y</kbd> copies a line's link or value |
 | Format's own | What the file says besides its rows, named for its format; see [the table below](#tabs-by-format) |
 | **Metadata** | The metadata line a [delimited format spec](../formats/format-specs.md#delimited-text) names, as key and value; appears for files read through one |
 | **Resources** | File size, how the file is read, buffered memory, and loading measurements |
 | **Partitions** | Partition columns for a hive-partitioned dataset |
 | **Notes** | Schema differences, skipped files and other findings; appears when there are notes |
 
-The file size, and a Parquet, Arrow IPC, Avro or ORC file's tab, are read in the
-background the first time the panel opens for a dataset: the few KB at an end of the
-file the open read too, and none of its rows. Until they arrive the size and the tab
-read `reading...`; a file that cannot be read shows why in their place. Remote
+The first time the panel opens for a dataset, it reads the file size and, for a
+Parquet, Arrow IPC, Avro or ORC file, its tab in the background. That reads only
+the few KB at one end of the file that opening it read too, and none of its rows.
+Until they arrive, the size and the tab say `reading...`; if the file cannot be
+read, they say why. Remote
 sources, directories, globs, datasets of several files, and compressed or streamed
 copies have no file size and no such tab.
 
 ## Column types
 
-<kbd>Enter</kbd> on the Schema tab, or **Change type...** in the cell menu (a
-right click on a cell), changes the column's type for the view: the same names,
-formats and rules a [format spec's `type`](../formats/format-specs.md#column-types)
-takes. **Combine into datetime...** in the cell menu, on a text, date or time
-column, makes a column as a spec's [derived column](../formats/format-specs.md#derived-columns)
+<kbd>Enter</kbd> on the Schema tab, or **Change type...** in the cell menu
+(right-click a cell), changes the column's type for the view. It takes the same
+names, formats and rules as a [format spec's `type`](../formats/format-specs.md#column-types).
+**Combine into datetime...** in the cell menu, on a text, date or time column,
+makes a new column the way a spec's [derived column](../formats/format-specs.md#derived-columns)
 does.
 
 | Choice | Does |
 |---|---|
-| A type name (`i64`, `f64`, `str`, `bool`, …) | The column reads as it at once. A value that does not fit is null |
-| `date`, `time`, `datetime` | A format next: each line shows what it makes of the column's first value (`03/04/2024 → 2024-04-03`), and a format typed (`%d.%m.%Y`) is the format |
+| A type name (`i64`, `f64`, `str`, `bool`, …) | The column takes that type at once. A value that does not fit is null |
+| `date`, `time`, `datetime` | Then a format: each line shows what it makes of the column's first value (`03/04/2024 → 2024-04-03`), or type your own (`%d.%m.%Y`) |
 | `as read` | The type the read gave the column |
 
 - The type row shows a changed type in the accent, and the footer says
@@ -50,16 +52,17 @@ does.
   and the Notes tab says how many: `code: 1 value not i64, read as null`.
 - Filters, charts, analysis, find, value counts and exports see the new type; a
   Parquet export writes it.
-- A [saved view](views.md) keeps each change as a spec's `[columns]` entry
-  says it, `{ "name": "zip", "type": "str" }`. On data without the column, the
+- A [saved view](views.md) keeps each change in the form of a spec's
+  `[columns]` entry: `{ "name": "zip", "type": "str" }`. On data without the column, the
   step is left out with a note.
 - A query, a pivot or a melt starts from the data as read, without the changes.
 
 ## Tabs by format
 
-Each format has its own tab beside Schema, or none, and a file that holds several
+Most formats add a tab of their own beside Schema. A file that holds several
 tables lists them on the [home screen](home-screen.md) as places inside it
-(`shop.db/orders`, `book.xlsx/Sales`) that recents record and Enter opens.
+(`shop.db/orders`, `book.xlsx/Sales`); <kbd>Enter</kbd> opens one, and recents
+remember it.
 
 | Format | Tab | Lists inside the file |
 |---|---|---|
@@ -88,11 +91,11 @@ tables lists them on the [home screen](home-screen.md) as places inside it
 
 CSV, TSV, PSV, JSON, NDJSON and plain text have no tab of their own: text holds its rows and nothing else.
 An `.xlsx` or `.xlsm` workbook lists its worksheets
-from its directory, without reading them; an `.xls` or `.xlsb` file keeps its worksheet
-names where only reading the workbook finds them, so it opens its first worksheet and
-`--table` or <kbd>T</kbd> names another. On the Excel and SQLite tabs,
-<kbd>↑</kbd> <kbd>↓</kbd> move a cursor over the worksheets or tables and
-<kbd>Enter</kbd> opens the one under it in place of this one.
+from its directory, without reading them; an `.xls` or `.xlsb` file stores its worksheet
+names where only reading the whole workbook finds them, so it opens on its first
+worksheet; `--table` or <kbd>T</kbd> chooses another. On the Excel and SQLite
+tabs, <kbd>↑</kbd> <kbd>↓</kbd> move a cursor over the worksheets or tables, and
+<kbd>Enter</kbd> opens the one under the cursor in place of the current one.
 
 A [Hugging Face](../formats/columnar-and-json.md#arrow-ipc) cache directory lists its
 splits inside it the same way (`cache/test`), above the files they are made of.
@@ -103,7 +106,8 @@ count is the dataset's, not the page's; <kbd>D</kbd> at the table shows the
 column types in a second header row.
 
 On a CSV, TSV or PSV file, <kbd>H</kbd> on the Schema tab reads the first row
-as data, under `column_1`, `column_2`, …, and again as column names. It reads
+as data, under `column_1`, `column_2`, …; press it again to read it as column
+names. It reads
 the file again, so the query, filters and sort are cleared, and the panel
 closes. The footer offers it only for those files.
 
@@ -120,8 +124,8 @@ opens on the Model tab:
 | Metadata | Key and value: SafeTensors `__metadata__` and the index's `metadata`, or GGUF's key/value pairs |
 
 Values are shown whole up to 64 KiB, so a chat template wraps over as many
-lines as it takes; a longer value, such as a whole `tokenizer.json`, ends with
-how much more there is.
+lines as it takes; a longer value, such as a whole `tokenizer.json`, ends by
+saying how much more there is.
 Arrays of up to 16 items are listed; longer ones, such as a tokenizer's
 vocabulary, show their length (`[128,256 strings]`). Across several files, the
 first file to name a key gives its value.
@@ -139,8 +143,8 @@ opens on the Audio tab:
 | Warnings | A data size the file does not hold, frames past the 4,294,967,295 a table holds, or bytes after the last whole frame |
 | Metadata | `bext.*` (description, originator, origination, time reference, coding history), `ixml.*` (project, scene, take, tape, note) and the iXML document itself, `info.*` from `LIST INFO`, AIFF's name and annotation, then each marker: its time, frame, region length and label |
 
-A data size of 0 or a placeholder, as a recorder leaves it, says so: the
-frames are counted from the file's size.
+When the data size is 0 or a placeholder, as a recorder can leave it, the tab
+says so and counts the frames from the file's size.
 
 ## MIDI
 
@@ -155,8 +159,8 @@ tab, or on Notes first when a note never ends or a file could not be read:
 | Copyright | The first copyright notice, when there is one |
 | Tracks | Each track's number and name, its events, notes, channels and instrument name |
 
-For a directory of songs, the lines are totals and the tempo range, and the
-list is the files that could not be read, with why.
+For a directory of songs, the lines give totals and the tempo range, and the
+list shows the files that could not be read, with the reason.
 
 ## File format tabs
 
@@ -173,7 +177,7 @@ VCD tab; for every other format the tab sits beside Schema.
 | SQLite | Page size and pages; schema version, user version and text encoding; tables and views; whether row counts are stored | Tables: each one's kind, columns and the rows `ANALYZE` stored for it. No table is counted to fill it |
 | GPS | NMEA: rows of the table opened, sentences and lines. GPX: points, tracks, routes and waypoints. Both: the time span and the latitude and longitude bounds of the rows | Sentences (NMEA): each type and how many |
 | VCD | Timescale, signal and scope counts; value changes and their time span; `$date`, `$version`, `$comment` | Signals: each path with its type, width and identifier |
-| FIX | Messages per BeginString; the dictionaries read with the log, each with what it matches and how many messages | Tags: each column with its tag number and the names the dictionaries give it, each dictionary's when they differ |
+| FIX | Messages per BeginString; the dictionaries read with the log, each with what it matches and how many messages | Tags: each column with its tag number and the names the dictionaries give it, with each dictionary's name when they differ |
 | SDF | Records, fields, and how many records are V3000 | Fields: each one's type and how many records hold it |
 | NumPy | Shape, type, order (C or Fortran) and format version; for an archive's array, the archive and how many arrays it holds | Fields: each one's type, subarray shape and byte offset |
 | ELF | Class, machine, type, entry point; bytes in loaded, unwritten sections (flash) and in written ones (RAM); the symbol count | Sections: each one's address, size and flags |
@@ -181,7 +185,7 @@ VCD tab; for every other format the tab sits beside Schema.
 | DataFlash | Message types with records and defined; records; whether the log has units | Messages: each type's records, format characters and length |
 | CAN | Frames, interfaces, whether timestamps are wall-clock; each dictionary read and what it matches; frames no dictionary names | Messages: each one's id, frames, signals and comment |
 
-A list of more than 10,000 shows the first 10,000 and how many more there are.
+A list of more than 10,000 entries shows the first 10,000 and how many more there are.
 
 ## Notes
 
@@ -211,14 +215,14 @@ be reliably ordered, such as `part=2` and `part=10`.
 The displayed row count may include deleted rows and superseded versions.
 See [lake table directories](open-files.md#directories).
 
-Each note is one sentence and a line beneath it saying what it is based on,
-so `in 1 of 3 files` never stands for files datui has not looked at. The list
-shows whole notes only, never a claim without its basis; when it is taller
-than the panel, the corner counts the notes out of view.
+Each note is one sentence, with a line beneath it saying what it is based on,
+so `in 1 of 3 files` never covers files datui has not looked at. The list shows
+whole notes only, never a claim without its basis; when the list is taller than
+the panel, the corner counts the notes out of view.
 
 <kbd>Enter</kbd> on a type-conflict note offers **read as text**: the column
-is read from the files that disagree too, at the type each wrote, so the
-values the conflict hid show, and the marks and the note go. Nothing is listed
+is then also read from the files that disagree, at the type each one wrote, so
+the values the conflict hid appear, and the marks and the note go away. Nothing is listed
 or read from the footers again. A filter or sort on the column then compares
 text, and a note says so. See
 [files that disagree](open-files.md#files-that-disagree).
@@ -228,7 +232,8 @@ the active view and disappear when those controls are cleared. Queries,
 pivots and drill-downs hide dataset notes until you reset or return to the
 original level.
 
-Unread notes accent the <kbd>i</kbd> key and open on the Notes tab. Set
+Unread notes show the <kbd>i</kbd> key in the accent color, and <kbd>i</kbd>
+opens on the Notes tab. Set
 `notes_accent = false` under `[display]` in the [config](configuration.md)
 to disable the accent; the notes are still collected and the tab still
 appears.

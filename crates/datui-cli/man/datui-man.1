@@ -11,7 +11,7 @@ datui\-man \- show a manual page, list them, or write them all under a directory
 .SH DESCRIPTION
 Show a manual page, list them, or write them all under a directory.
 .PP
-With no option, prints the page, or shows it with man(1) when standard output is a terminal; where man(1) is missing, as plain text through a pager: \fB$PAGER\fR, else less(1) or more(1). \fB\-\-dir\fR writes every page, so \fBman datui\fR finds them; a package or the release archive installs them already. \fIPAGE\fR is a page's name with or without \fBdatui\-\fR, and \fB.5\fR or \fB.7\fR for the file and topic pages when a command shares the name.
+With no option, prints the page. When standard output is a terminal, it shows the page with man(1) instead, or, where man(1) is missing, as plain text through a pager: \fB$PAGER\fR, else less(1) or more(1). \fB\-\-dir\fR writes every page where \fBman datui\fR finds them; a package or the release archive already installs them. \fIPAGE\fR is a page's name with or without \fBdatui\-\fR, and \fB.5\fR or \fB.7\fR for the file and topic pages when a command shares the name.
 .SH OPTIONS
 .TP
 \fIPAGE\fR
@@ -21,10 +21,10 @@ The page: datui (the default), a command (config, catalog, theme, cache, views, 
 List the pages and what each covers.
 .TP
 \fB\-\-dir\fR \fIDIR\fR
-Write every page under DIR, in man1, man5 and man7, where man looks for them: ~/.local/share/man.
+Write every page under DIR, in man1, man5 and man7, where man finds them; for your user, ~/.local/share/man.
 .TP
 \fB\-c\fR, \fB\-\-config\fR \fIKEY=VALUE\fR
-Set a config key for this run, as in the file: \-c display.\:row_numbers=true. Repeatable; a flag of the key's own still wins. \fBdatui config keys\fR lists them.
+Set a config key for this run, written as in the file: \-c display.\:row_numbers=true. Repeatable; the key's own flag, where it has one, still wins. \fBdatui config keys\fR lists the keys.
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help.

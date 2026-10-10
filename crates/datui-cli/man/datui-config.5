@@ -47,19 +47,19 @@ How files are read. A file's own layout (delimiter, header, rows to skip) is a f
 Read string columns as dates, times, durations or numbers where every value parses, after trimming: true for all, false for none, or a list of columns. CSV, and dates in JSON. A column with a leading zero (02134) stays text; a later value that does not parse is null, and the Notes tab counts them. Default: \fBtrue\fR. Flag: \fB\-\-infer\-types\fR.
 .TP
 \fBread.parquet_schema\fR (\fIunion | first\fR)
-A partitioned Parquet dataset's schema: union is every column any file has, from their footers; first lets Polars take one file's. Default: \fB"union"\fR.
+The schema of a partitioned Parquet dataset: union takes every column any file has, from their footers; first lets Polars take one file's schema. Default: \fB"union"\fR.
 .TP
 \fBread.decompress_in_memory\fR (\fIbool\fR)
 Decompress a compressed CSV, TSV or PSV into memory instead of to a temp file. Default: \fBfalse\fR.
 .TP
 \fBread.temp_dir\fR (\fIpath\fR)
-Directory for decompression temp files. Unset: the system's. Unset by default. Flag: \fB\-\-temp\-dir\fR.
+Directory for decompression temp files. Unset, the system's temp directory. Unset by default. Flag: \fB\-\-temp\-dir\fR.
 .TP
 \fBread.follow_interval\fR (\fIduration\fR)
-With \-\-follow, how often the file is checked for new rows, or on Linux the least time between two reads, 10ms to 1m. Appends within one interval are one refresh. Default: \fB"250ms"\fR.
+With \-\-follow, how often the file is checked for new rows (on Linux, the shortest time between two reads), from 10ms to 1m. Rows appended within one interval arrive in one refresh. Default: \fB"250ms"\fR.
 .TP
 \fBread.exact_count_files\fR (\fIinteger\fR)
-A dataset of more files than this shows a row count estimated from a sample of its footers until c in the Info panel counts it; 0 always counts. Default: \fB50000\fR.
+A dataset of more files than this shows a row count estimated from a sample of its footers, until c in the Info panel counts exactly; 0 always counts exactly. Default: \fB50000\fR.
 .TP
 \fBread.memory_warning\fR (\fIsize\fR)
 Ask before reading more than this of a file whole into memory (JSON, Avro, ORC, Excel and the other formats read in memory); 0 never asks. Default: \fB"1GiB"\fR.
@@ -92,7 +92,7 @@ Skip rows that do not parse instead of failing. Default: \fBfalse\fR. Flag: \fB\
 Box-drawing and arrow glyphs, or plain ASCII. auto uses them when the locale is UTF-8, or on Windows when no locale is set. Default: \fB"auto"\fR.
 .TP
 \fBdisplay.row_numbers\fR (\fI"auto" | bool\fR)
-Number rows on the left by their place in the source, kept through a sort or filter (# toggles). auto: for text and logs; true or false: for all of them. Default: \fB"auto"\fR. Flag: \fB\-\-row\-numbers\fR.
+Number rows on the left by their place in the source; a row keeps its number through a sort or filter (# toggles). auto numbers text and logs; true or false turns them on or off for every table. Default: \fB"auto"\fR. Flag: \fB\-\-row\-numbers\fR.
 .TP
 \fBdisplay.row_numbers_start\fR (\fIinteger\fR)
 The number of the source's first row. Default: \fB1\fR.
@@ -110,13 +110,13 @@ A second header row naming each column's type (D toggles). Default: \fBtrue\fR.
 Accent the i key when datui has noticed something about the data. Default: \fBtrue\fR.
 .TP
 \fBdisplay.mouse\fR (\fIbool\fR)
-Take the mouse: the wheel scrolls, a click selects. false leaves it to the terminal. Default: \fBtrue\fR. Flag: \fB\-\-mouse\fR.
+Use the mouse: the wheel scrolls and a click selects. false leaves the mouse to the terminal. Default: \fBtrue\fR. Flag: \fB\-\-mouse\fR.
 .TP
 \fBdisplay.scroll_region\fR (\fIbool\fR)
-Move lines within the terminal when the screen scrolls, so a scroll writes the new lines, not the page. false redraws every line that moved, for a terminal that mishandles the move. Default: \fBtrue\fR.
+Scroll by moving lines within the terminal, so a scroll writes only the new lines, not the whole page. false redraws every line that moved, for a terminal that mishandles the move. Default: \fBtrue\fR.
 .TP
 \fBdisplay.sidebar_width\fR (\fIinteger\fR)
-Width of every sidebar, in cells. Unset: each sidebar's own. Unset by default.
+Width of every sidebar, in cells. Unset, each sidebar uses its own width. Unset by default.
 .TP
 \fBdisplay.right_align_numbers\fR (\fIbool\fR)
 Right-align numeric columns and their headers. Default: \fBtrue\fR.
@@ -142,24 +142,24 @@ Most memory the buffered rows may take, estimated from the schema; 0 for no limi
 Use the Polars streaming engine where it applies. Default: \fBtrue\fR.
 .TP
 \fBperformance.threads\fR (\fIinteger\fR)
-Most threads Polars computes with; 0 for every core. It caps speed, not memory; POLARS_MAX_THREADS, when set, wins. The datui command only: the Python module runs its own Polars, which POLARS_MAX_THREADS sizes when it first computes. Default: \fB0\fR.
+Most threads Polars computes with; 0 for every core. It limits speed, not memory. POLARS_MAX_THREADS, when set, wins. Applies to the datui command only: the Python module runs its own Polars, sized by POLARS_MAX_THREADS when it first computes. Default: \fB0\fR.
 .SS "[analysis]"
 Analysis, Data Quality and charts.
 .TP
 \fBanalysis.sample_rows\fR (\fIinteger\fR)
-Rows an analysis samples from a larger table, spread across all of it; 0 reads every row. Default: \fB100000\fR. Flag: \fB\-\-sample\-rows\fR.
+Rows an analysis samples from a larger table, spread across the whole table; 0 reads every row. Default: \fB100000\fR. Flag: \fB\-\-sample\-rows\fR.
 .TP
 \fBanalysis.chart_rows\fR (\fIinteger\fR)
-Rows a chart reads; a larger table is sampled across all of it. Default: \fB10000\fR.
+Rows a chart reads; a larger table is sampled across its whole length. Default: \fB10000\fR.
 .TP
 \fBanalysis.chart_grid\fR (\fIbool\fR)
 Start charts with a grid at the major ticks (g toggles). Default: \fBfalse\fR.
 .TP
 \fBanalysis.quality_local_copy\fR (\fIsize\fR)
-Most a Data Quality full scan of a remote dataset copies into the cache to read once; 0 never copies. Default: \fB"2GiB"\fR.
+Largest remote dataset a Data Quality full scan copies into the cache, so it is fetched once and every pass reads the copy; 0 never copies. Default: \fB"2GiB"\fR.
 .TP
 \fBanalysis.sample_memory_limit\fR (\fIsize\fR)
-Most memory a view's sample may take. Unset: the memory available now decides; 0 never warns or stops. Unset by default.
+Most memory a view's sample may take. Unset, the memory available now decides; 0 never warns or stops. Unset by default.
 .SS "[chart]"
 Charts exported to a file (\fBe\fR in the chart view).
 .TP
@@ -172,7 +172,7 @@ The home screen.
 Also list directories from the desktop's recently-used files; never the file names. Default: \fBtrue\fR.
 .TP
 \fBhome.wordmark\fR (\fIbool\fR)
-Show the datui wordmark at the top of the home screen; off, the one-line title bar. Default: \fBtrue\fR.
+Show the datui wordmark at the top of the home screen; false shows a one-line title bar instead. Default: \fBtrue\fR.
 .TP
 \fBhome.show_unreadable\fR (\fIbool\fR)
 List files datui cannot read, dimmed (Ctrl+A toggles). Default: \fBfalse\fR.
@@ -248,7 +248,7 @@ Queries remembered. Default: \fB1000\fR.
 Remember queries. Default: \fBtrue\fR.
 .TP
 \fBquery.default_mode\fR (\fIsql | q\fR)
-The language : starts in, until Ctrl+T picks another. Default: \fB"sql"\fR.
+The language the : command line starts in, until Ctrl+T picks another. Default: \fB"sql"\fR.
 .SS "[views]"
 .TP
 \fBviews.auto_apply\fR (\fIbool\fR)
@@ -257,7 +257,7 @@ Apply the best-matching view when a file opens. Default: \fBfalse\fR.
 How the copy dialog (\fBy\fR) reaches the system clipboard.
 .TP
 \fBclipboard.backend\fR (\fIauto | native | osc52\fR)
-auto: the display server where one answers, osc52 elsewhere (SSH). osc52 is an escape sequence the terminal applies. Default: \fB"auto"\fR.
+auto uses the display server where one answers, and osc52 elsewhere (SSH). osc52 is an escape sequence that asks the terminal to copy. Default: \fB"auto"\fR.
 .TP
 \fBclipboard.osc52_limit\fR (\fIsize\fR)
 Longest osc52 copy to attempt, as base64. Terminals cap what they accept. Default: \fB"100KiB"\fR.
@@ -267,7 +267,7 @@ Where format specs and dictionaries are found.
 \fBformats.path\fR (\fIlist\fR)
 Directories of format specs and dictionaries, searched after ~/.config/datui/formats and $DATUI_FORMATS_PATH. Adds up across imports. Default: \fB[]\fR.
 .SS "[limits]"
-The most of a file some readers take in. Past one, the rest is left out or the file refused, and the note or error names the key that raises it.
+How much of a file some readers take in. Past a limit, the rest is left out or the file is refused, and the note or error names the key that raises the limit.
 .TP
 \fBlimits.indexed_records\fR (\fIinteger\fR)
 Most records one pass indexes: a flight log's messages, a candump's frames, a text file's lines, a format spec's tagged records. Default: \fB67108864\fR.
@@ -307,10 +307,10 @@ Largest NumPy header read; a file with a larger one is refused. Default: \fB"4Mi
 .SS "[log]"
 .TP
 \fBlog.file\fR (\fIpath\fR)
-Where the log goes. Unset: datui.log in the cache directory. Unset by default. Flag: \fB\-\-log\-file\fR.
+Where the log is written. Unset, datui.log in the cache directory. Unset by default. Flag: \fB\-\-log\-file\fR.
 .TP
 \fBlog.level\fR (\fIerror | warn | info | debug | trace | off\fR)
-How much the log says (default warn). DATUI_LOG beats a config file's; \-c and \-\-log-level beat DATUI_LOG. Unset by default. Flag: \fB\-\-log\-level\fR.
+How much the log records (default warn). DATUI_LOG overrides the config file; \-c and \-\-log-level override DATUI_LOG. Unset by default. Flag: \fB\-\-log\-level\fR.
 .SS "[theme]"
 .TP
 \fBtheme.mode\fR (\fIauto | dark | light\fR)
@@ -322,7 +322,7 @@ The theme used when the terminal is dark: night-market, day-market, or a file's 
 \fBtheme.light\fR (\fIstring\fR)
 The theme used when the terminal is light: night-market, day-market, or a file's name in the config directory's themes/. A name that cannot be used falls back to day-market, with a warning when light is in use. Default: \fB"day\-market"\fR.
 .SS "[theme.colors]"
-Each slot takes a name (\fBred\fR, \fBbright_blue\fR, \fBdefault\fR), \fB#rrggbb\fR or \fBindexed(0\-255)\fR. They lie over the theme in use, \fBtheme.dark\fR or \fBtheme.light\fR, in either mode; a whole theme of your own goes in a file in \fBthemes/\fR.
+Each slot takes a name (\fBred\fR, \fBbright_blue\fR, \fBdefault\fR), \fB#rrggbb\fR or \fBindexed(0\-255)\fR. They override the theme in use, \fBtheme.dark\fR or \fBtheme.light\fR, in either mode; a whole theme of your own goes in a file in \fBthemes/\fR.
 .TP
 \fBtheme.colors.chip_key\fR (\fIcolor\fR)
 Keys named in the footer, dialogs, the breadcrumb and the correlation matrix. Default: \fB#7dcfff\fR dark, \fB#2e7de9\fR light.
@@ -507,7 +507,7 @@ A glyph slot from glyphs.rs, replaced when the Unicode set is active. Keeps the 
 The config directory, in place of the platform's (\fB~/.config/datui\fR on Linux). Saved views and format specs live there too.
 .TP
 \fBDATUI_LOG\fR
-The log level: \fBerror\fR, \fBwarn\fR, \fBinfo\fR, \fBdebug\fR, \fBtrace\fR or \fBoff\fR. Beats \fBlog.level\fR in a file; \fB\-c\fR and \fB\-\-log\-level\fR beat it.
+The log level: \fBerror\fR, \fBwarn\fR, \fBinfo\fR, \fBdebug\fR, \fBtrace\fR or \fBoff\fR. Overrides \fBlog.level\fR in a config file; \fB\-c\fR and \fB\-\-log\-level\fR override it.
 .SH FILES
 \fICONFIG\fR is \fB$DATUI_CONFIG_DIR\fR when it is set, else \fB$XDG_CONFIG_HOME/datui\fR (\fB~/.config/datui\fR) on Linux, \fB~/Library/Application Support/datui\fR on macOS and \fB%APPDATA%\edatui\fR on Windows.
 .TP

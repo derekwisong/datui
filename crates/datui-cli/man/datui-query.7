@@ -32,7 +32,7 @@ Accessors and dates
 name in ["Ann", "Bo"]  item like "*ham*"
 Membership and patterns
 .PP
-The grammar of q on the command line (\fB:\fR, then \fBq:\fR): a subset of the q language, evaluated right to left. Query data walks through it. Every example below runs on the public dataset its block names; open that dataset from \fBExample datasets\fR on the home screen.
+The grammar of q, typed on the command line (\fB:\fR, then \fBq:\fR). datui's q is a subset of the q language and evaluates right to left. Query data walks through it. Every example below runs on the public dataset its block names; open that dataset from \fBExample datasets\fR on the home screen.
 .PP
 q and kdb+ are trademarks of KX Systems. datui is not affiliated with or endorsed by KX.
 .SH "STRUCTURE OF A QUERY"
@@ -116,7 +116,7 @@ Parentheses also matter for \fB,\fR and \fB|\fR in where: splitting on comma and
 \fBselect distinct carrier, origin\fR \(em only the distinct rows of the result; \fBselect distinct\fR alone drops duplicate rows. A column named \fBdistinct\fR is \fBcol["distinct"]\fR, or plain \fBdistinct\fR before \fB,\fR \fB:\fR \fB.\fR or an operator
 .SH "BY CLAUSE (GROUPING AND AGGREGATION)"
 .IP \(bu 4
-\fBby origin, dest\fR \(em group by those columns; non-group columns become list columns, and the UI supports drill-down
+\fBby origin, dest\fR \(em group by those columns; the other columns become list columns, and \fBEnter\fR on a row drills down
 .IP \(bu 4
 \fBby carrier, long: distance > 1000\fR \(em group by a column and a computed expression
 .IP \(bu 4

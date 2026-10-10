@@ -28,8 +28,8 @@ into `demos/`.
 | `capture.py teaser shots-food` | Records only the tapes named |
 | `capture.py --out DIR` | Writes to `DIR`; the default is `~/tmp/datui-captures` |
 | `capture.py --dry-run` | Shows each take's fixture, `datui` command, scrubbed variables and outputs |
-| `capture.py --cache-dir DIR` | Shares one datui cache across takes, warm after the first; each take starts cold otherwise |
-| `capture.py --network-note TEXT` | Records the connection for captions |
+| `capture.py --cache-dir DIR` | Shares one datui cache across takes, so every take after the first starts warm; without it, each take starts cold |
+| `capture.py --network-note TEXT` | Notes the network connection in each take's metadata, for captions |
 | `capture.py --keep-fixtures` | Keeps each take's scratch HOME, config and cache |
 | `capture.py --publish` | Copies the outputs in `--out` into `demos/`; records nothing |
 
@@ -43,10 +43,10 @@ into `demos/`.
 | `scripts/demos/theme-gallery.tape` | One screen per theme in `themes/`, and `theme-gallery.png`, two by two |
 | `NAME.json` beside each output | The datui version and commit, hardware, network, cold or warm cache, time and length, for captions |
 
-A tape holds keys, waits and `Screenshot` lines; no `Set`, `Output` or
-`Source`. Setup goes inside `Hide`/`Show`; waits for the network stay on
-camera, as `Wait+Screen`. A number in a rolling dataset (NOAA, earthquakes) is
-never a wait's pattern.
+A tape holds only keys, waits and `Screenshot` lines, with no `Set`, `Output`
+or `Source`. Put setup inside `Hide`/`Show`. Waits for the network stay on
+camera, as `Wait+Screen`. Never wait for a number from a rolling dataset (NOAA,
+earthquakes), since it changes.
 
 ## Isolation
 
@@ -58,8 +58,9 @@ Each take runs in its own fixture, removed afterward:
   and the other login variables are unset, and so are `NO_COLOR` and `DATUI_`
   settings.
 - No shell history; the prompt is `$ `.
-- `datui` on the take's `PATH` adds `-c cloud.discover=false` and the theme,
-  and downloads into the take's temp directory.
+- The `datui` on the take's `PATH` is a wrapper that adds
+  `-c cloud.discover=false` and the theme, and downloads into the take's temp
+  directory.
 
 Look at every output at its published size before `--publish`: no paths
 outside the fixture, no account details, no stray dialogs.

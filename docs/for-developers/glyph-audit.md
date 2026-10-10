@@ -15,18 +15,18 @@ through fontconfig (`fc-list`, `fc-query`), and exits non-zero on a violation.
 | Rule | Why |
 |---|---|
 | Every codepoint exists in JetBrainsMono Nerd Font | Required coverage for the default set |
-| No `Emoji=Yes, Emoji_Presentation=No` codepoint missing from any floor font | A terminal whose font lacks one falls back to the **color emoji** font and renders a blank cell or a clipped blob — no user font choice fixes it |
+| No `Emoji=Yes, Emoji_Presentation=No` codepoint missing from any floor font | A terminal whose font lacks one falls back to the **color emoji** font and renders a blank cell or a clipped blob, and no font the user picks fixes it |
 | The ASCII set is pure ASCII | It is the floor a terminal without UTF-8 falls back to |
 
-The `plot` marks are mostly ratatui markers rather than strings, so the script
-sees only their column eighths; the `the_ascii_plot_marks_are_ascii` test in
-`glyphs.rs` checks the rest of the ASCII set's plot marks.
+Most `plot` marks are ratatui markers, not strings, so the script sees only
+their column eighths. The `the_ascii_plot_marks_are_ascii` test in `glyphs.rs`
+checks the rest of the ASCII set's plot marks.
 
 The floor fonts are JetBrainsMono Nerd Font, Liberation Mono and Noto Sans
 Mono. A *non-emoji* codepoint missing from the last two is reported but
 allowed: fontconfig substitutes another text font, which renders fine in one
 color. A wider list (Fira Code, Hack, Cascadia, Iosevka, Menlo, SF Mono, Consolas,
-DejaVu Sans Mono) is audited informationally wherever those fonts are
+DejaVu Sans Mono) is audited for information only, where those fonts are
 installed.
 
 ## Add a glyph

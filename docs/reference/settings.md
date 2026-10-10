@@ -35,11 +35,11 @@ lives, imports, the theme and troubleshooting.
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
 | `read.infer_types` | bool \| list of columns | `true` | `--infer-types` | Read string columns as dates, times, durations or numbers where every value parses, after trimming: true for all, false for none, or a list of columns. CSV, and dates in JSON. A column with a leading zero (02134) stays text; a later value that does not parse is null, and the Notes tab counts them. |
-| `read.parquet_schema` | union \| first | `"union"` |  | A partitioned Parquet dataset's schema: union is every column any file has, from their footers; first lets Polars take one file's. |
+| `read.parquet_schema` | union \| first | `"union"` |  | The schema of a partitioned Parquet dataset: union takes every column any file has, from their footers; first lets Polars take one file's schema. |
 | `read.decompress_in_memory` | bool | `false` |  | Decompress a compressed CSV, TSV or PSV into memory instead of to a temp file. |
-| `read.temp_dir` | path | unset | `--temp-dir` | Directory for decompression temp files. Unset: the system's. |
-| `read.follow_interval` | duration | `"250ms"` |  | With --follow, how often the file is checked for new rows, or on Linux the least time between two reads, 10ms to 1m. Appends within one interval are one refresh. |
-| `read.exact_count_files` | integer | `50000` |  | A dataset of more files than this shows a row count estimated from a sample of its footers until c in the Info panel counts it; 0 always counts. |
+| `read.temp_dir` | path | unset | `--temp-dir` | Directory for decompression temp files. Unset, the system's temp directory. |
+| `read.follow_interval` | duration | `"250ms"` |  | With --follow, how often the file is checked for new rows (on Linux, the shortest time between two reads), from 10ms to 1m. Rows appended within one interval arrive in one refresh. |
+| `read.exact_count_files` | integer | `50000` |  | A dataset of more files than this shows a row count estimated from a sample of its footers, until c in the Info panel counts exactly; 0 always counts exactly. |
 | `read.memory_warning` | size | `"1GiB"` |  | Ask before reading more than this of a file whole into memory (JSON, Avro, ORC, Excel and the other formats read in memory); 0 never asks. |
 | `read.audio_float` | bool | `false` |  | Show integer audio samples as float in [-1, 1]. |
 
@@ -63,15 +63,15 @@ lives, imports, the theme and troubleshooting.
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
 | `display.unicode` | auto \| always \| never | `"auto"` |  | Box-drawing and arrow glyphs, or plain ASCII. auto uses them when the locale is UTF-8, or on Windows when no locale is set. |
-| `display.row_numbers` | "auto" \| bool | `"auto"` | `--row-numbers` | Number rows on the left by their place in the source, kept through a sort or filter (# toggles). auto: for text and logs; true or false: for all of them. |
+| `display.row_numbers` | "auto" \| bool | `"auto"` | `--row-numbers` | Number rows on the left by their place in the source; a row keeps its number through a sort or filter (# toggles). auto numbers text and logs; true or false turns them on or off for every table. |
 | `display.row_numbers_start` | integer | `1` |  | The number of the source's first row. |
 | `display.cell_padding` | "comfortable" \| "compact" \| integer | `"comfortable"` |  | Space between columns: comfortable (2 cells), compact (1) or a number of cells. |
 | `display.column_colors` | bool | `true` |  | Color cells by column type. |
 | `display.type_row` | bool | `true` |  | A second header row naming each column's type (D toggles). |
 | `display.notes_accent` | bool | `true` |  | Accent the i key when datui has noticed something about the data. |
-| `display.mouse` | bool | `true` | `--mouse` | Take the mouse: the wheel scrolls, a click selects. false leaves it to the terminal. |
-| `display.scroll_region` | bool | `true` |  | Move lines within the terminal when the screen scrolls, so a scroll writes the new lines, not the page. false redraws every line that moved, for a terminal that mishandles the move. |
-| `display.sidebar_width` | integer | unset |  | Width of every sidebar, in cells. Unset: each sidebar's own. |
+| `display.mouse` | bool | `true` | `--mouse` | Use the mouse: the wheel scrolls and a click selects. false leaves the mouse to the terminal. |
+| `display.scroll_region` | bool | `true` |  | Scroll by moving lines within the terminal, so a scroll writes only the new lines, not the whole page. false redraws every line that moved, for a terminal that mishandles the move. |
+| `display.sidebar_width` | integer | unset |  | Width of every sidebar, in cells. Unset, each sidebar uses its own width. |
 | `display.right_align_numbers` | bool | `true` |  | Right-align numeric columns and their headers. |
 | `display.number_format` | preset \| table | `"none"` | `--number-format` | Digit grouping: none, thousands, european, si, swiss, indian, underscore or system, or a [display.number_format] table (, toggles). |
 
@@ -86,7 +86,7 @@ lives, imports, the theme and troubleshooting.
 | `performance.max_buffered_rows` | integer | `100000` |  | Most rows the table buffers between reads; 0 for no limit. |
 | `performance.max_buffered` | size | `"512MiB"` |  | Most memory the buffered rows may take, estimated from the schema; 0 for no limit. Rounded up to whole MiB. |
 | `performance.streaming` | bool | `true` |  | Use the Polars streaming engine where it applies. |
-| `performance.threads` | integer | `0` |  | Most threads Polars computes with; 0 for every core. It caps speed, not memory; POLARS_MAX_THREADS, when set, wins. The datui command only: the Python module runs its own Polars, which POLARS_MAX_THREADS sizes when it first computes. |
+| `performance.threads` | integer | `0` |  | Most threads Polars computes with; 0 for every core. It limits speed, not memory. POLARS_MAX_THREADS, when set, wins. Applies to the datui command only: the Python module runs its own Polars, sized by POLARS_MAX_THREADS when it first computes. |
 
 ## Analysis
 
@@ -94,11 +94,11 @@ lives, imports, the theme and troubleshooting.
 
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
-| `analysis.sample_rows` | integer | `100000` | `--sample-rows` | Rows an analysis samples from a larger table, spread across all of it; 0 reads every row. |
-| `analysis.chart_rows` | integer | `10000` |  | Rows a chart reads; a larger table is sampled across all of it. |
+| `analysis.sample_rows` | integer | `100000` | `--sample-rows` | Rows an analysis samples from a larger table, spread across the whole table; 0 reads every row. |
+| `analysis.chart_rows` | integer | `10000` |  | Rows a chart reads; a larger table is sampled across its whole length. |
 | `analysis.chart_grid` | bool | `false` |  | Start charts with a grid at the major ticks (g toggles). |
-| `analysis.quality_local_copy` | size | `"2GiB"` |  | Most a Data Quality full scan of a remote dataset copies into the cache to read once; 0 never copies. |
-| `analysis.sample_memory_limit` | size | unset |  | Most memory a view's sample may take. Unset: the memory available now decides; 0 never warns or stops. |
+| `analysis.quality_local_copy` | size | `"2GiB"` |  | Largest remote dataset a Data Quality full scan copies into the cache, so it is fetched once and every pass reads the copy; 0 never copies. |
+| `analysis.sample_memory_limit` | size | unset |  | Most memory a view's sample may take. Unset, the memory available now decides; 0 never warns or stops. |
 
 ## Chart
 
@@ -115,7 +115,7 @@ lives, imports, the theme and troubleshooting.
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
 | `home.desktop_recents` | bool | `true` |  | Also list directories from the desktop's recently-used files; never the file names. |
-| `home.wordmark` | bool | `true` |  | Show the datui wordmark at the top of the home screen; off, the one-line title bar. |
+| `home.wordmark` | bool | `true` |  | Show the datui wordmark at the top of the home screen; false shows a one-line title bar instead. |
 | `home.show_unreadable` | bool | `false` |  | List files datui cannot read, dimmed (Ctrl+A toggles). |
 | `home.hide` | list | `[]` |  | Catalogs not shown, by id: mine (catalog.toml), examples, or a listed file's name; one entry as catalog/id, such as examples/nyc-taxis. Adds up across imports. |
 | `home.preview_max` | size | `"64MiB"` |  | Largest local file whose first rows the home screen previews; 0 turns the preview off. |
@@ -166,7 +166,7 @@ lives, imports, the theme and troubleshooting.
 |---|---|---|---|---|
 | `query.history_limit` | integer | `1000` |  | Queries remembered. |
 | `query.history` | bool | `true` |  | Remember queries. |
-| `query.default_mode` | sql \| q | `"sql"` |  | The language : starts in, until Ctrl+T picks another. |
+| `query.default_mode` | sql \| q | `"sql"` |  | The language the : command line starts in, until Ctrl+T picks another. |
 
 ## Views
 
@@ -182,7 +182,7 @@ lives, imports, the theme and troubleshooting.
 
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
-| `clipboard.backend` | auto \| native \| osc52 | `"auto"` |  | auto: the display server where one answers, osc52 elsewhere (SSH). osc52 is an escape sequence the terminal applies. |
+| `clipboard.backend` | auto \| native \| osc52 | `"auto"` |  | auto uses the display server where one answers, and osc52 elsewhere (SSH). osc52 is an escape sequence that asks the terminal to copy. |
 | `clipboard.osc52_limit` | size | `"100KiB"` |  | Longest osc52 copy to attempt, as base64. Terminals cap what they accept. |
 
 ## Formats
@@ -195,7 +195,7 @@ lives, imports, the theme and troubleshooting.
 
 ## Limits
 
-`[limits]` The most of a file some readers take in. Past one, the rest is left out or the file refused, and the note or error names the key that raises it.
+`[limits]` How much of a file some readers take in. Past a limit, the rest is left out or the file is refused, and the note or error names the key that raises the limit.
 
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
@@ -218,8 +218,8 @@ lives, imports, the theme and troubleshooting.
 
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
-| `log.file` | path | unset | `--log-file` | Where the log goes. Unset: datui.log in the cache directory. |
-| `log.level` | error \| warn \| info \| debug \| trace \| off | unset | `--log-level` | How much the log says (default warn). DATUI_LOG beats a config file's; -c and --log-level beat DATUI_LOG. |
+| `log.file` | path | unset | `--log-file` | Where the log is written. Unset, datui.log in the cache directory. |
+| `log.level` | error \| warn \| info \| debug \| trace \| off | unset | `--log-level` | How much the log records (default warn). DATUI_LOG overrides the config file; -c and --log-level override DATUI_LOG. |
 
 ## Theme
 
@@ -233,7 +233,7 @@ lives, imports, the theme and troubleshooting.
 
 ## Colors
 
-`[theme.colors]` Each slot takes a name (`red`, `bright_blue`, `default`), `#rrggbb` or `indexed(0-255)`. They lie over the theme in use, `theme.dark` or `theme.light`, in either mode; a whole theme of your own goes in a file in `themes/`.
+`[theme.colors]` Each slot takes a name (`red`, `bright_blue`, `default`), `#rrggbb` or `indexed(0-255)`. They override the theme in use, `theme.dark` or `theme.light`, in either mode; a whole theme of your own goes in a file in `themes/`.
 
 | Key | Dark | Light | Description |
 |---|---|---|---|

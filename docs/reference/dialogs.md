@@ -19,19 +19,20 @@ forms (Sample, Expected, a column's intent).
   pattern for a melt by type) is skipped.
 - <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd> work as the arrows on a
   field that does not take typing.
-- A multiline field (a view's description) types <kbd>Enter</kbd>, and
-  <kbd>↑</kbd> <kbd>↓</kbd> move between its lines, leaving it from the first or
-  last; <kbd>Ctrl</kbd>+<kbd>J</kbd> applies from there.
+- In a multiline field (a view's description), <kbd>Enter</kbd> types a
+  newline, and <kbd>↑</kbd> <kbd>↓</kbd> move between its lines, leaving the
+  field from the first or last line. <kbd>Ctrl</kbd>+<kbd>J</kbd> applies from
+  there.
 - In a picker, typing narrows the list, <kbd>↑</kbd> <kbd>↓</kbd> move,
-  <kbd>Enter</kbd> chooses, <kbd>Space</kbd> toggles where several can be
-  chosen and elsewhere chooses until you type (then it types a space, so a
-  name of several words narrows), and <kbd>Tab</kbd> chooses and moves to the
-  next field.
+  <kbd>Enter</kbd> chooses, and <kbd>Tab</kbd> chooses and moves to the next
+  field. <kbd>Space</kbd> toggles an item where several can be chosen.
+  Elsewhere it chooses until you start typing; after that it types a space, so
+  you can narrow by a name of several words.
 - The chart's options apply as they change, so <kbd>Enter</kbd> there acts as
   <kbd>Space</kbd> does.
-- A dialog that cannot do what <kbd>Enter</kbd> asked says why on its last
-  line: a blank path, or an export that could not write. The dialog stays as
-  you left it, to fix and press <kbd>Enter</kbd> again.
+- If a dialog cannot do what <kbd>Enter</kbd> asked, it says why on its last
+  line, such as a blank path or an export that could not write. The dialog
+  stays as you left it, so you can fix it and press <kbd>Enter</kbd> again.
 
 Every question (overwrite a file, delete a view, run a full scan, read every
 row) is one dialog with two named choices:

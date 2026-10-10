@@ -13,7 +13,7 @@ datui --sample-rows 50000 https://d37ci6vzurychx.cloudfront.net/trip-data/yellow
 | To | Do |
 |---|---|
 | Page quickly through a large dataset | Prefer Parquet: its footers hold the types and row counts, and it is read a row group at a time |
-| Page deep into a large CSV | The first jump to a row counts the rows before it; from there a page reads only its own rows, ahead of the screen as you go |
+| Page deep into a large CSV | The first jump to a row counts the rows before it; after that, each page reads only its own rows, ahead of the screen as you go |
 | Open local partitions | Pass the directory (`datui events/`), so datui combines the footers and counts the rows |
 | Analyze many rows | Analyses read a [sample](analysis-features.md#sampling), 100,000 rows by default; `--sample-rows N` changes it, `0` reads every row |
 | Work on part of a large table | <kbd>S</kbd> draws a [sample](sampling.md) into memory: the query, Analysis, charts and export run on it, and export saves it |
@@ -23,14 +23,14 @@ datui --sample-rows 50000 https://d37ci6vzurychx.cloudfront.net/trip-data/yellow
 | See what a format reads | The [formats table](../formats/index.md#how-each-format-is-read): lazy scan, decompressed copy, converted to Arrow, or in memory. Past `[read] memory_warning` (1 GiB by default), datui asks before reading a file into memory |
 | See what was read | <kbd>i</kbd> → **Resources** for the buffer and the loading measurements; **Notes** for row groups and small files |
 
-`[performance] streaming` (on by default) runs what Polars can in batches; it
-is not a memory limit on every query. [Performance](../reference/performance.md)
+`[performance] streaming` (on by default) runs what Polars can in batches. It
+does not cap the memory of every query. [Performance](../reference/performance.md)
 has measured times to first rows and memory.
 
 ## How large datasets open
 
 A directory of more than 64 Parquet files, local or in the cloud, opens on the
-first and last files by name and reads the other footers in the background;
+first and last files by name, then reads the other footers in the background;
 the footer counts them on a line of its own. Until they are in:
 
 - The total row count is estimated from a random sample of 2,000 footers, read
@@ -41,9 +41,10 @@ the footer counts them on a line of its own. Until they are in:
 - A query, pivot or drill-down leaves the new columns out until you return to
   the data as opened.
 
-Above 20,000 files the background pass reads a sample of the footers, and the
-row count reads the rest: the footer shows `files 18,402 / 842,225` and
-<kbd>Esc</kbd> stops it, leaving the estimate. Counts read 256 footers at once.
+Above 20,000 files, the background pass reads a sample of the footers, and the
+row count reads the rest. The footer shows its progress
+(`files 18,402 / 842,225`); <kbd>Esc</kbd> stops it and keeps the estimate.
+Counts read 256 footers at a time.
 
 | Files | Row count |
 |---|---|
@@ -52,12 +53,12 @@ row count reads the rest: the footer shows `files 18,402 / 842,225` and
 | Up to `read.exact_count_files` (50,000) | Estimated, then counted in the background |
 | More | Estimated; <kbd>c</kbd> on the Info panel counts exactly, and so does <kbd>End</kbd> |
 
-A count keeps each file's footer in the cache by its path, size, time and
-etag. Counting the dataset again, after a stop, or after files were added,
+A count caches each file's footer, keyed by its path, size, modification time
+and etag. Counting the dataset again, after a stop, or after files were added,
 reads only the footers it does not have.
 
-[Value counts](value-counts.md) of a dataset of files say in the footer how
-many of the files the read has reached.
+On a dataset of many files, [Value counts](value-counts.md) shows in the
+footer how many of the files it has read so far.
 
 While a directory or prefix is listed, the loading screen counts the files:
 `Listing files: 412,000`; <kbd>Ctrl</kbd>+<kbd>O</kbd> stops it. A large S3 or

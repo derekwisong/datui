@@ -15,7 +15,7 @@ The cache holds nothing datui cannot rebuild; clearing it loses the recents' ord
 .SH COMMANDS
 .TP
 \fBdatui cache clear\fR
-Delete the cache directory's contents, or with \-\-recents only the recent datasets.
+Delete the cache directory's contents; with \-\-recents, only the recent datasets.
 .RS
 .TP
 \fB\-\-recents\fR
@@ -24,7 +24,7 @@ Forget the recently opened datasets and keep the rest.
 .SH OPTIONS
 .TP
 \fB\-c\fR, \fB\-\-config\fR \fIKEY=VALUE\fR
-Set a config key for this run, as in the file: \-c display.\:row_numbers=true. Repeatable; a flag of the key's own still wins. \fBdatui config keys\fR lists them.
+Set a config key for this run, written as in the file: \-c display.\:row_numbers=true. Repeatable; the key's own flag, where it has one, still wins. \fBdatui config keys\fR lists the keys.
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help.
@@ -54,7 +54,7 @@ The recent datasets the home screen lists. \fBdatui cache clear \-\-recents\fR f
 The prompts' history.
 .TP
 \fICACHE\fR/shapes/, \fICACHE\fR/facts/, \fICACHE\fR/cloud_listings/
-What the home screen has measured of datasets and listed of cloud sources, so it can show rows, columns and sizes without reading them again.
+What the home screen has measured of datasets, and its listings of cloud sources, so it can show rows, columns and sizes without reading them again.
 .TP
 \fICACHE\fR/datui.log
 The log, unless \fBlog.file\fR names another.

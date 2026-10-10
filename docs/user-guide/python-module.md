@@ -8,7 +8,7 @@ pip install datui
 ```
 
 The package on [PyPI](https://pypi.org/project/datui/) installs the `datui`
-command and the `datui` module. Python 3.10 or later.
+command and the `datui` module. It needs Python 3.10 or later.
 [Python API](../reference/python-api.md) lists every option, the return value
 and the errors.
 
@@ -25,7 +25,7 @@ datui.view(penguins.collect())
 ```
 
 A LazyFrame passes its plan, not its data, and stays lazy: datui reads the
-rows it shows. Sorting, aggregation and other operations may still scan the
+rows it needs to show. Sorting, aggregation and other operations may still scan the
 whole input. A DataFrame works too. <kbd>q</kbd> closes datui and returns to
 Python.
 
@@ -56,10 +56,10 @@ datui.view("s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/ELEMENT=TMAX/")
 datui.view("https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins.csv")
 ```
 
-The keywords are the flags' and the config keys' names: `delimiter` for
+The keywords are named after the flags and config keys: `delimiter` for
 `--delimiter`, `row_numbers` for `display.row_numbers`, and `config` for any
-key, as `-c` sets it. Pass them as keywords or as a `datui.DatuiOptions`.
-`datui.OPTION_NAMES` lists them; [Python API](../reference/python-api.md#options)
+key, the way `-c` sets it. Pass them as keywords or as a `datui.DatuiOptions`.
+`datui.OPTION_NAMES` lists them, and [Python API](../reference/python-api.md#options)
 gives each one's type and flag. For a frame, only display options apply.
 
 ## Return the current view
@@ -76,17 +76,17 @@ if result is not None:
 
 Run the species summary from the
 [quick start](../getting-started/quick-start.md#2-group-by-species) and press
-<kbd>q</kbd>: `result` collects to the three rows, Gentoo 5076.01626 and 124
-penguins first. Collecting reads the CSV from the web again.
+<kbd>q</kbd>. `result` collects to the three rows, with Gentoo first at
+5076.01626 and 124 penguins. Collecting reads the CSV from the web again.
 
-`capture=True` returns the final table's view on a normal quit: the applied
-query, filters, sort, drill-down, reshape and column order, over all matching
-rows, as a LazyFrame even for DataFrame input. `None` when no dataset was open
+With `capture=True`, a normal quit returns the final view as a LazyFrame, even
+for DataFrame input: the applied query, filters, sort, drill-down, reshape and
+column order, over all matching rows. It returns `None` if no dataset was open
 at quit.
 
 **Collecting runs the returned plan again**, with Python's own Polars; the
-rows datui showed are not cached. A `polars` that cannot read the plan gets
-rows instead; see [Compatibility](#compatibility).
+rows datui showed are not cached. If your `polars` cannot read the plan, you
+get rows instead; see [Compatibility](#compatibility).
 
 | Source | What collecting the result does |
 |---|---|
@@ -113,15 +113,15 @@ same way. Both sides must agree on the plan format:
 
 The wheel declares `polars>=1.38` and never downgrades the `polars` you have. A
 plan the wheel cannot read raises `ValueError` before the TUI opens, naming the
-release it is built for; pass `lf.collect()` or a path instead. Paths do not go
+Polars release the wheel is built for. Pass `lf.collect()` or a path instead. Paths do not go
 through a plan and work with any `polars` version. A DataFrame column of Python
-objects (`pl.Object`) or `Float16` raises `ValueError` naming the column; cast a
+objects (`pl.Object`) or `Float16` raises `ValueError` naming the column. Cast a
 `Float16` column to `Float32` first.
 
 When your `polars` cannot read the captured plan, or the view has no plan form
 (a SQLite table, a text or log file), `view()` returns the view's
-rows instead, with a `UserWarning` saying why: datui collects them at quit and
-holds every row in memory, and collecting the result reads nothing again.
+rows instead, with a `UserWarning` saying why. datui collects the rows at quit
+and holds them all in memory, so collecting the result reads nothing again.
 
 ## Build from source
 

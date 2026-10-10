@@ -2,7 +2,7 @@
 
 `datui.view()` opens a file, a URL or a Polars frame in the terminal, and can
 hand the final view back. [Use datui from Python](../user-guide/python-module.md)
-is the guide.
+is the guide to it.
 
 ```python
 import polars as pl
@@ -16,7 +16,7 @@ if result is not None:
 
 ## datui.view
 
-The signature; `data` is the one argument it needs:
+The signature. Only `data` is required:
 
 ```python,template
 datui.view(data, *, capture=False, options=None, **kwargs) -> polars.LazyFrame | None
@@ -27,21 +27,22 @@ datui.view(data, *, capture=False, options=None, **kwargs) -> polars.LazyFrame |
 | `data` | A `polars.LazyFrame` or `polars.DataFrame`; a path or URL as `str` or `pathlib.Path`; or a list or tuple of them, read as one table as on the command line |
 | `capture` | `True` returns the final view on a normal quit |
 | `options` | A `datui.DatuiOptions` |
-| `**kwargs` | Any [option](#options) by name. With `options` too, a keyword wins over the same option there |
+| `**kwargs` | Any [option](#options) by name. If `options` also sets it, the keyword wins |
 
 A path or URL is read as the command line reads it (`s3://`, `gs://`,
-`abfss://`, `http(s)://`, globs), and the open's options apply. A frame is
-handed over as its serialized plan, and only display options apply to it.
+`abfss://`, `http(s)://`, globs), and the reading options apply. A LazyFrame is
+handed over as its serialized plan and a DataFrame as Arrow data; only display
+options apply to a frame.
 An `az://container/path` URL takes its account from the Azure environment
 variables or from the config's one Azure connection.
 
 ### Return value
 
-`None`, unless `capture=True` and a dataset was open at quit. Then a
-`polars.LazyFrame`: the applied query, filters, sort, drill-down, reshape and
-column order, over every matching row. It is a plan, not the rows datui
-showed: collecting it runs the plan again with Python's Polars, rereading
-files that must still exist. When your Polars cannot read the plans this
+`None`, unless `capture=True` and a dataset was open at quit. In that case, a
+`polars.LazyFrame` with the applied query, filters, sort, drill-down, reshape
+and column order, over every matching row. It is a plan, not the rows datui
+showed: collecting it runs the plan again with Python's Polars and rereads the
+files, which must still exist. If your Polars cannot read the plans this
 wheel writes (2.0 cannot), or the view has no plan form (a SQLite table, a text
 or log file), the result is the view's rows instead, collected at quit, with a
 `UserWarning` saying why.
@@ -58,8 +59,8 @@ or log file), the result is the view's rows instead, collected at quit, with a
 
 ## datui.DatuiOptions
 
-The same options as keywords, made once and passed as `options=`. A value is
-checked when it is made, with the errors above.
+The keyword options, built once and passed as `options=`. Each value is checked
+when the object is built, and raises the errors above.
 
 ```python
 import datui
@@ -85,22 +86,22 @@ character's code (`ord(";")`).
 <!-- generated: options -->
 | Keyword | Takes | Command line | What it does |
 |---|---|---|---|
-| `format` | string | `--format` | File format, when the extension does not say: parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel, safetensors, gguf, nmea, gpx, audio, midi, sqlite, vcd, fix, sdf, numpy, elf, ulog, dataflash, candump, text, journal; or a format spec: its name (`datui formats` lists them), its file (a path with a / or ending .toml), or its http(s), s3, gs or az URL (at most 1 MiB) |
-| `table` | string | `--table` | Table to open from a file that holds several. Excel: a worksheet by name, or by 0-based index when no worksheet is so named. NMEA: fixes (default), GGA, RMC, VTG, GSA, GSV, GLL, ZDA or sentences. SQLite: a table or view by name. NumPy: an array of an archive (.npz) by name. ELF: symbols (default) or sections. ULog: a topic. DataFlash: a message type. candump: frames (default), signals, or a message a dictionary names. Hugging Face cache and DatasetDict directories: a split (default train) |
+| `format` | string | `--format` | File format, when the extension does not say: parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel, safetensors, gguf, nmea, gpx, audio, midi, sqlite, vcd, fix, sdf, numpy, elf, ulog, dataflash, candump, text, journal. Or a format spec: its name (`datui formats` lists them), its file (a path with a / or ending .toml), or its http(s), s3, gs or az URL (at most 1 MiB) |
+| `table` | string | `--table` | Table to open from a file that holds several. Excel: a worksheet by name, or by 0-based index when no worksheet has that name. NMEA: fixes (default), GGA, RMC, VTG, GSA, GSV, GLL, ZDA or sentences. SQLite: a table or view by name. NumPy: an array of an archive (.npz) by name. ELF: symbols (default) or sections. ULog: a topic. DataFlash: a message type. candump: frames (default), signals, or a message a dictionary names. Hugging Face cache and DatasetDict directories: a split (default train) |
 | `hive` | bool | `--hive` | Read a glob as one partitioned table, or force partition columns on a directory whose layout does not say so. Ignored for a single file |
 | `compression` | gzip \| zstd \| bzip2 \| xz | `--compression` | Compression, when the extension does not say: gzip, zstd, bzip2 or xz |
-| `dict` | list | `--dict` | A dictionary to decode with, over those on the format search path: QuickFIX XML (.xml) for FIX logs, DBC (.dbc) for CAN logs, or TOML with kind = "fix" or "dbc". Repeatable |
+| `dict` | list | `--dict` | A dictionary to decode with, ahead of those on the format search path: QuickFIX XML (.xml) for FIX logs, DBC (.dbc) for CAN logs, or TOML with kind = "fix" or "dbc". Repeatable |
 | `view` | string | `--view` | Apply a saved view by name once the data is on screen |
 | `delimiter` | string | `--delimiter` | Column separator: one character, tab, \t or a code such as 0x1f (default: , for .csv, tab for .tsv, \| for .psv) |
 | `no_header` | bool | `--no-header` | Read the first row as data; columns are named column_1, column_2, ... |
-| `header_rows` | list | `--header-rows` | The line, or comma-separated lines, holding the header, counted from 1 before anything is skipped. Several are joined per column ([csv] header_join); the data starts after the last |
+| `header_rows` | list | `--header-rows` | The line holding the header, or several lines separated by commas, counted from 1 before anything is skipped. Several lines are joined per column ([csv] header_join), and the data starts after the last |
 | `footer_rows` | integer | `--footer-rows` | Skip this many rows at the end, such as a footer. Reads the whole file to count rows |
-| `skip_rows` | integer | `--skip-rows` | Skip this many rows at the start; the header is read after them. Quote-aware, unlike --skip-lines |
-| `skip_lines` | integer | `--skip-lines` | Skip this many raw lines at the start, split on newlines alone: a newline inside quotes counts |
+| `skip_rows` | integer | `--skip-rows` | Skip this many rows before the header (with --header-rows, after it). Quote-aware, unlike --skip-lines |
+| `skip_lines` | integer | `--skip-lines` | Skip this many raw lines at the start. Every newline ends a line, even one inside quotes |
 | `infer_types` | bool \| list of columns | `--infer-types` | Read string columns as dates, times, durations or numbers where every value parses, after trimming: true for all, false for none, or a list of columns. CSV, and dates in JSON. A column with a leading zero (02134) stays text; a later value that does not parse is null, and the Notes tab counts them. |
-| `parquet_schema` | union \| first | `-c read.parquet_schema=...` | A partitioned Parquet dataset's schema: union is every column any file has, from their footers; first lets Polars take one file's. |
+| `parquet_schema` | union \| first | `-c read.parquet_schema=...` | The schema of a partitioned Parquet dataset: union takes every column any file has, from their footers; first lets Polars take one file's schema. |
 | `decompress_in_memory` | bool | `-c read.decompress_in_memory=...` | Decompress a compressed CSV, TSV or PSV into memory instead of to a temp file. |
-| `temp_dir` | path | `--temp-dir` | Directory for decompression temp files. Unset: the system's. |
+| `temp_dir` | path | `--temp-dir` | Directory for decompression temp files. Unset, the system's temp directory. |
 | `audio_float` | bool | `-c read.audio_float=...` | Show integer audio samples as float in [-1, 1]. |
 | `comment` | string | `--comment` | Lines starting with this are comments, before the header and among the data. |
 | `header_join` | string | `-c csv.header_join=...` | Joins a column's names when --header-rows names several lines. |
@@ -108,7 +109,7 @@ character's code (`ord(";")`).
 | `null_values` | list | `--null` | Values read as null: VAL in every column, COL=VAL in column COL only. --null is repeatable and replaces this list. |
 | `infer_rows` | integer | `--infer-rows` | Rows read to infer column types. |
 | `ignore_errors` | bool | `--ignore-errors` | Skip rows that do not parse instead of failing. |
-| `row_numbers` | "auto" \| bool | `--row-numbers` | Number rows on the left by their place in the source, kept through a sort or filter (# toggles). auto: for text and logs; true or false: for all of them. |
+| `row_numbers` | "auto" \| bool | `--row-numbers` | Number rows on the left by their place in the source; a row keeps its number through a sort or filter (# toggles). auto numbers text and logs; true or false turns them on or off for every table. |
 | `row_numbers_start` | integer | `-c display.row_numbers_start=...` | The number of the source's first row. |
 | `column_colors` | bool | `-c display.column_colors=...` | Color cells by column type. |
 | `right_align_numbers` | bool | `-c display.right_align_numbers=...` | Right-align numeric columns and their headers. |
@@ -118,6 +119,6 @@ character's code (`ord(";")`).
 | `max_buffered_rows` | integer | `-c performance.max_buffered_rows=...` | Most rows the table buffers between reads; 0 for no limit. |
 | `max_buffered` | size | `-c performance.max_buffered=...` | Most memory the buffered rows may take, estimated from the schema; 0 for no limit. Rounded up to whole MiB. |
 | `streaming` | bool | `-c performance.streaming=...` | Use the Polars streaming engine where it applies. |
-| `sample_rows` | integer | `--sample-rows` | Rows an analysis samples from a larger table, spread across all of it; 0 reads every row. |
+| `sample_rows` | integer | `--sample-rows` | Rows an analysis samples from a larger table, spread across the whole table; 0 reads every row. |
 | `config` | dict | `-c KEY=VALUE` | Any config key to its value, as `-c` sets it: `config={"display.row_numbers": True}` |
 <!-- end generated: options -->

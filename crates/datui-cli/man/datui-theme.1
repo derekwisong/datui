@@ -12,11 +12,11 @@ datui\-theme \- list the themes, built in and in the config directory's themes/,
 .SH DESCRIPTION
 List the themes, built in and in the config directory's themes/, or print one as a file to start from.
 .PP
-A theme is a set of colors, one per slot. night-market (dark) and day-market (light) are built in; every \fICONFIG\fR/themes/*.toml is a theme, named by its file. A theme file holds \fBtheme.colors\fR slots, plus \fBextends\fR (the theme its unset slots come from; without it, the built-in for the mode it is used in) and \fBdescription\fR. \fBtheme.dark\fR and \fBtheme.light\fR in the config pick the theme for each mode, and \fBtheme.colors\fR lies over whichever is in use. A file with a mistake is left out with a warning, and its mode uses the built-in.
+A theme is a set of colors, one per slot. night-market (dark) and day-market (light) are built in; every \fICONFIG\fR/themes/*.toml is a theme, named by its file. A theme file holds \fBtheme.colors\fR slots, plus \fBextends\fR (the theme its unset slots come from; without it, the built-in for the mode it is used in) and \fBdescription\fR. \fBtheme.dark\fR and \fBtheme.light\fR in the config pick the theme for each mode, and \fBtheme.colors\fR overrides whichever is in use. A file with a mistake is left out with a warning, and its mode uses the built-in.
 .SH COMMANDS
 .TP
 \fBdatui theme list\fR
-List the themes: name, the mode it is set for, where it comes from and its description.
+List the themes: each one's name, mode, source and description.
 .TP
 \fBdatui theme show\fR
 Print a theme as a file with every slot, to save into themes/ and edit.
@@ -28,7 +28,7 @@ The theme: night-market, day-market, or a file's name in themes/.
 .SH OPTIONS
 .TP
 \fB\-c\fR, \fB\-\-config\fR \fIKEY=VALUE\fR
-Set a config key for this run, as in the file: \-c display.\:row_numbers=true. Repeatable; a flag of the key's own still wins. \fBdatui config keys\fR lists them.
+Set a config key for this run, written as in the file: \-c display.\:row_numbers=true. Repeatable; the key's own flag, where it has one, still wins. \fBdatui config keys\fR lists the keys.
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help.

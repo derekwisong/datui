@@ -8,12 +8,12 @@ so everything works without a mouse.
 | Mouse | Does |
 |---|---|
 | Click a cell | Puts the cursor on it |
-| Click a header | The column cursor on its column |
+| Click a header | Puts the column cursor on its column |
 | Double-click a cell | <kbd>Enter</kbd> on the row |
 | Double-click a header | Sorts by its column, as <kbd>[</kbd> <kbd>]</kbd> do: ascending, then descending, then off. The header carries the direction |
-| Double-click the gap right of a header | Fits the column to the rows on screen, as <kbd>=</kbd> does on the cursor's column, which moves there; it never sorts |
-| Drag a header onto another column | Moves the column there, as <kbd>H</kbd> <kbd>L</kbd> do; a rule on the header marks where it lands. Let go off the columns, or press a key, and nothing moves |
-| Drag the gap right of a header | Sets the column's width by hand, as <kbd>&lt;</kbd> <kbd>&gt;</kbd> do, from 4 to 240 cells; a column cut at the right side, by its last header cell |
+| Double-click the gap right of a header | Fits the column to the rows on screen and moves the column cursor there, as <kbd>=</kbd> does; it never sorts |
+| Drag a header onto another column | Moves the column there, as <kbd>H</kbd> <kbd>L</kbd> do; a rule on the header marks where it lands. Let go outside the columns, or press a key, and nothing moves |
+| Drag the gap right of a header | Sets the column's width by hand, as <kbd>&lt;</kbd> <kbd>&gt;</kbd> do, from 4 to 240 cells. For a column cut off at the right edge, drag from its last header cell |
 | Right-click a cell | The cursor goes there and the cell's menu opens |
 | Wheel | <kbd>↑</kbd> <kbd>↓</kbd>, three rows a notch |
 | <kbd>Shift</kbd>+wheel, or a sideways wheel | <kbd>←</kbd> <kbd>→</kbd>: the column cursor |
@@ -66,11 +66,11 @@ Each line names its key, and running it presses that key on the cell.
 
 ## While datui works
 
-The mouse is never held for later. A click acts where its keys would act at
-once and is dropped where they would wait
-([Keys typed while datui works](table.md#keys-typed-while-datui-works)):
-a width drag acts at a busy table, as <kbd>&lt;</kbd> <kbd>&gt;</kbd> do, and
-a dropped header, a menu line or a click on a field is dropped.
+The mouse is never held for later. While datui is busy, a click acts if its
+key would act at once, and is dropped if its key would wait
+([Keys typed while datui works](table.md#keys-typed-while-datui-works)).
+So a width drag works at a busy table, as <kbd>&lt;</kbd> <kbd>&gt;</kbd> do,
+but a dropped header, a menu line or a click on a field is dropped.
 
 ## Selecting text
 

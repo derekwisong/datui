@@ -241,7 +241,7 @@ fn command_examples(command: &str) -> String {
     after_help = examples_help()
 )]
 pub struct Args {
-    /// Files, directories, globs or URLs to open; files of one shape are one table. - reads standard input, as does no PATH when data is piped in. No PATH opens the home screen
+    /// Files, directories, globs or URLs to open; files of the same shape open as one table. - reads standard input, as does no PATH when data is piped in. With no PATH and nothing piped in, datui opens the home screen
     #[arg(num_args = 0.., value_name = "PATH")]
     pub paths: Vec<std::path::PathBuf>,
 
@@ -265,7 +265,7 @@ pub struct Args {
     )]
     pub compression: Option<CompressionFormat>,
 
-    /// A dictionary to decode with, over those on the format search path: QuickFIX XML (.xml) for FIX logs, DBC (.dbc) for CAN logs, or TOML with kind = "fix" or "dbc". Repeatable
+    /// A dictionary to decode with, ahead of those on the format search path: QuickFIX XML (.xml) for FIX logs, DBC (.dbc) for CAN logs, or TOML with kind = "fix" or "dbc". Repeatable
     #[arg(long = "dict", value_name = "FILE", help_heading = "Open")]
     pub dict: Vec<std::path::PathBuf>,
 
@@ -273,15 +273,15 @@ pub struct Args {
     #[arg(short = 'f', long = "follow", action, help_heading = "Open")]
     pub follow: bool,
 
-    /// Record standard input to FILE while viewing it. With -, pass it on to standard output, as tee does, and draw on the terminal
+    /// Record standard input to FILE while viewing it. With -, pass it through to standard output, as tee does, while drawing on the terminal
     #[arg(long = "tee", value_name = "FILE", help_heading = "Open")]
     pub tee: Option<std::path::PathBuf>,
 
-    /// With --tee: keep FILE exactly as the bytes came. Otherwise a stream that left its header's sizes blank has them filled in when it ends
+    /// With --tee: write FILE exactly as the bytes arrived. Without it, sizes a stream left blank in its header are filled in when it ends
     #[arg(long = "tee-raw", requires = "tee", action, help_heading = "Open")]
     pub tee_raw: bool,
 
-    /// With --tee: replace FILE if it is there
+    /// With --tee: replace FILE if it exists
     #[arg(long = "force", action, requires = "tee", help_heading = "Open")]
     pub force: bool,
 
@@ -289,7 +289,7 @@ pub struct Args {
     #[arg(long = "hex", action, help_heading = "Open")]
     pub hex: bool,
 
-    /// Bytes a row of the hex view holds, so records line up (default: 8, 16, 32 or 64, as many as fit)
+    /// Bytes per row in the hex view, so records line up (default: 8, 16, 32 or 64, as many as fit)
     #[arg(long = "hex-width", value_name = "N", value_parser = clap::value_parser!(u16).range(1..=4096), help_heading = "Open")]
     pub hex_width: Option<u16>,
 
@@ -308,7 +308,7 @@ pub struct Args {
     #[arg(long = "no-header", action, help_heading = "Delimited text")]
     pub no_header: bool,
 
-    /// The line, or comma-separated lines, holding the header, counted from 1 before anything is skipped. Several are joined per column ([csv] header_join); the data starts after the last
+    /// The line holding the header, or several lines separated by commas, counted from 1 before anything is skipped. Several lines are joined per column ([csv] header_join), and the data starts after the last
     #[arg(
         long = "header-rows",
         value_name = "N[,M...]",
@@ -326,11 +326,11 @@ pub struct Args {
     )]
     pub footer_rows: Option<usize>,
 
-    /// Skip this many rows at the start; the header is read after them. Quote-aware, unlike --skip-lines
+    /// Skip this many rows before the header (with --header-rows, after it). Quote-aware, unlike --skip-lines
     #[arg(long = "skip-rows", value_name = "N", help_heading = "Delimited text")]
     pub skip_rows: Option<usize>,
 
-    /// Skip this many raw lines at the start, split on newlines alone: a newline inside quotes counts
+    /// Skip this many raw lines at the start. Every newline ends a line, even one inside quotes
     #[arg(long = "skip-lines", value_name = "N", help_heading = "Delimited text")]
     pub skip_lines: Option<usize>,
 
@@ -364,7 +364,7 @@ pub struct Args {
     #[arg(long = "sample-rows", value_name = "N", help = settings::flag_help("sample-rows"), help_heading = "Display")]
     pub sample_rows: Option<usize>,
 
-    /// Set a config key for this run, as in the file: -c display.row_numbers=true. Repeatable; a flag of the key's own still wins. `datui config keys` lists them
+    /// Set a config key for this run, written as in the file: -c display.row_numbers=true. Repeatable; the key's own flag, where it has one, still wins. `datui config keys` lists the keys
     #[arg(
         short = 'c',
         long = "config",
@@ -605,7 +605,7 @@ pub enum Command {
         /// List the pages and what each covers
         #[arg(long, conflicts_with_all = ["page", "dir"])]
         list: bool,
-        /// Write every page under DIR, in man1, man5 and man7, where man looks for them: ~/.local/share/man
+        /// Write every page under DIR, in man1, man5 and man7, where man finds them; for your user, ~/.local/share/man
         #[arg(long, value_name = "DIR", conflicts_with = "page")]
         dir: Option<std::path::PathBuf>,
     },
@@ -616,7 +616,7 @@ pub enum Command {
 pub enum ConfigAction {
     /// Write the default config file, every key commented out at its default
     Init {
-        /// Replace a config file that is there
+        /// Replace an existing config file
         #[arg(long)]
         force: bool,
     },
@@ -646,13 +646,13 @@ pub fn completions(shell: clap_complete::Shell) -> String {
 /// What `datui catalog` does.
 #[derive(Clone, Debug, Subcommand)]
 pub enum CatalogAction {
-    /// With NAME, print that catalog's file (examples is the one datui ships); without, list the catalogs: id, label, datasets and file
+    /// Print catalog NAME's file (examples is the one datui ships). Without NAME, list the catalogs: id, label, datasets and file
     Show {
         /// The catalog's id: mine (catalog.toml), examples, or a listed file's name
         #[arg(value_name = "NAME")]
         name: Option<String>,
     },
-    /// Check a catalog file and list its datasets; a mistake is named by its line, with the fix, and exits non-zero
+    /// Check a catalog file and list its datasets. A mistake is reported with its line and the fix, and the command exits non-zero
     Check {
         /// The catalog file
         #[arg(value_name = "FILE")]
@@ -663,7 +663,7 @@ pub enum CatalogAction {
 /// What `datui theme` does.
 #[derive(Clone, Debug, Subcommand)]
 pub enum ThemeAction {
-    /// List the themes: name, the mode it is set for, where it comes from and its description
+    /// List the themes: each one's name, mode, source and description
     List,
     /// Print a theme as a file with every slot, to save into themes/ and edit
     Show {
@@ -676,7 +676,7 @@ pub enum ThemeAction {
 /// What `datui cache` does.
 #[derive(Clone, Debug, Subcommand)]
 pub enum CacheAction {
-    /// Delete the cache directory's contents, or with --recents only the recent datasets
+    /// Delete the cache directory's contents; with --recents, only the recent datasets
     Clear {
         /// Forget the recently opened datasets and keep the rest
         #[arg(long)]
@@ -701,7 +701,7 @@ pub enum ViewsAction {
 /// What `datui formats` does besides listing.
 #[derive(Clone, Debug, Subcommand)]
 pub enum FormatsAction {
-    /// Check a format spec or a dictionary (QuickFIX XML, DBC or TOML), by name or by file; with FILE, print its first decoded rows, or what a dictionary names in the log. Exits non-zero on an error
+    /// Check a format spec or a dictionary (QuickFIX XML, DBC or TOML), by name or by file. With FILE, print the first rows it decodes, or what the dictionary names in that log. Exits non-zero on an error
     Check {
         /// A format spec or dictionary on the search path, by name, or its file
         #[arg(value_name = "SPEC")]

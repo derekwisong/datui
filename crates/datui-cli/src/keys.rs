@@ -305,7 +305,7 @@ pub const GLOBAL: Group = Group {
             .more("This screen's keys. In a text field ? types, and F1 opens the help")
             .run("F1"),
         k("Ctrl+O", "Home", "The home screen; abandons a load")
-            .more("The home screen, on the dataset left, its filter kept and selected (typing replaces it); abandons a load"),
+            .more("Go to the home screen, with the dataset you left selected. Its filter is kept and selected, so typing replaces it. During a load, cancels the load"),
         k(
             "Ctrl+Q / Ctrl+C",
             "Quit",
@@ -313,7 +313,7 @@ pub const GLOBAL: Group = Group {
         )
         .more("Quit from anywhere; Ctrl+C quits from a text field too, where Alt+W copies"),
         k("Click a field", "Act", "Focus a form's field and act as Space")
-            .more("Focus a form's field and act as Space: a checkbox flips, a choice steps, a picker opens, a button runs; a text field takes the cursor. A row of a list (a sort, a filter, a column) takes focus on the first click and acts on the second. A click on a picker's line chooses it, on a tab switches to it, and on a key in the footer presses it. A click outside a dialog does nothing. The mouse is the terminal's with display.mouse = false (or --mouse false); in most terminals Shift+drag selects text either way")
+            .more("Focus a form's field and act as Space does: a checkbox flips, a choice steps, a picker opens, a button runs, and a text field takes the cursor. In a list of sorts, filters or columns, the first click on a row focuses it and the second acts on it. A click on a picker's line chooses it, a click on a tab switches to it, and a click on a key in the footer presses it. A click outside a dialog does nothing. With display.mouse = false (or --mouse false) the mouse belongs to the terminal; in most terminals Shift+drag selects text either way")
             .no_run(),
         k("Right-click a field", "Back", "Step a choice back, as ← does; else focus it").no_run(),
     ],
@@ -325,7 +325,7 @@ pub const HELP: Group = Group {
     keys: &[
         k("↑ / ↓ (j/k)", "Move", "Move between the keys"),
         k("Enter", "Run", "Close the help and press the key")
-            .more("Close the help and press the key on the line, where help was opened"),
+            .more("Close the help and press the selected line's key on the screen the help was opened from"),
         k("/", "Filter", "Narrow to the keys whose text matches"),
         k("Esc", "Close", "Clear the filter, then close").also(&["Clear"]),
     ],
@@ -416,7 +416,7 @@ pub const SCREENS: &[Screen] = &[
                 keys: &[
                     k("↑ / ↓ (j/k)", "Move", "Move the row cursor"),
                     k("← / → (h/l)", "Column", "Move the column cursor")
-                        .more("Move the column cursor, frozen columns included; the columns scroll only when it would leave the screen"),
+                        .more("Move the column cursor, frozen columns included. The columns scroll only when the cursor would leave the screen"),
                     k("Shift+← / Shift+→", "Page columns", "A page of columns left or right")
                         .more("A page of columns left or right, the cursor on the page's first column"),
                     k("{ / }", "First, last", "First column, last column"),
@@ -424,12 +424,12 @@ pub const SCREENS: &[Screen] = &[
                     k("Ctrl+D / Ctrl+U", "Half page", "Half a page down or up"),
                     k("Home / End", "Top, end", "First or last row (G = End)"),
                     k(":", "Command line", "Go to a row, or run SQL or q")
-                        .more("The command line: digits go to that row (the prefix says row:), anything else runs as SQL or q, as the prefix says; Ctrl+T switches. With a query in effect it opens on the query's text"),
+                        .more("Open the command line. Digits go to that row (the prefix shows row:); anything else runs as SQL or q, whichever the prefix shows, and Ctrl+T switches. With a query in effect, the line opens holding the query's text"),
                     k("g", "Go to column", "Go to a column by name"),
                     k("/ (f)", "Find", "Find text, a regex, or letters in order")
-                        .more("Find text, a regex, or letters in order in the view; matches on screen light up as you type, and Enter takes the cursor, column cursor and all, to the first at or after its row. f opens it too"),
+                        .more("Find text, a regex, or letters in order in the view. Matches on screen light up as you type. Enter moves the cursor, row and column, to the first match at or after the current row. f opens it too"),
                     k("n / N", "Next", "Next or previous match")
-                        .more("Next / previous match from the cursor's cell, wrapping round the view"),
+                        .more("Next / previous match from the cursor's cell, wrapping around the view"),
                     k("Enter", "Drill", "Drill down to a group's rows, or inspect")
                         .more("On a row of a by query or a SQL GROUP BY, drill down to its rows (Esc comes back); elsewhere, inspect the row"),
                     k("Space", "Inspect", "Inspect the row: every field, whole")
@@ -444,14 +444,14 @@ pub const SCREENS: &[Screen] = &[
                     k("s", "Sort & Filter", "Sort & Filter sidebar, on the cursor's column")
                         .more("Open the Sort & Filter sidebar (tabs: Columns, Filters), on the cursor's column"),
                     k("+ / -", "Filter", "Keep (+) or drop (-) rows with this cell's value")
-                        .more("Filter on the cursor's cell: + keeps the rows with its value, - drops them (a null cell: the nulls). Each adds a filter to the Sort & Filter sidebar, joined with \"and\"; the value is the cell's exactly as stored"),
+                        .more("Filter on the cursor's cell: + keeps the rows with its value, - drops them (on a null cell, the nulls). Each adds a filter to the Sort & Filter sidebar, joined with \"and\"; the value is the cell's exactly as stored"),
                     k("r", "Reverse", "Reverse the sort, or the row order")
                         .more("Reverse sort order (sorted columns carry a direction mark in the header); with no sort, reverse the row order"),
                     k("H / L", "Move column", "Move the cursor's column left or right")
                         .more("Move the cursor's column one place left or right, the cursor with it; a frozen column moves among the frozen ones. R puts the order back"),
                     k("p", "Pivot & Melt", "Pivot or melt"),
                     k("S", "Sample", "Draw a sample into memory; the view works on it")
-                        .more("Draw a sample of the source into memory: the step under the query, filters and sort, which then run over it. The rows show as they arrive (Esc stops, keeping them); the footer says sample 100,000 of 36.8M. Analysis, charts and export read the sample. S again edits it; Method No sample, or R, takes it away"),
+                        .more("Draw a sample of the source into memory; the query, filters and sort then run over the sample. Rows show as they arrive (Esc stops and keeps them), and the footer says, for example, sample 100,000 of 36.8M. Analysis, charts and export read the sample. S again edits it; the Method No sample, or R, removes it"),
                     k("R", "Reset", "Clear query, filters, sort, layout, view")
                         .more("Reset table: clear the sample, query, filters, sort, column order, hidden columns and widths, frozen columns, pivot/melt, drill-down and the applied view"),
                 ],
@@ -484,19 +484,19 @@ pub const SCREENS: &[Screen] = &[
                 name: "Display",
                 keys: &[
                     k("#", "Row numbers", "Row numbers on or off")
-                        .more("Row numbers on or off: each row's place in the source, kept through a sort or a filter (a text file's line numbers). On for text and logs; display.row_numbers sets it"),
+                        .more("Row numbers on or off. Each row keeps its place in the source as its number through a sort or a filter (in a text file, its line number). On by default for text and logs; display.row_numbers sets it"),
                     k(",", "Grouping", "Number formatting (digit grouping) on or off"),
                     k("D", "Types", "The type row under the headers on or off"),
                     k("< / >", "Width", "The cursor's column 4 cells narrower or wider"),
                     k("= / w", "Fit, auto", "Fit the column to the rows on screen; automatic")
                         .more("Fit the cursor's column to the rows on screen; w puts it back to automatic width"),
                     k("b", "Format spec", "Read a binary file with another format spec")
-                        .more("A binary file read through a format spec: read it again with another spec. Clears the query, filters and sort"),
+                        .more("On a binary file read through a format spec, read it again with another spec. Clears the query, filters and sort"),
                     k("T", "Table", "Open another table of the file")
-                        .more("A file of several tables (a workbook's worksheets, a database's tables, a format spec's record types, a Hugging Face cache's splits): pick another to open in place of this one, as --table names it. Clears the query, filters and sort; a saved view for the table applies. On a file of one table, says so"),
+                        .more("In a file of several tables (a workbook's worksheets, a database's tables, a format spec's record types, a Hugging Face cache's splits), open another table in place of this one, as --table does. Clears the query, filters and sort, and applies a saved view for that table. On a file of one table, says so"),
                     k("t", "Follow", "Follow the file as it grows")
                     .also(&["Pause", "Resume"])
-                        .more("Follow the file as it grows (CSV, TSV, PSV, NDJSON). Reads it again, so the query, filters and sort are cleared; while following, t pauses and resumes, and Esc stops"),
+                        .more("Follow the file as it grows (CSV, TSV, PSV, NDJSON). The file is read again, so the query, filters and sort are cleared. While following, t pauses and resumes, and Esc stops"),
                 ],
             },
             Group {
@@ -522,14 +522,14 @@ pub const SCREENS: &[Screen] = &[
                     k("Double-click a header's edge", "Fit", "Fit the column to the rows, as = does")
                         .more("Double-click the gap right of a column's header to fit the column to the rows on screen, as = does; the column cursor moves to it, and nothing is sorted")
                         .no_run(),
-                    k("Wheel", "Scroll", "↑ / ↓, three rows a notch")
-                        .more("↑ / ↓, three rows a notch; the same in help, the inspector and the sidebars")
+                    k("Wheel", "Scroll", "Scroll three rows a notch, as ↑ / ↓ do")
+                        .more("Scroll three rows a notch, as ↑ / ↓ do; the same in help, the inspector and the sidebars")
                         .no_run(),
                     k("Shift+wheel", "Across", "← / →, the column cursor")
-                        .more("← / →, the column cursor (a sideways wheel too)")
+                        .more("Move the column cursor, as ← / → do (a sideways wheel too)")
                         .no_run(),
                     k("Click a key", "Press", "Press a key the footer shows")
-                        .more("Press a key the footer shows; a click on the filters and sort presses s, on query presses :")
+                        .more("Press a key shown in the footer. A click on the filters and sort presses s, and a click on the query presses :")
                         .no_run(),
                     k("Drag a header", "Move column", "Move the column there, as H / L do")
                         .more("Drag a column's header onto another column to move it there, as H / L do; a rule on the header marks where it lands")
@@ -553,13 +553,13 @@ pub const SCREENS: &[Screen] = &[
                 name: "Explore",
                 keys: &[
                     k("↑ / ↓", "Move", "Move the selection (Ctrl+P / Ctrl+N too)")
-                        .more("Move the selection (Ctrl+P / Ctrl+N too). datui opens with no row picked, reading nothing, the row it lands on shown tinted; the first ↑ or ↓ picks that row, PgUp, PgDn, Home, End, Ctrl+↑ / Ctrl+↓ and the wheel move from it, a click picks the row clicked, and typing picks the best match"),
+                        .more("Move the selection (Ctrl+P / Ctrl+N too). The home screen opens with no row picked, so nothing is read, and the row it starts on is tinted. The first ↑ or ↓ picks that row, and PgUp, PgDn, Home, End, Ctrl+↑ / Ctrl+↓ and the wheel move from it. A click picks the row clicked, and typing picks the best match"),
                     k("Ctrl+↑ / Ctrl+↓", "Section", "Previous or next section"),
                     k("PgUp / PgDn", "Page", "A screenful, stopping at the first and last"),
                     k("Home / End", "First, last", "The first or last row")
-                        .more("The first or last row. The filter has no cursor to move: it is edited at its end"),
+                        .more("The first or last row. The filter has no cursor; typing always edits its end"),
                     k("← / →", "Fold", "Fold or unfold; → goes inside or shows more")
-                        .more("Fold or unfold a section; → on a directory or a file of tables goes inside it, and on a file a format spec reads as record types lists them, one row each. On a directory cut to its first rows, or RECENT, → on its more row shows them all; ← on a row past the first ones cuts it back, and on any other row folds"),
+                        .more("Fold or unfold a section. → on a directory or a file of tables goes inside it, and on a file a format spec reads as record types it lists them, one row each. When a directory or RECENT shows only its first rows, → on its more row shows them all, and ← on a row past the first ones shortens it again; on any other row, ← folds"),
                     k("Space", "Fold", "Fold the section (types once filtering)")
                         .more("While the filter is empty: fold or unfold the section header under the cursor. With a filter typed, it types"),
                     k("Tab", "Sort", "Cycle the sort")
@@ -587,7 +587,7 @@ pub const SCREENS: &[Screen] = &[
                         .more("Narrow by name or column; fuzzy, so \"sal\" finds \"sales\". What you open often ranks first. Typing also searches below the directory you are inside and the listed bucket names; matches appear under \"Found\". A paste goes in whole")
                         .no_run(),
                     k("~", "Path", "Type a path or URL (on an empty filter)")
-                        .more("While the filter is empty: type a path or URL by hand. The list shows the directory being typed, narrowed by the name after the last /. The prompt is a plain editor: characters, Backspace, Ctrl+U clears, The first name that matches is picked. Tab completes the one name left or what the names share, or a name picked further down; ↑ / ↓ pick a name, and ↑ from the first takes the path as typed; Enter opens the picked name or the typed path: a file opens, a directory is gone inside; Esc closes. A pasted path goes in whole, a line break in it as a space; one starting with ~ pasted on an empty filter opens the prompt with it. s3://, gs:// and az:// complete from buckets and prefixes already known. With a filter typed, ~ types into it"),
+                        .more("While the filter is empty, type a path or URL by hand. The list shows the directory being typed, narrowed by the name after the last /, and the first name that matches is picked. The prompt takes characters, Backspace, and Ctrl+U to clear. Tab completes the one name left, the start the names share, or a name picked further down. ↑ / ↓ pick a name, and ↑ from the first goes back to the path as typed. Enter opens the picked name or the typed path: a file opens, and a directory is entered. Esc closes. A pasted path goes in whole, a line break in it as a space; one starting with ~ pasted on an empty filter opens the prompt with it. s3://, gs:// and az:// complete from buckets and prefixes already known. With a filter typed, ~ types into it"),
                     k("Ctrl+U", "Clear", "Clear the filter or path input"),
                     k("Ctrl+R", "Refresh", "List again what is on screen"),
                 ],
@@ -603,7 +603,7 @@ pub const SCREENS: &[Screen] = &[
                     .also(&["Add", "Forget"])
                         .more("Add the dataset or directory under the cursor to catalog.toml, listed under My datasets; on a row from catalog.toml, forget it. A heading stands for the directory it lists. Only catalog.toml is written; another catalog is hidden with home.hide"),
                     k("Ctrl+E", "Docs", "The row's documentation, full screen")
-                        .more("Open the Documentation view of a catalog row, of a place inside one, or of a file whose format spec documents it: description, publisher, license, links, record types, columns with units and value legends, bookmarks. A catalog's description, link and column notes stand over the spec's. Ctrl+E here is not readline's end of line: the filter is edited at its end"),
+                        .more("Open the Documentation view of a catalog row, of a place inside one, or of a file whose format spec documents it: description, publisher, license, links, record types, columns with units and value legends, bookmarks. A catalog's description, link and column notes take precedence over the spec's. Here Ctrl+E is not readline's end of line: the filter is always edited at its end"),
                     k("Delete", "Forget", "Forget a recent, place or catalog.toml row; hide")
                     .also(&["Hide"])
                         .more("Forget the highlighted recent entry, or a whole place after confirming, or a row from catalog.toml, or hide a cloud source. On the Example datasets heading, hide them until datui cache clear, after confirming"),
@@ -654,7 +654,7 @@ pub const SCREENS: &[Screen] = &[
                         .no_run(),
                     k("Enter", "Run", "Go to the row, or run the query")
                     .also(&["Go"])
-                        .more("Go to the row, or run the query as the prefix says, sql: or q:. Reopened with a query in effect, the line holds its text, selected: typing replaces it, arrows edit it"),
+                        .more("Go to the row, or run the query in the language the prefix shows, sql: or q:. Reopened with a query in effect, the line holds the query's text, selected: typing replaces it, and the arrows edit it"),
                     k("Ctrl+J", "Run", "Run, the same as Enter"),
                     k("Ctrl+T", "Language", "SQL or q; the line keeps its text")
                         .more("Switch between SQL and q, keeping what is typed; the choice is remembered. [query] default_mode sets the first"),
@@ -687,7 +687,7 @@ pub const SCREENS: &[Screen] = &[
                         .more("What to find: text (any case until a capital is typed), a regex with Ctrl+R, or letters in order with Ctrl+T. Matches in the rows on screen light up as you type, and the line says how many are on screen")
                         .no_run(),
                     k("Enter", "Next", "Go to the first match at or after the row")
-                        .more("Find: the cursor, column cursor and all, goes to the first match at or after its row, reading past the rows on hand when it must (the footer counts the rows read; Esc stops). On an empty field, clear the find"),
+                        .more("Find: the cursor moves, row and column, to the first match at or after the current row, reading beyond the rows already read when it must (the footer counts the rows read; Esc stops). On an empty field, clear the find"),
                     k("Ctrl+G", "Keep matches", "Keep only the rows that match, as a filter")
                         .more("Keep only the rows with a match, as a filter: the footer and the Sort & Filter sidebar show it, and removing it there (or R) brings the rows back"),
                     k("Ctrl+R", "Regex", "Regex on or off"),
@@ -703,7 +703,7 @@ pub const SCREENS: &[Screen] = &[
                 name: "At the table",
                 keys: &[
                     k("n / N", "Next", "Next or previous match")
-                        .more("Next / previous match from the cursor's cell. Past the last match the find comes round to the first, and the footer says so. Each one typed while a find reads runs in turn; Esc stops them all").no_run(),
+                        .more("Next / previous match from the cursor's cell. After the last match the find wraps to the first, and the footer says so. Presses typed while a find is reading run in turn; Esc stops them all").no_run(),
                     k("/", "Find again", "Find again, the last pattern ready to edit").no_run(),
                     k("Esc", "Clear", "Clear the find (or stop one still reading)").no_run(),
                 ],
@@ -740,7 +740,7 @@ pub const SCREENS: &[Screen] = &[
                     k("← / → (h/l)", "Row", "Previous and next row")
                         .more("Previous and next row; the table's cursor moves with it"),
                     k("Tab / Shift+Tab", "Value", "Into the value, to scroll and find in it")
-                        .more("Into the value, to scroll and find in it. Nothing moves: the panes are split by what they hold, not by where the cursor is"),
+                        .more("Into the value, to scroll and find in it. The panes keep their sizes: they are split by what they hold, not by where the cursor is"),
                     k("Enter", "Open", "Open a struct, list or JSON; read a field")
                     .also(&["Rows", "Read", "Retry"])
                         .more("On a group's row, its rows, as at the table. Else open a struct, a list, or text holding a JSON object or array; or read a field the table's rows do not hold (hidden and binary columns)"),
@@ -779,10 +779,10 @@ pub const SCREENS: &[Screen] = &[
                     k("↑ / ↓ (j/k)", "Scroll", "Scroll a line"),
                     k("PgUp / PgDn", "Page", "Scroll a page"),
                     k("Home / End", "Top/End", "Top and end, however long the value")
-                        .more("Top and end, at once however long the value"),
+                        .more("Top and end, instantly, however long the value"),
                     k("/", "Find", "Find in the value; n and N go on")
-                        .more("Find in the value; n and N go to the next and last place"),
-                    k("n / N", "Next", "The next or last place found in the value"),
+                        .more("Find in the value; n and N go to the next and previous match"),
+                    k("n / N", "Next", "The next or previous match in the value"),
                     k("e, w, y, o", "As fields", "As in the fields"),
                     k("Esc / Tab", "Fields", "Back to the fields; Esc clears a find first")
                         .more("Back to the fields (Shift+Tab too); Esc clears a find first"),
@@ -840,7 +840,7 @@ pub const SCREENS: &[Screen] = &[
                 k("H", "Header", "Schema tab, CSV: first row as data or names")
                     .more("Schema tab, CSV, TSV, PSV: read the first row as data, under column_1, column_2, …; again to read it as column names. Reads the file again, so the query, filters and sort are cleared, and the panel closes"),
                 k("c", "Count", "Count every row, where the count is an estimate")
-                    .more("A dataset of more files than read.exact_count_files shows a row count estimated from a sample of its footers; c reads every footer for the exact count. The footer shows how far it has got, and Esc at the table stops it"),
+                    .more("A dataset of more files than read.exact_count_files shows a row count estimated from a sample of its footers; c reads every footer for the exact count. The footer shows its progress, and Esc at the table stops it"),
                 k("x", "Hex", "Show the file's bytes in the hex view"),
                 k("Esc / i", "Close", "Close the panel"),
             ],
@@ -865,11 +865,11 @@ pub const SCREENS: &[Screen] = &[
                     k("s", "Sort", "Sort by count or by value"),
                     k("c", "Histogram", "A number's histogram, or the list of its values")
                     .also(&["List"])
-                        .more("Between a number column's histogram, binned from the counts, and the list of its values. A number opens as its histogram; the header says which is shown"),
+                        .more("Switch a number column between its histogram, binned from the counts, and the list of its values. A number column opens as its histogram; the header says which is shown"),
                     k("a", "All rows", "Count every row, when the counts are of a sample"),
                     k("t", "New rows", "Count again with the rows that arrived")
                     .also(&["Refresh"])
-                        .more("While following a file, count again with the rows that arrived since; the bar says how many"),
+                        .more("While following a file, count again with the rows that arrived since; the footer says how many"),
                 ],
             },
             Group {
@@ -1005,7 +1005,7 @@ pub const SCREENS: &[Screen] = &[
                 name: "Shelves",
                 keys: &[
                     k("1-7", "Type", "Chart type, in order: Line to Heatmap")
-                        .more("Switch the chart type directly: Line, Scatter, Bar, Histogram, Box, KDE, Heatmap ([ / ] step). The shelves keep what the new type takes. On Rows, digits type a sample size instead")
+                        .more("Switch the chart type: Line, Scatter, Bar, Histogram, Box, KDE, Heatmap ([ / ] step). The shelves keep what the new type takes. On Rows, digits type a sample size instead")
                         .run("1"),
                     k("[ / ]", "Type", "Previous or next chart type"),
                     k("Tab / Shift+Tab (↑ / ↓)", "Next", "Next or previous row")
@@ -1036,7 +1036,7 @@ pub const SCREENS: &[Screen] = &[
                         .more("Export the chart to PNG, SVG or PDF, with a title, notes and source. Needs the chart's shelves filled first"),
                     k("t", "New rows", "Draw again with the rows that arrived")
                     .also(&["Refresh"])
-                        .more("While following a file, draw again with the rows that arrived since; the bar says how many"),
+                        .more("While following a file, draw again with the rows that arrived since; the footer says how many"),
                 ],
             },
             Group {
@@ -1123,7 +1123,7 @@ pub const SCREENS: &[Screen] = &[
                     .also(&["Tools", "Result"]),
                     k("Enter", "Detail", "Q-Q plot and histogram for the column")
                     .also(&["Open"])
-                        .more("Open detail view for selected column (shows Q-Q plot and histogram); with the sidebar focused, open a tool"),
+                        .more("Open the selected column's detail, a Q-Q plot and a histogram; with the sidebar focused, open a tool"),
                     k("Esc", "Back", "Cancel a run; the tools; then close")
                     .also(&["Cancel", "Tools", "Close"])
                         .more("Cancel a run in progress; otherwise from the results back to the tools, and from the tools close the analysis view"),
@@ -1168,9 +1168,9 @@ pub const SCREENS: &[Screen] = &[
                     k("PgUp / PgDn", "Page", "A page"),
                     k("Enter", "Detail", "The pair's detail (not on the diagonal)")
                     .also(&["Open"])
-                        .more("Open pair detail view (on a cell) or open a tool (sidebar); does nothing on a diagonal cell"),
+                        .more("On a cell, open the pair's detail; in the sidebar, open a tool. Does nothing on a diagonal cell"),
                     k("m", "Method", "Pearson or Spearman, named in the title")
-                        .more("Method: Pearson r or Spearman ρ, named in the title (both come from the one run, so it reads nothing)"),
+                        .more("Method: Pearson r or Spearman ρ, named in the title (one run computes both, so switching reads nothing)"),
                     k("Esc", "Back", "Cancel a run; the tools; then close")
                     .also(&["Cancel", "Tools", "Close"])
                         .more("Cancel a run in progress; otherwise from the matrix back to the tools, and from the tools close the analysis view"),
@@ -1379,7 +1379,7 @@ pub const SCREENS: &[Screen] = &[
                     .also(&["Toggle", "Pick"])
                         .more("On Scope or Format: the next value, wrapping. On Column: open its picker. On Header: toggle"),
                     k("Enter", "Copy", "Copy, from anywhere in the form")
-                        .more("Copy, from anywhere in the form. On the Cell scope with no column picked, Enter re-accents the spec line instead of copying"),
+                        .more("Copy, from anywhere in the form. On the Cell scope with no column picked, Enter copies nothing and shows pick a column to copy in the warning color"),
                     k("Esc", "Cancel", "Close a picker, then the dialog")
                         .more("Close a picker, then the dialog, without copying"),
                 ],
@@ -1389,7 +1389,7 @@ pub const SCREENS: &[Screen] = &[
                 keys: &[
                     k("(type)", "Narrow", "Narrow the list").no_run(),
                     k("↑ / ↓", "Move", "Move the cursor (j/k narrow)")
-                        .more("Move the cursor (j/k narrow the picker; only ↑/↓ move there)"),
+                        .more("Move the cursor (in the picker, j and k type; only ↑ / ↓ move)"),
                     k("Enter / Space", "Choose", "Choose")
                         .more("Choose. Space chooses until typing narrows the list, then types a space, so a name of several words narrows"),
                     k("Tab / Shift+Tab", "Next", "Choose and move on"),
@@ -1470,7 +1470,7 @@ pub const SCREENS: &[Screen] = &[
                     .more("Narrow the list to the names that contain it. In the format list, a strftime format typed that no line holds is the format"),
                 k("↑ / ↓", "Move", "Move"),
                 k("Enter", "Choose", "The type, or its format")
-                    .more("The type: the column reads as it at once, a value that does not fit null. A date, time or datetime asks its format next, each line showing what it makes of the column's first value. as read takes the type away"),
+                    .more("Apply the type: the column is read as it at once, and a value that does not fit becomes null. A date, time or datetime asks for its format next, each line showing what it makes of the column's first value. as read removes the type"),
                 k("Backspace", "Delete", "Delete a character (Ctrl+W a word, Ctrl+U all)"),
                 k("Esc", "Back", "Back to the types, or close")
                     .also(&["Cancel"]),
@@ -1489,7 +1489,7 @@ pub const SCREENS: &[Screen] = &[
                 k("Space", "Pick", "Pick a column, or step the kind"),
                 k("← / →", "Change", "Step the kind: datetime, date or time"),
                 k("Enter", "Make", "Make the column")
-                    .more("Make the column, before the first column it is made from, as a format spec's derived column is: a date and a time, and a UTC offset, make a datetime in UTC"),
+                    .more("Make the column, placed before the first column it is made from, as a format spec's derived column is. A date, a time and a UTC offset make a datetime in UTC"),
                 k("Esc", "Cancel", "Cancel"),
             ],
         },
@@ -1506,7 +1506,7 @@ pub const SCREENS: &[Screen] = &[
     Screen {
         context: Context::TablePicker,
         title: "Table picker",
-        reached: "<kbd>T</kbd> at a table of a file of several.",
+        reached: "<kbd>T</kbd> at a table from a file of several tables.",
         groups: &[Group {
             name: "Pick",
             keys: &[
@@ -1570,7 +1570,7 @@ pub const SCREENS: &[Screen] = &[
                         .more("Find bytes. Text is found as its UTF-8 bytes (Ctrl+U in the prompt: as UTF-16 little-endian). 0x1acffc1d, or two or more hex pairs (de ad be ef), is a byte pattern, where ?? matches any byte. Text in double quotes is text, even when it looks like hex. A match may span rows"),
                     k("n / N", "Next, previous", "Next or previous match, round the end")
                     .also(&["Next", "Prev"])
-                        .more("The next or previous match, round the end of the file"),
+                        .more("The next or previous match, wrapping around the end of the file"),
                     k("R", "Stride", "Bytes per row from the matches' spacing")
                     .also(&["Use stride"])
                         .more("When the matches after the one found are all the same distance apart, make that the bytes per row"),
@@ -1595,7 +1595,7 @@ pub const SCREENS: &[Screen] = &[
                     k("#", "Offsets", "Offsets in decimal or hex")
                     .also(&["Hex", "Decimal"]),
                     k("i / Enter", "Inspector", "Show or hide the byte inspector")
-                        .more("Show or hide the byte inspector. Beside the bytes when there is room for it and 16 bytes a row, over them when there is not"),
+                        .more("Show or hide the byte inspector. It sits beside the bytes when there is room and a row holds 16 bytes, and over them otherwise"),
                     k("v", "Mark", "Mark a range from the cursor; again to unmark")
                     .also(&["Unmark"])
                         .more("Mark from the cursor; move to mark a range, and the status line counts it. v again, or Esc, unmarks"),

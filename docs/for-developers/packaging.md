@@ -12,8 +12,9 @@ python3 scripts/packaging/build_package.py aur
 ```
 
 It runs `cargo build --release`, stages the manpages and shell completions in
-`target/dist` (below), runs the packaging tool and prints where the package
-went. The tarball and the PKGBUILD need no tool; the others:
+`target/dist` (below), runs the packaging tool and prints the package's path.
+The tarball and the PKGBUILD need no extra tool; the `.deb` and `.rpm` need
+these:
 
 ```bash,repo
 cargo install cargo-deb
@@ -31,13 +32,13 @@ A binary built on a machine needs that machine's glibc or newer, so one built on
 the Ubuntu 24.04 runner failed on Ubuntu 22.04, Debian 12, RHEL 9 and Amazon
 Linux 2023. The release builds the Linux binaries with
 [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild): zig links them
-against glibc 2.28 (`--target x86_64-unknown-linux-gnu.2.28`), the oldest a
-supported distribution ships (Debian 10, Ubuntu 20.04, RHEL 8), whatever the
-runner has. liblzma is compiled in (`xz2`'s `static` feature), as zstd, bzip2,
-zlib and SQLite already were, so the binary needs nothing beyond glibc. The
-wheels' extension is built the same way, as `manylinux_2_28` wheels, for x86_64
-and arm64. `scripts/requirements-release.txt` pins zig, cargo-zigbuild and
-maturin; the Nightly workflow builds the same way, so its cache serves the
+against glibc 2.28 (`--target x86_64-unknown-linux-gnu.2.28`), the oldest glibc
+a supported distribution ships (Debian 10, Ubuntu 20.04, RHEL 8), whatever glibc
+the runner has. liblzma is compiled in (`xz2`'s `static` feature), as zstd,
+bzip2, zlib and SQLite already were, so the binary needs nothing beyond glibc.
+The wheels' extension is built the same way, as `manylinux_2_28` wheels, for
+x86_64 and arm64. `scripts/requirements-release.txt` pins zig, cargo-zigbuild
+and maturin. The Nightly workflow builds the same way, so its cache serves the
 release. To build one yourself:
 
 ```bash,repo
@@ -48,13 +49,13 @@ python3 scripts/packaging/build_package.py deb --no-build
 ```
 
 `scripts/packaging/check_linux_release.py` is the release gate, which `publish`
-waits on. `symbols BINARY...` fails on any `GLIBC_` symbol version above 2.28,
-or a `NEEDED` library beyond glibc and libgcc_s, in the tarball's binary, the
-wheel's copy of it and the wheel's extension. `smoke DIR` runs the tarball's
-binary and installs the `.deb` or `.rpm` on Ubuntu 20.04 and 22.04, Debian 11
-and 12, Rocky 8 and 9 and Amazon Linux 2023, in docker, on x86_64 and arm64
-runners; `datui --version`, then `datui formats check` over a CSV, which reads
-the file and exits.
+waits on. `symbols BINARY...` checks the tarball's binary, the wheel's copy of
+it and the wheel's extension. It fails on any `GLIBC_` symbol version above
+2.28, or any `NEEDED` library beyond glibc and libgcc_s. `smoke DIR` runs the
+tarball's binary and installs the `.deb` or `.rpm` on Ubuntu 20.04 and 22.04,
+Debian 11 and 12, Rocky 8 and 9 and Amazon Linux 2023, in docker, on x86_64 and
+arm64 runners. On each it runs `datui --version`, then `datui formats check` on
+a CSV, which reads the file and exits.
 
 The `.deb` states `Depends: libc6 (>= 2.28)` in `Cargo.toml` and the `.rpm` takes
 its `Requires` from ldd (`libc.so.6(GLIBC_2.28)`), so the package managers refuse
@@ -64,26 +65,32 @@ libc in 2.34, to `libc6 (>= 2.34)`, and Ubuntu 20.04 and Debian 11 refuse it.
 
 The archives are named by target triple, `datui-vX.Y.Z-TRIPLE.tar.gz` and
 `.zip`, with `datui` at the root; `[package.metadata.binstall]` in `Cargo.toml`
-tells `cargo binstall` so. `install.sh`, the Homebrew formula, the PKGBUILD,
+gives `cargo binstall` these names. `install.sh`, the Homebrew formula, the PKGBUILD,
 `publish-packages.yml`'s winget regex and Nightly's startup guard all read these
 names; change them together.
 
-`Release` runs by hand (Actions → Release → Run workflow) as a dry run from any
-branch: every build and the gate, no fuzz replay, no docs, and nothing
-published. Run one before a tag depends on a change to the builds.
+Run `Release` by hand (Actions → Release → Run workflow) for a dry run from any
+branch. It runs every build and the gate, skips the fuzz replay and the docs,
+and publishes nothing. Do a dry run before tagging a release that depends on a
+change to the builds.
 
 ## Manpages and completions
 
-The manpages are rendered from the sources the docs are (clap's definitions, the
-option, environment and key registries, the format descriptors,
-`examples.toml`, the query and format-spec references) by `gen_docs write`, and
-committed in `crates/datui-cli/man/`. Committed, they need no build step: a
-crates.io build cannot read the docs, and every channel ships
-the same files. `the_generated_docs_are_current` fails while one is stale;
-`crates/datui-cli/src/man/tests.rs` checks their sections and that every flag,
-command, key, setting, variable and exit status appears; CI's
-`scripts/docs/lint_manpages.py --require` runs mandoc and groff over them. Their
-date is `crates/datui-cli/release-date.txt`, which `bump_version.py` sets.
+`gen_docs write` renders the manpages from the same sources as the docs (clap's
+definitions, the option, environment and key registries, the format
+descriptors, `examples.toml`, the query and format-spec references) into
+`crates/datui-cli/man/`, where they are committed. Because they are committed,
+no build step renders them: a crates.io build cannot read the docs, and every
+channel ships the same files.
+
+| Check | What it does |
+|---|---|
+| `the_generated_docs_are_current` | Fails when a page is stale |
+| `crates/datui-cli/src/man/tests.rs` | Checks the sections, and that every flag, command, key, setting, variable and exit status appears |
+| `scripts/docs/lint_manpages.py --require` (CI) | Runs mandoc and groff over the pages |
+
+The pages' date is `crates/datui-cli/release-date.txt`, which `bump_version.py`
+sets.
 
 `cargo run -p datui-cli --bin gen_docs -- dist DIR` stages them for a package:
 `DIR/man/manN/` and `DIR/completions/` (`datui.bash`, `_datui`, `datui.fish`,
@@ -120,7 +127,7 @@ All packages include the MIT license as required:
 
 ## Output locations
 
-| Package | Output Directory | Example Filename |
+| Package | Output directory | Example file name |
 |---------|-----------------|------------------|
 | deb | `target/debian/` | `datui_X.Y.Z-1_amd64.deb` |
 | rpm | `target/generate-rpm/` | `datui-X.Y.Z-1.x86_64.rpm` |
@@ -141,16 +148,16 @@ replay on the tagged commit, regardless of the latest Nightly result.
 
 `release.yml` composes the release body before creating the release. It uses
 `release-notes/v<version>.md` when that file is committed, and otherwise
-generates a body from the commit subjects since the previous tag. The body is
-therefore never empty, and hand-written notes are always optional.
+generates a body from the commit subjects since the previous tag. So the body
+is never empty, and hand-written notes are optional.
 
 Write notes before tagging: `publish-packages.yml` copies the release body into
 the winget manifest. Editing the GitHub release afterward does not update winget.
 
 To write notes for a release, run `python scripts/bump_version.py notes` and
-commit the file with the release. `tests/repo/release_notes.rs` checks the
-wiring in CI, which runs on the release commit before the tag is pushed, and the
-winget job refuses to run komac against an empty release body. See
+commit the file with the release. In CI, `tests/repo/release_notes.rs` checks
+the wiring on the release commit, before the tag is pushed. The winget job
+refuses to run komac against an empty release body. See
 [the release-notes guide](https://github.com/derekwisong/datui/blob/main/release-notes/README.md).
 
 ### AUR by hand
@@ -232,7 +239,7 @@ The `publish-winget` job in `.github/workflows/publish-packages.yml` uses
 
 | Secret | Description |
 |--------|-------------|
-| `WINGET_TOKEN` | Classic PAT with `public_repo` scope. Fine-grained PATs do not work here — they cannot open a cross-fork PR against a repo you don't own. |
+| `WINGET_TOKEN` | Classic PAT with `public_repo` scope. Fine-grained PATs do not work here: they cannot open a cross-fork PR against a repo you don't own. |
 | `WINGET_SYNC_TOKEN` | Fine-grained PAT, repository access limited to `derekwisong/winget-pkgs`, with **Contents: Read and write** and **Workflows: Read and write**. It only syncs the fork. Optional, but without it a release can stop on a fork sync (below). |
 
 At least one version of `derekwisong.datui` must already exist in winget-pkgs; the
@@ -247,12 +254,12 @@ are generated with the format count.
 
 Before opening the PR, komac fast-forwards our fork from upstream. GitHub blocks any
 ref update that touches `.github/workflows/` unless the token carries `workflow`
-scope, and upstream winget-pkgs edits its own workflows every few weeks — so the sync
+scope, and upstream winget-pkgs edits its own workflows every few weeks, so the sync
 fails once enough time has passed since the last release. The error names a
 permissions problem, but **`WINGET_TOKEN` is fine; do not rotate it.**
 
-We can't just add the scope: GitHub's classic-PAT UI force-selects full `repo`
-(private repos included) whenever `workflow` is checked.
+Adding the scope is not an option: checking `workflow` in GitHub's classic-PAT
+UI also forces full `repo` scope, private repos included.
 
 Without `WINGET_SYNC_TOKEN`, the preflight step attempts the sync with
 `WINGET_TOKEN` and, when blocked, fails fast with these steps in the job log:
@@ -264,11 +271,11 @@ Without `WINGET_SYNC_TOKEN`, the preflight step attempts the sync with
 3. Confirm the PR opened:
    `gh pr list --repo microsoft/winget-pkgs --author derekwisong`.
 
-Being a few commits behind upstream at job start is harmless — winget-pkgs merges
-manifest PRs constantly and those never touch workflow files.
+Being a few commits behind upstream at job start is harmless: winget-pkgs merges
+manifest PRs constantly, and those never touch workflow files.
 
 With `WINGET_SYNC_TOKEN` set, none of this happens: the preflight syncs with that
-token, which may update workflow files on the fork and touches nothing else, and
+token, which can update workflow files on the fork and nothing else, and
 `.github/workflows/winget-fork-sync.yml` also syncs the fork every Monday (or on
 demand: `gh workflow run winget-fork-sync.yml`).
 

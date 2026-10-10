@@ -11,18 +11,18 @@ datui
 
 Type `penguins` to narrow the home screen, select **Palmer penguins** under
 **Example datasets**, and press <kbd>Enter</kbd>. A catalog file this small
-downloads without a question.
+downloads without asking first.
 
 ![The home screen narrowed to penguins: Palmer penguins under Example datasets, its details beside it: a 16.1 KB CSV over HTTP, CC0, no login](../demos/screenshots/quick-start-home.png)
 
-Type `penguins`: one match, its details beside it. <kbd>Enter</kbd> opens it.
+Typing `penguins` leaves one match, with its details beside it. <kbd>Enter</kbd> opens it.
 
 The table has 344 penguins. Empty fields in the file are null, shown as `∅`;
-`rownames` is the row number the host, Rdatasets, adds. The data is CC0, from
+`rownames` is a row number added by the host, Rdatasets. The data is CC0, from
 Palmer Station LTER; credit Horst, Hill and Gorman (2020).
 
-To skip the home screen, give the URL; datui asks before it downloads a URL
-you type, and <kbd>Enter</kbd> says yes:
+To skip the home screen, pass the URL. datui asks before it downloads a URL
+you type; press <kbd>Enter</kbd> to say yes:
 
 ```bash,network
 datui https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins.csv
@@ -61,8 +61,8 @@ Type it on one line, or press <kbd>Alt</kbd>+<kbd>Enter</kbd> for a new line.
 
 ![The species summary in the table: Gentoo heaviest at 5,076 g over 124 penguins, then Chinstrap and Adelie](../demos/screenshots/quick-start-sql.png)
 
-Which species is heaviest? Gentoo, 5,076 g on average over 124 penguins.
-<kbd>:</kbd>, the query, <kbd>Enter</kbd>.
+Which species is heaviest? Gentoo, at 5,076 g on average over 124 penguins.
+Press <kbd>:</kbd>, type the query and press <kbd>Enter</kbd>.
 
 `AVG` skips the two penguins with no mass; `COUNT(*)` counts every row. The
 table is named `df`. Press <kbd>Enter</kbd> on Gentoo to see its 124 penguins,
@@ -93,8 +93,8 @@ original rows, put the column cursor on `body_mass_g` (<kbd>g</kbd>, type
 
 ![A scatter of body_mass_g against flipper_length_mm: heavier penguins have longer flippers](../demos/screenshots/quick-start-chart.png)
 
-Do heavier penguins have longer flippers? Yes. <kbd>c</kbd> <kbd>2</kbd>, then
-**X** `flipper_length_mm`.
+Do heavier penguins have longer flippers? Yes. Press <kbd>c</kbd> <kbd>2</kbd>,
+then set **X** to `flipper_length_mm`.
 
 <kbd>↓</kbd> <kbd>↑</kbd> move between rows of the panel; <kbd>Space</kbd> on
 **X** opens its picker. Type part of the name and press <kbd>Enter</kbd>. The

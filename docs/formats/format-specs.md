@@ -81,9 +81,10 @@ DATUI_FORMATS_PATH=formats datui formats
 A spec reads fixed-size records, records that carry their length, several
 message types in one stream, or compressed blocks; a `kind = "delimited"` spec
 reads [CSV-like text with lines above its header](#delimited-text). Specs are
-data: no scripts or expressions, and every size read from a file is bounded.
-`--format` also takes a spec's `http(s)://`, `s3://`, `gs://` or `az://` URL,
-fetched once as the open starts; a spec file is at most 1 MiB.
+data, with no scripts or expressions, and every size read from a file is
+bounded. `--format` also takes a spec's `http(s)://`, `s3://`, `gs://` or
+`az://` URL, which is fetched once when the open starts. A spec file is at most
+1 MiB.
 
 ## A spec
 
@@ -99,9 +100,9 @@ every field type and key.
 | `description` | Shown by `datui formats` and the [Documentation view](../reference/format-specs.md#documentation) |
 | `documentation` | An `https://` link to the format's own documentation, for the Documentation view |
 | `match` | Which files are this format: `glob` (a pattern or a list), `magic` (a string or a list of bytes) at `magic_offset` (default 0), `where` (header values) |
-| `endian` | `le` (default), `be`, or `auto`: big-endian when the magic (at least two bytes) reads reversed. For fields without their own suffix |
+| `endian` | Byte order of fields without their own suffix: `le` (default), `be`, or `auto`, which is big-endian when the magic (at least two bytes) reads reversed |
 | `layout` | `rows` (default): one file of records. `columns`: a directory with one file per field |
-| `[header] fields` | Fields read once from the start of the file. Later parts refer to them |
+| `[header] fields` | Fields read once from the start of the file. Later parts of the spec refer to them |
 | `[header] size` | The header's size when it is more than its fields; a number or a header field |
 | `[records] fields` | The fields of one record, in order |
 | `[records] size` | The record's size, at least the fields' sum (the default); the rest is skipped |
@@ -135,10 +136,10 @@ line and column of each problem. The same places hold
 files of `kind = "fix"`, listed after the specs.
 
 `datui formats check SPEC [FILE]` checks one spec, by name or file. With a file,
-it prints the warnings and the first ten rows. Given a QuickFIX dictionary, it checks
-that, and with a FIX log says how many messages it matches and which of its tags
-they hold. It exits non-zero on an error, so
-a repository of specs can run it in CI.
+it prints the warnings and the first ten rows. Given a QuickFIX dictionary, it
+checks the dictionary, and with a FIX log it also says how many messages the
+dictionary matches and which of its tags they hold. It exits non-zero on an
+error, so a repository of specs can run it in CI.
 
 ## Which spec reads a file
 
@@ -146,7 +147,7 @@ a repository of specs can run it in CI.
 |---|---|
 | `--format FILE`: a path (it has a `/` or ends `.toml`), or an `http(s)://`, `s3://`, `gs://` or `az://` URL fetched once as the open starts | That spec, whatever the file is called |
 | `--format NAME` | The spec of that name |
-| A name datui already reads (`.csv`, `.parquet`) | Read as it is, as before, unless a [delimited spec](#delimited-text) matches a `.csv`, `.tsv` or `.psv` |
+| A name datui already reads (`.csv`, `.parquet`) | Read by its own reader, unless a [delimited spec](#delimited-text) matches a `.csv`, `.tsv` or `.psv` |
 | A `glob` matches | That spec |
 | A `magic` matches, in a file whose bytes are no format datui reads (such as Parquet) | That spec |
 
@@ -160,26 +161,29 @@ match = { glob = "*.l2", magic = "L2FD", where = { "header.version" = 3 } }
 
 
 When two specs match the same way, the first on the search path reads the file.
-The bar shows `2 formats match`, and the Notes tab names the others. A file no
-spec matches opens as it does without specs; a local file no reader takes
-either opens in the [hex view](../user-guide/hex-view.md), where <kbd>B</kbd> reads it with a
-spec and <kbd>r</kbd> lines the bytes up in records while you write one.
+The footer shows `2 formats match`, and the Notes tab names the others. A file no
+spec matches opens as it would without specs. A local file that no reader takes
+either opens in the [hex view](../user-guide/hex-view.md), where <kbd>B</kbd>
+reads it with a spec and <kbd>r</kbd> lines up the bytes in records while you
+write one.
 
-<kbd>T</kbd> on a file of several record types lists the whole file, then each
-type with its column count, and opens the one picked (`day.itch/add`), clearing
+On a file of several record types, <kbd>T</kbd> lists the whole file, then each
+type with its column count. Picking one opens it (`day.itch/add`) and clears
 the query, filters and sort.
 
 <kbd>b</kbd> on the table picks another spec and reads the file again with it,
 clearing the query, filters and sort. The list starts with the spec the file
-was read with, then the others that matched it the same way, then every other
-spec on the search path for a file (or for a directory of column files).
+was read with, then the others that matched it the same way, then every other format spec
+on the search path with the same `layout`: records in one file, or
+a directory of column files.
 The Notes tab of <kbd>i</kbd> says which spec read the file and why (`matched by
 magic L2FD · version 3`), the header's values, and any bytes left out.
 
-The home screen and its search name a file the same way. A file whose name
+The home screen and its search identify a file the same way. A file whose name
 says nothing (no extension, or `.bin`) is matched by magic and `where` against
-the first 4 KiB the listing reads from it anyway, up to 256 files a directory;
-nothing more is read. Its row reads the spec's name, and its details:
+its first 4 KiB, which the listing reads anyway, for up to 256 files per
+directory. Nothing more is read. Its row shows the spec's name, and its details
+show:
 
 | Field | Says |
 |---|---|
@@ -189,11 +193,12 @@ nothing more is read. Its row reads the spec's name, and its details:
 | `schema` | `3 columns (spec)` and each column's type, when the spec alone says them (fixed records, no size from the header); otherwise `on open` |
 | `records` | For a spec with variants: `2 types (spec)` and each record type's column count (`add 5 · cancel 3`). → lists the record types |
 
-A chip with several values (`[glob *.l2 *.lvl2]`) takes any of them. The
-listing names a file by its glob without reading it, so a glob-named row shows
-no `where` values; the open still checks them. Chips are drawn without brackets
-where the header tint shows. Text values are quoted where it does not
-(`[kind "A"]`), and a magic that is not text is hex (`7f 45 4c 46`).
+A chip with several values (`[glob *.l2 *.lvl2]`) matches any of them. The
+listing matches a file by its glob without reading it, so a row matched by glob
+shows no `where` values; opening the file still checks them. Chips are drawn
+without brackets where the header tint shows; where it does not, text values
+are quoted (`[kind "A"]`). A magic that is not text is shown in hex
+(`7f 45 4c 46`).
 
 ## Delimited text
 
@@ -246,26 +251,27 @@ plus `match`, `kind`, the layout keys, `[columns]`, `description` and
 | `skip_initial_space` | `true`: ignore the spaces after a delimiter |
 | `header_rows` | `{ name = N, unit = M }`: the line that names the columns and the line that gives their units. `name` may be a list of lines, joined with `header_join` (default a space). A number or a list is `name` alone. A header line is never data |
 | `header_join` | What joins the pieces of a name from several lines |
-| `metadata_line` | A line of `key="value"` or `key=value` pairs, separated by commas, for the Info panel. It must not be data: above the last header line, within `skip_lines`, or a comment line |
+| `metadata_line` | A line of `key="value"` or `key=value` pairs, separated by commas, for the Info panel. It must not be a data line: it is above the last header line, within `skip_lines`, or a comment line |
 | `null_values` | A value, or a list, read as null: `"NA"`, or `"COL=-999"` for one column |
 | `skip_lines` | Lines to pass over before the header |
 | `[columns]` | Column types and derived columns, below, and what columns mean: `description` and `unit` |
 
 Lines count from 1 at the top of the file. Each option the spec sets replaces
-the config's; a flag typed on the command line (`--delimiter`,
+the config's, and a flag typed on the command line (`--delimiter`,
 `--comment`, `--skip-initial-space`, `--header-rows`, `--skip-lines`)
-wins over the spec. The options the spec does not set keep theirs.
+wins over the spec. Options the spec does not set keep their config values.
 `datui --delimiter ';' formats check SPEC FILE` reads the file as an open with
-those flags would, and names the flags that override the spec. The header lines
-and the metadata line are the only lines read apart from the CSV reader.
+those flags would, and names the flags that override the spec. Apart from the
+CSV reader, datui reads only the header lines and the metadata line.
 
 ### Units
 
 A unit sits beside its column's type on the table's type row
 (`f64 · deg F`), in a **Unit** column on the Info panel's Schema tab, and in
-chart axis titles (`T1 Temp (deg F)`). A filter, sort or drill keeps them, and
-so does a query, pivot or melt for each column it carries unchanged, renamed or
-not. A column a query computes has no unit, even under the name of one that had.
+chart axis titles (`T1 Temp (deg F)`). Units survive a filter, sort or
+drill-down. A query, pivot or melt keeps the unit of each column it carries over
+unchanged, even when it renames the column. A column a query computes has no
+unit, even if it takes the name of a column that had one.
 
 ### Metadata
 
@@ -318,7 +324,7 @@ datui formats check ./typed.toml typed.csv
 | `date` `time` `datetime` | With `format`, a strftime format; without, the format is inferred |
 | `duration` | `1d`, `2h30m`, `-1w2d` |
 
-Use `i64` and `f64` unless a narrower type is wanted for an export or to hold
+Use `i64` and `f64` unless you want a narrower type for an export or to limit
 values to a range. A value is trimmed first, and one that does not fit the type,
 or is out of an integer type's range, is null. The first time the Info panel
 opens, one pass counts them, and the Notes tab says how many per column:
@@ -326,8 +332,8 @@ opens, one pass counts them, and the Notes tab says how many per column:
 not have is a note, not an error, since the files of a family differ. A typed
 column is the same type in every file read together, and `read.infer_types`
 leaves it alone. `type` beside `from` or `as` is refused: a derived column
-takes its type from `as`. The same types, and the derived columns, are on hand
-in the table: [Column types](../user-guide/dataset-info.md#column-types).
+takes its type from `as`. The same types, and the derived columns, are also available
+from the table: [Column types](../user-guide/dataset-info.md#column-types).
 
 ### Derived columns
 
@@ -345,16 +351,16 @@ there is documentation only: the type row shows the units line's.
 
 `format = "%Y-%m-%d %H:%M:%S"` gives the strftime format of the text, a date
 and a time joined with a space; without it the format is inferred. A value that
-does not parse is null. The column goes before the first column it is made
-from, which stays; one named after a column it is made from replaces that
-column, and its unit. There is no expression language: anything more is a
+does not parse is null. The derived column goes before the first column it is
+made from, which is kept. A derived column named after one of its source
+columns replaces that column and its unit. There is no expression language: anything more is a
 [query](../user-guide/querying-data.md).
 
 ### Matching
 
 A delimited spec matches a file whose name says no format datui reads, or says
 `.csv`, `.tsv` or `.psv`, compressed or not. A directory, or a glob such as
-`'logs/log_*.csv'`, is read through the spec its first file with text matches.
+`'logs/log_*.csv'`, is read with the spec that its first text file matches.
 <kbd>H</kbd> on the Info panel's Schema tab reads the file without a header,
 and without its derived columns.
 
@@ -371,8 +377,8 @@ different writer versions stack:
 | A file's column holds text where another's holds numbers | The column is text |
 | Files give a column different units | The first file's unit; a note lists the units seen |
 
-The Notes tab lists the columns not every file has. Columns keep the order
-the files first have them in.
+The Notes tab lists the columns not every file has. Columns keep the order in
+which they first appear across the files.
 
 ## Garmin TXi logs
 
@@ -382,8 +388,8 @@ affiliated with or endorsed by Garmin.
 The repository's `contrib/formats/garmin-txi.toml` reads the data logs a Garmin
 TXi writes: the airframe line as metadata, the units line, `time` in UTC, and
 each column typed. Copy it into `~/.config/datui/formats/` to open the logs, or
-a directory of them, with no flags. A twin fills the `E2` columns and a single
-leaves them blank. A log written before a GPS fix has blank date and GPS cells.
+a directory of them, with no flags. A twin-engine aircraft fills the `E2` columns;
+a single leaves them blank. A log written before a GPS fix has blank date and GPS cells.
 
 **`garmin-log.csv`**
 

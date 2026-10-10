@@ -10,24 +10,24 @@
 `cargo test` alone runs only the root package. `--workspace` adds `datui-lib`
 and `datui-cli`. CI runs the same tests with
 `cargo nextest run --workspace --locked --no-fail-fast`, one process per test,
-then `cargo test --doc --workspace --locked`; `test.sh ci` runs exactly that
-(with nextest's `ci` profile from `.config/nextest.toml`), or `cargo test` when
-nextest is not installed. The Python bindings are tested separately
+then `cargo test --doc --workspace --locked`. `test.sh ci` runs exactly that
+(with nextest's `ci` profile from `.config/nextest.toml`), or falls back to
+`cargo test` when nextest is not installed. The Python bindings are tested separately
 (`test.sh python`); see [Build Python bindings](python-bindings.md#build-and-test).
 
 ## Select the checks
 
 Run `./scripts/dev/test.sh check` while editing, then select the relevant test
-target. A name filter selects tests to execute; it does not by itself restrict
-the executables Cargo builds.
+target. A name filter picks which tests run, but on its own it does not limit
+which executables Cargo builds.
 
 | Command | Scope |
 |---|---|
 | `./scripts/dev/test.sh check` | Check `datui-lib` without linking |
-| `./scripts/dev/test.sh unit data_quality::` | Library test executable; only data-quality tests execute |
-| `./scripts/dev/test.sh integration app data_quality::` | App integration executable; only its Data Quality module executes |
+| `./scripts/dev/test.sh unit data_quality::` | Library test executable; runs only the data-quality tests |
+| `./scripts/dev/test.sh integration app data_quality::` | App integration executable; runs only its Data Quality module |
 | `./scripts/dev/test.sh integration home` | Home integration executable |
-| `./scripts/dev/test.sh integration data statistics::` | Data integration executable; only its statistics module executes |
+| `./scripts/dev/test.sh integration data statistics::` | Data integration executable; runs only its statistics module |
 | `./scripts/dev/test.sh cli` | CLI library tests |
 | `./scripts/dev/test.sh fmt` | Format the workspace, the fuzz targets and `crates/datui-pyo3` (`--check` only checks) |
 | `./scripts/dev/test.sh lint` | Formatting check and clippy with all targets, in the workspace, the fuzz targets and `crates/datui-pyo3`; then `ruff check`, `shellcheck` and `typos`, each skipped with a note when not installed; `preflight` is the same |
@@ -53,16 +53,17 @@ Polars build, so the first run is slow. CI runs `features none` (clippy only)
 on every pull request; the Nightly workflow runs `features --test`, then the
 root crate's tests with `cargo test --no-default-features`.
 
-During an edit, run the changed behavior's regression and related tests. Before
-submission, broaden to related targets and run formatting/clippy for Rust
-changes. Run the full suite for cross-cutting App/event-loop, LazyFrame,
-loading/schema, shared configuration, dependency/feature, and harness/layout
-changes. For isolated changes, CI supplies full-workspace coverage; report
-which checks were local. Documentation-only changes need the
+While editing, run the regression test for the changed behavior and its
+related tests. Before submitting, broaden to the related targets, and run
+formatting and clippy for Rust changes. Run the full suite for cross-cutting
+changes: the App or event loop, LazyFrames, loading or schemas, shared
+configuration, dependencies or features, and the test harness or layout. For
+isolated changes, let CI cover the full workspace, and report which checks you
+ran locally. Documentation-only changes need the
 [documentation checks](documentation.md#run-the-checks), not Rust tests.
 Replay the fuzz corpus for parser or matcher changes
 (`./scripts/dev/test.sh integration fuzz_corpus_test`). Do not rerun an unchanged
-broad check merely because another small scoped check finished.
+broad check just because another small scoped check finished.
 
 Select multiple affected targets explicitly when needed:
 
@@ -73,10 +74,11 @@ cargo test --locked -p datui --test data --test config
 For changes to the binary itself, also run `cargo check --locked -p datui` and
 exercise the changed CLI behavior. CLI definition tests do not replace this.
 
-Keep existing build artifacts for the edit loop. Changing compiler flags,
-toolchains or features can cause rebuilds; `cargo clean` is not a routine test
-step. `tests/ORGANIZATION.md` in the repository proposes structural changes to
-reduce linking and harness overhead.
+Keep existing build artifacts between edits. Changing compiler flags,
+toolchains or features can cause rebuilds, and `cargo clean` is not a routine
+test step. `tests/ORGANIZATION.md` in the repository records why the test
+targets are laid out as they are, and what that cost and saved in linking and
+harness time.
 
 ## Shared machines
 
@@ -87,14 +89,14 @@ Waiting for one of 2 heavy test runs to finish (/run/user/1000/datui-test-heavy*
 On your own machine you can ignore this. The maintainer runs several checkouts
 and agents on one machine, so `unit`, `integration`, `lint`, `clippy`, `msrv`,
 `ci`, `python`, `features`, `full`, and any command given `--release` take one
-of `DATUI_TEST_HEAVY_SLOTS` slots (default 2) shared by all of the user's
-checkouts, and wait, saying so once, when none is free. `DATUI_TEST_HEAVY_SLOTS=0`
-turns this off.
+of `DATUI_TEST_HEAVY_SLOTS` slots (default 2), shared by all of the user's
+checkouts. When no slot is free, they print the message above once and wait.
+`DATUI_TEST_HEAVY_SLOTS=0` turns this off.
 
 | Case | Behavior |
 |---|---|
 | Lock files | `$XDG_RUNTIME_DIR/datui-test-heavy*.lock`, or `/tmp/datui-test-heavy-<uid>*.lock` without `XDG_RUNTIME_DIR` |
-| Held | Until the command exits, by Ctrl-C or a crash too; never by a daemon it starts, such as sccache's server |
+| Held | Until the command exits, including by Ctrl-C or a crash. A daemon it starts, such as sccache's server, never holds it |
 | `test.sh` inside a heavy run | Runs under the outer run's slot (`DATUI_TEST_LOCK_HELD` is set) |
 | No `flock` (macOS without util-linux) | Runs without it and says so |
 
@@ -105,22 +107,23 @@ On such a machine, run full suites, workspace clippy and release builds through
 
 The statistics, distribution-detection and pivot/melt tests read sample files
 that are too large to commit. `./scripts/dev/test.sh setup`
-(`scripts/setup_dev.py`) creates `.venv`, installs `scripts/requirements.txt`
-(which pins Polars, NumPy, pyarrow, fastavro and openpyxl in
-`scripts/requirements-fixtures.txt`) and generates them, using
-[uv](https://github.com/astral-sh/uv) when it is installed and `python -m venv`
-otherwise. It is safe to re-run; `--force` regenerates even current fixtures.
+(`scripts/setup_dev.py`) creates `.venv` (with
+[uv](https://github.com/astral-sh/uv) when it is installed, otherwise
+`python -m venv`), installs `scripts/requirements.txt` (which pins Polars,
+NumPy, pyarrow, fastavro and openpyxl in `scripts/requirements-fixtures.txt`)
+and generates the files. It is safe to re-run; `--force` regenerates even
+current fixtures.
 
 The generator writes `tests/sample-data/.generated`, which starts with a SHA-256 of
 `scripts/generate_sample_data.py` and `scripts/requirements-fixtures.txt`. When
 a test starts and that stamp is missing or holds another digest, the test
 harness regenerates the fixtures, so pulling a generator change needs no manual
-step. It runs `.venv/bin/python` (`.venv\Scripts\python.exe` on Windows),
-falling back to the system Python, so the environment does not need to be
-activated. The generator takes the lock file `.sample-data.lock` beside the
-directory it writes (beside the link's target when `tests/sample-data` is a
-link), so only one run generates and the rest, test processes or a run by hand,
-wait for it and find the fixtures current. If generation fails, the test panics
+step. The harness runs `.venv/bin/python` (`.venv\Scripts\python.exe` on
+Windows), falling back to the system Python, so the environment does not need
+to be activated. The generator takes the lock file `.sample-data.lock` beside
+the directory it writes (beside the link's target when `tests/sample-data` is a
+link), so only one run generates the fixtures. The others, whether test
+processes or a run by hand, wait for it and then find the fixtures current. If generation fails, the test panics
 with the generator's error and the setup command.
 
 To regenerate by hand:
@@ -131,9 +134,9 @@ To regenerate by hand:
 
 The generator writes into a scratch directory beside the output and then
 renames each file into place, so a test process that has the old file mapped
-keeps reading it. The stamp lists the files it wrote after the digest; a file
-the last run listed and this one no longer writes is removed, and nothing else
-is. On Windows a rename over a file another process has open fails, so
+keeps reading it. After the digest, the stamp lists the files the generator
+wrote. A file the last run listed that this run no longer writes is removed;
+nothing else is. On Windows a rename over a file another process has open fails, so
 generate while no tests run there. `--out DIR` writes somewhere
 else, and `--if-stale` does nothing when the stamp is current. It exits with an
 error if any of its packages is missing.
@@ -143,7 +146,7 @@ to the generator:
 
 | Key part | Input |
 |---|---|
-| `scripts/generate_sample_data.py` | The generator; it reads only itself and the next one, for the stamp |
+| `scripts/generate_sample_data.py` | The generator. It reads only itself and the requirements file below, for the stamp |
 | `scripts/requirements-fixtures.txt` | Every package it imports, and their dependencies, at exact versions |
 | Python version | As `setup-python` resolved it |
 | Runner OS and arch | |
@@ -210,7 +213,8 @@ into a new top-level file.
 | `tests/common/` | Shared helpers |
 
 A test that changes the process (an environment variable another test reads, fd 2,
-Polars' configuration) keeps a target of its own; one executable shares all of it.
+Polars' configuration) keeps a target of its own, because all the tests in an
+executable share that state.
 Better still, give the code the setting directly, as the `NO_COLOR` unit test gives
 the color parser `no_color`. Tests in `config` only ever remove `NO_COLOR`. A test
 that counts something process-wide counts its own thread instead
@@ -234,8 +238,9 @@ shared helpers in `tests/common/`:
 
 Each helper runs the frame's work, `App::frame_work`, once the events on hand are
 handled, as the run loop does before it draws: home measurements fold into their
-rows and the frame asks for what it lacks (rows ahead, measurements, a follow's
-rows). A wait on state a frame brings needs no frame of its own.
+rows, and the frame asks for what it lacks (rows ahead, measurements, a follow's
+rows). So a test that waits on state a frame brings does not need to draw a
+frame.
 
 A wait returns as soon as the work is done. One that runs past `HANG_GUARD`
 (300 s) fails the test, naming the wait's location and what was still owed,
@@ -259,8 +264,8 @@ Such a sleep says why in a comment.
 Statistical and large-data tests set the run time of their executable. Use the
 smallest input that still makes the assertion: a size test needs blocks bigger than
 anything else allocated, not 200,000 rows; a band test needs bands that do and do
-not divide the rows. Keep what is the subject (the seeds of a fit, a cap that is a
-constant), and say in the test why its size is what it is.
+not divide the rows. Keep the sizes that are the test's subject (the seeds of a
+fit, a cap that is a constant), and say in the test why its size is what it is.
 
 ## Startup timing
 
@@ -278,5 +283,5 @@ scripts/dev/first_frame_probe.py before=/path/to/old/datui after=target/release/
 It runs each binary in a 120×30 pseudo-terminal with isolated config and cache,
 on 1,000-row CSV and Parquet fixtures, and prints p50/p95 as a Markdown table.
 `--silent` never answers the keyboard-protocol query and `--reply-delay MS`
-answers it late; a build that never asks is unaffected. Linux only. The
-numbers depend on the machine: they belong in a PR description, not in a test.
+answers it late; neither affects a build that never asks. The probe runs on
+Linux only. The numbers depend on the machine: they belong in a PR description, not in a test.

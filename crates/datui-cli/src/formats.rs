@@ -302,7 +302,7 @@ const EXCEL: Descriptor = Descriptor {
     tables: Some(Tables {
         opens: Some("its first table"),
         by_name: false,
-        help: "a worksheet by name, or by 0-based index when no worksheet is so named",
+        help: "a worksheet by name, or by 0-based index when no worksheet has that name",
     }),
     summary: Summary::Tab("Excel"),
     ..BASE
@@ -803,7 +803,7 @@ impl FileFormat {
 pub fn format_help() -> String {
     let names: Vec<&str> = FileFormat::ALL.iter().map(|f| f.name()).collect();
     format!(
-        "File format, when the extension does not say: {}; or a format spec: its name (`datui formats` lists them), its file (a path with a / or ending .toml), or its http(s), s3, gs or az URL (at most 1 MiB)",
+        "File format, when the extension does not say: {}. Or a format spec: its name (`datui formats` lists them), its file (a path with a / or ending .toml), or its http(s), s3, gs or az URL (at most 1 MiB)",
         names.join(", ")
     )
 }

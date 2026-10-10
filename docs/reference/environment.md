@@ -11,20 +11,20 @@ The variables datui reads.
 | `DATUI_CONFIG_DIR` | The config directory, in place of the platform's (`~/.config/datui` on Linux). Saved views and format specs live there too |
 | `DATUI_CACHE_DIR` | The cache directory, in place of the platform's (`~/.cache/datui` on Linux) |
 | `DATUI_FORMATS_PATH` | Directories of format specs and dictionaries, separated as `PATH` is, searched before `[formats] path` |
-| `DATUI_LOG` | The log level: `error`, `warn`, `info`, `debug`, `trace` or `off`. Beats `log.level` in a file; `-c` and `--log-level` beat it |
+| `DATUI_LOG` | The log level: `error`, `warn`, `info`, `debug`, `trace` or `off`. Overrides `log.level` in a config file; `-c` and `--log-level` override it |
 | `DATUI_DEBUG` | `1` shows the debug overlay |
-| `DATUI_GCP_PROJECT` | The Google Cloud project to list when projects cannot be searched, as `GOOGLE_CLOUD_PROJECT` |
-| `DATUI_TRACE_FIRST_ROWS` | A file to write the time to, in Unix nanoseconds, once the first rows are drawn. For benchmarks |
+| `DATUI_GCP_PROJECT` | The Google Cloud project to list when projects cannot be searched. Like `GOOGLE_CLOUD_PROJECT`, but read first |
+| `DATUI_TRACE_FIRST_ROWS` | A file to write the time (in Unix nanoseconds) to once the first rows are drawn. For benchmarks |
 
 ## Terminal
 
 | Variable | What it does |
 |---|---|
-| `NO_COLOR` | Set to anything: no colors, the terminal's own for everything |
-| `COLORTERM`, `TERM`, `FORCE_COLOR` | How many colors the terminal draws: 24-bit, 256 or 16. Theme colors are brought down to fit |
+| `NO_COLOR` | Set to anything to turn off colors: the terminal's own are used for everything |
+| `COLORTERM`, `TERM`, `FORCE_COLOR` | How many colors the terminal draws: 24-bit, 256 or 16. Theme colors are reduced to fit |
 | `COLORFGBG` | With `theme.mode = "auto"`, says whether the background is light or dark, for a terminal that does not answer when asked |
-| `TERM_PROGRAM` | With `theme.mode = "auto"`, names the terminal whose last answer about its background picks the first frame's theme; `TERM` when unset |
-| `LC_ALL`, `LC_CTYPE`, `LANG` | With `display.unicode = "auto"`, the first one set says whether the terminal takes UTF-8; when it does not, glyphs are ASCII. With none set, Windows draws Unicode and other systems ASCII |
+| `TERM_PROGRAM` | With `theme.mode = "auto"`, identifies the terminal, so its last answer about its background picks the first frame's theme; `TERM` is used when it is unset |
+| `LC_ALL`, `LC_CTYPE`, `LANG` | With `display.unicode = "auto"`, the first one set says whether the terminal takes UTF-8; if it does not, glyphs are ASCII. With none set, Windows gets Unicode and other systems ASCII |
 
 ## Programs datui starts
 

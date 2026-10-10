@@ -12,10 +12,10 @@ lists the prerequisites):
 
 On Windows without Git Bash, run `python scripts\setup_dev.py`, which is what
 `setup` runs. It creates `.venv` (with uv when installed, otherwise
-`python -m venv`), installs `scripts/requirements.txt` and the linters CI runs
-(ruff and typos), installs the pre-commit hooks (not from a `git worktree add`
-checkout, which shares the main one's) and generates the test fixtures.
-Rerunning it is cheap.
+`python -m venv`) and installs `scripts/requirements.txt` and the linters CI runs
+(ruff and typos). It also installs the pre-commit hooks and generates the test
+fixtures. It skips the hooks in a `git worktree add` checkout, which shares the
+main checkout's hooks. Rerunning it is cheap.
 
 | Option | Adds |
 |---|---|
@@ -25,12 +25,12 @@ Rerunning it is cheap.
 | `--no-hooks` | Skips the pre-commit hooks |
 
 `.venv/` is gitignored, and the test harness and scripts find
-`.venv/bin/python` on their own, so it need not be activated.
+`.venv/bin/python` on their own, so you don't need to activate it.
 
 ## Commands
 
-`./scripts/dev/test.sh` is the one entry point; `--help` lists every command
-and `--print` shows what one runs. Each check CI makes has one:
+`./scripts/dev/test.sh` runs every check. `--help` lists its commands, and
+`--print` shows what a command runs. Each CI check has a local command:
 
 | CI checks | Locally |
 |---|---|
@@ -51,7 +51,7 @@ hand.
 |---|---|---|
 | `cargo-fmt` | `scripts/dev/test.sh fmt --check` | Run `scripts/dev/test.sh fmt`, stage the changes |
 | `cargo-clippy` | `scripts/dev/test.sh clippy` | Fix the warnings; never add an `#[allow]` |
-| `check-added-large-files`, `trailing-whitespace` | pre-commit's own | As it says |
+| `check-added-large-files`, `trailing-whitespace` | pre-commit's own | Follow its message |
 
 ## Before opening a pull request
 
@@ -65,10 +65,10 @@ hand.
 [ruff](https://docs.astral.sh/ruff/) on the Python scripts (`ruff.toml`),
 [shellcheck](https://www.shellcheck.net) on the shell scripts and
 [typos](https://github.com/crate-ci/typos) on everything (`_typos.toml` holds
-the words spelled on purpose), each only when installed, `.venv`'s copy first.
-`setup` installs ruff and typos into `.venv` at CI's versions
-(`scripts/requirements-lint.txt` and `.github/tool-versions`); shellcheck is
-yours to install, and CI uses the runner image's. Then:
+the words spelled on purpose). Each linter runs only when installed, and
+`.venv`'s copy comes first. `setup` installs ruff and typos into `.venv` at CI's
+versions (`scripts/requirements-lint.txt` and `.github/tool-versions`). Install
+shellcheck yourself; CI uses the runner image's copy. Then:
 
 | Changed | Also |
 |---|---|
@@ -94,14 +94,14 @@ pull request with whatever the new clippy asks for. CI's MSRV job checks
 
 ## CI setup
 
-Jobs set up through `.github/actions/setup` (Rust, apt packages, the cargo
+CI jobs set up their environment through `.github/actions/setup` (Rust, apt packages, the cargo
 cache, Python, the test fixtures) and install cargo tools through
 `.github/actions/install-tools`, at the versions in `.github/tool-versions`.
 
 ## Workflow timeouts
 
-Every job sets `timeout-minutes`, and every apt step its own 5-minute limit, so
-a hang fails fast instead of holding a required check. Size a job's limit at
+Every job sets `timeout-minutes`, and every apt step has its own 5-minute
+limit, so a hang fails fast instead of holding a required check. Size a job's limit at
 1.5× its slowest recent run or more (`gh run list --workflow FILE --limit 50`,
 then `gh run view RUN_ID --json jobs`).
 

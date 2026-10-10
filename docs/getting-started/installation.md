@@ -23,12 +23,13 @@ The script installs the latest release for your platform:
 |---|---|
 | Debian, Ubuntu | Adds the [apt repository](#apt-repository) and its signing key with `sudo`, then installs the package with apt; `apt upgrade` keeps it current |
 | Fedora, RHEL, Amazon Linux | Adds the [dnf repository](#dnf-repository) with `sudo`, then installs the package with dnf; `dnf upgrade` keeps it current |
-| Arch Linux and derivatives, x86_64 | Asks, then installs `datui-bin` from the AUR with `yay` or `paru`; pacman owns it and the helper upgrades it. With neither, it says how and offers the archive |
+| Arch Linux and derivatives, x86_64 | Asks, then installs `datui-bin` from the AUR with `yay` or `paru`. pacman tracks the package and the helper upgrades it. Without either helper, it says how to install from the AUR and offers the release archive |
 | Other Linux, macOS | Unpacks the release archive: `datui` into `/usr/local/bin`, the manual pages into `/usr/local/share/man` |
 
-It checks each download against the release's `SHA256SUMS`, asks before it
-changes apt or dnf or runs an AUR helper (with no terminal to ask on, it goes ahead),
-and runs the installed binary before it reports success. Options go after `sh -s --`:
+The script checks each download against the release's `SHA256SUMS`. It asks
+before it changes apt or dnf or runs an AUR helper; with no terminal to ask on,
+it goes ahead. It runs the installed binary before it reports success. Pass
+options after `sh -s --`:
 
 | Option | Effect |
 |---|---|
@@ -68,9 +69,10 @@ curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/inst
 
 Homebrew needs `brew trust` before it will install from a third-party tap. The
 pip package installs the `datui` command and the [Python module](../user-guide/python-module.md).
-`cargo install` compiles datui, which takes a C compiler and some minutes; with
-[cargo-binstall](https://github.com/cargo-bins/cargo-binstall) installed,
-`cargo binstall datui` fetches the release archive for your platform instead.
+`cargo install` compiles datui, which needs a C compiler and takes several
+minutes. With [cargo-binstall](https://github.com/cargo-bins/cargo-binstall)
+installed, `cargo binstall datui` downloads the release archive for your
+platform instead.
 
 ### Apt repository
 
@@ -155,7 +157,7 @@ cargo build --release --locked --no-default-features --features sql,streaming
 | `http` | HTTP(S) URLs fail to open |
 | `sql` | The command line has no `sql:`; a view saved with SQL fails to apply |
 | `sqlite` | SQLite databases fail to open |
-| `streaming` | No Polars streaming engine: an export reads the whole view first, and a Data Quality read runs to its end on <kbd>Esc</kbd> |
+| `streaming` | No Polars streaming engine: an export reads the whole view first, and a Data Quality read runs to its end even after <kbd>Esc</kbd> |
 
 Example datasets lists only what the build can open.
 
@@ -164,11 +166,11 @@ Example datasets lists only what the build can open.
 The `.deb`, `.rpm`, AUR package, Homebrew formula and release archives install
 the [manual pages](../reference/manual-pages.md): `man datui`, `man
 datui-config`, `man 5 datui-config`, `man datui-keys`. `pip install datui` puts
-them in the environment's `share/man`, which `man` searches while its `bin` is
-on your `PATH`.
+them in the environment's `share/man`, which `man` searches when the
+environment's `bin` is on your `PATH`.
 
-After `cargo install` or a build from source, `datui man` shows them, and this
-installs them where `man` finds them for your user:
+After `cargo install` or a build from source, `datui man` shows them. To
+install them where `man` finds them for your user:
 
 ```bash
 datui man --dir ~/.local/share/man
@@ -179,9 +181,9 @@ datui man --dir ~/.local/share/man
 ## Shell completions
 
 The packages, Homebrew and the release archives (`completions/`) install the
-completion scripts for bash, zsh and fish. Otherwise `datui completions SHELL`
-prints the script for the flags, commands and format names. Set it up once per
-shell:
+completion scripts for bash, zsh and fish. Otherwise, `datui completions SHELL`
+prints a script that completes flags, commands and format names. Set it up once
+per shell:
 
 | Shell | Setup |
 |---|---|
@@ -199,15 +201,15 @@ winget install derekwisong.datui
 
 | | On Windows |
 |---|---|
-| Terminal | Windows Terminal and the classic console window draw 24-bit color; with "Use legacy console" checked, 16 colors. Both draw datui's Unicode glyphs whatever the code page; `[display] unicode = "never"` draws ASCII ([Glyphs or ASCII](../user-guide/configuration.md#glyphs-or-ascii)) |
+| Terminal | Windows Terminal and the classic console window draw 24-bit color; with "Use legacy console" checked, 16 colors. Both draw datui's Unicode glyphs with any code page; `[display] unicode = "never"` draws ASCII ([Glyphs or ASCII](../user-guide/configuration.md#glyphs-or-ascii)) |
 | Config file | `%APPDATA%\datui\config.toml` |
 | Format specs | `%APPDATA%\datui\formats` ([Format specs](../formats/format-specs.md)) |
 | Cache and log | `%LOCALAPPDATA%\datui` |
 | `~` | `datui ~\data\a.csv` opens from your user folder in cmd and PowerShell too |
 | Mouse | <kbd>Shift</kbd>+drag selects text in Windows Terminal while datui has the mouse ([Mouse and text selection](../user-guide/configuration.md#mouse-and-text-selection)) |
 | Globs | cmd and PowerShell pass `*.csv` to datui as typed; quote it in Git Bash, as on Linux |
-| A file open in another program | A spreadsheet app or database that holds a file exclusively stops datui reading it: datui says so. Close it there and reopen |
-| A file datui has open | datui reads files through memory maps, and Windows lets no program truncate, rename or delete a file while it is mapped. A program rotating a log datui has open can fail; close it in datui first (<kbd>Ctrl+O</kbd> or <kbd>q</kbd>) |
+| A file open in another program | If a spreadsheet app or database holds a file exclusively, datui cannot read it and says so. Close the file in that program and open it again |
+| A file datui has open | datui reads files through memory maps, and Windows lets no program truncate, rename or delete a file while it is mapped. So a program that rotates a log datui has open can fail; close the file in datui first (<kbd>Ctrl+O</kbd> or <kbd>q</kbd>) |
 
 ## Uninstall
 

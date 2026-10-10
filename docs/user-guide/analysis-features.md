@@ -3,12 +3,12 @@
 <kbd>a</kbd> opens Analysis: Describe, Distribution, Correlation Matrix and
 Data Quality, over a sample of the table.
 
-A list of tools sits on the right: <kbd>↑</kbd> <kbd>↓</kbd> pick a tool and
-<kbd>Enter</kbd> opens it, moving into its pane. <kbd>Tab</kbd> or
+A list of tools sits on the right. <kbd>↑</kbd> <kbd>↓</kbd> pick a tool, and
+<kbd>Enter</kbd> opens it and moves into its pane. <kbd>Tab</kbd> or
 <kbd>Shift+Tab</kbd> moves between the list and the result. <kbd>Esc</kbd> in the
 result goes back to the list, and <kbd>Esc</kbd> there returns to the table.
-Results last while the table shows the same rows: <kbd>a</kbd> again shows them as
-you left them.
+Results are kept while the table shows the same rows, so <kbd>a</kbd> again
+shows them as you left them.
 
 Analysis runs on the data as you see it, after any query and filters, unless
 the [sample](#sampling) is set to read the source.
@@ -19,9 +19,9 @@ Summary statistics per column, like Polars'
 [`describe`](https://docs.pola.rs/api/python/stable/reference/dataframe/api/polars.DataFrame.describe.html):
 count, nulls, mean, standard deviation, min, 25th percentile, median, 75th
 percentile and max. Date, datetime, time and duration columns get all of them
-but the standard deviation, written as the table writes them; text columns get
-min and max. When they do not all fit, the header counts those out of view
-(`+4 →`) and <kbd>←</kbd> <kbd>→</kbd> scroll to the last. Distribution scrolls
+except the standard deviation, formatted as the table shows them. Text columns
+get min and max. When the columns do not all fit, the header counts the ones
+out of view (`+4 →`), and <kbd>←</kbd> <kbd>→</kbd> scroll to them. Distribution scrolls
 its columns the same way.
 
 On **NYC yellow taxis (January 2025)**, 3,475,226 trips: press <kbd>a</kbd>,
@@ -36,15 +36,15 @@ part of the data. `passenger_count` and four other columns have 16,000 nulls.
 Compares each numeric column against fourteen distributions — Normal, Log-Normal,
 Uniform, Power Law, Exponential, Beta, Gamma, Chi-Squared, Student's t,
 Poisson, Bernoulli, Binomial, Geometric and Weibull — and names the one the
-values are consistent with, along with the Shapiro-Francia normality statistic
-and p-value, coefficient of variation, outlier count (past 1.5 IQR from the
-quartiles or 3 standard deviations from the mean, over every value in the
-sample), skewness and kurtosis.
+values are consistent with. It also gives the Shapiro-Francia normality
+statistic and p-value, the coefficient of variation, the outlier count (values
+past 1.5 IQR from the quartiles or 3 standard deviations from the mean, over
+every value in the sample), skewness and kurtosis.
 
 | What | How |
 |---|---|
 | Parameters | Maximum likelihood for normal, log-normal, uniform, exponential, gamma (Minka's approximation), beta, Weibull, power law (from the smallest value), Poisson, Bernoulli and geometric; moments for chi-squared, Student's t and binomial |
-| P-value | Kolmogorov-Smirnov on up to 500 values, calibrated by 199 samples drawn from the fit and refitted, so estimating the parameters from the data is accounted for. `<0.005` when none of the samples came close |
+| P-value | Kolmogorov-Smirnov on up to 500 values, calibrated with 199 samples drawn from the fit and refitted, which accounts for the parameters being estimated from the same data. `<0.005` when none of the samples came close |
 | Verdict | Among the families not rejected (p of 0.01 or more), the lowest AIC; a simpler family that holds is named instead unless the richer one is decisively better (AIC 10 or more lower). `No clear fit` when every family is rejected |
 | `n/a` | The family cannot describe the values: a log-normal of negative values, a Poisson of fractions |
 
@@ -73,9 +73,9 @@ histogram need not match any family.
 Press <kbd>Enter</kbd> on a column for the detail view: the verdict, then a Q-Q
 plot and a histogram comparing the values with the family chosen in the list,
 drawn with that family's fitted parameters. <kbd>↑</kbd> <kbd>↓</kbd> choose
-another family to compare with, which does not change the verdict; <kbd>s</kbd>
-toggles the histogram between linear and log scale; <kbd>Esc</kbd> returns to
-the table.
+another family to compare with, which does not change the verdict.
+<kbd>s</kbd> toggles the histogram between linear and log scale, and
+<kbd>Esc</kbd> returns to the table.
 
 | Detail | Shows |
 |---|---|
@@ -86,8 +86,8 @@ the table.
 | Histogram | The values in bins, with the chosen family's density drawn over them in the theme's secondary series color |
 | Distributions | Each family with its p-value, highest first; choosing an `n/a` family says why |
 
-The list's last row names the histogram's scale. Log needs positive values:
-asked for on others, the histogram stays linear and the scale reads `Linear`
+The list's last row names the histogram's scale. Log needs positive values. If
+the column has others, the histogram stays linear and the scale reads `Linear`
 in the warning color.
 
 On the same taxi sample, every column reads `No clear fit`, which is honest
@@ -98,31 +98,32 @@ as Describe does.
 ## Correlation matrix
 
 Pairwise correlations between every numeric column, colored by strength.
-Move around with the arrow keys and press <kbd>Enter</kbd> on a cell for the
-pair: the coefficient with a plain reading of it, R², the p-value, and how
-many row pairs it was computed from, out of the total rows.
+Move around with the arrow keys and press <kbd>Enter</kbd> on a cell for that
+pair's detail: the coefficient with a plain reading of it, R², the p-value, and
+how many row pairs it was computed from, out of the total rows.
 <kbd>Enter</kbd> on a diagonal cell does nothing. Correlation is undefined for
-a constant column. <kbd>r</kbd> draws a new sample from the matrix, not from
-inside the pair's detail.
+a constant column. <kbd>r</kbd> draws a new sample from the matrix, but not
+from a pair's detail.
 
 | Key | Action |
 |---|---|
 | <kbd>m</kbd> | Method: Pearson r or Spearman ρ, named in the title |
 | <kbd>Enter</kbd> | The selected pair |
 
-Spearman is Pearson's r of the ranks: it reads any relation that only rises
-or only falls, where Pearson reads a straight line. Both use the rows where
-the two columns hold a value, and both come from the one run, so
-<kbd>m</kbd> reads nothing. Spearman ranks at most 64 Mi values (rows times
-numeric columns); past that, as when every row of a large table is read, the
-matrix has Pearson only and <kbd>s</kbd> chooses a smaller sample.
+Spearman is Pearson's r computed on ranks: it finds any relation that only
+rises or only falls, while Pearson finds a straight line. Both use the rows
+where the two columns have a value. Both come from the same run, so
+<kbd>m</kbd> switches without reading the data again. Spearman ranks at most
+about 67 million values (64 Mi, rows times numeric columns). Past that, as when
+every row of a large table is read, the matrix shows Pearson only; press
+<kbd>s</kbd> to choose a smaller sample.
 
 Cells show three decimal places and the pair four. A value that would round
 to 1 but is not exactly 1 shows as 0.999 (0.9999 in the pair), so 1.000
 always means a perfect relation.
 
-On **Palmer penguins**, first hide `rownames`, the host's row number, so it is
-not treated as a measurement: <kbd>s</kbd>, <kbd>Tab</kbd>, <kbd>↓</kbd>,
+On **Palmer penguins**, first hide `rownames`, a row number added by the
+dataset's publisher, so it is not treated as a measurement: <kbd>s</kbd>, <kbd>Tab</kbd>, <kbd>↓</kbd>,
 <kbd>v</kbd>, <kbd>Enter</kbd>. Then <kbd>a</kbd>, **Correlation Matrix**,
 <kbd>Enter</kbd> to read all 344 rows. `flipper_length_mm` against
 `body_mass_g` is r = 0.871, strong positive, from 342 of 344 rows.
@@ -147,14 +148,14 @@ definitions.
 
 Every analysis tool reads the same sample: which rows, how they are picked,
 how many, and the seed. The first tool you run on a dataset shows the
-**Sample** form in its pane with the cursor in it: change a setting or press
-<kbd>Enter</kbd> to run with the form as it stands; <kbd>Esc</kbd> goes back to
-the tool list. After that, every tool you pick runs at once on the same sample. A
-value the data does not hold, or rows that match nothing, is refused with what
-the data does hold. <kbd>s</kbd> opens the form again from any tool;
-<kbd>Enter</kbd> applies it and runs the tool on screen again, and
-<kbd>Esc</kbd> discards the edit. The other tools' results go with the old
-sample, so switching tools compares like with like. The header says what was
+**Sample** form in its pane, with the cursor in it. Change a setting, or press
+<kbd>Enter</kbd> to run with the form as it is; <kbd>Esc</kbd> goes back to the
+tool list. After that, every tool you pick runs at once on the same sample. A
+value the data does not hold, or a choice that matches no rows, is refused, and
+the form shows what the data does hold. <kbd>s</kbd> opens the form again from
+any tool: <kbd>Enter</kbd> applies it and runs the tool on screen again, and
+<kbd>Esc</kbd> discards the edit. The other tools' results from the old sample
+are dropped, so switching tools always compares like with like. The header says what was
 read: `Describe · sample of 100,000 of 36,839,175 rows · source year=2020..2022`.
 
 | Setting | Choices |
@@ -162,15 +163,15 @@ read: `Describe · sample of 100,000 of 36,839,175 rows · source year=2020..202
 | Rows from | **All rows** (the table as shown, with its count), **The source, unfiltered** (only when a filter or query changes the rows), **Partitions**, **Files**, **Row range**, **Time range**; a choice appears only when the table has it |
 | Method | **Random** (default), **Equal per value**, **First rows**, **Every row** |
 | Per value of | For Equal per value: the column to split by; partition columns come first |
-| Sample size | Rows, or rows per value for Equal per value, typed over the one shown: `50000`, `50,000`, `50k`, `250k`, `2m`. Read on <kbd>Enter</kbd>; a size that is not one says why. The default is `[analysis] sample_rows` |
+| Sample size | Rows, or rows per value for Equal per value, typed over the one shown: `50000`, `50,000`, `50k`, `250k`, `2m`. Read on <kbd>Enter</kbd>; an invalid size says why. The default is `[analysis] sample_rows` |
 | Random seed | For Random and Equal per value: any whole number, typed over the one shown; the same seed reads the same rows, so `0` or `1` is a sample anyone can repeat. <kbd>r</kbd> draws a new one |
 
-Each kind of rows brings its own settings, with what it needs to know:
+Each **Rows from** choice adds its own settings:
 
 | Rows from | Settings |
 |---|---|
 | Partitions | **Partition**: the column. **Values**: one value, a list (`2019,2021`) or an inclusive range (`2020..2022`) compared in the column's own type; the values the source holds are listed under it |
-| Files | **Files**: their numbers, like `1,3`; the numbered files are listed under it and ticked as they are typed, <kbd>PgUp</kbd> <kbd>PgDn</kbd> scrolls |
+| Files | **Files**: their numbers, like `1,3`; the files are listed under it, numbered, and ticked as you type; <kbd>PgUp</kbd> <kbd>PgDn</kbd> scroll the list |
 | Row range | **From row** and **To row**, inclusive and 1-based, in the order the table shows; it starts as the whole table |
 | Time range | **Column**, **From** and **Before**: dates or RFC 3339 timestamps, the Before date not included |
 
@@ -191,22 +192,22 @@ Partitions, files and time ranges read the source, ignoring the query and filter
 | <kbd>a</kbd> | Read every row, after confirming the count; sets the method to Every row |
 | <kbd>Esc</kbd> | Cancel a run in progress |
 
-How a spread sample is read depends on the source:
+How a **Random** sample is read depends on the source:
 
 | Source | Sample | Reads |
 |---|---|---|
-| One Parquet or IPC file, unfiltered | 50 runs of rows at seeded places across it | The row groups those runs fall in |
+| One Parquet or IPC file, unfiltered | 50 blocks of consecutive rows at seeded places across it | Only the row groups those blocks fall in |
 | Anything else: a directory or hive table, a filter, a query, CSV | A seeded uniform sample, kept while the rows stream past | Every row once, holding only the sample |
 
-The sort is left out of an analysis read: no statistic depends on it. While a
+Analysis ignores the sort, since no statistic depends on it. While a
 cancelled run is still finishing, no tool starts another read: <kbd>a</kbd>,
-<kbd>r</kbd>, <kbd>v</kbd> and a new run wait. Data Quality reads the same
+<kbd>r</kbd>, <kbd>v</kbd> and new runs wait for it. Data Quality reads the same
 sample, at the same size, as every other tool.
 
-A view with its own [sample](sampling.md) (<kbd>S</kbd> at the table) is read
-whole by every tool: the header says `Reads the view's sample 100,000 of
+When the view has its own [sample](sampling.md) (<kbd>S</kbd> at the table),
+every tool reads all of it. The header says `Reads the view's sample 100,000 of
 3.48M`, and <kbd>s</kbd> edits the view's sample, drawing it again before the
-tool runs; **Every row** there takes it away.
+tool runs. Choosing **Every row** there removes the view's sample.
 
 The sample's starting size is [`analysis.sample_rows`](../reference/settings.md#analysis);
 `0` starts at every row. For one run, `--sample-rows N`:

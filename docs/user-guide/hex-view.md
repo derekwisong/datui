@@ -6,20 +6,20 @@ reader for, and to work out the layout of a [format spec](../formats/format-spec
 
 | Opens it | |
 |---|---|
-| A local file no reader and no spec takes | Opens here instead of failing |
+| A local file that no reader or format spec handles | Opens here instead of failing |
 | <kbd>Enter</kbd> on a `binary` row of the home screen | Rows shown with <kbd>Ctrl</kbd>+<kbd>A</kbd> |
 | <kbd>Ctrl</kbd>+<kbd>X</kbd> on the home screen | Any local file under the cursor |
 | <kbd>x</kbd> in the Info panel | The dataset's file, when it is one local file |
 | `datui --hex FILE` | Any local file |
 
 The file is memory-mapped, never read whole: drawing reads only the rows on
-screen, and a find reads the file on a worker. A file of many gigabytes opens
+screen, and a find reads the file in the background. A file of many gigabytes opens
 at once.
 
 ## Find a record's length
 
-This makes `feed.bin`, 500 records of 25 bytes that each start with `SYNC`,
-and opens it:
+This script makes `feed.bin`, 500 records of 25 bytes that each start with
+`SYNC`, and the commands after it open the file:
 
 **`make_feed.py`**
 
@@ -64,10 +64,10 @@ offset    00 01 02 03  04 05 06 07   08 09 0a 0b  0c 0d 0e 0f   10 11 12 13  14 
 0x19 of 0x30d4 · 0.2% · found SYNC · every 25 bytes · format unknown
 ```
 
-Bytes 4 to 11 count up in each record: a little-endian `u8` field, in a
+Bytes 4 to 11 count up in each record: a little-endian `u64` field, in a
 [format spec](../formats/format-specs.md)'s types. The byte inspector reads
-the bytes at the cursor every way at once, which is how the rest of the
-layout is found.
+the bytes at the cursor in every way at once; that is how you work out the
+rest of the layout.
 
 ## Layout
 
@@ -79,9 +79,9 @@ layout is found.
 | About 300 columns | 64 |
 | Under 50 columns | As many as fit, without the ASCII column |
 
-The byte inspector sits beside the bytes when there is room for it and 16 bytes
-per row; elsewhere <kbd>i</kbd> opens it under them, in at most half the rows,
-counting the readings that do not fit. <kbd>r</kbd> or
+The byte inspector sits beside the bytes when there is room for it alongside
+16 bytes per row. Otherwise <kbd>i</kbd> opens it under the bytes, in at most
+half the screen's rows, with a count of the readings that do not fit. <kbd>r</kbd> or
 `--hex-width N` fixes the bytes per row (1 to 4096) so that records line up;
 a row wider than the screen shows the part the cursor is in.
 
@@ -97,13 +97,13 @@ byte that is not printable is `·` (`.` on a terminal without Unicode).
 | <kbd>f</kbd>, <kbd>n</kbd> <kbd>N</kbd> | [Find](#find); the next and previous match, round the end of the file |
 | <kbd>:</kbd> | [Go to an offset](#go-to-an-offset) |
 | <kbd>R</kbd> | Make the distance between matches the bytes per row |
-| <kbd>r</kbd> | Bytes per row; empty for as many as fit |
+| <kbd>r</kbd> | Set the bytes per row; leave it empty for as many as fit |
 | <kbd>i</kbd> <kbd>Enter</kbd> | Show or hide the [byte inspector](#the-byte-inspector) |
 | <kbd>v</kbd> | Mark a range from the cursor; the status line counts it |
 | <kbd>B</kbd> | Read the file with a format spec |
-| <kbd>Esc</kbd> | Stop a find; close the byte inspector or the mark; then back to where it came from |
+| <kbd>Esc</kbd> | Stop a find, close the byte inspector, or clear the mark; otherwise go back to where the hex view was opened from |
 
-Moving takes vim's keys (`h` `j` `k` `l`, `w` `b`, `0` `$`, `g` `G`); the [keyboard reference](../reference/keyboard-shortcuts.md#hex-view)
+Movement uses vim's keys (`h` `j` `k` `l`, `w` `b`, `0` `$`, `g` `G`); the [keyboard reference](../reference/keyboard-shortcuts.md#hex-view)
 has every key.
 
 ## Go to an offset
@@ -131,7 +131,7 @@ a find still reading a large file.
 
 ## The byte inspector
 
-At the cursor, little-endian and big-endian side by side:
+The byte inspector reads the bytes at the cursor, little-endian and big-endian side by side:
 
 | Reading | |
 |---|---|

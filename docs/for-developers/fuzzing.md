@@ -8,15 +8,15 @@ Datui fuzzes the hand-written parsers and matchers that run on untrusted input, 
 | Target | Surface | What it checks |
 | --- | --- | --- |
 | `parse_query` | `query::parse_query` | A tokenizer and recursive-descent parser that slices token vectors by index. Malformed input must return `Err`, never panic. |
-| `sql_group_plan` | `sql_group::plan` | Reads every SQL statement to decide whether a `GROUP BY` result drills: resolves keys by ordinal, alias and expression and writes a statement of its own. Any text must give a plan or `None`, never panic. |
+| `sql_group_plan` | `sql_group::plan` | Reads each SQL statement to decide whether a `GROUP BY` result can be drilled down. It resolves keys by ordinal, alias and expression, and writes its own statement. Any text must give a plan or `None`, never panic. |
 | `number_format` | `numfmt::NumberFormat` | `width_*` computes a display width arithmetically, `write_*` renders into a fixed 64-byte stack buffer and returns the width it produced. The two must agree, and both must equal the characters actually appended. Table columns are sized from these numbers, so a disagreement corrupts the layout instead of failing visibly. |
 | `fuzzy_match` | `fuzzy::best_match` | Returned positions must be valid, strictly ascending character indices into the haystack, one per needle character. The home screen highlights matches by indexing with them. |
 | `glob_match` | `numfmt::Glob` | A backtracking wildcard matcher, checked for hangs and for its wildcard-free fast path agreeing with equality. |
-| `ipc_stream_head` | `ipc_stream::is_stream_head`, `stdin::sniff` | Reads a length from a file's first bytes and checks the flatbuffer it names is an Arrow schema message, on any file being opened and any pipe. Any bytes must give an answer, never a panic (Polars' own schema reader panics on some column types), and a pipe that is a stream must be read as one. |
+| `ipc_stream_head` | `ipc_stream::is_stream_head`, `stdin::sniff` | Runs on every file being opened and every pipe: reads a length from the first bytes and checks that the flatbuffer it points to is an Arrow schema message. Any bytes must give an answer, never a panic (Polars' own schema reader panics on some column types), and a pipe that is a stream must be read as one. |
 | `config_parse` | `config::AppConfig`, `config::ColorParser` | Validation and merging of user TOML, and color strings that get sliced by byte offset after a byte-length check. |
 | `audio_header` | `audio::read_header`, `audio::AudioSource` | The WAV, RF64 and AIFF chunk walker, which slices by sizes, counts and offsets the file states, and the sample decoder, which reads at offsets worked out from the header. A corrupt header must be an error, never a panic or an allocation sized by the file; a header that parses must give frames inside the file, and decoding them must work. |
 | `midi_file` | `midi::parse`, `midi::build` | A hand-written Standard MIDI File parser that slices by chunk lengths, variable-length deltas and event lengths read from the file, and keeps running status between events. A corrupt file must be an error, never a panic or an allocation sized by the file; a file that parses must build its table, one row per event. |
-| `model_header` | `model_files::read_safetensors`, `model_files::read_gguf`, `model_files::read_header_ranged_from` | Hand-written readers for model file headers that allocate and skip by lengths read from the file. Every input goes to both; a corrupt header must be an error, never a panic or an allocation sized by the file, and a header that parses must build its table. Read again by range, in ranges of a few bytes, each finds the same header or fails as the file reader does. |
+| `model_header` | `model_files::read_safetensors`, `model_files::read_gguf`, `model_files::read_header_ranged_from` | Hand-written readers for model file headers that allocate and skip by lengths read from the file. Every input goes to both; a corrupt header must be an error, never a panic or an allocation sized by the file, and a header that parses must build its table. Read again in ranges of a few bytes, it finds the same header, or fails as the file reader does. |
 | `format_spec` | `formats::Spec`, `fixed_records` | A binary format spec and a file it reads, split at the first NUL byte. A spec parses or fails with a line and column; a file reads or fails; every row the reader counts decodes, and a window of the rows matches the same rows read from the start. |
 | `gps_parse` | `gps::nmea::NmeaReader`, `gps::gpx::GpxReader` | Hand-written readers for GPS logs that take the file a piece at a time. The first byte picks the NMEA table and the size of the pieces, so every line, tag and entity is cut somewhere. Never a panic, a frame of another schema, or a coordinate off the globe; every length is bounded by the reader. |
 | `vcd_parse` | `vcd::VcdReader` | A hand-written reader of VCD tokens that takes the file a piece at a time, with token, header text, scope depth and signal bounds. The first byte picks the piece size. Never a panic or a batch of another schema; the rows add up and the header stays within its bounds. |
@@ -24,9 +24,9 @@ Datui fuzzes the hand-written parsers and matchers that run on untrusted input, 
 | `fix_dict` | `fix::dict::Dictionary` | QuickFIX XML data dictionaries, read by a hand-written scanner of tags and attributes, and the TOML form. Any text must parse or fail, never panic, and a dictionary that parses keeps its names within bounds. |
 | `sdf_parse` | `sdf::SdfReader` | A hand-written reader of SDF records a piece at a time, with line, value and field bounds. The first byte picks the piece size. Never a panic; the rows add up to the records and no value passes its bound. |
 | `can_parse` | `dbc::parse`, `candump::index`, `candump::Decoded` | A DBC dictionary and a candump log, split at the first NUL. DBC statements are read across lines with bounded counts and lengths; each line of the log is read as a frame; each message the dictionary names is decoded from its frames, Intel and Motorola bits, signed and multiplexed. Never a panic, and every decoded table has a row per frame. |
-| `text_lines` | `lines::guess`, `lines::LineIndex`, `lines::Lines` | What text no signature claims is (JSON, CSV or TSV on evidence, lines otherwise), from a head whole or cut anywhere, and the line index over it. Any bytes must give an answer, never a panic; the index has a row per line, the same whether built at once or read on as the bytes grow, and every row decodes. |
+| `text_lines` | `lines::guess`, `lines::LineIndex`, `lines::Lines` | Guesses what text that no signature claims is (JSON, CSV or TSV when the bytes show it, plain lines otherwise), from a whole head or one cut anywhere, and builds the line index over it. Any bytes must give an answer, never a panic; the index has a row per line, the same whether built at once or read on as the bytes grow, and every row decodes. |
 | `elf_symbols` | `elf::read`, `elf::demangle` | ELF headers, section headers and symbol tables read by the `object` crate at offsets and sizes the file gives, and the rows and Info tab built from them. A corrupt file must be an error, never a panic or an allocation sized by the file; a file that reads gives its two tables. |
-| `flight_log` | `ulog::index`, `dataflash::index`, `indexed::IndexedRecords` | ULog and DataFlash logs walked by the sizes and type ids they give, their message types defined by their own format records; the first byte picks the reader. A corrupt log must be passed over or end the pass, never a panic or an allocation sized by the file, and every message the index records decodes. |
+| `flight_log` | `ulog::index`, `dataflash::index`, `indexed::IndexedRecords` | ULog and DataFlash logs walked by the sizes and type ids they give, their message types defined by their own format records; the first byte picks the reader. Corrupt data must be skipped or end the pass, never a panic or an allocation sized by the file, and every message the index records decodes. |
 | `numpy_header` | `numpy::parse_literal`, `numpy::parse_header`, `numpy::open_in` | The `.npy` header's Python dict literal, parsed by hand, and the structured types in it, whose offsets, itemsizes and subarray shapes come from the file. A corrupt header must be an error, never a panic or an allocation sized by the file; a header that parses must give columns inside the bytes on hand, and its rows must decode. |
 | `hex_input` | `hex_view::parse_offset`, `hex_view::parse_pattern`, `hex_view::find` | The hex view's offset and byte-pattern parsers and its search, on what was typed (up to the first NUL) and the file after it. An offset that parses is inside the file, a pattern that parses fits its bound, every match reported is one and the first is the one a plain scan finds, and the byte inspector reads any bytes without a panic. |
 
@@ -42,7 +42,7 @@ The test decodes each input as libfuzzer-sys does (`Arbitrary::arbitrary_take_re
 over `Unstructured`), runs the empty input as libFuzzer does, and fails on any panic,
 even one the code catches, as the fuzzer's panic hook does. Its decoding matches the fuzzer's only while `Cargo.lock` and `fuzz/Cargo.lock` resolve the
 same `arbitrary`; the test checks that too. Put new checks in `run`. A new target needs
-a line in the test, which fails until its corpus is replayed.
+a line in the test; the test fails until it replays the new target's corpus.
 
 ## Running
 
@@ -96,42 +96,35 @@ independently of Nightly. Failed replays upload crashing inputs as build artifac
 
 `fuzz/corpus/` is committed, but it is a *seed* corpus, not the full coverage corpus.
 
-The four targets that take text are seeded with inputs a person can read: `parse_query`
-from the parser's own unit tests and the query examples throughout `docs/`,
-`sql_group_plan` from the planner's unit tests, `config_parse` from the TOML blocks in
-`docs/`, and `format_spec` from the specs in the format spec pages, each with a file after it. Anything named `regression-*` is an
-input that once crashed a target, kept so the replay test notices if it ever crashes
-again.
+Anything named `regression-*` is an input that once crashed a target, kept so the
+replay test notices if it ever crashes again.
 
-The other three take structured input that `arbitrary` decodes from raw bytes, so a
-hand-written seed would mean nothing. Those directories hold a bounded sample of
-minimized inputs from a real run, capped at 64 files each.
+The targets that take text are seeded with inputs a person can read:
 
-`midi_file` takes the bytes as they are. Its seeds are small files: format 0, 1 and
-2 with running status, sysex and meta events, SMPTE timing, a RIFF MIDI wrapper, and
-a track cut short.
+| Target | Seeds |
+| --- | --- |
+| `parse_query` | The parser's own unit tests and the query examples throughout `docs/` |
+| `sql_group_plan` | The planner's unit tests |
+| `config_parse` | The TOML blocks in `docs/` |
+| `format_spec` | The specs in the format spec pages, each with a file after it |
+| `fix_dict` | A QuickFIX XML dictionary, a TOML one, and a broken one of each |
 
-`model_header` takes the bytes as they are. Its seeds are small model file headers:
-SafeTensors with and without `__metadata__`, GGUF v3 in both byte orders with strings,
-arrays and tensors of several types, and GGUF v2.
-`gps_parse` takes the bytes as they are. Its seeds are a short NMEA log (every sentence
-type it reads, a prefixed line, a vendor sentence, out-of-range coordinates) and a GPX
-file (a DOCTYPE, CDATA, entities, namespaced extensions), each behind several first
-bytes, and a nesting past the depth bound.
+`number_format`, `fuzzy_match` and `glob_match` take structured input that
+`arbitrary` decodes from raw bytes, so a hand-written seed would mean nothing.
+Their directories hold a bounded sample of minimized inputs from a real run,
+capped at 64 files each.
 
-`vcd_parse`, `fix_parse` and `sdf_parse` take the bytes as they are, behind a first
-byte that picks the piece size. Their seeds are a small dump (scopes, an alias,
-vectors, a real, `x` and `z`), a picosecond timescale and a time past `i64`; FIX
-messages with SOH, `|`, `^A` and `;` delimiters, a prefix, a repeating group, a
-length-tagged value holding the delimiter, a bad checksum and a message cut short;
-and SDF records with a blank name, V3000 counts, multi-line values and a missing
-`$$$$`. `fix_dict` takes text: a QuickFIX XML dictionary, a TOML one, and a broken
-one of each.
+These targets take the bytes as they are, and their seeds are small files:
 
-`audio_header` takes the bytes as they are too. Its seeds are tiny audio files: 16-bit
-PCM, a Broadcast WAV with `bext`, iXML, `cue ` and `LIST` chunks, extensible float with
-a channel mask, RF64 with `ds64`, 8-bit with a placeholder data size, and AIFF and
-AIFF-C (`sowt`, `fl32`) with a marker.
+| Target | Seeds |
+| --- | --- |
+| `midi_file` | Format 0, 1 and 2 with running status, sysex and meta events, SMPTE timing, a RIFF MIDI wrapper, and a track cut short |
+| `model_header` | SafeTensors headers with and without `__metadata__`, GGUF v3 in both byte orders with strings, arrays and tensors of several types, and GGUF v2 |
+| `gps_parse` | A short NMEA log (every sentence type it reads, a prefixed line, a vendor sentence, out-of-range coordinates) and a GPX file (a DOCTYPE, CDATA, entities, namespaced extensions), each behind several first bytes, and a nesting past the depth bound |
+| `vcd_parse` | Behind a first byte that picks the piece size: a small dump (scopes, an alias, vectors, a real, `x` and `z`), a picosecond timescale and a time past `i64` |
+| `fix_parse` | Behind a first byte that picks the piece size: messages with SOH, `\|`, `^A` and `;` delimiters, a prefix, a repeating group, a length-tagged value holding the delimiter, a bad checksum and a message cut short |
+| `sdf_parse` | Behind a first byte that picks the piece size: records with a blank name, V3000 counts, multi-line values and a missing `$$$$` |
+| `audio_header` | 16-bit PCM, a Broadcast WAV with `bext`, iXML, `cue ` and `LIST` chunks, extensible float with a channel mask, RF64 with `ds64`, 8-bit with a placeholder data size, and AIFF and AIFF-C (`sowt`, `fl32`) with a marker |
 
 Commit a `regression-*` input for each fixed crash. Keep routine coverage inputs
 in the fuzzing cache. Minimize any additional seeds before committing them:
@@ -173,13 +166,11 @@ CARGO_BUILD_JOBS=2 DATUI_FUZZ_SANITIZER=address ./scripts/code/fuzz.sh run parse
 
 ## Why these run on stable
 
-cargo-fuzz reaches for `-Z sanitizer`, which is normally nightly-only, and
-`scripts/code/fuzz.sh` sets `RUSTC_BOOTSTRAP=1` to allow it on stable instead.
+cargo-fuzz uses `-Z sanitizer`, which is normally nightly-only. Polars currently
+enables an incompatible internal code path on nightly, so `scripts/code/fuzz.sh`
+compiles the fuzz targets on stable and sets `RUSTC_BOOTSTRAP=1` to allow the flag.
 
-Polars currently enables an incompatible internal code path on nightly.
-The wrapper uses stable with `RUSTC_BOOTSTRAP=1` to compile the fuzz targets.
-
-If a future Polars release fixes the nightly path, the flag can be dropped and the
-scripts switched to `cargo +nightly fuzz`.
+If a future Polars release fixes the nightly path, drop the flag and switch the
+scripts to `cargo +nightly fuzz`.
 
 [cargo-fuzz]: https://github.com/rust-fuzz/cargo-fuzz

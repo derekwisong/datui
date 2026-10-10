@@ -2,30 +2,30 @@
 
 Press <kbd>Space</kbd> at the table to see every field of the current row,
 and the focused field's whole value. It opens on the field of the column
-cursor's column. <kbd>Esc</kbd> or <kbd>Space</kbd> closes it.
+under the column cursor. <kbd>Esc</kbd> or <kbd>Space</kbd> closes it.
 
-<kbd>Enter</kbd>, or a double-click on the row, opens it too, except on a row of a `by` query or a SQL
-`GROUP BY`, where <kbd>Enter</kbd>
-[drills down into the group](querying-data.md#drill-down-a-group-by) and <kbd>Space</kbd> inspects.
-Where <kbd>Enter</kbd> drills, the footer says `Enter Drill`.
+<kbd>Enter</kbd>, or a double-click on the row, opens it too. The exception is
+a row of a `by` query or a SQL `GROUP BY`: there <kbd>Enter</kbd>
+[drills down into the group](querying-data.md#drill-down-a-group-by) and
+<kbd>Space</kbd> inspects. Where <kbd>Enter</kbd> drills, the footer says
+`Enter Drill`.
 
 The title counts the rows: `Row 3 of 60`. Inside a drill-down it counts the
 group's rows and names the group, `Row 3 of 20 · region=north`, since the
 inspector covers the breadcrumb.
 
-The list takes the rows its fields need and the value the rest; when they do
-not all fit, the value keeps the lines it needs, up to half the height, and
-the list scrolls, with `… 5 above` and `… 12 more` at its ends. At 140
-columns and wider the fields and the value sit side by side at full height,
-and the fields flow into as many columns as fit: a row with more fields than
-the screen has rows narrows the value to make room for them. At 240 columns
-and wider, a row with a binary field gives the value room for a hex dump of
-32 bytes a line. The fields' rule counts
-them, `14 · 2 null · 1 empty`, and the footer offers only the keys that act
-now.
+The field list gets the lines it needs and the value gets the rest. When they
+do not all fit, the value keeps the lines it needs, up to half the height, and
+the list scrolls, with `… 5 above` and `… 12 more` at its ends. At 140 columns
+and wider, the fields and the value sit side by side at full height, and the
+fields flow into as many columns as fit; a row with more fields than the screen
+has rows narrows the value to make room for them. At 240 columns and wider, a
+row with a binary field gives the value room for a hex dump of 32 bytes a line.
+The rule over the fields counts them, `14 · 2 null · 1 empty`, and the footer
+offers only the keys that work now.
 
-The table cuts long text at the edge of its column and rounds floats to its
-preview. The inspector shows what is stored:
+The table cuts long text at the edge of its column and rounds floats for
+display. The inspector shows what is stored:
 
 | Value | Shown as |
 |---|---|
@@ -40,11 +40,11 @@ preview. The inspector shows what is stored:
 | List, struct | One item per line, text quoted |
 | Binary | Its size, `1.0 MiB (1,048,576 bytes)`, and what the first bytes say it is: PNG, JPEG or GIF with its dimensions, PDF, gzip, zstd, zip, Parquet, Arrow. UTF-8 bytes read as text; others as a hex dump |
 
-Exact means the value as Polars stored it, not the spelling in a CSV file: a
-`1.50` read from CSV is the float `1.5`.
+What is stored is the value as Polars holds it, not the spelling in a CSV
+file: a `1.50` read from CSV is the float `1.5`.
 
-A dataset a [catalog](../reference/catalogs.md#columns) documents
-says more under the value: what the field means, and what the value stands
+For a dataset a [catalog](../reference/catalogs.md#columns) documents, the
+inspector says more under the value: what the field means, and what the value stands
 for when the documentation lists it. In NOAA's weather data, `AWDR` under
 `ELEMENT` reads `AWDR = Average daily wind direction (degrees)`, and a blank
 `Q_FLAG` reads `blank = did not fail any quality assurance check`.
@@ -55,7 +55,7 @@ for when the documentation lists it. In NOAA's weather data, `AWDR` under
 |---|---|
 | <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Previous and next row; the table's cursor moves with it |
 | <kbd>Tab</kbd> <kbd>Shift+Tab</kbd> | Into the value ([below](#read-a-long-value)) |
-| <kbd>Enter</kbd> | Open a struct, a list or JSON text ([below](#drill-down-into-nested-values)), read a field the table's rows do not hold, or on a group's row drill down |
+| <kbd>Enter</kbd> | Open a struct, a list or JSON text ([below](#drill-down-into-nested-values)), read a [field the table has not read](#hidden-and-binary-columns), or drill down on a group's row |
 | <kbd>y</kbd> <kbd>Y</kbd> | Copy the value; copy the row as JSON ([below](#copy-a-field-or-the-row)) |
 | <kbd>e</kbd> <kbd>w</kbd> | The value's next [view](#views); word or hard wrap |
 | <kbd>c</kbd> <kbd>m</kbd> | [Compare](#compare-two-rows) with the next row; pin this one |
@@ -68,28 +68,28 @@ every key.
 ## Read a long value
 
 <kbd>Tab</kbd> or <kbd>Shift+Tab</kbd> moves the focus, and the `▎` rail, into
-the value. Nothing moves: the list and the value are split by what they hold, so
-a long value already has its room.
+the value. The layout stays as it is: the list and the value are already sized
+by what they hold, so a long value already has its room.
 
 | Key | Action |
 |---|---|
 | <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd> | Scroll a line |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Scroll a page |
 | <kbd>Home</kbd> <kbd>End</kbd> | The top and the end |
-| <kbd>/</kbd> | Find in the value; <kbd>n</kbd> <kbd>N</kbd> go to the next and the last place. Lowercase text ignores case |
+| <kbd>/</kbd> | Find in the value; <kbd>n</kbd> <kbd>N</kbd> go to the next and previous match. A search in lowercase ignores case |
 | <kbd>e</kbd> <kbd>w</kbd> <kbd>y</kbd> <kbd>o</kbd> | As in the fields |
 | <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Previous and next row |
 | <kbd>Esc</kbd> <kbd>Tab</kbd> | Back to the fields; <kbd>Esc</kbd> clears a find first |
 
 Only what is on screen is wrapped, so the end of a 2 MiB string or a 1 MiB
-binary is as near as its start: <kbd>Tab</kbd> <kbd>End</kbd>. The rule says
+binary is as quick to reach as its start: <kbd>Tab</kbd>, then <kbd>End</kbd>. The rule says
 where the pane is: `lines 41-73 of 4,000 · 1%` for text,
 `0x0-0x1ff of 0x100000` for bytes.
 
 Word wrap breaks between words and after `/ & ? , ; | -`, so a URL wraps at its
 separators. A long run with no spaces, such as base64, fills each row instead.
 <kbd>w</kbd> switches to hard wrap, at the pane's edge, for every value until
-pressed again.
+you press it again.
 
 ## Views
 
@@ -108,7 +108,7 @@ JSON text over 64 KiB is indented in the background; until then it shows raw,
 with `json, indenting...` on the rule. gzip and zstd are decompressed in the
 background when their Text view is chosen, with `decompressing...` on the rule
 until then; bytes that turn out to hold no text go back to Hex, and the rule
-says `not text`. Escaped text tells a line break (`\n`)
+says `not text`. Escaped text distinguishes a line break (`\n`)
 from a backslash followed by `n` (`\\n`), and shows invisible characters such
 as a no-break space as `\u{a0}`.
 
@@ -124,7 +124,7 @@ order (previous, this, next), each named over its column, and the title says
 
 <kbd>m</kbd> pins the current row: Compare then shows it beside each row you
 move to with <kbd>←</kbd> <kbd>→</kbd>, and the title says `compare with pinned 3`.
-<kbd>m</kbd> on the pinned row lets it go. <kbd>Esc</kbd> or <kbd>c</kbd>
+<kbd>m</kbd> on the pinned row unpins it. <kbd>Esc</kbd> or <kbd>c</kbd>
 leaves Compare; the next <kbd>Esc</kbd> closes the inspector.
 
 ## Drill down into nested values
@@ -143,7 +143,7 @@ in the document's order. The footer says `Enter Open` where it applies.
 | <kbd>Space</kbd> | Close |
 
 The title is the path from the row: `Row 42 of 60 › customer › address`.
-On a narrow terminal the middle steps give way to `…`. A list of structs,
+On a narrow terminal the middle steps are replaced by `…`. A list of structs,
 or a JSON array of objects, shows as a table with a column per field (the
 first object's keys); `+3` after the header counts the columns that do not
 fit, and the focused item's whole value is under the table.
@@ -151,27 +151,27 @@ fit, and the focused item's whole value is under the table.
 | Limit | |
 |---|---|
 | Items | Only the items on screen are read: a list of a million items opens at once, and `End` reaches the last |
-| JSON text | Up to 64 KiB is parsed on the key; longer text in the background, with the spinner. Text over 4 MiB is not opened; <kbd>Tab</kbd> reads it in the value |
+| JSON text | Up to 64 KiB is parsed as soon as you press the key; longer text in the background, with the spinner. Text over 4 MiB is not opened; <kbd>Tab</kbd> reads it in the value |
 | Depth | JSON nested deeper than 128 levels does not open |
 
-Text that does not parse stays where it is, and the footer says why:
+Text that does not parse does not open, and the footer says why:
 `Not JSON: key must be a string at line 1 column 2`. From then on
 <kbd>Enter</kbd> leaves it as text, read in the value like any other.
 
 ## Copy a field or the row
 
 <kbd>y</kbd> copies the focused value through the same clipboard as the
-[copy dialog](copying.md), as its view shows it: numbers exact, lists and
-structs as JSON, indented JSON in the JSON view, the text bytes hold in their
-Text view, other bytes as base64 (the footer says `y Copy base64`), a null as
+[copy dialog](copying.md), as its view shows it: numbers exact; lists and
+structs as JSON; indented JSON in the JSON view; bytes in their Text view as
+that text, other bytes as base64 (the footer says `y Copy base64`); a null as
 nothing.
 
 <kbd>Y</kbd> copies the whole row as one JSON object, field names as keys and
 values exact, without leaving the inspector. Hidden and binary fields are
-included once read; otherwise the message counts them:
+included once they have been read; the message counts any that have not:
 `Copied row 3: 12 fields, 2 not read`.
 
-A copy over an `osc52` clipboard's `osc52_limit_kb` is refused.
+With the `osc52` clipboard, a copy larger than `osc52_limit_kb` is refused.
 
 ## Open a value elsewhere
 
@@ -181,7 +181,7 @@ temporary file named for the field, the row and its kind (`.json`, `.xml`,
 
 | Value | Opened with |
 |---|---|
-| Text, JSON, bytes with no known kind | `$VISUAL`, `$EDITOR` or `$PAGER`, else `less` (on Windows, the system's opener). It has the terminal until it exits, and the file is removed then |
+| Text, JSON, bytes with no known kind | `$VISUAL`, `$EDITOR` or `$PAGER`, else `less` (on Windows, the system's opener). It takes over the terminal until it exits, and then the file is removed |
 | Images and PDFs | The system's opener: `xdg-open`, `open`, or Windows' `start`, which asks for a program when none is set. The file stays until datui quits |
 
 A program named with arguments, such as `code --wait`, runs with them. Nothing
@@ -193,10 +193,11 @@ The table reads only the columns it shows, and reads a binary column as a
 `‹binary›` placeholder. In the inspector, columns hidden in
 [Sort & Filter](filtering-sorting.md) are listed after the others with a `⊘`
 mark, and they and binary columns read `not read`. <kbd>Enter</kbd> on one reads
-those fields for this row, in the background. From then on, while the focus
-stays on that field, each row moved to is read too, without holding the keys. The read also checks the
-row's other fields: if a query's sort with ties put another row there on
-reading again, the pane says so instead of showing that row's values. A sort
+those fields for this row, in the background. After that, while the focus
+stays on that field, each row you move to is read too, without holding up the
+keys. The read also checks the row's other fields: if a query's sort leaves
+ties and the second read puts another row in that place, the pane says so
+instead of showing that row's values. A sort
 from Sort & Filter or a SQL `ORDER BY` keeps tied rows in order, and a SQL
 result comes back in one order, so a second read finds the same row.
 

@@ -3,9 +3,9 @@
 Data Quality reports missing values, repeated values and changes across files
 or time: <kbd>a</kbd>, **Data Quality**, <kbd>Enter</kbd>.
 
-The pane is **Setup**: every setting a run takes, before anything is read.
-Press <kbd>Enter</kbd> to run it as it stands, or change it first. Nothing in
-Setup reads the data; <kbd>Enter</kbd> does, once.
+The pane opens on **Setup**, which holds every setting for a run. Press
+<kbd>Enter</kbd> to run as it is, or change settings first. Nothing in Setup
+reads the data; only <kbd>Enter</kbd> does, once.
 
 | Section | What you set |
 |---|---|
@@ -14,8 +14,8 @@ Setup reads the data; <kbd>Enter</kbd> does, once.
 | **Study** | Grain, the windows rows are expected in, comparison, values or file metadata only, latency threshold, and the window an interval goes in |
 | **Read** | What Run will read: a sampling pass, a count, rows a run already read, or no read at all |
 
-<kbd>s</kbd> opens the Sample form over Setup; its <kbd>Enter</kbd> applies the
-sample to Setup and returns there. <kbd>Esc</kbd> discards everything changed
+<kbd>s</kbd> opens the Sample form over Setup. <kbd>Enter</kbd> in the form
+applies the sample to Setup and returns there. <kbd>Esc</kbd> discards everything changed
 in Setup. After a run, <kbd>e</kbd> opens Setup again.
 
 ## Check missing values
@@ -35,7 +35,7 @@ Open **Food nutrition (fast food)** from **Example datasets**, then:
 | Single value | `salad` | always "Other" |
 
 Press <kbd>2</kbd> for **Columns**: each column's missing count and findings.
-A filter changes the rows checked; to ignore it, press <kbd>s</kbd>, set
+A filter changes which rows are checked. To ignore it, press <kbd>s</kbd>, set
 **Rows from** to the unfiltered source, and press <kbd>Enter</kbd> twice: once
 to apply the sample, once to run.
 
@@ -47,10 +47,10 @@ with **Random seed** `1`, the header reads
 
 ## Inspect a finding
 
-On **Overview**, select a finding and press <kbd>Enter</kbd>: its numbers, the
-evidence and what to check. Press <kbd>Enter</kbd> again to open the matching
-rows; on a sampled run these are the sample's rows, the ones the finding
-counted. <kbd>Esc</kbd> returns to the finding.
+On **Overview**, select a finding and press <kbd>Enter</kbd> to see its
+numbers, the evidence and what to check. Press <kbd>Enter</kbd> again to open
+the matching rows. On a sampled run, these are the sample's rows that the
+finding counted. <kbd>Esc</kbd> returns to the finding.
 
 | Finding | <kbd>Enter</kbd> on its detail opens |
 |---|---|
@@ -60,15 +60,15 @@ counted. <kbd>Esc</kbd> returns to the finding.
 | **Numbers**, **Dates** or **Codes as text** that all parse | Nothing: the detail says every value parses |
 
 The rows come from the ones the run kept, so opening them reads nothing. A full
-scan keeps no rows, and an older sample may have been released: then
-<kbd>Enter</kbd> shows what reading the rows would take, and only
-<kbd>Enter</kbd> there reads. <kbd>Esc</kbd> reads nothing.
+scan keeps no rows, and an older sample may have been released. In those cases
+<kbd>Enter</kbd> first shows what reading the rows would take; only a second
+<kbd>Enter</kbd> reads them, and <kbd>Esc</kbd> backs out without reading.
 
-To see fewer findings, press <kbd>c</kbd> for one column's or <kbd>t</kbd> for
-one type's; <kbd>o</kbd> orders them by rows affected, then by rate. Problems
-stay above notes, the line above the list says what is narrowed, and
-<kbd>Esc</kbd> shows every finding again. None of it reads or measures
-anything.
+To see fewer findings, press <kbd>c</kbd> to show one column's or
+<kbd>t</kbd> to show one type's. <kbd>o</kbd> orders them by rows affected,
+then by rate. Problems stay above notes, and the line above the list says what
+is narrowed. <kbd>Esc</kbd> shows every finding again. None of this reads or
+measures anything.
 
 | Page | Use it for |
 |---|---|
@@ -94,50 +94,51 @@ moved past sampling noise. <kbd>o</kbd> puts the largest changes first,
 <kbd>Enter</kbd> shows a segment's columns beside the one it is compared with,
 and <kbd>b</kbd> makes the selected segment the baseline.
 
-**Trends** draws each column across the whole range, the rows per segment
-first, pooling consecutive segments into bars; <kbd>m</kbd> changes the
-measure. A sample thin per segment, such as 100,000 rows over years of days,
-names only large changes on Segments; Trends shows the smaller ones. To judge
+**Trends** draws each column across the whole range, starting with the rows
+per segment, and pools consecutive segments into bars. <kbd>m</kbd> changes the
+measure. When the sample is thin per segment, such as 100,000 rows over years
+of days, **Segments** names only large changes; **Trends** shows the smaller
+ones. To judge
 single days, sample **Equal per value** of the date, or read every row.
 
 ## Read a trend
 
-On **Trends**, a sampled report draws the rows the sample drew under the exact
-rows, and says how many segments it reached thinly or not at all: a segment
-with rows and no sampled row is a bar of its own mark (`·`, `?` in ASCII),
-never a short bar. Select a line and press <kbd>Enter</kbd> for its bars;
-<kbd>↑</kbd> <kbd>↓</kbd> walk them.
+On **Trends**, a sampled report draws the sampled rows under the exact row
+counts, and says how many segments the sample reached thinly or not at all. A
+segment that has rows but no sampled row gets its own mark (`·`, `?` in
+ASCII), never a short bar. Select a line and press <kbd>Enter</kbd> for its
+bars; <kbd>↑</kbd> <kbd>↓</kbd> step through them.
 
 | Row | Says |
 |---|---|
 | Span | The bar's calendar range, or its first and last segment |
 | Segments | How many it pools, how many were not sampled, how many under 30 sampled rows |
 | Rows | Rows sampled of the exact count, or every row read |
-| The measure | The count, of how many rows or values, and the rate |
+| The measure | The count, out of how many rows or values, and the rate |
 | 95% interval | Where the rate likely sits, from the sample; none when every row was read |
 | Previous bar | The rate before and now, the move in points, and whether it is clear or within sampling noise; the baseline's bar when comparing with one |
 
-When segments are thin, press <kbd>w</kbd>: Setup opens with the next coarser
-window staged (days to weeks, weeks to months). Its **Read** says what that
-costs, often nothing, since days sum into weeks; <kbd>Enter</kbd> runs it and
+When segments are thin, press <kbd>w</kbd>. Setup opens with the next coarser
+window set (days to weeks, weeks to months). Its **Read** says what that costs,
+often nothing, since days sum into weeks. <kbd>Enter</kbd> runs it, and
 <kbd>Esc</kbd> keeps the grain you had. Nothing on these pages reads.
 
 ## Find gaps in time windows
 
-A window with no rows is a gap only once you say rows belong in it:
+A window with no rows counts as a gap only after you say rows are expected in it:
 
 1. With a time-window grain, move to **Expected** in Setup and press
    <kbd>Space</kbd>.
 2. Choose **Windows**: every window of the grain, or for hours and days,
    weekdays only.
 3. Optionally type **From** and **Before**, such as `2024-01-01` and
-   `2025-01-01`. Blank, the range runs from the first window found to the last.
+   `2025-01-01`. Left blank, the range runs from the first window found to the last.
 4. Press <kbd>Enter</kbd>, then <kbd>Enter</kbd> to run. With a report on screen
    and nothing else changed, this reads nothing: the windows are checked
    against the counts the report holds.
 
-**Trends** then sums up the expected windows, and <kbd>g</kbd> lists each run
-of them with no rows to show:
+**Trends** then summarizes the expected windows, and <kbd>g</kbd> lists each
+stretch of them that has no rows:
 
 | Gap | Means |
 |---|---|
@@ -153,8 +154,8 @@ asks for a shorter range or a coarser grain.
 1. In Setup, move to **Time roles** and press <kbd>Space</kbd>. Give each role
    its column: datui does not infer a column's meaning from its name.
 2. **Intervals** lists the pairs measured, such as `event to received`. Press
-   <kbd>Space</kbd> on it to choose any start and end. Setup names a role that
-   is in no interval.
+   <kbd>Space</kbd> on it to choose any start and end. Setup points out a role
+   that is in no interval.
 3. Optionally set **Latency over** to count breaches, and with a daily grain,
    **Window by** to put each delay on the day it started or ended.
 4. Press <kbd>Enter</kbd> to run, then <kbd>5</kbd> for **Intervals**.
@@ -166,11 +167,11 @@ asks for a shorter range or a coarser grain.
 | Negative, Zero, Over the threshold | Rows with both ends |
 
 A breach is `duration > threshold`: exactly an hour is not over an hour.
-<kbd>Enter</kbd> on an interval opens its detail at any terminal size;
-<kbd>Enter</kbd> on a count there shows its rows; on a sample, they are cut
-from the rows the run kept rather than read from the file again. Valid from
-to valid to reads as a validity period: no end is **open**, and an end before
-its start **ends first**.
+<kbd>Enter</kbd> on an interval opens its detail at any terminal size, and
+<kbd>Enter</kbd> on a count there shows its rows. On a sample, those rows come
+from the rows the run kept, not from a new read of the file. An interval from
+valid from to valid to is a validity period: a missing end is **open**, and an
+end before its start **ends first**.
 
 ## Times stored as text
 
@@ -185,11 +186,11 @@ time only when you say how:
 
 The format applies to this study only: every other check still sees the text.
 A format with an offset, such as `2024-01-31T08:15:00Z` or `+05:00`, reads
-each value as an instant in UTC; a time with no zone beside it is read as UTC,
-and Setup says so.
+each value as an instant in UTC. A time with no zone is read as UTC, and Setup
+says so.
 Values the format does not read are reported as **Unparsed times**, not as
-missing values, and <kbd>Enter</kbd> on the finding opens their rows. A role or
-grain on text with no format is named in Setup before you run.
+missing values, and <kbd>Enter</kbd> on the finding opens their rows. If a role or
+grain uses a text column with no format, Setup says so before you run.
 
 ## Declare what a column must hold
 
@@ -197,12 +198,12 @@ Declare what a column must hold, and the run reports the rows that break it:
 
 1. In Setup, move to **Column intent** and press <kbd>Space</kbd>.
 2. Choose a column and press <kbd>Space</kbd> for its form.
-3. Tick **Key** for the columns whose values together name one row, **Required**
-   for a column every row must fill, type the **Allowed** values separated by
-   commas (quote one that holds a comma: `"a, b"`), or a **Minimum** and
-   **Maximum**. Text can be **Read as** a whole
-   number or decimal; a range then compares the number. <kbd>Enter</kbd>
-   applies.
+3. Set what applies: tick **Key** for the columns whose values together
+   identify one row, tick **Required** if every row must have a value, type the
+   **Allowed** values separated by commas (quote one that holds a comma:
+   `"a, b"`), or set a **Minimum** and **Maximum**. Text can be **Read as** a
+   whole number or decimal, and a range then compares the number.
+   <kbd>Enter</kbd> applies.
 4. <kbd>Enter</kbd> on the list returns to Setup; <kbd>Enter</kbd> there runs.
 
 | Finding | Counts |
@@ -210,15 +211,15 @@ Declare what a column must hold, and the run reports the rows that break it:
 | Repeated key | Rows that share their key with another row |
 | Incomplete key | Rows with no value in part of the key |
 | Required, missing | Rows with no value |
-| Not allowed | Values outside the set, out of the column's values |
+| Not allowed | Values outside the allowed set, out of the column's values |
 | Out of range | Values below the minimum or above the maximum |
 | Unparsed numbers | Text that does not read as the number |
 
-Each is a problem, with its rows one <kbd>Enter</kbd> away. Intent reads nothing
-of its own: it is measured on the rows the run reads, and a change to it reuses
-the rows a run already read. On a sample, a key finds repeats among the sampled
-rows only: a repeat there is a repeat in the data, and no repeat says nothing
-about the rest. Setup's **Read** says so before you run; set the sample's method
+Each is reported as a problem, with its rows one <kbd>Enter</kbd> away. Intent
+adds no read of its own: it is measured on the rows the run reads, and changing
+it reuses the rows a run already read. On a sample, a key finds repeats among
+the sampled rows only. A repeat found there is a real repeat, but finding none
+says nothing about the rest of the data. Setup's **Read** says so before you run; set the sample's method
 to **Every row** to check every row, which adds one pass over the key's columns.
 
 ## Export the report
@@ -236,28 +237,28 @@ The report is written from what is on screen: nothing is read, and the data
 need not still be there. A file that exists is overwritten only after you
 confirm, and only once the whole report is written; see
 [Overwriting](exporting-data.md#overwriting). A failed write keeps the dialog
-open, the path as typed and the reason under it.
+open, with the path as typed and the reason under it.
 
 ## Check the read size
 
-Setup's **Read** section says what <kbd>Enter</kbd> will read before it reads:
+Before anything is read, Setup's **Read** section says what <kbd>Enter</kbd> will read:
 one sampling pass (which also counts the grain's segments when it streams), a
 count of the grain's column for exact segment totals, rows a run already read,
 or nothing when the report is already on screen or in the session cache.
-After a sampled run, changing roles, text formats, column intent, row chunks or
-a coarser window of a counted grain reads nothing; after any run, so does
-changing the comparison or expected windows. A new seed, size or scope reads a
+After a sampled run, changing roles, text formats, column intent, row chunks,
+or moving to a coarser window of a counted grain reads nothing. After any run,
+changing the comparison or expected windows reads nothing too. A new seed, size or scope reads a
 new sample.
-The **Read** rule names the rows runs have kept for reuse, such as
+The **Read** heading names the rows runs have kept for reuse, such as
 `100,000 rows kept · 12.4 MiB`; <kbd>d</kbd> releases them, and the next run
 that would have used them reads its sample again.
 
 A full scan of a remote dataset (S3, GCS, Azure) reads its scope once per check.
-When the whole dataset fits `[analysis] quality_local_copy` (2GiB by default) and the
-free disk, Read says `1 fetch of 8 objects (16.5 MiB) to a local copy · up to
-7 passes over it`: each object is fetched once into the cache directory,
-and every pass, and every later full scan of the dataset, reads the copy. The
-Read rule then adds `local copy · 16.5 MiB`, and <kbd>d</kbd> releases it with
+When the whole dataset fits within `[analysis] quality_local_copy` (2 GiB by
+default) and the free disk space, Read says `1 fetch of 8 objects (16.5 MiB) to
+a local copy · up to 7 passes over it`. Each object is fetched once into the
+cache directory, and every pass, and every later full scan of the dataset,
+reads the copy. The **Read** heading then adds `local copy · 16.5 MiB`, and <kbd>d</kbd> releases it with
 the rows. Otherwise Read says the passes go to the source, and why, such as
 `No local copy: 3.0 GiB over the 2.0 GiB limit`. See
 [Local copy of a remote source](../reference/data-quality.md#local-copy-of-a-remote-source).
@@ -265,13 +266,12 @@ the rows. Otherwise Read says the passes go to the source, and why, such as
 confirmation first; <kbd>Esc</kbd> there leaves the sample and the report as
 they were.
 
-While a run reads, the progress names its stage, whether that stage reads the
-source, and the rows seen where the read can count them. <kbd>Esc</kbd>
+While a run reads, the progress shows its stage, whether that stage reads the
+source, and the rows seen so far when the read can count them. <kbd>Esc</kbd>
 cancels: a sampling pass, or a full scan's passes, stop at the next batch, and
-a local copy being fetched stops at its next chunk and is removed. A
-read that cannot stop is shown as finishing, in the header and in Setup, until
-it ends; until then Run waits, nothing else reads beside it, and the last
-report stays.
+a local copy being fetched stops at its next chunk and is removed. A read that
+cannot stop shows as finishing, in the header and in Setup, until it ends.
+Until then, Run waits, nothing else reads, and the last report stays.
 
 Under the verdict, every report says what it covers:
 
@@ -282,14 +282,15 @@ Rows    100,000 of 36,839,175 sampled (0.27%) · 36,839,175 traversed
 Limits  Nearly unique: needs every row checked
 ```
 
-**Checks** counts what ran, over what, and what could not run; **Limits** says
-why, and names thin segments and unread footers. **Rows** gives the rows behind
-the numbers, and the rows the run's reads passed through to get them.
+**Checks** counts the checks that ran, what they ran over, and those that
+could not run. **Limits** says why, and names thin segments and unread footers.
+**Rows** gives the rows behind the numbers, and how many rows the run's reads
+passed through to get them.
 
 The header says what each result was measured on:
 `Data Quality · sample of 100,000 of 36,839,175 rows`. Missing-column and
-type-conflict findings describe the loaded source's footers, whatever rows the
-sample covers.
+type-conflict findings come from the source files' footers (their stored
+schemas), whatever rows the sample covers.
 
 See the [reference](../reference/data-quality.md) for the metric definitions,
 and [Keyboard shortcuts](../reference/keyboard-shortcuts.md#analysis-data-quality)

@@ -1,20 +1,20 @@
 # Pivot and melt
 
 <kbd>p</kbd> reshapes the table: **Pivot** turns values into columns, **Melt**
-turns columns into rows. It reshapes the rows the query and filters leave.
+turns columns into rows. It works on the rows left after the query and filters.
 
 <kbd>p</kbd> opens the builder full screen: the form on the left, a live
-preview of the result on the right. Below 100 columns the preview sits under
-the form.
+preview of the result on the right. In a terminal narrower than 100 columns,
+the preview sits under the form.
 
 | Preview line | Says |
 |---|---|
-| Input | The rows the preview ran over: `all 376 rows`, or the `first 1,000 rows of 1,939,184` of a larger view, `unsorted` when the view is sorted (a small sorted view is read in its order) |
-| Result | The shape, `rows × columns`. `?` is what the first rows cannot tell; a pivot's columns read `12+` until applied |
+| Input | The rows the preview ran over: `all 376 rows`, or the `first 1,000 rows of 1,939,184` of a larger view, plus `unsorted` when that larger view is sorted (a small sorted view is read in its order) |
+| Result | The shape, `rows × columns`. `?` marks what the first rows cannot tell; a pivot's columns read `12+` until applied |
 | `▲` | A pivot with 100 or more new columns, or why the reshape fails on these rows |
 
-Under them, the first rows of the result, typed and colored as the table
-draws them. Each change to the form runs the preview again in the background;
+Under these lines are the first rows of the result, typed and colored as in
+the table. Each change to the form runs the preview again in the background;
 <kbd>Enter</kbd> applies the reshape to the whole view.
 
 ## Pivot
@@ -58,18 +58,19 @@ The result has 138 rows, one per year, and the columns `year`, `Emma`,
 Output columns are sorted alphabetically. Pivot reads the rows once, in the
 background, and keeps one value per index and column pair in memory; filter
 large datasets first. A pivot that would make more than 10,000 columns is
-refused, with the count it would make; so is a [view](views.md) whose pivot would.
+refused, and the message gives the count. So is a [view](views.md) whose pivot
+would.
 
-A date or datetime past the calendar's range, such as a sentinel of
-`i64::MIN + 1` microseconds, names its column by its stored number, as the
-table shows it: `-9223372036854775807 us since 1970-01-01 UTC`.
+When a **Columns** value is a date or datetime outside the calendar's range,
+such as a sentinel of `i64::MIN + 1` microseconds, its new column is named by
+the stored number, as the table shows it: `-9223372036854775807 us since 1970-01-01 UTC`.
 
 ### Choose an aggregate
 
 Available functions are `last` (default), `first`, `min`, `max`, `avg`, `med`,
 `std` and `count`. String values support only `first` and `last`.
-Those two functions are positional and retain nulls. After sorting with nulls
-last, `last` returns null for any group ending in a null.
+Those two pick by position and keep nulls: after a sort with nulls last,
+`last` returns null for any group that ends in a null.
 
 ### Count with a pivot
 
@@ -105,8 +106,8 @@ rows with columns `year`, `name` and `n`: the 376 counts, plus a null for each
 of the 38 years Jennifer has none.
 
 Other strategies select columns by regex (**By pattern**), data type
-(**By type**) or an **Explicit list**. The form shows how many columns match,
-and the preview the rows they make, before it runs.
+(**By type**) or an **Explicit list**. Before you apply, the form shows how
+many columns match and the preview shows the rows they make.
 
 Melting dates together with text makes the values text. A date past the
 calendar's range becomes its stored number, as in a pivot.
@@ -115,22 +116,22 @@ Press <kbd>R</kbd> from the table to clear the reshape and other view changes.
 
 ## Keys
 
-The builder takes the keys every [dialog](../reference/dialogs.md) takes. It
-opens on its first row, Pivot or Melt.
+The builder uses the same keys as every [dialog](../reference/dialogs.md). It
+opens on its first row, which chooses Pivot or Melt.
 
 | Key | Action |
 |---|---|
 | <kbd>↓</kbd> <kbd>↑</kbd> or <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move between the rows |
 | <kbd>←</kbd> <kbd>→</kbd> | On the first row, switch Pivot and Melt; on Aggregate, Strategy or Type, the previous or next value; on Columns or Values, the previous or next column; in a text field, move the cursor |
 | <kbd>Space</kbd> | On a choice, its next value; on a column row, open its picker (type to narrow) |
-| <kbd>↑</kbd> <kbd>↓</kbd> in the picker | Move; <kbd>Space</kbd> toggles where several can be chosen, and elsewhere chooses until you type (then it types a space) |
+| <kbd>↑</kbd> <kbd>↓</kbd> in the picker | Move. <kbd>Space</kbd> toggles a column where several can be chosen; elsewhere it chooses, until you type (then it types a space) |
 | <kbd>Enter</kbd> | In the picker, choose; otherwise apply, from anywhere |
-| <kbd>Esc</kbd> | Stop a pivot being computed and keep the builder; close the picker alone, undoing the toggles made since it opened (<kbd>Enter</kbd> keeps them); otherwise close without applying |
+| <kbd>Esc</kbd> | While a pivot is computed, stop it and keep the builder; in the picker, close just the picker, undoing the toggles made since it opened (<kbd>Enter</kbd> keeps them); otherwise close without applying |
 | <kbd>?</kbd> | Help |
 
 ## Views
 
 A [view](views.md) saved after a pivot or melt stores the reshape and the
-query, filters and sort it ran over. When it is applied, the order is that
-query, filters and sort, the pivot or melt, then any SQL, filters and sort on
-its result, then column order.
+query, filters and sort it ran over. When it is applied, the steps run in this
+order: that query, filters and sort; the pivot or melt; any SQL, filters and
+sort on its result; then the column order.

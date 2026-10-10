@@ -1,40 +1,41 @@
 # Make a chart
 
-<kbd>c</kbd> charts the rows the query and filters leave, starting from a
-chart chosen for the column cursor's column. <kbd>Esc</kbd> returns to the
-table.
+<kbd>c</kbd> charts the rows left after the query and filters. It starts
+with a chart that suits the column under the column cursor. <kbd>Esc</kbd>
+returns to the table.
 
 | Cursor column | Chart `c` opens |
 |---|---|
 | A number | Its histogram |
 | Text, categorical or boolean | A bar of its counts per value |
-| A date or a time | A line over it, of the first numeric column (Y is left to pick when there is none) |
+| A date or a time | A line of the first numeric column over it (with no numeric column, Y is left for you to pick) |
 
-The panel says `suggested for f64` under **Type** until the type is changed.
-<kbd>c</kbd> again from the same column on the same dataset brings back the
-chart as it was left; from another column it suggests again.
+Until you change the type, the panel says `suggested for f64` under **Type**.
+Pressing <kbd>c</kbd> again on the same column of the same dataset brings back
+the chart as you left it. On another column, it suggests a new chart.
 
 ## The panel
 
-The panel on the left holds four shelves, the same four for every type, then
-the options. A shelf the type does not use stays in place, dimmed, with why
-(`density`, `same as X`); focus passes over it.
+The panel on the left holds four shelves, the same four for every type,
+followed by the options. A shelf the chart type does not use stays in place,
+dimmed, with the reason beside it (`density`, `same as X`). Moving through the
+panel skips it.
 
 | Shelf | Holds | Under it |
 |---|---|---|
 | **Type** | Line, Scatter, Bar, Histogram, Box, KDE, Heatmap | `suggested for <type>` |
-| **X** | A column: what the type takes on X | The time bucket of a date X on a line or scatter; the bar order; the histogram's bins |
-| **Y** | A column, several on a line or scatter (one series each); on a histogram, count or share | On a line, scatter or bar, the **Aggregate** row, and cumulative when it is on |
+| **X** | The column on the X axis | The time bucket of a date X on a line or scatter; the bar order; the histogram's bins |
+| **Y** | A column, or several on a line or scatter (one series each); on a histogram, count or share | On a line, scatter or bar, the **Aggregate** row, and cumulative when it is on |
 | **Color** | A category column: one series per value | Which values: `top 10 of 16 by rows`, `all 3`, `3 picked of 4,812` |
 
-The plot's title row says how the chart is made of the rows: `mean by month,
-running sum, colored by carrier`, `count per bin`, `one box per carrier`. The
-columns are named at their axes, the Y column over the y axis and X under the
-x axis at the right, so the title row is blank for a plain line or scatter. At
-its right end, dimmed, the chart says what it read: `sample of 10,000 of 337k
-rows · seed 42891`, `1,207 values outside p1-p99`. The seed draws the same
-sample again; a chart of every row names none. When the row is too narrow for both, the
-notes are cut with `…`, or left out.
+The plot's title row says how the rows were combined: `mean by month,
+running sum, colored by carrier`, `count per bin`, `one box per carrier`.
+Column names go on the axes instead: Y above the y axis, X below the right end
+of the x axis. So a plain line or scatter has a blank title row. At the right
+end of the title row, dimmed, the chart says which rows it read: `sample of
+10,000 of 337k rows · seed 42891`, `1,207 values outside p1-p99`. The seed
+draws the same sample again; a chart of every row shows no seed. When the row
+is too narrow for both, these notes are cut short with `…` or left out.
 
 ## Plot two columns
 
@@ -44,49 +45,50 @@ Open **Palmer penguins** from **Example datasets**, as in the
 1. Press <kbd>c</kbd>, then <kbd>2</kbd> for **Scatter**.
 2. Choose `flipper_length_mm` for **X** and `body_mass_g` for **Y**.
 
-Use <kbd>↓</kbd> to move through the rows and <kbd>Space</kbd> to open a
-shelf's picker. Type part of a name to narrow it; on **Y**,
-<kbd>Space</kbd> toggles a column and <kbd>Enter</kbd> closes the picker. The
-picker leaves out the X column. The two penguins with no measurements are left
-out.
+Use <kbd>↓</kbd> to move through the panel's rows and <kbd>Space</kbd> to
+open a shelf's picker. Type part of a name to narrow the list. On **Y**,
+<kbd>Space</kbd> toggles a column and <kbd>Enter</kbd> closes the picker, which
+leaves out the X column. The chart leaves out the two penguins with no
+measurements.
 
 Points are drawn in X order, so a line runs left to right whatever order the
 table is in. Nulls are dropped per series: a row with no X is left out, and a
 missing Y drops that series' point and breaks its line. Other series keep
 their points.
 
-Esc keeps the chart as you left it: sort or filter the table, press
-<kbd>c</kbd> on the same column, and the same shelves chart the new view. A
+<kbd>Esc</kbd> keeps the chart as you left it. Sort or filter the table,
+press <kbd>c</kbd> on the same column, and the same shelves chart the new view. A
 column the view no longer has is dropped from the chart. Opening another
 dataset starts over.
 
 ## Aggregate
 
-The **Aggregate** row under **Y**, on a line, scatter or bar: <kbd>←</kbd>
-<kbd>→</kbd> step through none, count, distinct, sum, mean, median, stdev, quantile,
-min, max, first and last. With
-one, the rows that share an X (and a color) are made one point, or one bar, over every row of the view, in one
-group-by in the background; the chart says how many rows in its title row (`all
-336,776 rows`, or `rows in the groups shown` when a color leaves values out without Other),
-and the footer `Grouping 337k rows...` while it runs. Without one, a
-chart samples, and says so.
+On a line, scatter or bar chart, the **Aggregate** row under **Y** combines
+rows. <kbd>←</kbd> <kbd>→</kbd> step through none, count, distinct, sum, mean,
+median, stdev, quantile, min, max, first and last. With an aggregate, the rows
+that share an X (and a color) become one point or one bar. It runs over every
+row of the view, as one group-by in the background, and the footer shows
+`Grouping 337k rows...` meanwhile. The title row says how many rows it used:
+`all 336,776 rows`, or `rows in the groups shown` when Color leaves values out
+and Other is off. Without an aggregate, a chart samples, and says so.
 
 | Aggregate | Each point or bar | Y |
 |---|---|---|
 | **count** | The rows | None needed |
-| **distinct** | The different values, nulls left out (`nunique` in a query counts a null as one) | Any column, text too; another aggregate lets a text Y go |
+| **distinct** | The different values, nulls left out (`nunique` in a query counts a null as one) | Any column, text too. Switching to another aggregate drops a text Y |
 | **sum**, **mean**, **median**, **min**, **max** | As named | A number |
 | **stdev** | The sample standard deviation (n − 1). A group of one row has none and draws no point | A number |
 | **quantile** | The percentile on the line under **Aggregate**, `p90` to start; <kbd>←</kbd> <kbd>→</kbd> there step 1, 5, 10, 25, 75, 90, 95 and 99. Linear interpolation between the two nearest values | A number |
-| **first**, **last** | The first or last value in the view's order, nulls passed over: its sort, which **Aggregate** names (`last · by time_hour ▲`), or else the order the rows were read in (`last · by row order`) | A number |
+| **first**, **last** | The first or last non-null value in the view's order: its sort, which **Aggregate** names (`last · by time_hour ▲`), or else the order the rows were read in (`last · by row order`) | A number |
 
 | Option | What it does |
 |---|---|
-| Time bucket | Line and Scatter, under a date or datetime X: none, day, week (from Monday), month, quarter, year. A bucket with no aggregate takes **mean**; an aggregate on a date X with no bucket starts by the day |
-| **Cumulative** | Line and Scatter, with count, sum, mean, median, min or max; the others take none, since a running sum of distinct counts, deviations, percentiles or first values is none of those so far: **off**, **running sum**, or **compound**. The rows run as a total in X order, per series, and each point is the total at the end of its X or bucket: a running sum of Y, or Y's rates compounded over every row, `(1 + y1)(1 + y2)… − 1`. The aggregate is set aside meanwhile (a count runs as a count of rows); **Aggregate** says `mean · compound of rows` |
+| Time bucket | Line and Scatter, under a date or datetime X: none, day, week (from Monday), month, quarter, year. Picking a bucket with no aggregate sets **mean**; picking an aggregate on a date X with no bucket sets **day** |
+| **Cumulative** | Line and Scatter, with count, sum, mean, median, min or max: **off**, **running sum**, or **compound**. The other aggregates have none, since a running sum of distinct counts, deviations, percentiles or first values is not that measure so far. The rows are totaled in X order, per series, and each point is the total at the end of its X or bucket: a running sum of Y, or Y's rates compounded over every row, `(1 + y1)(1 + y2)… − 1`. While it is on, the aggregate is set aside (a count becomes a running count of rows) and **Aggregate** says so: `mean · compound of rows` |
 
-An X of more than about 200,000 values is refused before any row is grouped,
-judged from a sample of X, with the advice to bucket it.
+If a sample of X shows more than about 200,000 different values, the chart is
+refused before any rows are grouped, with advice to bucket X by a time unit or
+choose an X with fewer values.
 
 On **NYC flights (2013)**, with no query: press <kbd>c</kbd> on `carrier`, pick
 `arr_delay` for **Y** and step the aggregate to **mean**. Sixteen bars, F9
@@ -101,12 +103,12 @@ Which airlines arrive late? F9, by 21.92 minutes on average. <kbd>c</kbd> on
 ## Color
 
 **Color** splits a chart into one series per value of a category column, each
-in its own palette color. Without a pick, the ten values with the most rows
-are drawn (all of them, when the view is filtered to fewer); the line under
+in its own palette color. Until you pick values, the ten values with the most
+rows are drawn (or all of them, when the view has fewer), and the line under
 **Color** says which. <kbd>Space</kbd> on that line lists every value with its
-rows, most first: type to narrow, <kbd>Space</kbd> toggles a value (up to
-ten), <kbd>Enter</kbd> charts the ones picked. The values are counted over
-the whole view.
+row count, most first. Type to narrow the list, <kbd>Space</kbd> toggles a
+value (up to ten), and <kbd>Enter</kbd> charts the ones picked. Values are
+counted over the whole view.
 
 ![Mean dep_delay by hour colored by origin, all 336,776 rows: three lines, EWR highest at 31.1 minutes at 19:00](../demos/screenshots/chart-color-origin.png)
 
@@ -114,19 +116,19 @@ Which New York airport leaves latest, and when? Newark in the evening,
 31.1 minutes on average at 19:00. A line of `dep_delay` by `hour`,
 **Aggregate** **mean**, **Color** `origin`.
 
-**Other** gathers every value without a series of its own into one more
-series, the legend's last entry, in `dimmed`. <kbd>←</kbd> <kbd>→</kbd> on the
-line under **Color** turn it on or off; the line then reads `top 10 + 6 other`
-or `3 picked + 4,809 other`. It starts on for a scatter and off for the other
+**Other** groups the values without a series of their own into one more
+series, drawn in `dimmed` and listed last in the legend. <kbd>←</kbd>
+<kbd>→</kbd> on the line under **Color** turn it on or off. The line then reads
+`top 10 + 6 other` or `3 picked + 4,809 other`. It starts on for a scatter and off for the other
 types. When every value has a series there is no Other.
 
 | Type | With Color |
 |---|---|
 | Line, Scatter | A line or set of points per value. Other is one more line, aggregated over the rest as the others are; on a scatter its points are drawn under the colored ones, so the cloud keeps its shape. Several Y columns are already one series each, so Color is dimmed |
 | Bar | A bar per value in each category's row, under a legend of the values; Other is one more bar per category. Needs an aggregate |
-| Histogram | Each value's bins as an outline over the others, which filled bars would hide. **Y** can be **share of group**: each bin's share of its group's rows inside the range, so groups of different sizes compare. Other is one more outline. The range (**p1-p99**) is the whole column's |
+| Histogram | Each value's bins drawn as an outline, since filled bars would hide each other. **Y** can be **share of group**: each bin's share of its group's rows inside the range, so groups of different sizes compare. Other is one more outline. The range (**p1-p99**) is taken from the whole column |
 | KDE | A curve per value; Other is one more |
-| Box | Dimmed: a category on **X** already makes a box per value, ten by rows |
+| Box | Dimmed: a category on **X** already makes one box per value, for the ten values with the most rows |
 | Heatmap | Dimmed |
 
 A null value is a series of its own, named `null`.
@@ -149,7 +151,7 @@ A null value is a series of its own, named `null`.
 | **Bandwidth** | KDE | A multiple of the usual bandwidth, 0.2x to 5.0x |
 | **Range** | Histogram, Box, KDE | **All** values, or **p1-p99** (the 1st to 99th percentile) to leave out outliers that squash the rest; the chart counts what it left out |
 | Order | Bar (under X) | By value, largest first, or by label: text A to Z, numbers ascending |
-| **Y from zero**, **Log scale** | Line, Scatter | The Y axis from zero; ln(1 + y), its ticks naming y |
+| **Y from zero**, **Log scale** | Line, Scatter | Start the Y axis at zero; plot ln(1 + y), with the ticks labeled in y |
 | **Legend** | Line, Scatter, Bar, Histogram, KDE | **auto** or **off** |
 | **Grid** | Line, Scatter, Histogram, Box, KDE | Lines at the labeled ticks |
 | **Rows** | Charts that sample | **Sample** of a size, or **Every row**; an aggregate reads every row and says `all, exact`. See [Large tables](#large-tables) |
@@ -171,29 +173,28 @@ labels where there is room.
 
 | Feature | What it does |
 |---|---|
-| **Grid** | Dotted lines at the labeled ticks, under the series, in `chart_grid`. <kbd>g</kbd> or the **Grid** row toggles it; `chart_grid` in the [`[analysis]` section](../reference/settings.md#analysis) sets where a new chart starts (off) |
-| **Legend** | Names the series when there are two or more: a swatch and a name per series, with no frame, cleared from the plot where it covers the fewest points (a corner, or the middle of an edge). The **Legend** row hides it |
-| **Crosshair** | Line and Scatter: <kbd>x</kbd> gives the plot the keys. <kbd>←</kbd> <kbd>→</kbd> step a line down the plot from point to point (a column at a time where they crowd), <kbd>Home</kbd> <kbd>End</kbd> go to the ends, and under the plot a readout gives x and each series' value there: `date: 2020-04-30   high_temp: 67.2`. A series with no value there reads `∅`. <kbd>x</kbd>, <kbd>Tab</kbd> or <kbd>Esc</kbd> hand the keys back to the panel. A click on the plot puts the crosshair there |
-| Marks | Lines in braille. A scatter marks each point with a dot, or in braille past one point per four cells. Histogram bars fill their bins |
+| **Grid** | Dotted lines at the labeled ticks, under the series, in `chart_grid`. <kbd>g</kbd> or the **Grid** row toggles it; `chart_grid` in the [`[analysis]` section](../reference/settings.md#analysis) sets whether a new chart starts with it (default off) |
+| **Legend** | Names the series when there are two or more: a swatch and a name per series, with no frame, placed where it covers the fewest points (a corner, or the middle of an edge). The **Legend** row hides it |
+| **Crosshair** | Line and Scatter: <kbd>x</kbd> passes the keys to the plot. <kbd>←</kbd> <kbd>→</kbd> move a vertical line from point to point (a column at a time where they crowd), <kbd>Home</kbd> <kbd>End</kbd> go to the ends, and under the plot a readout gives x and each series' value there: `date: 2020-04-30   high_temp: 67.2`. A series with no value there reads `∅`. <kbd>x</kbd>, <kbd>Tab</kbd> or <kbd>Esc</kbd> hand the keys back to the panel. A click on the plot puts the crosshair there |
+| Marks | Lines in braille. A scatter marks each point with a dot, or in braille when there is more than one point per four cells. Histogram bars fill their bins |
 
 Without UTF-8 the grid is `.` and `:` and the tick marks `+`. Exports and the
 Distribution plots write their numbers the same way.
 
 ## Count rows per category
 
-With **Palmer penguins** open, press <kbd>c</kbd> on `species`: a bar of its
-counts. The bars read Adelie 152, Gentoo 124, Chinstrap 68: no query needed.
+With **Palmer penguins** open, press <kbd>c</kbd> on `species` for a bar
+chart of its counts, with no query needed: Adelie 152, Gentoo 124, Chinstrap 68.
 
-Counts are exact. The whole view is counted in one pass that keeps a count per
-category and no rows, whatever the sample size, and the chart says so under the
-plot: `all 344 rows`.
+Counts are exact, whatever the sample size. One pass over the whole view keeps
+a count per category and no rows, and the title row says so: `all 344 rows`.
 
 | Case | What happens |
 |---|---|
 | More than 100,000 categories | The count stops and the chart says so. Count by a column with fewer values |
 | A null category | Its own bar, labeled `∅` |
 | Equal counts | A to Z |
-| Another category, or leaving the chart, while it counts | The count stops; nothing partial is kept |
+| Switching to another column, or leaving the chart, during the count | The count stops; nothing partial is kept |
 
 ## Chart one value per category
 
@@ -211,7 +212,7 @@ The same sixteen bars as the mean above, F9 longest at 21.92 minutes.
 | Case | What happens |
 |---|---|
 | A category repeats | Refused: the chart says how many rows and categories it found and suggests the query that groups them, or an aggregate. Bars are not summed or averaged for you |
-| More bars than rows | The bars that fit, then `+ 212 more` counting the rest |
+| More bars than the plot has rows | The bars that fit, then `+ 212 more` counting the rest |
 | Negative values | Bars grow left of zero |
 | A null category | Its own bar, labeled `∅` |
 | A null value | That category is left out and counted in the title row |
@@ -253,15 +254,15 @@ Olivia rise after 2000. The [pivot](reshaping.md#pivot), then <kbd>c</kbd>
 ![Earthquakes of the past month, longitude against latitude: the Pacific Ring of Fire](../demos/screenshots/chart-quakes.png)
 
 Where does the earth shake? Around the Pacific. <kbd>c</kbd> <kbd>2</kbd> on
-`latitude`, **X** `longitude`. A rolling feed: your month draws its own points.
+`latitude`, **X** `longitude`. The feed rolls, so your month shows its own points.
 
 ## Large tables
 
 | Option | What it does |
 |---|---|
-| **Rows** | Rows a chart without an aggregate reads. A larger table is sampled across all of it, and the chart says so at the right of the title row, with the sample's seed: `sample of 10,000 of 3.5M rows · seed 42891`. Every row reads the whole view. A **Line** over a larger table is not sampled: see below |
+| **Rows** | Rows a chart without an aggregate reads. A larger table is sampled across all of it, and the chart says so at the right of the title row, with the sample's seed: `sample of 10,000 of 3.5M rows · seed 42891`. **Every row** reads the whole view. A **Line** over a larger table is not sampled: see below |
 | Aggregate | Reads every row, whatever the sample size |
-| The view's [sample](sampling.md) | Read whole: the **Rows** row goes, and the title row names the sample and its seed: `sample 100,000 of 3.48M · seed 42891` |
+| The view's [sample](sampling.md) | Read whole: the **Rows** row is hidden, and the title row names the sample and its seed: `sample 100,000 of 3.48M · seed 42891` |
 
 On **Rows**:
 
@@ -273,15 +274,15 @@ On **Rows**:
 | <kbd>Enter</kbd> | Read what the row says. Leaving the row reads it too |
 | <kbd>Esc</kbd> | Put the row back as it was, without reading |
 
-Nothing is read while the row is being changed: the chart stays as drawn, and
-the line under the row says `Enter to read`. A size that is not one (`12x`, `0`)
-says why there and is not read. **Sample** keeps its size while **Every row** is
+Nothing is read while you edit the row: the chart stays as drawn, and the
+line under the row says `Enter to read`. An invalid size (`12x`, `0`) says why
+there and is not read. **Sample** keeps its size while **Every row** is
 chosen.
 
 The sample is drawn as the [analysis tools](analysis-features.md#sampling)
-draw theirs, with the same seed: 50 runs of one Parquet or IPC file, or one
-streamed pass over anything else. Another option, or another chart of columns
-already read, draws from the same rows without reading the table again. An
+draw theirs, with the same seed: 50 blocks of rows from one Parquet or IPC file, or one
+streamed pass over anything else. Changing an option, or charting columns
+already read, reuses the same rows without reading the table again. An
 exported chart carries the same notes under the plot. The default size comes
 from `chart_rows` in the
 [`[analysis]` config section](../reference/settings.md#analysis) and is 10,000.
@@ -290,10 +291,10 @@ A **Line** chart with no aggregate and no color, over more rows than the sample
 size, draws an envelope instead: X is cut into half as many steps as the sample
 size, and each step draws its lowest and highest value, so every peak of a
 waveform or a long time series stays on the plot where a sample would miss it.
-Two streamed passes read the view: the rows and X's range, then each step. The
-chart says so in its title row: `min and max of 192M rows in 5,000 steps`.
-Scatter keeps the sample, and so does a Line over Parquet read in place from
-S3, GCS or Azure, which the envelope would download whole twice.
+It reads the view in two streamed passes: one for the row count and X's range,
+then one for the steps. The title row says so: `min and max of 192M rows in
+5,000 steps`. Scatter still samples. So does a Line over Parquet read in place
+from S3, GCS or Azure, since the envelope would download the whole file twice.
 
 ## Keys
 
@@ -309,20 +310,20 @@ S3, GCS or Azure, which the envelope would download whole twice.
 | <kbd>?</kbd> | Help |
 | <kbd>Esc</kbd> | Back to the table |
 
-In a picker: type part of a name to narrow, <kbd>↑</kbd> <kbd>↓</kbd> move,
-<kbd>Enter</kbd> chooses, and so does <kbd>Space</kbd> until you type (then it
-types a space; on a line or scatter chart's **Y** and on the Color values
-<kbd>Space</kbd> toggles one in or out),
-<kbd>Tab</kbd> or <kbd>Shift</kbd>+<kbd>Tab</kbd> chooses and moves to the
-next or previous row, and <kbd>Esc</kbd> backs out of the picker alone.
+In a picker, type part of a name to narrow the list and use <kbd>↑</kbd>
+<kbd>↓</kbd> to move. <kbd>Enter</kbd> chooses. <kbd>Space</kbd> chooses too
+until you type, and then it types a space. On a line or scatter chart's **Y**
+and on the Color values, <kbd>Space</kbd> toggles an entry in or out instead.
+<kbd>Tab</kbd> or <kbd>Shift</kbd>+<kbd>Tab</kbd> chooses and moves to the next
+or previous row, and <kbd>Esc</kbd> closes just the picker.
 
 ## Export
 
-<kbd>e</kbd> in the chart view opens the export dialog, on its path. Type a
+<kbd>e</kbd> in the chart view opens the export dialog, with the cursor on its path. Type a
 path and press <kbd>Enter</kbd>; the keys are those of every
 [dialog](../reference/dialogs.md), and <kbd>Ctrl</kbd>+<kbd>P</kbd> recalls a
 path exported to before. A path ending `.png`, `.svg` or `.pdf` takes that
-format; any other path gets **Format**'s extension after it (`chart.v2` writes
+format; any other path gets **Format**'s extension added (`chart.v2` writes
 `chart.v2.png`). You are asked before an
 existing file is overwritten, and a failed export leaves it as it was
 ([Overwriting](exporting-data.md#overwriting)). A blank path, or a failed
@@ -333,12 +334,12 @@ write, keeps the dialog open with the reason under the fields.
 | **Format** | **PNG**, **SVG** or **PDF**; SVG and PDF are vector, their text set as outlines |
 | **Style** | **Light**: white, with colors that stay apart for color-blind readers and in print. **Dark**: the terminal theme's colors. **Transparent**: Light with no background |
 | **Size** | A preset, below; typing **Width** or **Height** makes it **Custom** |
-| **Legend** | **Line ends**: each line named at its right end, the default for line and KDE charts (other charts take a legend at the top right). A corner, or **Off**. A chart whose legend is off exports with it off |
+| **Legend** | **Line ends** names each line at its right end, the default for line and KDE charts; other charts default to a legend at the top right. Or a corner, or **Off**. A chart whose legend is off exports with it off |
 | **Opacity** | Scatter: **Auto** (the default) draws points opaque up to 1,000 and fainter as there are more, down to 15% from 100,000, so a dense cloud shows where it is densest; or **100%**, **50%**, **20%** |
 | **Point size** | Scatter: **Small**, **Medium** (the default) or **Large**, 1.6, 2.4 or 3.6 pt |
 | **Line width** | Line, colored or not: **Thin**, **Normal** (the default) or **Bold**, 1, 1.5 or 2.5 pt; the legend's swatches follow |
-| **Y from zero** | Line: **On** takes zero into the Y axis. It starts as the chart's **Y from zero** option. Bars always start at zero |
-| **Title**, **Description** | Over the chart. The description starts as the title row's words, how the chart is made: `Mean by month, colored by carrier`; empty when it has none. The Y column is named over the plot's left edge, as on screen |
+| **Y from zero** | Line: **On** includes zero in the Y axis. It starts as the chart's **Y from zero** option. Bars always start at zero |
+| **Title**, **Description** | Over the chart. The description starts as the plot's title row, which says how the chart is made: `Mean by month, colored by carrier`; empty when it has none. The Y column is named over the plot's left edge, as on screen |
 | **Notes** | Under the chart, after what the chart says about its rows (a sample, values a range left out) |
 | **Source**, **Byline** | The last line: `Source: …` and the byline. Source starts from the catalog entry when the dataset came from one: its name, publisher and license |
 | **Recipe** | **Include** (the default, from [`chart.export_recipe`](../reference/settings.md#chart)) writes how the chart was made into the file; **Omit** writes no datui metadata at all |
@@ -361,8 +362,10 @@ The recipe is a JSON document that reads back as a [view](views.md):
 | `table` | The table of a file of tables, when it is one |
 | `rows` | What the chart read: the sample with its seed, or `every row` |
 | `settings` | The view's: the sample's scope, method, size, seed and how it was drawn, with the view it was drawn through; the query, filters, sort, column layout and types, reshape; the chart, its options and its export settings, the dialog's words included |
- The image is the same either way; the recipe can carry paths,
-bucket names and query values, so Omit before sharing a file that should not.
+
+The image is the same either way. The recipe can carry paths, bucket names and
+query values, so choose **Omit** before sharing a file that should not show
+them.
 
 | Format | Recipe in |
 |---|---|
@@ -388,8 +391,8 @@ the same slots, its background `background`, and its text `text_primary` and
 `text_secondary`.
 
 Two series never share a color. A slot the theme gives the same color as an
-earlier one is skipped, and on a 256- or 16-color terminal, or under
-`NO_COLOR`, the slots are counted as the terminal shows them: a chart draws one
-series per distinct color, so a 16-color terminal draws fewer (`top 4 of 16 by
+earlier one is skipped. On a 256- or 16-color terminal, or under `NO_COLOR`,
+slots are compared as the terminal shows them, and a chart draws one series per
+distinct color. So a 16-color terminal draws fewer series (`top 4 of 16 by
 rows`), with Other for the rest when it is on. A **Dark** export skips a
 repeated slot too, and otherwise always has all ten.

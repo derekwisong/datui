@@ -31,6 +31,16 @@ pub(crate) enum Applying {
     Restored(Option<Box<crate::table::DrillPlace>>),
 }
 
+/// Why a view, or a reopened dataset's place, could not be applied, as the error
+/// modal or the Reopen question says it.
+pub(crate) fn view_failure(applying: &Applying, message: &str) -> String {
+    if matches!(applying, Applying::Restored(_)) {
+        format!("Reopened, but the query, filters and sort could not be applied again: {message}")
+    } else {
+        format!("Error applying view: {message}")
+    }
+}
+
 impl SavedViews {
     /// A new dataset is on screen with no view applied.
     pub(crate) fn reset_for_dataset(&mut self) {
@@ -513,41 +523,14 @@ impl App {
     }
 
     /// A view's pivot could not be read or planned: the view before it stays.
-    /// `view` is kept for a reopen to try again when a file it read is gone.
-    pub(crate) fn view_pivot_failed(
-        &mut self,
-        view: &SavedView,
-        applying: &Applying,
-        message: &str,
-    ) {
-        let asked = crate::loading::open_options::KeptPlace {
-            settings: view.settings.clone(),
-            active: (!view.id.is_empty()).then(|| view.id.clone()),
-            drill: match applying {
-                Applying::Restored(drill) => drill.clone(),
-                _ => None,
-            },
-        };
-        self.view_failed(applying, message, Some(asked));
+    pub(crate) fn view_pivot_failed(&mut self, applying: &Applying, message: &str) {
+        self.view_failed(applying, message);
         self.read_after_view_rollback();
     }
 
-    /// Say why a view, or a reopened dataset's place, could not be applied. `asked`,
-    /// the place it was going to, is what a reopen tries.
-    pub(crate) fn view_failed(
-        &mut self,
-        applying: &Applying,
-        message: &str,
-        asked: Option<crate::loading::open_options::KeptPlace>,
-    ) {
-        let said = if matches!(applying, Applying::Restored(_)) {
-            format!(
-                "Reopened, but the query, filters and sort could not be applied again: {message}"
-            )
-        } else {
-            format!("Error applying view: {message}")
-        };
-        self.read_failed_asking(&said, asked);
+    /// Say why a view, or a reopened dataset's place, could not be applied.
+    pub(crate) fn view_failed(&mut self, applying: &Applying, message: &str) {
+        self.say_read_failed(&view_failure(applying, message));
     }
 
     /// The view before a failed or cancelled one is back: read its rows if none are on

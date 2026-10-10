@@ -738,7 +738,8 @@ fn an_object_rewritten_since_open_fails_the_fetch() {
     let asked = &app.confirmation_modal.message;
     assert!(
         asked.contains(
-            "part-1.parquet: A file was removed or replaced after the dataset was opened"
+            "A file was removed or replaced after the dataset was opened: \
+             s3://lake/events/part-1.parquet."
         ),
         "{asked}"
     );

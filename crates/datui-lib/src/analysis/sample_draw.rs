@@ -438,7 +438,7 @@ impl App {
         if message == sampling::CANCELLED {
             self.flash_note("Sample stopped".to_string());
         } else {
-            self.read_failed(message);
+            self.say_read_failed(message);
         }
     }
 

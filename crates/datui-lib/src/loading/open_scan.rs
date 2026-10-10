@@ -436,7 +436,7 @@ impl App {
                 Ok(()) => true,
                 Err(e) => {
                     let applying = crate::view::view_apply::Applying::Restored(None);
-                    self.view_failed(&applying, &e.to_string(), None);
+                    self.view_failed(&applying, &e.to_string());
                     false
                 }
             };

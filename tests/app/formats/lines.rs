@@ -487,7 +487,27 @@ fn go_to_a_row_waits_for_the_lines_to_be_indexed() {
         let text = screen(&mut app);
         assert!(text.contains("lines ") && text.contains("read "), "{text}");
     }
-    drain_events(&mut app, &rx);
+    // The indexing is no work the drain waits on, so draw and drain until the jump
+    // lands; a slow runner indexes past one drain.
+    let landed = |app: &App| {
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .selected_display_row()
+            == Some(1_400_001)
+    };
+    let deadline = Instant::now() + common::HANG_GUARD;
+    while !landed(&app) {
+        assert!(Instant::now() < deadline, "the jump never landed");
+        drain_events(&mut app, &rx);
+        let _ = screen(&mut app);
+        if let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            let mut next = Some(event);
+            while let Some(event) = next {
+                next = app.event(event);
+            }
+        }
+    }
     let _ = screen(&mut app);
     drain_events(&mut app, &rx);
     let state = app.data_table_state.as_ref().unwrap();

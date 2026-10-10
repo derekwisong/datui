@@ -938,7 +938,7 @@ impl DataTableState {
         match parsed {
             Ok(ParsedQuery {
                 cols,
-                filter,
+                filters,
                 group_by: group_by_cols,
                 group_by_names: group_by_col_names,
                 distinct,
@@ -965,7 +965,9 @@ impl DataTableState {
                     Some(Arc::new(kept))
                 };
 
-                if let Some(f) = filter {
+                // Successive filters, as q runs where: an aggregate in a later
+                // condition is over the rows the earlier ones kept.
+                for f in filters {
                     lf = lf.filter(f);
                 }
                 // What a drill-down into one of the groups shows.
@@ -1037,15 +1039,17 @@ impl DataTableState {
                     keys: keys.iter().map(|(name, _)| name.to_string()).collect(),
                 }];
                 // The same keys as Python, for a drill into one of the groups.
-                let python_keys: Vec<Option<String>> = match crate::query::parse_nodes(&query) {
-                    Ok(mut nodes) => {
-                        nodes.resolve_division(&input);
-                        nodes
-                            .group_by
-                            .iter()
-                            .map(|key| Some(key.without_aliases().python()))
-                            .collect()
-                    }
+                let python_keys: Vec<Option<String>> = match crate::query::parse_nodes(&query)
+                    .and_then(|mut nodes| {
+                        nodes.resolve_time_zones(&input);
+                        nodes.resolve_types(&input)?;
+                        Ok(nodes)
+                    }) {
+                    Ok(nodes) => nodes
+                        .group_by
+                        .iter()
+                        .map(|key| Some(key.without_aliases().python()))
+                        .collect(),
                     Err(_) => vec![None; keys.len()],
                 };
                 let python_rows = Some(vec![Step::QueryRows {

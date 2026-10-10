@@ -359,8 +359,8 @@ pub const Q_SUMMARY: &[(&str, &str)] = &[
         "Each part optional",
     ),
     (
-        "select a, b where a > 10, b < 5",
-        "In where, , is and; | is or",
+        "select a, b where a > 10, (b < 5) | c",
+        "Conditions filter in turn; & is and, | is or",
     ),
     (
         "select avg price, n:count id by region",

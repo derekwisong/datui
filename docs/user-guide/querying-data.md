@@ -248,7 +248,12 @@ q is a subset of the q language, not a complete q or q-sql, and it
 `select mean_delay: avg dep_delay by hour from df where origin = "JFK"`.
 
 Right to left means `a * b + c` is `a * (b + c)`, and `(a + b) * 2 > 100` is
-`(a + b) * (2 > 100)`: put the comparison first, `100 < (a + b) * 2`.
+`(a + b) * (2 > 100)`: put the comparison first, `100 < (a + b) * 2`. And and
+or are `&` and `|`, operators like the rest: `(a > 5) & b < 3` keeps rows with
+both, while `a > 5 & b < 3` is `a > (5 & (b < 3))`. The conditions after
+`where`, separated by `,`, filter in turn: in
+`where dep_delay > avg dep_delay, distance > avg distance` the second average
+is over the late flights only.
 [Query syntax](../reference/query-syntax.md) has the grammar, every accessor
 and more examples on the built-in datasets.
 

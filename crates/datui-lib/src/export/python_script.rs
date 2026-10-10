@@ -422,17 +422,21 @@ impl Step {
         match self {
             Step::Query { query, input, keys } => match crate::query::parse_nodes(query) {
                 Ok(mut nodes) => {
-                    nodes.resolve_division(input);
                     nodes.resolve_time_zones(input);
+                    if let Err(e) = nodes.resolve_types(input) {
+                        return vec![py_comment(&format!("the query did not run: {e}"))];
+                    }
                     nodes.python_steps(keys)
                 }
                 Err(e) => vec![py_comment(&format!("the query did not parse: {e}"))],
             },
             Step::QueryRows { query, input } => match crate::query::parse_nodes(query) {
                 Ok(mut nodes) => {
-                    nodes.resolve_division(input);
                     nodes.resolve_time_zones(input);
-                    nodes.python_filter().into_iter().collect()
+                    if let Err(e) = nodes.resolve_types(input) {
+                        return vec![py_comment(&format!("the query did not run: {e}"))];
+                    }
+                    nodes.python_filters()
                 }
                 Err(e) => vec![py_comment(&format!("the query did not parse: {e}"))],
             },

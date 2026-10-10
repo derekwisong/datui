@@ -8,7 +8,7 @@ pub(crate) mod sql_plan;
 
 use polars::prelude::StrptimeOptions;
 use polars::prelude::*;
-use std::ops::{Add, Div, Mul, Rem, Sub};
+use std::ops::{Add, Mul, Rem, Sub};
 
 #[derive(Debug, Clone, PartialEq)]
 enum Token {
@@ -30,7 +30,6 @@ enum Token {
     RBracket,
     Comma,
     Colon,
-    Pipe,
     Dot,
     Select,
     Where,
@@ -123,10 +122,6 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
                 tokens.push(Token::Colon);
                 chars.next();
             }
-            '|' => {
-                tokens.push(Token::Pipe);
-                chars.next();
-            }
             '(' => {
                 tokens.push(Token::LParen);
                 chars.next();
@@ -195,6 +190,20 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
                     return Err("Unterminated string literal".to_string());
                 }
                 tokens.push(Token::String(string_val));
+            }
+            '&' | '|' => {
+                chars.next();
+                if let Some(&next) = chars.peek()
+                    && (next == '&' || next == '|')
+                {
+                    let fix = if next == c {
+                        format!("use `{c}`")
+                    } else {
+                        "use `&` or `|`".to_string()
+                    };
+                    return Err(format!("`{c}{next}` is not q: {fix}"));
+                }
+                tokens.push(Token::Op(c.to_string()));
             }
             '^' => {
                 tokens.push(Token::Op("^".to_string()));
@@ -331,7 +340,6 @@ fn token_text(token: &Token) -> String {
         Token::RBracket => "]".to_string(),
         Token::Comma => ",".to_string(),
         Token::Colon => ":".to_string(),
-        Token::Pipe => "|".to_string(),
         Token::Dot => ".".to_string(),
         Token::Select => "select".to_string(),
         Token::Where => "where".to_string(),
@@ -414,8 +422,9 @@ fn strip_from(body: &[Token]) -> Result<Vec<Token>, String> {
 }
 
 /// Infix operators spelled as words (q's); ordinary identifiers elsewhere, so a column
-/// named `in` or `mod` still works at an expression's start or after `.`.
-const WORD_OPS: [&str; 5] = ["in", "like", "xbar", "mod", "wavg"];
+/// named `in` or `mod` still works at an expression's start or after `.`. `and` and
+/// `or` are `&` and `|`.
+const WORD_OPS: [&str; 7] = ["in", "like", "xbar", "mod", "wavg", "and", "or"];
 
 /// The infix operator at `tokens[i]`, if there is one: a symbol, or an operator
 /// word that has an operand before it.
@@ -469,9 +478,9 @@ pub(crate) enum BinOp {
     Add,
     Sub,
     Mul,
-    /// Polars' `/` on two expressions.
-    Div,
+    /// Division, always to a float, as q's `%`: `7 % 2` is 3.5.
     TrueDiv,
+    /// Floor division, for `xbar`'s buckets.
     FloorDiv,
     Rem,
     Eq,
@@ -480,8 +489,19 @@ pub(crate) enum BinOp {
     Gt,
     LtEq,
     GtEq,
+    /// q's `&` on two booleans. Any value exceeds a null in q, so a null on either
+    /// side is null (`false & null` too), unlike Polars' Kleene `and`. A where
+    /// condition lowers it to Polars' `and` ([`Node::to_predicate`]).
     And,
+    /// q's `|` on two booleans: a null on one side gives the other side.
     Or,
+    /// q's `&` (Lesser) on anything else: the smaller, null when either is null.
+    /// See [`Node::resolve_types`].
+    Lesser,
+    /// q's `|` (Greater) on anything else: the larger, so a null gives the other side.
+    Greater,
+    /// Polars' Kleene `or`, for `in`'s equalities.
+    Any,
 }
 
 /// A method applied to one expression.
@@ -544,7 +564,15 @@ pub(crate) enum Op {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CastTo {
+    Int8,
+    Int16,
+    Int32,
     Int64,
+    UInt8,
+    UInt16,
+    UInt32,
+    UInt64,
+    Float32,
     Float64,
     String,
 }
@@ -552,9 +580,51 @@ pub(crate) enum CastTo {
 impl CastTo {
     fn dtype(self) -> DataType {
         match self {
+            CastTo::Int8 => DataType::Int8,
+            CastTo::Int16 => DataType::Int16,
+            CastTo::Int32 => DataType::Int32,
             CastTo::Int64 => DataType::Int64,
+            CastTo::UInt8 => DataType::UInt8,
+            CastTo::UInt16 => DataType::UInt16,
+            CastTo::UInt32 => DataType::UInt32,
+            CastTo::UInt64 => DataType::UInt64,
+            CastTo::Float32 => DataType::Float32,
             CastTo::Float64 => DataType::Float64,
             CastTo::String => DataType::String,
+        }
+    }
+
+    /// The number type `dtype` is, as a cast.
+    fn number(dtype: &DataType) -> Option<CastTo> {
+        Some(match dtype {
+            DataType::Int8 => CastTo::Int8,
+            DataType::Int16 => CastTo::Int16,
+            DataType::Int32 => CastTo::Int32,
+            DataType::Int64 => CastTo::Int64,
+            DataType::UInt8 => CastTo::UInt8,
+            DataType::UInt16 => CastTo::UInt16,
+            DataType::UInt32 => CastTo::UInt32,
+            DataType::UInt64 => CastTo::UInt64,
+            DataType::Float32 => CastTo::Float32,
+            DataType::Float64 => CastTo::Float64,
+            _ => return None,
+        })
+    }
+
+    /// The Python Polars type.
+    fn python(self) -> &'static str {
+        match self {
+            CastTo::Int8 => "pl.Int8",
+            CastTo::Int16 => "pl.Int16",
+            CastTo::Int32 => "pl.Int32",
+            CastTo::Int64 => "pl.Int64",
+            CastTo::UInt8 => "pl.UInt8",
+            CastTo::UInt16 => "pl.UInt16",
+            CastTo::UInt32 => "pl.UInt32",
+            CastTo::UInt64 => "pl.UInt64",
+            CastTo::Float32 => "pl.Float32",
+            CastTo::Float64 => "pl.Float64",
+            CastTo::String => "pl.String",
         }
     }
 }
@@ -567,7 +637,7 @@ const MAX_EXPR_NODES: usize = 10_000;
 fn check_copies(node: &Node, copies: usize) -> Result<(), String> {
     if node.size().saturating_mul(copies) > MAX_EXPR_NODES {
         return Err(
-            "Expression is too large: nested wavg, xbar or in repeat what they are \
+            "Expression is too large: nested wavg, xbar, in or & repeat what they are \
                     given. Simplify it or split it into steps."
                 .to_string(),
         );
@@ -587,6 +657,8 @@ impl Node {
             | Node::Null
             | Node::Date(_)
             | Node::Timestamp { .. } => 0,
+            // Lowered, `&` on numbers repeats both sides (null where either is).
+            Node::Bin(BinOp::Lesser, a, b) => 2 * (a.size() + b.size()),
             Node::Bin(_, a, b) | Node::Coalesce(a, b) | Node::Filter(a, b) => a.size() + b.size(),
             Node::When(a, b, c) => a.size() + b.size() + c.size(),
             Node::Op(a, _) | Node::Alias(a, _) => a.size(),
@@ -648,7 +720,6 @@ impl Node {
                     BinOp::Add => left.add(right),
                     BinOp::Sub => left.sub(right),
                     BinOp::Mul => left.mul(right),
-                    BinOp::Div => left.div(right),
                     BinOp::TrueDiv => left.true_div(right),
                     BinOp::FloorDiv => left.floor_div(right),
                     BinOp::Rem => left.rem(right),
@@ -658,8 +729,18 @@ impl Node {
                     BinOp::Gt => left.gt(right),
                     BinOp::LtEq => left.lt_eq(right),
                     BinOp::GtEq => left.gt_eq(right),
-                    BinOp::And => left.and(right),
-                    BinOp::Or => left.or(right),
+                    BinOp::Any => left.or(right),
+                    // q: any value exceeds a null. The smaller of a null and anything
+                    // is null; the larger is the other side, as max_horizontal skips
+                    // nulls. On booleans the smaller is `and` and the larger `or`.
+                    // 1 × 1 is 1 and a null spreads, without repeating either side as
+                    // a null test would.
+                    BinOp::And => (left.cast(DataType::UInt8) * right.cast(DataType::UInt8))
+                        .cast(DataType::Boolean),
+                    BinOp::Lesser => {
+                        null_if_either(&left, &right).otherwise(min_max(true, left, right))
+                    }
+                    BinOp::Or | BinOp::Greater => min_max(false, left, right),
                 }
             }
             Node::Coalesce(left, right) => coalesce(&[left.to_expr(), right.to_expr()]),
@@ -669,6 +750,32 @@ impl Node {
                 .otherwise(otherwise.to_expr()),
             Node::Op(inner, op) => apply_op_expr(inner.to_expr(), op),
             Node::Alias(inner, name) => inner.to_expr().alias(name.as_str()),
+        }
+    }
+
+    /// The expression as a where condition: only its true rows matter, so q's `&` and
+    /// `|` on booleans at its top (outside `not`) are Polars' `and` and `or`, which are
+    /// true on the same rows and let Polars push the condition down to the scan.
+    pub(crate) fn to_predicate(&self) -> Expr {
+        match self {
+            Node::Bin(BinOp::And, left, right) => left.to_predicate().and(right.to_predicate()),
+            Node::Bin(BinOp::Or, left, right) => left.to_predicate().or(right.to_predicate()),
+            _ => self.to_expr(),
+        }
+    }
+
+    /// [`Self::to_predicate`] as Python.
+    pub(crate) fn python_predicate(&self) -> String {
+        let operand = |node: &Node| match node {
+            Node::Bin(BinOp::And | BinOp::Or, ..) => format!("({})", node.python_predicate()),
+            _ => node.python_operand(),
+        };
+        match self {
+            Node::Bin(op @ (BinOp::And | BinOp::Or), left, right) => {
+                let symbol = if *op == BinOp::And { "&" } else { "|" };
+                format!("{} {symbol} {}", operand(left), operand(right))
+            }
+            _ => self.python(),
         }
     }
 
@@ -683,39 +790,6 @@ impl Node {
             Node::When(c, t, o) => Node::When(strip(c), strip(t), strip(o)),
             Node::Op(inner, op) => Node::Op(strip(inner), op.clone()),
             leaf => leaf.clone(),
-        }
-    }
-
-    /// Name each `/` as Polars runs it over `schema`: `Div` floor-divides integers and
-    /// divides otherwise, so Python needs `//` or `/` by the quotient's type.
-    pub(crate) fn resolve_division(&mut self, schema: &Schema) {
-        match self {
-            Node::Bin(_, left, right) | Node::Coalesce(left, right) | Node::Filter(left, right) => {
-                left.resolve_division(schema);
-                right.resolve_division(schema);
-            }
-            Node::When(c, t, o) => {
-                c.resolve_division(schema);
-                t.resolve_division(schema);
-                o.resolve_division(schema);
-            }
-            Node::Op(inner, _) | Node::Alias(inner, _) => inner.resolve_division(schema),
-            _ => {}
-        }
-        if let Node::Bin(BinOp::Div, ..) = self {
-            let quotient = DataFrame::empty_with_schema(schema)
-                .lazy()
-                .select([self.to_expr()])
-                .collect_schema()
-                .ok()
-                .and_then(|s| s.get_at_index(0).map(|(_, dtype)| dtype.is_integer()));
-            if let (Some(whole), Node::Bin(op, ..)) = (quotient, self) {
-                *op = if whole {
-                    BinOp::FloorDiv
-                } else {
-                    BinOp::TrueDiv
-                };
-            }
         }
     }
 
@@ -796,6 +870,81 @@ impl Node {
         false
     }
 
+    /// Whether the node is boolean by its form, whatever the data: a test, a logical
+    /// operation or a boolean literal.
+    fn is_boolean(&self) -> bool {
+        match self {
+            Node::Bool(_) => true,
+            Node::Bin(op, ..) => matches!(
+                op,
+                BinOp::Eq
+                    | BinOp::Neq
+                    | BinOp::Lt
+                    | BinOp::Gt
+                    | BinOp::LtEq
+                    | BinOp::GtEq
+                    | BinOp::And
+                    | BinOp::Or
+            ),
+            Node::Op(_, op) => matches!(
+                op,
+                Op::Not
+                    | Op::IsNull
+                    | Op::IsNotNull
+                    | Op::StartsWith(_)
+                    | Op::EndsWith(_)
+                    | Op::ContainsLiteral(_)
+                    | Op::ContainsRegex(_)
+            ),
+            Node::Alias(inner, _) => inner.is_boolean(),
+            _ => false,
+        }
+    }
+
+    /// Settle what the parser could not tell by form, from the types over `schema`,
+    /// as q does. Inner operations settle first, so an outer one sees their types.
+    ///
+    /// - `&` and `|` ([`BinOp::Lesser`], [`BinOp::Greater`]) on two booleans are
+    ///   [`BinOp::And`] and [`BinOp::Or`]; a boolean with a number counts as 0/1 in the
+    ///   number's type; a string or a date with anything else is an error.
+    /// - A whole number typed next to an integer (`a & 5`, `a - 5`) is an integer, so
+    ///   the result stays one as in q.
+    /// - `not` of a number is `x = 0`, not Polars' bitwise not.
+    pub(crate) fn resolve_types(&mut self, schema: &Schema) -> Result<(), String> {
+        match self {
+            Node::Bin(_, left, right) | Node::Coalesce(left, right) | Node::Filter(left, right) => {
+                left.resolve_types(schema)?;
+                right.resolve_types(schema)?;
+            }
+            Node::When(c, t, o) => {
+                c.resolve_types(schema)?;
+                t.resolve_types(schema)?;
+                o.resolve_types(schema)?;
+            }
+            Node::Op(inner, _) | Node::Alias(inner, _) => inner.resolve_types(schema)?,
+            _ => {}
+        }
+        match self {
+            Node::Op(inner, Op::Not) if !inner.is_boolean() => {
+                let zero = match inner.dtype(schema) {
+                    Some(t) if t.is_integer() => Node::Int(0),
+                    Some(t) if t.is_float() => Node::Num(0.0),
+                    _ => return Ok(()),
+                };
+                let inner = std::mem::replace(inner.as_mut(), Node::Null);
+                *self = inner.bin(BinOp::Eq, zero);
+            }
+            Node::Bin(BinOp::Add | BinOp::Sub | BinOp::Mul, left, right) => {
+                whole_next_to_integer(left, right, schema);
+            }
+            Node::Bin(op @ (BinOp::Lesser | BinOp::Greater), left, right) => {
+                resolve_min_max(op, left, right, schema)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// The type the expression has over `schema`, when Polars can say.
     fn dtype(&self, schema: &Schema) -> Option<DataType> {
         DataFrame::empty_with_schema(schema)
@@ -849,6 +998,22 @@ impl Node {
                     py_str(zone)
                 ))
             ),
+            Node::Bin(BinOp::Or | BinOp::Greater, left, right) => {
+                format!("pl.max_horizontal({}, {})", left.python(), right.python())
+            }
+            Node::Bin(BinOp::And, left, right) => format!(
+                "({}.cast(pl.UInt8) * {}.cast(pl.UInt8)).cast(pl.Boolean)",
+                left.python_operand(),
+                right.python_operand()
+            ),
+            Node::Bin(BinOp::Lesser, left, right) => {
+                let (l, r) = (left.python_operand(), right.python_operand());
+                format!(
+                    "pl.when({l}.is_null() | {r}.is_null()).then(None).otherwise(pl.min_horizontal({}, {}))",
+                    left.python(),
+                    right.python()
+                )
+            }
             Node::Bin(op, left, right) => {
                 // A literal on the right stays bare (`pl.col("a") > 1.0`); Python's
                 // operators turn it into one.
@@ -887,10 +1052,157 @@ impl Node {
     /// would otherwise bind to part of it.
     fn python_operand(&self) -> String {
         match self {
+            // Calls, which bind as a whole.
+            Node::Bin(BinOp::And | BinOp::Or | BinOp::Lesser | BinOp::Greater, ..) => self.python(),
             Node::Bin(..) => format!("({})", self.python()),
             _ => self.python(),
         }
     }
+}
+
+/// What `&` and `|` make of an operand's type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Bool,
+    Int,
+    Float,
+    Temporal,
+    Text,
+    /// Unknown, or a type q has no rule here for (a null literal, a list).
+    Other,
+}
+
+impl Kind {
+    fn of(node: &Node, schema: &Schema) -> Kind {
+        if node.is_boolean() {
+            return Kind::Bool;
+        }
+        match node.dtype(schema) {
+            Some(DataType::Boolean) => Kind::Bool,
+            Some(t) if t.is_integer() => Kind::Int,
+            Some(t) if t.is_float() => Kind::Float,
+            Some(t) if t.is_temporal() => Kind::Temporal,
+            Some(DataType::String | DataType::Categorical(..) | DataType::Enum(..)) => Kind::Text,
+            _ => Kind::Other,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Kind::Bool => "a boolean",
+            Kind::Int | Kind::Float => "a number",
+            Kind::Temporal => "a date or time",
+            Kind::Text => "a string",
+            Kind::Other => "a value",
+        }
+    }
+}
+
+/// A whole number typed on one side of an integer becomes an integer literal.
+fn whole_next_to_integer(left: &mut Node, right: &mut Node, schema: &Schema) {
+    let whole = |node: &Node| match node {
+        Node::Num(n) if n.fract() == 0.0 && n.abs() < i64::MAX as f64 => Some(*n as i64),
+        _ => None,
+    };
+    let integer = |node: &Node| matches!(Kind::of(node, schema), Kind::Int | Kind::Bool);
+    if let Some(n) = whole(left)
+        && integer(right)
+    {
+        *left = Node::Int(n);
+    } else if let Some(n) = whole(right)
+        && integer(left)
+    {
+        *right = Node::Int(n);
+    }
+}
+
+/// Settle `op`, q's `&` or `|` on anything but two booleans known by form, by the
+/// operands' types; see [`Node::resolve_types`].
+fn resolve_min_max(
+    op: &mut BinOp,
+    left: &mut Node,
+    right: &mut Node,
+    schema: &Schema,
+) -> Result<(), String> {
+    let symbol = if *op == BinOp::Lesser { "&" } else { "|" };
+    whole_next_to_integer(left, right, schema);
+    let (l, r) = (Kind::of(left, schema), Kind::of(right, schema));
+    let number = |k: Kind| matches!(k, Kind::Int | Kind::Float);
+    let refuse = |a: Kind, b: Kind| {
+        Err(format!(
+            "`{symbol}` cannot combine {} with {}",
+            a.name(),
+            b.name()
+        ))
+    };
+    match (l, r) {
+        (Kind::Bool, Kind::Bool) => {
+            *op = if *op == BinOp::Lesser {
+                BinOp::And
+            } else {
+                BinOp::Or
+            };
+        }
+        (Kind::Text, Kind::Bool | Kind::Int | Kind::Float | Kind::Temporal)
+        | (Kind::Bool | Kind::Int | Kind::Float | Kind::Temporal, Kind::Text) => {
+            return refuse(l, r);
+        }
+        // q's result would be the date or time, counted from 2000.01.01; Polars
+        // counts from 1970, so there is no faithful cast.
+        (Kind::Temporal, Kind::Bool | Kind::Int | Kind::Float)
+        | (Kind::Bool | Kind::Int | Kind::Float, Kind::Temporal) => return refuse(l, r),
+        // A boolean is 0/1 in the number's type.
+        (Kind::Bool, k) if number(k) => bool_as(left, right, schema),
+        (k, Kind::Bool) if number(k) => bool_as(right, left, schema),
+        // Polars' common type of Int64 and UInt64 is Float64; q keeps a long. A
+        // UInt64 past Int64's range becomes null.
+        (Kind::Int, Kind::Int) => {
+            let unsigned = |n: &Node| n.dtype(schema) == Some(DataType::UInt64);
+            let signed = |n: &Node| n.dtype(schema).is_some_and(|t| t.is_signed_integer());
+            if unsigned(left) && signed(right) {
+                cast_in_place(left, CastTo::Int64);
+            } else if unsigned(right) && signed(left) {
+                cast_in_place(right, CastTo::Int64);
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Cast the boolean `flag` to the type of the number beside it: a whole number as
+/// typed is a long, as in q (Polars would read it as Int32).
+fn bool_as(flag: &mut Node, number: &Node, schema: &Schema) {
+    let to = match number {
+        Node::Int(_) => Some(CastTo::Int64),
+        _ => number.dtype(schema).as_ref().and_then(CastTo::number),
+    };
+    if let Some(to) = to {
+        cast_in_place(flag, to);
+    }
+}
+
+/// Null where either side is null.
+fn null_if_either(left: &Expr, right: &Expr) -> Then {
+    when(left.clone().is_null().or(right.clone().is_null())).then(lit(NULL))
+}
+
+/// The smaller or the larger of two, row by row; a null is skipped.
+fn min_max(smaller: bool, left: Expr, right: Expr) -> Expr {
+    let both = [left, right];
+    let result = if smaller {
+        polars::lazy::dsl::min_horizontal(both)
+    } else {
+        polars::lazy::dsl::max_horizontal(both)
+    };
+    // Two inputs, so never the empty-input error.
+    result.expect("min/max of two expressions")
+}
+
+/// `node` replaced by itself cast to `to`.
+fn cast_in_place(node: &mut Node, to: CastTo) {
+    let inner = std::mem::replace(node, Node::Null);
+    *node = inner.op(Op::Cast(to));
 }
 
 fn time_unit_name(unit: TimeUnit) -> &'static str {
@@ -907,7 +1219,7 @@ impl BinOp {
             BinOp::Add => "+",
             BinOp::Sub => "-",
             BinOp::Mul => "*",
-            BinOp::Div | BinOp::TrueDiv => "/",
+            BinOp::TrueDiv => "/",
             BinOp::FloorDiv => "//",
             BinOp::Rem => "%",
             BinOp::Eq => "==",
@@ -916,8 +1228,10 @@ impl BinOp {
             BinOp::Gt => ">",
             BinOp::LtEq => "<=",
             BinOp::GtEq => ">=",
-            BinOp::And => "&",
-            BinOp::Or => "|",
+            BinOp::Any => "|",
+            // Written as calls; see `Node::python`.
+            BinOp::And | BinOp::Lesser => "&",
+            BinOp::Or | BinOp::Greater => "|",
         }
     }
 }
@@ -965,8 +1279,6 @@ impl Op {
             Op::MonthStart => ".dt.month_start()",
             Op::MonthEnd => ".dt.month_end()",
             Op::Strip => ".str.strip_chars()",
-            Op::Cast(CastTo::Int64) => ".cast(pl.Int64, strict=False)",
-            Op::Cast(CastTo::Float64) => ".cast(pl.Float64, strict=False)",
             Op::Cast(CastTo::String) => ".cast(pl.String)",
             _ => "",
         };
@@ -978,6 +1290,7 @@ impl Op {
             None => "strict=False".to_string(),
         };
         match self {
+            Op::Cast(to) => format!(".cast({}, strict=False)", to.python()),
             Op::DtFormat(f) => format!(".dt.to_string({})", py_str(f)),
             Op::StartsWith(s) => format!(".str.starts_with({})", py_str(s)),
             Op::EndsWith(s) => format!(".str.ends_with({})", py_str(s)),
@@ -1176,7 +1489,7 @@ fn any_of(mut conditions: Vec<Node>) -> Node {
         return conditions.pop().unwrap_or(Node::Bool(false));
     }
     let right = conditions.split_off(conditions.len() / 2);
-    any_of(conditions).bin(BinOp::Or, any_of(right))
+    any_of(conditions).bin(BinOp::Any, any_of(right))
 }
 
 /// A `like` pattern as an anchored regex: `*` is any run of characters, `?` any
@@ -1303,8 +1616,9 @@ fn apply_op(left: Node, op: &str, right: Node) -> Result<Node, String> {
         "+" => BinOp::Add,
         "-" => BinOp::Sub,
         "*" => BinOp::Mul,
-        // `%` divides (q heritage); `/` is the alias everyone expects.
-        "%" | "/" => BinOp::Div,
+        // `%` divides (q heritage); `/` is the alias everyone expects. Always to a
+        // float, as q's `%`, even on two integers (Polars' `/` would floor them).
+        "%" | "/" => BinOp::TrueDiv,
         "^" => return Ok(Node::Coalesce(Box::new(left), Box::new(right))),
         "=" => BinOp::Eq,
         "<" => BinOp::Lt,
@@ -1312,6 +1626,17 @@ fn apply_op(left: Node, op: &str, right: Node) -> Result<Node, String> {
         "<=" => BinOp::LtEq,
         ">=" => BinOp::GtEq,
         "<>" | "!=" => BinOp::Neq,
+        // q's Lesser and Greater: and/or on two booleans, min/max otherwise. Two
+        // tests or other boolean forms are known here; columns wait for the schema
+        // (`Node::resolve_types`). `&` repeats its operands (null where either is).
+        "&" | "and" if left.is_boolean() && right.is_boolean() => BinOp::And,
+        "&" | "and" => {
+            check_copies(&left, 2)?;
+            check_copies(&right, 2)?;
+            BinOp::Lesser
+        }
+        "|" | "or" if left.is_boolean() && right.is_boolean() => BinOp::Or,
+        "|" | "or" => BinOp::Greater,
         _ => return Err(format!("Unknown operator: {}", op)),
     };
     Ok(left.bin(op, right))
@@ -1760,7 +2085,11 @@ fn parse_term(tokens: &[Token]) -> Result<(Node, &[Token]), String> {
             if depth > 0 {
                 return Err("Unmatched parenthesis".to_string());
             }
-            let inner = parse_node(&tokens[1..i - 1])?;
+            let inner = &tokens[1..i - 1];
+            if split_tokens(inner, &Token::Comma).len() > 1 {
+                return Err(PAREN_COMMA.to_string());
+            }
+            let inner = parse_node(inner)?;
             let (expr, remaining) = parse_accessors(inner, &tokens[i..], None)?;
             Ok((expr, remaining))
         }
@@ -1772,6 +2101,10 @@ fn parse_term(tokens: &[Token]) -> Result<(Node, &[Token]), String> {
         )),
     }
 }
+
+/// A list in parentheses: q's join, or several where conditions grouped.
+const PAREN_COMMA: &str = "`,` inside parentheses joins lists in q, which datui does not \
+     support; combine conditions with `&` or `|`";
 
 /// Deepest nesting the recursive-descent parser follows, so a long chain (`------x`,
 /// `((((x))))`) errors instead of overflowing the stack (found by the `parse_query`
@@ -1915,8 +2248,9 @@ fn parse_node(tokens: &[Token]) -> Result<Node, String> {
 pub struct ParsedQuery {
     /// The select list; empty means every column.
     pub cols: Vec<Expr>,
-    /// The where clause, its terms ANDed.
-    pub filter: Option<Expr>,
+    /// The where clause's conditions, applied as successive filters: each one over
+    /// the rows the ones before it kept, so an aggregate in a later one sees only those.
+    pub filters: Vec<Expr>,
     /// The by expressions.
     pub group_by: Vec<Expr>,
     /// Names of the by columns that have one (a plain column or an alias).
@@ -1933,7 +2267,7 @@ impl ParsedQuery {
         let guard = |e: Expr| crate::past_calendar::guard_expr(e, schema);
         Self {
             cols: self.cols.into_iter().map(guard).collect(),
-            filter: self.filter.map(guard),
+            filters: self.filters.into_iter().map(guard).collect(),
             group_by: self.group_by.into_iter().map(guard).collect(),
             ..self
         }
@@ -1968,7 +2302,8 @@ pub fn sanitize_query_error(msg: &str) -> String {
 #[derive(Debug, Default)]
 pub(crate) struct QueryNodes {
     pub cols: Vec<Node>,
-    pub filter: Option<Node>,
+    /// The where clause's conditions, in order; see [`ParsedQuery::filters`].
+    pub filters: Vec<Node>,
     pub group_by: Vec<Node>,
     pub group_by_names: Vec<String>,
     pub distinct: bool,
@@ -1979,23 +2314,10 @@ impl QueryNodes {
         let lower = |nodes: Vec<Node>| nodes.iter().map(Node::to_expr).collect();
         ParsedQuery {
             cols: lower(self.cols),
-            filter: self.filter.as_ref().map(Node::to_expr),
+            filters: self.filters.iter().map(Node::to_predicate).collect(),
             group_by: lower(self.group_by),
             group_by_names: self.group_by_names,
             distinct: self.distinct,
-        }
-    }
-
-    /// Each `/` named as Polars runs it over `schema`, the data the query reads; see
-    /// [`Node::resolve_division`].
-    pub(crate) fn resolve_division(&mut self, schema: &Schema) {
-        let nodes = self
-            .cols
-            .iter_mut()
-            .chain(self.filter.iter_mut())
-            .chain(self.group_by.iter_mut());
-        for node in nodes {
-            node.resolve_division(schema);
         }
     }
 
@@ -2005,11 +2327,21 @@ impl QueryNodes {
         let nodes = self
             .cols
             .iter_mut()
-            .chain(self.filter.iter_mut())
+            .chain(self.filters.iter_mut())
             .chain(self.group_by.iter_mut());
         for node in nodes {
             node.resolve_time_zones(schema);
         }
+    }
+
+    /// What the parser could not tell by form, settled by the types in `schema`; see
+    /// [`Node::resolve_types`].
+    pub(crate) fn resolve_types(&mut self, schema: &Schema) -> Result<(), String> {
+        self.cols
+            .iter_mut()
+            .chain(self.filters.iter_mut())
+            .chain(self.group_by.iter_mut())
+            .try_for_each(|node| node.resolve_types(schema))
     }
 
     /// Fails on a temporal column compared with quoted text; see
@@ -2017,22 +2349,24 @@ impl QueryNodes {
     fn check_quoted_temporal(&self, schema: &Schema) -> Result<(), String> {
         self.cols
             .iter()
-            .chain(self.filter.iter())
+            .chain(self.filters.iter())
             .chain(self.group_by.iter())
             .try_for_each(|node| node.check_quoted_temporal(schema))
     }
 
-    /// The where clause as a Python `.filter(...)` call, if there is one.
-    pub(crate) fn python_filter(&self) -> Option<String> {
-        self.filter
-            .as_ref()
-            .map(|f| format!(".filter({})", f.python()))
+    /// The where clause as Python: one `.filter(...)` per condition, in order, as
+    /// datui runs them.
+    pub(crate) fn python_filters(&self) -> Vec<String> {
+        self.filters
+            .iter()
+            .map(|f| format!(".filter({})", f.python_predicate()))
+            .collect()
     }
 
     /// Python calls doing what `DataTableState::query` does: the where clause, then the
     /// grouping (ordered by keys named `key_names`) or the select list, then `distinct`.
     pub(crate) fn python_steps(&self, key_names: &[String]) -> Vec<String> {
-        let mut steps: Vec<String> = self.python_filter().into_iter().collect();
+        let mut steps = self.python_filters();
         if !self.group_by.is_empty() {
             let keys = python_list(&self.group_by);
             let aggs = if !self.cols.is_empty() {
@@ -2087,6 +2421,7 @@ pub fn parse_query_over(query: &str, schema: Option<&Schema>) -> Result<ParsedQu
     if let Some(schema) = schema {
         nodes.resolve_time_zones(schema);
         nodes.check_quoted_temporal(schema)?;
+        nodes.resolve_types(schema)?;
     }
     Ok(nodes.into_parsed())
 }
@@ -2122,7 +2457,8 @@ pub(crate) fn parse_nodes(query: &str) -> Result<QueryNodes, String> {
     };
     if !parts.is_empty() {
         return Err(
-            "Unexpected second 'where': combine conditions with ',' (and) or '|' (or)".to_string(),
+            "Unexpected second 'where': list the conditions after one where, separated by ','"
+                .to_string(),
         );
     }
 
@@ -2304,35 +2640,23 @@ pub(crate) fn parse_nodes(query: &str) -> Result<QueryNodes, String> {
         }
     }
 
-    let mut filter: Option<Node> = None;
-    if let Some(wt) = where_tokens {
+    // q splits where only on its top-level commas, into conditions applied in turn;
+    // each is an ordinary expression (`&` and `|` are operators like any other).
+    let mut filters = Vec::new();
+    if let Some(wt) = where_tokens.filter(|wt| !wt.is_empty()) {
         for chunk in split_tokens(&wt, &Token::Comma) {
             if chunk.is_empty() {
-                continue;
+                return Err(
+                    "Empty condition in where: a ',' with nothing before or after it".to_string(),
+                );
             }
-            let mut or_expr: Option<Node> = None;
-            for or_chunk in split_tokens(&chunk, &Token::Pipe) {
-                if or_chunk.is_empty() {
-                    continue;
-                }
-                let e = parse_node(&or_chunk)?;
-                or_expr = match or_expr {
-                    Some(curr) => Some(curr.bin(BinOp::Or, e)),
-                    None => Some(e),
-                };
-            }
-            if let Some(e) = or_expr {
-                filter = match filter {
-                    Some(curr) => Some(curr.bin(BinOp::And, e)),
-                    None => Some(e),
-                };
-            }
+            filters.push(parse_node(&chunk)?);
         }
     }
 
     Ok(QueryNodes {
         cols,
-        filter,
+        filters,
         group_by: group_by_cols,
         group_by_names: group_by_col_names,
         distinct,

@@ -65,18 +65,59 @@ first as a unit.
 - `a * b + c` → `a * (b + c)`, not `(a * b) + c`
 - `(a + b) * 2 > 100` → `(a + b) * (2 > 100)`; write the comparison first,
   `100 < (a + b) * 2`
+- `a > 5 & b < 3` → `a > (5 & (b < 3))`; parenthesize the left comparison,
+  `(a > 5) & b < 3`
 
 Put the operation you want done first on the right, or use `()` to override
 grouping:
 
 ```q,dataset=flights,network
 select gain: (dep_delay - arr_delay) * 60
-select carrier, flight where (dep_delay > 60) | (arr_delay > 60)
+select carrier, flight where (dep_delay > 60) | arr_delay > 60
 ```
 
-Parentheses also matter for `,` and `|` in where: splitting on comma and pipe
-respects nesting, so you can wrap ORs in `()` and combine them with commas.
-See [Where clause](#where-clause--and-).
+## And, or
+
+`&` (or the word `and`) and `|` (or `or`) are operators like `+` or `>`: no
+precedence, right to left, in select, by and where. Only the rightmost
+comparison can go without parentheses.
+
+| Written | Means |
+|---|---|
+| `(a > 5) & b < 3` | `(a > 5)` and `(b < 3)` |
+| `a > 5 & b < 3` | `a > (5 & (b < 3))` |
+| `(a > 5) \| (b < 3) & c = 1` | `(a > 5)` or (`(b < 3)` and `(c = 1)`) |
+| `not (a > 5) & b < 3` | not (`(a > 5)` and `(b < 3)`) |
+
+On two booleans they are and and or. On numbers they are q's lesser and
+greater: `&` is the smaller of the two, `|` the larger, row by row. A boolean
+with a number counts as 0 or 1 in the number's type, and a whole number next
+to an integer column is an integer, so `a & 5` stays an integer. As in q, any
+value exceeds a null: `&` with a null is null, and `|` with a null is the
+other side.
+
+| Operands | `x & y` | `x \| y` | With a null |
+|---|---|---|---|
+| Two booleans | And | Or | `false & null` is null; `false \| null` is `false` |
+| Numbers, or a boolean with a number | Smaller | Larger | `null & 3` is null; `null \| 3` is `3` |
+| Two dates or times, or two strings | Earlier, or first in order | Later, or last in order | As for numbers |
+| A string or a date with anything else | Error | Error | |
+
+In a where condition, a null drops the row either way.
+
+```q,dataset=flights,network
+select carrier, flight where (origin = "JFK") & dep_delay > 60
+select carrier, flight where (dep_delay > 60) or (arr_delay > 60) and distance > 1000
+select flight, late: 0 | dep_delay, capped: 120 & arr_delay
+```
+
+`0 | dep_delay` floors early departures at 0, and a cancelled flight's null
+delay becomes 0 too; `120 & arr_delay` caps delays at two hours and keeps a
+missing delay null.
+
+`not` of a number is whether it is 0: `not x` is `x = 0`.
+
+`&&` and `||` are errors: write `&` or `|`.
 
 ## Select clause
 
@@ -102,36 +143,45 @@ An unaliased aggregate of a single column is named `{fn}_{column}`, so
 `select avg dep_delay, max dep_delay by carrier` yields `avg_dep_delay` and
 `max_dep_delay`; an explicit alias (`total: sum[distance]`) overrides it.
 
-## Where clause: `,` and `|`
+## Where clause
 
-The where clause combines conditions with two separators:
-
-- `,` — AND. Each comma-separated segment is one ANDed condition.
-- `|` — OR. Within one segment, `|` separates alternatives that are ORed.
-
-The where part is split on `,` first (respecting `()` and `[]`), then each
-segment on `|`, so `,` has broader scope than `|`:
+The where clause is a list of conditions separated by `,`. Each one filters
+the rows the ones before it kept, in order, so an aggregate in a later
+condition is over those rows only. Within a condition, combine tests with `&`
+and `|` ([above](#and-or)).
 
 | Written | Means |
 |---|---|
-| `where a > 10, b < 2` | `(a > 10) AND (b < 2)` |
-| `where a > 10 \| a < 5` | `(a > 10) OR (a < 5)` |
-| `where a > 10 \| a < 5, b = 2` | `(a > 10 OR a < 5) AND (b = 2)` |
-| `A, B \| C` | `A AND (B OR C)` |
-| `A \| B, C \| D` | `(A OR B) AND (C OR D)` |
+| `where a > 10, b < 2` | Rows with `a > 10`, then of those, rows with `b < 2` |
+| `where (a > 10) \| a < 5` | `(a > 10)` or `(a < 5)` |
+| `where a > 10 \| a < 5` | `a > (10 \| (a < 5))`, which is `a > 10` |
+| `where (a > 10) \| a < 5, b = 2` | (`(a > 10)` or `(a < 5)`), then `b = 2` |
+
+Flights later than average, then of those, longer than their average:
+
+```q,dataset=flights,network
+select carrier, flight, dep_delay, distance where dep_delay > avg dep_delay, distance > avg distance
+```
+
+The second `avg distance` is over the late flights only. Written as one
+condition, `(dep_delay > avg dep_delay) & distance > avg distance`, both
+averages are over every row.
+
+A `,` inside parentheses is an error: in q it joins lists, which datui does
+not support. Combine the conditions with `&` or `|` instead.
+A `,` with no condition on one side, as in `where a > 1,` or `,,`, is an
+error too.
 
 The where clause takes conditions only: no `name: expression` assignment.
-
-For more complex logic, wrap OR subexpressions in `()` — parentheses keep `|`
-inside one AND term — and separate the groups with `,`.
 
 ## Operators and literals
 
 | Kind | Syntax |
 |---|---|
-| Arithmetic | `+` `-` `*` `/` `%` (`/` and `%` both divide; `%` is not modulo, `mod` is) |
+| Arithmetic | `+` `-` `*` `/` `%`: `/` and `%` both divide and always give a float, as q's `%` does (`7 % 2` is `3.5`); wrap the result in `floor[...]` for a whole number. `%` is not modulo, `mod` is |
 | Equal, not equal | `=`, `!=`, `<>` (same as `!=`) |
 | Ordering | `<` `>` `<=` `>=` |
+| And, or | `&` `and`, `\|` `or`: and/or on booleans, smaller/larger on numbers; see [And, or](#and-or) |
 | Coalesce | `^` — first non-null, left to right; `a^b^c` = coalesce(a, b, c), binding right-to-left as `a^(b^c)` |
 | Numbers | `42`, `3.14` |
 | Strings | `"hello"`, `\"` for an embedded quote |
@@ -166,9 +216,9 @@ Because evaluation is right-to-left, `x mod 2 in [1]` is `x mod (2 in [1])`.
 Write `(x mod 2) in [1]` or `1 = x mod 2`. `not name in ["Mary"]` negates the
 whole test.
 
-The words are operators only between two operands. A column named `in` or
-`mod` still works on its own or at the start of an expression, and
-`col["in"]` always does.
+The words are operators only between two operands. A column named `in`,
+`mod`, `and` or `or` still works on its own or at the start of an expression,
+and `col["in"]` always does.
 
 ## Date and datetime accessors
 
@@ -285,7 +335,7 @@ logic in where. Write `fn[expr]` or `fn expr`; brackets are optional.
 
 | Function | Description | Example |
 |---|---|---|
-| `not` | Logical negation | `where not[origin = "JFK"]`, `where not dep_delay > 10` |
+| `not` | Logical negation; of a number, whether it is 0 | `where not[origin = "JFK"]`, `where not dep_delay > 10` |
 | `null` | Is null | `where null dep_time`, `where null[dep_time]` |
 | `not null` | Is not null | `where not null dep_time` |
 

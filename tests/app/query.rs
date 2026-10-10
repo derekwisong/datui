@@ -989,6 +989,43 @@ fn test_q_style_distinct_like_mod_and_xbar() {
     );
 }
 
+/// Where conditions run in turn, so an aggregate in a later one is over the rows the
+/// earlier ones kept; `&` in one condition sees every row. A drill into a group shows
+/// the rows the conditions kept.
+#[test]
+fn test_q_where_conditions_run_in_turn() {
+    let (mut app, rx, tx) = open_query_filter_fixture("query_where_in_turn.csv");
+    let run = |app: &mut App, q: &str| {
+        app.event(AppEvent::Applied(datui::Applied::QQuery(q.to_string())));
+        pump_until_idle(app, &rx, &tx);
+        assert!(
+            app.data_table_state.as_ref().unwrap().error().is_none(),
+            "{q}"
+        );
+        current_rows(app)
+    };
+    // a < 30 keeps 0..29, whose average is 14.5: 15 rows. As one condition, the
+    // average is over every row (49.5) and no row passes both.
+    assert_eq!(run(&mut app, "select where a < 30, a > avg a"), 15);
+    assert_eq!(run(&mut app, "select where (a < 30) & a > avg a"), 0);
+    // a > 49.5 keeps 50..99, whose c averages 1.02: the c = 2 rows. Over every row c
+    // averages 0.99, so one condition keeps c = 1 too.
+    assert_eq!(run(&mut app, "select where a > avg a, c > avg c"), 17);
+    assert_eq!(run(&mut app, "select where (a > avg a) & c > avg c"), 33);
+    // Strict q: a > (90 | (a < 5)) is a > 90.
+    assert_eq!(run(&mut app, "select where a > 90 | a < 5"), 9);
+    assert_eq!(run(&mut app, "select where (a > 90) | a < 5"), 14);
+
+    run(
+        &mut app,
+        "select n: count a by c where a > avg a, c > avg c",
+    );
+    let state = app.data_table_state.as_mut().unwrap();
+    state.drill_down_into_group(0).unwrap();
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(current_rows(&app), 17);
+}
+
 /// And for SQL.
 #[cfg(feature = "sql")]
 #[test]

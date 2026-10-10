@@ -68,8 +68,8 @@ Which species is heaviest? Gentoo, 5,076 g on average over 124 penguins.
 table is named `df`. Press <kbd>Enter</kbd> on Gentoo to see its 124 penguins,
 and <kbd>Esc</kbd> to come back.
 
-The same summary is one line in **q**, a subset of q that evaluates right
-to left. Press <kbd>:</kbd>, then <kbd>Ctrl</kbd>+<kbd>T</kbd> for `q:`:
+The same summary is shorter in **q**, datui's other query language. Press
+<kbd>:</kbd>, then <kbd>Ctrl</kbd>+<kbd>T</kbd> to switch to `q:`:
 
 ```q,dataset=penguins,network,rows=3
 select mean_mass_g: avg body_mass_g by species

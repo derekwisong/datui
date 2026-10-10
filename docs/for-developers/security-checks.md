@@ -32,9 +32,9 @@ workspace and would otherwise never be audited. Configuration is in `deny.toml`
 at the repository root.
 
 Nothing audits the Python dependencies in `scripts/`. They are development
-tooling and never reach a datui user, but an advisory in them still reaches a
-contributor's machine, so a version floor with the advisory ids written beside
-it is the current answer.
+tooling and never reach a datui user, but an advisory against them still
+affects contributors' machines. For now, each affected dependency gets a version
+floor with the advisory IDs written beside it.
 
 **zizmor** analyzes the GitHub Actions workflow files for the patterns that let
 a pull request steal a secret or poison a build: unpinned actions, over-broad
@@ -61,12 +61,12 @@ dependency will not accept, add it to the `ignore` list in `deny.toml` with two
 things written down: why it is acceptable today, and the event that should clear
 it. Both are required for an exception.
 
-The current entries are all of that shape. The two `quick-xml` denial-of-service
-advisories are the ones worth watching. They used to be reachable whenever datui
-opened an `.xlsx` file, which is untrusted data; `calamine` 0.36 moved to
-`quick-xml` 0.41 and closed that path. What is left is the copy `object_store`
-uses to parse S3 and GCS responses, which `polars` pins, so reaching it needs an
-object-store endpoint the user chose that answers with hostile XML.
+Every current entry has both. The two `quick-xml` denial-of-service advisories
+are the ones worth watching. They used to be reachable whenever datui opened an
+`.xlsx` file, which is untrusted data, until `calamine` 0.36 moved to `quick-xml`
+0.41 and closed that path. What is left is the copy `object_store` uses to parse
+S3 and GCS responses. `polars` pins that copy, and reaching it takes an
+object-store endpoint, chosen by the user, that answers with hostile XML.
 
 ## Adding a new action to a workflow
 

@@ -1,7 +1,7 @@
 # Check the examples
 
-The numbers the guides quote from the **Example datasets** that come with datui are checked
-by one script; that every command and query runs is
+One script checks the numbers the guides quote from the **Example datasets** that
+come with datui. Checking that every command and query runs is
 [the doc-example runner's](documentation.md#code-blocks) job.
 
 ```bash,repo
@@ -28,9 +28,9 @@ it; `-k food` runs one check). It needs the network, so CI does not run it.
 
 ## By hand
 
-The runner opens what each command names and runs each query; what a key does
-on screen, and the numbers a sampled analysis or a remote dataset shows, still
-need a person. Build a release binary, run it with a throwaway cache and config
+The runner opens what each command names and runs each query. A person still
+has to check what a key does on screen, and the numbers a sampled analysis or a
+remote dataset shows. Build a release binary, run it with a throwaway cache and config
 (`DATUI_CACHE_DIR`, `DATUI_CONFIG_DIR`), and open each dataset from the home
 screen.
 
@@ -49,6 +49,6 @@ screen.
 | [Remote data](../user-guide/remote-data.md) | NOAA 2024, its element counts, Bitcoin 2024 | 38,466,379 rows; `PRCP` first; 12 months |
 | [Python](../user-guide/python-module.md) | The capture example, with the wheel built as in [Build Python bindings](python-bindings.md) | The three-row summary |
 
-Earthquakes change daily, and Bitcoin gains a partition a day: their pages
-quote no counts. A number that no longer matches is a docs fix or a datui bug;
-file the bug with the dataset and the steps.
+The earthquake data changes daily, and Bitcoin gains a partition a day, so
+their pages quote no counts. A number that no longer matches means either the
+docs need a fix or datui has a bug; file a bug with the dataset and the steps.

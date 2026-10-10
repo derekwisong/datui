@@ -25,9 +25,10 @@ needs Rust and the Python headers (`python3-dev` on Debian and Ubuntu).
 ./scripts/dev/test.sh python
 ```
 
-That is what CI's Python job runs. The `datui` command the wheel installs runs a
-bundled binary, found beside the package rather than on `PATH`, so by hand:
-build it, copy it in, then build the extension:
+That is what CI's Python job runs. To do it by hand, note that the `datui`
+command the wheel installs runs a bundled binary, found beside the package
+rather than on `PATH`. So build the binary, copy it into the package, then build
+the extension:
 
 ```bash,repo
 cargo build
@@ -40,9 +41,9 @@ cd python && ../.venv/bin/maturin develop && cd ..
 
 On Windows, copy `target/debug/datui.exe`. Add `--release` to `maturin develop`
 for an optimized build. The tests cover imports, options, invalid input and
-serialized plans; where there is a pseudo-terminal, they also open the TUI and
-check that a captured frame outlives it, and that the
-[Python API](../reference/python-api.md) page lists every keyword.
+serialized plans, and check that the [Python API](../reference/python-api.md)
+page lists every keyword. Where there is a pseudo-terminal, they also open the
+TUI and check that a captured frame outlives it.
 
 <a id="running"></a>
 
@@ -65,8 +66,8 @@ A DataFrame crosses into the extension over the Arrow C stream
 (`view_from_arrow`), which does not change between Polars releases. A
 LazyFrame crosses as a serialized plan. Rust Polars **0.55** is paired with
 Python Polars **1.43**. The wheel declares `polars>=1.38` with no upper bound, so
-installing it does not prove every plan reads. Use the paired version when
-debugging a plan that does not.
+a successful install does not mean every plan can be read. When debugging a
+plan that cannot be read, use the paired version.
 
 The bridge checks the plan's DSL version and replaces its per-commit schema
 hash with the receiver's. That handles differing build hashes; it does not
@@ -74,13 +75,18 @@ translate incompatible plans. Polars 2.0 keeps the DSL version but adds required
 fields, so it cannot read the plans 0.55 writes.
 
 A capture comes back as a `Captured`: `plan()` gives the plan bytes, and
-`__arrow_c_stream__` collects the view and streams its rows. The wrapper reads
-the plan, and takes the rows with a `UserWarning` when its Polars cannot, when
-`plan()` fails (an anonymous scan or opaque function has no plan form), or
-without asking for the plan when its Polars is another major release. On the
-paired release an unreadable plan raises instead: it is a bug. CI runs the
-Python tests against the pinned 1.43, the 1.38 floor and 2.x, where captures
-come back as rows, and the docs' Python examples against 2.x too.
+`__arrow_c_stream__` collects the view and streams its rows. The Python wrapper
+reads the plan when it can. It takes the rows instead, with a `UserWarning`,
+when:
+
+- the installed Polars cannot read the plan;
+- `plan()` fails (an anonymous scan or opaque function has no plan form); or
+- the installed Polars is another major release, in which case it does not ask
+  for the plan at all.
+
+On the paired release, an unreadable plan raises instead, since it is a bug. CI
+runs the Python tests against the pinned 1.43, the 1.38 floor and 2.x (where
+captures come back as rows), and the docs' Python examples against 2.x too.
 
 When the Rust Polars moves, change these together:
 

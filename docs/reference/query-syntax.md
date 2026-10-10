@@ -91,12 +91,19 @@ comparison can go without parentheses.
 
 On two booleans they are and and or. On numbers they are q's lesser and
 greater: `&` is the smaller of the two, `|` the larger, row by row. A boolean
-with a number counts as 0 or 1.
+with a number counts as 0 or 1 in the number's type, and a whole number next
+to an integer column is an integer, so `a & 5` stays an integer. As in q, any
+value exceeds a null: `&` with a null is null, and `|` with a null is the
+other side.
 
-| Operands | `x & y` | `x \| y` | A null |
+| Operands | `x & y` | `x \| y` | With a null |
 |---|---|---|---|
-| Two booleans | And | Or | Decides only when the other side does not: `false & null` is `false`, `true & null` null; `true \| null` is `true` |
-| Numbers, or a boolean with a number | Smaller | Larger | Skipped: `null & 3` is `3` |
+| Two booleans | And | Or | `false & null` is null; `false \| null` is `false` |
+| Numbers, or a boolean with a number | Smaller | Larger | `null & 3` is null; `null \| 3` is `3` |
+| Two dates or times, or two strings | Earlier, or first in order | Later, or last in order | As for numbers |
+| A string or a date with anything else | Error | Error | |
+
+In a where condition, a null drops the row either way.
 
 ```q,dataset=flights,network
 select carrier, flight where (origin = "JFK") & dep_delay > 60
@@ -104,8 +111,13 @@ select carrier, flight where (dep_delay > 60) or (arr_delay > 60) and distance >
 select flight, late: 0 | dep_delay, capped: 120 & arr_delay
 ```
 
-`0 | dep_delay` floors early departures at 0; `120 & arr_delay` caps
-delays at two hours.
+`0 | dep_delay` floors early departures at 0, and a cancelled flight's null
+delay becomes 0 too; `120 & arr_delay` caps delays at two hours and keeps a
+missing delay null.
+
+`not` of a number is whether it is 0: `not x` is `x = 0`.
+
+`&&` and `||` are errors: write `&` or `|`.
 
 ## Select clause
 
@@ -157,6 +169,8 @@ averages are over every row.
 
 A `,` inside parentheses is an error: in q it joins lists, which datui does
 not support. Combine the conditions with `&` or `|` instead.
+A `,` with no condition on one side, as in `where a > 1,` or `,,`, is an
+error too.
 
 The where clause takes conditions only: no `name: expression` assignment.
 
@@ -321,7 +335,7 @@ logic in where. Write `fn[expr]` or `fn expr`; brackets are optional.
 
 | Function | Description | Example |
 |---|---|---|
-| `not` | Logical negation | `where not[origin = "JFK"]`, `where not dep_delay > 10` |
+| `not` | Logical negation; of a number, whether it is 0 | `where not[origin = "JFK"]`, `where not dep_delay > 10` |
 | `null` | Is null | `where null dep_time`, `where null[dep_time]` |
 | `not null` | Is not null | `where not null dep_time` |
 

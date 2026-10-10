@@ -1039,17 +1039,18 @@ impl DataTableState {
                     keys: keys.iter().map(|(name, _)| name.to_string()).collect(),
                 }];
                 // The same keys as Python, for a drill into one of the groups.
-                let python_keys: Vec<Option<String>> = match crate::query::parse_nodes(&query) {
-                    Ok(mut nodes) => {
-                        nodes.resolve_division(&input);
+                let python_keys: Vec<Option<String>> = match crate::query::parse_nodes(&query)
+                    .and_then(|mut nodes| {
                         nodes.resolve_time_zones(&input);
-                        nodes.resolve_logic(&input);
-                        nodes
-                            .group_by
-                            .iter()
-                            .map(|key| Some(key.without_aliases().python()))
-                            .collect()
-                    }
+                        nodes.resolve_types(&input)?;
+                        nodes.resolve_division(&input);
+                        Ok(nodes)
+                    }) {
+                    Ok(nodes) => nodes
+                        .group_by
+                        .iter()
+                        .map(|key| Some(key.without_aliases().python()))
+                        .collect(),
                     Err(_) => vec![None; keys.len()],
                 };
                 let python_rows = Some(vec![Step::QueryRows {

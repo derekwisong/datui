@@ -1709,8 +1709,9 @@ fn test_copy_as_python_scripts_compute_the_rows_datui_shows() {
             "& and | as min and max on numbers, and on booleans",
             Box::new(|s| {
                 s.query(
-                    "select order_id, lo: amount & 40, hi: 0 | qty - 3, m: (qty > 2) & 5 \
-                     where (qty > 1) & not region = \"east\""
+                    "select order_id, lo: amount & 40, hi: 0 | qty - 3, m: (qty > 2) & 5, \
+                     k: (amount > 40) & qty > 2, o: (amount > 40) | qty > 2, z: not qty \
+                     where (qty > 1) & not region = \"east\", not (amount > 20) & qty < 6"
                         .into(),
                 )
             }),

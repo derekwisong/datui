@@ -120,21 +120,35 @@ select carrier, flight where (dep_delay > 60) | arr_delay > 60
 \fBnot (a > 5) & b < 3\fR
 not (\fB(a > 5)\fR and \fB(b < 3)\fR)
 .PP
-On two booleans they are and and or. On numbers they are q's lesser and greater: \fB&\fR is the smaller of the two, \fB|\fR the larger, row by row. A boolean with a number counts as 0 or 1.
+On two booleans they are and and or. On numbers they are q's lesser and greater: \fB&\fR is the smaller of the two, \fB|\fR the larger, row by row. A boolean with a number counts as 0 or 1 in the number's type, and a whole number next to an integer column is an integer, so \fBa & 5\fR stays an integer. As in q, any value exceeds a null: \fB&\fR with a null is null, and \fB|\fR with a null is the other side.
 .TP
 Two booleans
 x & y: And
 .br
 x | y: Or
 .br
-A null: Decides only when the other side does not: \fBfalse & null\fR is \fBfalse\fR, \fBtrue & null\fR null; \fBtrue | null\fR is \fBtrue\fR
+With a null: \fBfalse & null\fR is null; \fBfalse | null\fR is \fBfalse\fR
 .TP
 Numbers, or a boolean with a number
 x & y: Smaller
 .br
 x | y: Larger
 .br
-A null: Skipped: \fBnull & 3\fR is \fB3\fR
+With a null: \fBnull & 3\fR is null; \fBnull | 3\fR is \fB3\fR
+.TP
+Two dates or times, or two strings
+x & y: Earlier, or first in order
+.br
+x | y: Later, or last in order
+.br
+With a null: As for numbers
+.TP
+A string or a date with anything else
+x & y: Error
+.br
+x | y: Error
+.PP
+In a where condition, a null drops the row either way.
 .PP
 On the \fBflights\fR dataset (see DATASETS):
 .PP
@@ -146,7 +160,11 @@ select flight, late: 0 | dep_delay, capped: 120 & arr_delay
 .EE
 .RE
 .PP
-\fB0 | dep_delay\fR floors early departures at 0; \fB120 & arr_delay\fR caps delays at two hours.
+\fB0 | dep_delay\fR floors early departures at 0, and a cancelled flight's null delay becomes 0 too; \fB120 & arr_delay\fR caps delays at two hours and keeps a missing delay null.
+.PP
+\fBnot\fR of a number is whether it is 0: \fBnot x\fR is \fBx = 0\fR.
+.PP
+\fB&&\fR and \fB||\fR are errors: write \fB&\fR or \fB|\fR.
 .SH "SELECT CLAUSE"
 .IP \(bu 4
 \fBselect\fR \(em all columns, no expressions
@@ -194,7 +212,7 @@ select carrier, flight, dep_delay, distance where dep_delay > avg dep_delay, dis
 .PP
 The second \fBavg distance\fR is over the late flights only. Written as one condition, \fB(dep_delay > avg dep_delay) & distance > avg distance\fR, both averages are over every row.
 .PP
-A \fB,\fR inside parentheses is an error: in q it joins lists, which datui does not support. Combine the conditions with \fB&\fR or \fB|\fR instead.
+A \fB,\fR inside parentheses is an error: in q it joins lists, which datui does not support. Combine the conditions with \fB&\fR or \fB|\fR instead. A \fB,\fR with no condition on one side, as in \fBwhere a > 1,\fR or \fB,,\fR, is an error too.
 .PP
 The where clause takes conditions only: no \fBname: expression\fR assignment.
 .SH "OPERATORS AND LITERALS"
@@ -537,7 +555,7 @@ Example: \fBselect len[tailnum]\fR
 .SS "Logic functions"
 .TP
 \fBnot\fR
-Logical negation
+Logical negation; of a number, whether it is 0
 .br
 Example: \fBwhere not[origin = "JFK"]\fR, \fBwhere not dep_delay > 10\fR
 .TP

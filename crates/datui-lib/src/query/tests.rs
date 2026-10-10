@@ -1474,10 +1474,11 @@ fn test_word_operators_right_to_left() {
 fn test_word_operators_right_to_left_evaluate() {
     let df = df!("x" => &[3i64, 4, 9]).unwrap();
     // 1 + x mod 4 is 1 + (x mod 4), not (1 + x) mod 4.
+    // A whole number added to an integer is one, as in q.
     let out = eval("select a: 1 + x mod 4", &df);
-    assert_eq!(values(&out, "a"), ["4.0", "1.0", "2.0"]);
+    assert_eq!(values(&out, "a"), ["4", "1", "2"]);
     let out = eval("select a: (1 + x) mod 4", &df);
-    assert_eq!(values(&out, "a"), ["0.0", "1.0", "2.0"]);
+    assert_eq!(values(&out, "a"), ["0", "1", "2"]);
     // x mod 2 in [1] would be x mod (2 in [1]); parentheses test the remainder.
     let out = eval("select x where (x mod 2) in [1]", &df);
     assert_eq!(values(&out, "x"), ["3", "9"]);
@@ -1965,31 +1966,135 @@ fn and_or_are_logical_on_booleans_and_min_max_on_numbers() {
         "f" => &[Some(true), None, Some(false), Some(true), None],
     )
     .unwrap();
-    let ints = |out: &DataFrame, name: &str| values(out, name);
-    // Numbers: elementwise min and max; a null is skipped, as Polars'
-    // min_horizontal and max_horizontal do (q would keep it).
+    // Numbers: the smaller and the larger, row by row, and integers stay integers.
+    // Any value exceeds a null in q: `&` with a null is null, `|` the other side.
     let out = eval("select lo: a & b, hi: a or b, floor: 0 | a - 5", &df);
-    assert_eq!(ints(&out, "lo"), ["1", "1", "6", "5", "3"]);
-    assert_eq!(ints(&out, "hi"), ["2", "4", "9", "5", "8"]);
-    assert_eq!(ints(&out, "floor"), ["0.0", "0.0", "1.0", "0.0", "3.0"]);
-    // A boolean with a number is 0/1 with it.
-    let out = eval("select m: (a > 3) & 5, x: 0 | b > 2", &df);
-    assert_eq!(ints(&out, "m"), ["0.0", "1.0", "1.0", "5.0", "1.0"]);
-    assert_eq!(ints(&out, "x"), ["0.0", "0.0", "1.0", "1.0", "1.0"]);
-    // Two booleans, a column among them, are and/or: Kleene, so a null decides
-    // only when the other side does not.
-    let out = eval("select a, b where f & b > 1", &df);
-    assert_eq!(ints(&out, "b"), ["2", "5"]);
-    let out = eval("select b where f | b > 2", &df);
-    assert_eq!(ints(&out, "b"), ["2", "9", "5", "3"]);
-    let out = eval("select b, k: f and b > 4", &df);
+    assert_eq!(values(&out, "lo"), ["1", "1", "6", "null", "3"]);
+    assert_eq!(values(&out, "hi"), ["2", "4", "9", "5", "8"]);
+    assert_eq!(values(&out, "floor"), ["0", "0", "1", "0", "3"]);
+    // A boolean with a number is 0/1 in the number's type.
+    let out = eval("select m: (a > 3) & 5, x: 0 | b > 2, y: (b > 2) | 0.5", &df);
+    assert_eq!(values(&out, "m"), ["0", "1", "1", "null", "1"]);
+    assert_eq!(values(&out, "x"), ["0", "0", "1", "1", "1"]);
+    assert_eq!(values(&out, "y"), ["0.5", "0.5", "1.0", "1.0", "1.0"]);
+    // Two booleans, a column among them, are and/or with the same null rule:
+    // `false & null` is null, `false | null` is false.
+    let out = eval("select b, k: f and b > 4, o: f | b > 4", &df);
     assert_eq!(
-        ints(&out, "k"),
-        ["false", "false", "false", "true", "false"]
+        values(&out, "k"),
+        ["false", "null", "false", "true", "null"]
     );
-    // `not` composes: not (f and (b > 4)).
+    assert_eq!(
+        values(&out, "o"),
+        ["true", "false", "true", "true", "false"]
+    );
+    let out = eval("select b where f & b > 1", &df);
+    assert_eq!(values(&out, "b"), ["2", "5"]);
+    let out = eval("select b where f | b > 2", &df);
+    assert_eq!(values(&out, "b"), ["2", "9", "5", "3"]);
+    // `not` composes: not (f and (b > 4)), null where f is.
     let out = eval("select b where not f & b > 4", &df);
-    assert_eq!(ints(&out, "b"), ["2", "1", "9", "3"]);
+    assert_eq!(values(&out, "b"), ["2", "9"]);
+}
+
+#[test]
+fn not_of_a_number_is_whether_it_is_zero() {
+    let df = df!(
+        "x" => &[Some(0i64), Some(3), None],
+        "y" => &[0.0, 0.0, 1.0],
+    )
+    .unwrap();
+    let out = eval("select n: not x, m: not y", &df);
+    assert_eq!(values(&out, "n"), ["true", "false", "null"]);
+    assert_eq!(values(&out, "m"), ["true", "true", "false"]);
+    // Booleans, so `&` is and, not a bitwise and of -1s.
+    let out = eval("select x where (not x) & not y", &df);
+    assert_eq!(values(&out, "x"), ["0"]);
+    let mut nodes = parse_nodes("select n: not x").unwrap();
+    nodes.resolve_types(df.schema()).unwrap();
+    assert_eq!(nodes.cols[0].python(), "(pl.col(\"x\") == 0).alias(\"n\")");
+}
+
+#[test]
+fn and_or_types_follow_q() {
+    let schema = Schema::from_iter([
+        Field::new("d".into(), DataType::Date),
+        Field::new("t".into(), DataType::Datetime(TimeUnit::Microseconds, None)),
+        Field::new("s".into(), DataType::String),
+        Field::new("i".into(), DataType::Int64),
+        Field::new("u".into(), DataType::UInt64),
+        Field::new("n".into(), DataType::Int32),
+        Field::new("g".into(), DataType::Float32),
+        Field::new("f".into(), DataType::Boolean),
+    ]);
+    let err = |q: &str| parse_query_over(q, Some(&schema)).unwrap_err();
+    assert_eq!(
+        err("select d & 5"),
+        "`&` cannot combine a date or time with a number"
+    );
+    assert_eq!(
+        err("select f | t"),
+        "`|` cannot combine a boolean with a date or time"
+    );
+    assert_eq!(
+        err("select s | 1"),
+        "`|` cannot combine a string with a number"
+    );
+    assert_eq!(
+        err("select where i > s & f"),
+        "`&` cannot combine a string with a boolean"
+    );
+    // Two dates or times, or two strings, are fine.
+    assert!(parse_query_over("select d & t, s | s", Some(&schema)).is_ok());
+    let typed = |expr: &str| {
+        let mut node = node(expr);
+        node.resolve_types(&schema).unwrap();
+        node
+    };
+    let dtype = |expr: &str| typed(expr).dtype(&schema).unwrap();
+    // A boolean takes the number's type; a whole number typed next to an integer is
+    // one, so the integer type stays.
+    assert_eq!(dtype("f & n"), DataType::Int32);
+    assert_eq!(dtype("g | f"), DataType::Float32);
+    assert_eq!(dtype("i & 5"), DataType::Int64);
+    assert_eq!(dtype("0 | i - 5"), DataType::Int64);
+    assert_eq!(dtype("i & 2.5"), DataType::Float64);
+    // Int64 with UInt64 is Int64, as q keeps a long (Polars would give Float64).
+    assert_eq!(dtype("i | u"), DataType::Int64);
+    assert_eq!(
+        typed("f & n").python(),
+        "pl.when(pl.col(\"f\").cast(pl.Int32, strict=False).is_null() | pl.col(\"n\").is_null()).then(None).otherwise(pl.min_horizontal(pl.col(\"f\").cast(pl.Int32, strict=False), pl.col(\"n\")))"
+    );
+}
+
+#[test]
+fn doubled_operators_and_empty_conditions_are_errors() {
+    assert_eq!(parse_err("select where a && b"), "`&&` is not q: use `&`");
+    assert_eq!(parse_err("select where a || b"), "`||` is not q: use `|`");
+    assert_eq!(
+        parse_err("select where a &| b"),
+        "`&|` is not q: use `&` or `|`"
+    );
+    let empty = "Empty condition in where: a ',' with nothing before or after it";
+    for q in [
+        "select where f,, b > 2",
+        "select where ,f",
+        "select where f,",
+    ] {
+        assert_eq!(parse_err(q), empty, "{q}");
+    }
+    // A where with nothing after it is still every row.
+    assert!(parse_query("select where").unwrap().filters.is_empty());
+}
+
+#[test]
+fn a_long_chain_of_and_is_refused_not_grown() {
+    let chain = vec!["x"; 40].join(" & ");
+    let err = parse_err(&format!("select {chain}"));
+    assert!(err.contains("nested wavg, xbar, in or &"), "{err}");
+    // Tests joined with `&` repeat nothing, however many.
+    let tests: Vec<String> = (0..60).map(|i| format!("(x > {i})")).collect();
+    assert!(parse_query(&format!("select where {}", tests.join(" & "))).is_ok());
 }
 
 #[test]
@@ -2045,42 +2150,59 @@ fn a_comma_in_parentheses_is_an_error() {
 
 #[test]
 fn and_or_read_as_python_polars() {
+    let predicate = |expr: &str| node(expr).python_predicate();
+    // As a where condition, only the true rows matter: Python's `&` and `|`.
     assert_eq!(
-        py("(a > 5) & b < 3"),
+        predicate("(a > 5) & b < 3"),
         "(pl.col(\"a\") > 5.0) & (pl.col(\"b\") < 3.0)"
     );
     assert_eq!(
-        py("(a>5) | (b<3) & c=1"),
+        predicate("(a>5) | (b<3) & c=1"),
         "(pl.col(\"a\") > 5.0) | ((pl.col(\"b\") < 3.0) & (pl.col(\"c\") == 1.0))"
     );
-    assert_eq!(py("a & 3"), "pl.min_horizontal(pl.col(\"a\"), pl.lit(3.0))");
+    // As a value, a null on either side of `&` is null: 1 × 1 is 1, and a null spreads.
+    assert_eq!(
+        py("(a > 5) & b < 3"),
+        "((pl.col(\"a\") > 5.0).cast(pl.UInt8) * (pl.col(\"b\") < 3.0).cast(pl.UInt8)).cast(pl.Boolean)"
+    );
+    assert_eq!(
+        py("(a > 5) | b < 3"),
+        "pl.max_horizontal(pl.col(\"a\") > 5.0, pl.col(\"b\") < 3.0)"
+    );
+    assert_eq!(
+        py("a & 3"),
+        "pl.when(pl.col(\"a\").is_null() | pl.lit(3.0).is_null()).then(None).otherwise(pl.min_horizontal(pl.col(\"a\"), pl.lit(3.0)))"
+    );
     assert_eq!(
         py("0 | x - 5"),
         "pl.max_horizontal(pl.lit(0.0), pl.col(\"x\") - 5.0)"
     );
     assert_eq!(
-        py("not (a > 5) & b < 3"),
-        "((pl.col(\"a\") > 5.0) & (pl.col(\"b\") < 3.0)).not_()"
+        predicate("not (a > 5) & b < 3"),
+        "((pl.col(\"a\") > 5.0).cast(pl.UInt8) * (pl.col(\"b\") < 3.0).cast(pl.UInt8)).cast(pl.Boolean).not_()"
     );
     // Over the data's types: a boolean column settles to `&`, a boolean with a
-    // number to 0/1.
+    // number to 0/1 in its type, a whole number next to an integer to an integer.
     let schema = Schema::from_iter([
         Field::new("f".into(), DataType::Boolean),
         Field::new("a".into(), DataType::Int64),
     ]);
     let typed = |expr: &str| {
         let mut node = node(expr);
-        node.resolve_logic(&schema);
-        node.python()
+        node.resolve_types(&schema).unwrap();
+        node
     };
-    assert_eq!(typed("f & a > 1"), "pl.col(\"f\") & (pl.col(\"a\") > 1.0)");
     assert_eq!(
-        typed("a > 5 & a < 3"),
-        "pl.col(\"a\") > pl.min_horizontal(pl.lit(5.0), (pl.col(\"a\") < 3.0).cast(pl.Int64, strict=False))"
+        typed("f & a > 1").python_predicate(),
+        "pl.col(\"f\") & (pl.col(\"a\") > 1.0)"
     );
     assert_eq!(
-        typed("a | 0"),
-        "pl.max_horizontal(pl.col(\"a\"), pl.lit(0.0))"
+        typed("a > 5 | a < 3").python(),
+        "pl.col(\"a\") > pl.max_horizontal(pl.lit(5), (pl.col(\"a\") < 3.0).cast(pl.Int64, strict=False))"
+    );
+    assert_eq!(
+        typed("a | 0").python(),
+        "pl.max_horizontal(pl.col(\"a\"), pl.lit(0))"
     );
 }
 

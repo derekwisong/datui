@@ -48,7 +48,7 @@ fn config_with(id: &str, name: &str, url: &str) -> datui::config::AppConfig {
 
 #[track_caller]
 fn pump(app: &mut App, rx: &std::sync::mpsc::Receiver<AppEvent>, done: impl Fn(&App) -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + common::HANG_GUARD;
     while !done(app) && Instant::now() < deadline {
         if let Ok(event) = rx.recv_timeout(Duration::from_millis(20)) {
             drive(app, event);
@@ -332,7 +332,7 @@ fn an_unreachable_web_file_says_so_on_its_row_and_its_open() {
 
     // Enter: the probe settles it, so the error comes without a download question.
     let mut next = app.event(key(KeyCode::Enter));
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + common::HANG_GUARD;
     while app.error_message().is_none() && Instant::now() < deadline {
         assert!(!app.awaiting_open_confirmation(), "asked to download a 404");
         match next.take() {

@@ -46,10 +46,10 @@ fn counting_server(bucket: &'static str) -> (String, Arc<AtomicUsize>) {
 fn pump(
     app: &mut datui::App,
     rx: &std::sync::mpsc::Receiver<datui::AppEvent>,
-    seconds: u64,
     done: impl Fn(&datui::App) -> bool,
 ) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(seconds);
+    // Only a hang guard: every wait here is for something that comes.
+    let deadline = Instant::now() + common::HANG_GUARD;
     while Instant::now() < deadline {
         // What is already queued first: `done` is about the state after it.
         while let Ok(event) = rx.try_recv() {
@@ -204,12 +204,12 @@ fn a_source_is_listed_when_entered_not_when_the_home_screen_opens() {
     app.enter_home();
 
     assert!(
-        pump(&mut app, &rx, 5, |app| row_shown(app, "lab")
+        pump(&mut app, &rx, |app| row_shown(app, "lab")
             && row_shown(app, "cached")),
         "both rows: {:?}",
         app.home.cloud
     );
-    assert!(pump(&mut app, &rx, 5, no_listing), "{:?}", app.home.cloud);
+    assert!(pump(&mut app, &rx, no_listing), "{:?}", app.home.cloud);
     let ids: Vec<&str> = app.home.cloud.iter().map(|s| s.id.as_str()).collect();
     assert_eq!(ids, ["cached", "gone", "lab"], "found logins are not shown");
     assert_eq!(requests.load(Ordering::SeqCst), 0, "no request at launch");
@@ -245,7 +245,7 @@ fn a_source_is_listed_when_entered_not_when_the_home_screen_opens() {
     select(&mut app, "lab");
     app.event(key(crossterm::event::KeyCode::Enter));
     assert!(
-        pump(&mut app, &rx, 10, |app| source(app, "lab").status
+        pump(&mut app, &rx, |app| source(app, "lab").status
             == datui::home::CloudStatus::Listed),
         "entering lists it: {:?}",
         source(&app, "lab")
@@ -258,16 +258,16 @@ fn a_source_is_listed_when_entered_not_when_the_home_screen_opens() {
 
     // Once a session: back out and in again, and nothing more is asked.
     app.event(key(crossterm::event::KeyCode::Backspace));
-    assert!(pump(&mut app, &rx, 5, |app| app.home.browsing.is_none()
+    assert!(pump(&mut app, &rx, |app| app.home.browsing.is_none()
         && row_shown(app, "lab")));
     select(&mut app, "lab");
     handle(&mut app, key(crossterm::event::KeyCode::Enter));
-    assert!(pump(&mut app, &rx, 5, no_listing), "{:?}", app.home.cloud);
+    assert!(pump(&mut app, &rx, no_listing), "{:?}", app.home.cloud);
     assert_eq!(requests.load(Ordering::SeqCst), 1, "listed once a session");
 
     // A source gone since its row was drawn says so, rather than waiting for good.
     app.event(key(crossterm::event::KeyCode::Backspace));
-    assert!(pump(&mut app, &rx, 5, |app| app.home.browsing.is_none()
+    assert!(pump(&mut app, &rx, |app| app.home.browsing.is_none()
         && row_shown(app, "gone")));
     datui::CacheManager::new("datui")
         .expect("isolated cache")
@@ -275,7 +275,7 @@ fn a_source_is_listed_when_entered_not_when_the_home_screen_opens() {
     select(&mut app, "gone");
     app.event(key(crossterm::event::KeyCode::Enter));
     assert!(
-        pump(&mut app, &rx, 5, |app| matches!(
+        pump(&mut app, &rx, |app| matches!(
             &source(app, "gone").status,
             datui::home::CloudStatus::Failed { short, .. } if short == "not found"
         )),

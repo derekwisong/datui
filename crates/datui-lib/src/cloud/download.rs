@@ -1058,8 +1058,8 @@ mod read_tests {
             std::thread::spawn(move || {
                 // Once the first chunk is on disk, the server has gone quiet. The size
                 // comes from the file, not its directory entry: Windows updates the
-                // entry's only when the writer closes it.
-                let deadline = Instant::now() + Duration::from_secs(5);
+                // entry's only when the writer closes it. The deadline is a hang guard.
+                let deadline = Instant::now() + Duration::from_secs(120);
                 let landed = loop {
                     let sizes = std::fs::read_dir(&dir)
                         .unwrap()

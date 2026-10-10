@@ -553,7 +553,7 @@ pub const SCREENS: &[Screen] = &[
                 name: "Explore",
                 keys: &[
                     k("↑ / ↓", "Move", "Move the selection (Ctrl+P / Ctrl+N too)")
-                        .more("Move the selection (Ctrl+P / Ctrl+N too). The home screen opens with no row picked, so nothing is read, and the row it starts on is tinted. The first ↑ or ↓ picks that row, and PgUp, PgDn, Home, End, Ctrl+↑ / Ctrl+↓ and the wheel move from it. A click picks the row clicked, and typing picks the best match"),
+                        .more("Move the selection (Ctrl+P / Ctrl+N too). The home screen opens with no row picked, so nothing is read, and the search box names the row it starts on. The first ↑ or ↓ picks that row, and PgUp, PgDn, Home, End, Ctrl+↑ / Ctrl+↓ and the wheel move from it. A click picks the row clicked, and typing picks the best match"),
                     k("Ctrl+↑ / Ctrl+↓", "Section", "Previous or next section"),
                     k("PgUp / PgDn", "Page", "A screenful, stopping at the first and last"),
                     k("Home / End", "First, last", "The first or last row")
@@ -572,7 +572,7 @@ pub const SCREENS: &[Screen] = &[
                 keys: &[
                     k("Enter", "Open", "What the footer names: Open, Inside, Look")
                     .also(&["Up", "Open all", "Inside", "Look", "Fold", "Show all", "Show", "Hex", "About"])
-                        .more("What the footer says on this row: \"Open all\" reads a whole directory as one table, \"Inside\" steps into it, \"Open\" loads a file, \"Look\" finds out first. A catalog bookmark, indented under its dataset, opens whole. On a section header, fold or unfold it; on a more row, show the rest; on `..`, go up a level; on the hidden-files row, show them. With no row picked yet, Enter acts on the row datui lands on, shown tinted"),
+                        .more("What the footer says on this row: \"Open all\" reads a whole directory as one table, \"Inside\" steps into it, \"Open\" loads a file, \"Look\" finds out first. A catalog bookmark, indented under its dataset, opens whole. On a section header, fold or unfold it; on a more row, show the rest; on `..`, go up a level; on the hidden-files row, show them. With no row picked yet, Enter acts on the row the search box names"),
                     k("Backspace", "Up", "Delete a filter character, or up a level")
                         .more("Delete a filter character; on an empty filter, up a level (from a bucket, back to its cloud source; from the top of a catalog's remote dataset, back here)"),
                     k("Esc", "Back", "Path prompt, filter, directory, then the table")

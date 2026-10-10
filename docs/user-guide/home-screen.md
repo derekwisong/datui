@@ -16,9 +16,9 @@ it, and <kbd>~</kbd> opens the path prompt. Typing narrows the list,
 in the [keyboard reference](../reference/keyboard-shortcuts.md#home-screen).
 
 datui starts with no row picked: the details pane describes the directory, and
-nothing is read until you choose a row. The starting row (the file opened last,
-else the first dataset or a directory's all-files row) is tinted, without the
-rail; the keys below act on it.
+nothing is read until you choose a row. No row is marked yet. The search box
+names the starting row after `Enter:` (the file opened last, else the first
+dataset or a directory's all-files row), and the keys below act on it.
 
 | Key, with no row picked | Does |
 |---|---|

@@ -338,7 +338,7 @@ fn test_parse_right_to_left_operator_precedence() {
     let filter = only(parse_query(query).unwrap().filters);
 
     // Should parse as c > (c % n)
-    let expected = col("c").gt(col("c").div(col("n")));
+    let expected = col("c").gt(col("c").true_div(col("n")));
     assert_eq!(filter, Some(expected));
 }
 
@@ -678,21 +678,21 @@ fn test_slash_divides_like_percent() {
     let slash = parse_expr(&tokenize("a/b").unwrap()).unwrap();
     let percent = parse_expr(&tokenize("a%b").unwrap()).unwrap();
     assert_eq!(slash, percent);
-    assert_eq!(slash, col("a").div(col("b")));
+    assert_eq!(slash, col("a").true_div(col("b")));
 }
 
 #[test]
 fn test_slash_right_to_left() {
     // Right-to-left like every other operator: 1/c+a is 1/(c+a).
     let expr = parse_expr(&tokenize("1/c+a").unwrap()).unwrap();
-    assert_eq!(expr, lit(1.0).div(col("c").add(col("a"))));
+    assert_eq!(expr, lit(1.0).true_div(col("c").add(col("a"))));
 }
 
 #[test]
 fn test_slash_in_where_clause() {
     // Same shape as the existing % test: c>c/n is c > (c/n).
     let filter = only(parse_query("select t, v where c>c/n").unwrap().filters);
-    assert_eq!(filter, Some(col("c").gt(col("c").div(col("n")))));
+    assert_eq!(filter, Some(col("c").gt(col("c").true_div(col("n")))));
 }
 
 #[test]
@@ -1800,35 +1800,20 @@ fn expressions_read_as_python_polars() {
 }
 
 #[test]
-fn division_reads_as_polars_runs_it_on_the_types() {
-    let schema = Schema::from_iter([
-        Field::new("i".into(), DataType::Int64),
-        Field::new("j".into(), DataType::Int32),
-        Field::new("u".into(), DataType::UInt8),
-        Field::new("f".into(), DataType::Float64),
-        Field::new("s".into(), DataType::String),
-    ]);
-    let py = |expr: &str| {
-        let mut node = parse_node(&tokenize(expr).unwrap()).unwrap();
-        node.resolve_division(&schema);
-        node.python()
-    };
-    // Two whole numbers floor-divide, as Polars' `/` on two expressions does.
-    assert_eq!(py("i / j"), "pl.col(\"i\") // pl.col(\"j\")");
-    assert_eq!(py("j % i"), "pl.col(\"j\") // pl.col(\"i\")");
-    assert_eq!(py("i / u"), "pl.col(\"i\") // pl.col(\"u\")");
-    // A pair Polars has no type for, which fails the query in datui too, and an
-    // unknown column stay Python's `/`.
-    assert_eq!(py("i / s"), "pl.col(\"i\") / pl.col(\"s\")");
-    assert_eq!(py("(i mod 3) / j"), "(pl.col(\"i\") % 3) // pl.col(\"j\")");
-    // A float on either side, or a number as typed, divides.
-    assert_eq!(py("i / f"), "pl.col(\"i\") / pl.col(\"f\")");
-    assert_eq!(py("i / 2"), "pl.col(\"i\") / 2.0");
+fn division_always_gives_a_fraction() {
+    // q's `%` gives a float, even of two whole numbers; Python's `/` does too.
+    assert_eq!(py("i / j"), "pl.col(\"i\") / pl.col(\"j\")");
+    assert_eq!(py("j % i"), "pl.col(\"j\") / pl.col(\"i\")");
+    assert_eq!(py("(i mod 3) / j"), "(pl.col(\"i\") % 3) / pl.col(\"j\")");
     assert_eq!(
         py("sum[i] / count[j]"),
-        "pl.col(\"i\").sum().alias(\"sum_i\") // pl.col(\"j\").count().alias(\"count_j\")"
+        "pl.col(\"i\").sum().alias(\"sum_i\") / pl.col(\"j\").count().alias(\"count_j\")"
     );
-    assert_eq!(py("x / i"), "pl.col(\"x\") / pl.col(\"i\")");
+    let df = df!("i" => &[7i64, -7], "j" => &[2i32, 2]).unwrap();
+    let out = eval("select q: i % j, r: (i + 1) / j, w: floor[i % j]", &df);
+    assert_eq!(values(&out, "q"), ["3.5", "-3.5"]);
+    assert_eq!(values(&out, "r"), ["4.0", "-3.0"]);
+    assert_eq!(values(&out, "w"), ["3.0", "-4.0"]);
 }
 
 #[test]

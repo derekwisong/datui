@@ -8,7 +8,7 @@ pub(crate) mod sql_plan;
 
 use polars::prelude::StrptimeOptions;
 use polars::prelude::*;
-use std::ops::{Add, Div, Mul, Rem, Sub};
+use std::ops::{Add, Mul, Rem, Sub};
 
 #[derive(Debug, Clone, PartialEq)]
 enum Token {
@@ -478,9 +478,9 @@ pub(crate) enum BinOp {
     Add,
     Sub,
     Mul,
-    /// Polars' `/` on two expressions.
-    Div,
+    /// Division, always to a float, as q's `%`: `7 % 2` is 3.5.
     TrueDiv,
+    /// Floor division, for `xbar`'s buckets.
     FloorDiv,
     Rem,
     Eq,
@@ -720,7 +720,6 @@ impl Node {
                     BinOp::Add => left.add(right),
                     BinOp::Sub => left.sub(right),
                     BinOp::Mul => left.mul(right),
-                    BinOp::Div => left.div(right),
                     BinOp::TrueDiv => left.true_div(right),
                     BinOp::FloorDiv => left.floor_div(right),
                     BinOp::Rem => left.rem(right),
@@ -791,39 +790,6 @@ impl Node {
             Node::When(c, t, o) => Node::When(strip(c), strip(t), strip(o)),
             Node::Op(inner, op) => Node::Op(strip(inner), op.clone()),
             leaf => leaf.clone(),
-        }
-    }
-
-    /// Name each `/` as Polars runs it over `schema`: `Div` floor-divides integers and
-    /// divides otherwise, so Python needs `//` or `/` by the quotient's type.
-    pub(crate) fn resolve_division(&mut self, schema: &Schema) {
-        match self {
-            Node::Bin(_, left, right) | Node::Coalesce(left, right) | Node::Filter(left, right) => {
-                left.resolve_division(schema);
-                right.resolve_division(schema);
-            }
-            Node::When(c, t, o) => {
-                c.resolve_division(schema);
-                t.resolve_division(schema);
-                o.resolve_division(schema);
-            }
-            Node::Op(inner, _) | Node::Alias(inner, _) => inner.resolve_division(schema),
-            _ => {}
-        }
-        if let Node::Bin(BinOp::Div, ..) = self {
-            let quotient = DataFrame::empty_with_schema(schema)
-                .lazy()
-                .select([self.to_expr()])
-                .collect_schema()
-                .ok()
-                .and_then(|s| s.get_at_index(0).map(|(_, dtype)| dtype.is_integer()));
-            if let (Some(whole), Node::Bin(op, ..)) = (quotient, self) {
-                *op = if whole {
-                    BinOp::FloorDiv
-                } else {
-                    BinOp::TrueDiv
-                };
-            }
         }
     }
 
@@ -1253,7 +1219,7 @@ impl BinOp {
             BinOp::Add => "+",
             BinOp::Sub => "-",
             BinOp::Mul => "*",
-            BinOp::Div | BinOp::TrueDiv => "/",
+            BinOp::TrueDiv => "/",
             BinOp::FloorDiv => "//",
             BinOp::Rem => "%",
             BinOp::Eq => "==",
@@ -1650,8 +1616,9 @@ fn apply_op(left: Node, op: &str, right: Node) -> Result<Node, String> {
         "+" => BinOp::Add,
         "-" => BinOp::Sub,
         "*" => BinOp::Mul,
-        // `%` divides (q heritage); `/` is the alias everyone expects.
-        "%" | "/" => BinOp::Div,
+        // `%` divides (q heritage); `/` is the alias everyone expects. Always to a
+        // float, as q's `%`, even on two integers (Polars' `/` would floor them).
+        "%" | "/" => BinOp::TrueDiv,
         "^" => return Ok(Node::Coalesce(Box::new(left), Box::new(right))),
         "=" => BinOp::Eq,
         "<" => BinOp::Lt,
@@ -2351,19 +2318,6 @@ impl QueryNodes {
             group_by: lower(self.group_by),
             group_by_names: self.group_by_names,
             distinct: self.distinct,
-        }
-    }
-
-    /// Each `/` named as Polars runs it over `schema`, the data the query reads; see
-    /// [`Node::resolve_division`].
-    pub(crate) fn resolve_division(&mut self, schema: &Schema) {
-        let nodes = self
-            .cols
-            .iter_mut()
-            .chain(self.filters.iter_mut())
-            .chain(self.group_by.iter_mut());
-        for node in nodes {
-            node.resolve_division(schema);
         }
     }
 

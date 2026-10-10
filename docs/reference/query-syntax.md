@@ -178,7 +178,7 @@ The where clause takes conditions only: no `name: expression` assignment.
 
 | Kind | Syntax |
 |---|---|
-| Arithmetic | `+` `-` `*` `/` `%` (`/` and `%` both divide; `%` is not modulo, `mod` is) |
+| Arithmetic | `+` `-` `*` `/` `%`: `/` and `%` both divide and always give a float, as q's `%` does (`7 % 2` is `3.5`); wrap the result in `floor[...]` for a whole number. `%` is not modulo, `mod` is |
 | Equal, not equal | `=`, `!=`, `<>` (same as `!=`) |
 | Ordering | `<` `>` `<=` `>=` |
 | And, or | `&` `and`, `\|` `or`: and/or on booleans, smaller/larger on numbers; see [And, or](#and-or) |

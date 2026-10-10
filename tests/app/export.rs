@@ -2077,9 +2077,9 @@ fn test_a_sniffed_file_copies_and_exports_as_the_format_read() {
     }
 }
 
-/// The query language's `/` and `%` floor-divide two whole numbers, as Polars' `/`
-/// on two expressions does: the script writes `//` there and `/` where a float
-/// takes part, so its rows are datui's, negatives and a zero divisor included.
+/// The query language's `/` and `%` give a fraction even of two whole numbers, as
+/// q's `%` does: the script writes `/`, so its rows are datui's, negatives and a
+/// zero divisor included.
 #[test]
 fn test_copy_as_python_divides_integers_as_datui_does() {
     let python = Path::new(".venv/bin/python");
@@ -2125,10 +2125,16 @@ fn test_copy_as_python_divides_integers_as_datui_does() {
         );
         let (rows, script) = run_python_script(&app).unwrap();
         assert!(
-            script.contains(" // "),
-            "{query}: no floor division\n{script}"
+            !script.contains(" // "),
+            "{query}: floor division\n{script}"
         );
         assert_eq!(rows, view_csv(&app), "{query}:\n{script}");
+        if query.starts_with("select k, q:") {
+            assert!(
+                view_csv(&app).contains("x,3.5,3.5,1,-3.5,"),
+                "{query}:\n{rows}"
+            );
+        }
     }
 }
 

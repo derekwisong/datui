@@ -1043,7 +1043,6 @@ impl DataTableState {
                     .and_then(|mut nodes| {
                         nodes.resolve_time_zones(&input);
                         nodes.resolve_types(&input)?;
-                        nodes.resolve_division(&input);
                         Ok(nodes)
                     }) {
                     Ok(nodes) => nodes

@@ -218,7 +218,7 @@ The where clause takes conditions only: no \fBname: expression\fR assignment.
 .SH "OPERATORS AND LITERALS"
 .TP
 Arithmetic
-\fB+\fR \fB\-\fR \fB*\fR \fB/\fR \fB%\fR (\fB/\fR and \fB%\fR both divide; \fB%\fR is not modulo, \fBmod\fR is)
+\fB+\fR \fB\-\fR \fB*\fR \fB/\fR \fB%\fR: \fB/\fR and \fB%\fR both divide and always give a float, as q's \fB%\fR does (\fB7 % 2\fR is \fB3.5\fR); wrap the result in \fBfloor[...]\fR for a whole number. \fB%\fR is not modulo, \fBmod\fR is
 .TP
 Equal, not equal
 \fB=\fR, \fB!=\fR, \fB<>\fR (same as \fB!=\fR)

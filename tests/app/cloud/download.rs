@@ -76,6 +76,11 @@ fn settle(app: &mut App, rx: &mpsc::Receiver<AppEvent>) {
     while let Some(event) = next_event(app, rx) {
         chain(app, event);
     }
+    // A dataset an open replaced is dropped on a thread of its own, its download with it.
+    assert!(
+        App::releases_settled(HANG_GUARD),
+        "a replaced dataset was never dropped"
+    );
 }
 
 fn files_in(dir: &Path) -> Vec<PathBuf> {
@@ -126,8 +131,6 @@ fn a_download_lands_whole_and_lives_with_its_dataset() {
     );
     settle(&mut app, &rx);
     assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 1);
-    // The replaced dataset is dropped on a thread of its own.
-    assert!(App::releases_settled(HANG_GUARD));
     assert!(
         files_in(dir.path()).is_empty(),
         "the replaced dataset's file went"

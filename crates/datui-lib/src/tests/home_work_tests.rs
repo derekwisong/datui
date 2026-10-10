@@ -108,6 +108,9 @@ fn a_place_that_never_answers_stops_spinning_and_ctrl_r_waits_again() {
         "its thread is still out, and not started again"
     );
 
+    // The second wait must outlast the checks below on a slow runner; only the first
+    // needed to run out.
+    app.home_app.probe_patience = Some(Duration::from_secs(60));
     app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('r'),
         KeyModifiers::CONTROL,

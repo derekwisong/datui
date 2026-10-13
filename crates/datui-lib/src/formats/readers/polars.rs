@@ -509,7 +509,7 @@ fn json(path: &Path, format: JsonFormat) -> Result<LazyFrame> {
 /// inference types `amount` String in one file and Int64 in another). Opt-ins elsewhere
 /// (DuckDB `union_by_name`, Spark `mergeSchema`), defaults here because datui notes
 /// what it did and `Enter` goes inside directories that are not one table; this is what
-/// their `(all files)` row reads with. Only for formats that rule judges (CSV, NDJSON;
+/// their open-all row reads with. Only for formats that rule judges (CSV, NDJSON;
 /// Parquet via `lenient_scan`): Arrow, Avro, ORC and `.json` would be silent, unnoted
 /// unions. Identical schemas stack as before; converted Arrow streams stack with IPC
 /// files read in place (`App::scan_arrow_parts`).

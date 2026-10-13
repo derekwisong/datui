@@ -780,7 +780,7 @@ fn a_directory_is_not_described_by_files_it_does_not_name() {
 /// **Nothing produces this row today.** `enrich` only reaches the gate for `Hive`
 /// and `MultiFile`; `look_at_directory` cannot answer `MultiFile` without counting
 /// a format, a hive root skips the gate outright, `CLASSIFIER_VERSION` 4 refuses a
-/// cached kind that arrives without a tally, and the cloud `(all files)` row is
+/// cached kind that arrives without a tally, and the cloud open-all row is
 /// built from a listing and never measured. So this constructs the row by hand, and
 /// it pins a default rather than a path.
 ///

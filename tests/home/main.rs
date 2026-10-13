@@ -4385,7 +4385,7 @@ fn test_partitioned_cloud_directories_are_labelled_and_open_whole() {
     home.browsing = Some(blocks.clone());
     home.rebuild(&[]);
     let first = door_of(&home).expect("the directory carries the door");
-    assert_eq!(first.name, "blocks (hive table: date)");
+    assert_eq!(first.name, "open all (hive table: date)");
     assert_eq!(first.kind, EntryKind::Hive);
     assert_eq!(
         first.path,
@@ -4417,7 +4417,7 @@ fn test_partitioned_cloud_directories_are_labelled_and_open_whole() {
     assert_eq!(home.sections[0].rows.len(), 2, "the door is not among them");
     assert_eq!(
         door_of(&home).map(|d| d.name.as_str()),
-        Some("parquet (all files, mixed)")
+        Some("open all (mixed files)")
     );
     // Not a dataset: the cursor lands on the first thing in it, so the first Enter never
     // reads `by_year` and `by_station` together.
@@ -4871,7 +4871,7 @@ fn test_a_directory_of_separate_tables_still_offers_to_read_them_together() {
     home.rebuild(&[]);
     assert_eq!(
         door_of(&home).map(|d| d.name.as_str()),
-        Some("exports (3 Parquet files, one schema)"),
+        Some("open all (3 Parquet files, one schema)"),
         "unpeeked, the listing offers it"
     );
 
@@ -4884,7 +4884,7 @@ fn test_a_directory_of_separate_tables_still_offers_to_read_them_together() {
     home.rebuild(&[]);
     assert_eq!(
         door_of(&home).map(|d| d.name.as_str()),
-        Some("exports (3 Parquet files, one schema)"),
+        Some("open all (3 Parquet files, one schema)"),
         "the second door does not close on a verdict"
     );
     assert_eq!(
@@ -4894,7 +4894,7 @@ fn test_a_directory_of_separate_tables_still_offers_to_read_them_together() {
     );
 }
 
-/// The `(all files)` row is labelled by what the listing under it holds, like any other
+/// The open-all row is labelled by what the listing under it holds, like any other
 /// directory row. It is built rather than listed, so it is the one row whose tally
 /// nothing upstream fills in.
 #[cfg(feature = "cloud")]
@@ -4926,7 +4926,7 @@ fn test_the_whole_directory_row_says_what_the_listing_holds() {
     home.rebuild(&[]);
 
     let row = door_of(&home).expect("the directory carries the door");
-    assert_eq!(row.name, "exports (12 Parquet files, one schema)");
+    assert_eq!(row.name, "open all (12 Parquet files, one schema)");
     assert_eq!(row.holds.data_files(), 12, "the tally the pane reports");
     // And no label. Every other label counts what is directly inside a directory; this
     // row reads the whole of it, so a count beside it would be about a different set of
@@ -5119,7 +5119,7 @@ fn test_the_whole_directory_row_is_a_door_not_a_search_result() {
 
     let first = |home: &HomeState| visible_names(home).first().cloned();
     assert!(
-        first(&home).is_some_and(|n| n.ends_with("(2 Parquet files, one schema)")),
+        first(&home).is_some_and(|n| n == "open all (2 Parquet files, one schema)"),
         "got {:?}",
         visible_names(&home)
     );
@@ -5132,13 +5132,13 @@ fn test_the_whole_directory_row_is_a_door_not_a_search_result() {
     );
 
     home.filter.clear();
-    assert!(first(&home).is_some_and(|n| n.ends_with("(2 Parquet files, one schema)")));
+    assert!(first(&home).is_some_and(|n| n == "open all (2 Parquet files, one schema)"));
 
     // And it is not one of the things being ordered.
     for sort in [SortMode::Size, SortMode::Rows, SortMode::Modified] {
         home.sort = sort;
         assert!(
-            first(&home).is_some_and(|n| n.ends_with("(2 Parquet files, one schema)")),
+            first(&home).is_some_and(|n| n == "open all (2 Parquet files, one schema)"),
             "under {sort:?} the first row was {:?}",
             visible_names(&home)
         );
@@ -5249,21 +5249,73 @@ fn test_an_azure_account_place_gets_no_door() {
     );
 }
 
-/// The door is named after the directory, at every path a directory can have.
-///
-/// Built by splitting the path on `/`, the filesystem root — which has no last
-/// component — produced a row called `" (all files)"`, and on Windows, where the
-/// separator is not the one a split looks for, a local directory would have been named
-/// with the whole of its path.
+/// A folder of folders gets no open-all row: nothing directly in it reads, and Polars
+/// refuses a tree whose files differ in extension, so the row could only fail (a
+/// Windows user's `VirtualBox VMs`, two VM folders of `.vbox` and `.vdi` files). A
+/// folder of partitions keeps it, and so does one with data of its own.
 #[test]
-fn test_the_door_is_named_after_the_directory_even_at_the_root() {
+fn test_a_folder_of_folders_has_no_door() {
+    let tmp = tempfile::tempdir().unwrap();
+    let vms = tmp.path().join("VirtualBox VMs");
+    for vm in ["Lubuntu", "pfSense"] {
+        let dir = vms.join(vm);
+        std::fs::create_dir_all(dir.join("Logs")).unwrap();
+        std::fs::write(dir.join(format!("{vm}.vbox")), "<xml/>").unwrap();
+        std::fs::write(dir.join(format!("{vm}.vbox-prev")), "<xml/>").unwrap();
+    }
+    let door_in = |dir: &std::path::Path| {
+        let mut home = HomeState {
+            browsing: Some(dir.to_path_buf()),
+            ..Default::default()
+        };
+        home.rebuild(&[]);
+        door_of(&home).map(|d| d.name.clone())
+    };
+    assert_eq!(door_in(&vms), None);
+    assert_eq!(door_in(&vms.join("Lubuntu")), None);
+
+    let partitioned = tmp.path().join("sales");
+    std::fs::create_dir_all(partitioned.join("year=2024")).unwrap();
+    std::fs::write(partitioned.join("year=2024").join("a.parquet"), b"PAR1").unwrap();
+    assert!(
+        door_in(&partitioned).is_some(),
+        "partitions read as one table"
+    );
+
+    std::fs::write(vms.join("inventory.csv"), "vm,ram\nLubuntu,2048\n").unwrap();
+    assert!(door_in(&vms).is_some(), "a file of its own to read");
+}
+
+/// → on `..` or the open-all row, which are already inside the directory, moves to
+/// its first row instead of doing nothing.
+#[test]
+fn test_right_past_the_door_lands_on_the_first_row() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("exports");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.csv"), "x\n1\n").unwrap();
+    std::fs::write(dir.join("b.csv"), "x\n2\n").unwrap();
     let mut home = HomeState {
-        browsing: Some(std::path::PathBuf::from("/")),
+        browsing: Some(dir.clone()),
         ..Default::default()
     };
     home.rebuild(&[]);
-    let door = door_of(&home).expect("the root is a directory like any other");
-    assert_eq!(door.name, "/ (all files, mixed)", "got {:?}", door.name);
+    let up = home
+        .position(|r| matches!(r, Row::Up { .. }))
+        .expect("a `..` row");
+    let door = home
+        .position(|r| matches!(r, Row::Door { .. }))
+        .expect("an open-all row");
+    for start in [up, door] {
+        home.selected = start;
+        assert!(home.step_past_door());
+        let Some(Row::Entry { entry, .. }) = home.selected_row() else {
+            panic!("landed on {:?}", home.selected_row());
+        };
+        assert_eq!(entry.name, "a.csv");
+    }
+    // On a row of the directory it is not this key's to take.
+    assert!(!home.step_past_door());
 }
 
 /// Stepping into a directory and back out leaves its label alone.
@@ -5367,16 +5419,13 @@ fn test_the_door_on_a_share_is_built_from_the_probe_not_the_disk() {
     );
 }
 
-/// The door is named the way the section title above it names the same place.
-///
-/// A source id is not part of a name — `s3://lab@bucket` is titled `bucket` — and an
-/// Azure container is named by container rather than by the long URL its last component
-/// happens to be. Both were reachable: a source with an id lists its buckets as
-/// `s3://<id>@bucket`, and an Azure account lists its containers as
-/// `abfss://<container>@<account>.dfs.core.windows.net/`.
+/// The door is named by what it opens wherever it is, never by its place: a source id
+/// (`s3://lab@bucket`) or an Azure container's long URL once leaked into the name. A
+/// source with an id lists its buckets as `s3://<id>@bucket`, and an Azure account
+/// lists its containers as `abfss://<container>@<account>.dfs.core.windows.net/`.
 #[cfg(feature = "cloud")]
 #[test]
-fn test_the_door_is_named_the_way_the_title_is() {
+fn test_the_door_is_named_by_what_it_opens_in_every_place() {
     use std::path::PathBuf;
     let named = |url: &str| -> String {
         let place = PathBuf::from(url);
@@ -5396,17 +5445,20 @@ fn test_the_door_is_named_the_way_the_title_is() {
             .expect("the place carries the row")
     };
 
-    assert_eq!(named("s3://bucket"), "bucket (1 Parquet file)");
-    assert_eq!(named("s3://lab@bucket"), "bucket (1 Parquet file)");
-    assert_eq!(named("s3://lab@bucket/exports"), "exports (1 Parquet file)");
-    assert_eq!(named("gs://bucket/exports/"), "exports (1 Parquet file)");
+    assert_eq!(named("s3://bucket"), "open all (1 Parquet file)");
+    assert_eq!(named("s3://lab@bucket"), "open all (1 Parquet file)");
+    assert_eq!(
+        named("s3://lab@bucket/exports"),
+        "open all (1 Parquet file)"
+    );
+    assert_eq!(named("gs://bucket/exports/"), "open all (1 Parquet file)");
     assert_eq!(
         named("abfss://raw@acct.dfs.core.windows.net"),
-        "raw (1 Parquet file)"
+        "open all (1 Parquet file)"
     );
     assert_eq!(
         named("abfss://raw@acct.dfs.core.windows.net/tbl"),
-        "tbl (1 Parquet file)"
+        "open all (1 Parquet file)"
     );
 }
 
@@ -5538,7 +5590,7 @@ fn a_found_dataset_matches_by_its_remembered_columns() {
     assert_eq!(section.rows.len(), 1, "and the row matched by column name");
 }
 
-/// Inside a directory of notes: no `(all files)` row, since there is nothing for it to
+/// Inside a directory of notes: no open-all row, since there is nothing for it to
 /// read, and one row saying how many files are hidden, so the directory does not look
 /// empty or broken. Ctrl+A shows them and the row goes.
 #[test]
@@ -7191,7 +7243,7 @@ mod landing {
         step_in(&mut app, &rx, &hive);
 
         let row = door(&app);
-        assert_eq!(row.name, "sales_hive (hive table: year, month)");
+        assert_eq!(row.name, "open all (hive table: year, month)");
         assert!(
             app.home.selection_is_the_door(),
             "one dataset: the cursor is on it"
@@ -7229,7 +7281,7 @@ mod landing {
         assert_eq!(row_kind(&app, &same), EntryKind::MultiFile);
         step_in(&mut app, &rx, &same);
 
-        assert_eq!(door(&app).name, "same_schema (3 Parquet files, one schema)");
+        assert_eq!(door(&app).name, "open all (3 Parquet files, one schema)");
         assert!(app.home.selection_is_the_door());
         enter_and_load(&mut app, &rx);
         let state = app.data_table_state.as_ref().unwrap();
@@ -7249,7 +7301,7 @@ mod landing {
 
         assert_eq!(
             door(&app).name,
-            "diff_schema (2 Parquet files, schemas differ)"
+            "open all (2 Parquet files, schemas differ)"
         );
         assert!(!app.home.selection_is_the_door());
         assert_eq!(
@@ -7267,7 +7319,7 @@ mod landing {
         step_in(&mut app, &rx, &mixed);
 
         let row = door(&app);
-        assert_eq!(row.name, "mixed (all files, mixed)");
+        assert_eq!(row.name, "open all (mixed files)");
         assert_eq!(
             datui::home::door_reads(&row),
             Some((
@@ -7287,13 +7339,9 @@ mod landing {
         let (mut app, rx) = home_over(tmp.path());
         step_in(&mut app, &rx, &data);
 
-        let row = door(&app);
-        assert_eq!(row.name, "data (all files, mixed)");
-        assert_eq!(
-            datui::home::door_reads(&row),
-            Some(("every Parquet file below".to_string(), None))
-        );
-        assert!(!app.home.selection_is_the_door());
+        // Only folders, of Parquet and of CSV: nothing to open as one table (a scan of
+        // the tree refuses the mix), so no open-all row.
+        assert!(app.home.sections.iter().all(|s| s.door.is_none()));
         let on = app
             .home
             .selected_entry()
@@ -7314,7 +7362,7 @@ mod landing {
         select(&mut app, &delta);
         go_into(&mut app, &rx, KeyCode::Enter, &delta);
 
-        assert_eq!(door(&app).name, "delta_tbl (Delta files, not the table)");
+        assert_eq!(door(&app).name, "open all (Delta files, not the table)");
         assert!(!app.home.selection_is_the_door());
         assert_eq!(
             app.home.selected_entry().map(|e| e.path.clone()),
@@ -7397,7 +7445,7 @@ fn test_late_footers_move_a_landed_cursor_and_only_a_landed_one() {
         home.apply_measurements();
         assert_eq!(
             door_of(home).map(|d| d.name.as_str()),
-            Some("exports (3 Parquet files, schemas differ)")
+            Some("open all (3 Parquet files, schemas differ)")
         );
     };
 
@@ -7451,7 +7499,7 @@ fn test_a_mixed_prefix_says_it_reads_below() {
     home.browsing = Some(place);
     home.rebuild(&[]);
     let door = door_of(&home).expect("the prefix carries the door").clone();
-    assert_eq!(door.name, "mix (all files, mixed)");
+    assert_eq!(door.name, "open all (mixed files)");
     assert_eq!(
         datui::home::door_reads(&door),
         Some((

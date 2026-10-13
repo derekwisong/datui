@@ -4271,7 +4271,54 @@ fn test_a_nested_hive_of_parquet_still_opens() {
     assert_eq!(state.lf().clone().collect().unwrap().height(), 3);
 }
 
-/// The `(all files)` row opens the directory it names, whatever the directory is
+/// A tree of folders, not partitions, reads the Parquet files below it and leaves the
+/// rest, as its open-all row's pane says (`reads every Parquet file below`).
+#[test]
+fn test_a_tree_of_folders_reads_the_parquet_below() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(dir.path(), "2023", df!("id" => &[1i64, 2]).unwrap());
+    write_parquet(dir.path(), "2024/q1", df!("id" => &[3i64]).unwrap());
+    std::fs::write(dir.path().join("2024").join("notes.txt"), b"not data").unwrap();
+
+    let app = open_local_dataset(dir.path());
+    let state = app
+        .data_table_state
+        .as_ref()
+        .expect("the Parquet files below open as one table");
+    assert_eq!(state.lf().clone().collect().unwrap().height(), 3);
+}
+
+/// With no Parquet below, Polars refuses the tree for its mixed extensions (a Windows
+/// user's `VirtualBox VMs`), and the error says so plainly rather than in Polars' words.
+#[test]
+fn test_a_tree_of_folders_without_parquet_says_why() {
+    let dir = tempfile::tempdir().unwrap();
+    for vm in ["Lubuntu", "pfSense"] {
+        let vm_dir = dir.path().join(vm);
+        std::fs::create_dir_all(vm_dir.join("Logs")).unwrap();
+        std::fs::write(vm_dir.join(format!("{vm}.vbox")), "<xml/>").unwrap();
+        std::fs::write(vm_dir.join(format!("{vm}.vbox-prev")), "<xml/>").unwrap();
+    }
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    let complaint = pump_open_until_error(
+        &mut app,
+        &rx,
+        vec![dir.path().to_path_buf()],
+        OpenOptions {
+            hive: true,
+            ..OpenOptions::default()
+        },
+    )
+    .expect("nothing below reads as one table");
+    assert!(
+        complaint.contains("not all one kind") && complaint.contains(".vbox"),
+        "{complaint}"
+    );
+    assert!(!complaint.contains("Operation not allowed"), "{complaint}");
+}
+
+/// The open-all row opens the directory it names, whatever the directory is
 /// labelled.
 ///
 /// The label describes; this row is the promise that the description cannot lock you
@@ -4300,10 +4347,10 @@ fn test_enter_on_the_whole_directory_row_opens_rather_than_descending() {
 
     let was = app.home.browsing.clone();
 
-    // → does nothing here. This row is inside the directory it opens, so going inside is
-    // nowhere: it would re-enter the listing already on screen and lose the cursor and
-    // the filter on the way. ← / → fold, the way they do on a file row. Checked before
-    // Enter, because Enter puts the app in its loading view and the home bar is gone.
+    // → does not go inside. This row is inside the directory it opens, so going inside is
+    // nowhere: it would re-enter the listing already on screen and lose the filter on the
+    // way. It moves to the directory's first row instead. Checked before Enter, because
+    // Enter puts the app in its loading view and the home bar is gone.
     let area = Rect::new(0, 0, 200, 24);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
@@ -4319,10 +4366,14 @@ fn test_enter_on_the_whole_directory_row_opens_rather_than_descending() {
         app.home.browsing, was,
         "→ on the row that opens this directory must not re-enter it"
     );
-    assert_eq!(
-        app.home.selected, row,
-        "and must not move the cursor off it"
+    assert!(
+        matches!(
+            app.home.selected_row(),
+            Some(datui::home::Row::Entry { .. })
+        ),
+        "it moves to the first row of the directory"
     );
+    app.home.select(row);
 
     // Enter opens it.
     let next = app.event(key(KeyCode::Enter));
@@ -4489,7 +4540,7 @@ fn test_the_command_line_reads_a_directory_the_way_enter_does() {
     }
 
     // Separate tables: a place to look inside, browsed into rather than refused. The
-    // `(all files)` row in there is the keystroke that unions them anyway.
+    // open-all row in there is the keystroke that unions them anyway.
     let several = tmp.path().join("several");
     parquet(&several, "by_block.parquet", table(&["block", "fee"]));
     parquet(

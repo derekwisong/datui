@@ -1,7 +1,7 @@
 use crate::*;
 use polars::io::cloud::CloudOptions;
 
-/// The details pane says why a bucket directory's `(all files)` row reads nothing
+/// The details pane says why a bucket directory's open-all row reads nothing
 /// by the rule Enter applies, so it is never shown for one Enter would read.
 #[test]
 fn the_door_says_why_only_when_enter_would_read_nothing() {
@@ -162,7 +162,7 @@ fn a_cloud_directory_named_on_the_command_line_is_looked_at_first() {
     }
 }
 
-/// What the listing found decides it, as it does for the `(all files)` row.
+/// What the listing found decides it, as it does for the open-all row.
 #[test]
 fn a_cloud_directory_opens_as_its_listing_says() {
     use home::discover::{EntryKind, Holds};

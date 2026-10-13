@@ -184,6 +184,36 @@ fn files_whose_columns_differ_are_said_as_files() {
 /// Captured from a directory of three CSVs that share no columns, before the reader
 /// learned to union them. The plan is four lines of internals around one fact worth
 /// keeping — the file it stopped at.
+/// Polars' refusal of a directory whose tree mixes extensions (a VirtualBox folder on
+/// Windows), said with the two kinds and what to open instead.
+#[test]
+fn a_directory_of_mixed_files_says_what_to_open() {
+    let said = user_message_from_polars(&PolarsError::InvalidOperation(
+        "directory contained paths with different file extensions: first path: \
+         C:/Users/me/VirtualBox VMs/Lubuntu/Lubuntu.vbox, second path: \
+         C:/Users/me/VirtualBox VMs/Lubuntu/Lubuntu.vbox-prev. Please use a glob pattern \
+         to explicitly specify which files to read (e.g. 'dir/**/*', 'dir/**/*.parquet')."
+            .into(),
+    ));
+    assert!(said.contains("(.vbox and .vbox-prev)"), "{said}");
+    assert!(
+        said.contains("Open a file or directory inside it"),
+        "{said}"
+    );
+    assert!(!said.contains("Operation not allowed"), "{said}");
+    assert!(
+        !said.contains("Lubuntu"),
+        "the paths are not repeated: {said}"
+    );
+
+    let said = user_message_from_polars(&PolarsError::InvalidOperation(
+        "directory contained paths with different file extensions: first path: \
+         /data/run/part-0, second path: /data/run/notes.txt. Please use a glob pattern"
+            .into(),
+    ));
+    assert!(said.contains("(no extension and .txt)"), "{said}");
+}
+
 #[test]
 fn a_polars_query_plan_is_not_shown_to_the_user() {
     let raw = "Operation not allowed: 'union'/'concat' inputs should all have the \

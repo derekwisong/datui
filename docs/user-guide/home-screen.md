@@ -166,7 +166,7 @@ S3 dataset from NOAA, CC0, no login, with notes on its columns.
 | Schema | The known columns and types; `3 columns (spec)` when a format spec says them, then each column; `on open` when only opening the file reads them |
 | Records | For a file a format spec reads as several record types: `2 types (spec)`, then each type and its column count (`add 5 · cancel 3`) |
 | `▲ footer unreadable` | A Parquet file whose footer could not be read; opening it will most likely fail too |
-| Enter, `→` | What <kbd>Enter</kbd> and <kbd>→</kbd> do on a directory, a door, a file of tables or a file of record types: `all partitions as one table`, `step in · first row opens all`, `its tables`, `every record` and `its record types` |
+| Enter, `→` | What <kbd>Enter</kbd> and <kbd>→</kbd> do on a directory, a door, a file of tables or a file of record types: `all partitions as one table`, `step in · open all is inside`, `its tables`, `every record` and `its record types` |
 | `COLUMNS` | What each column means, for a catalog dataset or bookmark with column notes, or a file a format spec documents. The catalog's description, unit and legend each take precedence over the spec's, as in the [Documentation view](#documentation-view); a legend alone shows as `2 values`. `… 4 more` when the pane is short. <kbd>Ctrl</kbd>+<kbd>E</kbd> shows the whole page |
 | `ROWS` | The first eight rows of a local CSV, TSV, PSV, NDJSON, Arrow IPC or Parquet file, read when the row is selected. <kbd>Enter</kbd> opens the file on those rows, so they are read once. `[home] preview_max` sets the largest file read; `0` turns it off. Network shares and object stores are not read before opening |
 
@@ -221,17 +221,20 @@ the same row shows its internal tables.
 
 <kbd>→</kbd> always goes inside. <kbd>Enter</kbd> does what the footer says:
 `Open all` (one table), `Inside`, `Open` (a file), or `Look` (find out first).
-Inside, the first row reads the directory as one table and says how:
+Inside, after `..`, the `open all` row reads the directory as one table and says how:
 
-| Directory | First row | The cursor starts on |
+| Directory | `open all` row | The cursor starts on |
 |---|---|---|
-| Hive partitions | `sales (hive table: year, month)` | this row |
-| One format, one schema | `same (3 Parquet files, one schema)` | this row |
-| One format, schemas differ | `diff (2 Parquet files, schemas differ)` | the first file |
-| Model weights | `llama (model, 3 SafeTensors files)` | this row |
-| One data file | `notes (1 CSV file)` | the first file |
-| Several formats, or files beside directories | `data (all files, mixed)` | the first row inside |
-| Delta, Iceberg or Hudi | `tbl (Delta files, not the table)` | the first row inside |
+| Hive partitions | `open all (hive table: year, month)` | this row |
+| One format, one schema | `open all (3 Parquet files, one schema)` | this row |
+| One format, schemas differ | `open all (2 Parquet files, schemas differ)` | the first file |
+| Model weights | `open all (model, 3 SafeTensors files)` | this row |
+| One data file | `open all (1 CSV file)` | the first file |
+| Several formats, or files beside directories | `open all (mixed files)` | the first row inside |
+| Delta, Iceberg or Hudi | `open all (Delta files, not the table)` | the first row inside |
+| Only subdirectories | none | the first row inside |
+
+<kbd>→</kbd> on `..` or the `open all` row moves to the directory's first row.
 
 On a mixed directory the pane names what is read and what is skipped. Delta,
 Iceberg and Hudi files are read without the transaction log, so deleted rows

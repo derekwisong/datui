@@ -338,7 +338,7 @@ fn enter_source(
 
 /// Put the cursor on the visible row with this name, and say whether it was found.
 ///
-/// The `(all files)` row counts: it is a row on screen with a name, drawn like any
+/// The open-all row counts: it is a row on screen with a name, drawn like any
 /// other. What it is not is one of its section's `rows` — it is `Row::Door`, because
 /// its path is the directory's and a path-keyed map cannot tell the two apart.
 fn select_row(app: &mut datui::App, name: &str) -> bool {
@@ -1928,7 +1928,7 @@ fn partitioned_cloud_directories_are_hive_datasets() {
     assert!(
         pump_until(&mut app, &rx, 60, |app| row_kind(
             app,
-            "blocks (hive table: date)"
+            "open all (hive table: date)"
         )
         .is_some()),
         "a row for every partition"

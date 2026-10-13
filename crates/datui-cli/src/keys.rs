@@ -559,7 +559,7 @@ pub const SCREENS: &[Screen] = &[
                     k("Home / End", "First, last", "The first or last row")
                         .more("The first or last row. The filter has no cursor; typing always edits its end"),
                     k("← / →", "Fold", "Fold or unfold; → goes inside or shows more")
-                        .more("Fold or unfold a section. → on a directory or a file of tables goes inside it, and on a file a format spec reads as record types it lists them, one row each. When a directory or RECENT shows only its first rows, → on its more row shows them all, and ← on a row past the first ones shortens it again; on any other row, ← folds"),
+                        .more("Fold or unfold a section. → on a directory or a file of tables goes inside it, and on a file a format spec reads as record types it lists them, one row each. On `..` or the open-all row, which are already inside, → moves to the directory's first row. When a directory or RECENT shows only its first rows, → on its more row shows them all, and ← on a row past the first ones shortens it again; on any other row, ← folds"),
                     k("Space", "Fold", "Fold the section (types once filtering)")
                         .more("While the filter is empty: fold or unfold the section header under the cursor. With a filter typed, it types"),
                     k("Tab", "Sort", "Cycle the sort")

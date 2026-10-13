@@ -2100,7 +2100,7 @@ impl App {
         self.home_refresh();
     }
 
-    /// Whether the highlighted row is the `(all files)` door, which opens the browsed
+    /// Whether the highlighted row is the open-all row, which opens the browsed
     /// directory and so is already inside it.
     fn selection_opens_the_whole_directory(&self) -> bool {
         self.home.selection_is_the_door()
@@ -2128,7 +2128,7 @@ impl App {
         .then_some(entry.path.clone())
     }
 
-    /// Why Enter on a bucket directory's `(all files)` row reads nothing, by Enter's
+    /// Why Enter on a bucket directory's open-all row reads nothing, by Enter's
     /// own rule: a hive root or one-table directory reads through its files, and one
     /// with a reader for its contents reads with that.
     #[cfg(feature = "cloud")]
@@ -2290,7 +2290,7 @@ impl App {
             let directory = home::directory_dataset_url(&entry.path);
             return Some(self.home_open_directory_as(directory, true, None, reader));
         }
-        // The `(all files)` row opens its directory whatever the label: no label can lock
+        // The open-all row opens its directory whatever the label: no label can lock
         // the user out. Sent straight to the open, since `open_what_it_is` would read the
         // label and step inside again.
         if self.selection_opens_the_whole_directory() {

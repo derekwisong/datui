@@ -781,7 +781,7 @@ pub fn sample_files(
 /// evolution produces, read cleanly as a union. No score or threshold: a file either
 /// brings a column no other has or not (overlap ratios cannot tell drift from
 /// unrelated tables sharing a key). Failing is not a refusal: the row goes inside,
-/// and `(all files)` still opens the union. Fewer than two files, or files without
+/// and the open-all row still opens the union. Fewer than two files, or files without
 /// columns, are one table.
 pub fn is_nested(files: &[Vec<String>]) -> bool {
     let Some(widest) = files.iter().max_by_key(|f| f.len()) else {

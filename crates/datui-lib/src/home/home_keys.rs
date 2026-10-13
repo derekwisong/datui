@@ -197,6 +197,7 @@ impl App {
                     }
                     self.home_browse_into(directory);
                 }
+                None if self.home.step_past_door() => {}
                 None => self.home_collapse(false),
             },
             // A screenful, matching the table; the renderer keeps view_height current.

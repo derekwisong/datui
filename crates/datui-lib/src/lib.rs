@@ -428,7 +428,7 @@ pub enum WhatEnter {
     /// Load the file on the row.
     OpensFile,
     /// Read the whole directory as one table: a hive root, a directory whose files are
-    /// one table, or the `(all files)` row.
+    /// one table, or the open-all row.
     OpensDirectory,
     /// Step into the directory. What `→` does too, on these rows.
     GoesInside,

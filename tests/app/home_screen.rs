@@ -1654,7 +1654,7 @@ fn test_both_doors_are_open_on_a_directory_datui_cannot_name() {
         .collect();
     assert_eq!(
         names.first().map(String::as_str),
-        Some("exports (all files, mixed)"),
+        Some("open all (mixed files)"),
         "got {names:?}"
     );
 }
@@ -1867,6 +1867,8 @@ fn test_the_door_reads_a_local_directory_with_the_local_rules() {
     std::fs::create_dir_all(project.join("metadata")).unwrap();
     std::fs::write(project.join("data").join("a.parquet"), b"x").unwrap();
     std::fs::write(project.join("metadata").join("notes.md"), b"x").unwrap();
+    // A file of its own, so it has an open-all row: folders alone get none.
+    std::fs::write(project.join("summary.csv"), b"a\n1\n").unwrap();
 
     let door_kind = |dir: &std::path::Path| {
         let (tx, _rx) = mpsc::channel();
@@ -2220,7 +2222,7 @@ fn test_a_place_row_says_inside_and_says_it_once() {
 
 /// The pane does not point at a door that will not be there.
 ///
-/// `whole_directory_row` gives no `(all files)` row to a directory with nothing in it,
+/// `whole_directory_row` gives no open-all row to a directory with nothing in it,
 /// nor to any directory while a filter is typed — and the pane said "the first row in
 /// there reads the whole directory as one table" for every plain directory regardless.
 #[test]
@@ -2232,6 +2234,10 @@ fn test_the_pane_only_promises_a_door_that_exists() {
     std::fs::create_dir_all(&full).unwrap();
     std::fs::write(full.join("a.csv"), "a,b\n1,2\n").unwrap();
     std::fs::write(full.join("b.csv"), "x,y,z\n3,4,5\n").unwrap();
+    // Folders of files datui does not read, as a VirtualBox VMs folder is.
+    let folders = tmp.path().join("folders");
+    std::fs::create_dir_all(folders.join("vm")).unwrap();
+    std::fs::write(folders.join("vm").join("vm.vbox"), "<xml/>").unwrap();
 
     let pane = |app: &mut App, name: &str| {
         let row = app
@@ -2266,12 +2272,16 @@ fn test_the_pane_only_promises_a_door_that_exists() {
 
     let shown = pane(&mut app, "full");
     assert!(
-        shown.contains("first row opens all"),
+        shown.contains("open all is inside"),
         "a directory with something in it has the door to point at: {shown}"
     );
     assert!(
-        !pane(&mut app, "empty").contains("first row opens all"),
+        !pane(&mut app, "empty").contains("open all is inside"),
         "an empty directory has none, so nothing points at one"
+    );
+    assert!(
+        !pane(&mut app, "folders").contains("open all is inside"),
+        "nor does a directory of directories"
     );
 }
 

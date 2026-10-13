@@ -292,6 +292,9 @@ pub fn user_message_from_polars(err: &PolarsError) -> String {
     if let Some(none) = nothing_matched(&said) {
         return none;
     }
+    if let Some(mixed) = extensions_differ(&said) {
+        return mixed;
+    }
     let said = without_the_query_plan(&said);
     let (first, rest) = said.split_once('\n').unwrap_or((&said, ""));
     match rust_names_said_plainly(first) {
@@ -357,6 +360,29 @@ fn nothing_matched(msg: &str) -> Option<String> {
     } else {
         "No files found there.".to_string()
     })
+}
+
+/// A directory scan Polars refused because the files under it differ in extension,
+/// said with the two kinds it met and what to open instead. The caller names the
+/// directory.
+fn extensions_differ(msg: &str) -> Option<String> {
+    let (_, paths) = msg.split_once("directory contained paths with different file extensions")?;
+    let (_, rest) = paths.split_once("first path: ")?;
+    let (first, rest) = rest.split_once(", second path: ")?;
+    let second = rest.split(". Please use").next().unwrap_or(rest);
+    let extension = |path: &str| {
+        let name = path.trim().rsplit(['/', '\\']).next().unwrap_or(path);
+        match name.rsplit_once('.') {
+            Some((stem, ext)) if !stem.is_empty() => format!(".{ext}"),
+            _ => "no extension".to_string(),
+        }
+    };
+    Some(format!(
+        "The files below it are not all one kind ({} and {}). Open a file or directory \
+         inside it, or name the files with a pattern such as dir/**/*.parquet.",
+        extension(first),
+        extension(second)
+    ))
 }
 
 fn polars_words(err: &PolarsError) -> String {

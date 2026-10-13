@@ -425,7 +425,7 @@ pub fn directory_dataset_url(path: &Path) -> PathBuf {
     }
 }
 
-/// The `(all files)` row: opens the browsed directory as one table whatever its
+/// The open-all row: opens the browsed directory as one table whatever its
 /// label, so a wrong label costs at most a keystroke. Offered in every directory,
 /// local or remote, and built from the listing on screen.
 fn whole_directory_row(dir: &Path, rows: &[Entry], remote: bool) -> Option<Entry> {
@@ -471,9 +471,16 @@ fn whole_directory_row(dir: &Path, rows: &[Entry], remote: bool) -> Option<Entry
     // No door into a directory with nothing to open (empty, or only `_SUCCESS`).
     // Judged by what the directory holds, not only the listed rows: Spark and GBIF
     // part files have no extension and list nothing, yet open by their bytes.
-    // Extensionless files and subdirectories count; files no reader takes do not.
-    let openable_row = rows.iter().any(|r| r.kind != EntryKind::Other);
-    if !openable_row && holds_nothing_to_open(&holds) {
+    // Extensionless files count; files no reader takes do not, and on disk neither do
+    // plain subdirectories (see `holds_nothing_to_open`).
+    let object_store = is_object_store_url(dir);
+    let openable_row = rows.iter().any(|r| match r.kind {
+        EntryKind::File => true,
+        EntryKind::Other => false,
+        _ => object_store,
+    });
+    let laid_out = !matches!(kind, EntryKind::Directory | EntryKind::Unknown);
+    if !openable_row && !laid_out && holds_nothing_to_open(&holds, object_store) {
         return None;
     }
     let mut entry = Entry::directory(&directory_dataset_url(dir));
@@ -484,27 +491,6 @@ fn whole_directory_row(dir: &Path, rows: &[Entry], remote: bool) -> Option<Entry
     entry.opens_whole_directory = true;
     entry.name = door_name(&entry, rows);
     Some(entry)
-}
-
-/// The directory a door opens, named as the section title names it: no source id
-/// (`s3://lab@bucket` is `bucket`), and an Azure container by its name.
-/// `file_name` rather than splitting on `/`, for the filesystem root and Windows.
-fn door_base_name(dir: &Path) -> String {
-    let text = dir.to_string_lossy();
-    if let Some((_, container, key)) = crate::cloud::source::azure_parts(&text) {
-        let leaf = key.trim_matches('/').rsplit('/').next().unwrap_or("");
-        if leaf.is_empty() {
-            container
-        } else {
-            leaf.to_string()
-        }
-    } else {
-        let (_, plain) = crate::cloud::source::split_source_id(&text);
-        std::path::Path::new(plain.as_ref())
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| plain.into_owned())
-    }
 }
 
 /// What a directory's door opens, from the kind and the tally already in hand.
@@ -592,9 +578,11 @@ fn door_keys(door: &Entry, rows: &[Entry]) -> Vec<String> {
     keys
 }
 
-/// The door's name: the directory, and what `Enter` on it opens.
+/// The door's name: what `Enter` on it opens, led by the action. Not the directory's
+/// name: the section title above says that, and a row named like the directory read as
+/// one more thing in it (a `~\VirtualBox VMs (all files, mixed)` row inside
+/// `~\VirtualBox VMs`).
 pub fn door_name(door: &Entry, rows: &[Entry]) -> String {
-    let name = door_base_name(&door.path);
     let holds = &door.holds;
     let more = if holds.truncated { "+" } else { "" };
     let files = |format: &str| {
@@ -630,11 +618,14 @@ pub fn door_name(door: &Entry, rows: &[Entry]) -> String {
             "{} files, not the table",
             door.kind.lake_name().unwrap_or_default()
         ),
-        DoorKind::Mixed => "all files, mixed".to_string(),
-        DoorKind::Unknown => "all files".to_string(),
+        DoorKind::Mixed => "mixed files".to_string(),
+        DoorKind::Unknown => return DOOR_ACTION.to_string(),
     };
-    format!("{name} ({what})")
+    format!("{DOOR_ACTION} ({what})")
 }
+
+/// The words every door's name starts with.
+pub const DOOR_ACTION: &str = "open all";
 
 /// What `Enter` on a door that is not one table reads and leaves out, for the
 /// details pane. Locally: the commonest format's files directly inside, or a whole
@@ -713,10 +704,20 @@ pub fn name_by_spec(formats: &crate::formats::Registry, rows: &mut [Entry]) {
     }
 }
 
-/// Whether a directory holds nothing a `(all files)` row could read. Shared by the
+/// Whether a directory holds nothing an open-all row could read. Shared by the
 /// door and the details pane so they agree.
-pub fn holds_nothing_to_open(holds: &discover::Holds) -> bool {
-    holds.formats.is_empty() && holds.directories == 0 && holds.unnamed == 0
+///
+/// On disk, subdirectories alone are not enough: the scan of a tree refuses one whose
+/// files differ in extension, and a folder of folders (a home directory, VirtualBox's)
+/// almost always does. Partitions and a saved `DatasetDict` still are. An object-store
+/// prefix is read as Parquet below whatever else is there, so its sub-prefixes count.
+pub fn holds_nothing_to_open(holds: &discover::Holds, object_store: bool) -> bool {
+    let below = if object_store {
+        holds.directories > 0
+    } else {
+        holds.partitions > 0 || holds.dataset_dict
+    };
+    holds.formats.is_empty() && holds.unnamed == 0 && !below
 }
 
 /// Whether `path` is one of datui's own `cloud://` places rather than a real location.
@@ -4613,7 +4614,7 @@ impl HomeState {
             {
                 out.push(Slot::Plain(Row::Up { section: si }));
             }
-            // The door next, whatever the sort. Not while filtering: its `all files` name
+            // The door next, whatever the sort. Not while filtering: its `open all` name
             // fuzzy-matches most of the alphabet.
             if has_door {
                 out.push(Slot::Door { section: si });
@@ -4875,6 +4876,23 @@ impl HomeState {
     /// Whether the cursor is on the door rather than on something in the directory.
     pub fn selection_is_the_door(&self) -> bool {
         matches!(self.selected_row(), Some(Row::Door { .. }))
+    }
+
+    /// From `..` or the door, the first row of the directory: what → means there,
+    /// since those rows are already inside it. False elsewhere, or with nothing below.
+    pub fn step_past_door(&mut self) -> bool {
+        let Some(Row::Up { section } | Row::Door { section, .. }) = self.selected_row() else {
+            return false;
+        };
+        let first = (self.selected + 1..self.row_count()).find(
+            |&i| matches!(self.row_at(i), Some(Row::Entry { section: s, .. }) if s == section),
+        );
+        let Some(first) = first else {
+            return false;
+        };
+        self.move_selection((first - self.selected) as isize);
+        self.follow_selection();
+        true
     }
 
     /// The recents that live in `place`: what `Delete` on its row forgets.

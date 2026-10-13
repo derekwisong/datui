@@ -56,7 +56,10 @@ fn meta_columns(entry: &Entry, unmeasured: bool, hint: Option<u64>, gone: Option
         (None, None, Some(hint)) => format!("~{}", crate::numfmt::bytes(hint)),
         (None, None, None) => String::new(),
     };
-    let age = entry.modified.map(discover::format_age).unwrap_or_default();
+    // The door's time would be its directory's, and read as a file's.
+    let age = (entry.modified.filter(|_| !entry.opens_whole_directory))
+        .map(discover::format_age)
+        .unwrap_or_default();
     format!("{shape:>13}  {size:>9}  {age:>4}")
 }
 
@@ -1410,7 +1413,12 @@ fn entry_line<'a>(
         .source
         .as_deref()
         .map(crate::home::locality::Locality::of_fstype);
-    let place_cell = format!("{} ", locality_glyph(locality));
+    // The door is an action, not a place: no marker, its name where the others start.
+    let place_cell = if entry.opens_whole_directory {
+        " ".repeat(glyphs::display_width(locality_glyph(locality)) + 1)
+    } else {
+        format!("{} ", locality_glyph(locality))
+    };
     let place_w = glyphs::display_width(&place_cell);
     let (name_width, meta) = meta_cells(entry, &notes, locality, show_meta, name_width);
     let cell = fit_kind_cell(
@@ -1433,9 +1441,12 @@ fn entry_line<'a>(
     let pad = name_width
         .saturating_sub(2 + glyphs::display_width(&name) + glyphs::display_width(&cell.text));
 
-    // Unreadable files are listed so the directory reads as it is, dimmed.
+    // Unreadable files are listed so the directory reads as it is, dimmed. The door is
+    // chrome, a shade quieter than the rows it opens.
     let name_fg = if entry.kind == EntryKind::Other {
         ctx.dimmed
+    } else if entry.opens_whole_directory {
+        ctx.text_secondary
     } else {
         ctx.text_primary
     };
@@ -1623,34 +1634,21 @@ fn fit_name(
     if length <= budget {
         return (name, positions);
     }
-    let door_cut = name
-        .rfind(" (")
-        .filter(|_| door)
-        .map(|at| name.split_at(at));
-    if budget > ellipsis_len
-        && let Some((base, what)) = door_cut
-    {
-        let cut = if budget > what.chars().count() + ellipsis_len {
-            let room = budget - what.chars().count() - ellipsis_len;
-            let kept: String = base.chars().take(room).collect();
-            format!("{kept}{}{what}", g.ellipsis)
-        } else {
-            // Narrower still: drop the directory; what Enter opens keeps its head.
-            let what = what.trim_start();
-            if what.chars().count() <= budget {
-                what.to_string()
-            } else {
-                let kept: String = what.chars().take(budget - ellipsis_len).collect();
-                format!("{kept}{}", g.ellipsis)
-            }
-        };
-        return (cut, Vec::new());
-    }
     if budget <= 1 {
         return (name, positions);
     }
-    // A relative path too (a search hit under a directory): its leaf is the file.
-    if name.starts_with('/') || name.starts_with('~') || name.trim_end_matches('/').contains('/') {
+    // A relative path too (a search hit under a directory): its leaf is the file. A
+    // door's name is words led by its action, which keeps its head.
+    if door {
+        let kept = budget - 1;
+        (
+            name.chars().take(kept).collect::<String>() + g.ellipsis,
+            Vec::new(),
+        )
+    } else if name.starts_with('/')
+        || name.starts_with('~')
+        || name.trim_end_matches('/').contains('/')
+    {
         let name = glyphs::fit_start(&name, budget);
         // The tail survived: positions shift left by what was dropped, right by the
         // ellipsis.
@@ -2600,7 +2598,10 @@ fn enter_notes(entry: &Entry, facts: &NoteFacts) -> (Vec<(&'static str, String)>
     let g = glyphs::get();
     // Whether a door will be inside to point at (none for an empty or markers-only
     // directory). The current filter does not matter: stepping in clears it.
-    let door_in_there = !crate::home::holds_nothing_to_open(&entry.holds);
+    let door_in_there = !crate::home::holds_nothing_to_open(
+        &entry.holds,
+        crate::home::is_object_store_url(&entry.path),
+    );
     let footer_unreadable = entry.kind == EntryKind::File
         && entry.rows.is_none()
         && discover::is_parquet_path(&entry.path)
@@ -2791,12 +2792,12 @@ fn variant_lines(
 const FOOTER_UNREADABLE: &str = "footer unreadable";
 
 /// What `Enter` does on a directory it steps into rather than opens, after `step in`.
-const INSIDE_AND_THE_DOOR: &str = "first row opens all";
+const INSIDE_AND_THE_DOOR: &str = "open all is inside";
 
 /// The same, for a lake table, whose files are not its rows.
-const INSIDE_A_LAKE_TABLE: &str = "first row reads files, log ignored";
+const INSIDE_A_LAKE_TABLE: &str = "open all inside ignores the log";
 
-/// What `Enter` does on the `(all files)` row itself.
+/// What `Enter` does on the open-all row itself.
 const THE_DOOR: &str = "all files as one table";
 
 /// The same, in a hive directory.

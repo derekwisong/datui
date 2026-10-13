@@ -275,7 +275,7 @@ fn the_row_that_opens_a_directory_draws_without_a_label() {
     let mut drawn: Vec<(EntryKind, String)> = Vec::new();
     for kind in [EntryKind::MultiFile, EntryKind::Hive, EntryKind::Directory] {
         let mut door = row("gs://cloud-samples-data/bigquery/us-states", kind);
-        door.name = "us-states (all files)".to_string();
+        door.name = "open all".to_string();
         door.opens_whole_directory = true;
         door.holds = crate::home::discover::Holds {
             formats: vec![("parquet".to_string(), 9)],
@@ -299,16 +299,16 @@ fn the_row_that_opens_a_directory_draws_without_a_label() {
         // And with room to spare it reads as itself, with no label beside it.
         let line = entry_line(&door, false, EntryNotes::default(), &rows(&ctx, 40, true));
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(text.contains("us-states (all files)"), "{kind:?}: {text:?}");
+        assert!(text.contains("open all"), "{kind:?}: {text:?}");
         assert!(!text.contains("parquet"), "{kind:?}: {text:?}");
         drawn.push((kind, text));
     }
 
     // Nor does a curated place word or a source id stand in for the label it does
     // not have. Both are about the directory; this row is the door into it, and
-    // `bigquery (all files)  dataset` says the door is the dataset.
+    // `open all  dataset` says the door is the dataset.
     let mut door = row("s3://lab@bucket/exports", EntryKind::Directory);
-    door.name = "exports (all files)".to_string();
+    door.name = "open all".to_string();
     door.opens_whole_directory = true;
     let known = connections(&["lab"]);
     let text: String = entry_line(
@@ -325,7 +325,7 @@ fn the_row_that_opens_a_directory_draws_without_a_label() {
     .iter()
     .map(|s| s.content.as_ref())
     .collect();
-    assert!(text.contains("exports (all files)"), "{text:?}");
+    assert!(text.contains("open all"), "{text:?}");
     assert!(
         !text.contains("dataset"),
         "curated word on a door: {text:?}"
@@ -336,10 +336,10 @@ fn the_row_that_opens_a_directory_draws_without_a_label() {
     // a second match of its own, which is how the row and the pane come to disagree
     // about one directory.
     let mut door = row("s3://bucket/warehouse", EntryKind::Directory);
-    door.name = "warehouse (all files)".to_string();
+    door.name = "open all".to_string();
     door.opens_whole_directory = true;
     let pane = preview_text(&door, 60);
-    assert!(pane.contains("warehouse (all files)"), "{pane}");
+    assert!(pane.contains("open all"), "{pane}");
     assert!(
         !pane.lines().any(|l| l.trim_start().starts_with("kind")),
         "a kind stood in for the label it does not have: {pane}"
@@ -1579,16 +1579,18 @@ fn the_title_survives_a_note_that_wants_the_whole_line() {
     );
 }
 
-/// At 80 columns the open-all row keeps what it opens and cuts the directory's
-/// name, which the section title above it already carries; at 200 it is whole.
+/// The open-all row reads as an action, not a file: its name leads with what it does
+/// and keeps that head when cut, and it has no storage marker and no age, which would
+/// be its directory's.
 #[test]
 fn the_door_keeps_what_it_opens_when_its_name_is_cut() {
     let ctx = RenderContext::for_test();
     let mut door = row("/data/same_schema/", EntryKind::MultiFile);
-    door.name = "same_schema (3 Parquet files, one schema)".to_string();
+    door.name = "open all (3 Parquet files, one schema)".to_string();
     door.opens_whole_directory = true;
     door.rows = Some(6);
     door.cols = Some(2);
+    door.modified = Some(std::time::SystemTime::now() - std::time::Duration::from_secs(86_400 * 3));
     let drawn = |width: usize| -> String {
         entry_line(
             &door,
@@ -1601,26 +1603,24 @@ fn the_door_keeps_what_it_opens_when_its_name_is_cut() {
         .map(|s| s.content.as_ref())
         .collect()
     };
+    let g = glyphs::get();
     // An 80-column terminal leaves the list 78.
     let narrow = drawn(78);
-    assert!(
-        narrow.contains("(3 Parquet files, one schema)"),
-        "{narrow:?}"
-    );
-    assert!(!narrow.contains("same_schema ("), "{narrow:?}");
+    assert!(narrow.contains("open all (3 Parquet"), "{narrow:?}");
     assert!(
         narrow.contains("6 × 2") || narrow.contains("6 x 2"),
         "{narrow:?}"
     );
+    assert!(!narrow.contains("3d"), "the directory's age: {narrow:?}");
+    let before = &narrow[..narrow.find("open all").unwrap_or(0)];
+    assert!(!before.contains(g.here), "a storage marker: {narrow:?}");
     assert_eq!(
         narrow.chars().count(),
         row_width(78 - META_WIDTH as usize, true),
         "the columns stay where they are: {narrow:?}"
     );
-    // At 60 the directory goes and what Enter opens keeps its head.
     let narrowest = drawn(58);
-    assert!(narrowest.contains("(3 Parquet files"), "{narrowest:?}");
-    assert!(!narrowest.contains("same_"), "{narrowest:?}");
+    assert!(narrowest.contains("open all ("), "{narrowest:?}");
     assert_eq!(
         narrowest.chars().count(),
         row_width(58 - META_WIDTH as usize, true),
@@ -1628,7 +1628,7 @@ fn the_door_keeps_what_it_opens_when_its_name_is_cut() {
     );
     let wide = drawn(200);
     assert!(
-        wide.contains("same_schema (3 Parquet files, one schema)"),
+        wide.contains("open all (3 Parquet files, one schema)"),
         "{wide:?}"
     );
 }

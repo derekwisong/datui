@@ -858,7 +858,10 @@ pub fn plan(header: &Header, name: &str) -> std::result::Result<Plan, String> {
                     let mut column = leaf.remove(0);
                     if header.fortran {
                         // Column-major: a column's elements are side by side.
-                        column.start = c * rows * itemsize;
+                        // The element count fits, but its bytes need not.
+                        column.start = (c * rows)
+                            .checked_mul(itemsize)
+                            .ok_or("the array is too large")?;
                         column.stride = itemsize;
                     } else {
                         column.start = c * itemsize;
@@ -1436,6 +1439,15 @@ mod tests {
         eprintln!("{message}");
         assert_shape(&message, &dir.path().join("a.npy"));
         assert!(message.contains("--table \"x\""), "{message}");
+    }
+
+    /// Found by fuzzing: the elements of a Fortran array fit a `usize`, the
+    /// bytes before its last column do not.
+    #[test]
+    fn a_fortran_array_too_large_to_address_is_refused() {
+        let bytes = npy("'<f4'", true, "(4000000000000000100, 4)", &[]);
+        let len = bytes.len();
+        assert!(open_in(Arc::new(Bytes::Owned(bytes)), 0, len, "a").is_err());
     }
 
     fn npy(descr: &str, fortran: bool, shape: &str, data: &[u8]) -> Vec<u8> {

@@ -1778,6 +1778,8 @@ pub struct LimitsConfig {
     pub midi_events: usize,
     /// Rows of a list on an Info panel tab.
     pub detail_rows: usize,
+    /// Levels a SQL statement may nest, at most the parser's own 50; 0 for that.
+    pub sql_depth: usize,
     /// Journal JSON read into memory, all files of one open together.
     pub journal_bytes: ByteSize,
     /// Fields of an SDF file, each a column.
@@ -1801,6 +1803,7 @@ impl LimitsConfig {
         midi_bytes: ByteSize::mib(64),
         midi_events: 10_000_000,
         detail_rows: 10_000,
+        sql_depth: 24,
         journal_bytes: ByteSize::mib(1024),
         sdf_fields: 4096,
         vcd_signals: 1 << 20,

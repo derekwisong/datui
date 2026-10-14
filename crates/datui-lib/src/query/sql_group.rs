@@ -14,8 +14,6 @@ use sqlparser::ast::{
     SelectItem, SetExpr, Statement, TableFactor, Visit, Visitor, WildcardAdditionalOptions,
     visit_expressions_mut,
 };
-use sqlparser::dialect::GenericDialect;
-use sqlparser::parser::{Parser, ParserOptions};
 
 /// How a grouped statement relates its result to its source rows.
 #[derive(Debug, PartialEq)]
@@ -52,16 +50,7 @@ const KEY_PREFIX: &str = "__datui_group_key_";
 /// result `result_width` columns wide, or `None` when the statement is not a grouping
 /// whose rows can be traced back reliably.
 pub fn plan(sql: &str, columns: &[&str], result_width: usize) -> Option<GroupPlan> {
-    // Parsed as polars-sql parses it, so the two read the same statement.
-    let statements = Parser::new(&GenericDialect)
-        .with_options(ParserOptions {
-            trailing_commas: true,
-            ..Default::default()
-        })
-        .try_with_sql(sql)
-        .ok()?
-        .parse_statements()
-        .ok()?;
+    let statements = super::sql_parse::statements(sql).ok()?;
     let [Statement::Query(query)] = statements.as_slice() else {
         return None;
     };
@@ -153,15 +142,7 @@ pub fn plan(sql: &str, columns: &[&str], result_width: usize) -> Option<GroupPla
 /// column's. Only a plain statement's select list is read: `*`, a column, or a column
 /// `AS` a name. Anything else, or a statement that is not plain, gives none.
 pub fn passed_through(sql: &str, columns: &[&str], result: &[&str]) -> Vec<(String, String)> {
-    let Some(statements) = Parser::new(&GenericDialect)
-        .with_options(ParserOptions {
-            trailing_commas: true,
-            ..Default::default()
-        })
-        .try_with_sql(sql)
-        .and_then(|mut parser| parser.parse_statements())
-        .ok()
-    else {
+    let Ok(statements) = super::sql_parse::statements(sql) else {
         return Vec::new();
     };
     let [Statement::Query(query)] = statements.as_slice() else {

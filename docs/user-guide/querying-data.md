@@ -105,6 +105,10 @@ not the full SQL standard. A statement reads one table, `df`:
 Sidebar filters and sort are not part of `df`, and neither is the previous
 statement's result: each statement starts from `df` again.
 
+A statement may nest at most `limits.sql_depth` levels (default 24); each
+parenthesis, call, subquery or part of a dotted name is a level. A deeper one
+is refused, and the message names the setting that raises it.
+
 A statement's rows come back in the same order on every read. Joins, unions,
 `DISTINCT` and groupings keep the order of the rows they read (a grouping that
 [drills down](#drill-down-a-group-by), with no `ORDER BY` or `LIMIT`, is sorted by

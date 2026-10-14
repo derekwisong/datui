@@ -205,6 +205,7 @@ lives, imports, the theme and troubleshooting.
 | `limits.midi_events` | integer | `10000000` |  | Most events read from MIDI files, all files of one open together. |
 | `limits.journal_bytes` | size | `"1GiB"` |  | Most journal JSON read into memory, all files of one open together; the records past it are left out, and the Notes tab says how much. |
 | `limits.detail_rows` | integer | `10000` |  | Most rows of a list on an Info panel tab (symbols, sections, metadata); one more row says how many were left out. |
+| `limits.sql_depth` | integer | `24` |  | Deepest a SQL statement may nest, each parenthesis, call, subquery or part of a dotted name a level; a deeper statement is refused. Each level past 24 about doubles the time a broken statement can take to reject: half a second at 28, seconds past 30. At most 50, the parser's own limit, which 0 means too. |
 | `limits.sdf_fields` | integer | `4096` |  | Most fields (data items by name) read from an SDF file, each a column. |
 | `limits.vcd_signals` | integer | `1048576` |  | Most signals read from a VCD file, each a column. |
 | `limits.fix_tags` | integer | `4096` |  | Most tags read from a FIX file, each a column. |

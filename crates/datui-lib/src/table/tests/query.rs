@@ -2025,3 +2025,17 @@ fn a_followed_view_reads_and_counts_from_its_marks() {
     let expected: Vec<_> = (0..20_050i64).filter(|i| i % 7 == 3).map(Some).collect();
     assert_eq!(t(last.collect().unwrap()), expected[expected.len() - 3..]);
 }
+
+/// A statement deeper than `limits.sql_depth` is refused before polars-sql parses it (which
+/// took 36 seconds on the UI thread for this one), naming the key; the view is left as it was.
+#[cfg(feature = "sql")]
+#[test]
+fn a_sql_statement_past_the_depth_bound_is_refused() {
+    let df = df!("dept" => ["a", "b"], "salary" => [1, 2]).unwrap();
+    let mut state = DataTableState::from_lazyframe(df.lazy(), &OpenOptions::default()).unwrap();
+    state.sql_query(crate::query::sql_parse::tests::FUZZ_HANG.to_string());
+    let error = state.error.as_ref().expect("refused").to_string();
+    assert!(error.contains("more than 24 levels deep"), "{error}");
+    assert!(error.ends_with("limits.sql_depth raises it"), "{error}");
+    assert_eq!(state.get_active_sql_query(), "");
+}

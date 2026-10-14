@@ -1142,7 +1142,10 @@ pub fn members(path: &Path) -> Result<Vec<Member>> {
         let Ok(entry) = archive.by_index_raw(index) else {
             continue;
         };
-        let Some(name) = entry.name().strip_suffix(".npy") else {
+        let Ok(full) = entry.name() else {
+            continue;
+        };
+        let Some(name) = full.strip_suffix(".npy") else {
             continue;
         };
         if entry.is_dir() || name.is_empty() {

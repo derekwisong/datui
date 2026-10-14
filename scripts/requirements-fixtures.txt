@@ -16,6 +16,6 @@ numpy==2.5.3; python_version >= "3.12"
 numpy==2.3.5; python_version == "3.11"
 numpy==2.2.6; python_version < "3.11"
 pyarrow==25.0.1
-fastavro==1.12.2
+fastavro==1.13.1
 openpyxl==3.1.5
 et-xmlfile==2.0.0

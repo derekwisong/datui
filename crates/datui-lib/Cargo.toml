@@ -102,7 +102,7 @@ brotli = { version = "8.0", default-features = false, features = ["std"] }
 rusqlite = { version = "0.40", optional = true, default-features = false, features = ["bundled", "hooks"] }
 # NumPy archives (.npz) are zip files. Already in the tree through calamine, with
 # the same features.
-zip = { version = "8.6", default-features = false, features = ["deflate"] }
+zip = { version = "9.0", default-features = false, features = ["deflate"] }
 # ELF symbol and section tables, and Rust symbol names demangled. Both already in
 # the tree through backtrace, at these versions and with ELF reading on.
 object = { version = "0.37.3", default-features = false, features = ["read_core", "elf", "unaligned"] }

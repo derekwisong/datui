@@ -1142,8 +1142,8 @@ impl DataTableState {
             use polars_sql::SQLContext;
             // polars-sql parses within the parser's own bound of 50 levels, under which a
             // statement with a mistake in it can take minutes to reject, on the UI thread.
-            if let Some(message) = crate::query::sql_parse::too_deep(trimmed) {
-                self.error = Some(PolarsError::ComputeError(message.into()));
+            if let Err(e) = crate::query::sql_parse::check(trimmed) {
+                self.error = Some(e);
                 return;
             }
             let mut ctx = SQLContext::new();

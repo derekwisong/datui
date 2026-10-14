@@ -288,7 +288,7 @@ Most journal JSON read into memory, all files of one open together; the records 
 Most rows of a list on an Info panel tab (symbols, sections, metadata); one more row says how many were left out. Default: \fB10000\fR.
 .TP
 \fBlimits.sql_depth\fR (\fIinteger\fR)
-Deepest a SQL statement may nest, each parenthesis, call, subquery or part of a dotted name a level; a deeper statement is refused. Past about 30, a statement with a mistake in it can take minutes to reject. 0 for the parser's own limit of 50. Default: \fB24\fR.
+Deepest a SQL statement may nest, each parenthesis, call, subquery or part of a dotted name a level; a deeper statement is refused. Each level past 24 about doubles the time a broken statement can take to reject: half a second at 28, seconds past 30. At most 50, the parser's own limit, which 0 means too. Default: \fB24\fR.
 .TP
 \fBlimits.sdf_fields\fR (\fIinteger\fR)
 Most fields (data items by name) read from an SDF file, each a column. Default: \fB4096\fR.

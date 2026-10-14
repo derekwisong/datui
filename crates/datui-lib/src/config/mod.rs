@@ -1778,7 +1778,7 @@ pub struct LimitsConfig {
     pub midi_events: usize,
     /// Rows of a list on an Info panel tab.
     pub detail_rows: usize,
-    /// Levels a SQL statement may nest; 0 for the parser's own limit.
+    /// Levels a SQL statement may nest, at most the parser's own 50; 0 for that.
     pub sql_depth: usize,
     /// Journal JSON read into memory, all files of one open together.
     pub journal_bytes: ByteSize,

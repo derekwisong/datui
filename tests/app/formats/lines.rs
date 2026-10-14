@@ -516,6 +516,40 @@ fn go_to_a_row_waits_for_the_lines_to_be_indexed() {
     assert!(numbers.contains(&1_400_001), "{numbers:?}");
 }
 
+/// `:N` typed once the lines are indexed but before the first page is read whole: the
+/// frame drawn while the row's page is on its way keeps the cursor on the row. On a slow
+/// runner the indexing answer lands with the open, so the jump is not parked and the
+/// test's wait for it holds before its page does.
+#[test]
+fn a_frame_drawn_before_the_rows_arrive_keeps_the_row_a_jump_landed_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = large_log(dir.path(), 1_500_000);
+    let (mut app, rx) = app();
+    let mut next = Some(AppEvent::Open(vec![log], OpenOptions::default()));
+    while app.data_table_state.is_none() || app.is_busy() || app.row_count_pending() {
+        match next.take() {
+            Some(event) => next = app.event(event),
+            None => next = common::next_event(&mut app, &rx),
+        }
+    }
+    assert!(app.data_table_state.as_ref().unwrap().indexing().is_none());
+    let _ = screen(&mut app);
+    let mut next = app.event(AppEvent::Applied(datui::Applied::GoToLine(1_400_000)));
+    while let Some(event) = next {
+        next = app.event(event);
+    }
+    assert!(app.is_busy(), "the row's page is being read");
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.selected_display_row(), Some(1_400_001));
+    // The frame meanwhile has no page to draw for the cursor's row.
+    let _ = screen(&mut app);
+    drain_events(&mut app, &rx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.selected_display_row(), Some(1_400_001));
+    let numbers = state.row_numbers_from(state.start_row(), state.visible_rows.max(1));
+    assert!(numbers.contains(&1_400_001), "{numbers:?}");
+}
+
 /// Home pauses the indexing, the table takes it up again; and the app gone, it stops
 /// for good, so nothing holds the file.
 #[test]

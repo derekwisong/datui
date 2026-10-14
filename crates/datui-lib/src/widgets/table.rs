@@ -1461,6 +1461,13 @@ impl StatefulWidget for DataTable {
         let start_row = state.start_to_draw();
         self.drawn_from = start_row;
         state.on_screen = None;
+        // The view's page is still being read (there are rows to read: a frame known
+        // empty has none coming): what is drawn meanwhile is the last page drawn, or
+        // nothing, and the cursor is not on it.
+        let rows_pending = !state.page_on_hand(state.view.start_row)
+            && state
+                .num_rows_if_valid()
+                .is_none_or(|rows| rows > state.view.start_row);
         // Only on the cursor's row (and, when drawn, its column): the cursor is what a
         // find moves, and a mark left behind would read as a second match.
         let selected = state.table_state.selected();
@@ -1717,6 +1724,13 @@ impl StatefulWidget for DataTable {
         } else {
             // Truly empty: no schema, not loaded, or blank file
             Paragraph::new("No data").render(area, buf);
+        }
+
+        // Ratatui's Table moves the selection to the last row it drew and clears it over
+        // none; drawn while the view's page is on its way, that would move the cursor off
+        // the row a jump put it on, which the page then lands around.
+        if rows_pending {
+            state.table_state.select(selected);
         }
 
         // A table known to hold no rows says so under its header.

@@ -4,6 +4,8 @@ pub(crate) mod sql_assist;
 #[cfg(feature = "sql")]
 pub mod sql_group;
 #[cfg(feature = "sql")]
+pub(crate) mod sql_parse;
+#[cfg(feature = "sql")]
 pub(crate) mod sql_plan;
 
 use polars::prelude::StrptimeOptions;

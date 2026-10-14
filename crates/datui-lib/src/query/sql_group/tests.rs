@@ -171,3 +171,15 @@ fn passed_through_names_the_columns_a_statement_keeps() {
     assert!(kept("SELECT a FROM df JOIN df AS e ON true", &["a"]).is_empty());
     assert!(kept("not sql", &["a"]).is_empty());
 }
+
+/// The hang the fuzzer found (Nightly run 38560894044): sqlparser took 36 seconds per
+/// parse of this statement, for each width the target tries, until the parse was bounded
+/// by `limits.sql_depth`. It is no grouping, so every width gives no plan.
+#[test]
+fn a_statement_past_the_depth_bound_gives_no_plan_at_once() {
+    let sql = crate::query::sql_parse::tests::FUZZ_HANG;
+    for width in 0..8 {
+        assert_eq!(plan(sql, COLUMNS, width), None, "width {width}");
+    }
+    assert!(passed_through(sql, COLUMNS, &["dept"]).is_empty());
+}

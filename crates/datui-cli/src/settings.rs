@@ -348,6 +348,7 @@ pub const SETTINGS: &[Setting] = &[
     s("limits.midi_events", Count, Value("10000000"), "Most events read from MIDI files, all files of one open together."),
     s("limits.journal_bytes", Size, Value("\"1GiB\""), "Most journal JSON read into memory, all files of one open together; the records past it are left out, and the Notes tab says how much."),
     s("limits.detail_rows", Count, Value("10000"), "Most rows of a list on an Info panel tab (symbols, sections, metadata); one more row says how many were left out."),
+    s("limits.sql_depth", Count, Value("24"), "Deepest a SQL statement may nest, each parenthesis, call, subquery or part of a dotted name a level; a deeper statement is refused. Past about 30, a statement with a mistake in it can take minutes to reject. 0 for the parser's own limit of 50."),
     s("limits.sdf_fields", Count, Value("4096"), "Most fields (data items by name) read from an SDF file, each a column."),
     s("limits.vcd_signals", Count, Value("1048576"), "Most signals read from a VCD file, each a column."),
     s("limits.fix_tags", Count, Value("4096"), "Most tags read from a FIX file, each a column."),

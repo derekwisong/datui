@@ -4385,7 +4385,7 @@ fn test_partitioned_cloud_directories_are_labelled_and_open_whole() {
     home.browsing = Some(blocks.clone());
     home.rebuild(&[]);
     let first = door_of(&home).expect("the directory carries the door");
-    assert_eq!(first.name, "open all (hive table: date)");
+    assert_eq!(first.name, "Open all (hive table: date)");
     assert_eq!(first.kind, EntryKind::Hive);
     assert_eq!(
         first.path,
@@ -4417,7 +4417,7 @@ fn test_partitioned_cloud_directories_are_labelled_and_open_whole() {
     assert_eq!(home.sections[0].rows.len(), 2, "the door is not among them");
     assert_eq!(
         door_of(&home).map(|d| d.name.as_str()),
-        Some("open all (mixed files)")
+        Some("Open all (mixed files)")
     );
     // Not a dataset: the cursor lands on the first thing in it, so the first Enter never
     // reads `by_year` and `by_station` together.
@@ -4871,7 +4871,7 @@ fn test_a_directory_of_separate_tables_still_offers_to_read_them_together() {
     home.rebuild(&[]);
     assert_eq!(
         door_of(&home).map(|d| d.name.as_str()),
-        Some("open all (3 Parquet files, one schema)"),
+        Some("Open all (3 Parquet files, one schema)"),
         "unpeeked, the listing offers it"
     );
 
@@ -4884,7 +4884,7 @@ fn test_a_directory_of_separate_tables_still_offers_to_read_them_together() {
     home.rebuild(&[]);
     assert_eq!(
         door_of(&home).map(|d| d.name.as_str()),
-        Some("open all (3 Parquet files, one schema)"),
+        Some("Open all (3 Parquet files, one schema)"),
         "the second door does not close on a verdict"
     );
     assert_eq!(
@@ -4926,7 +4926,7 @@ fn test_the_whole_directory_row_says_what_the_listing_holds() {
     home.rebuild(&[]);
 
     let row = door_of(&home).expect("the directory carries the door");
-    assert_eq!(row.name, "open all (12 Parquet files, one schema)");
+    assert_eq!(row.name, "Open all (12 Parquet files, one schema)");
     assert_eq!(row.holds.data_files(), 12, "the tally the pane reports");
     // And no label. Every other label counts what is directly inside a directory; this
     // row reads the whole of it, so a count beside it would be about a different set of
@@ -5119,7 +5119,7 @@ fn test_the_whole_directory_row_is_a_door_not_a_search_result() {
 
     let first = |home: &HomeState| visible_names(home).first().cloned();
     assert!(
-        first(&home).is_some_and(|n| n == "open all (2 Parquet files, one schema)"),
+        first(&home).is_some_and(|n| n == "Open all (2 Parquet files, one schema)"),
         "got {:?}",
         visible_names(&home)
     );
@@ -5132,13 +5132,13 @@ fn test_the_whole_directory_row_is_a_door_not_a_search_result() {
     );
 
     home.filter.clear();
-    assert!(first(&home).is_some_and(|n| n == "open all (2 Parquet files, one schema)"));
+    assert!(first(&home).is_some_and(|n| n == "Open all (2 Parquet files, one schema)"));
 
     // And it is not one of the things being ordered.
     for sort in [SortMode::Size, SortMode::Rows, SortMode::Modified] {
         home.sort = sort;
         assert!(
-            first(&home).is_some_and(|n| n == "open all (2 Parquet files, one schema)"),
+            first(&home).is_some_and(|n| n == "Open all (2 Parquet files, one schema)"),
             "under {sort:?} the first row was {:?}",
             visible_names(&home)
         );
@@ -5187,10 +5187,42 @@ fn test_nothing_that_walks_the_rows_can_reach_the_door() {
             .any(|r| matches!(r, Row::Entry { entry, .. } if entry.path == door.path)),
         "and neither must a walk of `Row::Entry`"
     );
-    // It is on screen all the same, and first, after the way up.
+    // It is on screen all the same, and first, before the way up.
     assert!(matches!(home.visible().first(), Some(Row::Header { .. })));
-    assert!(matches!(home.visible().get(1), Some(Row::Up { .. })));
-    assert!(matches!(home.visible().get(2), Some(Row::Door { .. })));
+    assert!(matches!(home.visible().get(1), Some(Row::Door { .. })));
+    assert!(matches!(home.visible().get(2), Some(Row::Up { .. })));
+}
+
+/// The door sits under the directory's heading, before `..`, with a blank line after it
+/// in a dense list as in a spaced one: the directory's action, set apart from its
+/// listing. The blank is no row's line, and nothing else gets one.
+#[test]
+fn test_a_blank_line_sets_the_door_apart_from_the_listing() {
+    let tmp = TempDir::new().unwrap();
+    touch(tmp.path(), "a.parquet");
+    touch(tmp.path(), "b.parquet");
+    let mut home = HomeState {
+        browsing: Some(tmp.path().to_path_buf()),
+        ..Default::default()
+    };
+    home.rebuild(&[]);
+    let rows = home.visible();
+    assert!(matches!(rows.get(1), Some(Row::Door { .. })), "{rows:?}");
+    assert!(matches!(rows.get(2), Some(Row::Up { .. })), "{rows:?}");
+    for spaced in [false, true] {
+        let lines = home.list_lines(spaced);
+        assert_eq!(lines.spacers(), 1);
+        assert_eq!(lines.line_of(1), 1);
+        assert_eq!(lines.row_on(2), None, "the blank after the door");
+        assert_eq!(lines.line_of(2), 3);
+        assert_eq!(lines.total(), rows.len() + 1);
+    }
+
+    // While filtering there is no door, and no blank.
+    home.filter = "a".to_string();
+    home.rebuild(&[]);
+    assert!(!home.visible().iter().any(|r| matches!(r, Row::Door { .. })));
+    assert_eq!(home.list_lines(false).spacers(), 0);
 }
 
 /// The two directories that get no door, and the reason each is not one.
@@ -5445,20 +5477,20 @@ fn test_the_door_is_named_by_what_it_opens_in_every_place() {
             .expect("the place carries the row")
     };
 
-    assert_eq!(named("s3://bucket"), "open all (1 Parquet file)");
-    assert_eq!(named("s3://lab@bucket"), "open all (1 Parquet file)");
+    assert_eq!(named("s3://bucket"), "Open all (1 Parquet file)");
+    assert_eq!(named("s3://lab@bucket"), "Open all (1 Parquet file)");
     assert_eq!(
         named("s3://lab@bucket/exports"),
-        "open all (1 Parquet file)"
+        "Open all (1 Parquet file)"
     );
-    assert_eq!(named("gs://bucket/exports/"), "open all (1 Parquet file)");
+    assert_eq!(named("gs://bucket/exports/"), "Open all (1 Parquet file)");
     assert_eq!(
         named("abfss://raw@acct.dfs.core.windows.net"),
-        "open all (1 Parquet file)"
+        "Open all (1 Parquet file)"
     );
     assert_eq!(
         named("abfss://raw@acct.dfs.core.windows.net/tbl"),
-        "open all (1 Parquet file)"
+        "Open all (1 Parquet file)"
     );
 }
 
@@ -5920,7 +5952,7 @@ mod coming_back {
         }
     }
 
-    /// `..` is the first row inside a directory, and Enter on it goes up a level as
+    /// `..` comes first inside a directory, after the door, and Enter on it goes up a level as
     /// Backspace does, the cursor back on the directory left.
     #[test]
     fn dot_dot_goes_up_a_level() {
@@ -5941,7 +5973,7 @@ mod coming_back {
             .iter()
             .position(|row| matches!(row, Row::Up { .. }))
             .expect("a way up");
-        assert_eq!(up, 1, "first under the heading");
+        assert_eq!(up, 2, "first under the heading and the door");
         app.home
             .move_selection(up as isize - app.home.selected as isize);
         assert_eq!(app.what_enter_does(), datui::WhatEnter::GoesUp);
@@ -6907,18 +6939,30 @@ fn test_down_from_the_top_moves_the_cursor_until_the_margin() {
 
     let mut line = first;
     while line < bottom - 2 {
+        // A blank line sets the door apart from the listing.
+        let gap = u16::from(app.home.selection_is_the_door());
         let next = press_and_draw(&mut app, KeyCode::Down);
-        assert_eq!(next, line + 1);
+        assert_eq!(next, line + 1 + gap);
         assert_eq!(app.home.scroll, 0, "the list holds still");
         line = next;
     }
-    for step in 1..=5 {
-        assert_eq!(press_and_draw(&mut app, KeyCode::Down), bottom - 2);
-        assert_eq!(app.home.scroll, step);
+    // The door scrolls off with its blank line, two lines at once (a view never starts
+    // on a blank), and the cursor takes the line it gained before the list moves again.
+    let mut last = bottom - 2;
+    for _ in 1..=5 {
+        let scroll = app.home.scroll;
+        let line = press_and_draw(&mut app, KeyCode::Down);
+        assert!(
+            (line == bottom - 2 && app.home.scroll == scroll + 1)
+                || (line == bottom - 3 && last == bottom - 2 && app.home.scroll == scroll + 1)
+                || (line == bottom - 2 && last == bottom - 3 && app.home.scroll == scroll),
+            "{line} after {last}, bottom {bottom}"
+        );
+        last = line;
     }
     let scroll = app.home.scroll;
     for step in 1..=(height - 5) {
-        assert_eq!(press_and_draw(&mut app, KeyCode::Up), bottom - 2 - step);
+        assert_eq!(press_and_draw(&mut app, KeyCode::Up), last - step);
         assert_eq!(app.home.scroll, scroll, "the list holds still");
     }
 }
@@ -7243,7 +7287,7 @@ mod landing {
         step_in(&mut app, &rx, &hive);
 
         let row = door(&app);
-        assert_eq!(row.name, "open all (hive table: year, month)");
+        assert_eq!(row.name, "Open all (hive table: year, month)");
         assert!(
             app.home.selection_is_the_door(),
             "one dataset: the cursor is on it"
@@ -7281,7 +7325,7 @@ mod landing {
         assert_eq!(row_kind(&app, &same), EntryKind::MultiFile);
         step_in(&mut app, &rx, &same);
 
-        assert_eq!(door(&app).name, "open all (3 Parquet files, one schema)");
+        assert_eq!(door(&app).name, "Open all (3 Parquet files, one schema)");
         assert!(app.home.selection_is_the_door());
         enter_and_load(&mut app, &rx);
         let state = app.data_table_state.as_ref().unwrap();
@@ -7301,7 +7345,7 @@ mod landing {
 
         assert_eq!(
             door(&app).name,
-            "open all (2 Parquet files, schemas differ)"
+            "Open all (2 Parquet files, schemas differ)"
         );
         assert!(!app.home.selection_is_the_door());
         assert_eq!(
@@ -7319,7 +7363,7 @@ mod landing {
         step_in(&mut app, &rx, &mixed);
 
         let row = door(&app);
-        assert_eq!(row.name, "open all (mixed files)");
+        assert_eq!(row.name, "Open all (mixed files)");
         assert_eq!(
             datui::home::door_reads(&row),
             Some((
@@ -7362,7 +7406,7 @@ mod landing {
         select(&mut app, &delta);
         go_into(&mut app, &rx, KeyCode::Enter, &delta);
 
-        assert_eq!(door(&app).name, "open all (Delta files, not the table)");
+        assert_eq!(door(&app).name, "Open all (Delta files, not the table)");
         assert!(!app.home.selection_is_the_door());
         assert_eq!(
             app.home.selected_entry().map(|e| e.path.clone()),
@@ -7445,7 +7489,7 @@ fn test_late_footers_move_a_landed_cursor_and_only_a_landed_one() {
         home.apply_measurements();
         assert_eq!(
             door_of(home).map(|d| d.name.as_str()),
-            Some("open all (3 Parquet files, schemas differ)")
+            Some("Open all (3 Parquet files, schemas differ)")
         );
     };
 
@@ -7499,7 +7543,7 @@ fn test_a_mixed_prefix_says_it_reads_below() {
     home.browsing = Some(place);
     home.rebuild(&[]);
     let door = door_of(&home).expect("the prefix carries the door").clone();
-    assert_eq!(door.name, "open all (mixed files)");
+    assert_eq!(door.name, "Open all (mixed files)");
     assert_eq!(
         datui::home::door_reads(&door),
         Some((
@@ -10333,8 +10377,13 @@ mod at_rest {
     fn at_rest_the_box_names_the_row_enter_takes() {
         use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
         let (_tmp, mut app, _rx) = opened();
-        let name = match app.home.cursor_row() {
-            Some(Row::Entry { entry, .. }) | Some(Row::Door { entry, .. }) => entry.name.clone(),
+        // The door draws its action as a chip and what it opens beside it.
+        let (name, drawn) = match app.home.cursor_row() {
+            Some(Row::Entry { entry, .. }) => (entry.name.clone(), entry.name.clone()),
+            Some(Row::Door { entry, .. }) => (
+                entry.name.clone(),
+                datui::home::door_what(&entry.name).to_string(),
+            ),
             _ => panic!("the cursor rests on a row"),
         };
         let area = Rect::new(0, 0, 160, 30);
@@ -10349,16 +10398,21 @@ mod at_rest {
         );
         let y = lines
             .iter()
-            .position(|l| l.contains(&name) && !l.contains("Enter:"))
+            .position(|l| l.contains(&drawn) && !l.contains("Enter:"))
             .expect("the row is drawn") as u16;
         let rail = datui::glyphs::get().rail;
         assert!((0..3).all(|x| buf[(x, y)].symbol() != rail), "no rail");
+        // The door's chip has its own fill, marked or not.
+        let chip = (lines[y as usize].find(" Open all "))
+            .map(|at| lines[y as usize][..at].chars().count() as u16);
+        let in_chip = |x: u16| chip.is_some_and(|c| (c..c + 10).contains(&x));
         assert!(
             (0..area.width).all(|x| {
                 let cell = &buf[(x, y)];
-                cell.bg == ratatui::style::Color::Reset
-                    && !cell.modifier.contains(ratatui::style::Modifier::DIM)
-                    && !cell.modifier.contains(ratatui::style::Modifier::REVERSED)
+                in_chip(x)
+                    || cell.bg == ratatui::style::Color::Reset
+                        && !cell.modifier.contains(ratatui::style::Modifier::DIM)
+                        && !cell.modifier.contains(ratatui::style::Modifier::REVERSED)
             }),
             "no row is marked"
         );

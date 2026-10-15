@@ -1928,7 +1928,7 @@ fn partitioned_cloud_directories_are_hive_datasets() {
     assert!(
         pump_until(&mut app, &rx, 60, |app| row_kind(
             app,
-            "open all (hive table: date)"
+            "Open all (hive table: date)"
         )
         .is_some()),
         "a row for every partition"

@@ -578,7 +578,8 @@ fn door_keys(door: &Entry, rows: &[Entry]) -> Vec<String> {
     keys
 }
 
-/// The door's name: what `Enter` on it opens, led by the action. Not the directory's
+/// The door's name: what `Enter` on it opens, led by the action; the row draws the
+/// action as a chip and [`door_what`] beside it. Not the directory's
 /// name: the section title above says that, and a row named like the directory read as
 /// one more thing in it (a `~\VirtualBox VMs (all files, mixed)` row inside
 /// `~\VirtualBox VMs`).
@@ -625,7 +626,14 @@ pub fn door_name(door: &Entry, rows: &[Entry]) -> String {
 }
 
 /// The words every door's name starts with.
-pub const DOOR_ACTION: &str = "open all";
+pub const DOOR_ACTION: &str = "Open all";
+
+/// What a door's name says it opens, without the action: `3 Parquet files, one
+/// schema` from `Open all (3 Parquet files, one schema)`; empty for a bare action.
+pub fn door_what(name: &str) -> &str {
+    let what = name.strip_prefix(DOOR_ACTION).unwrap_or(name).trim();
+    (what.strip_prefix('(').and_then(|w| w.strip_suffix(')'))).unwrap_or(what)
+}
 
 /// What `Enter` on a door that is not one table reads and leaves out, for the
 /// details pane. Locally: the commonest format's files directly inside, or a whole
@@ -1409,6 +1417,8 @@ struct View {
     /// Which slots are section headers, in order: few, so the list's lines are found
     /// from them without walking every row.
     headers: Vec<usize>,
+    /// Which slots are doors, in order.
+    doors: Vec<usize>,
     hits: Hits,
     /// See [`HomeState::has_any_dataset`].
     has_dataset: bool,
@@ -1479,14 +1489,15 @@ enum Slot {
     },
 }
 
-/// Where the listed rows fall in the list, given its section headers: with `spaced`, a
-/// blank line comes before every header but the first. Answers in a few steps for
-/// any row or line, so a frame never walks thousands of rows to find its own.
+/// Where the listed rows fall in the list: with `spaced`, a blank line comes before
+/// every header but the first, and one always follows a door, setting the directory's
+/// action apart from its listing. Answers in a few steps for any row or line, so a
+/// frame never walks thousands of rows to find its own.
 #[derive(Debug, Clone)]
 pub struct ListLines {
-    headers: Vec<usize>,
+    /// The rows a blank line comes before, in order.
+    gaps: Vec<usize>,
     rows: usize,
-    spaced: bool,
 }
 
 impl ListLines {
@@ -1495,20 +1506,14 @@ impl ListLines {
         self.rows
     }
 
-    /// How many of them are section headers.
-    pub fn headers(&self) -> usize {
-        self.headers.len()
+    /// How many blank lines the list has.
+    pub fn spacers(&self) -> usize {
+        self.gaps.len()
     }
 
     /// The line row `row` is drawn on.
     pub fn line_of(&self, row: usize) -> usize {
-        if !self.spaced {
-            return row;
-        }
-        // Headers at or above the row, but the first, each bring a blank line.
-        let above = self.headers.partition_point(|&h| h <= row);
-        let first_at_top = self.headers.first() == Some(&0);
-        row + above.saturating_sub(usize::from(first_at_top))
+        row + self.gaps.partition_point(|&g| g <= row)
     }
 
     /// Lines the whole list takes.
@@ -1601,6 +1606,10 @@ pub struct HomeState {
     pub scroll: usize,
     /// How many rows the last frame had room for. See [`HomeState::scroll`].
     pub view_height: usize,
+    /// The last frame's list in lines, and whether it was spaced: the scroll is settled in
+    /// lines, as the frame draws it. Zero until the first frame.
+    pub view_lines: usize,
+    pub spaced: bool,
     /// True while the user is typing a path directly.
     pub path_input_active: bool,
     pub path_input: String,
@@ -1830,6 +1839,8 @@ impl Default for HomeState {
             selected: 0,
             scroll: 0,
             view_height: 0,
+            view_lines: 0,
+            spaced: false,
             path_input_active: false,
             path_input: String::new(),
             path_listing: None,
@@ -3429,7 +3440,10 @@ impl HomeState {
                 scoring: false,
                 ..self.search.clone()
             }),
-            line: self.selected.saturating_sub(self.scroll),
+            line: {
+                let lines = self.list_lines(self.spaced);
+                (lines.line_of(self.selected)).saturating_sub(lines.line_of(self.scroll))
+            },
         };
         // A place already on the trail is being re-entered from elsewhere; its old mark is
         // over.
@@ -3492,7 +3506,8 @@ impl HomeState {
     /// Put the row just returned to on the line it was left on, when that is known.
     fn scroll_to_returning_line(&mut self) {
         if let Some(line) = self.returning_line.take() {
-            self.scroll = self.selected.saturating_sub(line);
+            let lines = self.list_lines(self.spaced);
+            self.scroll = lines.first_row_from(lines.line_of(self.selected).saturating_sub(line));
         }
     }
 
@@ -3599,12 +3614,33 @@ impl HomeState {
         self.reselect(key);
     }
 
+    /// Tell the listing the list's lines as the frame draws them: `lines` tall, `spaced`
+    /// or dense. Rows and lines differ by the blank lines, so the scroll the frame settles
+    /// is the one [`HomeState::follow_selection`] and a return to a place settle.
+    pub fn set_list_shape(&mut self, lines: usize, spaced: bool) {
+        self.view_lines = lines;
+        self.spaced = spaced;
+    }
+
     /// Settle the viewport now, as the next frame will: the look-into pass is asked for
     /// when a listing lands, before that frame, and a stale `scroll` from the replaced
     /// listing would spend the batch on rows nobody sees.
     fn follow_selection(&mut self) {
-        let rows = self.row_count();
-        self.scroll = settle_top(self.scroll, self.selected, self.view_height, rows);
+        if self.view_lines == 0 {
+            let rows = self.row_count();
+            self.scroll = settle_top(self.scroll, self.selected, self.view_height, rows);
+            return;
+        }
+        let lines = self.list_lines(self.spaced);
+        let rows = lines.rows();
+        let line_of = |row: usize| lines.line_of(row.min(rows.saturating_sub(1)));
+        let top = settle_top(
+            line_of(self.scroll),
+            line_of(self.selected),
+            self.view_lines,
+            lines.total(),
+        );
+        self.scroll = lines.first_row_from(top);
     }
 
     /// Whether a section is folded: the user's last choice, else its default. Never
@@ -4274,15 +4310,18 @@ impl HomeState {
     }
 
     /// Where each row of [`HomeState::visible`] falls in the list, `spaced` with a
-    /// blank line before every header but the first; from the headers alone, so a frame
-    /// costs the rows it shows, not the rows listed.
+    /// blank line before every header but the first, and a blank line after each door;
+    /// from the headers and doors alone, so a frame costs the rows it shows, not the
+    /// rows listed.
     pub fn list_lines(&self, spaced: bool) -> ListLines {
         let view = self.view();
-        ListLines {
-            headers: view.headers.clone(),
-            rows: view.slots.len(),
-            spaced,
-        }
+        let rows = view.slots.len();
+        let headers = (view.headers.iter().copied()).filter(|&h| spaced && h > 0);
+        let doors = (view.doors.iter().map(|&d| d + 1)).filter(|&r| r < rows);
+        let mut gaps: Vec<usize> = headers.chain(doors).collect();
+        gaps.sort_unstable();
+        gaps.dedup();
+        ListLines { gaps, rows }
     }
 
     /// How many rows the filter matches: the sum of the section headers' counts.
@@ -4480,6 +4519,10 @@ impl HomeState {
                 .filter(|(_, slot)| matches!(slot, Slot::Plain(Row::Header { .. })))
                 .map(|(i, _)| i)
                 .collect(),
+            doors: (slots.iter().enumerate())
+                .filter(|(_, slot)| matches!(slot, Slot::Door { .. }))
+                .map(|(i, _)| i)
+                .collect(),
             slots,
             hits,
             has_dataset: self
@@ -4606,18 +4649,19 @@ impl HomeState {
             if collapsed {
                 continue;
             }
-            // The way up first, as `..` in any listing.
+            // The door first, whatever the sort: the directory's action, under the header
+            // that names the directory and apart from its listing. Not while filtering: its
+            // `Open all` name fuzzy-matches most of the alphabet.
+            if has_door {
+                out.push(Slot::Door { section: si });
+            }
+            // Then the way up, as `..` in any listing.
             let root = section.root.as_deref();
             if self.filter.is_empty()
                 && root
                     .is_some_and(|root| self.browsing.is_some() || self.parent_of(root).is_some())
             {
                 out.push(Slot::Plain(Row::Up { section: si }));
-            }
-            // The door next, whatever the sort. Not while filtering: its `open all` name
-            // fuzzy-matches most of the alphabet.
-            if has_door {
-                out.push(Slot::Door { section: si });
             }
             // At the root listing a huge directory shows its first rows (a share of the
             // height) and one row for the rest, so it does not bury the sections below. A filter

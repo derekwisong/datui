@@ -1654,7 +1654,7 @@ fn test_both_doors_are_open_on_a_directory_datui_cannot_name() {
         .collect();
     assert_eq!(
         names.first().map(String::as_str),
-        Some("open all (mixed files)"),
+        Some("Open all (mixed files)"),
         "got {names:?}"
     );
 }

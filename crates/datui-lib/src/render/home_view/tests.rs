@@ -275,7 +275,7 @@ fn the_row_that_opens_a_directory_draws_without_a_label() {
     let mut drawn: Vec<(EntryKind, String)> = Vec::new();
     for kind in [EntryKind::MultiFile, EntryKind::Hive, EntryKind::Directory] {
         let mut door = row("gs://cloud-samples-data/bigquery/us-states", kind);
-        door.name = "open all".to_string();
+        door.name = "Open all".to_string();
         door.opens_whole_directory = true;
         door.holds = crate::home::discover::Holds {
             formats: vec![("parquet".to_string(), 9)],
@@ -299,7 +299,7 @@ fn the_row_that_opens_a_directory_draws_without_a_label() {
         // And with room to spare it reads as itself, with no label beside it.
         let line = entry_line(&door, false, EntryNotes::default(), &rows(&ctx, 40, true));
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(text.contains("open all"), "{kind:?}: {text:?}");
+        assert!(text.contains("Open all"), "{kind:?}: {text:?}");
         assert!(!text.contains("parquet"), "{kind:?}: {text:?}");
         drawn.push((kind, text));
     }
@@ -308,7 +308,7 @@ fn the_row_that_opens_a_directory_draws_without_a_label() {
     // not have. Both are about the directory; this row is the door into it, and
     // `open all  dataset` says the door is the dataset.
     let mut door = row("s3://lab@bucket/exports", EntryKind::Directory);
-    door.name = "open all".to_string();
+    door.name = "Open all".to_string();
     door.opens_whole_directory = true;
     let known = connections(&["lab"]);
     let text: String = entry_line(
@@ -325,7 +325,7 @@ fn the_row_that_opens_a_directory_draws_without_a_label() {
     .iter()
     .map(|s| s.content.as_ref())
     .collect();
-    assert!(text.contains("open all"), "{text:?}");
+    assert!(text.contains("Open all"), "{text:?}");
     assert!(
         !text.contains("dataset"),
         "curated word on a door: {text:?}"
@@ -336,10 +336,10 @@ fn the_row_that_opens_a_directory_draws_without_a_label() {
     // a second match of its own, which is how the row and the pane come to disagree
     // about one directory.
     let mut door = row("s3://bucket/warehouse", EntryKind::Directory);
-    door.name = "open all".to_string();
+    door.name = "Open all".to_string();
     door.opens_whole_directory = true;
     let pane = preview_text(&door, 60);
-    assert!(pane.contains("open all"), "{pane}");
+    assert!(pane.contains("Open all"), "{pane}");
     assert!(
         !pane.lines().any(|l| l.trim_start().starts_with("kind")),
         "a kind stood in for the label it does not have: {pane}"
@@ -1579,14 +1579,14 @@ fn the_title_survives_a_note_that_wants_the_whole_line() {
     );
 }
 
-/// The open-all row reads as an action, not a file: its name leads with what it does
-/// and keeps that head when cut, and it has no storage marker and no age, which would
-/// be its directory's.
+/// The open-all row reads as an action, not a file: its action is a chip that stays
+/// whole when the row is cut, what it opens follows, and it has no storage marker and
+/// no age, which would be its directory's.
 #[test]
 fn the_door_keeps_what_it_opens_when_its_name_is_cut() {
     let ctx = RenderContext::for_test();
     let mut door = row("/data/same_schema/", EntryKind::MultiFile);
-    door.name = "open all (3 Parquet files, one schema)".to_string();
+    door.name = "Open all (3 Parquet files, one schema)".to_string();
     door.opens_whole_directory = true;
     door.rows = Some(6);
     door.cols = Some(2);
@@ -1606,13 +1606,13 @@ fn the_door_keeps_what_it_opens_when_its_name_is_cut() {
     let g = glyphs::get();
     // An 80-column terminal leaves the list 78.
     let narrow = drawn(78);
-    assert!(narrow.contains("open all (3 Parquet"), "{narrow:?}");
+    assert!(narrow.contains(" Open all  3 Parquet"), "{narrow:?}");
     assert!(
         narrow.contains("6 × 2") || narrow.contains("6 x 2"),
         "{narrow:?}"
     );
     assert!(!narrow.contains("3d"), "the directory's age: {narrow:?}");
-    let before = &narrow[..narrow.find("open all").unwrap_or(0)];
+    let before = &narrow[..narrow.find("Open all").unwrap_or(0)];
     assert!(!before.contains(g.here), "a storage marker: {narrow:?}");
     assert_eq!(
         narrow.chars().count(),
@@ -1620,7 +1620,7 @@ fn the_door_keeps_what_it_opens_when_its_name_is_cut() {
         "the columns stay where they are: {narrow:?}"
     );
     let narrowest = drawn(58);
-    assert!(narrowest.contains("open all ("), "{narrowest:?}");
+    assert!(narrowest.contains(" Open all  3"), "{narrowest:?}");
     assert_eq!(
         narrowest.chars().count(),
         row_width(58 - META_WIDTH as usize, true),
@@ -1628,7 +1628,7 @@ fn the_door_keeps_what_it_opens_when_its_name_is_cut() {
     );
     let wide = drawn(200);
     assert!(
-        wide.contains("open all (3 Parquet files, one schema)"),
+        wide.contains(" Open all  3 Parquet files, one schema "),
         "{wide:?}"
     );
 }

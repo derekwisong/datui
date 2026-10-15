@@ -221,20 +221,23 @@ the same row shows its internal tables.
 
 <kbd>→</kbd> always goes inside. <kbd>Enter</kbd> does what the footer says:
 `Open all` (one table), `Inside`, `Open` (a file), or `Look` (find out first).
-Inside, after `..`, the `open all` row reads the directory as one table and says how:
+Inside, under the directory's heading and above `..`, the `Open all` chip reads the
+directory as one table and says how. A blank line sets it apart from the files:
 
-| Directory | `open all` row | The cursor starts on |
+| Directory | Beside `Open all` | The cursor starts on |
 |---|---|---|
-| Hive partitions | `open all (hive table: year, month)` | this row |
-| One format, one schema | `open all (3 Parquet files, one schema)` | this row |
-| One format, schemas differ | `open all (2 Parquet files, schemas differ)` | the first file |
-| Model weights | `open all (model, 3 SafeTensors files)` | this row |
-| One data file | `open all (1 CSV file)` | the first file |
-| Several formats, or files beside directories | `open all (mixed files)` | the first row inside |
-| Delta, Iceberg or Hudi | `open all (Delta files, not the table)` | the first row inside |
-| Only subdirectories | none | the first row inside |
+| Hive partitions | `hive table: year, month` | the chip |
+| One format, one schema | `3 Parquet files, one schema` | the chip |
+| One format, schemas differ | `2 Parquet files, schemas differ` | the first file |
+| Model weights | `model, 3 SafeTensors files` | the chip |
+| One data file | `1 CSV file` | the first file |
+| Several formats, or files beside directories | `mixed files` | the first row inside |
+| Delta, Iceberg or Hudi | `Delta files, not the table` | the first row inside |
+| Only subdirectories | no chip | the first row inside |
 
-<kbd>→</kbd> on `..` or the `open all` row moves to the directory's first row.
+The chip is not offered while you type a filter.
+
+<kbd>→</kbd> on `..` or the `Open all` row moves to the directory's first row.
 
 On a mixed directory the pane names what is read and what is skipped. Delta,
 Iceberg and Hudi files are read without the transaction log, so deleted rows

@@ -473,10 +473,11 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
     // and what to look into both derive from it.
     let height = area.height as usize;
     // With room, a blank line before every header but the first (at most four); under
-    // thirty lines the list is dense. Spacers come off the height RECENT's cap uses.
+    // thirty lines the list is dense, but for the blank after a door. Spacers come off the
+    // height RECENT's cap uses.
     let spaced = height >= SPACED_LIST_HEIGHT;
-    let headers = app.home.list_lines(spaced).headers();
-    let spacers = if spaced { headers.saturating_sub(1) } else { 0 };
+    let spacers = app.home.list_lines(spaced).spacers();
+    app.home.set_list_shape(height, spaced);
     // Height first: RECENT's cap is a share of it, and the cursor must be back on its
     // row before the scroll settles.
     app.home.set_view_height(height.saturating_sub(spacers));
@@ -615,7 +616,7 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
         let Some(row) = app.home.row_at(idx) else {
             break;
         };
-        let spacer = spaced && idx > 0 && matches!(row, crate::home::Row::Header { .. });
+        let spacer = idx > 0 && at > row_lines.line_of(idx - 1) + 1;
         if spacer && at > first_line {
             lines.push(Line::from(""));
         }
@@ -1394,7 +1395,13 @@ fn entry_line<'a>(
     // A row under a place is indented from the name's side; the meta columns stay put.
     let name_width = name_width.saturating_sub(notes.indent);
 
-    let mut name = entry.name.clone();
+    let door = entry.opens_whole_directory;
+    // The door is an action: its name's action is drawn as a chip, what it opens beside it.
+    let mut name = if door {
+        crate::home::door_what(&entry.name).to_string()
+    } else {
+        entry.name.clone()
+    };
     // Nothing is there to go inside of, whatever the path looks like.
     if shows_as_a_place(entry) && notes.place_kind != Some("missing") {
         name.push('/');
@@ -1413,9 +1420,11 @@ fn entry_line<'a>(
         .source
         .as_deref()
         .map(crate::home::locality::Locality::of_fstype);
-    // The door is an action, not a place: no marker, its name where the others start.
-    let place_cell = if entry.opens_whole_directory {
-        " ".repeat(glyphs::display_width(locality_glyph(locality)) + 1)
+    // The door is an action, not a place: its chip where the marker is, a cell of row
+    // after it.
+    let door_chip = format!(" {} ", crate::home::DOOR_ACTION);
+    let place_cell = if door {
+        format!("{door_chip} ")
     } else {
         format!("{} ", locality_glyph(locality))
     };
@@ -1437,15 +1446,15 @@ fn entry_line<'a>(
         Vec::new()
     };
     let budget = name_width.saturating_sub(2 + place_w + glyphs::display_width(&cell.text) + 1);
-    let (name, name_positions) = fit_name(name, marks, budget, entry.opens_whole_directory);
+    let (name, name_positions) = fit_name(name, marks, budget, door);
     let pad = name_width
-        .saturating_sub(2 + glyphs::display_width(&name) + glyphs::display_width(&cell.text));
+        .saturating_sub(place_w + glyphs::display_width(&name) + glyphs::display_width(&cell.text));
 
-    // Unreadable files are listed so the directory reads as it is, dimmed. The door is
-    // chrome, a shade quieter than the rows it opens.
+    // Unreadable files are listed so the directory reads as it is, dimmed. What the door
+    // opens is chrome, a shade quieter than the rows it opens.
     let name_fg = if entry.kind == EntryKind::Other {
         ctx.dimmed
-    } else if entry.opens_whole_directory {
+    } else if door {
         ctx.text_secondary
     } else {
         ctx.text_primary
@@ -1456,19 +1465,22 @@ fn entry_line<'a>(
     } else if label.missing_source {
         base.fg(ctx.warning)
     } else if matches!(entry.kind, EntryKind::Hive | EntryKind::MultiFile) {
-        Style::default()
-            .bg(ctx.controls_bg)
-            .fg(ctx.accent)
-            .add_modifier(Modifier::BOLD)
+        action_chip_style(ctx)
     } else {
         base.fg(ctx.dimmed)
     };
 
-    let mut spans = vec![
-        chrome.marker(),
-        chrome.pad(notes.indent),
-        Span::styled(place_cell, base.fg(locality_color(locality, ctx))),
-    ];
+    let mut spans = vec![chrome.marker(), chrome.pad(notes.indent)];
+    if door {
+        // The chip keeps its look selected: the rail and the tint say where the cursor is.
+        spans.push(Span::styled(door_chip, action_chip_style(ctx)));
+        spans.push(chrome.pad(1));
+    } else {
+        spans.push(Span::styled(
+            place_cell,
+            base.fg(locality_color(locality, ctx)),
+        ));
+    }
     spans.extend(highlight_spans(
         &name,
         &name_positions,
@@ -1504,6 +1516,15 @@ fn entry_line<'a>(
     }
     spans.push(chrome.pad(1));
     Line::from(spans)
+}
+
+/// A flat chip in the list: the door's action, and the label of a dataset made of
+/// many files.
+fn action_chip_style(ctx: &RenderContext) -> Style {
+    Style::default()
+        .bg(ctx.controls_bg)
+        .fg(ctx.accent)
+        .add_modifier(Modifier::BOLD)
 }
 
 /// An entry row's meta columns, and the name's width once a row with nothing to show

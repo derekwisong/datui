@@ -63,6 +63,19 @@ impl App {
         fallback: bool,
         record_size: Option<usize>,
     ) {
+        self.open_hex_fetched(path, None, origin, fallback, record_size);
+    }
+
+    /// [`Self::open_hex`] for a file that may be a download: `fetched` is the URL it came
+    /// from and the hold on it, which the view keeps.
+    fn open_hex_fetched(
+        &mut self,
+        path: PathBuf,
+        fetched: Option<(PathBuf, crate::cloud::download::TempDownload)>,
+        origin: Origin,
+        fallback: bool,
+        record_size: Option<usize>,
+    ) {
         self.stop_hex_find();
         let job = Job::HexOpen {
             origin,
@@ -71,7 +84,7 @@ impl App {
         };
         self.spawn_job(job, Some("Opening as hex..."), move |_| {
             HexSource::open(path.clone())
-                .map(|source| Answer::HexOpened(Box::new(source)))
+                .map(|source| Answer::HexOpened(Box::new(HexSource { fetched, ..source })))
                 .map_err(|e| format!("{}: {e}", path.display()))
         });
     }
@@ -96,6 +109,7 @@ impl App {
     pub(crate) fn land_on_hex(&mut self, hex: crate::loading::Hex) {
         let crate::loading::Hex {
             file,
+            fetched,
             from_home,
             asked,
             record_size,
@@ -109,7 +123,7 @@ impl App {
         } else {
             Origin::Launch
         };
-        self.open_hex(file, origin, !asked, record_size);
+        self.open_hex_fetched(file, fetched, origin, !asked, record_size);
     }
 
     /// Leave the hex view the way it was entered: home, the table, or (from the command

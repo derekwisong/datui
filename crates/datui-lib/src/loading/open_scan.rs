@@ -61,6 +61,18 @@ impl OpenedSource {
     }
 }
 
+/// What an object in a store named with no format turned out to be.
+#[cfg(feature = "cloud")]
+enum Unnamed {
+    /// No such object: a prefix named without its slash.
+    Missing,
+    Parquet,
+    /// Something else, `size` bytes, downloaded.
+    Other {
+        size: u64,
+    },
+}
+
 /// What a cloud open was pointed at: the URL as given, the prefix to list, and the
 /// glob to keep.
 #[cfg(feature = "cloud")]
@@ -1023,6 +1035,49 @@ impl App {
         Ok(head.and_then(|r| r.ok()).map(|meta| meta.size))
     }
 
+    /// What an object named with no format is, by a `HEAD` and its first
+    /// [`crate::formats::readers::HEAD`] bytes, sniffed as a local file's are.
+    #[cfg(feature = "cloud")]
+    fn sniff_cloud_object(
+        url: &str,
+        cloud: &crate::config::CloudConfig,
+        runtime: &tokio::runtime::Handle,
+    ) -> Result<Unnamed> {
+        use object_store::ObjectStoreExt;
+
+        let (_bucket, key) = Self::cloud_bucket_and_key(url)?;
+        let (_, _, store) = Self::cloud_store_for(Path::new(url), cloud, runtime)?;
+        let path = crate::cloud::cloud_browse::object_path(&key);
+        let sniffed = wait_on_runtime(runtime, async move {
+            let size = match store.head(&path).await {
+                Ok(meta) => meta.size,
+                Err(object_store::Error::NotFound { .. }) => return Ok(Unnamed::Missing),
+                Err(e) => return Err(e),
+            };
+            let end = size.min(crate::formats::readers::HEAD as u64);
+            let head = if end == 0 {
+                Default::default()
+            } else {
+                store.get_range(&path, 0..end).await?
+            };
+            let parquet = crate::formats::readers::sniff(
+                &head,
+                None,
+                crate::formats::readers::Asked::Open { extension: false },
+                |f| f == FileFormat::Parquet,
+            )
+            .is_some();
+            Ok(if parquet {
+                Unnamed::Parquet
+            } else {
+                Unnamed::Other { size }
+            })
+        });
+        sniffed
+            .ok_or_else(|| color_eyre::eyre::eyre!("cancelled"))?
+            .map_err(|e| color_eyre::eyre::eyre!(crate::error_display::store_message(&e)))
+    }
+
     /// Download `url` to a temp file; `stop` ends it early, even while the server is
     /// silent, and any failure removes the file (see
     /// [`crate::cloud::download::read_to_temp`]). Past `limit` bytes it fails with
@@ -1427,6 +1482,36 @@ impl App {
                             // A missing file or silent host ends the open here, before asking about a
                             // download.
                             Self::fetch_remote_size_http(url).map_err(|gone| gone.message)?
+                        }
+                        #[cfg(feature = "cloud")]
+                        loading::PendingDownload::S3 { url, options, .. }
+                        | loading::PendingDownload::Gcs { url, options, .. }
+                        | loading::PendingDownload::Azure { url, options, .. }
+                            if loading::unnamed_object(url, options) =>
+                        {
+                            // Its first bytes say what a local file's would: Parquet is read
+                            // in place, anything else downloaded and told apart there.
+                            match Self::sniff_cloud_object(url, &cloud, &runtime) {
+                                // Named without its slash, as a local directory may be.
+                                Ok(Unnamed::Missing) => {
+                                    return Ok(Answer::Load(Box::new(LoadAnswer::InPlace {
+                                        path: PathBuf::from(format!("{url}/")),
+                                        options: options.clone(),
+                                    })));
+                                }
+                                Ok(Unnamed::Parquet) => {
+                                    return Ok(Answer::Load(Box::new(LoadAnswer::InPlace {
+                                        path: PathBuf::from(url),
+                                        options: OpenOptions {
+                                            format: Some(FileFormat::Parquet),
+                                            ..options.clone()
+                                        },
+                                    })));
+                                }
+                                Ok(Unnamed::Other { size }) => Some(size),
+                                // The download says why it cannot be read.
+                                Err(_) => None,
+                            }
                         }
                         #[cfg(feature = "cloud")]
                         loading::PendingDownload::S3 { url, .. }

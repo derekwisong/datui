@@ -213,8 +213,10 @@ license = "CC BY-NC 4.0"
 ```
 
 Parquet part files with no extension, like GBIF's `occurrence.parquet/000001`,
-open as Parquet, as does a local file with no extension that starts and ends
-with `PAR1`.
+open as Parquet. Any other object with no extension opens as the same file on
+disk would: datui reads its first 4 KiB, scans it in place if it is Parquet,
+and otherwise downloads it and reads it by its bytes (delimited text, lines, or
+the hex view). A name with no object behind it is opened as a prefix.
 
 ### Examples on public data
 

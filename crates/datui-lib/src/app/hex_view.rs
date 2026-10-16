@@ -209,6 +209,9 @@ pub struct HexHit {
 pub struct HexSource {
     pub path: PathBuf,
     pub bytes: Arc<Bytes>,
+    /// A download `path` is: the URL it was fetched from, and the hold that keeps the
+    /// file while it is shown.
+    pub fetched: Option<(PathBuf, crate::cloud::download::TempDownload)>,
 }
 
 impl std::fmt::Debug for HexSource {
@@ -231,12 +234,17 @@ impl HexSource {
             )));
         }
         let bytes = Arc::new(Bytes::map(&path)?);
-        Ok(Self { path, bytes })
+        Ok(Self {
+            path,
+            bytes,
+            fetched: None,
+        })
     }
 }
 
 /// The hex view's state.
 pub struct HexView {
+    /// The file shown, or for a download the URL it was fetched from.
     pub path: PathBuf,
     pub bytes: Arc<Bytes>,
     pub origin: Origin,
@@ -269,12 +277,18 @@ pub struct HexView {
     pub picker: Option<crate::widgets::ui::PickerState>,
     /// The layout of the last frame drawn, which the moves page by.
     pub geometry: Geometry,
+    /// The download shown, held until the view goes: after `bytes`, which map it.
+    _download: Option<crate::cloud::download::TempDownload>,
 }
 
 impl HexView {
     pub fn new(source: HexSource, origin: Origin, fallback: bool, serial: u64) -> Self {
+        let (path, download) = match source.fetched {
+            Some((url, download)) => (url, Some(download)),
+            None => (source.path, None),
+        };
         Self {
-            path: source.path,
+            path,
             bytes: source.bytes,
             origin,
             fallback,
@@ -293,6 +307,7 @@ impl HexView {
             input: crate::widgets::text_input::TextInput::new(),
             picker: None,
             geometry: Geometry::default(),
+            _download: download,
         }
     }
 
@@ -306,8 +321,10 @@ impl HexView {
 
     /// The file's name, for the header.
     pub fn name(&self) -> String {
-        self.path.file_name().map_or_else(
-            || self.path.display().to_string(),
+        // Piped bytes are named `stdin`, not `-`.
+        let path = crate::loading::stdin::named(&self.path);
+        path.file_name().map_or_else(
+            || path.display().to_string(),
             |n| n.to_string_lossy().into_owned(),
         )
     }
@@ -1101,6 +1118,7 @@ mod tests {
             HexSource {
                 path: PathBuf::from("x.bin"),
                 bytes: Arc::new(Bytes::Owned(bytes)),
+                fetched: None,
             },
             Origin::Launch,
             false,

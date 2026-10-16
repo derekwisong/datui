@@ -231,15 +231,19 @@ directory as one table and says how. A blank line sets it apart from the files:
 | One format, schemas differ | `2 Parquet files, schemas differ` | the first file |
 | Model weights | `model, 3 SafeTensors files` | the chip |
 | One data file | `1 CSV file` | the first file |
-| Several formats, or files beside directories | `mixed files` | the first row inside |
+| Several formats, or files beside directories | `1 CSV file, 1 JSON file skipped` | the first row inside |
+| Files with no extension, on disk | `2 files with no extension` | the first row inside |
 | Delta, Iceberg or Hudi | `Delta files, not the table` | the first row inside |
 | Only subdirectories | no chip | the first row inside |
+| A bucket prefix of files with no extension, or none datui reads | no chip | the first row inside |
 
 The chip is not offered while you type a filter.
 
 <kbd>→</kbd> on `..` or the `Open all` row moves to the directory's first row.
 
-On a mixed directory the pane names what is read and what is skipped. Delta,
+On a mixed directory the chip names what is read, and the pane lists what is
+skipped. In a bucket, open a file with no extension on its own: it is read by
+its bytes, where a prefix is read by its files' names. Delta,
 Iceberg and Hudi files are read without the transaction log, so deleted rows
 and old versions may show. How files combine is in
 [Open files and directories](open-files.md#files-that-disagree).

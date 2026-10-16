@@ -2159,23 +2159,25 @@ impl App {
             // Data files, none Parquet. `label()` says `mixed` for several formats, so the
             // line spells them out.
             [] => {
-                // Nothing readable. A refusal only if nothing is below: sub-prefixes may hold
-                // Parquet a level down.
-                (holds.not_read > 0 && holds.directories == 0).then(|| {
-                    "this prefix holds nothing datui can read — datui reads a directory in \
-                     an object store as Parquet only."
-                        .to_string()
+                // Nothing a prefix scan reads. A refusal only if nothing is below: sub-prefixes
+                // may hold Parquet a level down. Files with no extension open one at a time,
+                // by their bytes.
+                (holds.not_read + holds.unnamed > 0 && holds.directories == 0).then(|| {
+                    "nothing in this prefix reads as one table. Open a file in it.".to_string()
                 })
             }
             formats => {
                 let held = formats
                     .iter()
-                    .map(|(name, count)| format!("{count} {name}"))
+                    .map(|(name, count)| {
+                        let title = FileFormat::from_name(name)
+                            .map_or_else(|| name.to_ascii_uppercase(), |f| f.title().to_string());
+                        format!("{count} {title}")
+                    })
                     .collect::<Vec<_>>()
                     .join(", ");
                 Some(format!(
-                    "this prefix holds {held} — datui reads a directory in an object store \
-                     as Parquet only. Open one of the files below instead."
+                    "this prefix holds {held}, which open one file at a time. Open a file in it."
                 ))
             }
         }

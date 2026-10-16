@@ -2455,7 +2455,7 @@ fn render_preview(
     #[cfg(feature = "cloud")]
     if entry.opens_whole_directory && crate::App::why_a_door_reads_nothing(&entry).is_some() {
         lines.push(Line::from(Span::styled(
-            format!("{} prefix opens Parquet only", g.warning),
+            format!("{} files here open one at a time", g.warning),
             Style::default().fg(ctx.warning),
         )));
     }

@@ -468,17 +468,13 @@ fn whole_directory_row(dir: &Path, rows: &[Entry], remote: bool) -> Option<Entry
     } else {
         crate::home::discover::look_at_directory(dir)
     };
-    // No door into a directory with nothing to open (empty, or only `_SUCCESS`).
-    // Judged by what the directory holds, not only the listed rows: Spark and GBIF
-    // part files have no extension and list nothing, yet open by their bytes.
-    // Extensionless files count; files no reader takes do not, and on disk neither do
-    // plain subdirectories (see `holds_nothing_to_open`).
+    // No door into a directory with nothing to open (empty, only `_SUCCESS`, or only
+    // subdirectories). Judged by what the directory holds, not only the listed rows:
+    // Spark and GBIF part files have no extension and list nothing, yet open by their
+    // bytes. See `holds_nothing_to_open`. A listing's object with no extension is a
+    // file row, but a prefix scan reads by name, so there the tally decides alone.
     let object_store = is_object_store_url(dir);
-    let openable_row = rows.iter().any(|r| match r.kind {
-        EntryKind::File => true,
-        EntryKind::Other => false,
-        _ => object_store,
-    });
+    let openable_row = !object_store && rows.iter().any(|r| r.kind == EntryKind::File);
     let laid_out = !matches!(kind, EntryKind::Directory | EntryKind::Unknown);
     if !openable_row && !laid_out && holds_nothing_to_open(&holds, object_store) {
         return None;
@@ -619,7 +615,22 @@ pub fn door_name(door: &Entry, rows: &[Entry]) -> String {
             "{} files, not the table",
             door.kind.lake_name().unwrap_or_default()
         ),
-        DoorKind::Mixed => "mixed files".to_string(),
+        DoorKind::Mixed => match door_reads(door) {
+            Some((reads, None)) => reads,
+            // One kind left out is named; several are counted, and the pane names them.
+            Some((reads, Some(_))) => match door_skips(door).as_slice() {
+                [(_, what)] => format!("{reads}, {what} skipped"),
+                skips => {
+                    let n: usize = skips.iter().map(|(n, _)| n).sum();
+                    format!("{reads}, {n}{more} skipped")
+                }
+            },
+            None if holds.unnamed > 0 => {
+                let word = if holds.unnamed == 1 { "file" } else { "files" };
+                format!("{}{more} {word} with no extension", holds.unnamed)
+            }
+            None => "mixed files".to_string(),
+        },
         DoorKind::Unknown => return DOOR_ACTION.to_string(),
     };
     format!("{DOOR_ACTION} ({what})")
@@ -636,44 +647,64 @@ pub fn door_what(name: &str) -> &str {
 }
 
 /// What `Enter` on a door that is not one table reads and leaves out, for the
-/// details pane. Locally: the commonest format's files directly inside, or a whole
-/// Parquet scan when there are subdirectories or no own files. In an object store:
-/// the prefix scanned whole in its commonest format.
+/// details pane and the door's name. Locally: the commonest format's files directly
+/// inside, or a whole Parquet scan when there are subdirectories or no own files. In
+/// an object store: the prefix scanned whole in its commonest format.
 pub fn door_reads(door: &Entry) -> Option<(String, Option<String>)> {
     if !matches!(door_kind(door), DoorKind::Mixed | DoorKind::Single) {
         return None;
     }
     let holds = &door.holds;
     let more = if holds.truncated { "+" } else { "" };
-    let plain = holds.directories.saturating_sub(holds.partitions);
-    let directories = |n: usize| {
-        let word = if n == 1 { "directory" } else { "directories" };
-        format!("{n}{more} {word}")
-    };
     let Some((format, count)) = holds.formats.first() else {
         return (holds.directories > 0).then(|| ("every Parquet file below".to_string(), None));
     };
-    // A prefix in an object store is scanned whole, subdirectories included.
-    let remote = is_object_store_url(&door.path);
-    let below = remote || holds.partitions > 0 || (holds.formats.len() == 1 && format == "parquet");
-    let below = below && holds.directories > 0;
-    let reads = if below && remote {
-        format!("every {format} file below")
-    } else if below {
+    let reads = if reads_below(door) && is_object_store_url(&door.path) {
+        format!("every {} file below", format_title(format))
+    } else if reads_below(door) {
         "every Parquet file below".to_string()
     } else {
-        format!("{count}{more} {format}")
+        counted(*count, more, &format_title(format), "file", "files")
     };
-    let mut skips: Vec<String> = holds
+    let skips: Vec<String> = door_skips(door).into_iter().map(|(_, what)| what).collect();
+    Some((reads, (!skips.is_empty()).then(|| skips.join(", "))))
+}
+
+/// `3 CSV files`, `1 directory`.
+fn counted(n: usize, more: &str, title: &str, one: &str, many: &str) -> String {
+    let word = if n == 1 { one } else { many };
+    if title.is_empty() {
+        format!("{n}{more} {word}")
+    } else {
+        format!("{n}{more} {title} {word}")
+    }
+}
+
+/// Whether a door's read takes in its subdirectories: an object-store prefix is
+/// scanned whole, and on disk partitions or Parquet alone are scanned as a tree.
+fn reads_below(door: &Entry) -> bool {
+    let holds = &door.holds;
+    let only_parquet = holds.formats.len() == 1 && holds.formats[0].0 == "parquet";
+    holds.directories > 0
+        && (is_object_store_url(&door.path) || holds.partitions > 0 || only_parquet)
+}
+
+/// What a door's read leaves out, counted: the other formats' files, and on disk the
+/// plain subdirectories it does not go into. Each is its count and its words.
+fn door_skips(door: &Entry) -> Vec<(usize, String)> {
+    let holds = &door.holds;
+    let more = if holds.truncated { "+" } else { "" };
+    let mut skips: Vec<(usize, String)> = holds
         .formats
         .iter()
         .skip(1)
-        .map(|(name, n)| format!("{n}{more} {name}"))
+        .map(|(name, n)| (*n, counted(*n, more, &format_title(name), "file", "files")))
         .collect();
-    if !below && plain > 0 {
-        skips.push(directories(plain));
+    let plain = holds.directories.saturating_sub(holds.partitions);
+    if !reads_below(door) && plain > 0 {
+        skips.push((plain, counted(plain, more, "", "directory", "directories")));
     }
-    Some((reads, (!skips.is_empty()).then(|| skips.join(", "))))
+    skips
 }
 
 /// Name files a format spec's glob matches as data, under the spec's name, from the
@@ -715,17 +746,15 @@ pub fn name_by_spec(formats: &crate::formats::Registry, rows: &mut [Entry]) {
 /// Whether a directory holds nothing an open-all row could read. Shared by the
 /// door and the details pane so they agree.
 ///
-/// On disk, subdirectories alone are not enough: the scan of a tree refuses one whose
-/// files differ in extension, and a folder of folders (a home directory, VirtualBox's)
-/// almost always does. Partitions and a saved `DatasetDict` still are. An object-store
-/// prefix is read as Parquet below whatever else is there, so its sub-prefixes count.
+/// Subdirectories alone are not enough: on disk the scan of a tree refuses one whose
+/// files differ in extension, and in an object store a prefix of prefixes (a bucket's
+/// root, `by_year/` beside `by_station/`) is rarely one table. Partitions and a saved
+/// `DatasetDict` still are. Files with no extension count on disk, where the open
+/// reads them by their bytes; a prefix is scanned by name, so there they do not.
 pub fn holds_nothing_to_open(holds: &discover::Holds, object_store: bool) -> bool {
-    let below = if object_store {
-        holds.directories > 0
-    } else {
-        holds.partitions > 0 || holds.dataset_dict
-    };
-    holds.formats.is_empty() && holds.unnamed == 0 && !below
+    let below = holds.partitions > 0 || holds.dataset_dict;
+    let unnamed = holds.unnamed > 0 && !object_store;
+    holds.formats.is_empty() && !unnamed && !below
 }
 
 /// Whether `path` is one of datui's own `cloud://` places rather than a real location.

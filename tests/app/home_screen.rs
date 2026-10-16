@@ -1654,9 +1654,28 @@ fn test_both_doors_are_open_on_a_directory_datui_cannot_name() {
         .collect();
     assert_eq!(
         names.first().map(String::as_str),
-        Some("Open all (mixed files)"),
+        Some("Open all (1 CSV file, 1 JSON file skipped)"),
         "got {names:?}"
     );
+}
+
+/// On disk a file with no extension is read by its bytes, so a directory of them has a
+/// door that says so. (In a bucket it has none: a prefix scan reads by name.)
+#[test]
+fn test_a_directory_of_files_with_no_extension_says_so_on_its_door() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(tmp.path().join("file"), b"a,b\n1,2\n").unwrap();
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.home.rebuild(&[]);
+    let door = app.home.visible().iter().find_map(|r| match r {
+        datui::home::Row::Door { entry, .. } => Some(entry.name.clone()),
+        _ => None,
+    });
+    assert_eq!(door.as_deref(), Some("Open all (1 file with no extension)"));
 }
 
 /// The door into a lake table reads its files, and says they are not the table.
@@ -1916,8 +1935,10 @@ fn test_the_cloud_door_reads_a_prefix_with_the_reader_its_listing_calls_for() {
     use datui::home::discover::{Entry, EntryKind};
     use std::path::PathBuf;
 
+    const NO_DOOR: &str = "no door";
+
     // Press Enter on the door of a prefix holding these names, and say what happened.
-    // A name with a dot in it stands for an object, the rest for sub-prefixes; a name
+    // A name with a dot in it, or `file`, stands for an object, the rest for sub-prefixes; a name
     // with an `=` in it is a partition, the way a listing hands one over.
     fn door(prefix: &str, names: &[&str]) -> (Option<OpenOptions>, String) {
         let place = PathBuf::from(prefix);
@@ -1926,7 +1947,7 @@ fn test_the_cloud_door_reads_a_prefix_with_the_reader_its_listing_calls_for() {
             .map(|name| {
                 let mut entry = Entry::directory(&place.join(name));
                 entry.name = (*name).to_string();
-                if name.contains('.') {
+                if name.contains('.') || *name == "file" {
                     entry.kind = EntryKind::File;
                     entry.size = Some(1_000);
                 }
@@ -1941,12 +1962,14 @@ fn test_the_cloud_door_reads_a_prefix_with_the_reader_its_listing_calls_for() {
         app.home.probe_ready(place.clone(), rows, false);
         app.home.browsing = Some(place);
         app.home.rebuild(&[]);
-        let row = app
+        let Some(row) = app
             .home
             .visible()
             .iter()
             .position(|r| matches!(r, datui::home::Row::Door { .. }))
-            .expect("the prefix carries the row");
+        else {
+            return (None, NO_DOOR.to_string());
+        };
         app.home.select(row);
         let event = app.event(key(KeyCode::Enter));
         let options = match event {
@@ -1976,12 +1999,13 @@ fn test_the_cloud_door_reads_a_prefix_with_the_reader_its_listing_calls_for() {
         "and the dataset can say what it passed over"
     );
 
-    // Nothing datui has a reader for. `holds.formats` is empty here, so a test written
-    // over the formats alone let it through and the scan came back blaming the login.
-    let (options, said) = door("s3://bucket/docs", &["README.md", "notes.pdf"]);
-    assert!(options.is_none());
-    assert!(said.contains("nothing datui can read"), "{said:?}");
-    assert!(!said.to_lowercase().contains("credential"), "{said:?}");
+    // Nothing datui has a reader for, or a file with no extension, which a prefix scan
+    // does not read by its bytes: no door, where one used to scan and blame the login.
+    for names in [&["README.md", "notes.pdf"][..], &["file"][..]] {
+        let (options, said) = door("s3://bucket/docs", names);
+        assert!(options.is_none());
+        assert_eq!(said, NO_DOOR, "{names:?}");
+    }
 
     // Parquet opens by its own route, which is the only one with hive partitioning
     // behind it and the one every cloud dataset took before any of this. The listing
@@ -1995,21 +2019,16 @@ fn test_the_cloud_door_reads_a_prefix_with_the_reader_its_listing_calls_for() {
         "a prefix of Parquet is what a cloud directory reads as"
     );
 
-    // No data files at all: tried, because the files below may be Parquet and nothing
-    // here has looked.
-    let (options, _) = door("s3://bucket/warehouse", &["by_year", "by_station"]);
-    assert!(
-        options.is_some(),
-        "nothing counted directly inside is not a reason to refuse"
-    );
+    // Only sub-prefixes: no door, as on disk. A blind scan of everything below is
+    // rarely one table, and it failed with an error that blamed the credentials.
+    let (options, said) = door("s3://bucket/warehouse", &["by_year", "by_station"]);
+    assert!(options.is_none());
+    assert_eq!(said, NO_DOOR);
 
-    // Including with unreadable files beside the sub-prefixes: a README at the top says
-    // nothing about what is under `by_year/`.
-    let (options, _) = door("s3://bucket/warehouse2", &["README.md", "by_year"]);
-    assert!(
-        options.is_some(),
-        "a sub-prefix may hold Parquet, and nothing here has looked"
-    );
+    // Nor with unreadable files beside them: a README is not data.
+    let (options, said) = door("s3://bucket/warehouse2", &["README.md", "by_year"]);
+    assert!(options.is_none());
+    assert_eq!(said, NO_DOOR);
 
     // And a hive root with one stray data file beside its partitions. `formats` holds
     // only the stray, so picking the reader from it would read the whole root as CSV —

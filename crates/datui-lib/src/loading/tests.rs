@@ -731,6 +731,63 @@ fn a_remote_object_a_spec_reads_is_downloaded_first() {
     ));
 }
 
+/// An object whose name says no format is probed for its first bytes, as a local
+/// file's are read; a part file in a `.parquet` directory, or a format asked for, is
+/// read in place without asking.
+#[cfg(feature = "cloud")]
+#[test]
+fn an_unnamed_remote_object_is_probed_for_its_bytes() {
+    let open = |url: &str, options: OpenOptions| {
+        Loader::default().open(OpenRequest {
+            options,
+            ..request(url)
+        })
+    };
+    for url in ["s3://b/u/file", "gs://b/u/file", "s3://b/notes/000001"] {
+        let Step::Probe(pending) = open(url, OpenOptions::default()) else {
+            panic!("{url} is probed");
+        };
+        assert!(unnamed_object(pending.parts().0, pending.parts().2));
+    }
+    let parquet = OpenOptions {
+        format: Some(FileFormat::Parquet),
+        ..OpenOptions::default()
+    };
+    for (url, options) in [
+        ("s3://b/occurrence.parquet/000001", OpenOptions::default()),
+        ("s3://b/u/", OpenOptions::default()),
+        ("s3://b/u/*", OpenOptions::default()),
+        ("s3://b/u/file", parquet),
+    ] {
+        assert!(
+            matches!(open(url, options), Step::Scan { .. }),
+            "{url} is read in place"
+        );
+    }
+
+    // The probe's answer: Parquet by its bytes, or a prefix, is scanned in place.
+    let mut loader = Loader::default();
+    let Step::Probe(_) = loader.open(request("s3://b/u/file")) else {
+        panic!("probed");
+    };
+    let id = loader.id().unwrap();
+    let Step::Scan { paths, options, .. } = answer(
+        &mut loader,
+        id,
+        LoadAnswer::InPlace {
+            path: PathBuf::from("s3://b/u/file"),
+            options: OpenOptions {
+                format: Some(FileFormat::Parquet),
+                ..OpenOptions::default()
+            },
+        },
+    ) else {
+        panic!("scanned in place");
+    };
+    assert_eq!(paths, [PathBuf::from("s3://b/u/file")]);
+    assert_eq!(options.format, Some(FileFormat::Parquet));
+}
+
 /// `--format` naming a URL: the spec is fetched first, in a phase of its own, then the
 /// open goes on as it would have, carrying the spec; a second answer does nothing.
 #[test]

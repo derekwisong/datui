@@ -619,6 +619,8 @@ pub(crate) enum Step {
 #[derive(Debug)]
 pub(crate) struct Hex {
     pub(crate) file: PathBuf,
+    /// A download `file` is: the URL it came from and the hold on it.
+    pub(crate) fetched: Option<(PathBuf, TempDownload)>,
     pub(crate) from_home: bool,
     /// Asked for (`--hex`) rather than fallen back to.
     pub(crate) asked: bool,
@@ -793,6 +795,11 @@ pub(crate) enum LoadAnswer {
     /// The remote file's size.
     #[cfg(any(feature = "http", feature = "cloud"))]
     Sized(PendingDownload),
+    /// An object in a store named with no format is Parquet by its first bytes, or is
+    /// no object but a prefix (`path`, with its slash): read where it is, not
+    /// downloaded.
+    #[cfg(feature = "cloud")]
+    InPlace { path: PathBuf, options: OpenOptions },
     /// A download started without asking passed its limit and was stopped, its
     /// partial file removed: the user is asked before it is fetched whole.
     #[cfg(any(feature = "http", feature = "cloud"))]
@@ -1528,20 +1535,16 @@ impl Loader {
                 | Phase::ReadingLines,
             ) => {
                 let from_home = load.from_home;
-                // A download is a temporary file the load owns; it has no bytes to show
-                // once the load is put down.
-                let fetched = load.download.is_some();
-                let named = load.path.clone();
+                // A download is shown as a local file is, the view holding it; kept too,
+                // so reading it with a spec reads the copy on hand.
+                let fetched = load.download.take();
                 self.retire();
-                if fetched {
-                    let message = match named {
-                        Some(path) => crate::error_display::file_message(&path, crate::UNSUPPORTED),
-                        None => crate::UNSUPPORTED.to_string(),
-                    };
-                    return Step::Failed(Failed { message, from_home });
+                if let Some(fetched) = &fetched {
+                    self.kept = Some(fetched.clone());
                 }
                 Step::Hex(Hex {
                     file,
+                    fetched: fetched.map(|fetched| (fetched.url, fetched.file)),
                     from_home,
                     asked,
                     record_size,
@@ -1632,6 +1635,19 @@ impl Loader {
                         ..options
                     },
                     display: None,
+                    status: "Scanning...",
+                }
+            }
+            // An unnamed object whose first bytes say Parquet, or a prefix: scanned where
+            // it is.
+            #[cfg(feature = "cloud")]
+            (LoadAnswer::InPlace { path, options }, Phase::CheckingSize { .. }) => {
+                load.phase = Phase::Scanning { downloaded: false };
+                let display = load.path.clone().filter(|shown| *shown != path);
+                Step::Scan {
+                    paths: vec![path],
+                    options,
+                    display,
                     status: "Scanning...",
                 }
             }
@@ -1940,8 +1956,11 @@ fn remote_download(src: &source::InputSource, options: &OpenOptions) -> Option<P
     #[cfg(feature = "cloud")]
     let spec = options.spec_file.is_some() || options.spec_name.is_some();
     #[cfg(feature = "cloud")]
-    let should_download =
-        |url: &str| should_download(url) || (spec && !source::is_prefix_or_glob(url));
+    let should_download = |url: &str| {
+        should_download(url)
+            || (spec && !source::is_prefix_or_glob(url))
+            || unnamed_object(url, options)
+    };
     #[cfg(feature = "cloud")]
     if !spec && let Some(arrow) = cloud_arrow(src, options) {
         return Some(arrow);
@@ -2011,6 +2030,20 @@ fn cloud_arrow(src: &source::InputSource, options: &OpenOptions) -> Option<Pendi
         size: None,
         options: options.clone(),
     })
+}
+
+/// An object in a store whose name says no format: the probe reads its first bytes
+/// ([`LoadAnswer::InPlace`] for Parquet or a prefix named without its slash), and anything
+/// else is downloaded and told apart as a local file is. A part file in a `.parquet`
+/// directory is Parquet by its name, as it is on disk.
+#[cfg(feature = "cloud")]
+pub(crate) fn unnamed_object(url: &str, options: &OpenOptions) -> bool {
+    options.format.is_none()
+        && options.spec_file.is_none()
+        && options.spec_name.is_none()
+        && !source::is_prefix_or_glob(url)
+        && source::url_path_extension(url).1.is_none()
+        && !crate::home::discover::is_parquet_key(url)
 }
 
 #[cfg(feature = "cloud")]

@@ -28,6 +28,9 @@ mod cloud_parity;
 #[cfg(feature = "cloud")]
 #[path = "cloud/reopen.rs"]
 mod cloud_reopen;
+#[cfg(feature = "cloud")]
+#[path = "cloud/unnamed.rs"]
+mod cloud_unnamed;
 #[path = "../common/mod.rs"]
 mod common;
 #[path = "formats/elf.rs"]

@@ -9,6 +9,7 @@ fn view(bytes: Vec<u8>) -> HexView {
         HexSource {
             path: PathBuf::from("sample.bin"),
             bytes: Arc::new(Bytes::Owned(bytes)),
+            fetched: None,
         },
         Origin::Launch,
         false,

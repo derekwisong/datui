@@ -16,8 +16,12 @@ fn the_door_says_why_only_when_enter_would_read_nothing() {
         entry
     };
     let why = App::why_a_door_reads_nothing(&door(&[("tsv", 2)], 0));
-    assert!(why.is_some_and(|why| why.contains("2 tsv")));
-    assert!(App::why_a_door_reads_nothing(&door(&[], 3)).is_some());
+    assert!(why.is_some_and(|why| why.contains("2 TSV")));
+    let why = App::why_a_door_reads_nothing(&door(&[], 3)).unwrap();
+    assert_eq!(
+        why,
+        "nothing in this prefix reads as one table. Open a file in it."
+    );
     assert_eq!(App::why_a_door_reads_nothing(&door(&[("csv", 3)], 0)), None);
     assert_eq!(
         App::why_a_door_reads_nothing(&door(&[("parquet", 3)], 0)),
@@ -287,4 +291,22 @@ fn an_az_url_opens_as_abfss_or_says_which_account_is_missing() {
             _ => panic!("refused"),
         }
     }
+}
+
+/// A scan that fails on what a file holds says so alone; only the store's own failure
+/// points at the credentials.
+#[test]
+fn only_a_store_failure_blames_the_credentials() {
+    use polars::prelude::PolarsError;
+    let said = |e: PolarsError| format!("{:#}", App::cloud_scan_failed("gs://b/p/", &e));
+    let format = said(PolarsError::ComputeError(
+        "File out of specification: incorrect magic in parquet footer".into(),
+    ));
+    assert!(format.contains("incorrect magic"), "{format}");
+    assert!(!format.contains("credentials"), "{format}");
+    let store = said(PolarsError::IO {
+        error: std::sync::Arc::new(std::io::Error::other("connection refused")),
+        msg: None,
+    });
+    assert!(store.contains("Check the credentials"), "{store}");
 }

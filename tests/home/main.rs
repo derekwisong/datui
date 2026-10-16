@@ -4397,9 +4397,8 @@ fn test_partitioned_cloud_directories_are_labelled_and_open_whole() {
         "a hive table is one dataset, so the cursor lands on the row that opens it"
     );
 
-    // A directory of plain subdirectories gets one too. Its files are a level down, which
-    // is what `Enter` on the row reads — and which directory holds them is the question
-    // the row exists so you do not have to answer first.
+    // A directory of plain subdirectories gets none, as on disk: `by_year` and
+    // `by_station` read together are not one table.
     let parquet = PathBuf::from("s3://noaa-ghcn-pds/parquet");
     home.probe_ready(
         parquet.clone(),
@@ -4415,13 +4414,7 @@ fn test_partitioned_cloud_directories_are_labelled_and_open_whole() {
     home.browsing = Some(parquet);
     home.rebuild(&[]);
     assert_eq!(home.sections[0].rows.len(), 2, "the door is not among them");
-    assert_eq!(
-        door_of(&home).map(|d| d.name.as_str()),
-        Some("Open all (mixed files)")
-    );
-    // Not a dataset: the cursor lands on the first thing in it, so the first Enter never
-    // reads `by_year` and `by_station` together.
-    assert!(!home.selection_is_the_door());
+    assert_eq!(door_of(&home).map(|d| d.name.as_str()), None);
     assert_eq!(
         home.selected_entry().map(|e| e.path.clone()),
         Some(PathBuf::from("s3://noaa-ghcn-pds/parquet/by_year"))
@@ -7363,12 +7356,12 @@ mod landing {
         step_in(&mut app, &rx, &mixed);
 
         let row = door(&app);
-        assert_eq!(row.name, "Open all (mixed files)");
+        assert_eq!(row.name, "Open all (1 Parquet file, 2 skipped)");
         assert_eq!(
             datui::home::door_reads(&row),
             Some((
-                "1 parquet".to_string(),
-                Some("1 csv, 1 directory".to_string())
+                "1 Parquet file".to_string(),
+                Some("1 CSV file, 1 directory".to_string())
             ))
         );
         assert!(!app.home.selection_is_the_door());
@@ -7543,12 +7536,15 @@ fn test_a_mixed_prefix_says_it_reads_below() {
     home.browsing = Some(place);
     home.rebuild(&[]);
     let door = door_of(&home).expect("the prefix carries the door").clone();
-    assert_eq!(door.name, "Open all (mixed files)");
+    assert_eq!(
+        door.name,
+        "Open all (every CSV file below, 1 JSON file skipped)"
+    );
     assert_eq!(
         datui::home::door_reads(&door),
         Some((
-            "every csv file below".to_string(),
-            Some("1 json".to_string())
+            "every CSV file below".to_string(),
+            Some("1 JSON file".to_string())
         ))
     );
     assert!(!home.selection_is_the_door());

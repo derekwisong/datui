@@ -2562,11 +2562,29 @@ impl App {
 
     /// A scan of `url` in an object store that Polars refused, with what to check.
     #[cfg(feature = "cloud")]
-    fn cloud_scan_failed(url: &str, e: &polars::prelude::PolarsError) -> color_eyre::Report {
+    pub(crate) fn cloud_scan_failed(
+        url: &str,
+        e: &polars::prelude::PolarsError,
+    ) -> color_eyre::Report {
         let said = crate::error_display::user_message_from_polars(e);
         let (first, rest) = said.split_once('\n').unwrap_or((&said, ""));
         let first = first.trim_end().trim_end_matches('.');
-        let what = format!("could not read it: {first}. Check the credentials and the URL.");
+        // Only the store's own failure says anything of the credentials; a file that is
+        // not what it was read as says so alone.
+        fn from_the_store(e: &polars::prelude::PolarsError) -> bool {
+            use polars::prelude::PolarsError;
+            match e {
+                PolarsError::IO { .. } => true,
+                PolarsError::Context { error, .. } => from_the_store(error),
+                _ => false,
+            }
+        }
+        let check = if from_the_store(e) {
+            " Check the credentials and the URL."
+        } else {
+            ""
+        };
+        let what = format!("could not read it: {first}.{check}");
         let what = match rest {
             "" => what,
             rest => format!("{what}\n{rest}"),

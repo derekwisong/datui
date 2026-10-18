@@ -2396,16 +2396,17 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             if let Some(known) = probes.entry(p) {
                 return known;
             }
-            if let Some(variant) = discover::variant_row(p, formats) {
+            // Finding a variant or a member stats the path and each parent, which waits on a
+            // share that went away (seconds per stat on an automount whose server is down).
+            let remote = network_check(p);
+            if !remote && let Some(variant) = discover::variant_row(p, formats) {
                 return variant;
             }
-            if !network_check(p)
-                && let Some(split) = discover::split_row(p)
-            {
+            if !remote && let Some(split) = discover::split_row(p) {
                 return split;
             }
-            let mut entry = entry_for_path(p, network_check(p));
-            if !network_check(p) {
+            let mut entry = entry_for_path(p, remote);
+            if !remote {
                 discover::name_unlisted_file(&mut entry, formats);
             }
             // A dataset opened from a catalog keeps the catalog's name, not its URL's last

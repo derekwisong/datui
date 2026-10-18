@@ -46,6 +46,21 @@ ignore = [
     { id = "RUSTSEC-2026-0194", reason = "quick-xml DoS; xlsx path fixed by calamine 0.36, remaining copy is object_store S3/GCS XML, pinned by polars" },
     { id = "RUSTSEC-2026-0195", reason = "quick-xml DoS; xlsx path fixed by calamine 0.36, remaining copy is object_store S3/GCS XML, pinned by polars" },
 
+    # zip 8.6, three extraction bugs: SUID/SGID bits kept, symlinks whose
+    # targets leave the destination, and permissions applied through symlinks.
+    # Patched in 9.0.
+    #
+    # All three live in `ZipArchive::extract` and `ZipStreamReader::extract`.
+    # The only copy of 8.6 is calamine 0.36's, which reads an .xlsx's parts by
+    # name and never extracts. datui's own zip use (Excel sniffing, .npz) is
+    # already on 9.0.
+    #
+    # No upgrade is available: calamine 0.36.1 is the latest and requires zip 8.
+    # Clears when: calamine moves to zip 9.
+    { id = "RUSTSEC-2026-0367", reason = "zip 8 extract keeps SUID bits; only copy is calamine's, which never extracts" },
+    { id = "RUSTSEC-2026-0368", reason = "zip 8 extract follows symlinks out; only copy is calamine's, which never extracts" },
+    { id = "RUSTSEC-2026-0369", reason = "zip 8 extract chmods through symlinks; only copy is calamine's, which never extracts" },
+
     # --- Unmaintained, no known vulnerability ---
 
     # bincode 2, via polars-utils. Unmaintained, no advisory against the code.

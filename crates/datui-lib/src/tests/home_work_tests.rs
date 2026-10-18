@@ -120,8 +120,23 @@ fn a_place_that_never_answers_stops_spinning_and_ctrl_r_waits_again() {
     assert_eq!(app.home_app.probes_inflight, vec![place.clone()]);
 
     drop(held);
+    // Its answer relists the place, and that listing spins too.
     until(&mut app, &rx, "the late answer lands", |app| {
-        app.home.probes.listed(&place).is_some()
+        app.home.probes.listed(&place).is_some() && !app.home.listing_in_flight
+    });
+    assert!(!app.something_is_spinning());
+}
+
+/// The footer says "Looking..." while a listing is out, so its spinner turns until the
+/// listing lands; else the loop sleeps with nothing to wake it.
+#[test]
+fn a_listing_in_flight_spins() {
+    let (mut app, rx) = app();
+    app.home_refresh();
+    assert!(app.home.listing_in_flight);
+    assert!(app.something_is_spinning(), "waiting on the listing");
+    until(&mut app, &rx, "the listing lands", |app| {
+        !app.home.listing_in_flight
     });
     assert!(!app.something_is_spinning());
 }

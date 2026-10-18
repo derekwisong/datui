@@ -2031,7 +2031,8 @@ impl App {
             || self.chart_preparing()
             || self.value_counts_computing()
             || (self.input_mode == InputMode::Home
-                && (self.home.awaiting_listing().is_some()
+                && (self.home.listing_in_flight
+                    || self.home.awaiting_listing().is_some()
                     || self.home.sections_waiting()
                     || !self.home.peeking.is_empty()))
     }

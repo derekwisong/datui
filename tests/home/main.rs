@@ -1395,6 +1395,40 @@ fn test_a_remote_recent_is_shown_without_stat() {
     );
 }
 
+/// Finding a recent's variant stats it and each parent, seconds apiece on an automount
+/// whose server is down, so a remote recent is not looked inside: with specs loaded, the
+/// local twin is the spec's variant and the remote one is taken as named.
+#[test]
+fn test_a_remote_recent_is_not_looked_inside_for_a_variant() {
+    common::isolate_cache();
+    let (_formats, registry) = magic_specs();
+    let tmp = TempDir::new().unwrap();
+    let spec_of = |dir: &std::path::Path| {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(dir.join("data.bin"), mktd_bytes(1)).unwrap();
+        let recent = datui::formats::members::place(&dir.join("data.bin"), "status");
+        let mut home = HomeState {
+            network_check: pretend_remote,
+            cloud: Vec::new(),
+            formats: std::sync::Arc::new(registry.clone()),
+            ..Default::default()
+        };
+        home.rebuild(std::slice::from_ref(&recent));
+        home.sections
+            .iter()
+            .flat_map(|s| &s.rows)
+            .find(|r| r.path == recent)
+            .unwrap_or_else(|| panic!("{recent:?} in {:?}", visible_names(&home)))
+            .format_spec
+            .clone()
+    };
+    assert_eq!(
+        spec_of(&tmp.path().join("local")).as_deref(),
+        Some("acme.mktd")
+    );
+    assert_eq!(spec_of(&tmp.path().join("PRETEND_REMOTE")), None);
+}
+
 // ---------------------------------------------------------------------------
 // Object-store and HTTP URLs
 // ---------------------------------------------------------------------------

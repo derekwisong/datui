@@ -15,7 +15,7 @@ polars-runtime-32==1.43.2
 numpy==2.5.4; python_version >= "3.12"
 numpy==2.3.5; python_version == "3.11"
 numpy==2.2.6; python_version < "3.11"
-pyarrow==25.0.1
+pyarrow==26.0.0
 fastavro==1.13.1
 openpyxl==3.1.5
 et-xmlfile==2.0.0

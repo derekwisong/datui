@@ -80,3 +80,4 @@ updates:
     labels: [dependencies, python, ci]
     ignore:
       - dependency-name: "polars"
+      - dependency-name: "polars-runtime-*"

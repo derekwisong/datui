@@ -120,7 +120,10 @@ runs:
       if: inputs.python == 'true' || inputs.pip-cache != '' || inputs.venv != '' || inputs.fixtures == 'true'
       uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
       with:
-        python-version: '3.x'
+        # Not '3.x': the fixture pins have to install on it, and on 3.15 pyarrow
+        # 25 has no wheel and polars 1.43 fails building a Series. Move this with
+        # the polars bump.
+        python-version: '3.14'
         cache: ${{ inputs.pip-cache != '' && 'pip' || '' }}
         cache-dependency-path: ${{ inputs.pip-cache }}
 

@@ -1,6 +1,6 @@
 //! Recursive search below the working directory.
 
-use datui::config::SearchConfig;
+use datui::config::{Interval, SearchConfig};
 use datui::home::discover::Entry;
 use datui::home::search;
 use std::fs;
@@ -220,11 +220,17 @@ fn test_results_stream_rather_than_arriving_all_at_once() {
         touch(&tmp.path().join(format!("d{i:03}/f.parquet")));
     }
 
+    // The default budget is short enough that a slow Windows runner stops the walk
+    // partway (239 of 500 in the October 21 Nightly); the budget is not the subject.
+    let config = SearchConfig {
+        time_budget: Interval::ms(60_000),
+        ..Default::default()
+    };
     let mut batches = 0usize;
     let mut total = 0usize;
     search::walk_with_specs(
         tmp.path(),
-        &SearchConfig::default(),
+        &config,
         &datui::formats::Registry::default(),
         |batch, _| {
             if !batch.is_empty() {

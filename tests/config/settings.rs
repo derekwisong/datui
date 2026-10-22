@@ -3340,6 +3340,16 @@ spinner = ["◐", "◓", "◑", "◒"]
 }
 
 #[test]
+fn a_date_or_time_where_a_section_belongs_is_rejected_when_read() {
+    // toml types a TOML time as an empty table straight from text, but as a string
+    // once it is a value, which is how layers resolve. Found by the config_parse fuzzer.
+    for text in ["log = 20:00", "theme = 1979-05-27"] {
+        let err = ConfigLayer::parse(text).expect_err(text);
+        assert!(err.to_string().contains("expected struct"), "{text}: {err}");
+    }
+}
+
+#[test]
 fn glyph_override_errors_name_the_slot() {
     let unknown: AppConfig = toml::from_str("[glyphs]\nno_such_slot = \"x\"").expect("parses");
     let err = unknown.validate().expect_err("unknown slot rejected");

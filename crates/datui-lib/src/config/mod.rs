@@ -2224,6 +2224,9 @@ impl ConfigLayer {
     pub fn parse(text: &str) -> Result<Self> {
         let typed: AppConfig = toml::from_str(text)?;
         let table: toml::Table = toml::from_str(text)?;
+        // Typed from text, a TOML date or time passes for an empty section; as a value,
+        // the way layers resolve, it is a string. Check it the way it will be read.
+        toml::Value::Table(table.clone()).try_into::<AppConfig>()?;
         Ok(Self::from_table(table, typed.import))
     }
 

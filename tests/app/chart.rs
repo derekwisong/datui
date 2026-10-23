@@ -710,6 +710,42 @@ fn quick_chart_picks_the_type_from_the_cursor_column() {
     }
 }
 
+/// A duration is an X in time: `c` on it suggests a line over it, ticked in lengths
+/// of time.
+#[test]
+fn a_duration_x_charts_a_line_ticked_in_time() {
+    use datui::chart::chart_modal::Mark;
+    let path = common::fixture_dir().join("chart_duration_x.parquet");
+    // A sample a second for ten minutes, in nanoseconds as MangoHud logs it.
+    let mut df = df!(
+        "elapsed" => (0..600).map(|i| i * 1_000_000_000).collect::<Vec<i64>>(),
+        "fps" => (0..600).map(|i| 60.0 + (i % 7) as f64).collect::<Vec<f64>>()
+    )
+    .unwrap();
+    df.apply("elapsed", |c| {
+        c.cast(&DataType::Duration(TimeUnit::Nanoseconds)).unwrap()
+    })
+    .unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+
+    press(&mut app, KeyCode::Char('c'));
+    assert_eq!(app.chart.modal.mark(), Mark::Line);
+    assert_eq!(app.chart.modal.x().map(String::as_str), Some("elapsed"));
+    assert_eq!(app.chart.modal.y(), ["fps"]);
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    let area = Rect::new(0, 0, 100, 30);
+    let mut buf = Buffer::empty(area);
+    Widget::render(&mut app, area, &mut buf);
+    let text = common::buffer_text(&buf);
+    assert!(text.contains("2m") && text.contains("4m"), "{text}");
+}
+
 /// Every type shows the same shelves; one it does not use is dimmed, with why, and
 /// focus passes over it.
 #[test]

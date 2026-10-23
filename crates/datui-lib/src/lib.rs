@@ -3544,7 +3544,10 @@ impl App {
                         .filter(|(_, dtype)| {
                             matches!(
                                 dtype,
-                                DataType::Datetime(_, _) | DataType::Date | DataType::Time
+                                DataType::Datetime(_, _)
+                                    | DataType::Date
+                                    | DataType::Time
+                                    | DataType::Duration(_)
                             )
                         })
                         .map(|(name, _)| name.to_string())

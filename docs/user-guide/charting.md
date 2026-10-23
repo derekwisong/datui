@@ -155,8 +155,8 @@ Dates and datetimes are written as ISO 8601 with a space before the time:
 
 | Type | Plots | X | Y |
 |---|---|---|---|
-| **Line** | Lines in X order | A number, date or time | Up to ten numeric columns, or a count |
-| **Scatter** | Points | A number, date or time | Up to ten numeric columns, or a count |
+| **Line** | Lines in X order | A number, date, time or duration | Up to ten numeric columns, or a count |
+| **Scatter** | Points | A number, date, time or duration | Up to ten numeric columns, or a count |
 | **Bar** | One horizontal bar per category | A text, categorical, boolean or integer column | A numeric column with an aggregate, a count, or a column already one row per category |
 | **Histogram** | Rows per bin | A number | Count or share |
 | **Box** | Quartiles and whiskers | A category, one box per value, or none | A number |

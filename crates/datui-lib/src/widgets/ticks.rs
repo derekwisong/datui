@@ -148,7 +148,7 @@ const CALENDAR_STEPS: &[(Unit, &[u32])] = &[
 ];
 
 /// The calendar steps a `kind` axis can take, finest first: a date ticks on days at
-/// the finest, a time of day on hours at the coarsest.
+/// the finest, a time of day on hours at the coarsest, a duration on whole days.
 pub fn calendar_steps(kind: XAxisTemporalKind) -> impl Iterator<Item = CalendarStep> {
     CALENDAR_STEPS
         .iter()
@@ -156,9 +156,16 @@ pub fn calendar_steps(kind: XAxisTemporalKind) -> impl Iterator<Item = CalendarS
         .filter(move |s| match kind {
             XAxisTemporalKind::Date => s.unit >= Unit::Day,
             XAxisTemporalKind::Time => s.unit <= Unit::Hour,
+            // Days past one count from the 1st of a month.
+            XAxisTemporalKind::Duration => s.unit <= Unit::Hour || *s == DAY,
             _ => true,
         })
 }
+
+const DAY: CalendarStep = CalendarStep {
+    unit: Unit::Day,
+    n: 1,
+};
 
 /// An axis value as the date and time it stands for; a time of day falls on the
 /// epoch's day.
@@ -166,6 +173,12 @@ pub fn to_datetime(v: f64, kind: XAxisTemporalKind) -> Option<NaiveDateTime> {
     match kind {
         XAxisTemporalKind::Numeric => None,
         XAxisTemporalKind::Time => Some(epoch_day().and_time(x_time(v)?)),
+        // From the epoch, whose midnight every step counts from.
+        XAxisTemporalKind::Duration => {
+            let ms = (v * 1e3).round();
+            (ms.abs() < 1e15)
+                .then(|| epoch_day().and_time(NaiveTime::MIN) + TimeDelta::milliseconds(ms as i64))
+        }
         _ => x_datetime(v, kind),
     }
 }
@@ -183,6 +196,7 @@ pub fn from_datetime(at: NaiveDateTime, kind: XAxisTemporalKind) -> Option<f64> 
         XAxisTemporalKind::DatetimeUs => utc.timestamp_micros() as f64,
         XAxisTemporalKind::DatetimeMs => utc.timestamp_millis() as f64,
         XAxisTemporalKind::DatetimeNs => utc.timestamp_nanos_opt()? as f64,
+        XAxisTemporalKind::Duration => (at - epoch_day().and_time(NaiveTime::MIN)).as_seconds_f64(),
         XAxisTemporalKind::Time => {
             let t = at.time();
             f64::from(t.num_seconds_from_midnight()) * 1e9 + f64::from(t.nanosecond())
@@ -291,6 +305,9 @@ pub fn calendar_labels(
         .iter()
         .enumerate()
         .map(|(i, at)| {
+            if kind == XAxisTemporalKind::Duration {
+                return from_datetime(*at, kind).map_or_else(String::new, elapsed);
+            }
             let pattern = if kind == XAxisTemporalKind::Time {
                 if unit == Unit::Second {
                     "%H:%M:%S"
@@ -303,6 +320,34 @@ pub fn calendar_labels(
             at.format(pattern).to_string()
         })
         .collect()
+}
+
+/// `seconds` as a length of time in its units, largest first, each that is not zero:
+/// `0s`, `45s`, `1m30s`, `2h`, `1d4h`, `-2.5s`. Seconds keep their fraction to the
+/// microsecond.
+pub fn elapsed(seconds: f64) -> String {
+    if !seconds.is_finite() {
+        return seconds.to_string();
+    }
+    let micros = (seconds.abs() * 1e6).round() as u64;
+    let (mut whole, fraction) = (micros / 1_000_000, micros % 1_000_000);
+    let mut out = String::from(if micros > 0 && seconds < 0.0 { "-" } else { "" });
+    for (unit, name) in [(86_400, "d"), (3_600, "h"), (60, "m")] {
+        if whole >= unit {
+            out.push_str(&format!("{}{name}", whole / unit));
+            whole %= unit;
+        }
+    }
+    if whole > 0 || fraction > 0 || out.trim_start_matches('-').is_empty() {
+        out.push_str(&whole.to_string());
+        if fraction > 0 {
+            let digits = format!("{fraction:06}");
+            out.push('.');
+            out.push_str(digits.trim_end_matches('0'));
+        }
+        out.push('s');
+    }
+    out
 }
 
 fn calendar_pattern(at: &NaiveDateTime, unit: Unit, first: bool) -> &'static str {

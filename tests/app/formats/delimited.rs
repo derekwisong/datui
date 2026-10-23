@@ -1070,6 +1070,45 @@ fn the_contributed_specs_parse() {
     );
 }
 
+/// The MangoHud spec types a log's columns and reads the game and the session's
+/// start from its name.
+#[test]
+fn the_mangohud_spec_reads_a_log_and_its_name() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("contrib/formats");
+    let spec = Spec::load(&dir.join("mangohud.toml")).unwrap();
+    let path = common::fixture_dir().join("vkcube_2026-10-22_18-40-30.csv");
+    std::fs::write(
+        &path,
+        "os,cpu,gpu,ram,kernel,driver,cpuscheduler\n\
+         Linux,Example CPU,Example GPU,32768000,6.12.0,,performance\n\
+         fps,frametime,cpu_load,gpu_load,elapsed\n\
+         144.2,6.93,21.5,64,100000000\n\
+         143.8,6.95,22.1,65,200000000\n",
+    )
+    .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.set_formats(Registry::of(vec![spec]));
+    open(&mut app, &rx, path, OpenOptions::default());
+    let df = collected(&app);
+    assert_eq!(df.height(), 2);
+    assert_eq!(df.column("fps").unwrap().dtype(), &DataType::Float64);
+    assert_eq!(df.column("elapsed").unwrap().dtype(), &DataType::Int64);
+    assert_eq!(
+        df.column("game").unwrap().str().unwrap().get(0),
+        Some("vkcube")
+    );
+    let start = df.column("start").unwrap();
+    assert!(matches!(start.dtype(), DataType::Datetime(..)));
+    assert!(
+        start
+            .get(0)
+            .unwrap()
+            .to_string()
+            .starts_with("2026-10-22 18:40:30")
+    );
+}
+
 /// `read.infer_types` leaves a column of codes with leading zeros as text, though
 /// Polars would read `02134` as a number, and types `0.5` as one.
 #[test]

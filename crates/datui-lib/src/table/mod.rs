@@ -871,6 +871,10 @@ impl DataTableState {
         self.view.unsorted_lf = None;
         self.view.base_steps = Vec::new();
         self.view.reshape_steps = None;
+        // The view's column changes lie on the new root as on the old.
+        if !self.view.column_changes.is_empty() {
+            self.show_column_changes();
+        }
         self.drop_buffer();
     }
 

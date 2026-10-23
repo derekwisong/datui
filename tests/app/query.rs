@@ -550,6 +550,39 @@ fn test_reading_a_filtered_column_as_text_says_the_comparison_changed() {
     );
 }
 
+/// A column the view retyped keeps its type when another is read as text, which
+/// replaces the data the changes lie on.
+#[test]
+fn reading_a_column_as_text_keeps_the_views_types() {
+    use datui::formats::column_types::ColumnType;
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("id" => &[0i64, 1, 2], "n" => &[1i64, 10, 20]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[3i64], "n" => &["sixty"]).unwrap(),
+    );
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let area = Rect::new(0, 0, 100, 24);
+    let _ = painted(&mut app, &rx, &tx, area);
+
+    let state = app.data_table_state.as_mut().unwrap();
+    state.set_column_type("id", Some(ColumnType::named("f64", None).unwrap()));
+    assert!(state.read_column_as_text("n").unwrap());
+    let _ = painted(&mut app, &rx, &tx, area);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.schema().get("id"), Some(&DataType::Float64));
+    assert_eq!(state.schema().get("n"), Some(&DataType::String));
+    assert_eq!(
+        view_frame(&app).column("id").unwrap().dtype(),
+        &DataType::Float64
+    );
+}
+
 /// The accent is about the note being *new*: a sort that has something to say brings
 /// it back after the panel has already been opened once.
 #[test]

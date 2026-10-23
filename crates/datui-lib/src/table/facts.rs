@@ -857,6 +857,17 @@ impl DataTableState {
         if !self.scan_is_the_root() || self.view.drift_column_present {
             return None;
         }
+        // The source runs them over its own columns, before the view's column changes.
+        let changed = |column: &str| self.view.column_changes.iter().any(|c| c.name == column);
+        if self
+            .view
+            .filters
+            .iter()
+            .any(|f| changed(&f.column) || f.columns.iter().any(|c| changed(c)))
+            || self.view.sort_columns.iter().any(|c| changed(c))
+        {
+            return None;
+        }
         let sort: Vec<(String, bool)> = self
             .view
             .sort_columns

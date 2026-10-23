@@ -1905,11 +1905,12 @@ impl ColorKey {
         if parts.len() == 1 {
             return parts.remove(0);
         }
-        let parts: Vec<Expr> = parts
+        // Joined by `+`: `concat_str` exists only with SQL.
+        parts
             .into_iter()
             .map(|p| p.fill_null(lit(NULL_LABEL)))
-            .collect();
-        concat_str(parts, COLOR_JOIN, false)
+            .reduce(|joined, p| joined + lit(COLOR_JOIN) + p)
+            .expect("two or more columns")
     }
 
     /// Each row's label in `df`, which holds the key's columns.

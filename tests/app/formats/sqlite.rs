@@ -386,6 +386,30 @@ fn the_sidebar_sorts_and_filters_in_sqlite() {
     assert!(frame(&app).equals_missing(&expected));
 }
 
+/// A filter on a column the view retyped runs in Polars, over the type the view gave
+/// it, not in SQLite over the type stored.
+#[test]
+fn a_filter_on_a_retyped_column_stays_out_of_sqlite() {
+    use datui::app::modals::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+    use datui::formats::column_types::ColumnType;
+    let db = sqlite().join("shop.db");
+    let (mut app, _rx) = open_with(db, table("orders"));
+    let state = app.data_table_state.as_mut().unwrap();
+    state.set_column_type("amount", Some(ColumnType::named("str", None).unwrap()));
+    state.filter(vec![FilterStatement {
+        columns: Vec::new(),
+        column: "amount".to_string(),
+        operator: FilterOperator::Gt,
+        value: "40".to_string(),
+        logical_op: LogicalOperator::And,
+    }]);
+    let plan = state.lf().describe_plan().unwrap();
+    assert!(plan.contains("FILTER"), "left to Polars:\n{plan}");
+    let df = frame(&app);
+    assert!(df.height() > 0);
+    assert_eq!(df.column("amount").unwrap().dtype(), &DataType::String);
+}
+
 /// Copy as Python reads the table on screen through `sqlite3`, the one table of a
 /// database opened without `--table` included, and computes datui's rows.
 #[test]

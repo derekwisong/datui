@@ -4302,8 +4302,20 @@ fn a_query_reads_the_columns_as_retyped() {
     assert_eq!(state.get_filters().len(), 1);
 
     // The query made `wall`: it has no type as read to change.
-    assert_eq!(state.type_as_read("wall"), None);
+    assert_eq!(state.changeable_column("wall"), None);
     assert!(state.why_type_fixed("wall").contains("made by the query"));
+
+    // A column the query renamed changes as the one it reads.
+    run_query(&mut app, &rx, &tx, "select e: elapsed");
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.changeable_column("e").as_deref(), Some("elapsed"));
+
+    // With the query cleared the rows still have the types.
+    run_query(&mut app, &rx, &tx, "");
+    assert_eq!(
+        view_frame(&app).column("elapsed").unwrap().dtype(),
+        &DataType::Duration(TimeUnit::Nanoseconds)
+    );
 
     app.event(AppEvent::Reset);
     pump_until_idle(&mut app, &rx, &tx);

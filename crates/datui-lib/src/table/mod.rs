@@ -995,6 +995,8 @@ impl DataTableState {
         self.reset_view_state(0);
         if !self.view.column_changes.is_empty() {
             self.show_column_changes();
+            // `install_base` showed the data without them; the caller reads the rows.
+            self.deferred(Self::apply_transformations);
         }
         self.restore_footer_count();
     }

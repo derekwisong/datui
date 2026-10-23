@@ -142,6 +142,9 @@ impl PivotJob {
 /// `None` while every column is its own loaded column.
 pub(super) type Lineage = Option<Arc<Vec<(String, String)>>>;
 
+/// How Copy as Python says the view's column changes, which it cannot write.
+const TYPED_COLUMNS: &str = "datui typed columns as a format spec would";
+
 /// `pairs`, each a shown name and the name of a column of a frame whose lineage is
 /// `root`, traced back to the loaded columns. A name `root` does not know is dropped.
 pub(super) fn traced(root: &Lineage, pairs: Vec<(String, String)>) -> Lineage {
@@ -409,9 +412,26 @@ impl DataTableState {
             .collect()
     }
 
-    /// `column`'s type before the view's: as the read gave it, or as the view made it.
-    /// `None` for a column not in the data as loaded, such as one a query made: the
-    /// view's column changes are laid on the data under the query.
+    /// The column of the data as loaded, or one the view made, that the shown `column`
+    /// is: the one Change type changes, as the view's column changes are laid on the
+    /// data under the query. `None` for one a query computed, or under a pivot, melt or
+    /// group.
+    pub fn changeable_column(&self, column: &str) -> Option<String> {
+        if self.view.grouped.is_some() || self.view.reshaped_lf.is_some() {
+            return None;
+        }
+        let loaded = match &self.view.lineage {
+            None => column.to_string(),
+            Some(pairs) => pairs
+                .iter()
+                .find(|(shown, _)| shown == column)
+                .map(|(_, loaded)| loaded.clone())?,
+        };
+        self.type_as_read(&loaded).map(|_| loaded)
+    }
+
+    /// `column`'s type before the view's, by its name in the data as loaded: as the
+    /// read gave it, or as the view made it.
     pub fn type_as_read(&self, column: &str) -> Option<DataType> {
         if self.view.grouped.is_some() || self.view.reshaped_lf.is_some() {
             return None;
@@ -441,7 +461,8 @@ impl DataTableState {
     /// Up to `n` of `column`'s values as read that are not blank, as text: from the
     /// rows on hand, or from the first rows when the view has typed the column.
     pub fn values_on_screen(&self, column: &str, n: usize) -> Vec<String> {
-        let from_buffer = self.column_type_of(column).is_none();
+        // Under a query the shown column may be another, or computed.
+        let from_buffer = self.column_type_of(column).is_none() && self.view.base_is_root;
         let df = if from_buffer {
             self.view.buffered_df.clone()
         } else {
@@ -818,8 +839,13 @@ impl DataTableState {
     /// the sort.
     pub(super) fn view_steps(&self) -> Vec<Step> {
         let mut steps = Vec::new();
-        // Under the query, which reads the columns as typed.
-        if !self.view.column_changes.is_empty() {
+        // Under the query, which reads the columns as typed; a base built from this
+        // view's steps (a pivot, melt or drill) says it already.
+        let said_already =
+            self.view.base_steps.iter().any(
+                |s| matches!(s, Step::Unreproducible(text) if text.starts_with(TYPED_COLUMNS)),
+            );
+        if !self.view.column_changes.is_empty() && !said_already {
             let said: Vec<String> = self
                 .view
                 .column_changes
@@ -827,7 +853,7 @@ impl DataTableState {
                 .map(crate::formats::column_types::ColumnChange::to_toml)
                 .collect();
             steps.push(Step::Unreproducible(format!(
-                "datui typed columns as a format spec would: {}",
+                "{TYPED_COLUMNS}: {}",
                 said.join("; ")
             )));
         }

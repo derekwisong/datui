@@ -290,7 +290,8 @@ impl DataTableState {
         scope: &crate::analysis::data_quality::QualityScope,
     ) -> Result<(LazyFrame, Arc<Schema>)> {
         Ok(if scope.uses_source() {
-            let mut lf = self.query_source();
+            // The data as loaded, as the run profiled it, not the view's column changes.
+            let mut lf = Self::without_drift(self.original_lf.clone());
             let source = if matches!(
                 scope,
                 crate::analysis::data_quality::QualityScope::SourceFiles(_)

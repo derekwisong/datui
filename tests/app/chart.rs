@@ -781,7 +781,7 @@ fn chart_color_splits_and_the_value_picker_lists_by_rows() {
     );
     press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Enter);
-    assert_eq!(app.chart.modal.color().map(String::as_str), Some("carrier"));
+    assert_eq!(app.chart.modal.color(), ["carrier"]);
     pump_until_chart_ready(&mut app, &rx, &tx);
 
     let names = |app: &App| {
@@ -821,7 +821,7 @@ fn chart_color_splits_and_the_value_picker_lists_by_rows() {
     // Over to origin and back: the carrier chart is cached, and so are its values.
     app.chart.modal.focus = ChartFocus::Color;
     press(&mut app, KeyCode::Right);
-    assert_eq!(app.chart.modal.color().map(String::as_str), Some("origin"));
+    assert_eq!(app.chart.modal.color(), ["origin"]);
     pump_until_chart_ready(&mut app, &rx, &tx);
     press(&mut app, KeyCode::Left);
     app.chart.modal.spec.encoding.color.values = vec![Some("WN".to_string())];
@@ -831,6 +831,51 @@ fn chart_color_splits_and_the_value_picker_lists_by_rows() {
         app.chart.modal.has_color_counts(),
         "its values came back with it"
     );
+}
+
+/// Color by two columns, picked in order with Space: a series per combination,
+/// named by their values joined, in the legend too.
+#[test]
+fn chart_color_by_several_columns_names_each_combination() {
+    use datui::chart::chart_modal::{ChartFocus, Mark};
+    let (mut app, rx, tx) = open_flights("chart_color_columns_test.parquet");
+    // `c` on day: a line of delay over it.
+    table_key(&mut app, &rx, &tx, 'l');
+    table_key(&mut app, &rx, &tx, 'l');
+    press(&mut app, KeyCode::Char('c'));
+    assert_eq!(app.chart.modal.mark(), Mark::Line);
+    app.chart.modal.focus = ChartFocus::Color;
+    press(&mut app, KeyCode::Char(' '));
+    assert_eq!(
+        app.chart.modal.picker.as_ref().unwrap().items(),
+        ["none", "carrier", "origin"]
+    );
+    for _ in 0..2 {
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' '));
+    }
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.chart.modal.color(), ["carrier", "origin"]);
+    pump_until_chart_ready(&mut app, &rx, &tx);
+
+    // Each carrier flies from one origin, 100 rows each: equal counts, in the
+    // columns' order.
+    let combinations = [
+        "AA · JFK",
+        "B6 · JFK",
+        "DL · EWR",
+        "EV · LGA",
+        "F9 · LGA",
+        "MQ · LGA",
+        "UA · EWR",
+        "US · EWR",
+        "WN · JFK",
+    ];
+    let cap = app.chart.modal.series_max();
+    let names = app.chart_names().expect("a line chart is prepared");
+    assert_eq!(names, combinations[..cap.min(9)]);
+    let text = screen_text(&mut app);
+    assert!(text.contains("AA · JFK"), "{text}");
 }
 
 /// Rows: a typed size, or Every row, is read on Enter and not before; while it

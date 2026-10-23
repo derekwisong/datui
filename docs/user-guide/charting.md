@@ -26,7 +26,7 @@ panel skips it.
 | **Type** | Line, Scatter, Bar, Histogram, Box, KDE, Heatmap | `suggested for <type>` |
 | **X** | The column on the X axis | The time bucket of a date X on a line or scatter; the bar order; the histogram's bins |
 | **Y** | A column, or several on a line or scatter (one series each); on a histogram, count or share | On a line, scatter or bar, the **Aggregate** row, and cumulative when it is on |
-| **Color** | A category column: one series per value | Which values: `top 10 of 16 by rows`, `all 3`, `3 picked of 4,812` |
+| **Color** | Category, date or datetime columns: one series per value, or per combination of several columns' values | Which values: `top 10 of 16 by rows`, `all 3`, `3 picked of 4,812` |
 
 The plot's title row says how the rows were combined: `mean by month,
 running sum, colored by carrier`, `count per bin`, `one box per carrier`.
@@ -102,8 +102,8 @@ Which airlines arrive late? F9, by 21.92 minutes on average. <kbd>c</kbd> on
 
 ## Color
 
-**Color** splits a chart into one series per value of a category column, each
-in its own palette color. Until you pick values, the ten values with the most
+**Color** splits a chart into one series per value of a category, date or
+datetime column, each in its own palette color. Until you pick values, the ten values with the most
 rows are drawn (or all of them, when the view has fewer), and the line under
 **Color** says which. <kbd>Space</kbd> on that line lists every value with its
 row count, most first. Type to narrow the list, <kbd>Space</kbd> toggles a
@@ -132,6 +132,24 @@ types. When every value has a series there is no Other.
 | Heatmap | Dimmed |
 
 A null value is a series of its own, named `null`.
+
+### Several columns
+
+<kbd>Space</kbd> on **Color** opens its picker, where <kbd>Space</kbd> toggles
+columns in the order you pick them and <kbd>Enter</kbd> charts them. With none
+toggled, <kbd>Enter</kbd> takes the column under the cursor alone. Each
+combination of their values is one series, named by the values joined with `·`:
+`FlightSimulator2024 · 2026-10-22 18:40:30`. Counts, the top ten, the value
+picker and Other work per combination. <kbd>←</kbd> <kbd>→</kbd> on **Color**
+step to a single column. `none` clears them.
+
+Dates and datetimes are written as ISO 8601 with a space before the time:
+
+| Column | Written |
+|---|---|
+| Date | `2026-10-22` |
+| Datetime | To the minute, with seconds and a fraction only as far as some value needs them: `2026-10-22 18:40`, `2026-10-22 18:40:30`, `2026-10-22 18:40:30.250` |
+| Datetime with a time zone | The zone's abbreviation after it: `2026-10-22 14:40 EDT` |
 
 ## Chart types
 
@@ -303,7 +321,7 @@ from S3, GCS or Azure, since the envelope would download the whole file twice.
 | <kbd>1</kbd>–<kbd>7</kbd> | Switch the type directly, from anywhere: Line, Scatter, Bar, Histogram, Box, KDE, Heatmap (<kbd>[</kbd> <kbd>]</kbd> step) |
 | <kbd>↓</kbd> <kbd>↑</kbd> or <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move between the panel's rows |
 | <kbd>Space</kbd> <kbd>Enter</kbd> | Open a shelf's picker, or the Color values; toggle an option, or take its next value. The panel applies as it changes, so <kbd>Enter</kbd> acts as <kbd>Space</kbd> does |
-| <kbd>←</kbd> <kbd>→</kbd> | Step the type, the time bucket, the aggregate, cumulative, bins, range, order or sample size (<kbd>+</kbd> <kbd>-</kbd> too, <kbd>PgUp</kbd> <kbd>PgDn</kbd> for bigger steps on the sample size); on a shelf of one column, the previous or next column; flip a toggle |
+| <kbd>←</kbd> <kbd>→</kbd> | Step the type, the time bucket, the aggregate, cumulative, bins, range, order or sample size (<kbd>+</kbd> <kbd>-</kbd> too, <kbd>PgUp</kbd> <kbd>PgDn</kbd> for bigger steps on the sample size); on a shelf of one column or on Color, the previous or next column; flip a toggle |
 | <kbd>g</kbd> | Grid on or off |
 | <kbd>x</kbd> | The crosshair, on a line or scatter chart |
 | <kbd>e</kbd> | Export the chart |
@@ -313,7 +331,8 @@ from S3, GCS or Azure, since the envelope would download the whole file twice.
 In a picker, type part of a name to narrow the list and use <kbd>↑</kbd>
 <kbd>↓</kbd> to move. <kbd>Enter</kbd> chooses. <kbd>Space</kbd> chooses too
 until you type, and then it types a space. On a line or scatter chart's **Y**
-and on the Color values, <kbd>Space</kbd> toggles an entry in or out instead.
+on **Color** and on the Color values, <kbd>Space</kbd> toggles an entry in or
+out instead.
 <kbd>Tab</kbd> or <kbd>Shift</kbd>+<kbd>Tab</kbd> chooses and moves to the next
 or previous row, and <kbd>Esc</kbd> closes just the picker.
 

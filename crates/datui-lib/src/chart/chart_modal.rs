@@ -274,14 +274,34 @@ impl YEncoding {
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ColorEncoding {
-    pub field: Option<String>,
-    /// The values given a series each, in color order. Empty: the largest
-    /// [`COLOR_MAX`] by rows. `None` is the rows with no value.
+    /// No column, one, or several: a series per combination of their values, in the
+    /// order picked.
+    #[serde(default, deserialize_with = "one_or_more")]
+    pub field: Vec<String>,
+    /// The values given a series each, in color order: a combination's values
+    /// joined (`chart_data::COLOR_JOIN`). Empty: the largest [`COLOR_MAX`] by rows.
+    /// `None` is the rows with no value.
     pub values: Vec<Option<String>>,
     /// Whether every other value's rows make one more series, Other. Unset: on for a
     /// scatter, off otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub other: Option<bool>,
+}
+
+/// A Color field as saved: a list, or as views saved it before Color took several,
+/// one column or none.
+fn one_or_more<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Field {
+        One(String),
+        More(Vec<String>),
+    }
+    Ok(match Option::<Field>::deserialize(d)? {
+        None => Vec::new(),
+        Some(Field::One(column)) => vec![column],
+        Some(Field::More(columns)) => columns,
+    })
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -356,7 +376,7 @@ pub enum ChartFocus {
     Aggregate,
     /// Under the aggregate, a quantile's percentile.
     Quantile,
-    /// The Color shelf's column.
+    /// The Color shelf's columns.
     Color,
     /// Under Color: which values get a series.
     ColorValues,
@@ -393,12 +413,21 @@ pub struct ChartColumns<'a> {
     pub category: &'a [String],
 }
 
-/// The values of the Color column, most rows first, as the chart's last count
-/// found them: what the value picker lists.
+/// The values of the Color columns (each combination's, joined), most rows first, as
+/// the chart's last count found them: what the value picker lists.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ColorCounts {
-    pub column: String,
+    pub columns: Vec<String>,
     pub values: Vec<(Option<String>, u64)>,
+}
+
+/// Keep the Color columns `keep` says to; the values picked go with any that goes.
+fn retain_color(color: &mut ColorEncoding, keep: impl Fn(&String) -> bool) {
+    let before = color.field.len();
+    color.field.retain(keep);
+    if color.field.len() != before {
+        color.values.clear();
+    }
 }
 
 /// What the open Picker edits.
@@ -460,12 +489,15 @@ pub struct ChartModal {
     pub picker_for: Option<PickerFor>,
     /// Per item of the value picker: its rows, shown beside it.
     pub picker_details: Vec<String>,
+    /// The Color as its picker found it: what is charted while Space toggles columns,
+    /// so each toggle does not count the view again.
+    pub color_opened: Option<ColorEncoding>,
     pub numeric_candidates: Vec<String>,
     pub temporal_candidates: Vec<String>,
     /// Dates and datetimes: the X columns a time bucket truncates.
     pub bucketable_candidates: Vec<String>,
     pub category_candidates: Vec<String>,
-    /// The Color column's values by rows, once a chart counted them.
+    /// The Color columns' values by rows, once a chart counted them.
     pub color_counts: Option<ColorCounts>,
     /// The dataset the choices were made on (`App::dataset_generation`), and the
     /// column the table's cursor was on: `c` again from the same column on the
@@ -520,8 +552,9 @@ impl ChartModal {
         self.spec.encoding.y.aggregate
     }
 
-    pub fn color(&self) -> Option<&String> {
-        self.spec.encoding.color.field.as_ref()
+    /// The Color columns, in the order picked.
+    pub fn color(&self) -> &[String] {
+        &self.spec.encoding.color.field
     }
 
     /// Open the chart view. From the column it was left on, on the same dataset,
@@ -676,6 +709,7 @@ impl ChartModal {
         self.picker = None;
         self.picker_for = None;
         self.picker_details.clear();
+        self.color_opened = None;
     }
 
     /// Whether the crosshair can take the keys: a line or scatter plot with points
@@ -695,10 +729,7 @@ impl ChartModal {
             encoding.x.field = None;
         }
         encoding.y.field.retain(|c| has(c));
-        if encoding.color.field.as_ref().is_some_and(|c| !has(c)) {
-            encoding.color.field = None;
-            encoding.color.values.clear();
-        }
+        retain_color(&mut encoding.color, |c| has(c));
     }
 
     // ----- What applies -----
@@ -752,12 +783,17 @@ impl ChartModal {
                 .filter(|c| Some(*c) != x || mark == Mark::Box)
                 .cloned()
                 .collect(),
-            PickerFor::Color => self
-                .category_candidates
-                .iter()
-                .filter(|c| Some(*c) != x)
-                .cloned()
-                .collect(),
+            // A date or datetime with few values is a category too.
+            PickerFor::Color => {
+                let mut all = self.category_candidates.clone();
+                for c in &self.bucketable_candidates {
+                    if !all.contains(c) {
+                        all.push(c.clone());
+                    }
+                }
+                all.retain(|c| Some(c) != x);
+                all
+            }
             PickerFor::ColorValues => Vec::new(),
         }
     }
@@ -795,7 +831,7 @@ impl ChartModal {
 
     /// Whether `spec`'s color splits its chart into series.
     pub fn colored_in(spec: &ChartSpec) -> bool {
-        spec.encoding.color.field.is_some() && Self::color_use_in(spec) == ShelfUse::Used
+        !spec.encoding.color.field.is_empty() && Self::color_use_in(spec) == ShelfUse::Used
     }
 
     /// Whether the chart takes an aggregate: a line, a scatter, a bar.
@@ -852,7 +888,7 @@ impl ChartModal {
         }
         if self.color_use() == ShelfUse::Used {
             rows.push(Color);
-            if self.color().is_some() {
+            if !self.color().is_empty() {
                 rows.push(ColorValues);
             }
         }
@@ -920,9 +956,17 @@ impl ChartModal {
                 }
             }
             Mark::Bar => {
+                // A category the chart was colored by becomes its bars.
                 if !encoding.x.field.as_ref().is_some_and(category) {
-                    encoding.x.field = encoding.color.field.take();
-                    encoding.color.values.clear();
+                    encoding.x.field = encoding
+                        .color
+                        .field
+                        .iter()
+                        .position(category)
+                        .map(|i| encoding.color.field.remove(i));
+                    if encoding.x.field.is_some() {
+                        encoding.color.values.clear();
+                    }
                 }
                 if encoding.y.field.is_empty() && encoding.y.aggregate == Aggregate::None {
                     encoding.y.aggregate = Aggregate::Count;
@@ -972,15 +1016,7 @@ impl ChartModal {
         if !x_temporal || !mark.is_xy() || encoding.y.aggregate == Aggregate::None {
             encoding.x.time_unit = TimeUnit::None;
         }
-        if encoding
-            .color
-            .field
-            .as_ref()
-            .is_some_and(|c| !color_pool.contains(c))
-        {
-            encoding.color.field = None;
-            encoding.color.values.clear();
-        }
+        retain_color(&mut encoding.color, |c| color_pool.contains(c));
         if !matches!(mark, Mark::Line | Mark::Scatter | Mark::Bar) {
             encoding.y.aggregate = Aggregate::None;
         }
@@ -1011,8 +1047,8 @@ impl ChartModal {
     pub fn picker_is_multi(&self, which: PickerFor) -> bool {
         match which {
             PickerFor::Y => self.y_is_multi(),
-            PickerFor::ColorValues => true,
-            PickerFor::X | PickerFor::Color => false,
+            PickerFor::Color | PickerFor::ColorValues => true,
+            PickerFor::X => false,
         }
     }
 
@@ -1062,7 +1098,7 @@ impl ChartModal {
         let current = match which {
             PickerFor::X => encoding.x.field.as_deref(),
             PickerFor::Y => encoding.y.field.first().map(String::as_str),
-            PickerFor::Color => encoding.color.field.as_deref(),
+            PickerFor::Color => encoding.color.field.first().map(String::as_str),
             PickerFor::ColorValues => return Some(0),
         };
         match current {
@@ -1089,22 +1125,24 @@ impl ChartModal {
         self.picker = Some(state);
         self.picker_for = Some(which);
         self.picker_details = details;
+        self.color_opened = (which == PickerFor::Color).then(|| self.spec.encoding.color.clone());
     }
 
     /// Whether the value picker has values to list: the chart has counted the
-    /// Color column on screen.
+    /// Color columns on screen.
     pub fn has_color_counts(&self) -> bool {
         self.color_counts
             .as_ref()
-            .is_some_and(|c| Some(&c.column) == self.color())
+            .is_some_and(|c| c.columns == self.color())
     }
 
-    /// ←/→ on a pick-one column row: the next or previous column, chosen at once.
+    /// ←/→ on a pick-one column row, or on Color: the next or previous column,
+    /// chosen at once (on Color, alone).
     pub fn step_picker_row(&mut self, delta: i8) {
         let Some(which) = self.picker_for(self.focus) else {
             return;
         };
-        if self.picker_is_multi(which) {
+        if self.picker_is_multi(which) && which != PickerFor::Color {
             return;
         }
         let (items, _) = self.picker_items(which);
@@ -1126,13 +1164,19 @@ impl ChartModal {
 
     /// Enter in the Picker: a pick-one row takes the cursor's item; a row of
     /// several keeps its toggles, or adopts the cursor's item when none are
-    /// toggled, so Enter on a fresh list still charts something. The Picker closes.
+    /// toggled, so Enter on a fresh list still charts something (on Color, when none
+    /// were toggled since it opened: the cursor's column alone, or `none`). The Picker
+    /// closes.
     pub fn picker_choose(&mut self) {
         let (Some(which), Some(i)) = (self.picker_for, self.picker_cursor()) else {
             self.close_picker();
             return;
         };
         let item = self.picker.as_ref().and_then(|p| p.items().get(i).cloned());
+        let toggled = self
+            .color_opened
+            .as_ref()
+            .is_some_and(|c| *c != self.spec.encoding.color);
         self.close_picker();
         let Some(item) = item else {
             return;
@@ -1150,6 +1194,8 @@ impl ChartModal {
                     self.spec.encoding.color.values.push(value);
                 }
             }
+            // Columns toggled stay; with none toggled, Enter takes the cursor's alone.
+            PickerFor::Color if toggled => {}
             _ => self.choose(which, &item, i),
         }
         self.settle();
@@ -1164,15 +1210,12 @@ impl ChartModal {
                 encoding.x.field = (!none).then(|| item.to_string());
                 // A series cannot be the X axis too, nor a color.
                 encoding.y.field.retain(|y| y != item);
-                if encoding.color.field.as_deref() == Some(item) {
-                    encoding.color.field = None;
-                    encoding.color.values.clear();
-                }
+                retain_color(&mut encoding.color, |c| c != item);
                 encoding.x.time_unit = TimeUnit::None;
             }
             PickerFor::Y => encoding.y.field = vec![item.to_string()],
             PickerFor::Color => {
-                let field = (!none).then(|| item.to_string());
+                let field: Vec<String> = (!none).then(|| item.to_string()).into_iter().collect();
                 if field != encoding.color.field {
                     encoding.color.values.clear();
                 }
@@ -1206,6 +1249,22 @@ impl ChartModal {
                     field.push(item);
                 }
             }
+            // Columns in the order picked; `none` clears them.
+            PickerFor::Color => {
+                let Some(item) = self.picker.as_ref().and_then(|p| p.items().get(i).cloned())
+                else {
+                    return;
+                };
+                let color = &mut self.spec.encoding.color;
+                if i == 0 {
+                    color.field.clear();
+                } else if let Some(pos) = color.field.iter().position(|c| *c == item) {
+                    color.field.remove(pos);
+                } else {
+                    color.field.push(item);
+                }
+                color.values.clear();
+            }
             PickerFor::ColorValues => {
                 let Some(value) = self.color_value_at(i) else {
                     return;
@@ -1230,6 +1289,11 @@ impl ChartModal {
                 .as_ref()
                 .and_then(|p| p.items().get(i))
                 .is_some_and(|item| self.y().contains(item)),
+            Some(PickerFor::Color) => self
+                .picker
+                .as_ref()
+                .and_then(|p| p.items().get(i))
+                .is_some_and(|item| i > 0 && self.color().contains(item)),
             Some(PickerFor::ColorValues) => self
                 .color_value_at(i)
                 .is_some_and(|v| self.spec.encoding.color.values.contains(&v)),
@@ -1246,9 +1310,12 @@ impl ChartModal {
 
     /// The spec to chart: the one chosen, with an open Picker's cursor previewed on
     /// the Y shelf (and on X, except for a line or scatter, whose X re-reads
-    /// everything).
+    /// everything). Color stays as its picker found it until the picker closes.
     pub fn effective_spec(&self) -> ChartSpec {
         let mut spec = self.spec.clone();
+        if let Some(color) = &self.color_opened {
+            spec.encoding.color = color.clone();
+        }
         let (Some(which), Some(i)) = (self.picker_for, self.picker_cursor()) else {
             return spec;
         };
@@ -1265,6 +1332,7 @@ impl ChartModal {
             PickerFor::X if !spec.mark.is_xy() => {
                 spec.encoding.x.field = (!(self.offers_none(which) && i == 0)).then_some(item);
             }
+
             _ => {}
         }
         spec
@@ -1562,7 +1630,7 @@ impl ChartModal {
             }
         }
         if self.colored() {
-            parts.push(format!("colored by {}", self.color().unwrap()));
+            parts.push(format!("colored by {}", self.color().join(" and ")));
         }
         parts.join(", ")
     }
@@ -1594,8 +1662,9 @@ impl crate::app::form::Form for ChartModal {
             .into_iter()
             .map(|row| {
                 let kind = match self.picker_for(row) {
+                    // Color steps a column at a time, though its Picker takes several.
                     Some(which) => FieldKind::Picker {
-                        multi: self.picker_is_multi(which),
+                        multi: self.picker_is_multi(which) && which != PickerFor::Color,
                     },
                     None if self.is_toggle_row(row) => FieldKind::Checkbox,
                     // Type, the buckets, the aggregates and the numbers step.
@@ -1815,10 +1884,10 @@ mod tests {
         modal.focus = ChartFocus::Color;
         modal.open_picker();
         let items = modal.picker.as_ref().unwrap().items().to_vec();
-        assert_eq!(items, ["none", "carrier", "origin", "year"]);
+        assert_eq!(items, ["none", "carrier", "origin", "year", "date"]);
         modal.picker.as_mut().unwrap().select_original(1);
         modal.picker_choose();
-        assert_eq!(modal.color().map(String::as_str), Some("carrier"));
+        assert_eq!(modal.color(), ["carrier"]);
         assert!(modal.row_order().contains(&ChartFocus::ColorValues));
 
         // Nothing to pick until a chart has counted the values.
@@ -1826,7 +1895,7 @@ mod tests {
         modal.open_picker();
         assert!(modal.picker.is_none());
         modal.color_counts = Some(ColorCounts {
-            column: "carrier".to_string(),
+            columns: vec!["carrier".to_string()],
             values: (0..COLOR_MAX + 2)
                 .map(|i| (Some(format!("C{i}")), 100 - i as u64))
                 .chain([(None, 1)])
@@ -1849,11 +1918,90 @@ mod tests {
         // Another column starts from the top values again.
         modal.focus = ChartFocus::Color;
         modal.step(ChartFocus::Color, 1);
-        assert_eq!(modal.color().map(String::as_str), Some("origin"));
+        assert_eq!(modal.color(), ["origin"]);
         assert!(modal.spec.encoding.color.values.is_empty());
         modal.step(ChartFocus::Color, -1);
         modal.step(ChartFocus::Color, -1);
-        assert!(modal.color().is_none(), "none is the first choice");
+        assert!(modal.color().is_empty(), "none is the first choice");
+    }
+
+    /// Space picks Color columns in order, a date among them; Enter keeps them, and
+    /// `none` clears them. The values picked go with a change of columns.
+    #[test]
+    fn color_takes_several_columns_in_order() {
+        let mut modal = open_on(Some(("delay", &DataType::Float64)));
+        modal.focus = ChartFocus::Color;
+        modal.open_picker();
+        let at = |modal: &ChartModal, name: &str| {
+            let items = modal.picker.as_ref().unwrap().items();
+            items.iter().position(|i| i == name).unwrap()
+        };
+        for name in ["origin", "date"] {
+            let i = at(&modal, name);
+            modal.picker.as_mut().unwrap().select_original(i);
+            modal.picker_toggle();
+        }
+        assert!(modal.is_marked(at(&modal, "date")));
+        assert!(!modal.is_marked(0), "none is not a column");
+        modal.picker_choose();
+        assert_eq!(modal.color(), ["origin", "date"]);
+        assert_eq!(modal.how(), "count per bin, colored by origin and date");
+
+        modal.spec.encoding.color.values = vec![Some("JFK · 2024-01-01".to_string())];
+        modal.open_picker();
+        let i = at(&modal, "origin");
+        modal.picker.as_mut().unwrap().select_original(i);
+        modal.picker_toggle();
+        assert_eq!(modal.color(), ["date"]);
+        assert!(modal.spec.encoding.color.values.is_empty());
+        modal.picker.as_mut().unwrap().select_original(0);
+        modal.picker_toggle();
+        assert!(modal.color().is_empty());
+        modal.close_picker();
+
+        // Toggles chart once the picker closes; Enter with none toggled takes the
+        // cursor's column alone, or none.
+        modal.spec.encoding.color.field = vec!["origin".to_string()];
+        modal.open_picker();
+        let i = at(&modal, "carrier");
+        modal.picker.as_mut().unwrap().select_original(i);
+        modal.picker_toggle();
+        assert_eq!(modal.effective_spec().encoding.color.field, ["origin"]);
+        modal.picker_choose();
+        assert_eq!(
+            modal.effective_spec().encoding.color.field,
+            ["origin", "carrier"]
+        );
+        modal.open_picker();
+        let i = at(&modal, "date");
+        modal.picker.as_mut().unwrap().select_original(i);
+        modal.picker_choose();
+        assert_eq!(modal.color(), ["date"]);
+        modal.open_picker();
+        modal.picker.as_mut().unwrap().select_original(0);
+        modal.picker_choose();
+        assert!(modal.color().is_empty(), "Enter on none clears");
+
+        // A bar chart takes a category it was colored by as its bars.
+        modal.spec.encoding.color.field = vec!["date".to_string(), "carrier".to_string()];
+        modal.set_mark(Mark::Bar);
+        assert_eq!(modal.x().map(String::as_str), Some("carrier"));
+        assert_eq!(modal.color(), ["date"]);
+    }
+
+    /// A view saved when Color took one column still loads; Color saves a list.
+    #[test]
+    fn a_color_of_one_column_as_saved_before_still_loads() {
+        let color = |field: serde_json::Value| -> ColorEncoding {
+            serde_json::from_value(serde_json::json!({ "field": field, "values": [] })).unwrap()
+        };
+        assert_eq!(color(serde_json::json!("carrier")).field, ["carrier"]);
+        assert!(color(serde_json::Value::Null).field.is_empty());
+        assert_eq!(color(serde_json::json!(["a", "b"])).field, ["a", "b"]);
+        let none: ColorEncoding = serde_json::from_str(r#"{"values": []}"#).unwrap();
+        assert!(none.field.is_empty());
+        let saved = serde_json::to_value(color(serde_json::json!("carrier"))).unwrap();
+        assert_eq!(saved["field"], serde_json::json!(["carrier"]));
     }
 
     #[test]
@@ -1870,7 +2018,7 @@ mod tests {
         let mut modal = open_on(Some(("date", &DataType::Date)));
         modal.step(ChartFocus::TimeUnit, 3);
         modal.spec.encoding.y.cumulative = Cumulative::Sum;
-        modal.spec.encoding.color.field = Some("carrier".to_string());
+        modal.spec.encoding.color.field = vec!["carrier".to_string()];
         assert_eq!(modal.how(), "by month, running sum, colored by carrier");
     }
 
@@ -1945,9 +2093,9 @@ mod tests {
         modal.spec.encoding.x.time_unit = TimeUnit::None;
         modal.spec.encoding.y.aggregate = Aggregate::None;
         assert_eq!(modal.how(), "");
-        modal.spec.encoding.color.field = Some("carrier".to_string());
+        modal.spec.encoding.color.field = vec!["carrier".to_string()];
         assert_eq!(modal.how(), "colored by carrier");
-        modal.spec.encoding.color.field = None;
+        modal.spec.encoding.color.field = Vec::new();
         modal.spec.encoding.y.aggregate = Aggregate::Mean;
         assert_eq!(modal.how(), "mean by date");
         modal.set_mark(Mark::Histogram);
@@ -2142,7 +2290,7 @@ mod tests {
     #[test]
     fn color_use_reads_the_spec_charted() {
         let mut modal = open_on(Some(("date", &DataType::Date)));
-        modal.spec.encoding.color.field = Some("carrier".to_string());
+        modal.spec.encoding.color.field = vec!["carrier".to_string()];
         assert!(modal.colored());
         let mut spec = modal.spec.clone();
         spec.encoding.y.field.push("distance".to_string());

@@ -239,20 +239,20 @@ fn panel_lines(modal: &ChartModal, schema: Option<&Schema>, ctx: &RenderContext)
     // Color.
     match modal.color_use() {
         ShelfUse::Dimmed(why) => {
-            let value = match encoding.color.field.as_deref() {
-                Some(c) => c.to_string(),
-                None => crate::chart::chart_modal::NONE_ITEM.to_string(),
+            let value = match encoding.color.field.is_empty() {
+                false => encoding.color.field.join(", "),
+                true => crate::chart::chart_modal::NONE_ITEM.to_string(),
             };
             lines.push(row("Color", vec![quiet(value, ctx)], None, true));
             lines.push(sub(vec![quiet(why, ctx)], None, true));
         }
         ShelfUse::Used => {
-            let value = match encoding.color.field.as_deref() {
-                Some(c) => vec![column_span(c, schema, ctx)],
-                None => vec![quiet(crate::chart::chart_modal::NONE_ITEM, ctx)],
+            let value = match encoding.color.field.is_empty() {
+                false => columns_spans(&encoding.color.field, schema, ctx),
+                true => vec![quiet(crate::chart::chart_modal::NONE_ITEM, ctx)],
             };
             lines.push(row("Color", value, Some(ChartFocus::Color), false));
-            if encoding.color.field.is_some() {
+            if !encoding.color.field.is_empty() {
                 lines.push(sub(
                     color_values_line(modal, ctx),
                     Some(ChartFocus::ColorValues),
@@ -487,11 +487,13 @@ fn render_picker(
     };
     // It owns the keys, drawn or not: the panel's rows take no clicks.
     crate::app::pointer::record(area, Hit::Picker);
+    let values_title = modal.color().join(", ");
     let title = match modal.picker_for {
         Some(PickerFor::X) => "X",
         Some(PickerFor::Y) => "Y",
         Some(PickerFor::Color) => "Color",
-        Some(PickerFor::ColorValues) => modal.color().map(String::as_str).unwrap_or("Values"),
+        Some(PickerFor::ColorValues) if !values_title.is_empty() => &values_title,
+        Some(PickerFor::ColorValues) => "Values",
         None => "",
     };
     let filtered = state.filtered();

@@ -94,7 +94,7 @@ impl Plan {
                 None,
             )?;
             watch.check()?;
-            let counted = count_frame(&read.rows.df, &self.column, MAX_DISTINCT)?;
+            let counted = count_frame(&read.rows.df, &[&self.column], MAX_DISTINCT)?;
             // A view no larger than the sample was read whole: that is exact.
             let of = read.rows.sample_size.map(|_| read.rows.total_rows);
             return ValueCounts::new(&self.column, dtype, counted, of);
@@ -133,7 +133,7 @@ fn stream_counts(lf: &LazyFrame, column: &str, watch: &ReadWatch) -> Result<Coun
         lf.clone(),
         Some(watch),
         false,
-        Tally::new(column, MAX_DISTINCT),
+        Tally::new(&[column], MAX_DISTINCT),
         |tally, batch| tally.observe(&batch),
     )?;
     // Part of the view counted is not a count of it.

@@ -917,7 +917,7 @@ fn counts_cap_their_bars_and_stop_past_the_category_cap() {
 #[test]
 fn a_tally_merges_batches_and_stops_past_its_cap() {
     let batch = |ids: std::ops::Range<i64>| df!("id" => ids.collect::<Vec<_>>()).unwrap();
-    let mut tally = Tally::new("id", 200_000);
+    let mut tally = Tally::new(&["id"], 200_000);
     assert!(!tally.observe(&batch(0..70_000)).unwrap());
     assert_eq!(tally.merged, 70_000, "merged once the batches pile up");
     assert!(!tally.observe(&batch(0..10)).unwrap());
@@ -936,7 +936,7 @@ fn a_tally_merges_batches_and_stops_past_its_cap() {
         .unwrap();
     assert_eq!(total, 70_010);
 
-    let mut tally = Tally::new("id", 1_000);
+    let mut tally = Tally::new(&["id"], 1_000);
     assert!(
         tally.observe(&batch(0..70_000)).unwrap(),
         "past the cap: stop reading"
@@ -953,7 +953,7 @@ fn a_streamed_count_stops_past_its_cap_or_when_cancelled() {
         .lazy();
     let cancel = Arc::default();
     assert!(matches!(
-        stream_counts(&ids, "id", 1_000, &cancel).unwrap(),
+        stream_counts(&ids, &["id"], 1_000, &cancel).unwrap(),
         Counted::TooMany
     ));
 
@@ -1080,7 +1080,7 @@ fn a_time_bucket_aggregates_every_row_per_month_and_color() {
     let lf = returns();
     let groups = [Some("A".to_string()), Some("B".to_string())];
     let split = ColorSplit {
-        column: "symbol",
+        key: &ColorKey::column("symbol"),
         groups: &groups,
         other: false,
     };
@@ -1137,7 +1137,7 @@ fn cumulative_sums_or_compounds_along_x() {
     let lf = returns();
     let groups = [Some("A".to_string())];
     let split = ColorSplit {
-        column: "symbol",
+        key: &ColorKey::column("symbol"),
         groups: &groups,
         other: false,
     };
@@ -1252,7 +1252,7 @@ fn color_takes_the_largest_groups_or_the_ones_picked() {
         .chain(std::iter::once("v0".to_string()))
         .collect();
     let lf = df!("c" => values).unwrap().lazy();
-    let rows = value_rows(&lf, "c", &all_rows()).unwrap();
+    let (_, rows) = color_rows(&lf, &["c".to_string()], &all_rows()).unwrap();
     assert_eq!(rows.values.len(), 9);
     assert_eq!(rows.rows, 10 + 11 + 12 + 13 + 14 + 15 + 16 + 17 + 18 + 1);
     assert_eq!(rows.values[0], (Some("v8".to_string()), 18));
@@ -1272,6 +1272,128 @@ fn color_takes_the_largest_groups_or_the_ones_picked() {
     assert_eq!(color_groups(&rows, &picked, 1), [Some("v1".to_string())]);
 }
 
+/// The labels a datetime takes: ISO 8601 with a space, one precision for every
+/// value (seconds and their fraction only as far as some value needs), the zone
+/// when the column has one. A date is the date.
+#[test]
+fn a_datetime_label_is_as_precise_as_its_values_need() {
+    let labels = |stored: &[i64], unit: TimeUnit, zone: Option<&str>| -> Vec<String> {
+        let zone = TimeZone::opt_try_new(zone).unwrap();
+        let start = Int64Chunked::from_slice("start".into(), stored)
+            .into_datetime(unit, zone)
+            .into_series();
+        let lf = DataFrame::new_infer_height(vec![start.into()])
+            .unwrap()
+            .lazy();
+        let (_, rows) = color_rows(&lf, &["start".to_string()], &all_rows()).unwrap();
+        let mut labels: Vec<String> = rows.values.into_iter().flat_map(|(v, _)| v).collect();
+        labels.sort();
+        labels
+    };
+    const MIN: i64 = 60_000;
+    // 2026-10-22 18:40 UTC, in milliseconds.
+    let at = 1_792_627_200_000 + (18 * 60 + 40) * MIN;
+    let ms = TimeUnit::Milliseconds;
+    assert_eq!(
+        labels(&[at, at + MIN], ms, None),
+        ["2026-10-22 18:40", "2026-10-22 18:41"]
+    );
+    assert_eq!(
+        labels(&[at, at + 30_000], ms, None),
+        ["2026-10-22 18:40:00", "2026-10-22 18:40:30"]
+    );
+    assert_eq!(
+        labels(&[at, at + 1_500], ms, None),
+        ["2026-10-22 18:40:00.000", "2026-10-22 18:40:01.500"]
+    );
+    // Microseconds of whole milliseconds take three places, not six.
+    let us = TimeUnit::Microseconds;
+    assert_eq!(
+        labels(&[at * 1_000, at * 1_000 + 1_500_000], us, None),
+        ["2026-10-22 18:40:00.000", "2026-10-22 18:40:01.500"]
+    );
+    assert_eq!(
+        labels(&[at * 1_000, at * 1_000 + 1], us, None),
+        ["2026-10-22 18:40:00.000000", "2026-10-22 18:40:00.000001"]
+    );
+    assert_eq!(labels(&[at], ms, Some("UTC")), ["2026-10-22 18:40 UTC"]);
+    assert_eq!(
+        labels(&[at], ms, Some("America/New_York")),
+        ["2026-10-22 14:40 EDT"]
+    );
+
+    let lf = df!("day" => [NaiveDate::from_ymd_opt(2026, 10, 22).unwrap()])
+        .unwrap()
+        .lazy();
+    let (_, rows) = color_rows(&lf, &["day".to_string()], &all_rows()).unwrap();
+    assert_eq!(rows.values, [(Some("2026-10-22".to_string()), 1)]);
+}
+
+/// Color by several columns: a group per combination of their values, named by
+/// them joined, a null one `null`; the key a count returns splits rows the same way
+/// in a sampled chart and in an aggregate.
+#[test]
+fn several_columns_color_a_group_per_combination() {
+    use crate::chart::chart_modal::{Aggregate, Cumulative, TimeUnit};
+    const MIN: i64 = 60_000;
+    let at = 1_792_627_200_000 + (18 * 60 + 40) * MIN;
+    let start = Int64Chunked::from_slice("start".into(), &[at, at, at + MIN, at, at])
+        .into_datetime(polars::prelude::TimeUnit::Milliseconds, None)
+        .into_series();
+    let df = df!(
+        "x" => [1i64, 2, 1, 1, 2],
+        "y" => [1.0, 2.0, 3.0, 4.0, 5.0],
+        "game" => [Some("fs"), Some("fs"), Some("fs"), Some("cp"), None]
+    )
+    .unwrap();
+    let lf = df.hstack(&[start.into()]).unwrap().lazy();
+    let schema = lf.clone().collect_schema().unwrap();
+    let columns = ["game".to_string(), "start".to_string()];
+    let (key, rows) = color_rows(&lf, &columns, &all_rows()).unwrap();
+    assert_eq!(
+        rows.values,
+        [
+            (Some("fs · 2026-10-22 18:40".to_string()), 2),
+            (Some("cp · 2026-10-22 18:40".to_string()), 1),
+            (Some("fs · 2026-10-22 18:41".to_string()), 1),
+            (Some("null · 2026-10-22 18:40".to_string()), 1),
+        ]
+    );
+    let groups = color_groups(&rows, &[], 2);
+    let split = ColorSplit {
+        key: &key,
+        groups: &groups,
+        other: true,
+    };
+    let sampled = prepare_xy_by(&lf, schema.as_ref(), "x", "y", split, &all_rows()).unwrap();
+    assert_eq!(
+        sampled.names,
+        ["fs · 2026-10-22 18:40", "cp · 2026-10-22 18:40", "Other"]
+    );
+    assert_eq!(sampled.series[0], [(1.0, 1.0), (2.0, 2.0)]);
+    assert_eq!(sampled.series[1], [(1.0, 4.0)]);
+    assert_eq!(sampled.series[2], [(1.0, 3.0), (2.0, 5.0)]);
+
+    let ys = ["y".to_string()];
+    let summed = prepare_aggregate_xy(
+        &lf,
+        schema.as_ref(),
+        &AggregateSpec {
+            x: "x",
+            time_unit: TimeUnit::None,
+            ys: &ys,
+            aggregate: Aggregate::Sum,
+            quantile: 50,
+            cumulative: Cumulative::Off,
+            color: Some(split),
+        },
+        &all_rows(),
+    )
+    .unwrap();
+    assert_eq!(summed.names, sampled.names);
+    assert_eq!(summed.series, sampled.series);
+}
+
 /// A line or scatter split by color without an aggregate: the sampled rows, a
 /// series per group in X order, rows of no group left out.
 #[test]
@@ -1286,7 +1408,7 @@ fn a_color_splits_the_sampled_points() {
     let schema = lf.clone().collect_schema().unwrap();
     let groups = [Some("a".to_string()), Some("b".to_string())];
     let split = ColorSplit {
-        column: "c",
+        key: &ColorKey::column("c"),
         groups: &groups,
         other: false,
     };
@@ -1366,7 +1488,7 @@ fn stdev_quantile_first_and_last_per_x() {
             aggregate: Aggregate::Last,
             quantile: 90,
             color: Some(ColorSplit {
-                column: "c",
+                key: &ColorKey::column("c"),
                 groups: &groups,
                 other: false,
             }),
@@ -1438,7 +1560,7 @@ fn distinct_counts_any_y_per_x() {
     assert_eq!(ys_of(&by_month.series[0]), [2.0, 2.0], "Ann, Bo; Cy, Di");
     let groups = [Some("F".to_string()), Some("M".to_string())];
     let split = ColorSplit {
-        column: "sex",
+        key: &ColorKey::column("sex"),
         groups: &groups,
         other: false,
     };
@@ -1483,8 +1605,9 @@ fn other_gathers_every_value_without_a_series() {
     .lazy();
     let schema = lf.clone().collect_schema().unwrap();
     let groups = [Some("a".to_string())];
+    let key = ColorKey::column("c");
     let split = |other| ColorSplit {
-        column: "c",
+        key: &key,
         groups: &groups,
         other,
     };
@@ -1572,7 +1695,7 @@ fn bars_aggregate_per_category_and_color() {
     .lazy();
     let groups = [Some("EWR".to_string()), Some("JFK".to_string())];
     let split = ColorSplit {
-        column: "origin",
+        key: &ColorKey::column("origin"),
         groups: &groups,
         other: false,
     };
@@ -1679,7 +1802,7 @@ fn a_histogram_splits_into_groups_on_shared_bins() {
     .lazy();
     let groups = [Some("a".to_string()), Some("b".to_string())];
     let split = ColorSplit {
-        column: "g",
+        key: &ColorKey::column("g"),
         groups: &groups,
         other: false,
     };
@@ -1705,7 +1828,7 @@ fn a_box_per_category() {
     .lazy();
     let groups = [Some("y".to_string()), Some("x".to_string())];
     let split = ColorSplit {
-        column: "k",
+        key: &ColorKey::column("k"),
         groups: &groups,
         other: false,
     };

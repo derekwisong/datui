@@ -30,7 +30,7 @@ const SCENARIOS: &[Scenario] = &[
         name: "scatter_by_color",
         set: |m| {
             columns(m, Mark::Scatter, "a", &["b"]);
-            m.spec.encoding.color.field = Some("g".to_string());
+            m.spec.encoding.color.field = vec!["g".to_string()];
         },
     },
     Scenario {

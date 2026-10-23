@@ -60,15 +60,15 @@ impl ChartCache {
         self.colors.clear();
     }
 
-    /// Keep a Color column's values, the last count of it.
+    /// Keep a Color's values, the last count of its columns.
     pub(crate) fn hold_colors(&mut self, colors: ColorCounts) {
-        self.colors.retain(|c| c.column != colors.column);
+        self.colors.retain(|c| c.columns != colors.columns);
         self.colors.push(colors);
     }
 
-    /// The values counted for Color column `column`.
-    pub(crate) fn colors(&self, column: &str) -> Option<&ColorCounts> {
-        self.colors.iter().find(|c| c.column == column)
+    /// The values counted for Color columns `columns`.
+    pub(crate) fn colors(&self, columns: &[String]) -> Option<&ColorCounts> {
+        self.colors.iter().find(|c| c.columns == columns)
     }
 
     /// The rows held for `view`, or a fresh holder when they belong to another.
@@ -292,11 +292,8 @@ impl ChartRequest {
         sampling: &chart_data::ChartSampling,
     ) -> Result<(PlotData, Option<ColorCounts>)> {
         let encoding = &self.spec.encoding;
-        let counts = encoding
-            .color
-            .field
-            .as_deref()
-            .map(|c| chart_data::value_rows(lf, c, sampling).map(|rows| (c, rows)))
+        let counts = (!encoding.color.field.is_empty())
+            .then(|| chart_data::color_rows(lf, &encoding.color.field, sampling))
             .transpose()?;
         let groups = counts.as_ref().map(|(_, rows)| {
             chart_data::color_groups(rows, &encoding.color.values, self.series_cap)
@@ -313,13 +310,9 @@ impl ChartRequest {
         let split = counts
             .as_ref()
             .zip(groups.as_ref())
-            .map(|((column, _), groups)| ColorSplit {
-                column,
-                groups,
-                other,
-            });
-        let picker = counts.as_ref().map(|(column, rows)| ColorCounts {
-            column: column.to_string(),
+            .map(|((key, _), groups)| ColorSplit { key, groups, other });
+        let picker = counts.as_ref().map(|(key, rows)| ColorCounts {
+            columns: key.columns.clone(),
             values: rows.values.clone(),
         });
         let x = encoding.x.field.as_deref().unwrap_or_default();
@@ -414,13 +407,13 @@ impl ChartRequest {
                 PlotData::Box(match encoding.x.field.as_deref() {
                     // One box per category: the largest by rows.
                     Some(by) => {
-                        let rows = chart_data::value_rows(lf, by, sampling)?;
+                        let (key, rows) = chart_data::color_rows(lf, &[by.to_string()], sampling)?;
                         let groups = chart_data::color_groups(&rows, &[], self.series_cap);
                         let mut data = chart_data::prepare_box_by(
                             lf,
                             y,
                             ColorSplit {
-                                column: by,
+                                key: &key,
                                 groups: &groups,
                                 other: false,
                             },
@@ -641,14 +634,7 @@ impl App {
         if self.chart.cache.get(&request).is_some() {
             self.chart.cache.touch(&request, self.chart.modal.log_scale);
             // A cached chart's colors were counted with it.
-            if let Some(colors) = request
-                .spec
-                .encoding
-                .color
-                .field
-                .as_deref()
-                .and_then(|c| self.chart.cache.colors(c))
-            {
+            if let Some(colors) = self.chart.cache.colors(&request.spec.encoding.color.field) {
                 self.chart.modal.color_counts = Some(colors.clone());
             }
             return;

@@ -1015,7 +1015,7 @@ pub const SCREENS: &[Screen] = &[
                         .more("On X, Y or Color: open its picker. On the line under Color: pick the values that get a series, by rows. On an option: toggle it or take its next value. The panel applies as it changes, so Enter acts as Space does, except on Rows: Space switches between Sample and Every row, and Enter reads what the row says"),
                     k("← / → (h/l)", "Change", "Step the type, bucket, aggregate or option")
                     .also(&["Type", "Bucket", "Aggregate", "Percentile", "Adjust", "Switch", "Order", "Range", "Cumulative"])
-                        .more("Step the type, the time bucket (day, week, month, quarter, year), the aggregate (count, distinct, sum, mean, median, stdev, quantile, min, max, first, last) and a quantile's percentile, cumulative, bins, range or order; on Rows, switch between Sample and Every row (read on Enter); on a shelf that takes one column, the previous or next column; on the line under Color, turn Other (every value without a series) on or off; flip a toggle"),
+                        .more("Step the type, the time bucket (day, week, month, quarter, year), the aggregate (count, distinct, sum, mean, median, stdev, quantile, min, max, first, last) and a quantile's percentile, cumulative, bins, range or order; on Rows, switch between Sample and Every row (read on Enter); on a shelf that takes one column, or Color, the previous or next column (Color takes it alone); on the line under Color, turn Other (every value without a series) on or off; flip a toggle"),
                     k("+ / -", "Adjust", "Bins or bandwidth"),
                     k("0-9", "Size", "On Rows: type a sample size, like 50k or 2m")
                         .more("On Rows: type a sample size, like 50000, 50,000, 50k, 250k or 2m. Backspace edits, Enter reads it, Esc puts the row back as it was. A size of at least the table's rows is Every row. Nothing is read until Enter or focus leaves the row")
@@ -1051,9 +1051,9 @@ pub const SCREENS: &[Screen] = &[
                 name: "Picker",
                 keys: &[
                     k("↑ / ↓", "Move", "Move; typing narrows"),
-                    k("Enter / Space", "Choose", "Choose (Y, Color values: Space toggles one)")
+                    k("Enter / Space", "Choose", "Choose (Y, Color, its values: Space toggles one)")
                     .also(&["Toggle", "Done"])
-                        .more("Choose; on a line or scatter chart's Y and on the Color values, Space toggles one in or out (up to 10, fewer on a terminal of fewer colors). Elsewhere Space chooses until typing narrows the list, then types a space"),
+                        .more("Choose; on a line or scatter chart's Y, on Color and on the Color values, Space toggles one in or out (Y and the values up to 10, fewer on a terminal of fewer colors; Color's columns in the order picked, a series per combination of their values). Elsewhere Space chooses until typing narrows the list, then types a space"),
                     k("Tab / Shift+Tab", "Next", "Choose and move to the next or previous row"),
                     k("Esc", "Back", "Back out of the picker alone"),
                 ],

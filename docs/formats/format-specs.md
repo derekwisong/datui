@@ -255,6 +255,7 @@ plus `match`, `kind`, the layout keys, `[columns]`, `description` and
 | `null_values` | A value, or a list, read as null: `"NA"`, or `"COL=-999"` for one column |
 | `skip_lines` | Lines to pass over before the header |
 | `[columns]` | Column types and derived columns, below, and what columns mean: `description` and `unit` |
+| `[files]` | `path`: parts of each file's name that become columns, [below](#columns-from-file-names) |
 
 Lines count from 1 at the top of the file. Each option the spec sets replaces
 the config's, and a flag typed on the command line (`--delimiter`,
@@ -379,6 +380,34 @@ different writer versions stack:
 
 The Notes tab lists the columns not every file has. Columns keep the order in
 which they first appear across the files.
+
+### Columns from file names
+
+```toml,spec
+name = "acme.frames"
+kind = "delimited"
+match = { magic = "os,cpu,gpu" }
+
+[files]
+path = "{game}_{start:%Y-%m-%d_%H-%M-%S}.csv"
+```
+
+Each file read through this spec gets a `game` and a `start` column in front,
+read from its name: `Hades_II_2026-10-22_18-40-30.csv` gives `Hades_II` and
+2026-10-22 18:40:30. Open a directory or a glob of such files and each row says
+which file it came from.
+
+| Part | Column |
+|---|---|
+| `{name}` | Text |
+| `{name:%Y%m%d}` | A date, in a chrono format |
+| `{name:%Y-%m-%d_%H-%M-%S}` | A datetime, when the format has a time |
+
+A dated part matches the digits its format writes, so a `{game}` before it may
+hold `_`. A pattern with `/` matches the directories above the file too:
+`{rig}/{game}_{start:%Y%m%d}.csv`. A file whose name does not match keeps its
+rows, with its path columns null and a note; so does a part that does not parse
+as its date. A part named like a column of the file is left out, with a note.
 
 ## Garmin TXi logs
 

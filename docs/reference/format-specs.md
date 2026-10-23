@@ -294,8 +294,10 @@ fields = [{ name = "price", type = "f8" }]
 
 `datui --format acme.trades store/` reads every file under `store/` that the
 pattern matches as one table, with a column for each part: a date for a part
-with a format, text otherwise. A file whose part does not parse as its date is
-left out, with a note.
+with a format, a datetime when the format has a time (`{at:%Y%m%d_%H%M%S}`),
+text otherwise. A file whose part does not parse as its date is left out, with a
+note. A [delimited spec](../formats/format-specs.md#columns-from-file-names)
+takes `[files]` too, and adds the columns to each file it reads.
 
 ## Columns layout
 

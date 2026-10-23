@@ -51,6 +51,8 @@ pub struct Delimited {
     pub columns: Vec<Derived>,
     /// Columns of the file read as a declared type, by name.
     pub types: Vec<(String, crate::formats::column_types::ColumnType)>,
+    /// `[files]`: the parts of each file's path read as columns.
+    pub files: Option<crate::formats::Files>,
 }
 
 /// The `key="value"` line at the top of a file.

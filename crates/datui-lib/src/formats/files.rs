@@ -1,7 +1,8 @@
 //! A directory of one spec's files, `{date}/{venue}/trades.bin`: one table, the parts
-//! of each file's path as columns.
+//! of each file's path as columns. A delimited spec's `[files]` adds the same columns to
+//! each file it reads ([`dress_file`]).
 
-use super::{Bytes, Opened, Spec, SpecRecords};
+use super::{Bytes, Files, Opened, PathPart, Spec, SpecRecords};
 use polars::prelude::*;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -20,7 +21,9 @@ pub struct SpecFiles {
     sources: Vec<Arc<Bytes>>,
 }
 
-/// One part's pattern, compiled: its regex, and the part names it captures.
+/// One part's pattern, compiled: its regex, and the part names it captures. A dated
+/// part matches what its format writes, so `{game}_{start:%Y-%m-%d}` splits `a_b_2024-01-02`
+/// at the date.
 fn component_regex(component: &str) -> Result<(regex::Regex, Vec<String>), String> {
     let mut out = String::from("^");
     let mut names = Vec::new();
@@ -30,14 +33,179 @@ fn component_regex(component: &str) -> Result<(regex::Regex, Vec<String>), Strin
         let after = &rest[open + 1..];
         let close = after.find('}').ok_or("a `{` without its `}`")?;
         let inside = &after[..close];
-        let name = inside.split_once(':').map_or(inside, |(n, _)| n);
-        out.push_str("(.+?)");
+        let (name, format) = match inside.split_once(':') {
+            Some((name, format)) => (name, Some(format)),
+            None => (inside, None),
+        };
+        out.push('(');
+        out.push_str(&format.map_or_else(|| ".+?".to_string(), format_regex));
+        out.push(')');
         names.push(name.to_string());
         rest = &after[close + 1..];
     }
     out.push_str(&regex::escape(rest));
     out.push('$');
     Ok((regex::Regex::new(&out).map_err(|e| e.to_string())?, names))
+}
+
+/// What a chrono `format` writes, as a regex: digits for its numbers, its literals as
+/// they are.
+fn format_regex(format: &str) -> String {
+    use chrono::format::{Item, StrftimeItems};
+    StrftimeItems::new(format)
+        .map(|item| match item {
+            Item::Literal(s) | Item::Space(s) => regex::escape(s),
+            Item::OwnedLiteral(s) | Item::OwnedSpace(s) => regex::escape(&s),
+            Item::Numeric(..) => r"\s*\d+".to_string(),
+            _ => ".+?".to_string(),
+        })
+        .collect()
+}
+
+impl PathPart {
+    /// Whether the part's format reads a time of day as well as a date.
+    fn has_time(&self) -> bool {
+        use chrono::format::{Item, Numeric, StrftimeItems};
+        self.date.as_deref().is_some_and(|format| {
+            StrftimeItems::new(format).any(|item| {
+                matches!(
+                    item,
+                    Item::Numeric(
+                        Numeric::Hour
+                            | Numeric::Hour12
+                            | Numeric::Minute
+                            | Numeric::Second
+                            | Numeric::Timestamp,
+                        _
+                    )
+                )
+            })
+        })
+    }
+
+    /// The part's column type: a datetime when its format has a time, a date when it
+    /// has none, text when it has no format.
+    pub(crate) fn dtype(&self) -> DataType {
+        match &self.date {
+            None => DataType::String,
+            Some(_) if self.has_time() => DataType::Datetime(TimeUnit::Microseconds, None),
+            Some(_) => DataType::Date,
+        }
+    }
+
+    /// The part's value, from the text of it in a path.
+    fn value(&self, text: &str) -> Result<AnyValue<'static>, String> {
+        let Some(format) = &self.date else {
+            return Ok(AnyValue::StringOwned(text.into()));
+        };
+        let wrong = || format!("`{text}` is not a date as {format}");
+        if self.has_time() {
+            let at = chrono::NaiveDateTime::parse_from_str(text, format).map_err(|_| wrong())?;
+            Ok(AnyValue::Datetime(
+                at.and_utc().timestamp_micros(),
+                TimeUnit::Microseconds,
+                None,
+            ))
+        } else {
+            let date = chrono::NaiveDate::parse_from_str(text, format).map_err(|_| wrong())?;
+            let days =
+                (date - chrono::NaiveDate::from_ymd_opt(1970, 1, 1).expect("a date")).num_days();
+            Ok(AnyValue::Date(days as i32))
+        }
+    }
+}
+
+/// `lf` with the path's `values` in front, a column each of `fields`.
+fn dress(lf: LazyFrame, fields: &[(PlSmallStr, DataType)], values: &[AnyValue]) -> LazyFrame {
+    let mut exprs: Vec<Expr> = fields
+        .iter()
+        .zip(values)
+        .map(|((name, dtype), value)| {
+            let value = match value {
+                AnyValue::Date(d) => lit(*d).cast(DataType::Date),
+                AnyValue::Datetime(us, ..) => lit(*us).cast(dtype.clone()),
+                AnyValue::StringOwned(s) => lit(s.as_str()),
+                _ => lit(NULL).cast(dtype.clone()),
+            };
+            value.alias(name.clone())
+        })
+        .collect();
+    exprs.push(all().as_expr());
+    lf.select(exprs)
+}
+
+/// `lf`, the rows of one file a delimited spec reads at `path`, with the parts of its
+/// path `files` names in front. The end of the path is matched, a component of it to a
+/// component of the pattern. A part that does not match or parse is null, with a note,
+/// and one the file has as a column is left to the file's.
+pub(crate) fn dress_file(
+    files: &Files,
+    path: &Path,
+    mut lf: LazyFrame,
+) -> Result<(LazyFrame, Vec<String>), String> {
+    let components: Vec<(regex::Regex, Vec<String>)> = files
+        .pattern
+        .split('/')
+        .map(component_regex)
+        .collect::<Result<_, _>>()?;
+    let shown = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    let mut notes = Vec::new();
+    // Absolute, so a pattern with `/` sees the directories of a file opened by a bare
+    // name; not canonical, so a link is matched by the name it was opened under.
+    let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let names: Vec<String> = path
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    let mut texts: Vec<PartText> = Vec::new();
+    let tail = names
+        .len()
+        .checked_sub(components.len())
+        .map(|at| &names[at..]);
+    let matched = tail.is_some_and(|tail| {
+        tail.iter().zip(&components).all(|(name, (re, parts))| {
+            let Some(caps) = re.captures(name) else {
+                return false;
+            };
+            for (i, part) in parts.iter().enumerate() {
+                let text = caps.get(i + 1).map_or("", |m| m.as_str());
+                texts.push((part.clone(), text.to_string()));
+            }
+            true
+        })
+    });
+    if !matched {
+        notes.push(format!(
+            "{shown}: its path does not match {}; its path columns are empty",
+            files.pattern
+        ));
+        texts.clear();
+    }
+    let schema = lf.collect_schema().map_err(|e| e.to_string())?;
+    let mut fields = Vec::new();
+    let mut values = Vec::new();
+    for part in &files.parts {
+        if schema.contains(&part.name) {
+            notes.push(format!(
+                "{shown}: `{}` is a column of the file; the path's part is left out",
+                part.name
+            ));
+            continue;
+        }
+        let value = match texts.iter().find(|(n, _)| *n == part.name) {
+            None => AnyValue::Null,
+            Some((_, text)) => part.value(text).unwrap_or_else(|e| {
+                notes.push(format!("{shown}: {e}; `{}` is empty", part.name));
+                AnyValue::Null
+            }),
+        };
+        fields.push((PlSmallStr::from(part.name.as_str()), part.dtype()));
+        values.push(value);
+    }
+    Ok((dress(lf, &fields, &values), notes))
 }
 
 /// A part's name and the text it matched in a path.
@@ -125,23 +293,13 @@ pub fn open(spec: &Spec, dir: &Path) -> Result<Opened, String> {
                 .iter()
                 .find(|(n, _)| *n == part.name)
                 .map_or("", |(_, t)| t.as_str());
-            match &part.date {
-                Some(format) => match chrono::NaiveDate::parse_from_str(text, format) {
-                    Ok(date) => {
-                        let days = (date
-                            - chrono::NaiveDate::from_ymd_opt(1970, 1, 1).expect("a date"))
-                        .num_days();
-                        values.push(AnyValue::Date(days as i32));
-                    }
-                    Err(_) => {
-                        notes.push(format!(
-                            "{shown}: `{text}` is not a date as {format}; left out"
-                        ));
-                        ok = false;
-                        break;
-                    }
-                },
-                None => values.push(AnyValue::StringOwned(text.into())),
+            match part.value(text) {
+                Ok(value) => values.push(value),
+                Err(e) => {
+                    notes.push(format!("{shown}: {e}; left out"));
+                    ok = false;
+                    break;
+                }
             }
         }
         if !ok {
@@ -181,16 +339,7 @@ pub fn open(spec: &Spec, dir: &Path) -> Result<Opened, String> {
     let part_fields: Vec<(PlSmallStr, DataType)> = files
         .parts
         .iter()
-        .map(|p| {
-            (
-                PlSmallStr::from(p.name.as_str()),
-                if p.date.is_some() {
-                    DataType::Date
-                } else {
-                    DataType::String
-                },
-            )
-        })
+        .map(|p| (PlSmallStr::from(p.name.as_str()), p.dtype()))
         .collect();
     let mut fields: Vec<Field> = part_fields
         .iter()
@@ -230,21 +379,7 @@ impl std::fmt::Debug for SpecFiles {
 impl SpecFiles {
     /// `lf`, the rows of part `i`, with the part's path values in front.
     fn dressed(&self, i: usize, lf: LazyFrame) -> LazyFrame {
-        let mut exprs: Vec<Expr> = self
-            .part_fields
-            .iter()
-            .zip(&self.parts[i].1)
-            .map(|((name, dtype), value)| {
-                let value = match value {
-                    AnyValue::Date(d) => lit(*d).cast(DataType::Date),
-                    AnyValue::StringOwned(s) => lit(s.as_str()),
-                    _ => lit(NULL).cast(dtype.clone()),
-                };
-                value.alias(name.clone())
-            })
-            .collect();
-        exprs.push(all().as_expr());
-        lf.select(exprs)
+        dress(lf, &self.part_fields, &self.parts[i].1)
     }
 }
 

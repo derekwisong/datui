@@ -136,7 +136,8 @@ A null value is a series of its own, named `null`.
 ### Several columns
 
 <kbd>Space</kbd> on **Color** opens its picker, where <kbd>Space</kbd> toggles
-columns in the order you pick them and <kbd>Enter</kbd> keeps them. Each
+columns in the order you pick them and <kbd>Enter</kbd> charts them. With none
+toggled, <kbd>Enter</kbd> takes the column under the cursor alone. Each
 combination of their values is one series, named by the values joined with `·`:
 `FlightSimulator2024 · 2026-10-22 18:40:30`. Counts, the top ten, the value
 picker and Other work per combination. <kbd>←</kbd> <kbd>→</kbd> on **Color**

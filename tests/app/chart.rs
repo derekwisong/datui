@@ -833,8 +833,6 @@ fn chart_color_splits_and_the_value_picker_lists_by_rows() {
     );
 }
 
-/// Rows: a typed size, or Every row, is read on Enter and not before; while it
-/// waits the chart stays as drawn and the row says so.
 /// Color by two columns, picked in order with Space: a series per combination,
 /// named by their values joined, in the legend too.
 #[test]
@@ -880,6 +878,8 @@ fn chart_color_by_several_columns_names_each_combination() {
     assert!(text.contains("AA · JFK"), "{text}");
 }
 
+/// Rows: a typed size, or Every row, is read on Enter and not before; while it
+/// waits the chart stays as drawn and the row says so.
 #[test]
 fn chart_rows_are_read_on_enter() {
     use datui::chart::chart_modal::{ChartFocus, Mark};

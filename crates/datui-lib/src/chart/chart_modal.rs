@@ -489,6 +489,9 @@ pub struct ChartModal {
     pub picker_for: Option<PickerFor>,
     /// Per item of the value picker: its rows, shown beside it.
     pub picker_details: Vec<String>,
+    /// The Color as its picker found it: what is charted while Space toggles columns,
+    /// so each toggle does not count the view again.
+    pub color_opened: Option<ColorEncoding>,
     pub numeric_candidates: Vec<String>,
     pub temporal_candidates: Vec<String>,
     /// Dates and datetimes: the X columns a time bucket truncates.
@@ -706,6 +709,7 @@ impl ChartModal {
         self.picker = None;
         self.picker_for = None;
         self.picker_details.clear();
+        self.color_opened = None;
     }
 
     /// Whether the crosshair can take the keys: a line or scatter plot with points
@@ -1121,6 +1125,7 @@ impl ChartModal {
         self.picker = Some(state);
         self.picker_for = Some(which);
         self.picker_details = details;
+        self.color_opened = (which == PickerFor::Color).then(|| self.spec.encoding.color.clone());
     }
 
     /// Whether the value picker has values to list: the chart has counted the
@@ -1159,13 +1164,19 @@ impl ChartModal {
 
     /// Enter in the Picker: a pick-one row takes the cursor's item; a row of
     /// several keeps its toggles, or adopts the cursor's item when none are
-    /// toggled, so Enter on a fresh list still charts something. The Picker closes.
+    /// toggled, so Enter on a fresh list still charts something (on Color, when none
+    /// were toggled since it opened: the cursor's column alone, or `none`). The Picker
+    /// closes.
     pub fn picker_choose(&mut self) {
         let (Some(which), Some(i)) = (self.picker_for, self.picker_cursor()) else {
             self.close_picker();
             return;
         };
         let item = self.picker.as_ref().and_then(|p| p.items().get(i).cloned());
+        let toggled = self
+            .color_opened
+            .as_ref()
+            .is_some_and(|c| *c != self.spec.encoding.color);
         self.close_picker();
         let Some(item) = item else {
             return;
@@ -1183,7 +1194,8 @@ impl ChartModal {
                     self.spec.encoding.color.values.push(value);
                 }
             }
-            PickerFor::Color if !self.color().is_empty() => {}
+            // Columns toggled stay; with none toggled, Enter takes the cursor's alone.
+            PickerFor::Color if toggled => {}
             _ => self.choose(which, &item, i),
         }
         self.settle();
@@ -1298,9 +1310,12 @@ impl ChartModal {
 
     /// The spec to chart: the one chosen, with an open Picker's cursor previewed on
     /// the Y shelf (and on X, except for a line or scatter, whose X re-reads
-    /// everything).
+    /// everything). Color stays as its picker found it until the picker closes.
     pub fn effective_spec(&self) -> ChartSpec {
         let mut spec = self.spec.clone();
+        if let Some(color) = &self.color_opened {
+            spec.encoding.color = color.clone();
+        }
         let (Some(which), Some(i)) = (self.picker_for, self.picker_cursor()) else {
             return spec;
         };
@@ -1317,6 +1332,7 @@ impl ChartModal {
             PickerFor::X if !spec.mark.is_xy() => {
                 spec.encoding.x.field = (!(self.offers_none(which) && i == 0)).then_some(item);
             }
+
             _ => {}
         }
         spec
@@ -1942,6 +1958,29 @@ mod tests {
         modal.picker_toggle();
         assert!(modal.color().is_empty());
         modal.close_picker();
+
+        // Toggles chart once the picker closes; Enter with none toggled takes the
+        // cursor's column alone, or none.
+        modal.spec.encoding.color.field = vec!["origin".to_string()];
+        modal.open_picker();
+        let i = at(&modal, "carrier");
+        modal.picker.as_mut().unwrap().select_original(i);
+        modal.picker_toggle();
+        assert_eq!(modal.effective_spec().encoding.color.field, ["origin"]);
+        modal.picker_choose();
+        assert_eq!(
+            modal.effective_spec().encoding.color.field,
+            ["origin", "carrier"]
+        );
+        modal.open_picker();
+        let i = at(&modal, "date");
+        modal.picker.as_mut().unwrap().select_original(i);
+        modal.picker_choose();
+        assert_eq!(modal.color(), ["date"]);
+        modal.open_picker();
+        modal.picker.as_mut().unwrap().select_original(0);
+        modal.picker_choose();
+        assert!(modal.color().is_empty(), "Enter on none clears");
 
         // A bar chart takes a category it was colored by as its bars.
         modal.spec.encoding.color.field = vec!["date".to_string(), "carrier".to_string()];

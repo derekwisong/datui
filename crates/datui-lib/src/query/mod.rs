@@ -585,6 +585,8 @@ pub(crate) enum Op {
     Round(u32),
     /// A non-strict cast.
     Cast(CastTo),
+    /// A datetime or duration in another unit: `.dt.cast_time_unit`.
+    TimeUnit(TimeUnit),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -959,7 +961,11 @@ impl Node {
                 let inner = std::mem::replace(inner.as_mut(), Node::Null);
                 *self = inner.bin(BinOp::Eq, zero);
             }
-            Node::Bin(BinOp::Add | BinOp::Sub | BinOp::Mul, left, right) => {
+            Node::Bin(op @ (BinOp::Add | BinOp::Sub), left, right) => {
+                whole_next_to_integer(left, right, schema);
+                time_arithmetic(*op, left, right, schema)?;
+            }
+            Node::Bin(BinOp::Mul, left, right) => {
                 whole_next_to_integer(left, right, schema);
             }
             Node::Bin(op @ (BinOp::Lesser | BinOp::Greater), left, right) => {
@@ -1141,6 +1147,55 @@ fn whole_next_to_integer(left: &mut Node, right: &mut Node, schema: &Schema) {
     }
 }
 
+/// A datetime or duration `+` or `-` another: both in the finer unit, as Polars keeps
+/// the left's and would drop a duration's nanoseconds added to a datetime of
+/// microseconds. A number is no length of time: q's would count nanoseconds, but a
+/// Polars datetime may count micro- or milliseconds, so it is refused, saying how to
+/// make the number a duration.
+fn time_arithmetic(
+    op: BinOp,
+    left: &mut Node,
+    right: &mut Node,
+    schema: &Schema,
+) -> Result<(), String> {
+    let unit = |n: &Node| match n.dtype(schema) {
+        Some(DataType::Datetime(unit, _) | DataType::Duration(unit)) => Some(unit),
+        _ => None,
+    };
+    let instant = |n: &Node| {
+        matches!(
+            n.dtype(schema),
+            Some(DataType::Datetime(..) | DataType::Date)
+        )
+    };
+    let number = |n: &Node| matches!(Kind::of(n, schema), Kind::Int | Kind::Float);
+    if (instant(left) && number(right)) || (number(left) && instant(right)) {
+        let symbol = if op == BinOp::Add { "+" } else { "-" };
+        return Err(format!(
+            "`{symbol}` cannot add a number to a date or datetime: make the number a \
+             duration (Change type, duration, with its unit)"
+        ));
+    }
+    // Nanoseconds, then micro-, then milli-: the finer is the one that counts more.
+    let rank = |u: TimeUnit| match u {
+        TimeUnit::Nanoseconds => 2,
+        TimeUnit::Microseconds => 1,
+        TimeUnit::Milliseconds => 0,
+    };
+    if let (Some(l), Some(r)) = (unit(left), unit(right))
+        && l != r
+    {
+        let (coarse, finer) = if rank(l) < rank(r) {
+            (left, r)
+        } else {
+            (right, l)
+        };
+        let inner = std::mem::replace(coarse, Node::Null);
+        *coarse = inner.op(Op::TimeUnit(finer));
+    }
+    Ok(())
+}
+
 /// Settle `op`, q's `&` or `|` on anything but two booleans known by form, by the
 /// operands' types; see [`Node::resolve_types`].
 fn resolve_min_max(
@@ -1316,6 +1371,7 @@ impl Op {
         };
         match self {
             Op::Cast(to) => format!(".cast({}, strict=False)", to.python()),
+            Op::TimeUnit(unit) => format!(".dt.cast_time_unit(\"{}\")", time_unit_name(*unit)),
             Op::DtFormat(f) => format!(".dt.to_string({})", py_str(f)),
             Op::StartsWith(s) => format!(".str.starts_with({})", py_str(s)),
             Op::EndsWith(s) => format!(".str.ends_with({})", py_str(s)),
@@ -1417,6 +1473,7 @@ fn apply_op_expr(expr: Expr, op: &Op) -> Expr {
         Op::Round(decimals) => expr.round(*decimals, RoundMode::HalfAwayFromZero),
         // Non-strict casts: a value that does not convert becomes null.
         Op::Cast(to) => expr.cast(to.dtype()),
+        Op::TimeUnit(unit) => expr.dt().cast_time_unit(*unit),
     }
 }
 

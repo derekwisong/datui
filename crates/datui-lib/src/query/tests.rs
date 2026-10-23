@@ -2226,3 +2226,55 @@ fn successive_conditions_read_as_one_python_filter_each() {
         ]
     );
 }
+
+/// A datetime and a duration add and subtract in the finer unit of the two, so a
+/// duration's nanoseconds survive a datetime of microseconds; two datetimes subtract
+/// to a duration. A number added to a datetime is refused, saying how to make it a
+/// duration.
+#[test]
+fn a_datetime_and_a_duration_add_in_the_finer_unit() {
+    let start = Int64Chunked::from_slice("start".into(), &[1_000_000])
+        .into_datetime(TimeUnit::Microseconds, None)
+        .into_series();
+    let elapsed = Int64Chunked::from_slice("elapsed".into(), &[1_500_000_001])
+        .into_duration(TimeUnit::Nanoseconds)
+        .into_series();
+    let n = Series::new("n".into(), &[5i64]);
+    let df = DataFrame::new_infer_height(vec![start.into(), elapsed.into(), n.into()]).unwrap();
+    let out = eval(
+        "select wall: start + elapsed, back: (start + elapsed) - elapsed, gap: (start + elapsed) - start",
+        &df,
+    );
+    let wall = out.column("wall").unwrap();
+    assert_eq!(
+        wall.dtype(),
+        &DataType::Datetime(TimeUnit::Nanoseconds, None)
+    );
+    assert_eq!(
+        wall.to_physical_repr().i64().unwrap().get(0),
+        Some(2_500_000_001)
+    );
+    let back = out.column("back").unwrap();
+    assert_eq!(
+        back.to_physical_repr().i64().unwrap().get(0),
+        Some(1_000_000_000)
+    );
+    let gap = out.column("gap").unwrap();
+    assert_eq!(gap.dtype(), &DataType::Duration(TimeUnit::Nanoseconds));
+    assert_eq!(
+        gap.to_physical_repr().i64().unwrap().get(0),
+        Some(1_500_000_001)
+    );
+
+    let mut node = parse_node(&tokenize("start + elapsed").unwrap()).unwrap();
+    node.resolve_types(df.schema()).unwrap();
+    assert_eq!(
+        node.python(),
+        "pl.col(\"start\").dt.cast_time_unit(\"ns\") + pl.col(\"elapsed\")"
+    );
+
+    let err = parse_error_over("select start + n", &df);
+    assert!(err.contains("make the number a duration"), "{err}");
+    let err = parse_error_over("select n + start", &df);
+    assert!(err.contains("cannot add a number"), "{err}");
+}

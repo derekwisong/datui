@@ -841,6 +841,7 @@ pub(crate) fn infer_string_type(
         Some(ColumnType {
             dtype,
             format: format.map(String::from),
+            unit: None,
         })
     };
     let first_val = str_ca.iter().find_map(|o| o.filter(|s| !s.is_empty()));

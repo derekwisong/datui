@@ -4247,3 +4247,82 @@ fn a_column_retyped_in_the_table() {
         ["when"]
     );
 }
+
+/// Column types sit under the query: a query reads a retyped column as its type and
+/// adds a duration to a datetime, the type outlives the query, a type changed under a
+/// query runs it again with the sidebar filter kept, a column the query made keeps its
+/// type, and a reset drops the types.
+#[test]
+fn a_query_reads_the_columns_as_retyped() {
+    use datui::app::modals::filter_modal::FilterOperator;
+    let (mut app, rx, tx) = open_csv_with(
+        "retype_under_query.csv",
+        "id,start,elapsed\n1,2024-01-01 00:00:00,1500000000\n2,2024-01-01 00:00:00,90000000000\n3,2024-01-01 00:00:00,x\n",
+        OpenOptions::default(),
+    );
+    pump_until_idle(&mut app, &rx, &tx);
+    retype_from_schema(&mut app, "elapsed");
+    type_into(&mut app, "duration");
+    app.event(key(KeyCode::Enter));
+    // The unit: ns, the first.
+    app.event(key(KeyCode::Enter));
+    app.event(key(KeyCode::Esc));
+    pump_until_idle(&mut app, &rx, &tx);
+
+    run_query(&mut app, &rx, &tx, "select id, wall: start + elapsed");
+    assert_eq!(
+        view_text(&app, "wall"),
+        [
+            Some("2024-01-01 00:00:01.500".to_string()),
+            Some("2024-01-01 00:01:30".to_string()),
+            None,
+        ]
+    );
+    assert_eq!(
+        app.data_table_state.as_ref().unwrap().retyped_columns(),
+        ["elapsed"],
+        "the type outlives the query"
+    );
+
+    // Typed under the query, which runs again; the filter stays.
+    app.event(AppEvent::Applied(datui::Applied::Filter(vec![
+        filter_stmt("id", FilterOperator::Eq, "2"),
+    ])));
+    pump_until_idle(&mut app, &rx, &tx);
+    retype_from_schema(&mut app, "id");
+    type_into(&mut app, "f64");
+    app.event(key(KeyCode::Enter));
+    app.event(key(KeyCode::Esc));
+    pump_until_idle(&mut app, &rx, &tx);
+    let df = view_frame(&app);
+    assert_eq!(df.column("id").unwrap().dtype(), &DataType::Float64);
+    assert_eq!(df.height(), 1);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.get_active_query(), "select id, wall: start + elapsed");
+    assert_eq!(state.get_filters().len(), 1);
+
+    // The query made `wall`: it has no type as read to change.
+    assert_eq!(state.changeable_column("wall"), None);
+    assert!(state.why_type_fixed("wall").contains("made by the query"));
+
+    // A column the query renamed changes as the one it reads.
+    run_query(&mut app, &rx, &tx, "select e: elapsed");
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.changeable_column("e").as_deref(), Some("elapsed"));
+
+    // With the query cleared the rows still have the types.
+    run_query(&mut app, &rx, &tx, "");
+    assert_eq!(
+        view_frame(&app).column("elapsed").unwrap().dtype(),
+        &DataType::Duration(TimeUnit::Nanoseconds)
+    );
+
+    app.event(AppEvent::Reset);
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.retyped_columns().is_empty());
+    assert_eq!(
+        view_frame(&app).column("elapsed").unwrap().dtype(),
+        &DataType::String
+    );
+}

@@ -552,6 +552,16 @@ impl App {
         settings: &view::ViewSettings,
         pivoted: Option<DataFrame>,
     ) -> Result<Replayed> {
+        // First: a reshape and a query read the columns with their types.
+        if !settings.columns.is_empty() {
+            state.set_column_changes(&settings.columns);
+            if let Some(error) = state.error().cloned() {
+                return Err(color_eyre::eyre::eyre!(
+                    "{}",
+                    crate::error_display::user_message_from_polars(&error)
+                ));
+            }
+        }
         if settings.pivot.is_some() || settings.melt.is_some() {
             if let Some(source) = &settings.reshape_source {
                 Self::replay_query(
@@ -589,10 +599,6 @@ impl App {
             settings.query.as_deref(),
             settings.fuzzy_query.as_deref(),
         )?;
-        // Before the filters, which may compare in the types it gives.
-        if !settings.columns.is_empty() {
-            state.set_column_changes(&settings.columns);
-        }
         Self::replay_filters_and_sort(
             state,
             &settings.filters,

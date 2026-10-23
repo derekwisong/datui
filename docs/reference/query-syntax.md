@@ -192,6 +192,11 @@ A timestamp literal compared with a column that has a time zone is read as a
 clock time in that zone. A clock time repeated when clocks fall back means its
 first instant.
 
+A datetime or date plus or minus a duration is a datetime, and two datetimes
+subtract to a duration, in the finer unit of the two: `wall: start + elapsed`
+keeps `elapsed`'s nanoseconds. A number does not add to a datetime; make it a
+duration first with [Change type](../user-guide/dataset-info.md#column-types).
+
 Quoted text is a string, never a date: `where d = "2024.01.01"` on a date
 column is an error that names the literal to write, here `2024.01.01`. Time and
 duration columns have no literal; compare `t.hour`, `t.minute` or `t.second`

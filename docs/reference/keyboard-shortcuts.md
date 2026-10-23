@@ -74,7 +74,7 @@ Where a dataset opens.
 | `H / L` | Move the cursor's column one place left or right, the cursor with it; a frozen column moves among the frozen ones. R puts the order back |
 | `p` | Pivot or melt |
 | `S` | Draw a sample of the source into memory; the query, filters and sort then run over the sample. Rows show as they arrive (Esc stops and keeps them), and the footer says, for example, sample 100,000 of 36.8M. Analysis, charts and export read the sample. S again edits it; the Method No sample, or R, removes it |
-| `R` | Reset table: clear the sample, query, filters, sort, column order, hidden columns and widths, frozen columns, pivot/melt, drill-down and the applied view |
+| `R` | Reset table: clear the sample, column types, query, filters, sort, column order, hidden columns and widths, frozen columns, pivot/melt, drill-down and the applied view |
 
 ### Table · Analyze
 

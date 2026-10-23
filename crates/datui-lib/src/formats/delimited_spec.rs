@@ -304,6 +304,22 @@ impl Delimited {
                     );
                 }
             }
+            // A source the spec types is read as its type first: a duration's number of
+            // its unit is a length of time to add.
+            let sources: Vec<(Expr, DataType)> = derived
+                .from
+                .iter()
+                .map(|from| {
+                    let raw = schema
+                        .get(from.as_str())
+                        .cloned()
+                        .unwrap_or(DataType::String);
+                    match self.types.iter().find(|(name, _)| name == from) {
+                        Some((_, ty)) => (ty.expr(from, &raw), ty.dtype.clone()),
+                        None => (col(from.as_str()), raw),
+                    }
+                })
+                .collect();
             let name = PlSmallStr::from(derived.name.as_str());
             if !order.contains(&name) {
                 let at = order
@@ -312,7 +328,7 @@ impl Delimited {
                     .unwrap_or(order.len());
                 order.insert(at, name.clone());
             }
-            exprs.push(derived.expr().alias(name));
+            exprs.push(derived.expr_of(&sources).alias(name));
         }
         Ok(lf
             .with_columns(exprs)

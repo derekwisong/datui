@@ -890,16 +890,16 @@ Decimals. \fBf32\fR keeps about 7 significant digits
 With \fBformat\fR, a strftime format; without, the format is inferred
 .TP
 \fBduration\fR
-\fB1d\fR, \fB2h30m\fR, \fB\-1w2d\fR
+\fB1d\fR, \fB2h30m\fR, \fB\-1w2d\fR; or a number of \fBunit\fR: \fBns\fR (the default), \fBus\fR, \fBms\fR or \fBs\fR, so \fBelapsed = { type = "duration", unit = "ns" }\fR reads \fB1500000\fR as 1.5 ms
 .PP
 Use \fBi64\fR and \fBf64\fR unless you want a narrower type for an export or to limit values to a range. A value is trimmed first, and one that does not fit the type, or is out of an integer type's range, is null. The first time the Info panel opens, one pass counts them, and the Notes tab says how many per column: \fBRPM: 2 values out of range for u8, read as null\fR. A typed column the file does not have is a note, not an error, since the files of a family differ. A typed column is the same type in every file read together, and \fBread.infer_types\fR leaves it alone. \fBtype\fR beside \fBfrom\fR or \fBas\fR is refused: a derived column takes its type from \fBas\fR. The same types, and the derived columns, are also available from the table: Column types.
 .PP
 \fBDerived columns\fR
 .TP
 \fBdatetime\fR
-from: a date and a time, and optionally a UTC offset such as \fB\-05:00\fR, \fB+0530\fR or \fB\-5\fR; or one column of text
+from: a date and a time, and optionally a UTC offset such as \fB\-05:00\fR, \fB+0530\fR or \fB\-5\fR; or one column of text; or a datetime (or date) and a duration
 .br
-Column: A datetime. With an offset it is in UTC
+Column: A datetime. With an offset it is in UTC. A datetime and a duration add, in the finer unit of the two: \fBwall = { from = ["start", "elapsed"], as = "datetime" }\fR
 .TP
 \fBdate\fR
 from: one column
@@ -911,7 +911,9 @@ from: one column
 .br
 Column: A time of day
 .PP
-A column of the file takes \fBdescription\fR and \fBunit\fR alone (\fBbus1volts = { description = "Main bus voltage" }\fR), and a derived one takes them beside \fBfrom\fR and \fBas\fR. They show in the Documentation view. A \fBunit\fR there is documentation only: the type row shows the units line's.
+A column of the file takes \fBdescription\fR and \fBunit\fR alone (\fBbus1volts = { description = "Main bus voltage" }\fR), and a derived one takes them beside \fBfrom\fR and \fBas\fR. They show in the Documentation view. A \fBunit\fR there is documentation only: the type row shows the units line's. On a \fBduration\fR, \fBunit\fR is what its numbers count instead.
+.PP
+A source the spec types is read as its type before a column is made from it, so a duration's numbers are a length of time to add. A source from [\fB[files]\fR](#columns-from-file-names) can be one.
 .PP
 \fBformat = "%Y\-%m\-%d %H:%M:%S"\fR gives the strftime format of the text, a date and a time joined with a space; without it the format is inferred. A value that does not parse is null. The derived column goes before the first column it is made from, which is kept. A derived column named after one of its source columns replaces that column and its unit. There is no expression language: anything more is a query.
 .PP
@@ -989,7 +991,7 @@ datui formats check contrib/formats/garmin\-txi.toml garmin\-log.csv
 .EE
 .RE
 .SS "MangoHud logs"
-The repository's \fBcontrib/\:formats/\:mangohud.\:toml\fR reads MangoHud <\fIhttps://github.com/flightlessmango/MangoHud\fR>'s frame logs: each column typed with its unit, the system's values (line 2) as metadata, and \fBgame\fR and \fBstart\fR from the log's name. Copy it into \fB~/.config/datui/formats/\fR, then open a log or a folder of them; the \fB_summary.csv\fR files beside the logs are left out, with a note.
+The repository's \fBcontrib/\:formats/\:mangohud.\:toml\fR reads MangoHud <\fIhttps://github.com/flightlessmango/MangoHud\fR>'s frame logs: each column typed with its unit, the system's values (line 2) as metadata, \fBgame\fR and \fBstart\fR from the log's name, \fBelapsed\fR as a duration, and \fBwall\fR, the start plus \fBelapsed\fR: when each sample was taken. Copy it into \fB~/.config/datui/formats/\fR, then open a log or a folder of them; the \fB_summary.csv\fR files beside the logs are left out, with a note.
 .PP
 \fB\fBvkcube_2026\-10\-22_18\-40\-30.\:csv\fR\fR
 .PP

@@ -11,6 +11,8 @@ pub(super) struct GroupedView {
     /// The schemas of `base_lf` and of the view, so coming back resolves neither.
     base_schema: Arc<Schema>,
     schema: Arc<Schema>,
+    /// Whether `base_lf` is the data as loaded, which the column changes are laid on.
+    base_is_root: bool,
     pub(super) filters: Vec<FilterStatement>,
     pub(super) sort_columns: Vec<String>,
     pub(super) sort_descending: Vec<bool>,
@@ -398,7 +400,7 @@ impl DataTableState {
     /// drilled group or reshape only resolves its plan, reading nothing.
     pub fn sql_table_columns(&self) -> Vec<(String, DataType)> {
         let schema = if self.view.grouped.is_none() && self.view.reshaped_lf.is_none() {
-            Some(self.original_schema.clone())
+            Some(self.query_source_schema())
         } else {
             self.query_root().collect_schema().ok()
         };
@@ -994,6 +996,7 @@ impl DataTableState {
             lf: self.view.lf.clone(),
             base_lf: self.view.base_lf.clone(),
             base_schema: self.view.base_schema.clone(),
+            base_is_root: self.view.base_is_root,
             schema: self.view.schema.clone(),
             filters: std::mem::take(&mut self.view.filters),
             sort_columns: std::mem::take(&mut self.view.sort_columns),
@@ -1175,6 +1178,7 @@ impl DataTableState {
         self.view.unsorted_lf = None;
         self.view.base_lf = view.base_lf;
         self.view.base_schema = view.base_schema;
+        self.view.base_is_root = view.base_is_root;
         self.view.base_steps = view.base_steps;
         self.view.lineage = view.lineage;
         self.view.filters = view.filters;

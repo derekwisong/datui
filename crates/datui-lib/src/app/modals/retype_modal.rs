@@ -3,10 +3,13 @@
 //! as a view step before the filters.
 //!
 //! [`RetypeModal`] picks the type, then, for a date, time or datetime, a format that
-//! reads the column's first values, or one typed. [`CombineModal`] is the spec's
+//! reads the column's first values, or one typed; for a duration of numbers, the unit
+//! they count. [`CombineModal`] is the spec's
 //! `{ from = [...], as = "datetime" }`.
 
-use crate::formats::column_types::{ColumnType, DerivedKind, TYPE_NAMES, dtype_label};
+use crate::formats::column_types::{
+    ColumnType, DerivedKind, DurationUnit, TYPE_NAMES, dtype_label,
+};
 use crate::widgets::ui::PickerState;
 use polars::prelude::DataType;
 
@@ -24,6 +27,8 @@ pub enum Stage {
         ty: DataType,
         formats: Vec<Option<String>>,
     },
+    /// What a number of a duration counts: [`DurationUnit::ALL`], line by line.
+    Unit,
 }
 
 /// The type picker over the table.
@@ -45,7 +50,7 @@ pub enum Chosen {
     /// The column as read: the view's type taken away.
     AsRead,
     Type(ColumnType),
-    /// A temporal type: its format is next.
+    /// A temporal type's format, or a duration's unit, is next.
     Format,
     Nothing,
 }
@@ -92,7 +97,21 @@ impl RetypeModal {
                     self.offer_formats(ty.dtype);
                     return Chosen::Format;
                 }
+                if matches!(ty.dtype, DataType::Duration(_)) && self.counts() {
+                    self.offer_units();
+                    return Chosen::Format;
+                }
                 Chosen::Type(ty)
+            }
+            Stage::Unit => {
+                let Some(i) = self.picker.selected_original() else {
+                    return Chosen::Nothing;
+                };
+                Chosen::Type(ColumnType {
+                    dtype: DataType::Duration(polars::prelude::TimeUnit::Nanoseconds),
+                    format: None,
+                    unit: Some(DurationUnit::ALL[i]),
+                })
             }
             Stage::Format { ty, formats } => {
                 let typed = self.picker.filter.trim();
@@ -105,9 +124,45 @@ impl RetypeModal {
                 Chosen::Type(ColumnType {
                     dtype: ty.clone(),
                     format,
+                    unit: None,
                 })
             }
         }
+    }
+
+    /// Whether the column holds numbers, which a duration needs a unit for: numbers as
+    /// read, or text whose first value is one. Text such as `2h30m` says its own.
+    fn counts(&self) -> bool {
+        self.as_read.is_primitive_numeric()
+            || (self.as_read == DataType::String
+                && self
+                    .examples
+                    .first()
+                    .is_some_and(|v| v.trim().parse::<f64>().is_ok()))
+    }
+
+    /// The units a number of a duration may count, each with what it makes of the
+    /// first example; nanoseconds first.
+    fn offer_units(&mut self) {
+        let first = self.examples.first().cloned().unwrap_or_default();
+        let arrow = crate::glyphs::get().arrow_right;
+        let items = DurationUnit::ALL
+            .iter()
+            .map(|unit| {
+                let ty = ColumnType {
+                    dtype: DataType::Duration(polars::prelude::TimeUnit::Nanoseconds),
+                    format: None,
+                    unit: Some(*unit),
+                };
+                match crate::formats::column_types::preview(&ty, &first) {
+                    Some(read) => format!("{}  {first} {arrow} {read}", unit.name()),
+                    None => unit.name().to_string(),
+                }
+            })
+            .collect();
+        self.picker = PickerState::new(items);
+        self.picker.select_original(0);
+        self.stage = Stage::Unit;
     }
 
     /// Esc: back from the formats to the types. `false` when there is nowhere back to.
@@ -144,6 +199,7 @@ impl RetypeModal {
         let infer = ColumnType {
             dtype: dtype.clone(),
             format: None,
+            unit: None,
         };
         let mut items = vec![format!("infer from the values{}", shown(&infer))];
         let mut formats = vec![None];
@@ -151,6 +207,7 @@ impl RetypeModal {
             let ty = ColumnType {
                 dtype: dtype.clone(),
                 format: Some(format.to_string()),
+                unit: None,
             };
             items.push(format!("{format}{}", shown(&ty)));
             formats.push(Some(format.to_string()));
@@ -176,6 +233,7 @@ impl RetypeModal {
             &ColumnType {
                 dtype: ty.clone(),
                 format: Some(typed.to_string()),
+                unit: None,
             },
             first,
         );
@@ -190,6 +248,7 @@ impl RetypeModal {
                 dtype_label(&self.as_read)
             ),
             Stage::Format { ty, .. } => format!("{} Format", title_case(&dtype_label(ty))),
+            Stage::Unit => "Duration Unit".to_string(),
         }
     }
 }
@@ -216,7 +275,8 @@ pub enum CombineField {
 #[derive(Debug, Clone)]
 pub struct CombineModal {
     pub focus: CombineField,
-    /// The columns that can be a date, a time or an offset: text, dates and times.
+    /// The columns that can be a date, a time or an offset: text, dates and times; or a
+    /// datetime and a duration to add to it.
     pub columns: Vec<String>,
     pub date: String,
     pub time: Option<String>,
@@ -399,6 +459,41 @@ impl crate::app::form::Form for CombineModal {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A duration of numbers asks what each counts, showing what each unit makes of
+    /// the first; a duration of text such as `2h30m` says its own.
+    #[test]
+    fn a_duration_of_numbers_asks_its_unit() {
+        let duration = TYPE_NAMES.iter().position(|n| *n == "duration").unwrap() + 1;
+        let mut m = RetypeModal::new(
+            "elapsed".into(),
+            DataType::Int64,
+            None,
+            vec!["100308137".into()],
+        );
+        m.picker.select_original(duration);
+        assert_eq!(m.choose(), Chosen::Format);
+        assert_eq!(m.stage, Stage::Unit);
+        assert_eq!(m.title(), "Duration Unit");
+        assert!(
+            m.picker.items()[0].starts_with("ns  100308137"),
+            "{:?}",
+            m.picker.items()
+        );
+        m.picker.select_original(2);
+        let Chosen::Type(ty) = m.choose() else {
+            panic!("a unit is a type");
+        };
+        assert_eq!(ty.unit, Some(DurationUnit::Milliseconds));
+        assert!(m.back());
+
+        let mut m = RetypeModal::new("t".into(), DataType::String, None, vec!["2h30m".into()]);
+        m.picker.select_original(duration);
+        let Chosen::Type(ty) = m.choose() else {
+            panic!("text says its own unit");
+        };
+        assert_eq!(ty.unit, None);
+    }
 
     #[test]
     fn a_number_type_is_chosen_at_once_and_a_date_asks_its_format() {

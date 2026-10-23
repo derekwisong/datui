@@ -40,13 +40,19 @@ impl App {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
         };
-        let Some(as_read) = state.type_as_read(column) else {
+        // A query may show it renamed: the change is to the column it reads.
+        let Some(column) = state.changeable_column(column) else {
+            let why = state.why_type_fixed(column);
+            self.error_modal.show(why);
             return;
         };
-        let current = state.column_type_of(column).cloned();
-        let examples = state.values_on_screen(column, EXAMPLES);
+        let Some(as_read) = state.type_as_read(&column) else {
+            return;
+        };
+        let current = state.column_type_of(&column).cloned();
+        let examples = state.values_on_screen(&column, EXAMPLES);
         self.column_forms.retype = Some(RetypeModal::new(
-            column.to_string(),
+            column,
             as_read,
             current.as_ref(),
             examples,
@@ -59,16 +65,29 @@ impl App {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
         };
-        let schema = state.schema().clone();
+        let (Some(schema), Some(date)) = (state.changeable_schema(), state.changeable_column(date))
+        else {
+            let why = state.why_type_fixed(date);
+            self.error_modal.show(why);
+            return;
+        };
         let columns: Vec<String> = schema
             .iter()
             .filter(|(_, dtype)| {
-                matches!(dtype, DataType::String | DataType::Date | DataType::Time)
+                matches!(
+                    dtype,
+                    DataType::String
+                        | DataType::Date
+                        | DataType::Time
+                        | DataType::Datetime(..)
+                        | DataType::Duration(_)
+                )
             })
             .map(|(name, _)| name.to_string())
             .collect();
-        let taken: Vec<String> = schema.iter_names().map(|n| n.to_string()).collect();
-        self.column_forms.combine = Some(CombineModal::new(date.to_string(), columns, &taken));
+        let mut taken: Vec<String> = schema.iter_names().map(|n| n.to_string()).collect();
+        taken.extend(state.schema().iter_names().map(|n| n.to_string()));
+        self.column_forms.combine = Some(CombineModal::new(date, columns, &taken));
         self.open_over(|returns_to| Overlay::Combine { returns_to });
     }
 

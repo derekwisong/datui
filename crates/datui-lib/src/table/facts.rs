@@ -726,11 +726,20 @@ impl DataTableState {
     /// The frame a query, SQL statement or fuzzy search builds on, without the drift
     /// column (its schema becomes the column order).
     pub(super) fn query_source(&self) -> LazyFrame {
-        Self::without_drift(self.original_lf.clone())
+        Self::without_drift(self.changed_root())
     }
 
-    /// The schema of [`Self::query_source`], as known since the open: nothing resolved.
+    /// The schema of [`Self::query_source`]: as known since the open, with the view's
+    /// column changes.
     pub(super) fn query_source_schema(&self) -> Arc<Schema> {
+        if self.view.column_changes.is_empty() {
+            return self.original_without_drift();
+        }
+        Self::without_source_rows(self.root_schema()).0
+    }
+
+    /// The schema of the data as loaded without the drift column: nothing resolved.
+    pub(super) fn original_without_drift(&self) -> Arc<Schema> {
         Self::without_source_rows(self.original_schema.clone()).0
     }
 

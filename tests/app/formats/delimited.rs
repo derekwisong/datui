@@ -1108,6 +1108,21 @@ fn the_mangohud_spec_reads_a_folder_of_logs_and_their_names() {
         "{notes:?}"
     );
     assert_eq!(df.column("fps").unwrap().dtype(), &DataType::Float64);
+    // Milliseconds with a fraction, to the nanosecond.
+    let frametime = df.column("frametime").unwrap();
+    assert_eq!(
+        frametime.dtype(),
+        &DataType::Duration(TimeUnit::Nanoseconds)
+    );
+    assert_eq!(
+        frametime
+            .cast(&DataType::Int64)
+            .unwrap()
+            .i64()
+            .unwrap()
+            .get(0),
+        Some(6_930_000)
+    );
     assert_eq!(
         df.column("elapsed").unwrap().dtype(),
         &DataType::Duration(TimeUnit::Nanoseconds)

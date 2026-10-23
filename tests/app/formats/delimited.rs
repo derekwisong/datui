@@ -1070,6 +1070,60 @@ fn the_contributed_specs_parse() {
     );
 }
 
+/// The MangoHud spec types a log's columns and reads the game and the session's
+/// start from its name. A folder of logs leaves out the summary beside each, which
+/// the spec does not match, and a note names it.
+#[test]
+fn the_mangohud_spec_reads_a_folder_of_logs_and_their_names() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("contrib/formats");
+    let spec = Spec::load(&dir.join("mangohud.toml")).unwrap();
+    let logs = common::fixture_dir().join("mangohud_logs");
+    std::fs::create_dir_all(&logs).unwrap();
+    let path = logs.join("vkcube_2026-10-22_18-40-30.csv");
+    std::fs::write(
+        logs.join("vkcube_2026-10-22_18-40-30_summary.csv"),
+        "0.1% Min FPS,1% Min FPS,Average FPS\n120,130,144\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &path,
+        "os,cpu,gpu,ram,kernel,driver,cpuscheduler\n\
+         Linux,Example CPU,Example GPU,32768000,6.12.0,,performance\n\
+         fps,frametime,cpu_load,gpu_load,elapsed\n\
+         144.2,6.93,21.5,64,100000000\n\
+         143.8,6.95,22.1,65,200000000\n",
+    )
+    .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.set_formats(Registry::of(vec![spec]));
+    open(&mut app, &rx, logs, OpenOptions::default());
+    let df = collected(&app);
+    assert_eq!(df.height(), 2);
+    let notes = app.data_table_state.as_ref().unwrap().notes();
+    assert!(
+        notes.iter().any(|n| n
+            .summary
+            .contains("left out: vkcube_2026-10-22_18-40-30_summary.csv")),
+        "{notes:?}"
+    );
+    assert_eq!(df.column("fps").unwrap().dtype(), &DataType::Float64);
+    assert_eq!(df.column("elapsed").unwrap().dtype(), &DataType::Int64);
+    assert_eq!(
+        df.column("game").unwrap().str().unwrap().get(0),
+        Some("vkcube")
+    );
+    let start = df.column("start").unwrap();
+    assert!(matches!(start.dtype(), DataType::Datetime(..)));
+    assert!(
+        start
+            .get(0)
+            .unwrap()
+            .to_string()
+            .starts_with("2026-10-22 18:40:30")
+    );
+}
+
 /// `read.infer_types` leaves a column of codes with leading zeros as text, though
 /// Polars would read `02134` as a number, and types `0.5` as one.
 #[test]

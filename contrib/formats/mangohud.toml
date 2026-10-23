@@ -1,0 +1,35 @@
+# MangoHud frame logs (https://github.com/flightlessmango/MangoHud), named
+# <game>_<YYYY-MM-DD>_<HH-MM-SS>.csv: the game and the session's start become columns,
+# so logs opened together say which session each row is from. Needs datui 0.4.14.
+#
+# To use it, copy this file into ~/.config/datui/formats/.
+
+name = "mangohud.log"
+kind = "delimited"
+description = "MangoHud frame log"
+match = { magic = "os,cpu,gpu,ram,kernel,driver" }
+header_rows = 3
+metadata_line = 2
+
+[files]
+path = "{game}_{start:%Y-%m-%d_%H-%M-%S}.csv"
+
+[columns]
+game = { description = "The game's executable, from the log's name" }
+start = { description = "When the session started, from the log's name" }
+fps = { type = "f64", unit = "fps", description = "Frames per second over the sample" }
+frametime = { type = "f64", unit = "ms", description = "Average frame time over the sample" }
+cpu_load = { type = "f64", unit = "%" }
+cpu_power = { type = "f64", unit = "W" }
+gpu_load = { type = "f64", unit = "%" }
+cpu_temp = { type = "f64", unit = "°C" }
+gpu_temp = { type = "f64", unit = "°C" }
+gpu_core_clock = { type = "f64", unit = "MHz" }
+gpu_mem_clock = { type = "f64", unit = "MHz" }
+gpu_vram_used = { type = "f64", unit = "GiB" }
+gpu_power = { type = "f64", unit = "W" }
+ram_used = { type = "f64", unit = "GiB" }
+swap_used = { type = "f64", unit = "GiB" }
+process_rss = { type = "f64", unit = "GiB", description = "The game's own memory" }
+cpu_mhz = { type = "f64", unit = "MHz" }
+elapsed = { type = "i64", unit = "ns", description = "Time since logging started" }

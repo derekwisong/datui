@@ -361,7 +361,8 @@ columns replaces that column and its unit. There is no expression language: anyt
 
 A delimited spec matches a file whose name says no format datui reads, or says
 `.csv`, `.tsv` or `.psv`, compressed or not. A directory, or a glob such as
-`'logs/log_*.csv'`, is read with the spec that its first text file matches.
+`'logs/log_*.csv'`, is read with the spec that its first text file matches; files
+that spec does not match are left out, and a note names them.
 <kbd>H</kbd> on the Info panel's Schema tab reads the file without a header,
 and without its derived columns.
 
@@ -433,6 +434,29 @@ a single leaves them blank. A log written before a GPS fix has blank date and GP
 
 ```bash
 datui formats check contrib/formats/garmin-txi.toml garmin-log.csv
+```
+
+## MangoHud logs
+
+The repository's `contrib/formats/mangohud.toml` reads
+[MangoHud](https://github.com/flightlessmango/MangoHud)'s frame logs: each
+column typed with its unit, the system's values (line 2) as metadata, and `game`
+and `start` from the log's name. Copy it into `~/.config/datui/formats/`, then
+open a log or a folder of them; the `_summary.csv` files beside the logs are left
+out, with a note.
+
+**`vkcube_2026-10-22_18-40-30.csv`**
+
+```csv,file=vkcube_2026-10-22_18-40-30.csv
+os,cpu,gpu,ram,kernel,driver,cpuscheduler
+Linux,Example CPU,Example GPU,32768000,6.12.0,,performance
+fps,frametime,cpu_load,cpu_power,gpu_load,cpu_temp,gpu_temp,gpu_core_clock,gpu_mem_clock,gpu_vram_used,gpu_power,ram_used,swap_used,process_rss,cpu_mhz,elapsed
+144.2,6.93,21.5,35,64,58,61,2400,10000,3.2,180,9.8,0,1.4,4800,100000000
+143.8,6.95,22.1,36,65,58,61,2400,10000,3.2,181,9.8,0,1.4,4790,200000000
+```
+
+```bash
+datui formats check contrib/formats/mangohud.toml vkcube_2026-10-22_18-40-30.csv
 ```
 
 ## Checks

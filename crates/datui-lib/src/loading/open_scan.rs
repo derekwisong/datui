@@ -2963,7 +2963,7 @@ impl App {
                 splits: report.splits.clone(),
                 ..options.clone()
             };
-            return Self::read_with_delimited_spec(files, &nested, report, formats, choice);
+            return Self::read_spec_matches(files, &nested, report, formats, choice, options);
         }
         // A spec's read reports differing files itself, from their header lines.
         report.files_disagree = Self::files_disagree(files, options, found);
@@ -2974,6 +2974,60 @@ impl App {
             ..options.clone()
         };
         Self::build_local_lazyframe(files, &nested, report, formats)
+    }
+
+    /// `files` read through `choice`'s spec, less those it does not match (a log's
+    /// summary beside it), which a note names.
+    fn read_spec_matches(
+        files: &[PathBuf],
+        nested: &OpenOptions,
+        report: &mut ReadReport,
+        formats: &crate::formats::Registry,
+        choice: crate::formats::Choice,
+        options: &OpenOptions,
+    ) -> Result<Scan> {
+        let name = choice.spec.name.clone();
+        let mut matched = Vec::with_capacity(files.len());
+        let mut other = Vec::new();
+        for f in files {
+            let same =
+                Self::delimited_spec_of(f, options, formats)?.is_some_and(|c| c.spec.name == name);
+            if same || crate::formats::nul_tail::holds_nothing(f) {
+                matched.push(f.clone());
+            } else {
+                other.push(f);
+            }
+        }
+        let scan = Self::read_with_delimited_spec(&matched, nested, report, formats, choice)?;
+        if !other.is_empty() {
+            let shown: Vec<String> = other
+                .iter()
+                .take(3)
+                .map(|f| {
+                    f.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect();
+            let more = if other.len() > shown.len() {
+                ", ..."
+            } else {
+                ""
+            };
+            let files = if other.len() == 1 { "file" } else { "files" };
+            report.read_notes.push(crate::notes::Note {
+                summary: format!(
+                    "{} {files} the spec does not match, left out: {}{more}",
+                    other.len(),
+                    shown.join(", ")
+                ),
+                scope: format!("spec {name}"),
+                read_as_text: None,
+                passed_over: None,
+            });
+        }
+        Ok(scan)
     }
 
     /// The delimited spec whose glob or magic `file` matches, if one does.
@@ -3061,7 +3115,7 @@ impl App {
                     format: format.or(Some(FileFormat::Csv)),
                     ..options.clone()
                 };
-                return Self::read_with_delimited_spec(&files, &nested, report, formats, choice);
+                return Self::read_spec_matches(&files, &nested, report, formats, choice, options);
             }
         }
 

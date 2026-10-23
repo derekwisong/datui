@@ -7,7 +7,7 @@
 name = "mangohud.log"
 kind = "delimited"
 description = "MangoHud frame log"
-match = { magic = "os,cpu,gpu,ram,kernel,driver,cpuscheduler" }
+match = { magic = "os,cpu,gpu,ram,kernel,driver" }
 header_rows = 3
 metadata_line = 2
 

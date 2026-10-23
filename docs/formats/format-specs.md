@@ -361,7 +361,8 @@ columns replaces that column and its unit. There is no expression language: anyt
 
 A delimited spec matches a file whose name says no format datui reads, or says
 `.csv`, `.tsv` or `.psv`, compressed or not. A directory, or a glob such as
-`'logs/log_*.csv'`, is read with the spec that its first text file matches.
+`'logs/log_*.csv'`, is read with the spec that its first text file matches; files
+that spec does not match are left out, and a note names them.
 <kbd>H</kbd> on the Info panel's Schema tab reads the file without a header,
 and without its derived columns.
 
@@ -438,10 +439,11 @@ datui formats check contrib/formats/garmin-txi.toml garmin-log.csv
 ## MangoHud logs
 
 The repository's `contrib/formats/mangohud.toml` reads
-[MangoHud](https://github.com/flightlessmango/MangoHud)'s frame logs: the system
-line as metadata, each column typed with its unit, and `game` and `start` from
-the log's name. Copy it into `~/.config/datui/formats/`, then open a log or a
-folder of them.
+[MangoHud](https://github.com/flightlessmango/MangoHud)'s frame logs: each
+column typed with its unit, the system's values (line 2) as metadata, and `game`
+and `start` from the log's name. Copy it into `~/.config/datui/formats/`, then
+open a log or a folder of them; the `_summary.csv` files beside the logs are left
+out, with a note.
 
 **`vkcube_2026-10-22_18-40-30.csv`**
 

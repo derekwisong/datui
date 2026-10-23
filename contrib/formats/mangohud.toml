@@ -18,7 +18,7 @@ path = "{game}_{start:%Y-%m-%d_%H-%M-%S}.csv"
 game = { description = "The game's executable, from the log's name" }
 start = { description = "When the session started, from the log's name" }
 fps = { type = "f64", unit = "fps", description = "Frames per second over the sample" }
-frametime = { type = "f64", unit = "ms", description = "Average frame time over the sample" }
+frametime = { type = "duration", unit = "ms", description = "Average frame time over the sample" }
 cpu_load = { type = "f64", unit = "%" }
 cpu_power = { type = "f64", unit = "W" }
 gpu_load = { type = "f64", unit = "%" }

@@ -446,8 +446,8 @@ datui formats check contrib/formats/garmin-txi.toml garmin-log.csv
 The repository's `contrib/formats/mangohud.toml` reads
 [MangoHud](https://github.com/flightlessmango/MangoHud)'s frame logs: each
 column typed with its unit, the system's values (line 2) as metadata, `game`
-and `start` from the log's name, `elapsed` as a duration, and `wall`, the start
-plus `elapsed`: when each sample was taken. Copy it into `~/.config/datui/formats/`, then
+and `start` from the log's name, `frametime` and `elapsed` as durations, and
+`wall`, the start plus `elapsed`: when each sample was taken. Copy it into `~/.config/datui/formats/`, then
 open a log or a folder of them; the `_summary.csv` files beside the logs are left
 out, with a note.
 

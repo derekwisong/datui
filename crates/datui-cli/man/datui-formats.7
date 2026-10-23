@@ -991,7 +991,7 @@ datui formats check contrib/formats/garmin\-txi.toml garmin\-log.csv
 .EE
 .RE
 .SS "MangoHud logs"
-The repository's \fBcontrib/\:formats/\:mangohud.\:toml\fR reads MangoHud <\fIhttps://github.com/flightlessmango/MangoHud\fR>'s frame logs: each column typed with its unit, the system's values (line 2) as metadata, \fBgame\fR and \fBstart\fR from the log's name, \fBelapsed\fR as a duration, and \fBwall\fR, the start plus \fBelapsed\fR: when each sample was taken. Copy it into \fB~/.config/datui/formats/\fR, then open a log or a folder of them; the \fB_summary.csv\fR files beside the logs are left out, with a note.
+The repository's \fBcontrib/\:formats/\:mangohud.\:toml\fR reads MangoHud <\fIhttps://github.com/flightlessmango/MangoHud\fR>'s frame logs: each column typed with its unit, the system's values (line 2) as metadata, \fBgame\fR and \fBstart\fR from the log's name, \fBframetime\fR and \fBelapsed\fR as durations, and \fBwall\fR, the start plus \fBelapsed\fR: when each sample was taken. Copy it into \fB~/.config/datui/formats/\fR, then open a log or a folder of them; the \fB_summary.csv\fR files beside the logs are left out, with a note.
 .PP
 \fB\fBvkcube_2026\-10\-22_18\-40\-30.\:csv\fR\fR
 .PP

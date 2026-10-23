@@ -3572,6 +3572,12 @@ impl App {
                         })
                         .map(|(name, _)| name.to_string())
                         .collect();
+                    let duration_columns: Vec<String> = state
+                        .schema()
+                        .iter()
+                        .filter(|(_, dtype)| matches!(dtype, DataType::Duration(_)))
+                        .map(|(name, _)| name.to_string())
+                        .collect();
                     self.chart.modal.series_cap = Some(self.theme.series_colors().len());
                     self.chart.modal.row_order = self.view_state().sort;
                     let sampled = state.sampled().is_some();
@@ -3580,6 +3586,7 @@ impl App {
                             numeric: &numeric_columns,
                             datetime: &datetime_columns,
                             bucketable: &bucketable_columns,
+                            duration: &duration_columns,
                             category: &category_columns,
                         },
                         cursor.as_ref().map(|(name, dtype)| (name.as_str(), dtype)),

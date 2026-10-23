@@ -409,6 +409,8 @@ pub struct ChartColumns<'a> {
     pub datetime: &'a [String],
     /// Dates and datetimes, which a time bucket truncates (not times of day).
     pub bucketable: &'a [String],
+    /// Durations, which a line or scatter also takes as Y.
+    pub duration: &'a [String],
     /// Categories: text, categorical, boolean and integer columns
     /// (see `chart_data::is_category_dtype`).
     pub category: &'a [String],
@@ -497,6 +499,8 @@ pub struct ChartModal {
     pub temporal_candidates: Vec<String>,
     /// Dates and datetimes: the X columns a time bucket truncates.
     pub bucketable_candidates: Vec<String>,
+    /// Durations: a line's or scatter's Y as well as its X.
+    pub duration_candidates: Vec<String>,
     pub category_candidates: Vec<String>,
     /// The Color columns' values by rows, once a chart counted them.
     pub color_counts: Option<ColorCounts>,
@@ -573,6 +577,7 @@ impl ChartModal {
         self.close_picker();
         self.temporal_candidates = columns.datetime.to_vec();
         self.bucketable_candidates = columns.bucketable.to_vec();
+        self.duration_candidates = columns.duration.to_vec();
         self.numeric_candidates = columns.numeric.to_vec();
         self.category_candidates = columns.category.to_vec();
         self.plot_focus = false;
@@ -778,12 +783,19 @@ impl ChartModal {
                 all
             }
             // The X column against itself is only a diagonal.
-            PickerFor::Y => self
-                .numeric_candidates
-                .iter()
-                .filter(|c| Some(*c) != x || mark == Mark::Box)
-                .cloned()
-                .collect(),
+            PickerFor::Y => {
+                let durations = if mark.is_xy() {
+                    &self.duration_candidates[..]
+                } else {
+                    &[]
+                };
+                self.numeric_candidates
+                    .iter()
+                    .chain(durations)
+                    .filter(|c| Some(*c) != x || mark == Mark::Box)
+                    .cloned()
+                    .collect()
+            }
             // A date or datetime with few values is a category too.
             PickerFor::Color => {
                 let mut all = self.category_candidates.clone();
@@ -1719,6 +1731,7 @@ mod tests {
                 numeric: &c.numeric,
                 datetime: &c.datetime,
                 bucketable: &c.datetime,
+                duration: &[],
                 category: &c.category,
             },
             cursor,
@@ -2124,6 +2137,7 @@ mod tests {
             numeric: &c.numeric,
             datetime: &c.datetime,
             bucketable: &c.datetime,
+            duration: &[],
             category: &c.category,
         };
         modal.open(columns, Some(("delay", &DataType::Float64)), None, false, 1);
@@ -2247,6 +2261,7 @@ mod tests {
                 numeric: &numeric,
                 datetime: &datetime,
                 bucketable: &datetime[..1],
+                duration: &[],
                 category: &[],
             },
             Some(("clock", &DataType::Time)),

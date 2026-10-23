@@ -350,6 +350,24 @@ pub fn elapsed(seconds: f64) -> String {
     out
 }
 
+/// A tick `step` seconds from the next as a length of time: [`elapsed`] at a second
+/// and up, and finer in milliseconds or microseconds: `250ms`, `12.5ms`, `40µs`.
+pub fn elapsed_tick(v: f64, step: f64) -> String {
+    // A step taken between two ticks falls a hair short of what it is.
+    let step = step * (1.0 + 1e-6);
+    if step >= 1.0 || v.abs() >= 1.0 || v == 0.0 {
+        return elapsed(v);
+    }
+    let (scale, name) = if step >= 1e-3 {
+        (1e3, "ms")
+    } else {
+        (1e6, "µs")
+    };
+    let n = format!("{:.3}", v * scale);
+    let n = n.trim_end_matches('0').trim_end_matches('.');
+    format!("{n}{name}")
+}
+
 fn calendar_pattern(at: &NaiveDateTime, unit: Unit, first: bool) -> &'static str {
     let day_start = at.time() == NaiveTime::MIN;
     let month_start = day_start && at.day() == 1;

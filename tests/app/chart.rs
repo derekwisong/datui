@@ -746,6 +746,52 @@ fn a_duration_x_charts_a_line_ticked_in_time() {
     assert!(text.contains("2m") && text.contains("4m"), "{text}");
 }
 
+/// A duration is a line's Y as well: frame times in milliseconds tick as such, and
+/// the Y shelf of a histogram does not take them.
+#[test]
+fn a_duration_y_charts_ticked_in_milliseconds() {
+    use datui::chart::chart_modal::Mark;
+    let path = common::fixture_dir().join("chart_duration_y.parquet");
+    let mut df = df!(
+        "elapsed" => (0..600).map(|i| i * 1_000_000_000).collect::<Vec<i64>>(),
+        "frametime" => (0..600).map(|i| 14_000 + (i % 7) * 1_000).collect::<Vec<i64>>(),
+        "fps" => (0..600).map(|i| 60.0 + (i % 7) as f64).collect::<Vec<f64>>()
+    )
+    .unwrap();
+    df.apply("elapsed", |c| {
+        c.cast(&DataType::Duration(TimeUnit::Nanoseconds)).unwrap()
+    })
+    .unwrap();
+    df.apply("frametime", |c| {
+        c.cast(&DataType::Duration(TimeUnit::Microseconds)).unwrap()
+    })
+    .unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+
+    press(&mut app, KeyCode::Char('c'));
+    assert_eq!(app.chart.modal.mark(), Mark::Line);
+    app.chart.modal.spec.encoding.y.field = vec!["frametime".to_string()];
+    // Through a mark change, which keeps only the Y columns the chart takes.
+    app.chart.modal.set_mark(Mark::Scatter);
+    app.chart.modal.set_mark(Mark::Line);
+    assert_eq!(app.chart.modal.y(), ["frametime"]);
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    let area = Rect::new(0, 0, 100, 30);
+    let mut buf = Buffer::empty(area);
+    Widget::render(&mut app, area, &mut buf);
+    let text = common::buffer_text(&buf);
+    assert!(text.contains("16ms") && text.contains("2m"), "{text}");
+
+    app.chart.modal.set_mark(Mark::Box);
+    assert!(app.chart.modal.y().is_empty(), "{:?}", app.chart.modal.y());
+}
+
 /// Every type shows the same shelves; one it does not use is dimmed, with why, and
 /// focus passes over it.
 #[test]

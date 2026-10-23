@@ -1120,6 +1120,8 @@ fn render_xy_chart(
     };
     let y_spec = if y.log {
         AxisSpec::y_log(y_bounds, &y_numbers, &y.title)
+    } else if y.kind == XAxisTemporalKind::Duration {
+        AxisSpec::calendar(y_bounds, y.kind, &y_numbers, &y.title)
     } else {
         AxisSpec::y_numbers(y_bounds, &y_numbers, &y.title)
     };
@@ -1158,7 +1160,7 @@ fn render_xy_chart(
                 theme,
                 g,
                 (at, &x.title, written),
-                &y.numbers,
+                y,
                 values,
                 &lines.names,
                 other_at,
@@ -1189,7 +1191,7 @@ fn readout_entries(
     theme: &Theme,
     g: &Glyphs,
     (x, x_title, written): (f64, &str, String),
-    y: &AxisNumbers,
+    y: &Axis,
     series: &[Vec<(f64, f64)>],
     names: &[String],
     other_at: Option<usize>,
@@ -1208,7 +1210,7 @@ fn readout_entries(
         .enumerate()
     {
         let (value, value_style) = match value {
-            Some(v) => (y.write(v), value_style),
+            Some(v) => (crosshair::format_x(v, y.kind, &y.numbers), value_style),
             None => (g.null.to_string(), Style::default().fg(theme.dimmed())),
         };
         entries.push(crosshair::Entry {

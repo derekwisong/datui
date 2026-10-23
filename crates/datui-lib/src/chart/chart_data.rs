@@ -346,14 +346,29 @@ fn read_columns(
     Ok((read.df, rows))
 }
 
-/// A column's values as `f64`, one per row; null, NaN and infinities are `None`.
+/// A column's values as `f64`, one per row, a duration in seconds; null, NaN and
+/// infinities are `None`.
 fn f64_values(df: &DataFrame, column: &str) -> Result<Vec<Option<f64>>> {
-    let cast = df.column(column)?.cast(&DataType::Float64)?;
+    let values = df.column(column)?;
+    let per = per_second(values.dtype());
+    let cast = match per {
+        Some(_) => values.cast(&DataType::Int64)?.cast(&DataType::Float64)?,
+        None => values.cast(&DataType::Float64)?,
+    };
+    let per = per.unwrap_or(1.0);
     Ok(cast
         .f64()?
         .iter()
-        .map(|v| v.filter(|v| v.is_finite()))
+        .map(|v| v.map(|v| v / per).filter(|v| v.is_finite()))
         .collect())
+}
+
+/// `e`, of type `dtype`, as `f64`: a duration in seconds, as [`f64_values`] reads it.
+fn as_f64(e: Expr, dtype: Option<&DataType>) -> Expr {
+    match dtype.and_then(per_second) {
+        Some(per) => e.cast(DataType::Int64).cast(DataType::Float64) / lit(per),
+        None => e.cast(DataType::Float64),
+    }
 }
 
 /// X as `f64`, one per row: numbers as they are, temporal types as their ordinal and
@@ -709,7 +724,7 @@ pub fn prepare_chart_data(
         && let Some(limit) = sampling.limit.filter(|&n| n > 0)
         && sampling.known_total.is_none_or(|n| n > limit)
     {
-        match envelope_series(lf, x_column, x_dtype, y_columns, limit, sampling)? {
+        match envelope_series(lf, schema, x_column, y_columns, limit, sampling)? {
             Envelope::Drawn {
                 series,
                 breaks,
@@ -812,20 +827,20 @@ fn envelope_pass(lf: LazyFrame, cancel: &Arc<AtomicBool>) -> Result<DataFrame> {
 /// step). Rows without X are dropped; a step without a series' value breaks its line.
 fn envelope_series(
     lf: &LazyFrame,
+    schema: &Schema,
     x_column: &str,
-    x_dtype: &DataType,
     y_columns: &[String],
     limit: usize,
     sampling: &ChartSampling,
 ) -> Result<Envelope> {
     let cancel = &sampling.cancel;
+    let x_dtype = x_dtype(schema, x_column)?;
     // Temporal X as its ordinal and a duration in seconds, as `x_values` reads them.
     let x = match x_dtype {
-        DataType::Datetime(_, _) | DataType::Date | DataType::Time | DataType::Duration(_) => {
+        DataType::Datetime(_, _) | DataType::Date | DataType::Time => {
             col(x_column).cast(DataType::Int64).cast(DataType::Float64)
-                / lit(per_second(x_dtype).unwrap_or(1.0))
         }
-        _ => col(x_column).cast(DataType::Float64),
+        _ => as_f64(col(x_column), Some(x_dtype)),
     };
     // Not finite is null, so the aggregations below are a plain min and max, which
     // stream; a filter inside them does not.
@@ -874,7 +889,7 @@ fn envelope_series(
         .select(
             std::iter::once(x)
                 .chain(y_columns.iter().enumerate().map(|(i, y)| {
-                    finite(col(y.as_str()).cast(DataType::Float64)).alias(format!("__y{i}"))
+                    finite(as_f64(col(y.as_str()), schema.get(y))).alias(format!("__y{i}"))
                 }))
                 .collect::<Vec<_>>(),
         )
@@ -2258,13 +2273,17 @@ pub struct AggregateSpec<'a> {
     pub color: Option<ColorSplit<'a>>,
 }
 
-/// Y as an aggregate reads it: as numbers, or as it is for a distinct count, which
-/// counts strings and dates too.
-fn y_values(y: Expr, aggregate: crate::chart::chart_modal::Aggregate) -> Expr {
+/// Y, of type `dtype`, as an aggregate reads it: as numbers (a duration in seconds), or
+/// as it is for a distinct count, which counts strings and dates too.
+fn y_values(
+    y: Expr,
+    dtype: Option<&DataType>,
+    aggregate: crate::chart::chart_modal::Aggregate,
+) -> Expr {
     if aggregate.takes_any_y() {
         y
     } else {
-        y.cast(DataType::Float64)
+        as_f64(y, dtype)
     }
 }
 
@@ -2416,7 +2435,9 @@ pub fn prepare_aggregate_xy(
     let mut select = vec![x];
     let keys = vec![col("__x")];
     for (i, y) in ys.iter().enumerate() {
-        select.push(y_values(col(y.as_str()), spec.aggregate).alias(format!("__y{i}")));
+        select.push(
+            y_values(col(y.as_str()), schema.get(y), spec.aggregate).alias(format!("__y{i}")),
+        );
     }
     let (plan, keys) = group_plan(lf, (select, keys), spec.aggregate, spec.color);
     let plan = plan.filter(col("__x").is_not_null());
@@ -2579,7 +2600,7 @@ pub fn prepare_bar_aggregate(
     };
     let mut select = vec![until_cancelled(col(category), &sampling.cancel)];
     if let Some(value) = value {
-        select.push(y_values(col(value), aggregate).alias("__v"));
+        select.push(y_values(col(value), Some(&value_dtype), aggregate).alias("__v"));
     }
     let (plan, keys) = group_plan(lf, (select, vec![col(category)]), aggregate, color);
     let measure = match value {

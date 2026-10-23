@@ -4,7 +4,7 @@
 
 use std::borrow::Cow;
 
-use polars::prelude::Schema;
+use polars::prelude::{DataType, Schema};
 
 use crate::chart::chart_data::{
     self, BarData, BoxPlotData, ChartXRangeResult, HeatmapData, HistogramData, KdeData, RowsRead,
@@ -454,6 +454,18 @@ fn lines<'a>(data: Option<&'a PlotData>, context: &PlotContext<'_>) -> Plot<'a> 
             .collect::<Vec<_>>()
             .join(", ")
     };
+    // Durations stay durations through any aggregate but a count.
+    let durations = !ys.is_empty()
+        && ys.iter().all(|y| {
+            schema
+                .and_then(|s| s.get(y))
+                .is_some_and(|d| matches!(d, DataType::Duration(_)))
+        });
+    let y_kind = if durations && !aggregate.takes_any_y() && aggregate != Aggregate::Count {
+        XAxisTemporalKind::Duration
+    } else {
+        XAxisTemporalKind::Numeric
+    };
     let x_name = encoding.x.field.as_deref();
     let kind = match data {
         Some(PlotData::Lines(lines)) => lines.x_axis_kind,
@@ -488,8 +500,8 @@ fn lines<'a>(data: Option<&'a PlotData>, context: &PlotContext<'_>) -> Plot<'a> 
         y: Axis {
             title: y_title,
             numbers: y_numbers,
+            kind: y_kind,
             log: modal.log_scale,
-            ..Default::default()
         },
         scatter: spec.mark == Mark::Scatter,
         y_from_zero: modal.y_starts_at_zero,

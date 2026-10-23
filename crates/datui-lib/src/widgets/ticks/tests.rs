@@ -175,3 +175,15 @@ fn a_duration_axis_ticks_from_zero() {
     );
     assert!(calendar_steps(kind).all(|s| s.unit <= Unit::Day && (s.unit < Unit::Day || s.n == 1)));
 }
+
+/// Ticks under a second apart read in milliseconds or microseconds.
+#[test]
+fn fine_ticks_read_below_a_second() {
+    assert_eq!(elapsed_tick(0.0125, 0.0025), "12.5ms");
+    assert_eq!(elapsed_tick(0.015, 0.015 - 0.014), "15ms");
+    assert_eq!(elapsed_tick(0.25, 0.05), "250ms");
+    assert_eq!(elapsed_tick(0.00004, 0.00001), "40µs");
+    assert_eq!(elapsed_tick(0.0, 0.005), "0s");
+    assert_eq!(elapsed_tick(1.5, 0.5), "1.5s");
+    assert_eq!(elapsed_tick(120.0, 60.0), "2m");
+}

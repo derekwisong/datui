@@ -9,7 +9,7 @@ use std::sync::{Arc, OnceLock};
 use color_eyre::Result;
 use resvg::{tiny_skia, usvg};
 
-use crate::chart::chart_data::{BarData, segments};
+use crate::chart::chart_data::{BarData, XAxisTemporalKind, segments};
 use crate::chart::chart_plot::{Axis, Plot, PlotData};
 use crate::widgets::axes::{AxisSpec, TickSet};
 
@@ -928,6 +928,9 @@ fn axis_ticks(
     let spec = match (axis.log, across) {
         (true, _) => AxisSpec::y_log(bounds, &axis.numbers, ""),
         (false, true) => AxisSpec::calendar(bounds, axis.kind, &axis.numbers, ""),
+        (false, false) if axis.kind == XAxisTemporalKind::Duration => {
+            AxisSpec::calendar(bounds, axis.kind, &axis.numbers, "")
+        }
         (false, false) => AxisSpec::y_numbers(bounds, &axis.numbers, ""),
     };
     let (spacing, least) = if across {

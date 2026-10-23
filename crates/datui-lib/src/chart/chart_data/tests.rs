@@ -1108,6 +1108,26 @@ fn aggregate(
     .unwrap()
 }
 
+/// A duration Y charts in seconds too, as its points and as an aggregate of them.
+#[test]
+fn a_duration_y_is_in_seconds() {
+    use crate::chart::chart_modal::{Aggregate, Cumulative, TimeUnit};
+    let lf = df!(
+        "date" => &[0_i32, 0, 1],
+        "ret" => &[Some(16_000_i64), Some(18_000), None]
+    )
+    .unwrap()
+    .lazy()
+    .with_columns([
+        col("date").cast(DataType::Date),
+        col("ret").cast(DataType::Duration(polars::prelude::TimeUnit::Microseconds)),
+    ]);
+    let points = xy(&lf, "date", &["ret"], &all_rows());
+    assert_eq!(points.series[0], vec![(0.0, 0.016), (0.0, 0.018)]);
+    let mean = aggregate(&lf, TimeUnit::None, Aggregate::Mean, Cumulative::Off, None);
+    assert_eq!(mean.series[0], vec![(0.0, 0.017)]);
+}
+
 /// A month bucket makes one point per month, the aggregate over every row in
 /// it, per color group, at the month's first day.
 #[test]

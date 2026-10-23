@@ -232,6 +232,45 @@ impl<'a> AxisSpec<'a> {
                 least,
                 minor_gap,
             )],
+            // Seconds and up on calendar steps, and finer on nice ones.
+            Scale::Calendar {
+                kind: XAxisTemporalKind::Duration,
+                numbers,
+            } => vec![
+                calendar_sets(
+                    self.bounds,
+                    XAxisTemporalKind::Duration,
+                    length,
+                    spacing,
+                    least,
+                    minor_gap,
+                ),
+                number_sets(
+                    self.bounds,
+                    // Fractions of a second.
+                    &numbers.clone().fractional(),
+                    false,
+                    length,
+                    spacing,
+                    least,
+                    minor_gap,
+                )
+                .into_iter()
+                .map(|mut set| {
+                    let step = match set.ticks.as_slice() {
+                        [a, b, ..] => b - a,
+                        _ => 1.0,
+                    };
+                    set.levels = vec![
+                        set.ticks
+                            .iter()
+                            .map(|&v| ticks::elapsed_tick(v, step))
+                            .collect(),
+                    ];
+                    set
+                })
+                .collect(),
+            ],
             Scale::Calendar { kind, numbers } => {
                 let primary = calendar_sets(self.bounds, *kind, length, spacing, least, minor_gap);
                 let format = AxisFormat::ends_and_middle(self.bounds, numbers);

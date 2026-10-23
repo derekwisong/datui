@@ -194,6 +194,7 @@ fn open_modal() -> ChartModal {
             numeric: &["price".to_string(), "volume".to_string()],
             datetime: &["date".to_string()],
             bucketable: &["date".to_string()],
+            duration: &[],
             category: &["carrier".to_string()],
         },
         None,

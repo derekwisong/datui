@@ -509,6 +509,27 @@ fn test_tokenize_decimal_numbers() {
     }
 }
 
+/// An exponent is part of the number; an `e` with no digits after it is not.
+#[test]
+fn test_tokenize_exponents() {
+    for (text, number) in [
+        ("1e9", 1e9),
+        ("2.5E-3", 2.5e-3),
+        ("1e+2", 100.0),
+        (".5e1", 5.0),
+    ] {
+        assert_eq!(
+            tokenize(text).unwrap(),
+            vec![Token::Number(number)],
+            "{text}"
+        );
+    }
+    assert_eq!(
+        tokenize("2e").unwrap(),
+        vec![Token::Number(2.0), Token::Identifier("e".into())]
+    );
+}
+
 #[test]
 fn test_sanitize_duplicate_column_error() {
     let polars_msg = "duplicate: projections contained duplicate output name 'timestamp'. It's possible that multiple expressions are returning the same default column name. If this is the case, try renaming the columns with `.alias(\"new_name\")` to avoid duplicate column names.";

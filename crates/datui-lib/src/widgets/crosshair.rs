@@ -109,13 +109,14 @@ pub fn at_column(xs: &[f64], place: &PlotPlace, column: u16) -> Option<f64> {
         .min_by_key(|&v| place.column(v).abs_diff(column))
 }
 
-/// `x` as the readout writes it: in full, a date or time to the second, a number as
-/// the table writes its column.
+/// `x` as the readout writes it: in full, a date or time to the second, a duration in
+/// its units, a number as the table writes its column.
 pub fn format_x(x: f64, kind: XAxisTemporalKind, numbers: &AxisNumbers) -> String {
     let when = match kind {
         XAxisTemporalKind::Numeric => None,
         XAxisTemporalKind::Date => x_datetime(x, kind).map(|d| d.format("%Y-%m-%d").to_string()),
         XAxisTemporalKind::Time => x_time(x).map(|t| t.format("%H:%M:%S%.f").to_string()),
+        XAxisTemporalKind::Duration => Some(crate::widgets::ticks::elapsed(x)),
         _ => x_datetime(x, kind).map(|d| d.format("%Y-%m-%d %H:%M:%S%.f").to_string()),
     };
     when.unwrap_or_else(|| numbers.write(x))

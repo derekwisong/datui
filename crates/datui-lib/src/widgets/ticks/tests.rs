@@ -138,3 +138,40 @@ fn values_round_trip_through_dates() {
         assert_eq!(from_datetime(dt, kind), Some(v), "{kind:?}");
     }
 }
+
+/// A length of time reads in its units, largest first, leaving out those at zero.
+#[test]
+fn elapsed_reads_in_units() {
+    assert_eq!(elapsed(0.0), "0s");
+    assert_eq!(elapsed(45.0), "45s");
+    assert_eq!(elapsed(90.0), "1m30s");
+    assert_eq!(elapsed(7_200.0), "2h");
+    assert_eq!(elapsed(100_800.0), "1d4h");
+    assert_eq!(elapsed(-2.5), "-2.5s");
+    assert_eq!(elapsed(0.000_25), "0.00025s");
+    assert_eq!(elapsed(-0.0), "0s");
+}
+
+/// A duration axis ticks on whole minutes from zero, labeled as lengths of time.
+#[test]
+fn a_duration_axis_ticks_from_zero() {
+    let kind = XAxisTemporalKind::Duration;
+    let (lo, hi) = (
+        to_datetime(-30.0, kind).unwrap(),
+        to_datetime(400.0, kind).unwrap(),
+    );
+    let step = calendar_steps(kind)
+        .find(|s| s.unit == Unit::Minute && s.n == 2)
+        .unwrap();
+    let ticks = calendar_ticks(lo, hi, step);
+    let values: Vec<f64> = ticks
+        .iter()
+        .map(|t| from_datetime(*t, kind).unwrap())
+        .collect();
+    assert_eq!(values, [0.0, 120.0, 240.0, 360.0]);
+    assert_eq!(
+        calendar_labels(&ticks, step.unit, kind, true),
+        ["0s", "2m", "4m", "6m"]
+    );
+    assert!(calendar_steps(kind).all(|s| s.unit <= Unit::Day && (s.unit < Unit::Day || s.n == 1)));
+}

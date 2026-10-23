@@ -23,7 +23,8 @@ pub enum XAxisTemporalKind {
     DatetimeUs, // x = microseconds since epoch
     DatetimeMs,
     DatetimeNs,
-    Time, // x = nanoseconds since midnight
+    Time,     // x = nanoseconds since midnight
+    Duration, // x = seconds
 }
 
 fn x_axis_temporal_kind(dtype: &DataType) -> XAxisTemporalKind {
@@ -35,6 +36,7 @@ fn x_axis_temporal_kind(dtype: &DataType) -> XAxisTemporalKind {
             TimeUnit::Milliseconds => XAxisTemporalKind::DatetimeMs,
         },
         DataType::Time => XAxisTemporalKind::Time,
+        DataType::Duration(_) => XAxisTemporalKind::Duration,
         _ => XAxisTemporalKind::Numeric,
     }
 }
@@ -64,7 +66,17 @@ pub(crate) fn x_datetime(v: f64, kind: XAxisTemporalKind) -> Option<NaiveDateTim
         XAxisTemporalKind::DatetimeNs => {
             DateTime::from_timestamp_millis((v.trunc() as i64) / 1_000_000).map(|dt| dt.naive_utc())
         }
-        XAxisTemporalKind::Numeric | XAxisTemporalKind::Time => None,
+        XAxisTemporalKind::Numeric | XAxisTemporalKind::Time | XAxisTemporalKind::Duration => None,
+    }
+}
+
+/// A duration's stored units per second: a duration X is drawn in seconds.
+fn per_second(dtype: &DataType) -> Option<f64> {
+    match dtype {
+        DataType::Duration(TimeUnit::Nanoseconds) => Some(1e9),
+        DataType::Duration(TimeUnit::Microseconds) => Some(1e6),
+        DataType::Duration(TimeUnit::Milliseconds) => Some(1e3),
+        _ => None,
     }
 }
 
@@ -90,6 +102,9 @@ pub fn x_axis_label_at(
 ) -> Option<String> {
     if kind == XAxisTemporalKind::Numeric {
         return numbers.label(v, level);
+    }
+    if kind == XAxisTemporalKind::Duration {
+        return (level == 0).then(|| crate::widgets::ticks::elapsed(v));
     }
     if kind == XAxisTemporalKind::Time {
         let pattern = ["%H:%M:%S", "%H:%M"].get(level)?;
@@ -341,13 +356,18 @@ fn f64_values(df: &DataFrame, column: &str) -> Result<Vec<Option<f64>>> {
         .collect())
 }
 
-/// X as `f64`, one per row: numbers as they are, temporal types as their ordinal (see
-/// [`XAxisTemporalKind`]).
+/// X as `f64`, one per row: numbers as they are, temporal types as their ordinal and
+/// durations in seconds (see [`XAxisTemporalKind`]).
 fn x_values(df: &DataFrame, column: &str, dtype: &DataType) -> Result<Vec<Option<f64>>> {
     match dtype {
-        DataType::Datetime(_, _) | DataType::Date | DataType::Time => {
+        DataType::Datetime(_, _) | DataType::Date | DataType::Time | DataType::Duration(_) => {
             let ordinal = df.column(column)?.cast(&DataType::Int64)?;
-            Ok(ordinal.i64()?.iter().map(|v| v.map(|v| v as f64)).collect())
+            let per = per_second(dtype).unwrap_or(1.0);
+            Ok(ordinal
+                .i64()?
+                .iter()
+                .map(|v| v.map(|v| v as f64 / per))
+                .collect())
         }
         _ => f64_values(df, column),
     }
@@ -799,10 +819,11 @@ fn envelope_series(
     sampling: &ChartSampling,
 ) -> Result<Envelope> {
     let cancel = &sampling.cancel;
-    // Temporal X as its ordinal, as `x_values` reads it.
+    // Temporal X as its ordinal and a duration in seconds, as `x_values` reads them.
     let x = match x_dtype {
         DataType::Datetime(_, _) | DataType::Date | DataType::Time | DataType::Duration(_) => {
             col(x_column).cast(DataType::Int64).cast(DataType::Float64)
+                / lit(per_second(x_dtype).unwrap_or(1.0))
         }
         _ => col(x_column).cast(DataType::Float64),
     };

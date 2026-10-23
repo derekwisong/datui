@@ -405,6 +405,7 @@ pub enum ShelfUse {
 #[derive(Clone, Copy, Default)]
 pub struct ChartColumns<'a> {
     pub numeric: &'a [String],
+    /// Dates, datetimes, times and durations: an X in time.
     pub datetime: &'a [String],
     /// Dates and datetimes, which a time bucket truncates (not times of day).
     pub bucketable: &'a [String],
@@ -670,7 +671,7 @@ impl ChartModal {
     }
 
     /// Show Me: the chart a column's type suggests. A number: its histogram. A
-    /// category: a bar of its counts. A date or time: a line over it, of the
+    /// category: a bar of its counts. A date, time or duration: a line over it, of the
     /// first numeric column, with Y left to pick when there is none.
     fn suggest(&mut self, name: &str, dtype: &DataType) {
         let name = name.to_string();

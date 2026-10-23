@@ -459,6 +459,42 @@ fn a_date_x_is_ordinal() {
     assert_eq!(result.series[0], vec![(0.0, 3.0), (1.0, 1.0)]);
 }
 
+/// A duration X charts in seconds, whatever unit it is stored in, sampled or drawn as
+/// its envelope.
+#[test]
+fn a_duration_x_is_in_seconds() {
+    let lf = df!("t" => &[Some(1_500_000_000_i64), None, Some(0)], "y" => &[1.0_f64, 2.0, 3.0])
+        .unwrap()
+        .lazy()
+        .with_column(col("t").cast(DataType::Duration(TimeUnit::Nanoseconds)));
+    let result = xy(&lf, "t", &["y"], &all_rows());
+    assert_eq!(result.x_axis_kind, XAxisTemporalKind::Duration);
+    assert_eq!(result.series[0], vec![(0.0, 3.0), (1.5, 1.0)]);
+
+    let ms: Vec<i64> = (0..1_000).map(|i| i * 1_000).collect();
+    let lf = df!("t" => &ms, "y" => (0..1_000).map(f64::from).collect::<Vec<_>>())
+        .unwrap()
+        .lazy()
+        .with_column(col("t").cast(DataType::Duration(TimeUnit::Milliseconds)));
+    let schema = lf.clone().collect_schema().unwrap();
+    let result = prepare_chart_data(
+        &lf,
+        schema.as_ref(),
+        "t",
+        &["y".into()],
+        &ChartSampling::rows(Some(100)),
+        true,
+    )
+    .unwrap();
+    assert_eq!(result.rows.envelope_steps, Some(50));
+    let points = &result.series[0];
+    assert_eq!(points.first(), Some(&(0.0, 0.0)));
+    assert!(
+        points.iter().all(|&(x, y)| y >= x && y < x + 20.0),
+        "{points:?}"
+    );
+}
+
 fn with_outliers() -> LazyFrame {
     // 1..=100 and two far outliers.
     let mut v: Vec<f64> = (1..=100).map(f64::from).collect();

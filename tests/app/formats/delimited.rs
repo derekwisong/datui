@@ -1070,8 +1070,8 @@ fn the_contributed_specs_parse() {
     );
 }
 
-/// The MangoHud spec types a log's columns and reads the game and the session's
-/// start from its name. A folder of logs leaves out the summary beside each, which
+/// The MangoHud spec types a log's columns, reads the game and the session's start
+/// from its name, and adds the time since to the start. A folder of logs leaves out the summary beside each, which
 /// the spec does not match, and a note names it.
 #[test]
 fn the_mangohud_spec_reads_a_folder_of_logs_and_their_names() {
@@ -1108,7 +1108,23 @@ fn the_mangohud_spec_reads_a_folder_of_logs_and_their_names() {
         "{notes:?}"
     );
     assert_eq!(df.column("fps").unwrap().dtype(), &DataType::Float64);
-    assert_eq!(df.column("elapsed").unwrap().dtype(), &DataType::Int64);
+    assert_eq!(
+        df.column("elapsed").unwrap().dtype(),
+        &DataType::Duration(TimeUnit::Nanoseconds)
+    );
+    // The session's start plus the time since: when each sample was taken.
+    let wall = df.column("wall").unwrap();
+    assert_eq!(
+        wall.dtype(),
+        &DataType::Datetime(TimeUnit::Nanoseconds, None)
+    );
+    assert!(
+        wall.get(1)
+            .unwrap()
+            .to_string()
+            .starts_with("2026-10-22 18:40:30.200"),
+        "{wall:?}"
+    );
     assert_eq!(
         df.column("game").unwrap().str().unwrap().get(0),
         Some("vkcube")

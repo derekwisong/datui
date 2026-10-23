@@ -32,4 +32,5 @@ ram_used = { type = "f64", unit = "GiB" }
 swap_used = { type = "f64", unit = "GiB" }
 process_rss = { type = "f64", unit = "GiB", description = "The game's own memory" }
 cpu_mhz = { type = "f64", unit = "MHz" }
-elapsed = { type = "i64", unit = "ns", description = "Time since logging started" }
+elapsed = { type = "duration", unit = "ns", description = "Time since logging started" }
+wall = { from = ["start", "elapsed"], as = "datetime", description = "When the sample was taken" }

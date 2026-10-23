@@ -453,7 +453,7 @@ pub const SCREENS: &[Screen] = &[
                     k("S", "Sample", "Draw a sample into memory; the view works on it")
                         .more("Draw a sample of the source into memory; the query, filters and sort then run over the sample. Rows show as they arrive (Esc stops and keeps them), and the footer says, for example, sample 100,000 of 36.8M. Analysis, charts and export read the sample. S again edits it; the Method No sample, or R, removes it"),
                     k("R", "Reset", "Clear query, filters, sort, layout, view")
-                        .more("Reset table: clear the sample, query, filters, sort, column order, hidden columns and widths, frozen columns, pivot/melt, drill-down and the applied view"),
+                        .more("Reset table: clear the sample, column types, query, filters, sort, column order, hidden columns and widths, frozen columns, pivot/melt, drill-down and the applied view"),
                 ],
             },
             Group {

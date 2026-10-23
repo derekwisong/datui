@@ -36,14 +36,15 @@ copies have no file size and no such tab.
 <kbd>Enter</kbd> on the Schema tab, or **Change type...** in the cell menu
 (right-click a cell), changes the column's type for the view. It takes the same
 names, formats and rules as a [format spec's `type`](../formats/format-specs.md#column-types).
-**Combine into datetime...** in the cell menu, on a text, date or time column,
-makes a new column the way a spec's [derived column](../formats/format-specs.md#derived-columns)
-does.
+**Combine into datetime...** in the cell menu, on a text, date, time or datetime
+column, makes a new column the way a spec's [derived column](../formats/format-specs.md#derived-columns)
+does: a date and a time, or a datetime and a duration (`start` plus `elapsed`).
 
 | Choice | Does |
 |---|---|
 | A type name (`i64`, `f64`, `str`, `bool`, …) | The column takes that type at once. A value that does not fit is null |
 | `date`, `time`, `datetime` | Then a format: each line shows what it makes of the column's first value (`03/04/2024 → 2024-04-03`), or type your own (`%d.%m.%Y`) |
+| `duration`, on numbers | Then the unit they count: `ns`, `us`, `ms` or `s`, each line showing the first value as a duration |
 | `as read` | The type the read gave the column |
 
 - The type row shows a changed type in the accent, and the footer says
@@ -55,7 +56,10 @@ does.
 - A [saved view](views.md) keeps each change in the form of a spec's
   `[columns]` entry: `{ "name": "zip", "type": "str" }`. On data without the column, the
   step is left out with a note.
-- A query, a pivot or a melt starts from the data as read, without the changes.
+- A query, a pivot or a melt reads the columns as changed, and the changes
+  outlive it. Changing a type under a query runs the query again. Under a pivot,
+  melt or drill-down, and on a column a query made, types cannot change.
+- Reset (<kbd>R</kbd>) drops the changes.
 
 ## Tabs by format
 

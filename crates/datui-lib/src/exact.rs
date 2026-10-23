@@ -94,10 +94,71 @@ pub fn out_of_range(value: &AnyValue) -> Option<String> {
 
 const NANOS_PER_DAY: i64 = 86_400_000_000_000;
 
+/// A duration as the table shows it, exactly: days, hours and minutes, then seconds
+/// with their fraction (`1d 4h`, `1m 23.5s`); under a second in the largest unit that
+/// is at least one, with its fraction (`16.6667ms`, `1.5µs`, `999ns`). A negative one
+/// takes one sign in front (`-1m 30s`).
+pub fn duration_text(v: i64, unit: TimeUnit) -> String {
+    let per_ns: i128 = match unit {
+        TimeUnit::Milliseconds => 1_000_000,
+        TimeUnit::Microseconds => 1_000,
+        TimeUnit::Nanoseconds => 1,
+    };
+    let ns = (i128::from(v) * per_ns).unsigned_abs();
+    let mut out = String::from(if v < 0 { "-" } else { "" });
+    // `whole` of `per` nanoseconds, and the fraction past them.
+    let decimal = |out: &mut String, n: u128, per: u128, name: &str| {
+        let _ = write!(out, "{}", n / per);
+        let digits = per.ilog10() as usize;
+        if digits > 0 && !n.is_multiple_of(per) {
+            let fraction = format!("{:0digits$}", n % per);
+            out.push('.');
+            out.push_str(fraction.trim_end_matches('0'));
+        }
+        out.push_str(name);
+    };
+    const SECOND: u128 = 1_000_000_000;
+    if ns < SECOND {
+        let (per, name) = match ns {
+            1_000_000.. => (1_000_000, "ms"),
+            1_000.. => (1_000, "µs"),
+            _ => (1, "ns"),
+        };
+        decimal(&mut out, ns, per, name);
+        return out;
+    }
+    let mut rest = ns;
+    let mut parts = 0;
+    for (per, name) in [
+        (86_400 * SECOND, "d"),
+        (3_600 * SECOND, "h"),
+        (60 * SECOND, "m"),
+    ] {
+        if rest >= per {
+            if parts > 0 {
+                out.push(' ');
+            }
+            let _ = write!(out, "{}{name}", rest / per);
+            rest %= per;
+            parts += 1;
+        }
+    }
+    if rest > 0 {
+        if parts > 0 {
+            out.push(' ');
+        }
+        decimal(&mut out, rest, SECOND, "s");
+    }
+    out
+}
+
 /// [`AnyValue::str_value`], which panics on a date past the calendar, with such a
 /// value written as its stored number, and a list or struct holding one written
 /// as [`nested_compact`] does.
 pub fn str_value<'a>(value: &AnyValue<'a>) -> Cow<'a, str> {
+    if let AnyValue::Duration(v, unit) = value {
+        return Cow::Owned(duration_text(*v, *unit));
+    }
     match past_calendar_text(value) {
         Some(text) => Cow::Owned(text),
         None => value.str_value(),

@@ -63,6 +63,13 @@ fn dates_and_times_read_in_their_forms() {
     let ms = DataType::Duration(TimeUnit::Milliseconds);
     assert_eq!(stored("1d 2h", &ms), 26 * 3_600_000);
     assert_eq!(stored("-1m -30s", &ms), -90_000);
+    // As the table writes them: a fraction, and one sign for the whole.
+    assert_eq!(stored("-1m 30s", &ms), -90_000);
+    assert_eq!(stored("1m 23.5s", &ms), 83_500);
+    assert_eq!(
+        stored("16.6667ms", &DataType::Duration(TimeUnit::Nanoseconds)),
+        16_666_700
+    );
     assert_eq!(
         stored("1500µs", &DataType::Duration(TimeUnit::Microseconds)),
         1500
@@ -91,6 +98,8 @@ fn what_does_not_read_says_why() {
             .contains("is not a duration")
     );
     assert!(err("1ns", &DataType::Duration(TimeUnit::Microseconds)).contains("finer"));
+    assert!(err("1.5ns", &DataType::Duration(TimeUnit::Nanoseconds)).contains("is not a duration"));
+    assert!(err("1..5s", &DataType::Duration(TimeUnit::Nanoseconds)).contains("is not a duration"));
     assert!(err("abc", &DataType::Decimal(10, 2)).contains("is not a number"));
     assert!(err("yes", &DataType::Boolean).contains("true or false"));
 }
@@ -149,6 +158,14 @@ fn every_value_reads_back_from_its_text() {
         (
             DataType::Duration(TimeUnit::Nanoseconds),
             AnyValue::Duration(-1_500, TimeUnit::Nanoseconds),
+        ),
+        (
+            DataType::Duration(TimeUnit::Nanoseconds),
+            AnyValue::Duration(16_666_700, TimeUnit::Nanoseconds),
+        ),
+        (
+            DataType::Duration(TimeUnit::Milliseconds),
+            AnyValue::Duration(-90_500, TimeUnit::Milliseconds),
         ),
         (DataType::Decimal(10, 2), AnyValue::Decimal(150, 10, 2)),
     ];

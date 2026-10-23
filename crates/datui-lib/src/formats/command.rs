@@ -637,7 +637,7 @@ pub(crate) fn text_table(df: &polars::prelude::DataFrame) -> String {
                 .map(|c| match c.get(i) {
                     Ok(polars::prelude::AnyValue::String(s)) => s.to_string(),
                     Ok(polars::prelude::AnyValue::StringOwned(s)) => s.to_string(),
-                    Ok(v) => v.to_string(),
+                    Ok(v) => crate::exact::str_value(&v).into_owned(),
                     Err(_) => String::new(),
                 })
                 .collect(),

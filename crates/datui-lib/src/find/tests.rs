@@ -353,7 +353,7 @@ fn a_date_past_the_calendar_and_durations_are_text() {
     let t = Series::new("t".into(), [3_600_000_000_000i64, 0])
         .cast(&DataType::Time)
         .unwrap();
-    let dur = Series::new("dur".into(), [86_400_000i64, 1])
+    let dur = Series::new("dur".into(), [86_400_000i64, 16_500])
         .cast(&DataType::Duration(TimeUnit::Milliseconds))
         .unwrap();
     let df = DataFrame::new_infer_height(vec![d.into(), t.into(), dur.into()]).unwrap();
@@ -367,6 +367,9 @@ fn a_date_past_the_calendar_and_durations_are_text() {
     assert_eq!(cells(&time), [(0, "t")]);
     let dur = walk(&df, &spec("1d", false), None, start, Direction::Next, 1);
     assert_eq!(cells(&dur), [(0, "dur")]);
+    // As the table shows it.
+    let dur = walk(&df, &spec("16.5s", false), None, start, Direction::Next, 1);
+    assert_eq!(cells(&dur), [(1, "dur")]);
 }
 
 /// A sorted view costs a whole pass for any window, so it is read in one: the

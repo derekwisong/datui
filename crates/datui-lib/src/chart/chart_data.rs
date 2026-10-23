@@ -179,7 +179,8 @@ struct Held {
 }
 
 struct HeldCounts {
-    category: String,
+    /// The column, or columns, counted.
+    keys: Vec<String>,
     counted: Counted,
 }
 
@@ -1587,7 +1588,7 @@ fn count_bars(
     max_categories: usize,
     sampling: &ChartSampling,
 ) -> Result<BarData> {
-    let counted = match held_counts(sampling, category, max_categories)? {
+    let counted = match held_counts(sampling, &[category], max_categories)? {
         Some(counted) => counted,
         None => {
             // A view the sample size takes whole is read as the other charts read it,
@@ -1603,10 +1604,10 @@ fn count_bars(
                 None
             };
             let counted = match whole {
-                Some(df) => count_frame(&df, category, max_categories)?,
-                None => stream_counts(lf, category, max_categories, &sampling.cancel)?,
+                Some(df) => count_frame(&df, &[category], max_categories)?,
+                None => stream_counts(lf, &[category], max_categories, &sampling.cancel)?,
             };
-            hold_counts(sampling, category, &counted);
+            hold_counts(sampling, &[category], &counted);
             counted
         }
     };
@@ -1655,50 +1656,46 @@ fn count_bars(
     Ok(data(bars, more))
 }
 
-/// The view's counts of `category` without reading it: counted before, or counted now
-/// from rows held that are the whole view.
+/// The view's counts of the categories `keys` make without reading them: counted
+/// before, or counted now from rows held that are the whole view.
 fn held_counts(
     sampling: &ChartSampling,
-    category: &str,
+    keys: &[&str],
     max_categories: usize,
 ) -> Result<Option<Counted>> {
     let holding = sampling.held.0.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(held) = holding.counts.iter().find(|h| h.category == category) {
+    if let Some(held) = holding.counts.iter().find(|h| h.keys == keys) {
         return Ok(Some(held.counted.clone()));
     }
     let Some(whole) = holding
         .rows
         .as_ref()
-        .filter(|h| h.rows.sample_size.is_none() && h.df.column(category).is_ok())
+        .filter(|h| h.rows.sample_size.is_none() && keys.iter().all(|k| h.df.column(k).is_ok()))
     else {
         return Ok(None);
     };
-    let counted = count_frame(&whole.df, category, max_categories)?;
+    let counted = count_frame(&whole.df, keys, max_categories)?;
     drop(holding);
-    hold_counts(sampling, category, &counted);
+    hold_counts(sampling, keys, &counted);
     Ok(Some(counted))
 }
 
-fn hold_counts(sampling: &ChartSampling, category: &str, counted: &Counted) {
+fn hold_counts(sampling: &ChartSampling, keys: &[&str], counted: &Counted) {
     let mut holding = sampling.held.0.lock().unwrap_or_else(|e| e.into_inner());
-    holding.counts.retain(|h| h.category != category);
+    holding.counts.retain(|h| h.keys != keys);
     if holding.counts.len() >= HELD_COUNTS {
         holding.counts.remove(0);
     }
     holding.counts.push(HeldCounts {
-        category: category.to_string(),
+        keys: keys.iter().map(|k| k.to_string()).collect(),
         counted: counted.clone(),
     });
 }
 
-/// Count the categories of rows already in memory.
-pub(crate) fn count_frame(
-    df: &DataFrame,
-    category: &str,
-    max_categories: usize,
-) -> Result<Counted> {
-    let mut tally = Tally::new(category, max_categories);
-    tally.observe(&df.select([category])?)?;
+/// Count the categories `keys` make in rows already in memory.
+pub(crate) fn count_frame(df: &DataFrame, keys: &[&str], max_categories: usize) -> Result<Counted> {
+    let mut tally = Tally::new(keys, max_categories);
+    tally.observe(&df.select(keys.iter().copied())?)?;
     Ok(tally.finish()?)
 }
 
@@ -1724,9 +1721,10 @@ const HELD_COUNTS: usize = 4;
 const MERGE_AFTER: usize = 1 << 16;
 
 /// Rows per category, added up batch by batch. Holds one row per category and the
-/// batches since the last merge, never the rows themselves.
+/// batches since the last merge, never the rows themselves. A category is a value of
+/// one key column, or a combination of the values of several.
 pub(crate) struct Tally {
-    category: PlSmallStr,
+    keys: Vec<PlSmallStr>,
     max: usize,
     counts: Option<DataFrame>,
     /// Rows of `counts` as last merged: one per category.
@@ -1738,9 +1736,9 @@ pub(crate) struct Tally {
 }
 
 impl Tally {
-    pub(crate) fn new(category: &str, max: usize) -> Self {
+    pub(crate) fn new(keys: &[&str], max: usize) -> Self {
         Self {
-            category: category.into(),
+            keys: keys.iter().map(|&k| k.into()).collect(),
             max,
             counts: None,
             merged: 0,
@@ -1757,7 +1755,7 @@ impl Tally {
             return Ok(true);
         }
         self.rows += batch.height();
-        let part = group_counts(batch, &self.category, false)?;
+        let part = group_counts(batch, &self.keys, false)?;
         let mut counts = match self.counts.take() {
             Some(mut counts) => {
                 counts.vstack_mut(&part)?;
@@ -1766,7 +1764,7 @@ impl Tally {
             None => part,
         };
         if counts.height() - self.merged >= self.merged.max(MERGE_AFTER) {
-            counts = group_counts(&counts, &self.category, true)?;
+            counts = group_counts(&counts, &self.keys, true)?;
             self.merged = counts.height();
             self.too_many = self.merged > self.max;
         }
@@ -1776,7 +1774,7 @@ impl Tally {
 
     pub(crate) fn finish(self) -> PolarsResult<Counted> {
         let counts = match self.counts {
-            Some(counts) => Some(group_counts(&counts, &self.category, true)?),
+            Some(counts) => Some(group_counts(&counts, &self.keys, true)?),
             None => None,
         };
         if self.too_many || counts.as_ref().is_some_and(|c| c.height() > self.max) {
@@ -1791,8 +1789,8 @@ impl Tally {
 
 /// One row per category of `df` with how many rows it stands for: its rows, or when
 /// `summed` the counts they already carry, added up. A null category is one of them.
-fn group_counts(df: &DataFrame, category: &str, summed: bool) -> PolarsResult<DataFrame> {
-    let by = df.group_by([category])?;
+fn group_counts(df: &DataFrame, keys: &[PlSmallStr], summed: bool) -> PolarsResult<DataFrame> {
+    let by = df.group_by(keys.iter().cloned())?;
     let groups = by.get_groups();
     let counts: Vec<u64> = if summed {
         let carried: Vec<u64> = df
@@ -1821,32 +1819,35 @@ fn group_counts(df: &DataFrame, category: &str, summed: bool) -> PolarsResult<Da
 /// table can take minutes, and the next chart waits).
 fn stream_counts(
     lf: &LazyFrame,
-    category: &str,
+    keys: &[&str],
     max: usize,
     cancel: &Arc<AtomicBool>,
 ) -> Result<Counted> {
-    let state = Arc::new(Mutex::new(Tally::new(category, max)));
+    let state = Arc::new(Mutex::new(Tally::new(keys, max)));
     let callback_state = Arc::clone(&state);
     let callback_cancel = Arc::clone(cancel);
-    let sink = lf.clone().select([col(category)]).sink_batches(
-        PlanCallback::new(move |batch: DataFrame| {
-            let mut tally = callback_state
-                .lock()
-                .map_err(|_| PolarsError::ComputeError("count lock failed".into()))?;
-            if callback_cancel.load(Ordering::Relaxed) {
-                tally.cancelled = true;
-                return Ok(true);
-            }
-            tally.observe(&batch)
-        }),
-        false,
-        None,
-    )?;
+    let sink = lf
+        .clone()
+        .select(keys.iter().map(|&k| col(k)).collect::<Vec<_>>())
+        .sink_batches(
+            PlanCallback::new(move |batch: DataFrame| {
+                let mut tally = callback_state
+                    .lock()
+                    .map_err(|_| PolarsError::ComputeError("count lock failed".into()))?;
+                if callback_cancel.load(Ordering::Relaxed) {
+                    tally.cancelled = true;
+                    return Ok(true);
+                }
+                tally.observe(&batch)
+            }),
+            false,
+            None,
+        )?;
     // Streaming whatever the setting: a count per category is all this holds.
     crate::analysis::statistics::collect_lazy(sink, true)?;
     let tally = std::mem::replace(
         &mut *state.lock().unwrap_or_else(|e| e.into_inner()),
-        Tally::new(category, max),
+        Tally::new(keys, max),
     );
     // Part of the view counted is not a count of it. A pass that finished before it
     // was told to stop is whole, and kept.
@@ -1858,11 +1859,121 @@ fn stream_counts(
 
 // ----- Color: one series per value -----
 
-/// A color split: the column and the values given a group each, in color order (`None`
-/// for nulls). With `other`, all other values form one more group, [`OTHER`].
+/// What a color tells rows apart by: one column's values, or each combination of
+/// several columns' values, written as one label (`game · 2026-10-22 18:40`). A date or
+/// datetime is written as ISO 8601 at one precision for the whole chart: the least
+/// that every value counted needs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColorKey {
+    pub columns: Vec<String>,
+    /// Per column, the format its dates or datetimes are written in; `None` as text.
+    formats: Vec<Option<String>>,
+}
+
+/// Between the values of several columns in a color's label.
+pub const COLOR_JOIN: &str = " · ";
+
+/// A null value in a label, and the name of a null group.
+const NULL_LABEL: &str = "null";
+
+impl ColorKey {
+    /// One column's values, written as text.
+    pub fn column(name: &str) -> Self {
+        Self {
+            columns: vec![name.to_string()],
+            formats: vec![None],
+        }
+    }
+
+    /// The key's columns, each once.
+    fn names(&self) -> Vec<&str> {
+        self.columns.iter().map(String::as_str).collect()
+    }
+
+    /// Each row's label in a plan: of one column its value as text, null for null; of
+    /// several, their values joined, a null one written `null`.
+    fn expr(&self) -> Expr {
+        let mut parts: Vec<Expr> = self
+            .columns
+            .iter()
+            .zip(&self.formats)
+            .map(|(c, format)| match format {
+                Some(format) => crate::past_calendar::format_expr(col(c.as_str()), format.clone()),
+                None => crate::past_calendar::text_expr(col(c.as_str()), CastOptions::NonStrict),
+            })
+            .collect();
+        if parts.len() == 1 {
+            return parts.remove(0);
+        }
+        let parts: Vec<Expr> = parts
+            .into_iter()
+            .map(|p| p.fill_null(lit(NULL_LABEL)))
+            .collect();
+        concat_str(parts, COLOR_JOIN, false)
+    }
+
+    /// Each row's label in `df`, which holds the key's columns.
+    fn labels(&self, df: &DataFrame) -> Result<Series> {
+        const LABEL: &str = "__datui_color";
+        let names = self.names();
+        let out = df
+            .select(names.iter().copied())?
+            .lazy()
+            .select([self.expr().alias(LABEL)])
+            .collect()?;
+        Ok(out.column(LABEL)?.as_materialized_series().clone())
+    }
+}
+
+/// How a date or datetime column is written in a label, from the values it has:
+/// `%Y-%m-%d`, and for a datetime the time to the minute, with seconds and their
+/// fraction only as far as some value needs, and the zone when it has one.
+fn label_format(values: &Series) -> Result<Option<String>> {
+    let (unit, zone) = match values.dtype() {
+        DataType::Date => return Ok(Some("%Y-%m-%d".to_string())),
+        DataType::Datetime(unit, zone) => (*unit, zone.is_some()),
+        _ => return Ok(None),
+    };
+    let per_second: i64 = match unit {
+        TimeUnit::Milliseconds => 1_000,
+        TimeUnit::Microseconds => 1_000_000,
+        TimeUnit::Nanoseconds => 1_000_000_000,
+    };
+    let stored = values.to_physical_repr().cast(&DataType::Int64)?;
+    let mut seconds = false;
+    // The finest fraction a value has, in places of three: 0, 3, 6 or 9 digits.
+    let mut digits = 0;
+    for v in stored.i64()?.iter().flatten() {
+        let mut fraction = v.rem_euclid(per_second);
+        seconds |= fraction != 0 || v.div_euclid(per_second).rem_euclid(60) != 0;
+        if fraction != 0 {
+            let mut places = per_second.ilog10();
+            while places > 3 && fraction % 1_000 == 0 {
+                fraction /= 1_000;
+                places -= 3;
+            }
+            digits = digits.max(places);
+        }
+    }
+    let mut format = "%Y-%m-%d %H:%M".to_string();
+    if seconds {
+        format.push_str(":%S");
+    }
+    if digits > 0 {
+        format.push_str(&format!("%.{digits}f"));
+    }
+    if zone {
+        format.push_str(" %Z");
+    }
+    Ok(Some(format))
+}
+
+/// A color split: what tells the rows apart and the labels given a group each, in
+/// color order (`None` for nulls). With `other`, all other values form one more group,
+/// [`OTHER`].
 #[derive(Clone, Copy, Debug)]
 pub struct ColorSplit<'a> {
-    pub column: &'a str,
+    pub key: &'a ColorKey,
     pub groups: &'a [Option<String>],
     pub other: bool,
 }
@@ -1888,13 +1999,13 @@ impl ColorSplit<'_> {
 
 /// A group's name as a legend writes it.
 pub fn group_label(value: &Option<String>) -> String {
-    value.clone().unwrap_or_else(|| "null".to_string())
+    value.clone().unwrap_or_else(|| NULL_LABEL.to_string())
 }
 
 /// Each row's group: its index in `split.groups`, Other's after, or `None`. Compared as
-/// text, as the value picker lists them.
+/// labels, as the value picker lists them.
 fn row_groups(df: &DataFrame, split: ColorSplit<'_>) -> Result<Vec<Option<usize>>> {
-    let text = text_labels(df, split.column)?;
+    let text = split.key.labels(df)?;
     let index: std::collections::HashMap<Option<&str>, usize> = split
         .groups
         .iter()
@@ -1922,7 +2033,7 @@ fn read_split(
 ) -> Result<SplitValues> {
     let mut columns = vec![column];
     if let Some(split) = split {
-        columns.push(split.column);
+        columns.extend(split.key.names());
     }
     let (df, rows) = read_columns(lf, &columns, sampling)?;
     let values = f64_values(&df, column)?;
@@ -1938,8 +2049,8 @@ fn read_split(
     Ok((out, rows))
 }
 
-/// A column's values with the rows holding each, most rows first (equal counts in
-/// the column's order), counted over the whole view.
+/// A color's labels with the rows holding each, most rows first (equal counts in the
+/// columns' order), counted over the whole view.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ValueRows {
     pub values: Vec<(Option<String>, u64)>,
@@ -1947,14 +2058,21 @@ pub struct ValueRows {
     pub rows: usize,
 }
 
-/// Count `column`'s values over the whole view, or take the count held for it: one
-/// streamed pass that keeps a count per value, the one a bar chart of counts makes.
-pub fn value_rows(lf: &LazyFrame, column: &str, sampling: &ChartSampling) -> Result<ValueRows> {
-    let counted = match held_counts(sampling, column, COUNT_CATEGORY_CAP)? {
+/// Count each combination of `columns`' values over the whole view, or take the count
+/// held for it: one streamed pass that keeps a count per combination, the one a bar
+/// chart of counts makes of one column. Returns the key that labels them, its dates
+/// and datetimes written as precisely as the values counted need.
+pub fn color_rows(
+    lf: &LazyFrame,
+    columns: &[String],
+    sampling: &ChartSampling,
+) -> Result<(ColorKey, ValueRows)> {
+    let keys: Vec<&str> = columns.iter().map(String::as_str).collect();
+    let counted = match held_counts(sampling, &keys, COUNT_CATEGORY_CAP)? {
         Some(counted) => counted,
         None => {
-            let counted = stream_counts(lf, column, COUNT_CATEGORY_CAP, &sampling.cancel)?;
-            hold_counts(sampling, column, &counted);
+            let counted = stream_counts(lf, &keys, COUNT_CATEGORY_CAP, &sampling.cancel)?;
+            hold_counts(sampling, &keys, &counted);
             counted
         }
     };
@@ -1962,32 +2080,63 @@ pub fn value_rows(lf: &LazyFrame, column: &str, sampling: &ChartSampling) -> Res
         Counted::All { counts, rows } => (counts, rows),
         Counted::TooMany => {
             return Err(color_eyre::eyre::eyre!(
-                "more than {} values of {column}: choose a column with fewer",
-                crate::numfmt::group_chrome(COUNT_CATEGORY_CAP)
+                "more than {} values of {}: choose {} with fewer",
+                crate::numfmt::group_chrome(COUNT_CATEGORY_CAP),
+                keys.join(", "),
+                if keys.len() == 1 {
+                    "a column"
+                } else {
+                    "columns"
+                },
             ));
         }
     };
     let Some(counts) = counts else {
-        return Ok(ValueRows {
+        let key = ColorKey {
+            columns: columns.to_vec(),
+            formats: vec![None; columns.len()],
+        };
+        let none = ValueRows {
             values: Vec::new(),
             rows,
-        });
+        };
+        return Ok((key, none));
     };
-    let by_label: Vec<IdxSize> = label_order(counts.column(column)?.as_materialized_series())
-        .into_iter()
-        .map(|i| i as IdxSize)
-        .collect();
-    let counts = counts.take(&IdxCa::from_vec("order".into(), by_label))?;
-    let labels = text_labels(&counts, column)?;
-    let mut values: Vec<(Option<String>, u64)> = labels
+    let formats = keys
+        .iter()
+        .map(|k| label_format(counts.column(k)?.as_materialized_series()))
+        .collect::<Result<Vec<_>>>()?;
+    let key = ColorKey {
+        columns: columns.to_vec(),
+        formats,
+    };
+    let counts = counts.sort(
+        keys.clone(),
+        SortMultipleOptions::default()
+            .with_nulls_last(true)
+            .with_maintain_order(true),
+    )?;
+    let labels = key.labels(&counts)?;
+    // Values that write the same label (a `null` beside a null) are one group.
+    let mut values: Vec<(Option<String>, u64)> = Vec::with_capacity(labels.len());
+    let mut at: std::collections::HashMap<Option<String>, usize> = Default::default();
+    for (label, n) in labels
         .str()?
         .iter()
         .zip(counts.column(COUNT_COLUMN)?.u64()?.iter())
-        .map(|(label, n)| (label.map(str::to_string), n.unwrap_or(0)))
-        .collect();
-    // Stable, so equal counts keep the column's order.
+    {
+        let label = label.map(str::to_string);
+        match at.get(&label) {
+            Some(&i) => values[i].1 += n.unwrap_or(0),
+            None => {
+                at.insert(label.clone(), values.len());
+                values.push((label, n.unwrap_or(0)));
+            }
+        }
+    }
+    // Stable, so equal counts keep the columns' order.
     values.sort_by_key(|v| std::cmp::Reverse(v.1));
-    Ok(ValueRows { values, rows })
+    Ok((key, ValueRows { values, rows }))
 }
 
 /// The groups a color makes: the values picked, in the order picked, or else the
@@ -2010,7 +2159,7 @@ pub fn color_groups(
 /// In a plan: each row's group as its place among `split.groups` (UInt32), Other's
 /// after them, null for a value that has none.
 fn group_expr(split: ColorSplit<'_>) -> Expr {
-    let text = crate::past_calendar::text_expr(col(split.column), CastOptions::NonStrict);
+    let text = split.key.expr();
     let mut out = match split.other {
         true => lit(split.groups.len() as u32).cast(DataType::UInt32),
         false => lit(NULL).cast(DataType::UInt32),
@@ -2018,7 +2167,7 @@ fn group_expr(split: ColorSplit<'_>) -> Expr {
     for (i, group) in split.groups.iter().enumerate().rev() {
         let matches = match group {
             Some(value) => text.clone().eq(lit(value.clone())),
-            None => col(split.column).is_null(),
+            None => text.clone().is_null(),
         };
         out = when(matches).then(lit(i as u32)).otherwise(out);
     }
@@ -2049,7 +2198,9 @@ pub fn prepare_xy_by(
     sampling: &ChartSampling,
 ) -> Result<GroupedSeries> {
     let x_dtype = x_dtype(schema, x)?;
-    let (df, rows) = read_columns(lf, &[x, y, color.column], sampling)?;
+    let mut columns = vec![x, y];
+    columns.extend(color.key.names());
+    let (df, rows) = read_columns(lf, &columns, sampling)?;
     let ys = f64_values(&df, y)?;
     let groups = row_groups(&df, color)?;
     let mut built = SeriesBuilder::new(color.series());

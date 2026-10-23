@@ -405,9 +405,9 @@ fn the_title_says_how_and_y_is_named_at_its_axis() {
         assert_eq!(named[0].trim(), "price", "{named:#?}");
     };
     check(&mut modal, "");
-    modal.spec.encoding.color.field = Some("carrier".to_string());
+    modal.spec.encoding.color.field = vec!["carrier".to_string()];
     check(&mut modal, "colored by carrier");
-    modal.spec.encoding.color.field = None;
+    modal.spec.encoding.color.field = Vec::new();
     modal.spec.encoding.y.aggregate = Aggregate::Mean;
     check(&mut modal, "mean by volume");
     modal.set_mark(Mark::Line);
@@ -473,9 +473,9 @@ fn the_values_line_counts_other() {
     modal.set_mark(Mark::Scatter);
     modal.spec.encoding.x.field = Some("price".to_string());
     modal.spec.encoding.y.field = vec!["volume".to_string()];
-    modal.spec.encoding.color.field = Some("carrier".to_string());
+    modal.spec.encoding.color.field = vec!["carrier".to_string()];
     modal.color_counts = Some(crate::chart::chart_modal::ColorCounts {
-        column: "carrier".to_string(),
+        columns: vec!["carrier".to_string()],
         values: (0..16)
             .map(|i| (Some(format!("C{i}")), 100 - i as u64))
             .collect(),
@@ -658,9 +658,9 @@ fn sixteen_colors_cap_the_series() {
     modal.set_mark(Mark::Line);
     modal.spec.encoding.x.field = Some("price".to_string());
     modal.spec.encoding.y.field = vec!["volume".to_string()];
-    modal.spec.encoding.color.field = Some("carrier".to_string());
+    modal.spec.encoding.color.field = vec!["carrier".to_string()];
     modal.color_counts = Some(crate::chart::chart_modal::ColorCounts {
-        column: "carrier".to_string(),
+        columns: vec!["carrier".to_string()],
         values: (0..16)
             .map(|i| (Some(format!("C{i}")), 100 - i as u64))
             .collect(),
@@ -734,9 +734,9 @@ fn other_is_the_legends_last_entry() {
 fn the_value_picker_lists_values_by_rows() {
     let g = crate::glyphs::get();
     let mut modal = open_modal();
-    modal.spec.encoding.color.field = Some("carrier".to_string());
+    modal.spec.encoding.color.field = vec!["carrier".to_string()];
     modal.color_counts = Some(crate::chart::chart_modal::ColorCounts {
-        column: "carrier".to_string(),
+        columns: vec!["carrier".to_string()],
         values: vec![(Some("UA".to_string()), 2514), (Some("B6".to_string()), 12)],
     });
     modal.focus = ChartFocus::ColorValues;

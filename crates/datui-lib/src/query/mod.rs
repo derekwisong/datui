@@ -107,6 +107,25 @@ fn parse_date_literal(s: &str) -> Option<String> {
     Some(format!("{:04}-{:02}-{:02}", year, month, day))
 }
 
+/// An exponent after a number's digits, `e9`, `E-3` or `e+2`, onto `num_str`: only when
+/// digits follow, so `2e` and a name after a number are left alone.
+fn take_exponent(chars: &mut std::iter::Peekable<std::str::Chars<'_>>, num_str: &mut String) {
+    let mut ahead = chars.clone();
+    let Some(e @ ('e' | 'E')) = ahead.next() else {
+        return;
+    };
+    let sign = ahead.next_if(|c| *c == '+' || *c == '-');
+    if !ahead.peek().is_some_and(char::is_ascii_digit) {
+        return;
+    }
+    num_str.push(e);
+    num_str.extend(sign);
+    while let Some(d) = ahead.next_if(char::is_ascii_digit) {
+        num_str.push(d);
+    }
+    *chars = ahead;
+}
+
 fn tokenize(input: &str) -> Result<Vec<Token>, String> {
     let mut tokens = Vec::new();
     let mut chars = input.chars().peekable();
@@ -236,6 +255,7 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
                             break;
                         }
                     }
+                    take_exponent(&mut chars, &mut num_str);
                     if let Ok(n) = num_str.parse::<f64>() {
                         tokens.push(Token::Number(n));
                     } else {
@@ -272,7 +292,10 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
                 // Check for YYYY.MM.DD date literal
                 if let Some(iso) = parse_date_literal(&num_str) {
                     tokens.push(Token::DateLiteral(iso));
-                } else if let Ok(n) = num_str.parse::<f64>() {
+                    continue;
+                }
+                take_exponent(&mut chars, &mut num_str);
+                if let Ok(n) = num_str.parse::<f64>() {
                     tokens.push(Token::Number(n));
                 } else {
                     return Err(format!("Invalid number: {}", num_str));

@@ -99,6 +99,7 @@ pub(crate) fn delimited_spec_keys() -> Vec<&'static str> {
         "match",
         "metadata_line",
         "columns",
+        "files",
     ];
     keys.extend(SETTINGS.iter().filter_map(|s| s.spec));
     keys.extend(OPEN.iter().filter_map(|o| o.spec));

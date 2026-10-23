@@ -183,7 +183,7 @@ The where clause takes conditions only: no `name: expression` assignment.
 | Ordering | `<` `>` `<=` `>=` |
 | And, or | `&` `and`, `\|` `or`: and/or on booleans, smaller/larger on numbers; see [And, or](#and-or) |
 | Coalesce | `^` — first non-null, left to right; `a^b^c` = coalesce(a, b, c), binding right-to-left as `a^(b^c)` |
-| Numbers | `42`, `3.14` |
+| Numbers | `42`, `3.14`, `1e9`, `2.5e-3` |
 | Strings | `"hello"`, `\"` for an embedded quote |
 | Date literals | `2021.01.01` (YYYY.MM.DD) |
 | Timestamp literals | `2021.01.15T14:30:00.123456` (YYYY.MM.DDTHH:MM:SS[.fff...]); fractional-second digits set precision: 1–3 = ms, 4–6 = μs, 7–9 = ns |

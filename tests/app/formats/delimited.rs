@@ -1163,3 +1163,143 @@ fn a_specs_types_count_what_they_null_across_a_directory() {
         "{notes:?}"
     );
 }
+
+const FRAME_SPEC: &str = r##"
+name = "acme.frames"
+kind = "delimited"
+match = { magic = "os,gpu" }
+header_rows = 3
+
+[files]
+path = "{game}_{start:%Y-%m-%d_%H-%M-%S}.csv"
+"##;
+
+fn frame_log(fps: &[&str]) -> String {
+    let mut text = String::from("os,gpu\nlinux,rtx\nfps,frametime\n");
+    for f in fps {
+        text.push_str(&format!("{f},1.5\n"));
+    }
+    text
+}
+
+fn frames_app() -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    app.set_formats(Registry::of(vec![Spec::parse(FRAME_SPEC, None).unwrap()]));
+    (app, rx, tx)
+}
+
+/// `[files]` reads each file's name into columns in front: a name with `_` in it splits
+/// at the datetime, and a file whose name does not match keeps its rows, its path
+/// columns null, with a note.
+#[test]
+fn a_specs_files_path_names_columns_from_each_file() {
+    let dir = fresh_dir("delimited_spec_files_path");
+    std::fs::write(
+        dir.join("Hades_II_2026-10-22_18-40-30.csv"),
+        frame_log(&["60", "61"]),
+    )
+    .unwrap();
+    std::fs::write(dir.join("Game_2026-10-23_09-00-05.csv"), frame_log(&["90"])).unwrap();
+    std::fs::write(dir.join("unnamed.csv"), frame_log(&["30"])).unwrap();
+    let (mut app, rx, tx) = frames_app();
+    open_dir(&mut app, &rx, dir.clone());
+    assert!(app.error_message().is_none(), "{:?}", app.error_message());
+    pump_until_idle(&mut app, &rx, &tx);
+    let df = collected(&app)
+        .sort(["fps"], SortMultipleOptions::default())
+        .unwrap();
+    let names: Vec<&str> = df.get_column_names().iter().map(|n| n.as_str()).collect();
+    assert_eq!(names, ["game", "start", "fps", "frametime"]);
+    assert_eq!(
+        df.column("start").unwrap().dtype(),
+        &DataType::Datetime(TimeUnit::Microseconds, None)
+    );
+    let game: Vec<Option<&str>> = df.column("game").unwrap().str().unwrap().iter().collect();
+    assert_eq!(
+        game,
+        [None, Some("Hades_II"), Some("Hades_II"), Some("Game")]
+    );
+    let start = df.column("start").unwrap();
+    assert!(start.get(0).unwrap().is_null());
+    assert_eq!(start.get(1).unwrap().to_string(), "2026-10-22 18:40:30");
+    assert_eq!(start.get(3).unwrap().to_string(), "2026-10-23 09:00:05");
+    assert!(
+        note_summaries(&app)
+            .iter()
+            .any(|n| n.starts_with("unnamed.csv: its path does not match")),
+        "{:?}",
+        note_summaries(&app)
+    );
+
+    // One file alone gets the same columns.
+    let (mut app, rx, _tx) = frames_app();
+    open(
+        &mut app,
+        &rx,
+        dir.join("Game_2026-10-23_09-00-05.csv"),
+        OpenOptions::default(),
+    );
+    let df = collected(&app);
+    assert_eq!(
+        df.column("game").unwrap().str().unwrap().get(0),
+        Some("Game")
+    );
+    assert_eq!(
+        df.column("start").unwrap().get(0).unwrap().to_string(),
+        "2026-10-23 09:00:05"
+    );
+}
+
+/// A pattern with `/` reads the directory above each file too; one file alone whose
+/// name does not match opens with its path columns null and the note.
+#[test]
+fn a_files_path_reads_the_directory_above_each_file() {
+    let spec = FRAME_SPEC.replace("path = \"{game}", "path = \"{rig}/{game}");
+    let dir = fresh_dir("delimited_spec_files_dirs");
+    for (rig, fps) in [("beam", "60"), ("tull", "30")] {
+        std::fs::create_dir_all(dir.join(rig)).unwrap();
+        std::fs::write(
+            dir.join(rig).join("Game_2026-10-23_09-00-05.csv"),
+            frame_log(&[fps]),
+        )
+        .unwrap();
+    }
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    app.set_formats(Registry::of(vec![Spec::parse(&spec, None).unwrap()]));
+    open(
+        &mut app,
+        &rx,
+        dir.join("beam/Game_2026-10-23_09-00-05.csv"),
+        OpenOptions::default(),
+    );
+    let df = collected(&app);
+    assert_eq!(
+        df.column("rig").unwrap().str().unwrap().get(0),
+        Some("beam")
+    );
+    assert_eq!(
+        df.column("game").unwrap().str().unwrap().get(0),
+        Some("Game")
+    );
+
+    std::fs::write(dir.join("beam/unnamed.csv"), frame_log(&["10"])).unwrap();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    app.set_formats(Registry::of(vec![Spec::parse(&spec, None).unwrap()]));
+    open(
+        &mut app,
+        &rx,
+        dir.join("beam/unnamed.csv"),
+        OpenOptions::default(),
+    );
+    let df = collected(&app);
+    assert!(df.column("rig").unwrap().get(0).unwrap().is_null());
+    assert!(
+        note_summaries(&app)
+            .iter()
+            .any(|n| n.starts_with("unnamed.csv: its path does not match")),
+        "{:?}",
+        note_summaries(&app)
+    );
+}

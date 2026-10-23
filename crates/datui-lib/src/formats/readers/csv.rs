@@ -338,17 +338,49 @@ pub(crate) fn text_source(
     })
 }
 
+/// `lf`, read from `path` through a spec whose `[files]` names parts of the path, with
+/// the parts as columns in front, and the notes on parts that did not match.
+fn with_path_parts(
+    lf: LazyFrame,
+    path: &Path,
+    options: &OpenOptions,
+) -> Result<(LazyFrame, Vec<crate::notes::Note>)> {
+    let Some(files) = options
+        .delimited
+        .as_ref()
+        .and_then(|read| read.delimited().files.as_ref())
+    else {
+        return Ok((lf, Vec::new()));
+    };
+    let (lf, said) = crate::formats::files::dress_file(files, path, lf)
+        .map_err(|e| crate::error_display::in_file(path, color_eyre::eyre::eyre!(e)))?;
+    let notes = said
+        .into_iter()
+        .map(|summary| crate::notes::Note {
+            summary,
+            scope: format!("[files] path = \"{}\"", files.pattern),
+            read_as_text: None,
+            passed_over: None,
+        })
+        .collect();
+    Ok((lf, notes))
+}
+
 /// What every CSV read does after Polars parses it: name the columns (trimmed, or from
 /// `--header-rows`), skip post-delimiter padding, type text columns, drop the footer.
-/// `read` gets the steps Python can repeat.
+/// `read` gets the steps Python can repeat. A spec's path columns, from `path`, go in
+/// before the spec's columns are derived and typed, as they do for several files.
 fn finish_csv_frame(
     lf: LazyFrame,
+    path: &Path,
     options: &OpenOptions,
     header: Option<&[String]>,
     read: &mut Vec<String>,
     typing: &mut Typing,
 ) -> Result<LazyFrame> {
     let lf = name_csv_columns(lf, header, Some(read))?;
+    let (lf, notes) = with_path_parts(lf, path, options)?;
+    typing.notes.extend(notes);
     finish_csv_values(lf, options, read, typing)
 }
 
@@ -962,6 +994,7 @@ pub(crate) fn read_delimited(
             let mut typing = Typing::default();
             let lf = finish_csv_frame(
                 df.lazy(),
+                path,
                 options,
                 header.as_deref(),
                 &mut read,
@@ -1046,7 +1079,14 @@ fn scan_csv_file(path: &Path, opened: &Path, options: &OpenOptions) -> Result<Re
     let mut typing = Typing::default();
     let lf = scan_some_as_text(reader, options, &head, &mut typing.text)?.finish()?;
     let mut read = Vec::new();
-    let lf = finish_csv_frame(lf, options, header.as_deref(), &mut read, &mut typing)?;
+    let lf = finish_csv_frame(
+        lf,
+        opened,
+        options,
+        header.as_deref(),
+        &mut read,
+        &mut typing,
+    )?;
     Ok(Read {
         python: read,
         ..lf.into()
@@ -1134,6 +1174,12 @@ pub(crate) fn from_csv_paths(paths: &[impl AsRef<Path>], options: &OpenOptions) 
         lazy_frames = lined.frames;
         notes.extend(lined.notes);
         units = Some(lined.units);
+    }
+    // After lining up, which reads each file's columns by where they sit in its window.
+    for (lf, head) in lazy_frames.iter_mut().zip(&heads) {
+        let (dressed, said) = with_path_parts(std::mem::take(lf), &head.file, options)?;
+        *lf = dressed;
+        notes.extend(said);
     }
     let mut typing = Typing {
         text: read_text,

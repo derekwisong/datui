@@ -587,6 +587,9 @@ impl Reader<'_> {
             }
             spec.metadata_line = Some(n);
         }
+        if let Some(v) = top.get("files") {
+            spec.files = Some(self.files(v)?);
+        }
         if let Some(v) = top.get("columns") {
             let table = self.table(v, "[columns]")?;
             for (key, value) in table {

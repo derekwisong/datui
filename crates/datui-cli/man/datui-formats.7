@@ -816,6 +816,9 @@ Lines to pass over before the header
 .TP
 \fB[columns]\fR
 Column types and derived columns, below, and what columns mean: \fBdescription\fR and \fBunit\fR
+.TP
+\fB[files]\fR
+\fBpath\fR: parts of each file's name that become columns, below
 .PP
 Lines count from 1 at the top of the file. Each option the spec sets replaces the config's, and a flag typed on the command line (\fB\-\-delimiter\fR, \fB\-\-comment\fR, \fB\-\-skip\-initial\-space\fR, \fB\-\-header\-rows\fR, \fB\-\-skip\-lines\fR) wins over the spec. Options the spec does not set keep their config values. \fBdatui \-\-delimiter ';' formats check SPEC FILE\fR reads the file as an open with those flags would, and names the flags that override the spec. Apart from the CSV reader, datui reads only the header lines and the metadata line.
 .PP
@@ -936,6 +939,32 @@ Files give a column different units
 The first file's unit; a note lists the units seen
 .PP
 The Notes tab lists the columns not every file has. Columns keep the order in which they first appear across the files.
+.PP
+\fBColumns from file names\fR
+.PP
+.RS 4
+.EX
+name = "acme.frames"
+kind = "delimited"
+match = { magic = "os,cpu,gpu" }
+
+[files]
+path = "{game}_{start:%Y\-%m\-%d_%H\-%M\-%S}.csv"
+.EE
+.RE
+.PP
+Each file read through this spec gets a \fBgame\fR and a \fBstart\fR column in front, read from its name: \fBHades_II_2026\-10\-22_18\-40\-30.\:csv\fR gives \fBHades_II\fR and 2026-10-22 18:40:30. Open a directory or a glob of such files and each row says which file it came from.
+.TP
+\fB{name}\fR
+Text
+.TP
+\fB{name:%Y%m%d}\fR
+A date, in a chrono format
+.TP
+\fB{name:%Y\-%m\-%d_%H\-%M\-%S}\fR
+A datetime, when the format has a time
+.PP
+A dated part matches the digits its format writes, so a \fB{game}\fR before it may hold \fB_\fR. A pattern with \fB/\fR matches the directories above the file too: \fB{rig}/\:{game}_{start:%Y%m%d}.\:csv\fR. A file whose name does not match keeps its rows, with its path columns null and a note; so does a part that does not parse as its date. A part named like a column of the file is left out, with a note.
 .SS "Garmin TXi logs"
 Garmin and TXi are trademarks of Garmin Ltd. or its subsidiaries; datui is not affiliated with or endorsed by Garmin.
 .PP
@@ -1384,7 +1413,7 @@ fields = [{ name = "price", type = "f8" }]
 .EE
 .RE
 .PP
-\fBdatui \-\-format acme.trades store/\fR reads every file under \fBstore/\fR that the pattern matches as one table, with a column for each part: a date for a part with a format, text otherwise. A file whose part does not parse as its date is left out, with a note.
+\fBdatui \-\-format acme.trades store/\fR reads every file under \fBstore/\fR that the pattern matches as one table, with a column for each part: a date for a part with a format, a datetime when the format has a time (\fB{at:%Y%m%d_%H%M%S}\fR), text otherwise. A file whose part does not parse as its date is left out, with a note. A delimited spec takes \fB[files]\fR too, and adds the columns to each file it reads.
 .SS "Columns layout"
 .RS 4
 .EX

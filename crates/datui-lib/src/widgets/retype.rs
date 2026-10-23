@@ -35,7 +35,7 @@ pub fn render_retype(area: Rect, buf: &mut Buffer, modal: &RetypeModal, ctx: &Re
     crate::app::pointer::record(popup, crate::app::pointer::Hit::Modal);
     let back = match modal.stage {
         Stage::Type => "Cancel",
-        Stage::Format { .. } => "Back",
+        Stage::Format { .. } | Stage::Unit => "Back",
     };
     let footer = HintBar::from_ctx(ctx)
         .screen(Context::Retype)
@@ -49,6 +49,7 @@ pub fn render_retype(area: Rect, buf: &mut Buffer, modal: &RetypeModal, ctx: &Re
     let hint = match modal.stage {
         Stage::Type => "type to narrow",
         Stage::Format { .. } => "type to narrow, or a format such as %d.%m.%Y",
+        Stage::Unit => "what each number counts",
     };
     let filter = if picker.filter.is_empty() {
         Line::from(Span::styled(hint, Style::default().fg(ctx.dimmed)))

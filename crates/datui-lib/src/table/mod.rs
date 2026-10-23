@@ -39,6 +39,9 @@ pub(crate) struct View {
     /// `base_lf`'s schema as built, checked against by column changes without resolving
     /// the plan.
     base_schema: Arc<Schema>,
+    /// Whether `base_lf` is the data as loaded, which the view's column changes are laid
+    /// on; any other base was built from the data with them.
+    base_is_root: bool,
     pub(crate) df: Option<DataFrame>, // Scrollable columns dataframe
     pub(crate) locked_df: Option<DataFrame>, // Locked columns dataframe
     pub(crate) start_row: usize,
@@ -682,6 +685,7 @@ impl DataTableState {
                 unsorted_lf: None,
                 base_lf: lf.clone(),
                 base_schema: schema.clone(),
+                base_is_root: true,
                 lf,
                 df: None,
                 locked_df: None,
@@ -862,6 +866,7 @@ impl DataTableState {
         self.view.schema = schema;
         self.original_lf = lf.clone();
         self.view.base_lf = lf.clone();
+        self.view.base_is_root = true;
         self.view.lf = lf;
         self.view.unsorted_lf = None;
         self.view.base_steps = Vec::new();
@@ -888,6 +893,7 @@ impl DataTableState {
         self.widths.relearn();
         self.view.base_lf = lf.clone();
         self.view.base_schema = schema.clone();
+        self.view.base_is_root = false;
         self.view.lf = lf;
         self.view.unsorted_lf = None;
         // Callers say how the base was built; one that does not leaves a script saying so.
@@ -919,7 +925,6 @@ impl DataTableState {
     /// View state for a new root: no query text, no filters or sort, not drilled, the first
     /// `locked_columns_count` frozen, buffer dropped, cursor at the top left.
     fn reset_view_state(&mut self, locked_columns_count: usize) {
-        self.forget_column_changes();
         self.view.active_query.clear();
         self.view.active_sql_query.clear();
         self.view.active_fuzzy_query.clear();
@@ -972,9 +977,11 @@ impl DataTableState {
         self.view.reshape_source = None;
     }
 
-    /// Reset to `original_lf` with its loaded schema; the caller reads the rows.
+    /// Reset to `original_lf` with its loaded schema, the view's column changes laid on
+    /// it; the caller reads the rows.
     fn reset_lf_to_original(&mut self) {
-        self.install_base(self.original_lf.clone(), self.query_source_schema());
+        self.install_base(self.original_lf.clone(), self.original_without_drift());
+        self.view.base_is_root = true;
         self.view.base_steps = Vec::new();
         self.view.reshape_steps = None;
         self.view.lineage = None;
@@ -986,11 +993,15 @@ impl DataTableState {
         self.view.reshaped_lf = None;
         self.view.reshape_source = None;
         self.reset_view_state(0);
+        if !self.view.column_changes.is_empty() {
+            self.show_column_changes();
+        }
         self.restore_footer_count();
     }
 
     /// Back to the data as loaded, with nothing applied and no error showing.
     fn return_to_root(&mut self) {
+        self.forget_column_changes();
         self.reset_lf_to_original();
         self.error = None;
         self.suppress_error_display = false;

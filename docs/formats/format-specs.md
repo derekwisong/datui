@@ -323,7 +323,7 @@ datui formats check ./typed.toml typed.csv
 | `u8` `u16` `u32` `u64` | Unsigned integers |
 | `f32` `f64` | Decimals. `f32` keeps about 7 significant digits |
 | `date` `time` `datetime` | With `format`, a strftime format; without, the format is inferred |
-| `duration` | `1d`, `2h30m`, `-1w2d` |
+| `duration` | `1d`, `2h30m`, `-1w2d`; or a number of `unit`: `ns` (the default), `us`, `ms` or `s`, so `elapsed = { type = "duration", unit = "ns" }` reads `1500000` as 1.5 ms |
 
 Use `i64` and `f64` unless you want a narrower type for an export or to limit
 values to a range. A value is trimmed first, and one that does not fit the type,
@@ -340,7 +340,7 @@ from the table: [Column types](../user-guide/dataset-info.md#column-types).
 
 | `as` | `from` | Column |
 |---|---|---|
-| `datetime` | a date and a time, and optionally a UTC offset such as `-05:00`, `+0530` or `-5`; or one column of text | A datetime. With an offset it is in UTC |
+| `datetime` | a date and a time, and optionally a UTC offset such as `-05:00`, `+0530` or `-5`; or one column of text; or a datetime (or date) and a duration | A datetime. With an offset it is in UTC. A datetime and a duration add, in the finer unit of the two: `wall = { from = ["start", "elapsed"], as = "datetime" }` |
 | `date` | one column | A date |
 | `time` | one column | A time of day |
 
@@ -348,7 +348,12 @@ A column of the file takes `description` and `unit` alone
 (`bus1volts = { description = "Main bus voltage" }`), and a derived one takes
 them beside `from` and `as`. They show in the
 [Documentation view](../reference/format-specs.md#documentation). A `unit`
-there is documentation only: the type row shows the units line's.
+there is documentation only: the type row shows the units line's. On a
+`duration`, `unit` is what its numbers count instead.
+
+A source the spec types is read as its type before a column is made from it, so
+a duration's numbers are a length of time to add. A source from
+[`[files]`](#columns-from-file-names) can be one.
 
 `format = "%Y-%m-%d %H:%M:%S"` gives the strftime format of the text, a date
 and a time joined with a space; without it the format is inferred. A value that

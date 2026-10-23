@@ -1,9 +1,10 @@
 //! A column's declared type: one vocabulary for the type row, a delimited spec's
 //! `[columns]`, the typing of text columns, and a column retyped in the table.
 //!
-//! [`ColumnType`] is a type name and, for the temporal ones, a strftime `format`, read
-//! from and written as the inline table a spec entry uses: `{ type = "date", format =
-//! "%d/%m/%Y" }`. [`ColumnType::expr`] turns a column into it, lazily and never failing:
+//! [`ColumnType`] is a type name and, for the temporal ones, a strftime `format`, or
+//! for a duration the `unit` a number counts, read from and written as the inline table
+//! a spec entry uses: `{ type = "date", format = "%d/%m/%Y" }`, `{ type = "duration",
+//! unit = "ns" }`. [`ColumnType::expr`] turns a column into it, lazily and never failing:
 //! a value that does not fit is null. [`ColumnType::unfit`] counts those values, for
 //! the note that says so ([`unfit_notes`]).
 
@@ -78,6 +79,57 @@ pub struct ColumnType {
     /// The strftime format of the text, for `date`, `time` and `datetime`; inferred
     /// from the values when not given.
     pub format: Option<String>,
+    /// For a duration, what a number counts; nanoseconds when not given. Text such
+    /// as `2h30m` says its own.
+    pub unit: Option<DurationUnit>,
+}
+
+/// What a number read as a duration counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DurationUnit {
+    Nanoseconds,
+    Microseconds,
+    Milliseconds,
+    Seconds,
+}
+
+impl DurationUnit {
+    pub const ALL: [Self; 4] = [
+        Self::Nanoseconds,
+        Self::Microseconds,
+        Self::Milliseconds,
+        Self::Seconds,
+    ];
+
+    /// The unit a spec's `unit` names: `ns`, `us` (or `µs`), `ms` or `s`.
+    pub fn named(name: &str) -> Option<Self> {
+        Some(match name {
+            "ns" => Self::Nanoseconds,
+            "us" | "µs" => Self::Microseconds,
+            "ms" => Self::Milliseconds,
+            "s" => Self::Seconds,
+            _ => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Nanoseconds => "ns",
+            Self::Microseconds => "us",
+            Self::Milliseconds => "ms",
+            Self::Seconds => "s",
+        }
+    }
+
+    /// Nanoseconds in one.
+    fn nanos(self) -> i64 {
+        match self {
+            Self::Nanoseconds => 1,
+            Self::Microseconds => 1_000,
+            Self::Milliseconds => 1_000_000,
+            Self::Seconds => 1_000_000_000,
+        }
+    }
 }
 
 /// Written as the inline table a spec entry is, in a saved view's JSON too: `{ "type":
@@ -89,6 +141,9 @@ impl serde::Serialize for ColumnType {
         map.serialize_entry("type", &self.name())?;
         if let Some(format) = &self.format {
             map.serialize_entry("format", format)?;
+        }
+        if let Some(unit) = self.unit {
+            map.serialize_entry("unit", unit.name())?;
         }
         map.end()
     }
@@ -103,9 +158,13 @@ impl<'de> serde::Deserialize<'de> for ColumnType {
             name: String,
             #[serde(default)]
             format: Option<String>,
+            #[serde(default)]
+            unit: Option<String>,
         }
         let entry = Entry::deserialize(deserializer)?;
-        Self::named(&entry.name, entry.format).map_err(serde::de::Error::custom)
+        Self::named(&entry.name, entry.format)
+            .and_then(|ty| ty.counting(entry.unit.as_deref()))
+            .map_err(serde::de::Error::custom)
     }
 }
 
@@ -185,7 +244,11 @@ impl ColumnType {
                 TYPE_NAMES.join(", ")
             )
         })?;
-        let ty = Self { dtype, format };
+        let ty = Self {
+            dtype,
+            format,
+            unit: None,
+        };
         if ty.format.is_some() && !ty.is_temporal() {
             return Err(format!(
                 "format is for date, time and datetime, not {}",
@@ -193,6 +256,21 @@ impl ColumnType {
             ));
         }
         Ok(ty)
+    }
+
+    /// This duration with what a number counts, from a spec's `unit`: `ns`, `us`, `ms`
+    /// or `s`. Any other type takes no unit here; its `unit` is a label.
+    pub fn counting(mut self, unit: Option<&str>) -> Result<Self, String> {
+        let Some(unit) = unit else {
+            return Ok(self);
+        };
+        if !matches!(self.dtype, DataType::Duration(_)) {
+            return Err(format!("unit is for a duration, not {}", self.name()));
+        }
+        self.unit = Some(DurationUnit::named(unit).ok_or_else(|| {
+            format!("unknown duration unit \"{unit}\"; expected ns, us, ms or s")
+        })?);
+        Ok(self)
     }
 
     pub fn name(&self) -> String {
@@ -217,6 +295,9 @@ impl ColumnType {
         if let Some(format) = &self.format {
             table.insert("format", format.as_str().into());
         }
+        if let Some(unit) = self.unit {
+            table.insert("unit", unit.name().into());
+        }
         table.fmt();
         table.to_string()
     }
@@ -229,8 +310,10 @@ impl ColumnType {
             .as_inline_table()
             .ok_or_else(|| "expected an inline table such as { type = \"i64\" }".to_string())?;
         for (key, _) in table.iter() {
-            if key != "type" && key != "format" {
-                return Err(format!("unknown key `{key}`; expected type or format"));
+            if !["type", "format", "unit"].contains(&key) {
+                return Err(format!(
+                    "unknown key `{key}`; expected type, format or unit"
+                ));
             }
         }
         let name = table
@@ -245,7 +328,14 @@ impl ColumnType {
             ),
             None => None,
         };
-        Self::named(name, format)
+        let unit = match table.get("unit") {
+            Some(v) => Some(
+                v.as_str()
+                    .ok_or_else(|| "unit: expected a string".to_string())?,
+            ),
+            None => None,
+        };
+        Self::named(name, format)?.counting(unit)
     }
 
     fn strptime(&self) -> StrptimeOptions {
@@ -276,6 +366,18 @@ impl ColumnType {
 
     fn typed(&self, name: &str, from: &DataType) -> Expr {
         let column = col(PlSmallStr::from(name));
+        let per = self.unit.unwrap_or(DurationUnit::Nanoseconds).nanos();
+        // A number as a duration: so many of its unit, to the nanosecond.
+        if matches!(self.dtype, DataType::Duration(_)) && from.is_primitive_numeric() {
+            let nanos = if from.is_float() {
+                (column.cast(DataType::Float64) * lit(per as f64)).round(0, RoundMode::HalfToEven)
+            } else {
+                column.cast(DataType::Int64) * lit(per)
+            };
+            return nanos
+                .cast(DataType::Int64)
+                .cast(DataType::Duration(TimeUnit::Nanoseconds));
+        }
         if *from != DataType::String {
             return column.cast(self.dtype.clone());
         }
@@ -301,7 +403,7 @@ impl ColumnType {
                 lit(PlSmallStr::from_static("raise")),
             ),
             DataType::Duration(_) => text.map(
-                |c: Column| Ok(durations(c.str()?).into_column()),
+                move |c: Column| Ok(durations(c.str()?, per).into_column()),
                 |_: &Schema, field: &Field| {
                     Ok(Field::new(
                         field.name().clone(),
@@ -433,13 +535,21 @@ pub fn preview(ty: &ColumnType, value: &str) -> Option<String> {
     })
 }
 
-/// Text in Polars' duration format (`1d`, `2h30m`, `-1w2d`) as nanoseconds. A value that
-/// does not parse is null.
-pub fn durations(text: &StringChunked) -> DurationChunked {
+/// Text in Polars' duration format (`1d`, `2h30m`, `-1w2d`), or a number of `per`
+/// nanoseconds (`1500000`, `1.5`), as nanoseconds. A value that does not parse is null.
+pub fn durations(text: &StringChunked, per: i64) -> DurationChunked {
     let values: Vec<Option<i64>> = text
         .iter()
         .map(|v| {
             v.and_then(|s| {
+                if let Ok(n) = s.parse::<i64>() {
+                    return n.checked_mul(per);
+                }
+                if let Ok(x) = s.parse::<f64>() {
+                    let nanos = (x * per as f64).round();
+                    return (nanos.is_finite() && nanos.abs() < i64::MAX as f64)
+                        .then_some(nanos as i64);
+                }
                 polars::time::Duration::try_parse(s)
                     .ok()
                     .map(|d| d.duration_ns())
@@ -546,7 +656,8 @@ pub fn unfit_notes(unfit: &[Unfit], scope: &str) -> Vec<crate::notes::Note> {
 /// What a derived column is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DerivedKind {
-    /// From a date and a time, or one text column, with an optional UTC offset.
+    /// From a date and a time, or one text column, with an optional UTC offset; or a
+    /// datetime (or date) and a duration added to it.
     Datetime,
     Date,
     Time,
@@ -569,7 +680,8 @@ impl DerivedKind {
     }
 }
 
-/// A column built from others: `time = { from = ["Date", "Time", "Offset"], as = "datetime" }`.
+/// A column built from others: `time = { from = ["Date", "Time", "Offset"], as = "datetime" }`,
+/// or `wall = { from = ["start", "elapsed"], as = "datetime" }`, a datetime and a duration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Derived {
     pub name: String,
@@ -584,9 +696,42 @@ pub struct Derived {
 const OFFSET: &str = r"^\s*([+-])?(\d{1,2})(?::?(\d{2}))?(?::\d{2})?\s*$";
 
 impl Derived {
-    /// The column, lazily, from its sources' text.
-    pub fn expr(&self) -> Expr {
-        let text = |name: &str| col(name).cast(DataType::String);
+    /// The column, lazily, from its sources in `schema`.
+    pub fn expr(&self, schema: &Schema) -> Expr {
+        let sources: Vec<(Expr, DataType)> = self
+            .from
+            .iter()
+            .map(|f| {
+                let dtype = schema.get(f.as_str()).cloned().unwrap_or(DataType::String);
+                (col(f.as_str()), dtype)
+            })
+            .collect();
+        self.expr_of(&sources)
+    }
+
+    /// The column, lazily, from `sources`, one per `from` with its type: a datetime
+    /// and a duration added, in the finer unit of the two; otherwise from their text.
+    pub fn expr_of(&self, sources: &[(Expr, DataType)]) -> Expr {
+        if self.kind == DerivedKind::Datetime
+            && let [(at, at_type), (by, DataType::Duration(by_unit))] = sources
+            && matches!(at_type, DataType::Datetime(..) | DataType::Date)
+        {
+            let at_unit = match at_type {
+                DataType::Datetime(unit, _) => *unit,
+                _ => TimeUnit::Microseconds,
+            };
+            // Nanoseconds are the finest, milliseconds the coarsest.
+            let unit = [TimeUnit::Nanoseconds, TimeUnit::Microseconds]
+                .into_iter()
+                .find(|u| *u == at_unit || u == by_unit)
+                .unwrap_or(TimeUnit::Milliseconds);
+            let at = match at_type {
+                DataType::Date => at.clone().cast(DataType::Datetime(unit, None)),
+                _ => at.clone().dt().cast_time_unit(unit),
+            };
+            return at + by.clone().dt().cast_time_unit(unit);
+        }
+        let text = |i: usize| sources[i].0.clone().cast(DataType::String);
         let options = StrptimeOptions {
             format: self.format.as_deref().map(PlSmallStr::from),
             strict: false,
@@ -594,14 +739,14 @@ impl Derived {
             cache: true,
         };
         match self.kind {
-            DerivedKind::Date => text(&self.from[0]).str().to_date(options),
-            DerivedKind::Time => text(&self.from[0]).str().to_time(options),
+            DerivedKind::Date => text(0).str().to_date(options),
+            DerivedKind::Time => text(0).str().to_time(options),
             DerivedKind::Datetime => {
-                let stamp = match self.from.as_slice() {
-                    [one] => text(one),
+                let stamp = match sources.len() {
+                    1 => text(0),
                     // A null in either is a null stamp.
-                    [date, time, ..] => text(date) + lit(" ") + text(time),
-                    [] => unreachable!("a derived column has a source"),
+                    2.. => text(0) + lit(" ") + text(1),
+                    0 => unreachable!("a derived column has a source"),
                 };
                 let local = stamp.str().to_datetime(
                     Some(TimeUnit::Microseconds),
@@ -609,11 +754,11 @@ impl Derived {
                     options,
                     lit("raise"),
                 );
-                let Some(offset) = self.from.get(2) else {
+                if sources.len() < 3 {
                     return local;
-                };
+                }
                 // Local time less its offset from UTC is UTC.
-                let part = |group| text(offset).str().extract(lit(OFFSET), group);
+                let part = |group| text(2).str().extract(lit(OFFSET), group);
                 let sign = when(part(1).eq(lit("-")))
                     .then(lit(-1i64))
                     .otherwise(lit(1i64));
@@ -813,6 +958,106 @@ mod tests {
             s.str().unwrap().get(0),
             Some(" a "),
             "text is left as it is"
+        );
+    }
+
+    /// A duration reads a number as so many of its unit (nanoseconds without one),
+    /// from text or from a number column, and text such as `2h30m` as it says.
+    #[test]
+    fn a_duration_counts_its_unit() {
+        let nanos = |ty: &ColumnType, df: DataFrame, from: &DataType| -> Vec<Option<i64>> {
+            let out = df.lazy().select([ty.expr("v", from)]).collect().unwrap();
+            let v = out.column("v").unwrap();
+            assert_eq!(v.dtype(), &DataType::Duration(TimeUnit::Nanoseconds));
+            v.to_physical_repr().i64().unwrap().iter().collect()
+        };
+        let ms = ColumnType::named("duration", None)
+            .unwrap()
+            .counting(Some("ms"))
+            .unwrap();
+        let text =
+            df!("v" => [Some(" 1500 "), Some("1.5"), Some("2h30m"), Some("x"), None]).unwrap();
+        assert_eq!(
+            nanos(&ms, text, &DataType::String),
+            [
+                Some(1_500_000_000),
+                Some(1_500_000),
+                Some(9_000_000_000_000),
+                None,
+                None
+            ]
+        );
+        let ints = df!("v" => [100_308_137i64, -5]).unwrap();
+        let ns = ColumnType::named("duration", None).unwrap();
+        assert_eq!(
+            nanos(&ns, ints.clone(), &DataType::Int64),
+            [Some(100_308_137), Some(-5)]
+        );
+        let s = ns.clone().counting(Some("s")).unwrap();
+        assert_eq!(
+            nanos(&s, df!("v" => [0.25f64]).unwrap(), &DataType::Float64),
+            [Some(250_000_000)]
+        );
+
+        // Written and read back as a spec entry and a saved view write it.
+        assert_eq!(ms.to_toml(), r#"{ type = "duration", unit = "ms" }"#);
+        assert_eq!(ColumnType::from_toml(&ms.to_toml()).unwrap(), ms);
+        let json = serde_json::to_string(&ms).unwrap();
+        assert_eq!(serde_json::from_str::<ColumnType>(&json).unwrap(), ms);
+        assert!(ColumnType::from_toml(r#"{ type = "i64", unit = "ms" }"#).is_err());
+        assert!(ColumnType::from_toml(r#"{ type = "duration", unit = "frames" }"#).is_err());
+        assert_eq!(
+            ColumnType::from_toml(r#"{ type = "duration", unit = "µs" }"#)
+                .unwrap()
+                .unit,
+            Some(DurationUnit::Microseconds)
+        );
+    }
+
+    /// A datetime and a duration make a datetime in the finer unit of the two: a
+    /// duration's nanoseconds survive a datetime of microseconds. A date counts from
+    /// its midnight.
+    #[test]
+    fn a_datetime_and_a_duration_add_up() {
+        let start = Int64Chunked::from_slice("start".into(), &[1_000_000])
+            .into_datetime(TimeUnit::Microseconds, None)
+            .into_series();
+        let elapsed = Int64Chunked::from_slice("elapsed".into(), &[1_500_000_001])
+            .into_duration(TimeUnit::Nanoseconds)
+            .into_series();
+        let day = Int32Chunked::from_slice("day".into(), &[1])
+            .into_date()
+            .into_series();
+        let df =
+            DataFrame::new_infer_height(vec![start.into(), elapsed.into(), day.into()]).unwrap();
+        let derived = |from: [&str; 2]| Derived {
+            name: "wall".into(),
+            from: from.map(String::from).to_vec(),
+            kind: DerivedKind::Datetime,
+            format: None,
+        };
+        let schema = df.schema().clone();
+        let out = df
+            .lazy()
+            .select([
+                derived(["start", "elapsed"]).expr(&schema).alias("wall"),
+                derived(["day", "elapsed"]).expr(&schema).alias("from_day"),
+            ])
+            .collect()
+            .unwrap();
+        let wall = out.column("wall").unwrap();
+        assert_eq!(
+            wall.dtype(),
+            &DataType::Datetime(TimeUnit::Nanoseconds, None)
+        );
+        assert_eq!(
+            wall.to_physical_repr().i64().unwrap().get(0),
+            Some(2_500_000_001)
+        );
+        let from_day = out.column("from_day").unwrap();
+        assert_eq!(
+            from_day.to_physical_repr().i64().unwrap().get(0),
+            Some(86_400_000_000_000 + 1_500_000_001)
         );
     }
 }

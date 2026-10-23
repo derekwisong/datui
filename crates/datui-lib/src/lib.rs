@@ -1895,7 +1895,8 @@ impl App {
 
     /// Open the context menu at `at`, over the cell the cursor was just put on.
     pub fn open_context_menu(&mut self, at: ratatui::layout::Position) {
-        // A datetime is made from text, a date or a time.
+        // A datetime is made from text, a date or a time, or is a datetime a duration
+        // is added to.
         let combine = self
             .data_table_state
             .as_ref()
@@ -1904,7 +1905,10 @@ impl App {
                 state.schema().get(column).cloned()
             })
             .is_some_and(|dtype| {
-                matches!(dtype, DataType::String | DataType::Date | DataType::Time)
+                matches!(
+                    dtype,
+                    DataType::String | DataType::Date | DataType::Time | DataType::Datetime(..)
+                )
             });
         self.context_menu = Some(app::context_menu::ContextMenu::with(
             at,

@@ -41,6 +41,8 @@ impl App {
             return;
         };
         let Some(as_read) = state.type_as_read(column) else {
+            let why = state.why_type_fixed(column);
+            self.error_modal.show(why);
             return;
         };
         let current = state.column_type_of(column).cloned();
@@ -59,15 +61,27 @@ impl App {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
         };
-        let schema = state.schema().clone();
+        let Some(schema) = state.changeable_schema() else {
+            let why = state.why_type_fixed(date);
+            self.error_modal.show(why);
+            return;
+        };
         let columns: Vec<String> = schema
             .iter()
             .filter(|(_, dtype)| {
-                matches!(dtype, DataType::String | DataType::Date | DataType::Time)
+                matches!(
+                    dtype,
+                    DataType::String
+                        | DataType::Date
+                        | DataType::Time
+                        | DataType::Datetime(..)
+                        | DataType::Duration(_)
+                )
             })
             .map(|(name, _)| name.to_string())
             .collect();
-        let taken: Vec<String> = schema.iter_names().map(|n| n.to_string()).collect();
+        let mut taken: Vec<String> = schema.iter_names().map(|n| n.to_string()).collect();
+        taken.extend(state.schema().iter_names().map(|n| n.to_string()));
         self.column_forms.combine = Some(CombineModal::new(date.to_string(), columns, &taken));
         self.open_over(|returns_to| Overlay::Combine { returns_to });
     }

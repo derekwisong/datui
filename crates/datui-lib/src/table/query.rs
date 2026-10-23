@@ -410,12 +410,32 @@ impl DataTableState {
     }
 
     /// `column`'s type before the view's: as the read gave it, or as the view made it.
+    /// `None` for a column not in the data as loaded, such as one a query made: the
+    /// view's column changes are laid on the data under the query.
     pub fn type_as_read(&self, column: &str) -> Option<DataType> {
-        self.view
-            .base_schema
-            .get(column)
-            .or_else(|| self.view.schema.get(column))
-            .cloned()
+        if self.view.grouped.is_some() || self.view.reshaped_lf.is_some() {
+            return None;
+        }
+        match self.original_schema.get(column) {
+            Some(dtype) => Some(dtype.clone()),
+            None => self.root_schema().get(column).cloned(),
+        }
+    }
+
+    /// Why `column` cannot change type, when [`Self::type_as_read`] has none.
+    pub fn why_type_fixed(&self, column: &str) -> String {
+        if self.view.grouped.is_some() || self.view.reshaped_lf.is_some() {
+            "Columns change type under a pivot, melt or group: undo it first".to_string()
+        } else {
+            format!("{column} is made by the query: change the columns it reads")
+        }
+    }
+
+    /// The columns Change type and Combine work on: the data as loaded with the view's
+    /// changes, under any query. `None` under a pivot, melt or group.
+    pub fn changeable_schema(&self) -> Option<Arc<Schema>> {
+        (self.view.grouped.is_none() && self.view.reshaped_lf.is_none())
+            .then(|| Self::without_source_rows(self.root_schema()).0)
     }
 
     /// Up to `n` of `column`'s values as read that are not blank, as text: from the
@@ -425,8 +445,7 @@ impl DataTableState {
         let df = if from_buffer {
             self.view.buffered_df.clone()
         } else {
-            self.view
-                .base_lf
+            self.original_lf
                 .clone()
                 .select([col(column)])
                 .limit(n as IdxSize * 10)
@@ -473,6 +492,7 @@ impl DataTableState {
         ty: Option<crate::formats::column_types::ColumnType>,
     ) {
         use crate::formats::column_types::{Change, ColumnChange};
+        let before = self.changes_checkpoint();
         self.view
             .column_changes
             .retain(|c| !(c.name == column && matches!(c.change, Change::Typed(_))));
@@ -482,7 +502,7 @@ impl DataTableState {
                 change: Change::Typed(ty),
             });
         }
-        self.column_changes_changed();
+        self.column_changes_changed(before);
     }
 
     /// A column made from others, as a spec's derived column is, before the first
@@ -492,22 +512,16 @@ impl DataTableState {
         derived: crate::formats::column_types::Derived,
     ) -> std::result::Result<(), String> {
         use crate::formats::column_types::{Change, ColumnChange};
-        if self.view.schema.contains(&derived.name) {
+        let root = self.root_schema();
+        if self.view.schema.contains(&derived.name) || root.contains(&derived.name) {
             return Err(format!("a column is named {} already", derived.name));
         }
         for from in &derived.from {
-            if !self.view.schema.contains(from) {
-                return Err(format!("no column {from}"));
+            if !root.contains(from) {
+                return Err(format!("no column {from} in the data as loaded"));
             }
         }
-        let first = derived.from[0].clone();
-        let at = self
-            .view
-            .column_order
-            .iter()
-            .position(|c| *c == first)
-            .unwrap_or(self.view.column_order.len());
-        self.view.column_order.insert(at, derived.name.clone());
+        let before = self.changes_checkpoint();
         self.view.column_changes.push(ColumnChange {
             name: derived.name,
             change: Change::Made {
@@ -516,7 +530,7 @@ impl DataTableState {
                 format: derived.format,
             },
         });
-        self.column_changes_changed();
+        self.column_changes_changed(before);
         Ok(())
     }
 
@@ -526,8 +540,9 @@ impl DataTableState {
         &mut self,
         changes: &[crate::formats::column_types::ColumnChange],
     ) -> Vec<String> {
+        let before = self.changes_checkpoint();
         self.view.column_changes = Vec::new();
-        let base = self.view.base_schema.clone();
+        let base = self.original_schema.clone();
         let mut known: Vec<String> = base.iter_names().map(|n| n.to_string()).collect();
         let mut dropped = Vec::new();
         for change in changes {
@@ -559,25 +574,12 @@ impl DataTableState {
                 passed_over: None,
             }]
         };
-        // The made columns go before their first source, as they did when made.
-        for change in &self.view.column_changes {
-            if let crate::formats::column_types::Change::Made { from, .. } = &change.change
-                && !self.view.column_order.contains(&change.name)
-            {
-                let at = self
-                    .view
-                    .column_order
-                    .iter()
-                    .position(|c| *c == from[0])
-                    .unwrap_or(self.view.column_order.len());
-                self.view.column_order.insert(at, change.name.clone());
-            }
-        }
-        self.column_changes_changed();
+        self.column_changes_changed(before);
         dropped
     }
 
-    /// Drop the view's column changes and their notes, as a new pipeline root does.
+    /// Drop the view's column changes and their notes, as going back to the data as
+    /// loaded does. The caller rebuilds the view.
     pub(super) fn forget_column_changes(&mut self) {
         if self.view.column_changes.is_empty() && self.view.changes_dropped.is_empty() {
             return;
@@ -588,32 +590,140 @@ impl DataTableState {
         self.changes_unfit = None;
     }
 
-    /// After the column changes change: the schema shows them, a made column gone
-    /// leaves the column order, and the rows are read again.
-    fn column_changes_changed(&mut self) {
+    /// The view to go back to if the query fails over the column changes about to be
+    /// made: `None` over the data as loaded, where no query runs again.
+    fn changes_checkpoint(&self) -> Option<ViewRollback> {
+        (!self.view.base_is_root).then(|| self.rollback_point())
+    }
+
+    /// After the column changes change: over the data as loaded, the schema shows them
+    /// and the rows are read again; over a query's result, the query runs again on them,
+    /// and if it fails the view goes back to `before`, changes and all, with its error.
+    fn column_changes_changed(&mut self, before: Option<ViewRollback>) {
         self.view.changes_version += 1;
-        let (changed, _) = self.with_column_changes(self.view.base_lf.clone());
-        if let Ok(schema) = changed.clone().collect_schema() {
+        if self.view.base_is_root {
+            self.show_column_changes();
+            self.drop_buffer();
+            self.apply_transformations();
+            return;
+        }
+        if self.view.grouped.is_some() || self.view.reshaped_lf.is_some() {
+            return;
+        }
+        self.rerun_query();
+        if let Some(before) = before
+            && self.error.is_some()
+        {
+            let error = self.error.take();
+            self.roll_back(before);
+            self.error = error;
+        }
+    }
+
+    /// The schema of the data as loaded with the column changes, and the column order to
+    /// match: a made column gone leaves it, a new one goes before its first source.
+    pub(super) fn show_column_changes(&mut self) {
+        let (mut changed, _) =
+            self.with_column_changes(self.view.base_lf.clone(), &self.view.base_schema);
+        if let Ok(schema) = changed.collect_schema() {
             self.view.schema = schema;
         }
         let schema = self.view.schema.clone();
         self.view.column_order.retain(|c| schema.contains(c));
         for name in schema.iter_names() {
-            if !self.view.column_order.iter().any(|c| c == name.as_str()) {
-                self.view.column_order.push(name.to_string());
+            if self.view.column_order.iter().any(|c| c == name.as_str()) {
+                continue;
             }
+            let first = self
+                .view
+                .column_changes
+                .iter()
+                .find_map(|c| match &c.change {
+                    crate::formats::column_types::Change::Made { from, .. } if c.name == *name => {
+                        from.first()
+                    }
+                    _ => None,
+                });
+            let at = first
+                .and_then(|f| self.view.column_order.iter().position(|c| c == f))
+                .unwrap_or(self.view.column_order.len());
+            self.view.column_order.insert(at, name.to_string());
         }
         self.widths.relearn();
-        self.drop_buffer();
+    }
+
+    /// The active query, SQL statement and fuzzy search again, over the data with the
+    /// column changes; the filters and sort on columns still there stay, as does the
+    /// order of the columns. An error leaves the state as the failed run left it.
+    fn rerun_query(&mut self) {
+        let filters = std::mem::take(&mut self.view.filters);
+        let sort_columns = std::mem::take(&mut self.view.sort_columns);
+        let sort_descending = std::mem::take(&mut self.view.sort_descending);
+        let sort_ascending = self.view.sort_ascending;
+        let order = self.view.column_order.clone();
+        let locked = self.view.locked_columns_count;
+        let sql = self.view.active_sql_query.clone();
+        let dsl = self.view.active_query.clone();
+        let fuzzy = self.view.active_fuzzy_query.clone();
+        self.deferred(|s| {
+            if !sql.trim().is_empty() {
+                s.sql_query(sql);
+            } else if !dsl.trim().is_empty() {
+                s.query(dsl);
+            }
+            if s.error.is_none() && !fuzzy.trim().is_empty() {
+                s.fuzzy_search(fuzzy);
+            }
+        });
+        if self.error.is_some() {
+            return;
+        }
+        let schema = self.view.schema.clone();
+        self.view.filters = filters
+            .into_iter()
+            .filter(|f| f.column.is_empty() || schema.contains(&f.column))
+            .collect();
+        for (column, descending) in sort_columns.into_iter().zip(sort_descending) {
+            if schema.contains(&column) {
+                self.view.sort_columns.push(column);
+                self.view.sort_descending.push(descending);
+            }
+        }
+        self.view.sort_ascending = sort_ascending;
+        let mut kept: Vec<String> = order.into_iter().filter(|c| schema.contains(c)).collect();
+        for name in schema.iter_names() {
+            if !kept.iter().any(|c| c == name.as_str()) {
+                kept.push(name.to_string());
+            }
+        }
+        self.view.column_order = kept;
+        self.view.locked_columns_count = locked.min(self.view.column_order.len());
         self.apply_transformations();
     }
 
-    /// `lf` with the view's column changes in order, plus what counting their nulls
-    /// needs: the frame with only the made columns, and typed columns with their prior
-    /// types. Changes for missing columns are skipped.
+    /// The data as loaded with the view's column changes: what a query reads.
+    pub(super) fn changed_root(&self) -> LazyFrame {
+        self.with_column_changes(self.original_lf.clone(), &self.original_schema)
+            .0
+    }
+
+    /// The schema of [`Self::changed_root`].
+    pub(super) fn root_schema(&self) -> Arc<Schema> {
+        if self.view.column_changes.is_empty() {
+            return self.original_schema.clone();
+        }
+        self.changed_root()
+            .collect_schema()
+            .unwrap_or_else(|_| self.original_schema.clone())
+    }
+
+    /// `lf`, of `schema`, with the view's column changes in order, plus what counting
+    /// their nulls needs: the frame with only the made columns, and typed columns with
+    /// their prior types. Changes for missing columns are skipped.
     fn with_column_changes(
         &self,
         mut lf: LazyFrame,
+        schema: &Schema,
     ) -> (
         LazyFrame,
         Option<(LazyFrame, Vec<crate::formats::column_types::Typed>)>,
@@ -622,8 +732,7 @@ impl DataTableState {
         if self.view.column_changes.is_empty() {
             return (lf, None);
         }
-        // The frames passed here have the base's columns.
-        let mut schema = (*self.view.base_schema).clone();
+        let mut schema = schema.clone();
         let mut made = lf.clone();
         let mut typed = Vec::new();
         for change in &self.view.column_changes {
@@ -648,8 +757,9 @@ impl DataTableState {
                     if !from.iter().all(|f| schema.contains(f.as_str())) {
                         continue;
                     }
-                    lf = lf.with_column(derived.expr().alias(name.clone()));
-                    made = made.with_column(derived.expr().alias(name.clone()));
+                    let expr = derived.expr(&schema).alias(name.clone());
+                    lf = lf.with_column(expr.clone());
+                    made = made.with_column(expr);
                     schema.with_column(name, DataType::Null);
                 }
             }
@@ -670,7 +780,7 @@ impl DataTableState {
         {
             return None;
         }
-        let (_, count) = self.with_column_changes(self.view.base_lf.clone());
+        let (_, count) = self.with_column_changes(self.original_lf.clone(), &self.original_schema);
         let (source, typed) = count?;
         Some((source, typed, self.view.changes_version))
     }
@@ -704,9 +814,11 @@ impl DataTableState {
         ));
     }
 
-    /// How `lf` was built: the base's steps, then the filters and the sort.
+    /// How `lf` was built: the column changes, the base's steps, then the filters and
+    /// the sort.
     pub(super) fn view_steps(&self) -> Vec<Step> {
-        let mut steps = self.view.base_steps.clone();
+        let mut steps = Vec::new();
+        // Under the query, which reads the columns as typed.
         if !self.view.column_changes.is_empty() {
             let said: Vec<String> = self
                 .view
@@ -719,6 +831,7 @@ impl DataTableState {
                 said.join("; ")
             )));
         }
+        steps.extend(self.view.base_steps.iter().cloned());
         if !self.view.filters.is_empty() {
             let typed = self.typed_filters();
             let durations: Vec<String> = typed
@@ -792,7 +905,12 @@ impl DataTableState {
                     .flatten();
                 self.view.view_notes = Vec::new();
                 self.view.view_numbered = false;
-                self.with_column_changes(view.lf).0
+                if self.view.base_is_root {
+                    let schema = self.view.base_schema.clone();
+                    self.with_column_changes(view.lf, &schema).0
+                } else {
+                    view.lf
+                }
             }
             None => self.build_view(),
         };
@@ -805,7 +923,13 @@ impl DataTableState {
     /// `base_lf` with the view's column changes, row numbers, filters and order, in
     /// that order; the frame before the order is kept as `unsorted_lf`.
     fn build_view(&mut self) -> LazyFrame {
-        let mut lf = self.with_column_changes(self.view.base_lf.clone()).0;
+        // Any other base was built from the data with the changes already.
+        let mut lf = if self.view.base_is_root {
+            self.with_column_changes(self.view.base_lf.clone(), &self.view.base_schema)
+                .0
+        } else {
+            self.view.base_lf.clone()
+        };
         self.view.view_numbered = self.row_numbers && self.wants_view_numbers();
         if self.view.view_numbered {
             lf = lf.with_row_index(crate::formats::schema_union::DRIFT_COLUMN, None);
@@ -1095,7 +1219,7 @@ impl DataTableState {
             self.view
                 .reshaped_lf
                 .clone()
-                .unwrap_or_else(|| self.original_lf.clone()),
+                .unwrap_or_else(|| self.changed_root()),
         )
     }
 

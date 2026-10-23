@@ -630,13 +630,30 @@ impl Reader<'_> {
                         let ty =
                             crate::formats::column_types::ColumnType::named(&type_name, format)
                                 .map_err(|e| self.error(&t.span(), format!("{what}.type: {e}")))?;
+                        // A duration's unit is what its numbers count, not a label.
+                        let ty = match keys.get("unit") {
+                            Some(u)
+                                if matches!(ty.dtype, polars::prelude::DataType::Duration(_)) =>
+                            {
+                                let unit = self.string(u, &format!("{what}.unit"))?;
+                                ty.counting(Some(&unit)).map_err(|e| {
+                                    self.error(&u.span(), format!("{what}.unit: {e}"))
+                                })?
+                            }
+                            _ => ty,
+                        };
                         Some(ty)
                     }
                     None => None,
                 };
+                let counted = typed.as_ref().is_some_and(|t| t.unit.is_some());
                 let note = ColumnNote {
                     description: said("description")?,
-                    unit: said("unit")?,
+                    unit: if counted {
+                        String::new()
+                    } else {
+                        said("unit")?
+                    },
                     values: Vec::new(),
                     ty: typed.as_ref().map(|t| t.name()).unwrap_or_default(),
                 };

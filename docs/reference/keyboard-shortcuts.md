@@ -813,7 +813,7 @@ Combine into datetime in the cell menu, on a text, date or time column.
 | `Tab / Shift+Tab (↑ / ↓)` | Next or previous field |
 | `Space` | Pick a column, or step the kind |
 | `← / →` | Step the kind: datetime, date or time |
-| `Enter` | Make the column, placed before the first column it is made from, as a format spec's derived column is. A date, a time and a UTC offset make a datetime in UTC |
+| `Enter` | Make the column, placed after the last column it is made from, as a format spec's derived column is. A date, a time and a UTC offset make a datetime in UTC |
 | `Esc` | Cancel |
 
 ### Combine into datetime · Picker

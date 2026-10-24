@@ -286,7 +286,7 @@ impl Delimited {
         HeadFacts { units, metadata }
     }
 
-    /// `lf` with the derived columns, each before the first column it is made from.
+    /// `lf` with the derived columns, each after the last column it is made from.
     /// Lazy: nothing is read.
     pub fn derive(&self, mut lf: LazyFrame) -> PolarsResult<LazyFrame> {
         if self.columns.is_empty() {
@@ -324,8 +324,8 @@ impl Delimited {
             if !order.contains(&name) {
                 let at = order
                     .iter()
-                    .position(|c| c.as_str() == derived.from[0])
-                    .unwrap_or(order.len());
+                    .rposition(|c| derived.from.iter().any(|f| f == c.as_str()))
+                    .map_or(order.len(), |last| last + 1);
                 order.insert(at, name.clone());
             }
             exprs.push(derived.expr_of(&sources).alias(name));

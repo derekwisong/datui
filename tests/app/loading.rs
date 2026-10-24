@@ -7258,7 +7258,7 @@ fn the_footer_says_what_is_in_effect_and_the_mode_s_keys() {
 }
 
 /// "Combine into datetime" from the cell menu makes what a spec's derived column
-/// makes from the same columns, before the first of them.
+/// makes from the same columns, after the last of them.
 #[test]
 fn combine_into_datetime_matches_the_specs_column() {
     let path = common::fixture_dir().join("combine_like_spec.csv");
@@ -7288,9 +7288,9 @@ fn combine_into_datetime_matches_the_specs_column() {
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(
-        &state.get_column_order()[..2],
-        ["datetime", "Lcl Date"],
-        "before its first source"
+        state.get_column_order(),
+        ["Lcl Date", "Lcl Time", "UTCOfst", "datetime", "v"],
+        "after its last source"
     );
     let made = view_frame(&app).column("datetime").unwrap().clone();
 

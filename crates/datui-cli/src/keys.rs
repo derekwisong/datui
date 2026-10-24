@@ -1495,7 +1495,7 @@ pub const SCREENS: &[Screen] = &[
                 k("Space", "Pick", "Pick a column, or step the kind"),
                 k("← / →", "Change", "Step the kind: datetime, date or time"),
                 k("Enter", "Make", "Make the column")
-                    .more("Make the column, placed before the first column it is made from, as a format spec's derived column is. A date, a time and a UTC offset make a datetime in UTC"),
+                    .more("Make the column, placed after the last column it is made from, as a format spec's derived column is. A date, a time and a UTC offset make a datetime in UTC"),
                 k("Esc", "Cancel", "Cancel"),
             ],
         },

@@ -165,8 +165,8 @@ fn a_datetime_from_date_time_and_offset_is_utc() {
             .iter()
             .map(|n| n.as_str())
             .collect::<Vec<_>>(),
-        ["time", "d", "t", "o", "v"],
-        "before its first source"
+        ["d", "t", "o", "time", "v"],
+        "after its last source"
     );
     let time = out.column("time").unwrap();
     assert_eq!(

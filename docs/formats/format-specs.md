@@ -357,8 +357,9 @@ a duration's numbers are a length of time to add. A source from
 
 `format = "%Y-%m-%d %H:%M:%S"` gives the strftime format of the text, a date
 and a time joined with a space; without it the format is inferred. A value that
-does not parse is null. The derived column goes before the first column it is
-made from, which is kept. A derived column named after one of its source
+does not parse is null. The derived column goes right after the last column it
+is made from, which is kept; the order of the `[columns]` entries does not set
+the column order. A derived column named after one of its source
 columns replaces that column and its unit. There is no expression language: anything more is a
 [query](../user-guide/querying-data.md).
 

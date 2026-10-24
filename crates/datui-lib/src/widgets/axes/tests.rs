@@ -619,3 +619,30 @@ fn a_log_x_within_a_decade_and_far_under_one() {
     assert!(labels.contains(&"1e-9".to_string()), "{labels:?}");
     assert!(labels.iter().all(|l| l.contains('e')), "{labels:?}");
 }
+
+/// A log X writes each label with the digits it needs; past four powers of ten,
+/// or a label of more than six cells, every label in a short form, 1 as `1`.
+#[test]
+fn log_x_labels_take_the_digits_they_need() {
+    let labels = |lo: f64, hi: f64, width: u16| {
+        let axis = AxisSpec::x_log([lo.log10(), hi.log10()], &AxisNumbers::default(), "");
+        labels_on(&axis, width).join(" ")
+    };
+    for (lo, hi, width, want) in [
+        (1e-9, 1e12, 60, "1e-5 1 1e5 1e10"),
+        (1e-9, 1e12, 120, "1e-9 1e-6 1e-3 1 1e3 1e6 1e9 1e12"),
+        (1e-3, 1e3, 60, "0.01 1 100"),
+        (1e-3, 1e3, 80, "1e-3 1e-2 1e-1 1 1e1 1e2 1e3"),
+        (0.01, 100.0, 80, "0.01 0.1 1 10 100"),
+        (1.0, 1e9, 80, "1 100 10k 1M 100M"),
+        (1.0, 1e9, 120, "1 10 100 1k 10k 100k 1M 10M 100M 1G"),
+        // Within a power of ten: round steps, one precision as on any number axis.
+        (150.0, 900.0, 80, "250 500 750"),
+        (150.0, 900.0, 120, "200 400 600 800"),
+        (0.5, 2.0, 80, "0.5 1.0 1.5 2.0"),
+        // A single X.
+        (100.0, 100.0, 80, "100"),
+    ] {
+        assert_eq!(labels(lo, hi, width), want, "{lo}..{hi} at {width}");
+    }
+}

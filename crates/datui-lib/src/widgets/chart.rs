@@ -322,14 +322,14 @@ fn panel_lines(modal: &ChartModal, schema: Option<&Schema>, ctx: &RenderContext)
                 // Y's, then under it X's: a number X only, dimmed with why otherwise.
                 lines.push(row(
                     "Log scale",
-                    vec![quiet("y ", ctx), on_off(modal.log_scale)],
+                    vec![quiet("Y ", ctx), on_off(modal.log_scale)],
                     Some(field),
                     false,
                 ));
                 let x = if modal.x_takes_log() {
-                    vec![quiet("x ", ctx), on_off(modal.log_x)]
+                    vec![quiet("X ", ctx), on_off(modal.log_x)]
                 } else {
-                    vec![quiet("x numbers only", ctx)]
+                    vec![quiet("X numbers only", ctx)]
                 };
                 let takes = modal.x_takes_log();
                 lines.push(sub(x, takes.then_some(ChartFocus::LogX), !takes));
@@ -1107,8 +1107,15 @@ fn render_xy_chart(
     let drawn: Vec<_> = plot.drawn().collect();
 
     if drawn.is_empty() {
-        if modal.x().is_none() {
-            Paragraph::new(missing(modal))
+        // Points, none of them where a log X can put them.
+        let all_left_out = x.log && lines.series.iter().any(|s| !s.is_empty());
+        if modal.x().is_none() || all_left_out {
+            let why = if all_left_out {
+                "No X above 0 to draw on a log scale"
+            } else {
+                missing(modal)
+            };
+            Paragraph::new(why)
                 .style(Style::default().fg(text_secondary))
                 .centered()
                 .render(area, buf);

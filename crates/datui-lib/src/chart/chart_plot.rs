@@ -63,6 +63,9 @@ pub struct LinesData {
     /// Per series and point, the sum and count of the rows it stands for, when a
     /// point is not one row (`ChartDataResult::weights`): what smoothing averages.
     pub weights: Option<Vec<Vec<(f64, f64)>>>,
+    /// Rows an envelope stepped on a log X left out (X of 0 or less), which its points
+    /// no longer hold.
+    pub left_out_rows: usize,
     /// The smoothing windows these series offer (see [`smooth_ladder`]); empty when
     /// none does anything.
     pub ladder: Vec<Smooth>,
@@ -177,6 +180,7 @@ impl LinesData {
             ladder: smooth_ladder(&xs, longest, 1.0, grouped.x_axis_kind),
             steps_too_big: false,
             weights: None,
+            left_out_rows: 0,
             xs,
             bounds: extent(&grouped.series),
             names: grouped.names,
@@ -208,6 +212,12 @@ impl LinesData {
                 && !smooth_ladder(&self.xs, rows, 1.0, self.x_axis_kind).is_empty();
         }
         self.weights = weights;
+        self
+    }
+
+    /// With the rows an envelope on a log X left out.
+    pub fn leaving_out(mut self, rows: usize) -> Self {
+        self.left_out_rows = rows;
         self
     }
 
@@ -400,9 +410,31 @@ impl LinesData {
             .unwrap_or(&self.breaks)
     }
 
-    /// The points a log X leaves out: those at X of 0 or less.
-    pub fn left_out(&self, shown: Shown) -> usize {
-        self.kept(shown).map_or(0, |kept| kept.left_out)
+    /// What a log X leaves out (X of 0 or less), and whether those are rows an
+    /// envelope left out rather than points.
+    pub fn left_out(&self, shown: Shown) -> (usize, bool) {
+        if !self.wanted(shown).log_x {
+            return (0, false);
+        }
+        if self.left_out_rows > 0 {
+            return (self.left_out_rows, true);
+        }
+        (self.kept(shown).map_or(0, |kept| kept.left_out), false)
+    }
+
+    /// The series with points that a log X left none of.
+    pub fn emptied(&self, shown: Shown) -> Vec<&str> {
+        if !self.wanted(shown).log_x {
+            return Vec::new();
+        }
+        let drawn: Vec<usize> = self.drawn(shown).map(|s| s.index).collect();
+        self.series
+            .iter()
+            .zip(&self.names)
+            .enumerate()
+            .filter(|(i, (points, _))| !points.is_empty() && !drawn.contains(i))
+            .map(|(_, (_, name))| name.as_str())
+            .collect()
     }
 
     /// The Xs the crosshair stands on: on a log X, those above zero.

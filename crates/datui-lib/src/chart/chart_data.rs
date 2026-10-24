@@ -518,6 +518,8 @@ pub struct ChartDataResult {
     /// point is not one row: an envelope's step puts them on its low point and none
     /// on its high one, so a mean over the points is a mean over the rows.
     pub weights: Option<Vec<Vec<(f64, f64)>>>,
+    /// Rows an envelope stepped on a log X left out: those with X of 0 or less.
+    pub x_left_out: usize,
 }
 
 /// A series split at its breaks: the runs a line joins.
@@ -701,7 +703,8 @@ pub struct HeatmapData {
 /// order, ties in table order. With `envelope`, a view larger than the sample size is
 /// cut into steps, each drawing its low and high Y, keeping peaks a sample would miss;
 /// it reads twice, so only where [`ChartSampling::full_passes`] allows, stopping on
-/// [`ChartSampling::cancel`].
+/// [`ChartSampling::cancel`]. With `log_x` an envelope steps evenly along `log10(x)`,
+/// leaving out the rows with X of 0 or less and counting them.
 pub fn prepare_chart_data(
     lf: &LazyFrame,
     schema: &Schema,
@@ -709,6 +712,7 @@ pub fn prepare_chart_data(
     y_columns: &[String],
     sampling: &ChartSampling,
     envelope: bool,
+    log_x: bool,
 ) -> Result<ChartDataResult> {
     if y_columns.is_empty() {
         return Ok(ChartDataResult {
@@ -717,6 +721,7 @@ pub fn prepare_chart_data(
             x_axis_kind: XAxisTemporalKind::Numeric,
             rows: RowsRead::default(),
             weights: None,
+            x_left_out: 0,
         });
     }
 
@@ -729,18 +734,21 @@ pub fn prepare_chart_data(
         && let Some(limit) = sampling.limit.filter(|&n| n > 0)
         && sampling.known_total.is_none_or(|n| n > limit)
     {
-        match envelope_series(lf, schema, x_column, y_columns, limit, sampling)? {
+        let log_x = log_x && x_axis_kind == XAxisTemporalKind::Numeric;
+        match envelope_series(lf, schema, x_column, y_columns, limit, sampling, log_x)? {
             Envelope::Drawn {
                 series,
                 breaks,
                 weights,
                 rows,
                 steps,
+                left_out,
             } => {
                 return Ok(ChartDataResult {
                     series,
                     breaks,
                     weights: Some(weights),
+                    x_left_out: left_out,
                     x_axis_kind,
                     rows: RowsRead {
                         total_rows: rows,
@@ -785,6 +793,7 @@ pub fn prepare_chart_data(
         x_axis_kind,
         rows,
         weights: None,
+        x_left_out: 0,
     })
 }
 
@@ -798,6 +807,8 @@ enum Envelope {
         weights: Vec<Vec<(f64, f64)>>,
         rows: usize,
         steps: usize,
+        /// Rows a log X left out: those with X of 0 or less.
+        left_out: usize,
     },
     /// The view is no more rows than the sample size, this many: no envelope.
     Fits(usize),
@@ -834,6 +845,8 @@ fn envelope_pass(lf: LazyFrame, cancel: &Arc<AtomicBool>) -> Result<DataFrame> {
 /// Per Y column, half `limit` steps along X, each its lowest and highest finite Y at the
 /// step's lowest X, in X order: two streamed passes (rows and X bounds, then a group per
 /// step). Rows without X are dropped; a step without a series' value breaks its line.
+/// With `log_x` the steps are even along `log10(x)`, and the rows with X of 0 or less
+/// are left out and counted.
 fn envelope_series(
     lf: &LazyFrame,
     schema: &Schema,
@@ -841,6 +854,7 @@ fn envelope_series(
     y_columns: &[String],
     limit: usize,
     sampling: &ChartSampling,
+    log_x: bool,
 ) -> Result<Envelope> {
     let cancel = &sampling.cancel;
     let x_dtype = x_dtype(schema, x_column)?;
@@ -858,15 +872,33 @@ fn envelope_series(
             .then(e)
             .otherwise(lit(NULL).cast(DataType::Float64))
     };
-    let x = finite(until_cancelled(x, cancel)).alias("__x");
+    let x = finite(until_cancelled(x, cancel));
+    // On a log X a row is placed by log10(x); one at 0 or less is null, and counted.
+    let (x, left_out) = if log_x {
+        let left_out = x.clone().lt_eq(lit(0.0)).cast(DataType::UInt64).sum();
+        let logged = when(x.clone().gt(lit(0.0)))
+            .then(x.log(lit(10.0)))
+            .otherwise(lit(NULL).cast(DataType::Float64));
+        (logged, left_out)
+    } else {
+        (x, lit(0u64))
+    };
+    let x = x.alias("__x");
     let bounds = envelope_pass(
         lf.clone().select([
             len().alias("rows"),
             x.clone().min().alias("lo"),
             x.clone().max().alias("hi"),
+            left_out.alias("left_out"),
         ]),
         cancel,
     )?;
+    let left_out = bounds
+        .column("left_out")?
+        .cast(&DataType::UInt64)?
+        .u64()?
+        .get(0)
+        .unwrap_or(0) as usize;
     let rows = bounds
         .column("rows")?
         .cast(&DataType::UInt64)?
@@ -884,6 +916,7 @@ fn envelope_series(
         weights,
         rows,
         steps,
+        left_out,
     };
     let bound = |name: &str| -> Result<Option<f64>> { Ok(bounds.column(name)?.f64()?.get(0)) };
     let (Some(lo), Some(hi)) = (bound("lo")?, bound("hi")?) else {
@@ -961,6 +994,8 @@ fn envelope_series(
                 starts.push(points.len());
             }
             gap = false;
+            // A log X stepped on log10(x): back to X, which the plot logs as drawn.
+            let x = if log_x { 10f64.powf(x) } else { x };
             points.push((x, low));
             weighed.push((sum.unwrap_or(0.0), *count as f64));
             if high != low {

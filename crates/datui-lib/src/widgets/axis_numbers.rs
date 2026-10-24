@@ -104,6 +104,12 @@ enum Notation {
     /// up to two that write it exactly: `500`, `2k`, `10M`. A log axis's short form,
     /// whose ticks run across many powers of ten.
     Prefixed,
+    /// Each value to the fewest places, up to an axis's most, that write it exactly:
+    /// `0.01`, `1`, `100`.
+    Shortest,
+    /// 1, 2 or 5 times a power of ten as its mantissa and exponent, `2e-7`, `1e3`; 1
+    /// itself as `1`.
+    Powers,
     /// As the table writes the column: its precision, or as Polars writes a float
     /// (`19.434783`), never every digit an aggregate's division left.
     Table,
@@ -187,20 +193,46 @@ impl AxisFormat {
     }
 
     /// The format for a true log axis ticked at `ticks`, each 1, 2 or 5 times a power
-    /// of ten: as [`Self::log`] writes them, and `2e-7` for one too small to write in
-    /// the places an axis takes.
+    /// of ten: each with the places it needs and no more, `0.01  1  100`, since its
+    /// ticks differ in size far more than a linear axis's. Past four powers of ten, or
+    /// a label longer than six cells, every tick in a short form: `1  10  1k  1M` from
+    /// one up, `1e-9  1e-3  1  1e3` otherwise.
     pub fn powers(ticks: &[f64], numbers: &AxisNumbers) -> Self {
-        let least = ticks
+        const MOST_DECADES: f64 = 4.0;
+        const MOST_CELLS: usize = 6;
+        let ticks: Vec<f64> = ticks
             .iter()
-            .map(|v| v.abs())
-            .filter(|v| *v > 0.0)
-            .fold(f64::INFINITY, f64::min);
-        let mut format = Self::log(ticks, numbers);
-        if least < 10f64.powi(-MAX_AXIS_PLACES) * (1.0 - 1e-9) {
-            format.full = Notation::Scientific { places: 0 };
-            format.short = None;
+            .copied()
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .collect();
+        let least = ticks.iter().copied().fold(f64::INFINITY, f64::min);
+        let top = ticks.iter().copied().fold(0.0_f64, f64::max);
+        let long = ticks.iter().any(|&v| {
+            write(&numbers.format, v, Notation::Shortest, 0.0)
+                .chars()
+                .count()
+                > MOST_CELLS
+        });
+        let wide = top / least > 10f64.powf(MOST_DECADES) * (1.0 + 1e-9);
+        let compact = if least >= 1.0 && top < SCIENTIFIC_FROM {
+            Notation::Prefixed
+        } else {
+            Notation::Powers
+        };
+        let (full, short) = if long || wide {
+            (compact, None)
+        } else {
+            (
+                Notation::Shortest,
+                (compact == Notation::Powers || top >= 1e3).then_some(compact),
+            )
+        };
+        Self {
+            format: numbers.format.clone(),
+            full,
+            short,
+            zero_below: 0.0,
         }
-        format
     }
 
     /// The format for an axis from `lo` to `hi` ticked at its ends and halfway, as
@@ -238,9 +270,20 @@ fn write(format: &NumberFormat, v: f64, notation: Notation, zero_below: f64) -> 
             }
             return out;
         }
-        Notation::Fixed { .. } | Notation::Prefixed if !v.is_finite() => {
+        Notation::Fixed { .. } | Notation::Prefixed | Notation::Shortest | Notation::Powers
+            if !v.is_finite() =>
+        {
             return v.to_string();
         }
+        Notation::Powers => {
+            if (v - 1.0).abs() < 1e-12 {
+                return "1".to_string();
+            }
+            let mantissa = v.abs() / 10f64.powf((v.abs().log10() + 1e-9).floor());
+            let places = fewest_places(&[mantissa], 1.0, 0, 2);
+            return scientific(v, places, format.decimal_sep);
+        }
+        Notation::Shortest => (fewest_places(&[v], 1.0, 0, MAX_AXIS_PLACES), 1.0, ""),
         Notation::Prefixed => {
             let (unit, suffix) = [(1e12, "T"), (1e9, "G"), (1e6, "M"), (1e3, "k")]
                 .into_iter()

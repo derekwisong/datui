@@ -353,7 +353,7 @@ fn a_log_x_draws_log10_and_leaves_out_zero_and_below() {
         drawn,
         [vec![(0.0, 7.0), (1.0, 8.0), (3.0, 9.0)], vec![(2.0, 2.0)]]
     );
-    assert_eq!(data.left_out(shown), 3);
+    assert_eq!(data.left_out(shown).0, 3);
     assert_eq!(data.shown_bounds(shown).unwrap(), [0.0, 3.0, 2.0, 9.0]);
     assert_eq!(data.stops(shown), [1.0, 10.0, 100.0, 1000.0]);
     let (values, _) = data.values(shown);
@@ -362,7 +362,7 @@ fn a_log_x_draws_log10_and_leaves_out_zero_and_below() {
         [Some(8.0), None]
     );
     // Off, every point and every X again.
-    assert_eq!(data.left_out(Shown::default()), 0);
+    assert_eq!(data.left_out(Shown::default()).0, 0);
     assert_eq!(data.stops(Shown::default()).len(), 6);
     // A time X never takes it.
     let dates = lines(vec![vec![(1.0, 1.0)]], XAxisTemporalKind::Date);
@@ -407,7 +407,7 @@ fn a_log_x_smooths_in_data_x_and_clips_what_it_draws() {
     data.keep_shown(shown);
     let drawn: Vec<f64> = data.drawn(shown).flat_map(|s| ys(s.points)).collect();
     assert_eq!(drawn, [50.0, 0.0]);
-    assert_eq!(data.left_out(shown), 1);
+    assert_eq!(data.left_out(shown).0, 1);
 
     // An outlier at X = 0 is left out, so the drawn points have none.
     let mut ys_only: Vec<(f64, f64)> = (1..=40)

@@ -2064,12 +2064,12 @@ fn a_log_x_ticks_its_decades_and_reads_values() {
         (rows[at].clone(), rows[at + 1].clone())
     };
     let (log, x) = under_log(&render_rows(&mut modal, 100, 30));
-    assert!(log.contains("y off"), "{log}");
-    assert!(x.contains("x numbers only"), "{x}");
+    assert!(log.contains("Y off"), "{log}");
+    assert!(x.contains("X numbers only"), "{x}");
     modal.spec.encoding.x.field = Some("price".to_string());
     modal.log_x = true;
     let (_, x) = under_log(&render_rows(&mut modal, 100, 30));
-    assert!(x.contains(" x on "), "{x}");
+    assert!(x.contains(" X on "), "{x}");
 
     // 1 to 10,000, and a point at 0 the axis leaves out.
     let mut points: Vec<(f64, f64)> = (0..=40)

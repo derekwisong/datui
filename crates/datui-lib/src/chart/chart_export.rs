@@ -1151,9 +1151,10 @@ fn draw_plot(
     let mut frame = frame;
     let page_right = frame.right;
     if legend == LegendPlace::LineEnds {
+        // As the labels draw: bold.
         let widest = names
             .iter()
-            .map(|n| text_width(n, tick))
+            .map(|n| drawn_width(n, tick, 600))
             .fold(0.0, f64::max);
         frame.right -= (widest + tick).min(frame.width() / 3.0);
     }
@@ -1412,8 +1413,8 @@ impl Below {
         let entries: Vec<(String, f64)> = names
             .iter()
             .map(|name| {
-                let name = fit_width(name, tick, room);
-                let w = swatch + after + text_width(&name, tick);
+                let name = fit_width(name, (tick, 400), room);
+                let w = swatch + after + drawn_width(&name, tick, 400);
                 (name, w)
             })
             .collect();
@@ -1452,16 +1453,40 @@ impl Below {
     }
 }
 
-/// `text` cut in the middle until it sets no wider than `width` at `size`.
-fn fit_width(text: &str, size: f64, width: f64) -> String {
-    if text_width(text, size) <= width {
+/// How wide `text` draws at `size` in `weight`: its glyphs' right edge from where
+/// it starts, set in the fonts the file is drawn with. [`text_width`] guesses from
+/// an average advance, which is too wide for some names and too narrow for bold.
+fn drawn_width(text: &str, size: f64, weight: u16) -> f64 {
+    if text.trim().is_empty() {
+        return 0.0;
+    }
+    let svg = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\">\
+         <text x=\"0\" y=\"{size}\" font-size=\"{size}\" font-weight=\"{weight}\">{}</text></svg>",
+        esc(text)
+    );
+    tree(&svg).map_or_else(
+        |_| text_width(text, size),
+        |t| f64::from(t.root().abs_bounding_box().right()),
+    )
+}
+
+/// `text` cut in the middle until it draws no wider than `width` at `size` in
+/// `weight`.
+fn fit_width(text: &str, (size, weight): (f64, u16), width: f64) -> String {
+    if drawn_width(text, size, weight) <= width {
         return text.to_string();
     }
     // The most columns whose cut still fits.
     let (mut lo, mut hi) = (0, crate::glyphs::display_width(text));
     while lo < hi {
         let mid = (lo + hi).div_ceil(2);
-        if text_width(&crate::glyphs::fit_middle_with(text, mid, "…"), size) <= width {
+        if drawn_width(
+            &crate::glyphs::fit_middle_with(text, mid, "…"),
+            size,
+            weight,
+        ) <= width
+        {
             lo = mid;
         } else {
             hi = mid - 1;
@@ -1757,7 +1782,7 @@ fn line_end_labels(
             tick,
             c.color(i),
             ("start", 600),
-            &fit_width(&names[i], tick, room),
+            &fit_width(&names[i], (tick, 600), room),
         );
     }
 }
@@ -2471,14 +2496,17 @@ mod tests {
         for row in &narrow.rows {
             assert_eq!(row[0].2, 0.0, "a row starts at the left edge");
             let (_, name, x) = row.last().unwrap();
-            assert!(x + tick * 1.6 + text_width(name, tick) <= 150.0, "{row:?}");
+            assert!(
+                x + tick * 1.6 + drawn_width(name, tick, 400) <= 150.0,
+                "{row:?}"
+            );
         }
         let long = "FlightSimulator2024 · 2026-10-18 21:33:07".to_string();
         let cut = Below::of(std::slice::from_ref(&long), 150.0, tick);
         let (_, name, _) = &cut.rows[0][0];
         assert!(name.starts_with("Fli") && name.ends_with(":07"), "{name}");
         assert!(name.contains('…'), "{name}");
-        assert!(tick * 1.6 + text_width(name, tick) <= 150.0, "{name}");
+        assert!(tick * 1.6 + drawn_width(name, tick, 400) <= 150.0, "{name}");
         assert!(Below::of(&[], 150.0, tick).height == 0.0);
     }
 
@@ -2511,34 +2539,58 @@ mod tests {
         assert_ne!(flow.rows[1][1].2, flow.rows[0][1].2, "no columns: {flow:?}");
     }
 
-    /// A line-end name wider than the room beside the plot is cut in the middle to
-    /// it, so it stays on the page.
+    /// Line-end names that fit inside the page's margin are drawn whole; one that
+    /// would cross it is cut in the middle to end inside it.
     #[test]
-    fn a_long_line_end_name_is_cut_to_the_page() {
+    fn a_line_end_name_is_cut_only_past_the_margin() {
+        let names = [
+            "Cyberpunk2077 · 2026-10-20 19:45:12",
+            "BaldursGate3 · 2026-10-22 18:00:03",
+        ];
         let long = "an extraordinarily long series name that is wider than the room the \
                     line ends may take, 2026-10-23";
         let o = options();
-        let svg = svg(&lines(&["short", long]), &o).unwrap();
-        assert!(text_ys(&svg, long).is_empty(), "not whole: {svg}");
-        assert_eq!(text_ys(&svg, "short").len(), 1, "a short name stays whole");
-        let label = svg
+        // The title starts at the margin; the right one is as wide.
+        let title = svg(&lines(&names), &o).unwrap();
+        let margin = title
             .lines()
-            .find(|l| l.starts_with("<text") && l.contains("…"))
-            .unwrap_or_else(|| panic!("a cut name: {svg}"));
-        let attr = |name: &str| -> f64 {
-            let at = label.find(&format!(" {name}=\"")).unwrap() + name.len() + 3;
-            label[at..].split('"').next().unwrap().parse().unwrap()
+            .find(|l| l.contains(">Cumulative return by symbol<"))
+            .map(|l| attr_of(l, "x"))
+            .unwrap();
+        let edge = f64::from(o.width) - margin;
+        let labels = |svg: &str| -> Vec<(String, f64)> {
+            svg.lines()
+                .filter(|l| l.starts_with("<text") && l.contains("font-weight=\"600\""))
+                .filter(|l| !l.contains(">value<") && !l.contains(">x<"))
+                .filter(|l| !l.contains(">Cumulative return by symbol<"))
+                .map(|l| {
+                    let text = unescape(l.split('>').nth(1).unwrap().trim_end_matches("</text"));
+                    let right = attr_of(l, "x") + drawn_width(&text, attr_of(l, "font-size"), 600);
+                    (text, right)
+                })
+                .collect()
         };
-        let text = label.split('>').nth(1).unwrap().trim_end_matches("</text");
+        let whole = labels(&title);
+        assert_eq!(whole.len(), 2, "{title}");
+        for (text, right) in &whole {
+            assert!(names.contains(&text.as_str()), "{text} whole");
+            assert!(*right <= edge + 0.5, "{text} ends at {right}, past {edge}");
+        }
+        let cut = svg(&lines(&[names[0], long]), &o).unwrap();
+        let drawn = labels(&cut);
+        assert!(drawn.iter().any(|(t, _)| t == names[0]), "{drawn:?}");
+        let (text, right) = drawn.iter().find(|(t, _)| t.contains('…')).unwrap();
         assert!(
             text.starts_with("an extra") && text.ends_with("10-23"),
             "{text}"
         );
-        let right = attr("x") + text_width(text, attr("font-size"));
-        assert!(
-            right <= f64::from(o.width),
-            "{right} past the page: {label}"
-        );
+        assert!(*right <= edge + 0.5, "{text} ends at {right}, past {edge}");
+    }
+
+    /// The value of `name` on an SVG element's line.
+    fn attr_of(line: &str, name: &str) -> f64 {
+        let at = line.find(&format!(" {name}=\"")).unwrap() + name.len() + 3;
+        line[at..].split('"').next().unwrap().parse().unwrap()
     }
 
     /// Each kind with a legend draws it below with every name once; a kind without
@@ -2596,7 +2648,7 @@ mod tests {
         let err = svg(
             &lines(&refs),
             &ExportOptions {
-                width: 400,
+                width: 300,
                 height: 260,
                 dpi: 96.0,
                 legend: LegendPlace::Below,

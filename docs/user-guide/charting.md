@@ -334,7 +334,7 @@ Term by term:
 
 | Term | Means |
 |---|---|
-| `+0.126 per unit of distance` | The slope: how much Y changes for one unit of X. With units from a format spec, in them: `+0.126 min per mi`. Over a date or time X, per the largest length of time the data spans three of: `per day`, `per month` |
+| `+0.126 per unit of distance` | The slope: how much Y changes for one unit of X. With units from a format spec, in them: `+0.126 min per unit of distance (mi)`. Over a date or time X, per the largest length of time the data spans three of: `per day`, `per month` |
 | `doubles every 857 units of distance`, `+0.081% per unit of distance` | An exponential's rate: the X it takes Y to double (or halve), and the change per unit of X. `flat` when Y does not change |
 | `1% more distance, about 0.82% more air_time` | A power's exponent k: 1% more X gives about k% more Y. Below 1, Y grows slower than X; above, faster |
 | `strong` | The strength of the relation from \|r\|, the size of Pearson's r of the points the line was fitted to (of ln y, or ln y and ln x, for exponential and power): `no clear trend` under 0.05, **weak** under 0.3, **moderate** under 0.7, then **strong**, as the [correlation matrix](analysis-features.md#correlation-matrix) says it |
@@ -360,8 +360,8 @@ when the chart's sample already names it).
 
 | Where | What |
 |---|---|
-| Crosshair (<kbd>x</kbd>) | Each series' line value beside its own: `air_time: 659 · fit 646.9`, and with one line its equation: `fit: y = 0.126x + 18.5`. Over a date or time X, the slope alone (`+13% per month` for an exponential). With several lines, each value has its slope |
-| <kbd>y</kbd> | Copies the fit as text: the method, the columns and notes, then for each line its equation, slope, R² with r and p, Spearman's ρ, residual SD, median distance from the line and the points used. Over a date or time X the equation is `y = 112 at 2024-01-01, +28.9 per month`. While the fit runs, the footer says `Still fitting the trend` |
+| Crosshair (<kbd>x</kbd>) | Each series' line value beside its own: `air_time: 659 · fit 646.9`, and with one line its equation: `fit: y = 0.126x + 18.5`. Over a date or time X, the slope alone (an exponential's as a percentage per length of time). With several lines, each value has its slope |
+| <kbd>y</kbd> | Copies the fit as text: the method, the columns and notes, then for each line its equation, slope, R² with r and p, Spearman's ρ, residual SD, median distance from the line and the points used. Over a date or time X the equation gives the line's value at the first date, then its slope per length of time. While the fit runs, the footer says `Still fitting the trend` |
 | Export | Draws the lines and puts the reading over the notes |
 | Saved view | Keeps **Trend** and **over** |
 

@@ -484,7 +484,7 @@ fn readings_say_each_method() {
     let line = line_points();
     assert_eq!(
         read(&line, Trend::Linear, &words),
-        "+2.03 min per mi · strong, R² 0.99 · typically ±1.48 min off the line"
+        "+2.03 min per unit of distance (mi) · strong, R² 0.99 · typically ±1.48 min off the line"
     );
     // 10% more for each mile, give or take 2%.
     let grow: Vec<(f64, f64)> = line
@@ -498,7 +498,7 @@ fn readings_say_each_method() {
         .collect();
     assert_eq!(
         read(&grow, Trend::Exponential, &words),
-        "doubles every 7.23 mi · +10% per mi · strong, R² 1.00 · typically within ×1.03 of the line"
+        "doubles every 7.23 mi · +10% per unit of distance (mi) · strong, R² 1.00 · typically within ×1.03 of the line"
     );
     assert_eq!(
         read(&grow, Trend::Power, &words),
@@ -507,7 +507,7 @@ fn readings_say_each_method() {
     );
     assert_eq!(
         read(&line, Trend::Robust, &words),
-        "+2.00 min per mi · half the points within ±1.00 min of it"
+        "+2.00 min per unit of distance (mi) · half the points within ±1.00 min of it"
     );
     assert_eq!(
         read(&line, Trend::Local, &words),
@@ -604,12 +604,15 @@ fn several_fits_read_as_a_range() {
     let two = fit_all(&[line.clone(), steeper], false, key, 0);
     assert_eq!(
         reading(&two, &words, g).unwrap(),
-        ["2 fits", "slopes +2.03 to +2.23 min per mi"]
+        [
+            "2 fits",
+            "slopes +2.03 to +2.23 min per unit of distance (mi)"
+        ]
     );
     let same = fit_all(&[line.clone(), line.clone()], false, key, 0);
     assert_eq!(
         reading(&same, &words, g).unwrap(),
-        ["2 fits", "slopes +2.03 min per mi"]
+        ["2 fits", "slopes +2.03 min per unit of distance (mi)"]
     );
     let grow: Vec<(f64, f64)> = (1..=20).map(|x| (f64::from(x), 1.1f64.powi(x))).collect();
     let faster: Vec<(f64, f64)> = (1..=20).map(|x| (f64::from(x), 1.25f64.powi(x))).collect();
@@ -624,7 +627,7 @@ fn several_fits_read_as_a_range() {
     );
     assert_eq!(
         reading(&exp, &words, g).unwrap(),
-        ["2 fits", "+10% to +25% per mi"]
+        ["2 fits", "+10% to +25% per unit of distance (mi)"]
     );
     let local = fit_all(
         &[line.clone(), line],
@@ -754,23 +757,4 @@ fn a_stop_ends_theil_sen_and_lowess() {
         over: TrendOver::Color,
     };
     assert!(super::fit_all(&[points], false, key, 1, stopped).is_none());
-}
-
-/// A catalog names units in the plural; a rate is per one of them.
-#[test]
-fn a_plural_unit_reads_as_one() {
-    for (unit, one) in [
-        ("miles", "mile"),
-        ("minutes", "minute"),
-        ("inches", "inch"),
-        ("calories", "calorie"),
-        ("bytes", "byte"),
-        ("mi", "mi"),
-        ("km/h", "km/h"),
-        ("deg F", "deg F"),
-        ("Celsius", "Celsius"),
-        ("hours", "hour"),
-    ] {
-        assert_eq!(super::one_of(unit), one, "{unit}");
-    }
 }

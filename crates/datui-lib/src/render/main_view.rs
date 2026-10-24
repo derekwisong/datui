@@ -326,11 +326,11 @@ fn analysis_control_keys(app: &crate::App) -> Vec<Hint> {
     let say = |keys, label| registry_hint_as(context, None, keys, label);
     match modal.view {
         AnalysisView::DistributionDetail => {
-            let mut keys = vec![key("↑ / ↓")];
+            let mut keys = vec![key("↑ / ↓"), key("s")];
             if has_outliers(modal) {
                 keys.push(key("o"));
             }
-            keys.extend([key("s"), key("Esc")]);
+            keys.push(key("Esc"));
             return keys;
         }
         AnalysisView::CorrelationDetail => return vec![key("m"), key("Esc")],
@@ -872,9 +872,6 @@ fn value_counts_control_keys(app: &crate::App) -> Vec<Hint> {
             )
         {
             keys.push(say("Enter", "Rows"));
-        }
-        if modal.shows_histogram() && counts.binned.is_some() {
-            keys.push(say("Enter", "Outside"));
         }
         // A sample's way to the exact counts comes first: it says the counts are
         // not all there is.

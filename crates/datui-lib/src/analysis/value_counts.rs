@@ -244,13 +244,13 @@ fn weighted_sum(values: &Series, counts: &[u64]) -> PolarsResult<Number> {
 
 /// A number column's counts in bins: every value with its rows. The bins span the
 /// values, or the 1st to the 99th percentile when the tails reach ten times past
-/// it, and the values outside are counted, with that range. An integer column of few
-/// values has a bin per value.
+/// it, and the values outside are counted. An integer column of few values has a
+/// bin per value.
 fn histogram_of(
     column: &str,
     values: &Series,
     rows: &[u64],
-) -> Option<(crate::chart::chart_data::HistogramData, Option<(f64, f64)>)> {
+) -> Option<crate::chart::chart_data::HistogramData> {
     use crate::chart::chart_data::{Clipped, HistogramBin, HistogramData, RowsRead, ValueRange};
     let dtype = values.dtype();
     if !dtype.is_primitive_numeric() {
@@ -300,7 +300,7 @@ fn histogram_of(
         counts[bin] += n as f64;
     }
     let max_count = counts.iter().copied().fold(0.0, f64::max);
-    let data = HistogramData {
+    Some(HistogramData {
         column: column.to_string(),
         bins: counts
             .into_iter()
@@ -326,8 +326,7 @@ fn histogram_of(
             range: ValueRange::Percentile1To99,
             outside,
         }),
-    };
-    Some((data, clip.then_some((lo, hi))))
+    })
 }
 
 /// What one line of the listing stands for.
@@ -371,9 +370,6 @@ pub struct ValueCounts {
     /// A number column's counts in bins, for the histogram view; made with the
     /// counts, off the UI thread.
     pub histogram: Option<crate::chart::chart_data::HistogramData>,
-    /// The values the histogram's bins span when it left the rest out: the 1st and
-    /// 99th percentile, each a value of the column.
-    pub binned: Option<(f64, f64)>,
 }
 
 impl ValueCounts {
@@ -423,10 +419,9 @@ impl ValueCounts {
         let mut by_count = by_value.clone();
         by_count.sort_by(|&a, &b| rows[b].cmp(&rows[a]));
         let null_rows = summary.nulls as u64;
-        let (histogram, binned) = histogram_of(column, &values, &rows).unzip();
+        let histogram = histogram_of(column, &values, &rows);
         Ok(Self {
             histogram,
-            binned: binned.flatten(),
             column: column.to_string(),
             dtype,
             count_lines: listing(&by_count, &rows, null_rows, true),

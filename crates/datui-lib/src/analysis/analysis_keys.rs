@@ -277,8 +277,9 @@ impl App {
         None
     }
 
-    /// `o` on Distribution: the table filtered to the selected column's outliers, the
-    /// values past the bounds the sample set, rounded outward a little so they read.
+    /// `o` on Distribution: the table filtered to the selected column's outliers, past
+    /// the bounds the sample set, rounded outward a little so they read, and only on
+    /// the sides it found any. The column cursor goes to the column.
     fn keep_outliers(&mut self) -> Option<AppEvent> {
         let (column, outliers) = self.analysis_modal.selected_outliers()?;
         let column = column.to_string();
@@ -287,7 +288,28 @@ impl App {
             return None;
         };
         let (low, high) = round_outward(low, high);
-        self.keep_outside(&column, low, high, |app| app.close_overlay())
+        let below = outliers.below > 0;
+        let above = outliers.total_count > outliers.below;
+        let state = self.data_table_state.as_mut()?;
+        let statement = state.schema().get(&column).and_then(|dtype| {
+            crate::app::modals::filter_modal::FilterStatement::past(
+                &column,
+                dtype,
+                below.then_some(low),
+                above.then_some(high),
+            )
+        });
+        let Some(statement) = statement else {
+            self.flash_note(format!("{column} cannot be filtered by its outliers"));
+            return None;
+        };
+        state.set_current_column(&column);
+        let mut statements = state.view_filters().to_vec();
+        if !statements.contains(&statement) {
+            statements.push(statement);
+        }
+        self.close_overlay();
+        Some(AppEvent::Applied(crate::Applied::Filter(statements)))
     }
 
     /// ↑↓, PageUp, PageDown, Home and End: the tools in the sidebar, a distribution

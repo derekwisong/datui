@@ -40,7 +40,7 @@ pub struct LinesData {
     /// The series as a log scale or a clipped range draws them, and which. Only the
     /// chart on screen keeps one (`ChartCache::touch`): it is as large as the series.
     pub series_shown: Option<(Shown, Points)>,
-    /// The 1st and 99th percentiles of every Y, when some Y lies past them.
+    /// The range of the Ys that are not outliers, when some are.
     pub y_clip: Option<YClip>,
     /// Per series, where its line starts again after a gap (see `chart_data::segments`).
     pub breaks: Vec<Vec<usize>>,
@@ -64,8 +64,8 @@ pub struct Shown {
     pub clip: bool,
 }
 
-/// The Y range the 1st to 99th percentile spans, and how many points lie past it: a
-/// clipped chart draws those at its edge.
+/// The Y range of the points that are not outliers, and how many are: a clipped
+/// chart draws those at its edge.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct YClip {
     pub lo: f64,
@@ -74,22 +74,28 @@ pub struct YClip {
 }
 
 impl YClip {
-    /// The range of `series`'s Y values from the 1st to the 99th percentile; `None`
-    /// when no point lies past it.
+    /// The range of `series`'s Y values that are not outliers, as Distribution counts
+    /// them; `None` when none is.
     fn of(series: &[Vec<(f64, f64)>]) -> Option<Self> {
-        let mut ys: Vec<f64> = series
+        let ys: Vec<f64> = series
             .iter()
             .flatten()
             .map(|&(_, y)| y)
             .filter(|y| y.is_finite())
             .collect();
-        let (low, high) = chart_data::ValueRange::Percentile1To99.quantiles()?;
-        ys.sort_by(f64::total_cmp);
-        let (lo, hi) = (
-            chart_data::quantile(&ys, low),
-            chart_data::quantile(&ys, high),
-        );
-        let outside = ys.iter().filter(|&&y| y < lo || y > hi).count();
+        let (low, high) = crate::analysis::statistics::outlier_bounds(&ys)?;
+        let inside = |y: &&f64| (low..=high).contains(*y);
+        let lo = ys
+            .iter()
+            .filter(inside)
+            .copied()
+            .fold(f64::INFINITY, f64::min);
+        let hi = ys
+            .iter()
+            .filter(inside)
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max);
+        let outside = ys.iter().filter(|y| !inside(y)).count();
         (outside > 0 && hi > lo).then_some(Self { lo, hi, outside })
     }
 }
@@ -307,7 +313,7 @@ pub struct Axis {
     pub kind: XAxisTemporalKind,
     /// Values are `ln(1 + y)`; ticks name `y`.
     pub log: bool,
-    /// Values past the 1st and 99th percentiles are drawn at the edge.
+    /// Outliers are drawn at the edge.
     pub clip: bool,
 }
 

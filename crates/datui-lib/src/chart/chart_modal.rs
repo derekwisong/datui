@@ -1321,6 +1321,15 @@ impl ChartModal {
 
     // ----- What is charted right now -----
 
+    /// The Range row's value: a line or scatter chart draws its outliers at the edge
+    /// where another type leaves the tails out.
+    pub fn range_label(&self) -> &'static str {
+        match (self.spec.mark, self.value_range) {
+            (Mark::Line | Mark::Scatter, ValueRange::Percentile1To99) => "outliers at edge",
+            (_, range) => range.label(),
+        }
+    }
+
     /// How a line or scatter chart draws its Y values: the log scale, and the range.
     pub fn shown(&self) -> crate::chart::chart_plot::Shown {
         crate::chart::chart_plot::Shown {

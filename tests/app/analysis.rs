@@ -1018,46 +1018,9 @@ fn tails_csv() -> String {
         .collect()
 }
 
-/// Enter on a histogram that binned only p1-p99 filters the table to the values its
-/// note counted outside, with an `outside` filter beside the ones in effect.
-#[test]
-fn test_value_counts_enter_on_a_clipped_histogram_filters_to_its_tails() {
-    use datui::app::modals::filter_modal::FilterOperator;
-    let (mut app, rx, tx) = open_csv_with(
-        "value_counts_tails.csv",
-        &tails_csv(),
-        OpenOptions::default(),
-    );
-    counts_key(&mut app, &rx, &tx, KeyCode::Char('F'));
-    assert_eq!(app.value_counts.column(), Some("id"));
-    let screen = counts_screen(&mut app, 80, 24);
-    assert!(!screen.contains("Outside"), "no tails, no key: {screen}");
-    press_and_send(&mut app, &tx, KeyCode::Enter);
-    assert_eq!(app.overlay, Overlay::ValueCounts, "Enter does nothing");
-
-    counts_key(&mut app, &rx, &tx, KeyCode::Right);
-    assert_eq!(app.value_counts.column(), Some("amount"));
-    assert!(app.value_counts.shows_histogram());
-    let counts = app.value_counts.current().unwrap();
-    let outside = counts.histogram.as_ref().unwrap().clipped.unwrap().outside;
-    assert_eq!(counts.binned, Some((3.0, 199.0)));
-    let screen = counts_screen(&mut app, 80, 24);
-    assert!(screen.contains("Enter Outside"), "{screen}");
-
-    press_and_send(&mut app, &tx, KeyCode::Enter);
-    pump_until_idle(&mut app, &rx, &tx);
-    painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 30));
-    assert!(app.at_table());
-    let filters = app.data_table_state.as_ref().unwrap().view_filters();
-    assert_eq!(filters.len(), 1);
-    assert_eq!(filters[0].operator, FilterOperator::Outside);
-    assert_eq!(filters[0].value, "3..199");
-    assert_eq!(on_screen(&app, "id"), ["1", "2", "200", "201"]);
-    assert_eq!(on_screen(&app, "id").len(), outside);
-}
-
 /// `o` on Distribution filters the table to the selected column's outliers, the
-/// values past the bounds its count used, and a column without any says so.
+/// values past the bounds its count used, on the side it found them, and moves the
+/// column cursor there; a column without any says so.
 #[test]
 fn test_o_on_distribution_filters_to_the_columns_outliers() {
     use datui::app::modals::filter_modal::FilterOperator;
@@ -1100,6 +1063,10 @@ fn test_o_on_distribution_filters_to_the_columns_outliers() {
     assert!(app.at_table());
     let filters = app.data_table_state.as_ref().unwrap().view_filters();
     assert_eq!(filters.len(), 1);
-    assert_eq!(filters[0].operator, FilterOperator::Outside);
+    assert_eq!(filters[0].operator, FilterOperator::Gt, "none below");
     assert_eq!(on_screen(&app, "id"), ["201"]);
+    assert_eq!(
+        app.data_table_state.as_ref().unwrap().current_column(),
+        Some("amount")
+    );
 }

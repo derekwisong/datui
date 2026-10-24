@@ -1105,8 +1105,8 @@ fn chart_export_dialog_presets_and_legend() {
     assert!(std::fs::read_to_string(&svg).unwrap().starts_with("<svg"));
 }
 
-/// Range p1-p99 on a line chart spans the Y axis from the 1st to the 99th percentile,
-/// so one spike no longer flattens the rest, and the title row counts the points it
+/// Range on a line chart spans the Y axis over the points that are not outliers, so
+/// one spike no longer flattens the rest, and the title row counts the outliers it
 /// drew at the edge.
 #[test]
 fn a_line_charts_range_clips_its_y_axis_to_the_percentiles() {
@@ -1144,11 +1144,8 @@ fn a_line_charts_range_clips_its_y_axis_to_the_percentiles() {
     press(&mut app, KeyCode::Right);
     pump_until_chart_ready(&mut app, &rx, &tx);
     let text = draw(&mut app);
-    assert!(text.contains("p1-p99"), "{text}");
-    assert!(
-        text.contains("4 points outside p1-p99 drawn at the edge"),
-        "{text}"
-    );
+    assert!(text.contains("outliers at edge"), "{text}");
+    assert!(text.contains("1 outlier at the edge"), "{text}");
     assert!(
         !text.contains("1,000,000") && !text.contains("1M"),
         "{text}"

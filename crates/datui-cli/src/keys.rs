@@ -383,7 +383,7 @@ pub const Q_SUMMARY: &[(&str, &str)] = &[
 
 /// `o` on Distribution and its detail: the selected column's outliers.
 const OUTLIERS_KEY: Key = k("o", "Outliers", "Filter the table to the column's outliers")
-    .more("Filter the table to the selected column's outliers: a filter column outside LOW..HIGH in the Sort & Filter sidebar, beside the filters in effect. LOW and HIGH are the nearer of the IQR fences and three standard deviations on each side, from the sample, rounded outward to four significant digits of the range");
+    .more("Filter the table to the selected column's outliers, and move the column cursor to it: a filter column outside LOW..HIGH in the Sort & Filter sidebar, beside the filters in effect, or column > HIGH (column < LOW) when the sample found outliers on one side only. LOW and HIGH are the nearer of the IQR fences and three standard deviations on each side, from the sample, rounded outward to four significant digits of the range");
 
 /// The analysis tools' sample keys, the same on each.
 const SAMPLE_KEYS: &[Key] = &[
@@ -863,9 +863,9 @@ pub const SCREENS: &[Screen] = &[
                     k("Home / End", "First, last", "First and last row"),
                     k("← / → (h/l)", "Column", "The previous or next column")
                         .more("The previous or next column; the table's column cursor moves with it"),
-                    k("Enter", "Drill", "The value's rows; a histogram's values outside it")
-                    .also(&["Rows", "Outside"])
-                        .more("The rows holding the value, as a drill-down; Esc there comes back here. On a histogram that bins only the 1st to 99th percentile, filter the table to the values outside it: a filter column outside LOW..HIGH in the Sort & Filter sidebar"),
+                    k("Enter", "Drill", "The rows holding the value")
+                    .also(&["Rows"])
+                        .more("The rows holding the value, as a drill-down; Esc there comes back here"),
                     k("s", "Sort", "Sort by count or by value"),
                     k("c", "Histogram", "A number's histogram, or the list of its values")
                     .also(&["List"])

@@ -582,7 +582,7 @@ First and last row
 The previous or next column; the table's column cursor moves with it
 .TP
 \fBEnter\fR
-The rows holding the value, as a drill-down; Esc there comes back here. On a histogram that bins only the 1st to 99th percentile, filter the table to the values outside it: a filter column outside LOW..HIGH in the Sort & Filter sidebar
+The rows holding the value, as a drill-down; Esc there comes back here
 .TP
 \fBs\fR
 Sort by count or by value
@@ -877,7 +877,7 @@ Between the results and the tools
 Open the selected column's detail, a Q-Q plot and a histogram; with the sidebar focused, open a tool
 .TP
 \fBo\fR
-Filter the table to the selected column's outliers: a filter column outside LOW..HIGH in the Sort & Filter sidebar, beside the filters in effect. LOW and HIGH are the nearer of the IQR fences and three standard deviations on each side, from the sample, rounded outward to four significant digits of the range
+Filter the table to the selected column's outliers, and move the column cursor to it: a filter column outside LOW..HIGH in the Sort & Filter sidebar, beside the filters in effect, or column > HIGH (column < LOW) when the sample found outliers on one side only. LOW and HIGH are the nearer of the IQR fences and three standard deviations on each side, from the sample, rounded outward to four significant digits of the range
 .TP
 \fBEsc\fR
 Cancel a run in progress; otherwise from the results back to the tools, and from the tools close the analysis view
@@ -913,7 +913,7 @@ The first or last family
 Histogram scale: linear or log
 .TP
 \fBo\fR
-Filter the table to the selected column's outliers: a filter column outside LOW..HIGH in the Sort & Filter sidebar, beside the filters in effect. LOW and HIGH are the nearer of the IQR fences and three standard deviations on each side, from the sample, rounded outward to four significant digits of the range
+Filter the table to the selected column's outliers, and move the column cursor to it: a filter column outside LOW..HIGH in the Sort & Filter sidebar, beside the filters in effect, or column > HIGH (column < LOW) when the sample found outliers on one side only. LOW and HIGH are the nearer of the IQR fences and three standard deviations on each side, from the sample, rounded outward to four significant digits of the range
 .TP
 \fBEsc\fR
 Back to the distribution table

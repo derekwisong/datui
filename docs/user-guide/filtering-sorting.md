@@ -252,9 +252,7 @@ operator the same way, then type the value. <kbd>Enter</kbd> saves the row;
 
 The operator list offers what the column's type takes: a number, date or time
 has no `contains`, text no `outside`, and a flag only `=`, `!=` and the null tests.
-<kbd>o</kbd> in [Analysis](analysis-features.md#distribution) and
-<kbd>Enter</kbd> on a clipped [histogram](value-counts.md#histogram) add an
-`outside` filter for you.
+<kbd>o</kbd> in [Analysis](analysis-features.md#distribution) adds one for you.
 
 The value is read as the column's type, so `> 1000` on a number column is a
 numeric comparison and `>= 2024-01-01` on a date column compares dates:

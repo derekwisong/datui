@@ -4170,26 +4170,6 @@ impl App {
         Some(AppEvent::Applied(Applied::Filter(statements)))
     }
 
-    /// Filter the table to the rows of `column` below `low` or above `high`, beside the
-    /// filters in effect, once `leave` has put away the screen that asked.
-    pub(crate) fn keep_outside(
-        &mut self,
-        column: &str,
-        low: f64,
-        high: f64,
-        leave: impl FnOnce(&mut Self),
-    ) -> Option<AppEvent> {
-        let state = self.data_table_state.as_ref()?;
-        let dtype = state.schema().get(column)?.clone();
-        let statement = FilterStatement::outside(column, &dtype, low, high)?;
-        let mut statements = state.view_filters().to_vec();
-        leave(self);
-        if !statements.contains(&statement) {
-            statements.push(statement);
-        }
-        Some(AppEvent::Applied(Applied::Filter(statements)))
-    }
-
     /// Bring the sidebar in line with what is applied to the frame on screen (column
     /// order, hidden set, sort, filters). Called on open, so a canceled edit never
     /// returns staged, and after a drill-down, where stale filters would hit a List

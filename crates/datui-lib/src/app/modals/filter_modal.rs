@@ -172,37 +172,64 @@ pub struct FilterStatement {
 }
 
 impl FilterStatement {
-    /// The rows of `column` below `low` or above `high`, the ends written in the
-    /// column's type: an integer column's at the whole numbers past which the same
-    /// rows fall. `None` for a column that is not a number.
-    pub fn outside(
+    /// The rows of `column` below `low` or above `high`, with no end on a side left
+    /// out: `outside LOW..HIGH`, `< LOW` or `> HIGH`. The ends are written in the
+    /// column's type: an integer or decimal column's at the values past which the
+    /// same rows fall. `None` for a column that is not a number, or with no end.
+    pub fn past(
         column: &str,
         dtype: &polars::prelude::DataType,
-        low: f64,
-        high: f64,
+        low: Option<f64>,
+        high: Option<f64>,
     ) -> Option<Self> {
-        if !dtype.is_primitive_numeric() || !low.is_finite() || !high.is_finite() {
-            return None;
-        }
-        let (low, high) = if dtype.is_integer() {
-            // Below 0 an unsigned column has no rows, and -1 is no value of it.
-            let low = if dtype.is_unsigned_integer() {
+        use polars::prelude::DataType;
+        // The places an end is written to: below `low` is below the next value up,
+        // above `high` above the next one down.
+        let places = match dtype {
+            d if d.is_integer() => Some(0),
+            DataType::Decimal(_, scale) => Some(*scale as i32),
+            d if d.is_float() => None,
+            _ => return None,
+        };
+        let write = |end: f64, up: bool| {
+            if !end.is_finite() {
+                return None;
+            }
+            Some(match places {
+                None => crate::exact::f64_text(end),
+                Some(places) => {
+                    let scale = 10f64.powi(places);
+                    let end = if up {
+                        (end * scale).ceil()
+                    } else {
+                        (end * scale).floor()
+                    } / scale;
+                    format!("{end:.*}", places as usize)
+                }
+            })
+        };
+        // Below 0 an unsigned column has no rows, and -1 is no value of it.
+        let low = low.map(|low| {
+            if dtype.is_unsigned_integer() {
                 low.max(0.0)
             } else {
                 low
-            };
-            (
-                format!("{}", low.ceil() as i128),
-                format!("{}", high.floor() as i128),
-            )
-        } else {
-            (crate::exact::f64_text(low), crate::exact::f64_text(high))
+            }
+        });
+        let (operator, value) = match (low, high) {
+            (Some(low), Some(high)) => (
+                FilterOperator::Outside,
+                format!("{}..{}", write(low, true)?, write(high, false)?),
+            ),
+            (Some(low), None) => (FilterOperator::Lt, write(low, true)?),
+            (None, Some(high)) => (FilterOperator::Gt, write(high, false)?),
+            (None, None) => return None,
         };
         Some(Self {
             columns: Vec::new(),
             column: column.to_string(),
-            operator: FilterOperator::Outside,
-            value: format!("{low}..{high}"),
+            operator,
+            value,
             logical_op: LogicalOperator::And,
         })
     }

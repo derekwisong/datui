@@ -841,11 +841,14 @@ impl App {
             && self.chart.modal.shown().clip
             && let Some(clip) = lines.y_clip
         {
-            let noun = if clip.outside == 1 { "point" } else { "points" };
+            let noun = if clip.outside == 1 {
+                "outlier"
+            } else {
+                "outliers"
+            };
             notes.push(format!(
-                "{} {noun} outside {} drawn at the edge",
-                crate::numfmt::group_chrome(clip.outside),
-                ValueRange::Percentile1To99.label()
+                "{} {noun} at the edge",
+                crate::numfmt::group_chrome(clip.outside)
             ));
         }
         let sampled = self.data_table_state.as_ref().and_then(|s| s.sampled());

@@ -904,9 +904,9 @@ fn a_reselection_behind_a_stale_worker_counts_as_preparing() {
     assert!(!app.chart_preparing());
 }
 
-/// A line chart's p1-p99 range spans the Y axis from the 1st to the 99th percentile
-/// and draws the points past it at the edge, on a log scale too; with no point past
-/// them there is nothing to clip.
+/// A line chart's clipped range spans the Y axis over the points that are not
+/// outliers and draws the outliers at its edge, on a log scale too; the ends of a
+/// trend are not outliers, and with none there is nothing to clip.
 #[test]
 fn a_clipped_line_chart_draws_its_outliers_at_the_edge() {
     use crate::chart::chart_plot::Shown;
@@ -923,9 +923,9 @@ fn a_clipped_line_chart_draws_its_outliers_at_the_edge() {
         },
         None,
     );
-    let clip = lines.y_clip.expect("a point past p99");
-    assert!(clip.hi < 1e6 && clip.hi > 190.0, "{clip:?}");
-    assert_eq!(clip.outside, 4, "the spike and the ends past p1 and p99");
+    let clip = lines.y_clip.expect("an outlier");
+    assert_eq!((clip.lo, clip.hi), (0.0, 199.0), "the trend's ends stay");
+    assert_eq!(clip.outside, 1, "the spike alone");
     let clipped = Shown {
         log: false,
         clip: true,

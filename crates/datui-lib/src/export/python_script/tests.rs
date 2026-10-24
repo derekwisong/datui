@@ -718,7 +718,12 @@ fn outside_keeps_the_values_past_either_end() {
         "n" => &[Some(-7i64), Some(-5), Some(0), Some(60), Some(75), None],
         "u" => &[Some(0u32), Some(3), Some(9), None, None, None],
         "x" => &[Some(-0.5), Some(0.25), Some(1.0), Some(1.5), None, None],
+        "m" => &[Some("1.50"), Some("2.00"), Some("3.25"), Some("9.99"), None, None],
     )
+    .unwrap()
+    .lazy()
+    .with_column(col("m").cast(DataType::Decimal(10, 2)))
+    .collect()
     .unwrap();
     let schema = frame.schema().clone();
     let kept = |statement: FilterStatement| {
@@ -740,9 +745,10 @@ fn outside_keeps_the_values_past_either_end() {
             .into_no_null_iter()
             .collect::<Vec<_>>()
     };
-    let outside = |column: &str, low, high| {
-        FilterStatement::outside(column, schema.get(column).unwrap(), low, high).unwrap()
+    let past = |column: &str, low, high| {
+        FilterStatement::past(column, schema.get(column).unwrap(), low, high).unwrap()
     };
+    let outside = |column: &str, low, high| past(column, Some(low), Some(high));
     // The ends are kept out: past them is strictly past.
     assert_eq!(
         kept(statement("n", FilterOperator::Outside, "-5..60")),
@@ -757,9 +763,27 @@ fn outside_keeps_the_values_past_either_end() {
     assert_eq!(outside("u", -2.0, 8.0).value, "0..8");
     assert_eq!(kept(outside("u", -2.0, 8.0)), [9.0]);
     assert_eq!(kept(outside("x", 0.25, 1.0)), [-0.5, 1.5]);
+    // A decimal's ends at its places.
+    assert_eq!(outside("m", 1.505, 3.2549).value, "1.51..3.25");
+    assert_eq!(kept(outside("m", 1.505, 3.2549)), [1.5, 9.99]);
+    // One side alone is a comparison.
+    assert_eq!(past("n", None, Some(60.5)).describe(), "n > 60");
+    assert_eq!(kept(past("n", Some(-5.5), None)), [-7.0]);
     assert_eq!(
-        FilterStatement::outside("s", &DataType::String, 0.0, 1.0),
+        FilterStatement::past("n", &DataType::Int64, None, None),
         None
+    );
+    assert_eq!(
+        FilterStatement::past("s", &DataType::String, Some(0.0), Some(1.0)),
+        None
+    );
+    assert_eq!(
+        SidebarFilter::problem(
+            &statement("n", FilterOperator::Outside, "60..-5"),
+            schema.get("n")
+        )
+        .as_deref(),
+        Some("n: LOW is above HIGH")
     );
     assert_eq!(
         SidebarFilter::problem(

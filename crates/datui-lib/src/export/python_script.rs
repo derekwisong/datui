@@ -245,11 +245,14 @@ impl SidebarFilter {
                 ));
             };
             let dtype = dtype?;
-            return [low, high].into_iter().find_map(|end| {
-                crate::typed_value::parse(end, dtype)
-                    .err()
-                    .map(|why| format!("{}: {why}", statement.column))
-            });
+            let ends = crate::typed_value::parse(low, dtype)
+                .and_then(|low| Ok((low, crate::typed_value::parse(high, dtype)?)));
+            return match ends {
+                Err(why) => Some(format!("{}: {why}", statement.column)),
+                Ok((low, high)) => (low.value().partial_cmp(high.value())
+                    == Some(std::cmp::Ordering::Greater))
+                .then(|| format!("{}: LOW is above HIGH", statement.column)),
+            };
         }
         let dtype = dtype.filter(|_| compares)?;
         crate::typed_value::parse(&statement.value, dtype)

@@ -356,7 +356,7 @@ Where a dataset opens.
 | `PgUp / PgDn` | A page |
 | `Home / End` | First and last row |
 | `← / → (h/l)` | The previous or next column; the table's column cursor moves with it |
-| `Enter` | The rows holding the value, as a drill-down; Esc there comes back here. On a histogram that bins only the 1st to 99th percentile, filter the table to the values outside it: a filter column outside LOW..HIGH in the Sort & Filter sidebar |
+| `Enter` | The rows holding the value, as a drill-down; Esc there comes back here |
 | `s` | Sort by count or by value |
 | `c` | Switch a number column between its histogram, binned from the counts, and the list of its values. A number column opens as its histogram; the header says which is shown |
 | `a` | Count every row, when the counts are of a sample |
@@ -536,7 +536,7 @@ Distribution in the Analysis sidebar.
 | `PgUp / PgDn` | A page |
 | `Tab / Shift+Tab` | Between the results and the tools |
 | `Enter` | Open the selected column's detail, a Q-Q plot and a histogram; with the sidebar focused, open a tool |
-| `o` | Filter the table to the selected column's outliers: a filter column outside LOW..HIGH in the Sort & Filter sidebar, beside the filters in effect. LOW and HIGH are the nearer of the IQR fences and three standard deviations on each side, from the sample, rounded outward to four significant digits of the range |
+| `o` | Filter the table to the selected column's outliers, and move the column cursor to it: a filter column outside LOW..HIGH in the Sort & Filter sidebar, beside the filters in effect, or column &gt; HIGH (column &lt; LOW) when the sample found outliers on one side only. LOW and HIGH are the nearer of the IQR fences and three standard deviations on each side, from the sample, rounded outward to four significant digits of the range |
 | `Esc` | Cancel a run in progress; otherwise from the results back to the tools, and from the tools close the analysis view |
 
 ### Analysis: Distribution · Sample
@@ -560,7 +560,7 @@ Distribution in the Analysis sidebar.
 | `↑ / ↓ (j/k)` | Compare the values with another family |
 | `Home / End` | The first or last family |
 | `s` | Histogram scale: linear or log |
-| `o` | Filter the table to the selected column's outliers: a filter column outside LOW..HIGH in the Sort & Filter sidebar, beside the filters in effect. LOW and HIGH are the nearer of the IQR fences and three standard deviations on each side, from the sample, rounded outward to four significant digits of the range |
+| `o` | Filter the table to the selected column's outliers, and move the column cursor to it: a filter column outside LOW..HIGH in the Sort & Filter sidebar, beside the filters in effect, or column &gt; HIGH (column &lt; LOW) when the sample found outliers on one side only. LOW and HIGH are the nearer of the IQR fences and three standard deviations on each side, from the sample, rounded outward to four significant digits of the range |
 | `Esc` | Back to the distribution table |
 
 ## Analysis: Correlation

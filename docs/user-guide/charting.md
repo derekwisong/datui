@@ -170,6 +170,8 @@ Dates and datetimes are written as ISO 8601 with a space before the time:
 | **Range** | Histogram, Box, KDE, Line, Scatter | So outliers do not squash the rest. A histogram, box or KDE takes **All** values or **p1-p99**, the 1st to 99th percentile, and counts the values it left out: `1,207 values outside p1-p99`. A line or scatter chart takes **All** or **outliers at edge**: it keeps every point, spans its Y axis over those that are not outliers (as [Distribution](analysis-features.md#distribution) counts them), and draws the outliers at the edge: `2 outliers at the edge`. The crosshair reads their true values |
 | **Smooth** | Line | Draw each point as the mean of the values in a window ending at it (a moving average), to show the trend through noisy readings: **off**, or a window, a length of time or a number of points. See [Smoothing](#smoothing) |
 | raw (under Smooth) | Line | Draw the raw line faintly behind the smoothed one: **auto** (with one series), **on** or **off** |
+| **Trend** | Scatter | A line fitted through the points: **off**, **linear**, **exponential**, **power**, **robust**, **local** or **y = x**. See [Trend lines](#trend-lines) |
+| over (under Trend) | Scatter | With a **Color**: one fit **per color**, or one **overall**, over every point |
 | Order | Bar (under X) | By value, largest first, or by label: text A to Z, numbers ascending |
 | **Y from zero** | Line, Scatter | Start the Y axis at zero. Dimmed while Y is on a log scale, which has no zero |
 | **Log scale** | Line, Scatter | **Y**, and **X** on the line under it: a log axis. See [Log scale](#log-scale) |
@@ -286,6 +288,109 @@ from 17 to 4,983 miles, and more than half the flights are under 1,000, so on
 an ordinary axis they crowd into the left fifth of the plot. Tab to **X** under
 **Log scale** and press <kbd>Space</kbd>: those flights now spread over more
 than half the width, and the short hops under 200 miles separate.
+
+### Trend lines
+
+A scatter shows how two columns move together; a trend line says how much.
+**Trend** fits a line through the points, draws it over them (the points fade
+behind it) and reads it in a sentence under the plot. Tab to **Trend** and step
+the method with <kbd>←</kbd> <kbd>→</kbd>.
+
+| Method | Use it when | What it fits |
+|---|---|---|
+| **linear** | Y changes by about the same amount for each step of X | Least squares: the line y = a + bx that makes the squared vertical distances smallest |
+| **exponential** | Y grows or shrinks by about the same share for each step of X: prices, counts that compound | Least squares of ln y on x, drawn as y = A·e^(bx). Points with y of 0 or less are left out and counted |
+| **power** | Each 1% more X gives about the same % more Y: sizes, areas, scaling laws | Least squares of ln y on ln x, drawn as y = A·x^k. Points with x or y of 0 or less are left out. Not on a date or time X. Draws a curve on an ordinary X and a straight line on a log X |
+| **robust** | A few wild points pull the linear line off the rest | Theil–Sen: the slope is the median of the slopes between every pair of points (pairs with the same X are skipped), the line through the median of what is left. Past a million pairs, a million drawn at random with the sample's seed |
+| **local** | The relation bends and no formula fits it | LOWESS: at each X, a line fitted to its nearest 2/3 of the points, the nearest weighted most, then refitted three times with outliers weighted down. A curve, with no equation |
+| **y = x** | X and Y measure the same thing: a forecast and the actual, two runs of one test | Not fitted: the diagonal, to see which side the points fall on. Not on a date or time X |
+
+**robust** and **local** run in the background on a large chart: the plot says
+`Fitting trend...` until the line is drawn.
+
+With a **Color**, the line under **Trend**, **over**, picks **per color** (a
+line per series, in its color) or **overall** (one line through every point, in
+`chart_trend`). Without a Color, each Y column gets its own line. **y = x** is
+one line always. **Other** is fitted only in an overall line, and a series of
+fewer than 10 points gets no line.
+
+#### Reading the line
+
+Under the plot, one sentence. With several lines it says how many (`3 fits`);
+the crosshair and the copy give each. Each method on the
+[example](#example-air-time-per-mile) below:
+
+| Method | Reads |
+|---|---|
+| linear | `+0.126 per distance · strong, R² 0.98 · typically ±12.8 off the line` |
+| exponential | `doubles every 857 distance · +0.081% per distance · strong, R² 0.86 · typically ±27% off the line` |
+| power | `y ~ x^0.822 · 1% more x, 0.822% more y · strong, R² 0.98 · typically ±11% off the line` |
+| robust | `+0.126 per distance · half the points within ±6.73 of it` (the spread varies a little with the pairs drawn) |
+| local | `local fit, each point of its nearest 2/3 · typically ±12.8 off the line` |
+| y = x | `y = x · 0% of points above · typically ±1104 off the line` (minutes against miles: no use here) |
+
+Term by term:
+
+| Term | Means |
+|---|---|
+| `+0.126 per distance` | The slope: how much Y changes for one unit of X, with Y's unit when it has one. Over a date or time X, per the largest length of time the data spans three of: `per day`, `per month` |
+| `doubles every 857 distance`, `+0.081% per distance` | An exponential's rate: the X it takes Y to double (or halve), and the change per unit of X |
+| `y ~ x^0.822` | A power's exponent k: 1% more X gives about k% more Y. Below 1, Y grows slower than X; above, faster |
+| `strong` | The strength of the relation, from Pearson's r of the points the line was fitted to (of ln y, or ln y and ln x, for exponential and power): **none** under 0.05, **weak** under 0.3, **moderate** under 0.7, then **strong**, as the [correlation matrix](analysis-features.md#correlation-matrix) says it |
+| `R² 0.98` | The share of Y's variation the line accounts for, 0 to 1 |
+| `typically ±12.8 off the line` | The residual standard deviation: how far a point usually sits from the line, in Y's units. For exponential and power, as a percentage of the line's value |
+| `half the points within ±6.73 of it` | robust's spread: the median distance of a point from its line |
+| `0% of points above` | y = x: the share of points with Y greater than X |
+
+When Pearson's r and Spearman's ρ differ by 0.2 or more, a linear reading ends
+with a mark in `warning`: `▲ r 0.57 vs ρ 0.90: try robust or local`. Spearman's ρ
+measures any relation that only rises or only falls, so a gap says the points
+follow a curve, or that a few points pull a straight line.
+
+The title row says what was fitted: `fit on 4,812 · 188 null` (rows without an
+X or Y are not fitted), `fit on 54 means` under an aggregate, the points a log
+left out (`12 with y of 0 or less left out`), series too small
+(`2 series under 10 points not fitted`), and a robust fit's pairs when drawn at
+random (`slopes of 989k of 53.6B pairs · seed 641911`; the seed is not repeated
+when the chart's sample already names it).
+
+| Where | What |
+|---|---|
+| Crosshair (<kbd>x</kbd>) | Each series' line value beside its own: `air_time: 659 · fit 646.9`, and with one line its equation: `fit: y = 0.126x + 18.5`. Over a date or time X, the slope alone. With several lines, each value has its slope |
+| <kbd>y</kbd> | Copies the fit as text: the method, the columns and notes, then for each line its equation, slope, R² with r and p, Spearman's ρ, residual SD, median distance from the line and the points used |
+| Export | Draws the lines and puts the reading over the notes |
+| Saved view | Keeps **Trend** and **over** |
+
+Things to keep in mind:
+
+| Trap | Why |
+|---|---|
+| A line is not a cause | Two columns can move together because a third drives both |
+| One point can carry a line | A far point at the edge of X pulls least squares toward it; compare with **robust** |
+| A strong R² can hide a curve | Look at the points: a bend shows as runs of points above, then below, the line. The rank mark flags the plainest cases |
+| The slope holds within the data | Past the X range the line is not drawn, and nothing says the relation goes on |
+| A sample's line is a sample's | A sampled chart fits the sample; **Every row** fits them all |
+
+Not offered: on a **Cumulative** chart (each point holds the ones before it, so
+the points are not independent), and only on Scatter. With several Y columns,
+**over** reads `each Y column` and each is fitted on its own.
+
+#### Example: air time per mile
+
+Open **NYC flights (2013)** from **Example datasets**, press <kbd>c</kbd>, set
+the type to **Scatter**, X to `distance` and Y to `air_time`, and **Rows** to
+**Every row**. Tab to **Trend** and press <kbd>→</kbd>: **linear**. The title
+row says `fit on 327,346 · 9,430 null` (cancelled flights have no air time),
+and under the plot:
+
+`+0.126 per distance · strong, R² 0.98 · typically ±12.8 off the line`
+
+Each mile adds 0.126 minutes in the air, about 476 miles an hour, and a flight
+is usually within 13 minutes of the line. Press <kbd>x</kbd> and <kbd>End</kbd>:
+the longest flight, 4,983 miles, reads `air_time: 659 · fit 646.9`, with
+`fit: y = 0.126x + 18.5`: 18.5 minutes of climbing and descending that no
+distance covers. Step to **power**: `y ~ x^0.822`, so a flight twice as long
+takes about 1.77 times as long in the air (2^0.822); long flights cruise faster.
 
 ## Axes, grid and legend
 
@@ -434,9 +539,10 @@ from S3, GCS or Azure, since the envelope would download the whole file twice.
 | <kbd>1</kbd>–<kbd>7</kbd> | Switch the type directly, from anywhere: Line, Scatter, Bar, Histogram, Box, KDE, Heatmap (<kbd>[</kbd> <kbd>]</kbd> step) |
 | <kbd>↓</kbd> <kbd>↑</kbd> or <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move between the panel's rows |
 | <kbd>Space</kbd> <kbd>Enter</kbd> | Open a shelf's picker, or the Color values; toggle an option, or take its next value. The panel applies as it changes, so <kbd>Enter</kbd> acts as <kbd>Space</kbd> does |
-| <kbd>←</kbd> <kbd>→</kbd> | Step the type, the time bucket, the aggregate, cumulative, bins, range, order, smoothing window, raw line or sample size (<kbd>+</kbd> <kbd>-</kbd> too, <kbd>PgUp</kbd> <kbd>PgDn</kbd> for bigger steps on the sample size); on a shelf of one column or on Color, the previous or next column; flip a toggle |
+| <kbd>←</kbd> <kbd>→</kbd> | Step the type, the time bucket, the aggregate, cumulative, bins, range, order, smoothing window, raw line, trend, over or sample size (<kbd>+</kbd> <kbd>-</kbd> too, <kbd>PgUp</kbd> <kbd>PgDn</kbd> for bigger steps on the sample size); on a shelf of one column or on Color, the previous or next column; flip a toggle |
 | <kbd>g</kbd> | Grid on or off |
 | <kbd>x</kbd> | The crosshair, on a line or scatter chart |
+| <kbd>y</kbd> | Copy a scatter's trend fit |
 | <kbd>e</kbd> | Export the chart |
 | <kbd>?</kbd> | Help |
 | <kbd>Esc</kbd> | Back to the table |

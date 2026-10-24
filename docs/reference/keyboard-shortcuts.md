@@ -455,7 +455,7 @@ Where a dataset opens.
 | `[ / ]` | Previous or next chart type |
 | `Tab / Shift+Tab (↑ / ↓)` | Next or previous row of the panel, wrapping (j/k too). A shelf the type does not use is dimmed and skipped |
 | `Space / Enter` | On X, Y or Color: open its picker. On the line under Color: pick the values that get a series, by rows. On an option: toggle it or take its next value. The panel applies as it changes, so Enter acts as Space does, except on Rows: Space switches between Sample and Every row, and Enter reads what the row says |
-| `← / → (h/l)` | Step the type, the time bucket (day, week, month, quarter, year), the aggregate (count, distinct, sum, mean, median, stdev, quantile, min, max, first, last) and a quantile's percentile, cumulative, bins, range or order; on Smooth, the window of a line's moving average (trailing mean), to show its trend through noisy readings (off, then lengths of time over a time X or numbers of points over any other, sized to the data); on raw under it, whether the raw line is drawn faintly behind (auto: with one series; on; off); on X under Log scale, a log axis for a number X; on Rows, switch between Sample and Every row (read on Enter); on a shelf that takes one column, or Color, the previous or next column (Color takes it alone); on the line under Color, turn Other (every value without a series) on or off; flip a toggle |
+| `← / → (h/l)` | Step the type, the time bucket (day, week, month, quarter, year), the aggregate (count, distinct, sum, mean, median, stdev, quantile, min, max, first, last) and a quantile's percentile, cumulative, bins, range or order; on Smooth, the window of a line's moving average (trailing mean), to show its trend through noisy readings (off, then lengths of time over a time X or numbers of points over any other, sized to the data); on raw under it, whether the raw line is drawn faintly behind (auto: with one series; on; off); on a scatter's Trend, the line fitted through the points (off, linear, exponential, power, robust, local, y = x; a time X offers neither power nor y = x); on over under it, one fit per color or one over every point; on X under Log scale, a log axis for a number X; on Rows, switch between Sample and Every row (read on Enter); on a shelf that takes one column, or Color, the previous or next column (Color takes it alone); on the line under Color, turn Other (every value without a series) on or off; flip a toggle |
 | `+ / -` | Bins or bandwidth |
 | `0-9` | On Rows: type a sample size, like 50000, 50,000, 50k, 250k or 2m. Backspace edits, Enter reads it, Esc puts the row back as it was. A size of at least the table's rows is Every row. Nothing is read until Enter or focus leaves the row |
 | `g` | Grid on or off at the labeled ticks: Line, Scatter, Histogram, Box and KDE. [analysis] chart_grid sets where it starts |
@@ -466,6 +466,7 @@ Where a dataset opens.
 | Key | Action |
 |---|---|
 | `x` | Line and Scatter: the plot takes the keys, and a crosshair reads out x and every series' value under the plot. ← / → (h/l) step to the next point or column, Home/End go to the ends; x, Tab or Esc hand the keys back to the panel. A click on the plot puts the crosshair there |
+| `y` | Scatter with a trend: copy the method, the chart's columns and notes, and for each fit its equation, slope, R squared with r and p, Spearman ρ, residual SD and the points used, as plain text |
 | `e` | Export the chart to PNG, SVG or PDF, with a title, notes and source. Needs the chart's shelves filled first |
 | `t` | While following a file, draw again with the rows that arrived since; the footer says how many |
 
@@ -577,6 +578,7 @@ Correlation Matrix in the Analysis sidebar.
 | `Home / End` | Jump to the first pair (the first row's second column) or the last (the last row's next-to-last column); the matrix opens on the first |
 | `PgUp / PgDn` | A page |
 | `Enter` | On a cell, open the pair's detail; in the sidebar, open a tool. Does nothing on a diagonal cell |
+| `c` | On a cell off the diagonal, chart the pair as a scatter (X the cell's column, Y its row) with a linear trend; Esc from the chart comes back here |
 | `m` | Method: Pearson r or Spearman ρ, named in the title (one run computes both, so switching reads nothing) |
 | `Esc` | Cancel a run in progress; otherwise from the matrix back to the tools, and from the tools close the analysis view |
 
@@ -599,6 +601,7 @@ Correlation Matrix in the Analysis sidebar.
 | Key | Action |
 |---|---|
 | `m` | Pearson or Spearman |
+| `c` | Scatter the pair with a linear trend |
 | `Esc` | Return to the correlation matrix. Resampling (r) works from the matrix, not from inside this detail |
 
 ## Analysis: Data Quality

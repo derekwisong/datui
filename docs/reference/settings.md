@@ -285,6 +285,7 @@ lives, imports, the theme and troubleshooting.
 | `theme.colors.chart_9` | `#ff5fd2` | `#d1188c` | Chart series 9. |
 | `theme.colors.chart_10` | `#f4ef8a` | `#24357a` | Chart series 10. |
 | `theme.colors.chart_grid` | `#3d4785` | `#70aabf` | The chart grid, a shade dimmer than dimmed. |
+| `theme.colors.chart_trend` | `#c0caf5` | `#343b58` | A scatter's trend line over every point, and y = x. |
 | `theme.colors.accent` | `#7dcfff` | `#2e7de9` | Key chips, focused titles and the selection rail. |
 | `theme.colors.accent_bright` | `#a4daff` | `#1a6cd0` | The section the cursor is in. |
 | `theme.colors.gradient_start` | `#7aa2f7` | `#2e7de9` | The wordmark's first stop. |

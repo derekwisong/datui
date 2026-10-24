@@ -39,7 +39,7 @@ pub fn render(
         _ => outcome.and_then(|o| o.as_ref().ok()),
     };
     let notes = prepared
-        .map(|p| app.chart_notes_of(p, crate::glyphs::get().middot))
+        .map(|p| app.chart_notes_of(p, crate::glyphs::get()))
         .unwrap_or_default();
     let aggregating = request.as_ref().is_some_and(ChartRequest::aggregates);
 

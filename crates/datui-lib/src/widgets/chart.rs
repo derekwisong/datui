@@ -267,7 +267,14 @@ fn panel_lines(modal: &ChartModal, schema: Option<&Schema>, ctx: &RenderContext)
     lines.push(PanelLine::Rule("Options"));
     lines.push(PanelLine::Blank);
     let on_off = |on: bool| plain(if on { "on" } else { "off" }, ctx);
-    for field in rows.iter().copied() {
+    // Y from zero keeps its place under a log Y, which passes it over.
+    let mut shown_rows = rows.clone();
+    if let Some(at) = rows.iter().position(|r| *r == ChartFocus::LogScale)
+        && !rows.contains(&ChartFocus::YStartsAtZero)
+    {
+        shown_rows.insert(at, ChartFocus::YStartsAtZero);
+    }
+    for field in shown_rows {
         let (label, value) = match field {
             ChartFocus::Cumulative => ("Cumulative", plain(encoding.y.cumulative.label(), ctx)),
             ChartFocus::Bins if mark == Mark::Heatmap => {
@@ -300,8 +307,10 @@ fn panel_lines(modal: &ChartModal, schema: Option<&Schema>, ctx: &RenderContext)
                 continue;
             }
             // A line's Smooth stays in its place, dimmed, where it takes no part.
-            ChartFocus::YStartsAtZero if !rows.contains(&ChartFocus::Smooth) => {
-                if let ShelfUse::Dimmed(why) = modal.smooth_use() {
+            ChartFocus::YStartsAtZero => {
+                if !rows.contains(&ChartFocus::Smooth)
+                    && let ShelfUse::Dimmed(why) = modal.smooth_use()
+                {
                     lines.push(row(
                         "Smooth",
                         vec![quiet(format!("off {} {why}", g.middot), ctx)],
@@ -314,10 +323,19 @@ fn panel_lines(modal: &ChartModal, schema: Option<&Schema>, ctx: &RenderContext)
                         true,
                     ));
                 }
+                // A log Y has no zero: the row stays, dimmed, and Tab passes it.
+                if !rows.contains(&ChartFocus::YStartsAtZero) {
+                    lines.push(row(
+                        "Y from zero",
+                        vec![quiet(format!("off {} log scale", g.middot), ctx)],
+                        None,
+                        true,
+                    ));
+                    continue;
+                }
                 ("Y from zero", on_off(modal.y_starts_at_zero))
             }
             ChartFocus::Range => ("Range", plain(modal.range_label(), ctx)),
-            ChartFocus::YStartsAtZero => ("Y from zero", on_off(modal.y_starts_at_zero)),
             ChartFocus::LogScale => {
                 // Y's, then under it X's: a number X only, dimmed with why otherwise.
                 lines.push(row(
@@ -1104,16 +1122,25 @@ fn render_xy_chart(
         GraphType::Line
     };
     let (x, y) = (&plot.x, &plot.y);
-    let drawn: Vec<_> = plot.drawn().collect();
+    // Every series a line is drawn for: the smoothed one, or only its raw line.
+    let drawn = plot.named();
 
     if drawn.is_empty() {
-        // Points, none of them where a log X can put them.
-        let all_left_out = x.log && lines.series.iter().any(|s| !s.is_empty());
+        // Points, none of them where a log scale can put them.
+        let all_left_out = (x.log || y.log) && lines.series.iter().any(|s| !s.is_empty());
         if modal.x().is_none() || all_left_out {
-            let why = if all_left_out {
-                "No X above 0 to draw on a log scale"
-            } else {
+            let (by_x, by_y) = lines
+                .left_out(plot.shown())
+                .iter()
+                .fold((0, 0), |(x, y), l| (x + l.x, y + l.y));
+            let why = if !all_left_out {
                 missing(modal)
+            } else if by_x > 0 && by_y > 0 {
+                "No point with X and Y above 0 to draw on a log scale"
+            } else if by_y > 0 || (by_x == 0 && y.log) {
+                "No Y above 0 to draw on a log scale"
+            } else {
+                "No X above 0 to draw on a log scale"
             };
             Paragraph::new(why)
                 .style(Style::default().fg(text_secondary))
@@ -1165,10 +1192,13 @@ fn render_xy_chart(
     } else {
         all_y_min
     };
-    let y_max_bounds = if all_y_max > y_min_bounds {
-        all_y_max
+    let (y_min_bounds, y_max_bounds) = if all_y_max > y_min_bounds {
+        (y_min_bounds, all_y_max)
+    } else if y.log {
+        // Half a power of ten each side, so the value has a tick of its own.
+        (y_min_bounds - 0.5, y_min_bounds + 0.5)
     } else {
-        y_min_bounds + 1.0
+        (y_min_bounds, y_min_bounds + 1.0)
     };
     let (x_min_bounds, x_max_bounds) = if all_x_max > all_x_min {
         (all_x_min, all_x_max)
@@ -1177,23 +1207,19 @@ fn render_xy_chart(
     };
 
     let y_bounds = [y_min_bounds, y_max_bounds];
-    // On a log scale a tick stands for its value before the log.
-    let y_numbers = if y.log {
-        y.numbers.clone().fractional()
-    } else {
-        y.numbers.clone()
-    };
-    let y_spec = if y.log {
-        AxisSpec::y_log(y_bounds, &y_numbers, &y.title)
+    // On a log scale a tick names its value before the log, X and Y alike.
+    let y_spec = if y.log && y.kind == XAxisTemporalKind::Duration {
+        AxisSpec::log(y_bounds, &y.numbers, &y.title).durations()
+    } else if y.log {
+        AxisSpec::log(y_bounds, &y.numbers.clone().fractional(), &y.title)
     } else if y.kind == XAxisTemporalKind::Duration {
-        AxisSpec::calendar(y_bounds, y.kind, &y_numbers, &y.title)
+        AxisSpec::calendar(y_bounds, y.kind, &y.numbers, &y.title)
     } else {
-        AxisSpec::y_numbers(y_bounds, &y_numbers, &y.title)
+        AxisSpec::y_numbers(y_bounds, &y.numbers, &y.title)
     };
-    // On a log X, as on a log Y, a tick names its value before the log.
     let x_spec = if x.log {
         let numbers = x.numbers.clone().fractional();
-        AxisSpec::x_log([x_min_bounds, x_max_bounds], &numbers, &x.title)
+        AxisSpec::log([x_min_bounds, x_max_bounds], &numbers, &x.title)
     } else {
         x_axis([x_min_bounds, x_max_bounds], x.kind, &x.numbers, &x.title)
     };
@@ -1214,7 +1240,7 @@ fn render_xy_chart(
         .cursor_x
         .filter(|_| modal.plot_focus)
         .and_then(|cursor| {
-            if lines.xs.is_empty() {
+            if stops.is_empty() {
                 let mut xs = crosshair::xs(values);
                 if x.log {
                     xs.retain(|&x| x > 0.0);

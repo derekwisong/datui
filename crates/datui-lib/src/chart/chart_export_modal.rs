@@ -100,6 +100,8 @@ pub struct ExportDefaults {
     pub mark: Mark,
     /// A line chart's Y from zero, as drawn.
     pub y_from_zero: bool,
+    /// The chart's Y is on a log scale, which has no zero to start from.
+    pub log_y: bool,
 }
 
 pub struct ChartExportModal {
@@ -117,6 +119,8 @@ pub struct ChartExportModal {
     pub point_size: PointSize,
     pub line_width: LineWidth,
     pub y_from_zero: bool,
+    /// The chart's Y is on a log scale: no Y from zero to offer.
+    pub log_y: bool,
     pub path_input: TextInput,
     pub width_input: TextInput,
     pub height_input: TextInput,
@@ -181,6 +185,7 @@ impl ChartExportModal {
         // The marks' sizes stay as last used; the axis follows the chart.
         self.mark = defaults.mark;
         self.y_from_zero = defaults.y_from_zero;
+        self.log_y = defaults.log_y;
         self.apply_size();
         if let Some(saved) = self.restore.take() {
             self.put_back(saved);
@@ -246,7 +251,8 @@ impl ChartExportModal {
             ChartExportFocus::PointOpacity | ChartExportFocus::PointSize => {
                 self.mark == Mark::Scatter
             }
-            ChartExportFocus::LineWidth | ChartExportFocus::YFromZero => self.mark == Mark::Line,
+            ChartExportFocus::LineWidth => self.mark == Mark::Line,
+            ChartExportFocus::YFromZero => self.mark == Mark::Line && !self.log_y,
             _ => true,
         }
     }
@@ -448,6 +454,7 @@ impl Default for ChartExportModal {
             point_size: PointSize::default(),
             line_width: LineWidth::default(),
             y_from_zero: false,
+            log_y: false,
             path_input: TextInput::new(),
             width_input,
             height_input,
@@ -481,6 +488,7 @@ mod tests {
                 legend: false,
                 mark: Mark::Line,
                 y_from_zero: false,
+                log_y: false,
             },
         );
         modal
@@ -551,6 +559,11 @@ mod tests {
         modal.y_from_zero = true;
         modal.step(YFromZero, 1);
         assert_eq!(modal.y_from_zero_option(), Some(false));
+        // A log Y has no zero to start from.
+        modal.log_y = true;
+        assert!(!has(&modal, YFromZero) && has(&modal, LineWidth));
+        assert_eq!(modal.y_from_zero_option(), None);
+        modal.log_y = false;
         modal.mark = Mark::Scatter;
         assert_eq!(
             modal.point_opacity,

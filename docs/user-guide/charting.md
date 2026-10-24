@@ -171,8 +171,8 @@ Dates and datetimes are written as ISO 8601 with a space before the time:
 | **Smooth** | Line | Draw each point as the mean of the values in a window ending at it (a moving average), to show the trend through noisy readings: **off**, or a window, a length of time or a number of points. See [Smoothing](#smoothing) |
 | raw (under Smooth) | Line | Draw the raw line faintly behind the smoothed one: **auto** (with one series), **on** or **off** |
 | Order | Bar (under X) | By value, largest first, or by label: text A to Z, numbers ascending |
-| **Y from zero** | Line, Scatter | Start the Y axis at zero |
-| **Log scale** | Line, Scatter | **Y**: plot ln(1 + y), with the ticks labeled in y. **X** (the line under it): a log axis for a number X. See [Log scale](#log-scale) |
+| **Y from zero** | Line, Scatter | Start the Y axis at zero. Dimmed while Y is on a log scale, which has no zero |
+| **Log scale** | Line, Scatter | **Y**, and **X** on the line under it: a log axis. See [Log scale](#log-scale) |
 | **Legend** | Line, Scatter, Bar, Histogram, KDE | **auto** or **off** |
 | **Grid** | Line, Scatter, Histogram, Box, KDE | Lines at the labeled ticks |
 | **Rows** | Charts that sample | **Sample** of a size, or **Every row**; an aggregate reads every row and says `all, exact`. See [Large tables](#large-tables) |
@@ -219,7 +219,7 @@ gap, none longer than the span.
 | Nulls | Skipped. A window with no values draws no point (`∅` at the crosshair) |
 | Series | Each smoothed on its own, after any bucket, aggregate and cumulative |
 | Large tables | A line drawn as an envelope (see [Large tables](#large-tables)) averages the rows behind each step, not its lowest and highest value, and a window of N points is N rows, the oldest step counted in part, at its mean: `min and max of 192M rows in 5,000 steps · mean of the trailing 1m` |
-| Order | Smoothed, then (on a log X) the points at X of 0 or less left out, then **Range**, then **Log scale** |
+| Order | Smoothed, then (on a log scale) the points at 0 or less left out, then **Range**, then **Log scale** |
 | Range | With **outliers at edge**: without the raw line, the Y axis spans the smoothed line less its outliers. With it, the axis spans both lines less their outliers, and each line's outliers are drawn at the edge and counted in the title row. With **All**, the axis spans the raw line too; hide it (**raw** off) or use **outliers at edge** to fit the smoothed line |
 
 Smoothing changes only the drawing, not the data. An export draws the smoothed
@@ -256,28 +256,27 @@ room, so 1 to 10 is as wide as 1,000 to 10,000. Equal steps along it are equal
 ratios, not equal differences: doubling looks the same anywhere on the axis.
 
 **Log scale** has two lines: **Y** on its own row and **X** on the line under
-it. Focus either with <kbd>Tab</kbd> and toggle it with <kbd>Space</kbd>.
+it. Focus either with <kbd>Tab</kbd> and toggle it with <kbd>Space</kbd>. **X**
+takes only a number X: over a date, time or duration X the line reads
+`X numbers only`, dimmed, and <kbd>Tab</kbd> skips it.
 
-| Setting | What it draws |
-|---|---|
-| **Y** | ln(1 + y), so 0 stays on the axis; negative values are drawn at 0. Ticks at 0, 1, 10, 100 and on |
-| **X** | log10 of X. Only for a number X: over a date, time or duration X the line reads `X numbers only`, dimmed, and <kbd>Tab</kbd> skips it |
-
-Y adds 1 before the log so 0 stays on the axis; X takes log10 as is, so 0 and
-below can't be drawn.
-
-How the X axis works:
+Both axes follow the same rules:
 
 | Part | Rule |
 |---|---|
-| Values of 0 or less | A log has no place for them, so they are left out and counted in the title row: `3 points with X of 0 or less left out`. A series with none left is named there too: `size: every point left out`. With nothing left at all, the plot says so |
-| Ticks | Powers of ten (1, 10, 100), with 2 and 5 between when there is room, or every second or third power when there is less. An axis spanning less than a power of ten ticks at round steps (200, 400, 600). The axis ends where the data does |
+| Values of 0 or less | A log has no place for them, so they are left out and counted in the title row: `3 points with Y ≤ 0 left out`, or `with X or Y` when both axes are logged (`<=` in ASCII). A line breaks where they were. A series with none left is named there too: `size: every point left out`. With nothing left at all, the plot says so |
+| Ticks | Powers of ten (1, 10, 100), with 2 and 5 between when there is room, or every second or third power when there is less. An axis spanning less than a power of ten ticks at round steps (200, 400, 600). The axis ends where the data does; one value alone gets half a power of ten each side |
 | Labels | Each with the digits it needs: `0.01  1  100`. Past four powers of ten, or a label longer than six characters, all in a short form: `1  1k  1M` from one up, `1e-9  1e-3  1  1e3` below it. Round steps within a power of ten share one precision: `0.5  1.0  1.5` |
-| Crosshair | Moves point to point in the log spacing and reads X's own value: `size: 100`, not 2 |
-| Smooth | Smoothing works on the data as it is: a window of N points counts the points left out too. Only the drawing is logged |
-| **Range** | Fits the Y axis to the points drawn, not those left out |
-| Large tables | A line drawn as an envelope (see [Large tables](#large-tables)) steps evenly along the log, so each power of ten gets its share of the steps, and counts the rows left out: `12 rows with X of 0 or less left out`. Turning **X** on or off reads such a line again; anything else only redraws |
-| Export | Draws the same axis and notes |
+| Crosshair | Steps between the points drawn, skipping those left out, and reads the data's own values: `size: 100`, not 2 |
+| Smooth | A window averages every point, including those left out, so the smoothed line can run above 0 where the data is 0. Each line then draws only its own points above 0. The note counts the smoothed line's: `4 smoothed points with Y ≤ 0 left out`, and the raw line's too when it is drawn |
+| **Range** | Fits the Y axis to the points drawn, not those left out. On a log Y the outliers are found on the log scale, so a steady climb through powers of ten has none |
+| Duration Y | Ticks named as lengths of time: `10ms`, `1s`, `1m40s` |
+| **Y from zero** | Dimmed while Y is logged |
+| Large tables | A line drawn as an envelope (see [Large tables](#large-tables)) steps evenly along a log X, so each power of ten gets its share of the steps, and counts the rows left out: `12 rows with X ≤ 0 left out`. Turning **X** on or off reads such a line again. On a log Y each step stands on its least value above 0, and the rows with Y of 0 or less are counted (values, with several Y columns): `9,355 rows with Y ≤ 0 left out`. Turning **Y** on or off only redraws |
+| Export | Draws the same axes and notes |
+
+Before 0.4.14, **Y** drew ln(1 + y), which kept 0 on the axis. A saved view
+with **Y** on now draws log10 and leaves its zeros out.
 
 #### Example: flight distances
 
@@ -300,7 +299,7 @@ labels where there is room.
 |---|---|
 | Numbers | One notation and precision per axis, in the table's digit grouping and decimal separator ([number format](configuration.md#number-formatting)). Counts and integer columns tick in whole numbers |
 | Dates and times | Calendar boundaries: years, months, days, hours, minutes. A label names the unit that turns there: `2026` at a new year, `Apr` at a new month, `Mar 5` at a new day among hours, otherwise `12` or `06:00`. The first label also names the year |
-| Log scale | Y: 1, 10, 100 and on, with 2 and 5 between when there is room, and 0 where the data starts there; one format, shortened to `1k`, `10k`, `1M` when narrow. X: the same powers inside the data's range, each label with the digits it needs, round steps within a power of ten |
+| Log scale | 1, 10, 100 and on inside the data's range, with 2 and 5 between when there is room, each label with the digits it needs, round steps within a power of ten. See [Log scale](#log-scale) |
 | Crowded | Fewer ticks first, then shorter labels (`12.3k`, `12,3k`). A crowded time axis labels only its ends and middle. An axis that would get only two labels takes a finer step when it fits: `0 2 4 6`, not `0 5` |
 
 | Feature | What it does |
@@ -471,7 +470,7 @@ write, keeps the dialog open with the reason under the fields.
 | **Opacity** | Scatter: **Auto** (the default) draws points opaque up to 1,000 and fainter as there are more, down to 15% from 100,000, so a dense cloud shows where it is densest; or **100%**, **50%**, **20%** |
 | **Point size** | Scatter: **Small**, **Medium** (the default) or **Large**, 1.6, 2.4 or 3.6 pt |
 | **Line width** | Line, colored or not: **Thin**, **Normal** (the default) or **Bold**, 1, 1.5 or 2.5 pt; the legend's swatches follow |
-| **Y from zero** | Line: **On** includes zero in the Y axis. It starts as the chart's **Y from zero** option. Bars always start at zero |
+| **Y from zero** | Line: **On** includes zero in the Y axis. It starts as the chart's **Y from zero** option. Not offered for a log Y. Bars always start at zero |
 | **Title**, **Description** | Over the chart. The description starts as the plot's title row, which says how the chart is made: `Mean by month, colored by carrier`; empty when it has none. The Y column is named over the plot's left edge, as on screen |
 | **Notes** | Under the chart, after what the chart says about its rows (a sample, values a range left out) |
 | **Source**, **Byline** | The last line: `Source: …` and the byline. Source starts from the catalog entry when the dataset came from one: its name, publisher and license |

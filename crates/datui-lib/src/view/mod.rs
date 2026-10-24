@@ -207,6 +207,8 @@ pub struct SavedChart {
     /// A histogram's bars as each group's share of its rows.
     pub share: bool,
     pub y_starts_at_zero: bool,
+    /// A line or scatter chart's Y on a log scale: log10 since 0.4.14, ln(1 + y)
+    /// before, so a view saved with it now leaves out its Ys of 0 or less.
     pub log_scale: bool,
     /// A line or scatter chart's X on a log scale.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

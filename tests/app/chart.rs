@@ -1215,7 +1215,7 @@ fn a_line_charts_smooth_steps_lengths_of_time() {
 
 /// Sizes from 1 to 100,000, three of them 0 or less and two not finite (dropped
 /// before any axis sees them, as a null X is), with a
-/// date and a number beside them, written to `name`.
+/// date, numbers and a category beside them, written to `name`.
 fn log_x_fixture(name: &str) -> PathBuf {
     let path = common::fixture_dir().join(name);
     let mut size: Vec<f64> = (0..=50).map(|i| 10f64.powf(f64::from(i) / 10.0)).collect();
@@ -1225,7 +1225,8 @@ fn log_x_fixture(name: &str) -> PathBuf {
         "size" => size,
         "ms" => (0..n).map(|i| (i * 7 % 13) as f64).collect::<Vec<f64>>(),
         "day" => (0..n as i32).map(|d| 19_700 + d).collect::<Vec<i32>>(),
-        "neg" => (0..n).map(|i| -(i as f64)).collect::<Vec<f64>>()
+        "neg" => (0..n).map(|i| -(i as f64)).collect::<Vec<f64>>(),
+        "kind" => (0..n).map(|i| if i % 2 == 0 { "even" } else { "odd" }).collect::<Vec<&str>>()
     )
     .unwrap();
     df.apply("day", |c| c.cast(&DataType::Date).unwrap())
@@ -1284,8 +1285,9 @@ fn a_scatter_takes_a_log_x() {
     assert!(app.chart.modal.log_x);
     let text = draw(&mut app);
     assert!(text.contains("Y off") && text.contains("X on"), "{text}");
+    let at_most = datui::glyphs::get().at_most;
     assert!(
-        text.contains("3 points with X of 0 or less left out"),
+        text.contains(&format!("3 points with X {at_most} 0 left out")),
         "{text}"
     );
     let labels = text
@@ -1331,6 +1333,147 @@ fn a_scatter_takes_a_log_x() {
         "{text}"
     );
     assert!(text.contains("size: every point left out"), "{text}");
+}
+
+/// Y's log scale on a line: Space on Log scale turns it on, Y from zero dims, the
+/// notes count the points at Y of 0 or less it leaves out, the crosshair passes
+/// them, and with nothing above 0 the plot says why it is empty.
+#[test]
+fn a_line_takes_a_log_y() {
+    use datui::chart::chart_export_modal::ChartExportFocus;
+    use datui::chart::chart_modal::{ChartFocus, Mark};
+    let path = log_x_fixture("chart_log_y.parquet");
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    let g = datui::glyphs::get();
+
+    press(&mut app, KeyCode::Char('c'));
+    app.chart.modal.set_mark(Mark::Line);
+    app.chart.modal.spec.encoding.x.field = Some("day".to_string());
+    // 0 on every thirteenth row: five of them.
+    app.chart.modal.spec.encoding.y.field = vec!["ms".to_string()];
+    app.chart.modal.row_limit = None;
+    app.chart.modal.y_starts_at_zero = true;
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    let area = Rect::new(0, 0, 160, 34);
+    let draw = |app: &mut App| {
+        let mut buf = Buffer::empty(area);
+        Widget::render(app, area, &mut buf);
+        common::buffer_text(&buf)
+    };
+    app.chart.modal.focus = ChartFocus::LogScale;
+    press(&mut app, KeyCode::Char(' '));
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    assert!(app.chart.modal.log_scale);
+    let text = draw(&mut app);
+    assert!(text.contains("Y on"), "{text}");
+    assert!(
+        text.contains(&format!("off {} log scale", g.middot)),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("5 points with Y {} 0 left out", g.at_most)),
+        "{text}"
+    );
+    press(&mut app, KeyCode::BackTab);
+    assert_ne!(
+        app.chart.modal.focus,
+        ChartFocus::YStartsAtZero,
+        "Tab passes Y from zero"
+    );
+
+    // The crosshair never stands on a point left out: the first row's is 0.
+    press(&mut app, KeyCode::Char('x'));
+    press(&mut app, KeyCode::Home);
+    assert_eq!(app.chart.modal.cursor_x, Some(19_701.0));
+    press(&mut app, KeyCode::Char('x'));
+
+    // The export dialog offers no Y from zero for a log Y.
+    press(&mut app, KeyCode::Char('e'));
+    assert_eq!(app.overlay, Overlay::ChartExport);
+    assert!(!app.chart.export_modal.shows(ChartExportFocus::YFromZero));
+    assert!(app.chart.export_modal.shows(ChartExportFocus::LineWidth));
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.overlay, Overlay::Chart);
+
+    let dir = tempfile::tempdir().unwrap();
+    let svg = dir.path().join("chart.svg");
+    let next = app.event(AppEvent::Applied(datui::Applied::ChartExport(
+        chart_export_request(&svg, datui::chart::chart_export::ChartExportFormat::Svg),
+    )));
+    if let Some(next) = next {
+        app.event(next);
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+    // The file's axis and points are `a_log_y_exports_its_decades`'.
+    assert!(std::fs::read_to_string(&svg).unwrap().starts_with("<svg"));
+
+    // Off again, Y from zero is back as it was.
+    app.chart.modal.focus = ChartFocus::LogScale;
+    press(&mut app, KeyCode::Char(' '));
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    assert!(!app.chart.modal.log_scale && app.chart.modal.y_from_zero_shown());
+    let text = draw(&mut app);
+    let row = text.lines().find(|l| l.contains("Y from zero")).unwrap();
+    assert!(row.contains("on") && !row.contains("log scale"), "{row}");
+    press(&mut app, KeyCode::BackTab);
+    assert_eq!(app.chart.modal.focus, ChartFocus::YStartsAtZero);
+
+    app.chart.modal.log_scale = true;
+    app.chart.modal.spec.encoding.y.field = vec!["neg".to_string()];
+    app.event(AppEvent::Wake);
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    let text = draw(&mut app);
+    assert!(
+        text.contains("No Y above 0 to draw on a log scale"),
+        "{text}"
+    );
+    assert!(text.contains("neg: every point left out"), "{text}");
+
+    // Both axes logged: X leaves out some, Y the rest.
+    app.chart.modal.set_mark(Mark::Scatter);
+    app.chart.modal.spec.encoding.x.field = Some("size".to_string());
+    app.chart.modal.log_x = true;
+    app.event(AppEvent::Wake);
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    let text = draw(&mut app);
+    assert!(
+        text.contains("No point with X and Y above 0 to draw on a log scale"),
+        "{text}"
+    );
+}
+
+/// Y's log scale over a colored line: each color's series leaves out its own
+/// zeros, the note counts them all, and the legend names both.
+#[test]
+fn a_colored_line_takes_a_log_y() {
+    use datui::chart::chart_modal::Mark;
+    let path = log_x_fixture("chart_log_y_color.parquet");
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+
+    press(&mut app, KeyCode::Char('c'));
+    app.chart.modal.set_mark(Mark::Line);
+    app.chart.modal.spec.encoding.x.field = Some("day".to_string());
+    app.chart.modal.spec.encoding.y.field = vec!["ms".to_string()];
+    app.chart.modal.spec.encoding.color.field = vec!["kind".to_string()];
+    app.chart.modal.log_scale = true;
+    app.event(AppEvent::Wake);
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    let mut buf = Buffer::empty(Rect::new(0, 0, 160, 34));
+    Widget::render(&mut app, Rect::new(0, 0, 160, 34), &mut buf);
+    let text = common::buffer_text(&buf);
+    let at_most = datui::glyphs::get().at_most;
+    // Zeros at rows 0, 13, 26, 39 and 52, both colors among them.
+    assert!(
+        text.contains(&format!("5 points with Y {at_most} 0 left out")),
+        "{text}"
+    );
+    assert!(text.contains("even") && text.contains("odd"), "{text}");
 }
 
 /// Keys typed back to back through the pump, as a fast typist sends them, right

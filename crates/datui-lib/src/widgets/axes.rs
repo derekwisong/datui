@@ -51,12 +51,13 @@ enum Scale<'a> {
         kind: XAxisTemporalKind,
         numbers: AxisNumbers,
     },
-    /// A log scale, where position `v` stands for the value `exp_m1(v)`, from zero
-    /// up: ticks at each power of ten, with 2 and 5 between when there is room.
-    Log { numbers: AxisNumbers },
-    /// A true log scale, where position `v` stands for `10^v`, over the axis as given:
+    /// A log scale, where position `v` stands for `10^v`, over the axis as given:
     /// ticks at powers of ten with 2 and 5 between, or round steps within a decade.
-    Log10 { numbers: AxisNumbers },
+    Log10 {
+        numbers: AxisNumbers,
+        /// Values are seconds, labeled as lengths of time: `10ms`, `1s`, `1m40s`.
+        durations: bool,
+    },
     /// Ticks given in advance: evenly spaced ones thin out keeping both ends.
     Fixed {
         ticks: Vec<f64>,
@@ -168,32 +169,28 @@ impl<'a> AxisSpec<'a> {
         Self::fixed(bounds, ticks, label, title)
     }
 
-    /// A log-scale y axis (position `v` is `exp_m1(v)`): ticks at nice values (1, 10, 100,
-    /// with 2 and 5 between when there is room), widened to the ticks around its range, one
-    /// format throughout.
-    pub fn y_log(bounds: [f64; 2], numbers: &AxisNumbers, title: &'a str) -> Self {
+    /// A log-scale axis, X or Y (position `v` is `log10` of its value), not widened:
+    /// ticks at powers of ten, with 2 and 5 between when there is room, or round steps
+    /// when the axis spans less than a decade.
+    pub fn log(bounds: [f64; 2], numbers: &AxisNumbers, title: &'a str) -> Self {
         Self {
             bounds,
-            scale: Scale::Log {
+            scale: Scale::Log10 {
                 numbers: numbers.clone(),
+                durations: false,
             },
             title,
             pad: 0,
         }
     }
 
-    /// A log-scale x axis (position `v` is `log10` of its value), not widened: ticks at
-    /// powers of ten, with 2 and 5 between when there is room, or round steps when the
-    /// axis spans less than a decade.
-    pub fn x_log(bounds: [f64; 2], numbers: &AxisNumbers, title: &'a str) -> Self {
-        Self {
-            bounds,
-            scale: Scale::Log10 {
-                numbers: numbers.clone(),
-            },
-            title,
-            pad: 0,
+    /// The same log axis over seconds, labeled as lengths of time; any other axis
+    /// as it is.
+    pub fn durations(mut self) -> Self {
+        if let Scale::Log10 { durations, .. } = &mut self.scale {
+            *durations = true;
         }
+        self
     }
 
     /// The same axis, its labels right-aligned in at least `width` cells.
@@ -241,17 +238,10 @@ impl<'a> AxisSpec<'a> {
                     minor_gap,
                 )]
             }
-            Scale::Log { numbers } => vec![log_sets(
+            Scale::Log10 { numbers, durations } => vec![log10_sets(
                 self.bounds,
                 numbers,
-                length,
-                spacing,
-                least,
-                minor_gap,
-            )],
-            Scale::Log10 { numbers } => vec![log10_sets(
-                self.bounds,
-                numbers,
+                *durations,
                 length,
                 spacing,
                 least,
@@ -428,152 +418,18 @@ fn number_sets(
     with_ticks(sets)
 }
 
-/// Log-scale tick sets over `bounds` (positions are `exp_m1`) for an axis of `length`
-/// cells: from one up, powers of ten (with 2 and 5 between, or every second or third
-/// power), 0 below where the axis starts there; under one, plain nice steps. Each set
-/// widens the axis to its ticks around the data.
-fn log_sets(
-    bounds: [f64; 2],
-    numbers: &AxisNumbers,
-    length: f64,
-    spacing: f64,
-    least: f64,
-    minor_gap: f64,
-) -> Vec<TickSet> {
-    let [lo, hi] = bounds;
-    let (low, high) = (lo.exp_m1().max(0.0), hi.exp_m1());
-    if hi.partial_cmp(&lo) != Some(std::cmp::Ordering::Greater) || length <= 0.0 || high <= 0.0 {
-        let format = AxisFormat::log(&[low], numbers);
-        return vec![TickSet {
-            ticks: vec![lo],
-            minor: Vec::new(),
-            levels: vec![vec![format.label(low, 0).unwrap_or_default()]],
-            bounds,
-        }];
-    }
-    // Each option: its values (before the log) and the minor ones between.
-    let options: Vec<(Vec<f64>, Vec<f64>)> = if high <= 1.0 {
-        // Under one a log scale is close to linear, never more than twice as steep.
-        let finest = (high - low) * least.min(minor_gap) / length / 2.0;
-        ticks::nice_steps(low, high, finest, false)
-            .into_iter()
-            .map(|step| {
-                let [a, b] = ticks::widen(low, high, step);
-                (ticks::multiples(a, b, step), Vec::new())
-            })
-            .collect()
-    } else {
-        let decade = |v: f64| (v.log10() + 1e-9).floor() as i32;
-        // Every `every` powers of ten from the one at or under the data's least (one
-        // at the least, or zero) to the one at or over its most.
-        let values = |mantissas: &[f64], every: i32| {
-            let first = if low >= 1.0 { decade(low) } else { 0 };
-            let first = first - first.rem_euclid(every);
-            let mut values: Vec<f64> = if low < 1.0 { vec![0.0] } else { Vec::new() };
-            let mut k = first;
-            'up: loop {
-                for &m in mantissas {
-                    // Parsed, so 2e21 is the double nearest it and not 2 times one.
-                    let v: f64 = format!("{m}e{k}").parse().unwrap_or(f64::INFINITY);
-                    values.push(v);
-                    if v >= high * (1.0 - 1e-9) {
-                        break 'up;
-                    }
-                }
-                k += every;
-                if k > 308 {
-                    break;
-                }
-            }
-            // A zero under them stands in for the one, which sits too close to it
-            // past a step of a whole power.
-            if every > 1 || mantissas.len() == 1 {
-                values.retain(|&v| v != 1.0 || low >= 1.0);
-            }
-            // From the tick at or under the data's least.
-            let start = values
-                .iter()
-                .rposition(|&v| v <= low * (1.0 + 1e-9))
-                .unwrap_or(0);
-            values.split_off(start)
-        };
-        let fine = values(&[1.0, 2.0, 5.0], 1);
-        let mut options = vec![(fine.clone(), Vec::new())];
-        for every in [1, 2, 3, 5, 10, 20, 50, 100] {
-            let majors = values(&[1.0], every);
-            let minor = if every == 1 {
-                fine.iter()
-                    .copied()
-                    .filter(|v| !majors.contains(v))
-                    .collect()
-            } else {
-                Vec::new()
-            };
-            options.push((majors, minor));
-        }
-        options
-    };
-    let candidates: Vec<Candidate<(Vec<f64>, Vec<f64>)>> = options
-        .into_iter()
-        .filter(|(values, _)| values.len() >= 2)
-        .map(|(values, minor)| {
-            let at: Vec<f64> = values.iter().map(|v| v.ln_1p()).collect();
-            let per_cell = length / (at[at.len() - 1] - at[0]);
-            let gap = at
-                .windows(2)
-                .map(|w| (w[1] - w[0]) * per_cell)
-                .fold(f64::INFINITY, f64::min);
-            Candidate {
-                ticks: values.len(),
-                set: (values, minor),
-                gap,
-            }
-        })
-        .collect();
-    preferred(candidates, spacing, least)
-        .into_iter()
-        .map(|(values, minor)| {
-            let format = AxisFormat::log(&values, numbers);
-            let levels = (0..2)
-                .map_while(|level| values.iter().map(|&v| format.label(v, level)).collect())
-                .collect();
-            let at: Vec<f64> = values.iter().map(|v| v.ln_1p()).collect();
-            let bounds = [at[0], at[at.len() - 1]];
-            let per_cell = length / (bounds[1] - bounds[0]);
-            // Minor ticks inside the axis, and only where every one keeps its
-            // distance from the next.
-            let minor: Vec<f64> = minor
-                .iter()
-                .filter(|v| **v > values[0] && **v < values[values.len() - 1])
-                .map(|v| v.ln_1p())
-                .collect();
-            let mut all: Vec<f64> = minor.iter().chain(&at).copied().collect();
-            all.sort_by(f64::total_cmp);
-            let roomy = all
-                .windows(2)
-                .all(|w| (w[1] - w[0]) * per_cell >= minor_gap);
-            let minor = if roomy { minor } else { Vec::new() };
-            TickSet {
-                ticks: at,
-                minor,
-                levels,
-                bounds,
-            }
-        })
-        .collect()
-}
-
-/// A true log axis's ticks: their values, the minor ones between, and whether they
+/// A log axis's ticks: their values, the minor ones between, and whether they
 /// are powers of ten (or 2 or 5 times one) rather than round steps.
 type LogTicks = (Vec<f64>, Vec<f64>, bool);
 
-/// True log tick sets over `bounds` (positions are `log10`) for an axis of `length`
+/// Log tick sets over `bounds` (positions are `log10`) for an axis of `length`
 /// cells, inside the axis as given. Across a decade or more: powers of ten with 2 and 5
 /// between, or every second, third (and so on) power. Within less: round steps, as a
 /// number axis takes them, placed by their log; the 1-2-5 ticks after them.
 fn log10_sets(
     bounds: [f64; 2],
     numbers: &AxisNumbers,
+    durations: bool,
     length: f64,
     spacing: f64,
     least: f64,
@@ -585,11 +441,17 @@ fn log10_sets(
         || length <= 0.0
         || !(low > 0.0 && high.is_finite())
     {
-        let format = AxisFormat::powers(&[low], numbers);
+        let label = if durations {
+            ticks::elapsed_tick(low, low)
+        } else {
+            AxisFormat::powers(&[low], numbers)
+                .label(low, 0)
+                .unwrap_or_default()
+        };
         return vec![TickSet {
             ticks: vec![lo],
             minor: Vec::new(),
-            levels: vec![vec![format.label(low, 0).unwrap_or_default()]],
+            levels: vec![vec![label]],
             bounds,
         }];
     }
@@ -663,9 +525,14 @@ fn log10_sets(
             } else {
                 AxisFormat::new(&values, numbers)
             };
-            let levels = (0..2)
-                .map_while(|level| values.iter().map(|&v| format.label(v, level)).collect())
-                .collect();
+            // A length of time each to the unit it needs: `10ms`, `1s`, `1m40s`.
+            let levels = if durations {
+                vec![values.iter().map(|&v| ticks::elapsed_tick(v, v)).collect()]
+            } else {
+                (0..2)
+                    .map_while(|level| values.iter().map(|&v| format.label(v, level)).collect())
+                    .collect()
+            };
             let at: Vec<f64> = values.iter().map(|v| v.log10()).collect();
             // Minor ticks only where every one keeps its distance from the next.
             let minor: Vec<f64> = minor.iter().map(|v| v.log10()).collect();

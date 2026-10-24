@@ -17,49 +17,6 @@ fn preset(name: &str) -> AxisNumbers {
     }
 }
 
-/// A log axis writes every tick exactly in one form, whatever the closest two
-/// are; its short form names each tick's own k, M or G.
-#[test]
-fn log_axis_labels_write_each_tick_exactly() {
-    let ticks = [0.0, 1.0, 10.0, 100.0, 1e3, 1e4, 2e5, 1e6, 5e9];
-    let labels = |numbers: &AxisNumbers, level| {
-        let format = AxisFormat::log(&ticks, numbers);
-        ticks
-            .iter()
-            .map(|&v| format.label(v, level).unwrap())
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(
-        labels(&preset("thousands"), 0),
-        [
-            "0",
-            "1",
-            "10",
-            "100",
-            "1,000",
-            "10,000",
-            "200,000",
-            "1,000,000",
-            "5,000,000,000"
-        ]
-    );
-    assert_eq!(
-        labels(&AxisNumbers::default(), 1),
-        ["0", "1", "10", "100", "1k", "10k", "200k", "1M", "5G"]
-    );
-    let short = [0.0, 0.25, 0.5, 0.75, 1.0];
-    let format = AxisFormat::log(&short, &AxisNumbers::default());
-    let written: Vec<_> = short.iter().map(|&v| format.label(v, 0).unwrap()).collect();
-    assert_eq!(written, ["0.00", "0.25", "0.50", "0.75", "1.00"]);
-    assert_eq!(
-        format.label(1.0, 1),
-        None,
-        "no shorter form under a thousand"
-    );
-    let huge = AxisFormat::log(&[1e15, 2e16, 1e18], &AxisNumbers::default());
-    assert_eq!(huge.label(2e16, 0).as_deref(), Some("2e16"));
-}
-
 /// Each form a narrow axis steps down to, the same for every tick on it.
 #[test]
 fn axis_labels_step_down_to_shorter_forms() {

@@ -360,7 +360,7 @@ fn prepared_xy() -> PlotData {
     PlotData::Lines(LinesData::new(
         chart::chart_data::GroupedSeries {
             names: vec!["y".to_string()],
-            series: vec![vec![(0.0, 1.0)]],
+            series: vec![vec![(0.0, 100.0)]],
             breaks: vec![Vec::new()],
             x_axis_kind: chart::chart_data::XAxisTemporalKind::Numeric,
             rows: chart::chart_data::RowsRead::default(),
@@ -396,7 +396,7 @@ fn xy_entries_are_few_and_the_one_on_screen_stays() {
     cache.touch(&a, log);
     assert!(matches!(
         cache.prepared(&a),
-        Some(PlotData::Lines(xy)) if xy.series_shown.as_ref().and_then(|kept| kept.series.as_deref()) == Some(&[vec![(0.0, 2f64.ln())]][..])
+        Some(PlotData::Lines(xy)) if xy.series_shown.as_ref().and_then(|kept| kept.series.as_deref()) == Some(&[vec![(0.0, 2.0)]][..])
     ));
     assert!(!has_log(&cache, &b));
 
@@ -945,7 +945,7 @@ fn a_clipped_line_chart_draws_its_outliers_at_the_edge() {
         ..Shown::default()
     };
     lines.keep_shown(both);
-    assert_eq!(lines.shown_bounds(both).unwrap()[3], clip.hi.ln_1p());
+    assert_eq!(lines.shown_bounds(both).unwrap()[3], clip.hi.log10());
 
     let flat = LinesData::new(
         chart::chart_data::GroupedSeries {

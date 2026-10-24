@@ -505,6 +505,10 @@ pub fn prepare_chart_x_range(
     })
 }
 
+/// Per series, an envelope's steps as a log Y draws them, and where each line breaks:
+/// see [`ChartDataResult::log_y_steps`].
+pub type LogYSteps = (Vec<Vec<(f64, f64)>>, Vec<Vec<usize>>);
+
 /// Result of preparing chart data: series points and x-axis kind for label formatting.
 pub struct ChartDataResult {
     /// One per y column, in X order.
@@ -520,6 +524,13 @@ pub struct ChartDataResult {
     pub weights: Option<Vec<Vec<(f64, f64)>>>,
     /// Rows an envelope stepped on a log X left out: those with X of 0 or less.
     pub x_left_out: usize,
+    /// Values of 0 or less an envelope read, over every Y column, in the rows it
+    /// placed: what a log Y leaves out.
+    pub y_left_out: usize,
+    /// An envelope's steps as a log Y draws them, when some value is 0 or less: per
+    /// Y column each step's least value above 0 and its greatest, a step with none
+    /// left out, and where each line breaks. Read always, so a log Y only redraws.
+    pub log_y_steps: Option<LogYSteps>,
 }
 
 /// A series split at its breaks: the runs a line joins.
@@ -722,6 +733,8 @@ pub fn prepare_chart_data(
             rows: RowsRead::default(),
             weights: None,
             x_left_out: 0,
+            y_left_out: 0,
+            log_y_steps: None,
         });
     }
 
@@ -743,12 +756,16 @@ pub fn prepare_chart_data(
                 rows,
                 steps,
                 left_out,
+                y_left_out,
+                log_y_steps,
             } => {
                 return Ok(ChartDataResult {
                     series,
                     breaks,
                     weights: Some(weights),
                     x_left_out: left_out,
+                    y_left_out,
+                    log_y_steps,
                     x_axis_kind,
                     rows: RowsRead {
                         total_rows: rows,
@@ -794,6 +811,8 @@ pub fn prepare_chart_data(
         rows,
         weights: None,
         x_left_out: 0,
+        y_left_out: 0,
+        log_y_steps: None,
     })
 }
 
@@ -809,6 +828,10 @@ enum Envelope {
         steps: usize,
         /// Rows a log X left out: those with X of 0 or less.
         left_out: usize,
+        /// Values of 0 or less over every Y column, in the rows placed.
+        y_left_out: usize,
+        /// The steps as a log Y draws them: see [`ChartDataResult::log_y_steps`].
+        log_y_steps: Option<LogYSteps>,
     },
     /// The view is no more rows than the sample size, this many: no envelope.
     Fits(usize),
@@ -846,7 +869,7 @@ fn envelope_pass(lf: LazyFrame, cancel: &Arc<AtomicBool>) -> Result<DataFrame> {
 /// step's lowest X, in X order: two streamed passes (rows and X bounds, then a group per
 /// step). Rows without X are dropped; a step without a series' value breaks its line.
 /// With `log_x` the steps are even along `log10(x)`, and the rows with X of 0 or less
-/// are left out and counted.
+/// are left out and counted. The Y values of 0 or less are counted too, for a log Y.
 fn envelope_series(
     lf: &LazyFrame,
     schema: &Schema,
@@ -910,13 +933,15 @@ fn envelope_series(
     }
     let steps = (limit / 2).max(1);
     let n = y_columns.len();
-    let drawn = |series, breaks, weights| Envelope::Drawn {
+    let drawn = |series, breaks, weights, y_left_out, log_y_steps| Envelope::Drawn {
         series,
         breaks,
         weights,
         rows,
         steps,
         left_out,
+        y_left_out,
+        log_y_steps,
     };
     let bound = |name: &str| -> Result<Option<f64>> { Ok(bounds.column(name)?.f64()?.get(0)) };
     let (Some(lo), Some(hi)) = (bound("lo")?, bound("hi")?) else {
@@ -924,6 +949,8 @@ fn envelope_series(
             vec![Vec::new(); n],
             vec![Vec::new(); n],
             vec![Vec::new(); n],
+            0,
+            None,
         ));
     };
     let per_x = if hi > lo {
@@ -955,6 +982,22 @@ fn envelope_series(
         aggs.push(y.clone().max().alias(format!("__hi{i}")));
         // What a smoothed line averages: the step's rows, not its low and high.
         aggs.push(y.clone().sum().alias(format!("__sum{i}")));
+        // What a log Y stands a step on, and what it leaves out, found in the pass
+        // that reads Y anyway.
+        aggs.push(
+            when(y.clone().gt(lit(0.0)))
+                .then(y.clone())
+                .otherwise(lit(NULL).cast(DataType::Float64))
+                .min()
+                .alias(format!("__poslo{i}")),
+        );
+        aggs.push(
+            y.clone()
+                .lt_eq(lit(0.0))
+                .cast(DataType::UInt64)
+                .sum()
+                .alias(format!("__nonpositive{i}")),
+        );
         aggs.push(y.count().alias(format!("__n{i}")));
     }
     let df = envelope_pass(
@@ -967,7 +1010,12 @@ fn envelope_series(
     let mut series = Vec::with_capacity(n);
     let mut breaks = Vec::with_capacity(n);
     let mut weights = Vec::with_capacity(n);
+    let mut y_left_out = 0;
+    let (mut log_series, mut log_breaks) = (Vec::with_capacity(n), Vec::with_capacity(n));
     for i in 0..n {
+        y_left_out += counts_of(&df, &format!("__nonpositive{i}"))?
+            .iter()
+            .sum::<u64>() as usize;
         let lows = df.column(&format!("__lo{i}"))?.f64()?.clone();
         let highs = df.column(&format!("__hi{i}"))?.f64()?.clone();
         let sums = df
@@ -976,6 +1024,27 @@ fn envelope_series(
             .f64()?
             .clone();
         let counts = counts_of(&df, &format!("__n{i}"))?;
+        let positive_lows = df.column(&format!("__poslo{i}"))?.f64()?.clone();
+        let mut logged = Vec::new();
+        let mut logged_starts = Vec::new();
+        let mut logged_gap = false;
+        for ((x, low), high) in xs.iter().zip(positive_lows.iter()).zip(highs.iter()) {
+            let (Some(x), Some(low), Some(high)) = (x, low, high) else {
+                logged_gap = true;
+                continue;
+            };
+            if logged_gap && !logged.is_empty() {
+                logged_starts.push(logged.len());
+            }
+            logged_gap = false;
+            let x = if log_x { 10f64.powf(x) } else { x };
+            logged.push((x, low));
+            if high != low {
+                logged.push((x, high));
+            }
+        }
+        log_series.push(logged);
+        log_breaks.push(logged_starts);
         let mut points = Vec::with_capacity(xs.len() * 2);
         let mut weighed = Vec::with_capacity(xs.len() * 2);
         let mut starts = Vec::new();
@@ -1007,7 +1076,9 @@ fn envelope_series(
         breaks.push(starts);
         weights.push(weighed);
     }
-    Ok(drawn(series, breaks, weights))
+    // Without a value of 0 or less a log Y draws the steps as they are.
+    let log_y_steps = (y_left_out > 0).then_some((log_series, log_breaks));
+    Ok(drawn(series, breaks, weights, y_left_out, log_y_steps))
 }
 
 /// Each column's finite values, read in one pass; nulls are dropped per column.

@@ -1022,7 +1022,11 @@ impl ChartModal {
                         rows.push(Raw);
                     }
                 }
-                rows.extend([YStartsAtZero, LogScale]);
+                // A log Y has no zero to start from.
+                if !self.log_scale {
+                    rows.push(YStartsAtZero);
+                }
+                rows.push(LogScale);
                 if self.x_takes_log() {
                     rows.push(LogX);
                 }
@@ -1455,6 +1459,11 @@ impl ChartModal {
             smooth: self.smooth_shown(),
             raw: self.raw,
         }
+    }
+
+    /// Whether the Y axis starts at zero: chosen, and not on a log scale.
+    pub fn y_from_zero_shown(&self) -> bool {
+        self.y_starts_at_zero && !self.log_scale
     }
 
     /// Whether X can take a log scale: a number, not a date, time or duration.
@@ -2059,6 +2068,24 @@ mod tests {
         assert!(modal.shown().log_x);
         modal.set_mark(Mark::Bar);
         assert!(!modal.x_takes_log());
+    }
+
+    /// Y's log scale is kept with a view under its old name, and Y from zero with
+    /// it: dimmed while the log is on, back when it is off.
+    #[test]
+    fn log_y_is_kept_with_a_view() {
+        let mut modal = open_on(Some(("distance", &DataType::Float64)));
+        modal.log_scale = true;
+        modal.y_starts_at_zero = true;
+        let saved = serde_json::to_value(modal.saved(1, None)).unwrap();
+        assert_eq!(saved["log_scale"], serde_json::json!(true));
+        let back: crate::view::SavedChart = serde_json::from_value(saved).unwrap();
+        let mut restored = ChartModal::new();
+        restored.restore(&back, 1);
+        assert!(restored.log_scale && restored.y_starts_at_zero);
+        assert!(!restored.y_from_zero_shown());
+        restored.log_scale = false;
+        assert!(restored.y_from_zero_shown());
     }
 
     /// A view saved before X's log scale loads with it off; one saved with it on

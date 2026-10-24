@@ -2020,10 +2020,61 @@ fn a_smoothed_envelope_averages_its_rows() {
     assert!(pairs.iter().all(|w| w[0].1 == w[1].1));
 }
 
+/// An envelope keeps, beside its steps, each step's least value above 0 for a log
+/// Y: a step with a 0 in it draws its line from there, a step with nothing above 0
+/// is left out, and the rows each step weighs are as before.
+#[test]
+fn an_envelope_keeps_its_steps_for_a_log_y() {
+    // 30% zeros, the rest 1 to 1,000; the last tenth of the rows all 0.
+    let n = 30_000usize;
+    let y: Vec<f64> = (0..n)
+        .map(|i| {
+            if i >= n * 9 / 10 || i % 10 < 2 {
+                0.0
+            } else {
+                1.0 + (i % 1000) as f64
+            }
+        })
+        .collect();
+    let x: Vec<f64> = (0..n).map(|i| i as f64).collect();
+    let lf = df!("x" => &x, "y" => &y).unwrap().lazy();
+    let schema = lf.clone().collect_schema().unwrap();
+    let r = prepare_chart_data(
+        &lf,
+        schema.as_ref(),
+        "x",
+        &["y".into()],
+        &ChartSampling::rows(Some(600)),
+        true,
+        false,
+    )
+    .unwrap();
+    let zeros = y.iter().filter(|&&v| v == 0.0).count();
+    assert_eq!(r.y_left_out, zeros);
+    let (series, breaks) = r.log_y_steps.expect("some values are 0");
+    let points = &series[0];
+    assert!(points.iter().all(|p| p.1 > 0.0));
+    // Every step under the last tenth has values above 0: its low and high both.
+    let steps = |s: &[(f64, f64)]| {
+        let mut xs: Vec<f64> = s.iter().map(|p| p.0).collect();
+        xs.dedup();
+        xs
+    };
+    let logged = steps(points);
+    let all = steps(&r.series[0]);
+    assert!(logged.len() < all.len() && logged.len() >= all.len() * 85 / 100);
+    assert!(logged.iter().all(|x| *x < (n * 9 / 10) as f64));
+    assert!(breaks[0].is_empty(), "the steps left out are at the end");
+    // The rows each step weighs are untouched.
+    let rows: f64 = r.weights.unwrap()[0].iter().map(|&(_, c)| c).sum();
+    assert_eq!(rows as usize, n);
+}
+
 /// On a log X an envelope steps evenly along log10(x): each power of ten gets its
 /// share of the steps, where linear steps would put every size under 100k in the
 /// first. Rows at X of 0 or less are left out and counted, and each step's rows
-/// still weigh what smoothing averages.
+/// still weigh what smoothing averages. Its Ys of 0 or less are counted among the
+/// rows it places, for a log Y.
 #[test]
 fn an_envelope_on_a_log_x_steps_by_powers_of_ten() {
     // Sizes log-uniform from 1 to 1e6, and 7 at 0 or less.
@@ -2051,6 +2102,8 @@ fn an_envelope_on_a_log_x_steps_by_powers_of_ten() {
     let logged = envelope(true);
     assert_eq!(logged.rows.envelope_steps, Some(300));
     assert_eq!(logged.x_left_out, 7);
+    // y is 0 on every tenth row: 2,000 of the rows above 0.
+    assert_eq!(logged.y_left_out, 2_000);
     let points = &logged.series[0];
     assert!(points.iter().all(|p| p.0 > 0.0), "only X above 0");
     // Steps, not points: an envelope step draws one or two.
@@ -2064,6 +2117,7 @@ fn an_envelope_on_a_log_x_steps_by_powers_of_ten() {
     assert!((40..=60).contains(&first), "{first} steps under 10");
     let linear = envelope(false);
     assert_eq!(linear.x_left_out, 0);
+    assert_eq!(linear.y_left_out, 2_001, "the row at X of 0 is placed");
     assert!(
         steps_under(&linear.series[0], 1e5) < 40,
         "linear crowds them"

@@ -46,32 +46,32 @@
                                         │    0       10      20       30
                                         │                                      a
 ────────────────────────────────────────────────────────────────────────────────
-== line_mean_log styles b7152fbecc7f1586
+== line_mean_log styles fe5cf554e36527f7
  Chart ─────────────────────────────────│ mean by n                 all 300 rows
 ▎ Type         Line                     │ a
-  X            n                        │ 50┤
-  Y            a                        │   │
-  Aggregate    mean                     │   │
-  Color        none                     │   │
- Options ───────────────────────────────│   │
-  Cumulative   off                      │   │
-  Smooth       off                      │   │
-               raw auto                 │   │
-  Y from zero  off                      │   │
-  Log scale    Y on                     │ 20┤   ⢀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⡠⠤⠤⠤⠤⠤⣀⣀⣀
-               X off                    │   │⠉⠉⠉⠁
-  Range        All                      │   │
-  Legend       auto                     │   │
-  Grid         off                      │   │
-  Rows         all, exact               │   │
-                                        │   │
-                                        │ 10┤
-                                        │   └┬─────┬────┬─────┬─────┬─────┬────┬
-                                        │          2          4           6
+  X            n                        │     │                          ⢠⢇
+  Y            a                        │ 20.4┤                          ⡜⠸⡀
+  Aggregate    mean                     │     │                         ⢰⠁ ⢇
+  Color        none                     │     │                         ⡇  ⠸⡀
+ Options ───────────────────────────────│ 20.2┤                        ⡸    ⡇
+  Cumulative   off                      │     │                       ⢠⠃    ⢸
+  Smooth       off                      │     │          ⢀⢄           ⡜      ⡇
+               raw auto                 │     │         ⢀⠎ ⠣⡀        ⢰⠁      ⢸
+  Y from zero  off · log scale          │ 20.0┤        ⢀⠎   ⠘⢄       ⡇       ⠈⡆
+  Log scale    Y on                     │     │       ⢠⠊      ⠱⡀⢀⣀⡠⠤⠚         ⢱
+               X off                    │     │      ⢠⠃        ⠈⠁             ⠈⡆
+  Range        All                      │     │     ⡠⠃                         ⢱
+  Legend       auto                     │ 19.8┤    ⡰⠁
+  Grid         off                      │     │   ⡰⠁
+  Rows         all, exact               │     │  ⡰⠁
+                                        │ 19.6┤ ⡰⠁
+                                        │     │⡰⠁
+                                        │     └┬────┬─────┬────┬────┬─────┬────┬
+                                        │           2          4          6
                                         │                                      n
 ────────────────────────────────────────────────────────────────────────────────
-== scatter_log_x styles e2873a71ed4f992d
- Chart ─────────────────────────────────│   1 point with X of 0 or less left out
+== scatter_log_x styles 2f29a144e9ab142e
+ Chart ─────────────────────────────────│            1 point with X ≤ 0 left out
                                         │ b
 ▎ Type         Scatter                  │   │
                                         │ 50┤            ⡀      ⠁⠈  ⡀ ⡀⠉ ⣀⠈⢀⡈⣀⢁⡈

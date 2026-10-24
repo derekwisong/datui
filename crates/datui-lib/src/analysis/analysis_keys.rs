@@ -206,6 +206,12 @@ impl App {
                         }
                     }
                 }
+                KeyCode::Char('o')
+                    if self.analysis_modal.view == analysis_modal::AnalysisView::DistributionDetail
+                        || self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main =>
+                {
+                    return self.keep_outliers();
+                }
                 KeyCode::Char('s')
                     // Toggle histogram scale (linear/log) in distribution detail view
                     if self.analysis_modal.view
@@ -271,6 +277,41 @@ impl App {
         None
     }
 
+    /// `o` on Distribution: the table filtered to the selected column's outliers, past
+    /// the bounds the sample set, rounded outward a little so they read, and only on
+    /// the sides it found any. The column cursor goes to the column.
+    fn keep_outliers(&mut self) -> Option<AppEvent> {
+        let (column, outliers) = self.analysis_modal.selected_outliers()?;
+        let column = column.to_string();
+        let Some((low, high)) = outliers.bounds.filter(|_| outliers.total_count > 0) else {
+            self.flash_note(format!("No outliers in {column}"));
+            return None;
+        };
+        let (low, high) = round_outward(low, high);
+        let below = outliers.below > 0;
+        let above = outliers.total_count > outliers.below;
+        let state = self.data_table_state.as_mut()?;
+        let statement = state.schema().get(&column).and_then(|dtype| {
+            crate::app::modals::filter_modal::FilterStatement::past(
+                &column,
+                dtype,
+                below.then_some(low),
+                above.then_some(high),
+            )
+        });
+        let Some(statement) = statement else {
+            self.flash_note(format!("{column} cannot be filtered by its outliers"));
+            return None;
+        };
+        state.set_current_column(&column);
+        let mut statements = state.view_filters().to_vec();
+        if !statements.contains(&statement) {
+            statements.push(statement);
+        }
+        self.close_overlay();
+        Some(AppEvent::Applied(crate::Applied::Filter(statements)))
+    }
+
     /// ↑↓, PageUp, PageDown, Home and End: the tools in the sidebar, a distribution
     /// in the detail's selector, or the focused tool's rows.
     fn analysis_list_move(&mut self, step: ListMove) {
@@ -322,4 +363,17 @@ impl App {
             _ => {}
         }
     }
+}
+
+/// `low` down and `high` up to four significant digits of the span between them, so a
+/// bound reads `48.31`, not `48.30729166666667`; the rows between move by no more than
+/// that.
+fn round_outward(low: f64, high: f64) -> (f64, f64) {
+    let span = high - low;
+    if !span.is_finite() || span <= 0.0 {
+        return (low, high);
+    }
+    let digits = (3 - span.log10().floor() as i32).clamp(-15, 15);
+    let scale = 10f64.powi(digits);
+    ((low * scale).floor() / scale, (high * scale).ceil() / scale)
 }

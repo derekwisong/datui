@@ -277,7 +277,7 @@ fn panel_lines(modal: &ChartModal, schema: Option<&Schema>, ctx: &RenderContext)
                 "Bandwidth",
                 plain(format!("{:.1}x", modal.kde_bandwidth_factor), ctx),
             ),
-            ChartFocus::Range => ("Range", plain(modal.value_range.label(), ctx)),
+            ChartFocus::Range => ("Range", plain(modal.range_label(), ctx)),
             ChartFocus::YStartsAtZero => ("Y from zero", on_off(modal.y_starts_at_zero)),
             ChartFocus::LogScale => ("Log scale", on_off(modal.log_scale)),
             ChartFocus::ShowLegend => (
@@ -1077,7 +1077,7 @@ fn render_xy_chart(
 
     // Kept with the prepared series; worked out here only for series made here.
     let [all_x_min, all_x_max, all_y_min, all_y_max] =
-        lines.shown_bounds(y.log).unwrap_or([0.0; 4]);
+        lines.shown_bounds(plot.shown()).unwrap_or([0.0; 4]);
 
     // A scatter of few points marks each with a dot a cell wide; past one point per
     // four cells, the line's finer marks keep them apart.

@@ -966,7 +966,10 @@ mod read {
         fn atom(&self, filter: &FilterStatement) -> Option<Atom> {
             // A value SQLite holds that Polars reads as null is not NULL here.
             // A find kept as a filter matches cells as datui writes them.
-            if !filter.operator.takes_value() || filter.operator.is_find() {
+            if !filter.operator.takes_value()
+                || filter.operator.is_find()
+                || filter.operator == FilterOperator::Outside
+            {
                 return None;
             }
             let column = self.index_of(&filter.column)?;
@@ -1014,6 +1017,7 @@ mod read {
                 FilterOperator::Has | FilterOperator::HasRegex | FilterOperator::HasFuzzy => {
                     unreachable!("a kept find is not pushed down")
                 }
+                FilterOperator::Outside => unreachable!("a range is not pushed down"),
             }
         }
 

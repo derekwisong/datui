@@ -1155,12 +1155,13 @@ fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame
                     ),
                 ),
                 PlotData::Lines(lines) => {
-                    let [x_lo, x_hi, mut y_lo, mut y_hi] = lines.shown_bounds(y.log).unwrap_or([
-                        f64::INFINITY,
-                        f64::NEG_INFINITY,
-                        f64::INFINITY,
-                        f64::NEG_INFINITY,
-                    ]);
+                    let [x_lo, x_hi, mut y_lo, mut y_hi] =
+                        lines.shown_bounds(figure.plot.shown()).unwrap_or([
+                            f64::INFINITY,
+                            f64::NEG_INFINITY,
+                            f64::INFINITY,
+                            f64::NEG_INFINITY,
+                        ]);
                     if options.y_from_zero.unwrap_or(*y_from_zero) {
                         y_lo = y_lo.min(0.0);
                         y_hi = y_hi.max(0.0);

@@ -765,6 +765,22 @@ impl AnalysisModal {
         }
     }
 
+    /// The column of the distribution row selected, and its outliers.
+    pub fn selected_outliers(
+        &self,
+    ) -> Option<(&str, &crate::analysis::statistics::OutlierAnalysis)> {
+        if self.selected_tool != Some(AnalysisTool::DistributionAnalysis) {
+            return None;
+        }
+        let at = self.distribution_table_state.selected()?;
+        let analysis = self
+            .distribution_results
+            .as_ref()?
+            .distribution_analyses
+            .get(at)?;
+        Some((&analysis.column_name, &analysis.outliers))
+    }
+
     pub fn open_correlation_detail(&mut self) {
         if self.focus == AnalysisFocus::Main
             && self.selected_tool == Some(AnalysisTool::CorrelationMatrix)

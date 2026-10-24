@@ -1104,3 +1104,50 @@ fn chart_export_dialog_presets_and_legend() {
     run_to_idle(&mut app, &rx, &tx, out);
     assert!(std::fs::read_to_string(&svg).unwrap().starts_with("<svg"));
 }
+
+/// Range on a line chart spans the Y axis over the points that are not outliers, so
+/// one spike no longer flattens the rest, and the title row counts the outliers it
+/// drew at the edge.
+#[test]
+fn a_line_charts_range_clips_its_y_axis_to_the_percentiles() {
+    use datui::chart::chart_modal::{ChartFocus, Mark};
+    let path = common::fixture_dir().join("chart_y_range.parquet");
+    let mut df = df!(
+        "x" => (0..200).collect::<Vec<i64>>(),
+        "y" => (0..200).map(|i| if i == 100 { 1_000_000 } else { i }).collect::<Vec<i64>>()
+    )
+    .unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+
+    press(&mut app, KeyCode::Char('c'));
+    app.chart.modal.set_mark(Mark::Line);
+    app.chart.modal.spec.encoding.x.field = Some("x".to_string());
+    app.chart.modal.spec.encoding.y.field = vec!["y".to_string()];
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    let area = Rect::new(0, 0, 160, 30);
+    let draw = |app: &mut App| {
+        let mut buf = Buffer::empty(area);
+        Widget::render(app, area, &mut buf);
+        common::buffer_text(&buf)
+    };
+    let text = draw(&mut app);
+    assert!(text.contains("800000"), "{text}");
+    assert!(text.contains("Range") && text.contains("All"), "{text}");
+
+    app.chart.modal.focus = ChartFocus::Range;
+    press(&mut app, KeyCode::Right);
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    let text = draw(&mut app);
+    assert!(text.contains("outliers at edge"), "{text}");
+    assert!(text.contains("1 outlier at the edge"), "{text}");
+    assert!(
+        !text.contains("1,000,000") && !text.contains("1M"),
+        "{text}"
+    );
+}

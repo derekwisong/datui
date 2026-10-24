@@ -192,3 +192,19 @@ fn a_constant_column_is_constant_and_a_hopeless_one_has_no_clear_fit() {
         info.distribution_type
     );
 }
+
+/// A value past the outlier bounds is exactly a value one test or the other counts:
+/// the bounds `o` filters by are the count's.
+#[test]
+fn the_outlier_bounds_hold_what_the_tests_count() {
+    let mut values: Vec<f64> = (1..=99).map(f64::from).collect();
+    values.extend([10_000.0, -400.0, 150.0, -60.0]);
+    for (q25, q75) in [(25.0, 75.0), (40.0, 41.0), (-1000.0, 1000.0)] {
+        let test = OutlierTest::new(&values, q25, q75).unwrap();
+        let (low, high) = test.bounds();
+        for &v in &values {
+            let counted = test.beyond_fences(v) || test.z_score(v) > Z_THRESHOLD;
+            assert_eq!(counted, v < low || v > high, "{v} against {q25}..{q75}");
+        }
+    }
+}

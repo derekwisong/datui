@@ -911,7 +911,7 @@ impl ChartModal {
                 if self.aggregates() && self.aggregate().runs_cumulative() {
                     rows.push(Cumulative);
                 }
-                rows.extend([YStartsAtZero, LogScale, ShowLegend, Grid]);
+                rows.extend([YStartsAtZero, LogScale, Range, ShowLegend, Grid]);
             }
             Mark::Bar => rows.push(ShowLegend),
             Mark::Histogram => rows.extend([Range, ShowLegend, Grid]),
@@ -1320,6 +1320,23 @@ impl ChartModal {
     }
 
     // ----- What is charted right now -----
+
+    /// The Range row's value: a line or scatter chart draws its outliers at the edge
+    /// where another type leaves the tails out.
+    pub fn range_label(&self) -> &'static str {
+        match (self.spec.mark, self.value_range) {
+            (Mark::Line | Mark::Scatter, ValueRange::Percentile1To99) => "outliers at edge",
+            (_, range) => range.label(),
+        }
+    }
+
+    /// How a line or scatter chart draws its Y values: the log scale, and the range.
+    pub fn shown(&self) -> crate::chart::chart_plot::Shown {
+        crate::chart::chart_plot::Shown {
+            log: self.log_scale,
+            clip: self.value_range == ValueRange::Percentile1To99,
+        }
+    }
 
     /// The spec to chart: the one chosen, with an open Picker's cursor previewed on
     /// the Y shelf (and on X, except for a line or scatter, whose X re-reads
@@ -1827,6 +1844,7 @@ mod tests {
                 Color,
                 YStartsAtZero,
                 LogScale,
+                Range,
                 ShowLegend,
                 Grid,
                 LimitRows

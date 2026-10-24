@@ -77,6 +77,17 @@ another family to compare with, which does not change the verdict.
 <kbd>s</kbd> toggles the histogram between linear and log scale, and
 <kbd>Esc</kbd> returns to the table.
 
+<kbd>o</kbd>, on a column in the list or in its detail, closes Analysis and
+filters the table to that column's outliers and moves the column cursor to
+it. It adds a filter beside the filters in effect, which the
+[Sort & Filter sidebar](filtering-sorting.md) edits and removes:
+`COLUMN outside LOW..HIGH`, or `COLUMN > HIGH` (`COLUMN < LOW`) when the sample
+found outliers on one side only. Each end is the nearer of the IQR fence and
+three standard deviations, from the sample, rounded outward to four significant
+digits of the range between them. The table counts
+the rows past them in the whole view, so its count can differ from the
+sample's.
+
 | Detail | Shows |
 |---|---|
 | Fit | The verdict and its p-value; it stays as you choose other families |

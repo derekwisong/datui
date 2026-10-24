@@ -239,7 +239,7 @@ impl ValueRange {
         }
     }
 
-    fn quantiles(self) -> Option<(f64, f64)> {
+    pub(crate) fn quantiles(self) -> Option<(f64, f64)> {
         match self {
             Self::All => None,
             Self::Percentile1To99 => Some((0.01, 0.99)),
@@ -1081,7 +1081,7 @@ pub fn prepare_histogram_by(
     Ok(data)
 }
 
-fn quantile(sorted: &[f64], q: f64) -> f64 {
+pub(crate) fn quantile(sorted: &[f64], q: f64) -> f64 {
     if sorted.is_empty() {
         return 0.0;
     }

@@ -28,15 +28,20 @@ pub enum PlotData {
     Bars(BarData),
 }
 
+/// Each series' points.
+pub type Points = Vec<Vec<(f64, f64)>>;
+
 /// A line or scatter chart's series.
 #[derive(Debug, Clone, Default)]
 pub struct LinesData {
     /// One per series: its Y column, or its color group.
     pub names: Vec<String>,
-    pub series: Vec<Vec<(f64, f64)>>,
-    /// The series as a log scale draws them. Only the chart on screen keeps one
-    /// (`ChartCache::touch`): it is as large as the series.
-    pub series_log: Option<Vec<Vec<(f64, f64)>>>,
+    pub series: Points,
+    /// The series as a log scale or a clipped range draws them, and which. Only the
+    /// chart on screen keeps one (`ChartCache::touch`): it is as large as the series.
+    pub series_shown: Option<(Shown, Points)>,
+    /// The range of the Ys that are not outliers, when some are.
+    pub y_clip: Option<YClip>,
     /// Per series, where its line starts again after a gap (see `chart_data::segments`).
     pub breaks: Vec<Vec<usize>>,
     /// Every X of every series, in order, each once: where the crosshair stops.
@@ -49,6 +54,50 @@ pub struct LinesData {
     pub rows_note: Option<String>,
     /// The last series is Other: every value of a color without a series of its own.
     pub other: bool,
+}
+
+/// How a line or scatter chart draws its Y values: on a log scale, and clipped to
+/// [`LinesData::y_clip`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Shown {
+    pub log: bool,
+    pub clip: bool,
+}
+
+/// The Y range of the points that are not outliers, and how many are: a clipped
+/// chart draws those at its edge.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct YClip {
+    pub lo: f64,
+    pub hi: f64,
+    pub outside: usize,
+}
+
+impl YClip {
+    /// The range of `series`'s Y values that are not outliers, as Distribution counts
+    /// them; `None` when none is.
+    fn of(series: &[Vec<(f64, f64)>]) -> Option<Self> {
+        let ys: Vec<f64> = series
+            .iter()
+            .flatten()
+            .map(|&(_, y)| y)
+            .filter(|y| y.is_finite())
+            .collect();
+        let (low, high) = crate::analysis::statistics::outlier_bounds(&ys)?;
+        let inside = |y: &&f64| (low..=high).contains(*y);
+        let lo = ys
+            .iter()
+            .filter(inside)
+            .copied()
+            .fold(f64::INFINITY, f64::min);
+        let hi = ys
+            .iter()
+            .filter(inside)
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max);
+        let outside = ys.iter().filter(|y| !inside(y)).count();
+        (outside > 0 && hi > lo).then_some(Self { lo, hi, outside })
+    }
 }
 
 /// One series of [`LinesData`] that has points.
@@ -68,7 +117,8 @@ impl LinesData {
     /// their X values in order and their bounds.
     pub fn new(grouped: chart_data::GroupedSeries, rows_note: Option<String>) -> Self {
         Self {
-            series_log: None,
+            series_shown: None,
+            y_clip: YClip::of(&grouped.series),
             xs: crate::widgets::crosshair::xs(&grouped.series),
             bounds: extent(&grouped.series),
             names: grouped.names,
@@ -81,39 +131,75 @@ impl LinesData {
         }
     }
 
-    /// Keep a log copy of the series when `log` wants one, and none otherwise.
-    pub fn keep_log(&mut self, log: bool) {
-        match (log, self.series_log.is_some()) {
-            (true, false) => self.series_log = Some(log_series(&self.series)),
-            (false, true) => self.series_log = None,
-            _ => {}
+    /// What `shown` draws of these series: no clip when no point lies past the
+    /// percentiles.
+    fn wanted(&self, shown: Shown) -> Shown {
+        Shown {
+            clip: shown.clip && self.y_clip.is_some(),
+            ..shown
         }
     }
 
-    /// The series as drawn: logged on a log scale.
-    pub fn shown(&self, log: bool) -> &[Vec<(f64, f64)>] {
-        match (&self.series_log, log) {
-            (Some(logged), true) => logged,
+    /// What the series are drawn as now: as `shown` asks once a copy of them is kept,
+    /// and as they are before that.
+    fn drawn_as(&self, shown: Shown) -> Shown {
+        let wanted = self.wanted(shown);
+        match &self.series_shown {
+            Some((kept, _)) if *kept == wanted => wanted,
+            _ => Shown::default(),
+        }
+    }
+
+    /// Keep a copy of the series as `shown` draws them when that differs from the
+    /// series, and none otherwise.
+    pub fn keep_shown(&mut self, shown: Shown) {
+        let wanted = self.wanted(shown);
+        if wanted == Shown::default() {
+            self.series_shown = None;
+        } else if self.drawn_as(shown) != wanted {
+            let clip = self.y_clip.filter(|_| wanted.clip);
+            let series = self
+                .series
+                .iter()
+                .map(|points| {
+                    points
+                        .iter()
+                        .map(|&(x, y)| (x, shown_y(y, wanted.log, clip)))
+                        .collect()
+                })
+                .collect();
+            self.series_shown = Some((wanted, series));
+        }
+    }
+
+    /// The series as drawn: logged on a log scale, clipped to the percentiles.
+    pub fn shown(&self, shown: Shown) -> &[Vec<(f64, f64)>] {
+        match &self.series_shown {
+            Some((kept, series)) if *kept == self.wanted(shown) => series,
             _ => &self.series,
         }
     }
 
-    /// The least and greatest X and Y of the points as drawn. The log is monotone:
-    /// the bounds of the logged points are the logged bounds.
-    pub fn shown_bounds(&self, log: bool) -> Option<[f64; 4]> {
+    /// The least and greatest X and Y of the points as drawn. The log and the clip
+    /// are monotone: the bounds of the points drawn are the bounds drawn.
+    pub fn shown_bounds(&self, shown: Shown) -> Option<[f64; 4]> {
+        let drawn = self.drawn_as(shown);
+        let clip = self.y_clip.filter(|_| drawn.clip);
         match self.bounds {
-            Some([x0, x1, y0, y1]) if log && self.series_log.is_some() => {
-                Some([x0, x1, log_y(y0), log_y(y1)])
-            }
-            Some(bounds) => Some(bounds),
-            None => extent(self.shown(log)),
+            Some([x0, x1, y0, y1]) => Some([
+                x0,
+                x1,
+                shown_y(y0, drawn.log, clip),
+                shown_y(y1, drawn.log, clip),
+            ]),
+            None => extent(self.shown(shown)),
         }
     }
 
     /// The series with points, as drawn.
-    pub fn drawn(&self, log: bool) -> impl Iterator<Item = Drawn<'_>> {
+    pub fn drawn(&self, shown: Shown) -> impl Iterator<Item = Drawn<'_>> {
         let last = self.names.len().saturating_sub(1);
-        self.shown(log)
+        self.shown(shown)
             .iter()
             .zip(self.names.iter())
             .enumerate()
@@ -148,18 +234,17 @@ fn log_y(y: f64) -> f64 {
     y.max(0.0).ln_1p()
 }
 
-fn log_series(series: &[Vec<(f64, f64)>]) -> Vec<Vec<(f64, f64)>> {
-    series
-        .iter()
-        .map(|points| points.iter().map(|&(x, y)| (x, log_y(y))).collect())
-        .collect()
+/// A Y as drawn: at the edge of `clip` past it, then on the log scale.
+fn shown_y(y: f64, log: bool, clip: Option<YClip>) -> f64 {
+    let y = clip.map_or(y, |clip| y.clamp(clip.lo, clip.hi));
+    if log { log_y(y) } else { y }
 }
 
 impl PlotData {
     /// Nothing to draw: no points, bins, boxes, cells or bars.
     pub fn is_empty(&self) -> bool {
         match self {
-            Self::Lines(lines) => lines.drawn(false).next().is_none(),
+            Self::Lines(lines) => lines.drawn(Shown::default()).next().is_none(),
             Self::XRange(_) => true,
             Self::Bars(data) => data.bars.is_empty(),
             Self::Histogram(data) => data.bins.is_empty(),
@@ -228,6 +313,8 @@ pub struct Axis {
     pub kind: XAxisTemporalKind,
     /// Values are `ln(1 + y)`; ticks name `y`.
     pub log: bool,
+    /// Outliers are drawn at the edge.
+    pub clip: bool,
 }
 
 /// A chart as the screen and every export draw it: its data, borrowed from the chart
@@ -251,13 +338,22 @@ impl Plot<'_> {
         }
     }
 
-    /// A line or scatter chart's series, drawn on a log scale when the Y axis is one.
+    /// How the Y axis draws a line or scatter chart's values.
+    pub fn shown(&self) -> Shown {
+        Shown {
+            log: self.y.log,
+            clip: self.y.clip,
+        }
+    }
+
+    /// A line or scatter chart's series, as the Y axis draws them.
     pub fn drawn(&self) -> impl Iterator<Item = Drawn<'_>> {
         let lines = match &*self.data {
             PlotData::Lines(lines) => Some(lines),
             _ => None,
         };
-        lines.into_iter().flat_map(|lines| lines.drawn(self.y.log))
+        let shown = self.shown();
+        lines.into_iter().flat_map(move |lines| lines.drawn(shown))
     }
     /// The plot's curves, Other first so the rest are drawn over it: a line or
     /// scatter chart's series with points, the density curves, or a histogram's
@@ -476,12 +572,13 @@ fn lines<'a>(data: Option<&'a PlotData>, context: &PlotContext<'_>) -> Plot<'a> 
             _ => XAxisTemporalKind::Numeric,
         },
     };
+    let shown = modal.shown();
     let data = match data {
-        // A chart standing in while another is prepared has no log copy: made here,
-        // for as long as it stands in.
-        Some(PlotData::Lines(lines)) if modal.log_scale && lines.series_log.is_none() => {
+        // A chart standing in while another is prepared has no copy as drawn: made
+        // here, for as long as it stands in.
+        Some(PlotData::Lines(lines)) if lines.drawn_as(shown) != lines.wanted(shown) => {
             let mut lines = lines.clone();
-            lines.keep_log(true);
+            lines.keep_shown(shown);
             Cow::Owned(PlotData::Lines(lines))
         }
         Some(data @ (PlotData::Lines(_) | PlotData::XRange(_))) => Cow::Borrowed(data),
@@ -495,13 +592,14 @@ fn lines<'a>(data: Option<&'a PlotData>, context: &PlotContext<'_>) -> Plot<'a> 
                 .map(|x| AxisNumbers::column(numbers, schema, x))
                 .unwrap_or_default(),
             kind,
-            log: false,
+            ..Default::default()
         },
         y: Axis {
             title: y_title,
             numbers: y_numbers,
             kind: y_kind,
-            log: modal.log_scale,
+            log: shown.log,
+            clip: shown.clip,
         },
         scatter: spec.mark == Mark::Scatter,
         y_from_zero: modal.y_starts_at_zero,

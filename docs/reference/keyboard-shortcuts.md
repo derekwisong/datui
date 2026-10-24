@@ -536,6 +536,7 @@ Distribution in the Analysis sidebar.
 | `PgUp / PgDn` | A page |
 | `Tab / Shift+Tab` | Between the results and the tools |
 | `Enter` | Open the selected column's detail, a Q-Q plot and a histogram; with the sidebar focused, open a tool |
+| `o` | Filter the table to the selected column's outliers, and move the column cursor to it: a filter column outside LOW..HIGH in the Sort & Filter sidebar, beside the filters in effect, or column &gt; HIGH (column &lt; LOW) when the sample found outliers on one side only. LOW and HIGH are the nearer of the IQR fences and three standard deviations on each side, from the sample, rounded outward to four significant digits of the range |
 | `Esc` | Cancel a run in progress; otherwise from the results back to the tools, and from the tools close the analysis view |
 
 ### Analysis: Distribution · Sample
@@ -559,6 +560,7 @@ Distribution in the Analysis sidebar.
 | `↑ / ↓ (j/k)` | Compare the values with another family |
 | `Home / End` | The first or last family |
 | `s` | Histogram scale: linear or log |
+| `o` | Filter the table to the selected column's outliers, and move the column cursor to it: a filter column outside LOW..HIGH in the Sort & Filter sidebar, beside the filters in effect, or column &gt; HIGH (column &lt; LOW) when the sample found outliers on one side only. LOW and HIGH are the nearer of the IQR fences and three standard deviations on each side, from the sample, rounded outward to four significant digits of the range |
 | `Esc` | Back to the distribution table |
 
 ## Analysis: Correlation

@@ -128,6 +128,8 @@ pub struct SidebarFilter {
     pub value: FilterValue,
     /// The value as typed, which `contains` matches as text whatever the column.
     pub text: String,
+    /// An `outside` statement's two ends, typed as `value` is.
+    pub bounds: Option<(FilterValue, FilterValue)>,
     pub logical_op: LogicalOperator,
     /// The columns a find kept as a filter matches in, with their types: the one
     /// named, or every column for [`crate::app::modals::filter_modal::ANY_COLUMN`].
@@ -185,17 +187,21 @@ impl SidebarFilter {
     }
 
     pub fn typed(statement: &FilterStatement, dtype: Option<&DataType>) -> Self {
-        let text = statement.value.as_str();
-        let value = match dtype {
+        let typed = |text: &str| match dtype {
             None | Some(DataType::String) => FilterValue::Str(text.to_string()),
             Some(dtype) => crate::typed_value::parse(text, dtype)
                 .map(FilterValue::Typed)
                 .unwrap_or_else(|_| FilterValue::Str(text.to_string())),
         };
+        let bounds = (statement.operator == FilterOperator::Outside)
+            .then(|| FilterOperator::bounds(&statement.value))
+            .flatten()
+            .map(|(low, high)| (typed(low), typed(high)));
         Self {
             column: statement.column.clone(),
             operator: statement.operator,
-            value,
+            value: typed(&statement.value),
+            bounds,
             text: statement.value.clone(),
             logical_op: statement.logical_op,
             searched: Vec::new(),
@@ -231,6 +237,23 @@ impl SidebarFilter {
                 statement.operator,
                 FilterOperator::Contains | FilterOperator::NotContains
             );
+        if statement.operator == FilterOperator::Outside {
+            let Some((low, high)) = FilterOperator::bounds(&statement.value) else {
+                return Some(format!(
+                    "{}: write the range as LOW..HIGH",
+                    statement.column
+                ));
+            };
+            let dtype = dtype?;
+            let ends = crate::typed_value::parse(low, dtype)
+                .and_then(|low| Ok((low, crate::typed_value::parse(high, dtype)?)));
+            return match ends {
+                Err(why) => Some(format!("{}: {why}", statement.column)),
+                Ok((low, high)) => (low.value().partial_cmp(high.value())
+                    == Some(std::cmp::Ordering::Greater))
+                .then(|| format!("{}: LOW is above HIGH", statement.column)),
+            };
+        }
         let dtype = dtype.filter(|_| compares)?;
         crate::typed_value::parse(&statement.value, dtype)
             .err()
@@ -251,6 +274,10 @@ impl SidebarFilter {
             FilterOperator::Lt => column.lt(self.value.lit()),
             FilterOperator::GtEq => column.gt_eq(self.value.lit()),
             FilterOperator::LtEq => column.lt_eq(self.value.lit()),
+            FilterOperator::Outside => match &self.bounds {
+                Some((low, high)) => column.clone().lt(low.lit()).or(column.gt(high.lit())),
+                None => lit(false),
+            },
             FilterOperator::Contains => contains(),
             FilterOperator::NotContains => contains().not(),
             FilterOperator::IsNull => column.is_null(),
@@ -279,6 +306,14 @@ impl SidebarFilter {
             FilterOperator::Lt => "<",
             FilterOperator::GtEq => ">=",
             FilterOperator::LtEq => "<=",
+            FilterOperator::Outside => {
+                return match &self.bounds {
+                    Some((low, high)) => {
+                        format!("~{column}.is_between({}, {})", low.python(), high.python())
+                    }
+                    None => "pl.lit(False)".to_string(),
+                };
+            }
             FilterOperator::Contains | FilterOperator::NotContains => {
                 let not = if self.operator == FilterOperator::NotContains {
                     "~"

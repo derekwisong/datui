@@ -167,7 +167,7 @@ Dates and datetimes are written as ISO 8601 with a space before the time:
 |---|---|---|
 | **Bins** | Histogram (under X), Heatmap | 5 to 100 bins for a histogram, 5 to 60 a side for a heatmap |
 | **Bandwidth** | KDE | A multiple of the usual bandwidth, 0.2x to 5.0x |
-| **Range** | Histogram, Box, KDE | **All** values, or **p1-p99** (the 1st to 99th percentile) to leave out outliers that squash the rest; the chart counts what it left out |
+| **Range** | Histogram, Box, KDE, Line, Scatter | So outliers do not squash the rest. A histogram, box or KDE takes **All** values or **p1-p99**, the 1st to 99th percentile, and counts the values it left out: `1,207 values outside p1-p99`. A line or scatter chart takes **All** or **outliers at edge**: it keeps every point, spans its Y axis over those that are not outliers (as [Distribution](analysis-features.md#distribution) counts them), and draws the outliers at the edge: `2 outliers at the edge`. The crosshair reads their true values |
 | Order | Bar (under X) | By value, largest first, or by label: text A to Z, numbers ascending |
 | **Y from zero**, **Log scale** | Line, Scatter | Start the Y axis at zero; plot ln(1 + y), with the ticks labeled in y |
 | **Legend** | Line, Scatter, Bar, Histogram, KDE | **auto** or **off** |

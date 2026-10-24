@@ -334,6 +334,11 @@ pub struct OutlierAnalysis {
     pub percentage: f64,
     pub iqr_count: usize,
     pub zscore_count: usize,
+    /// A value below the first or above the second is an outlier by one test or
+    /// both; `None` where neither test applies.
+    pub bounds: Option<(f64, f64)>,
+    /// The outliers below the bounds; the rest are above.
+    pub below: usize,
 }
 
 #[derive(Clone)]
@@ -1002,9 +1007,29 @@ impl OutlierTest {
     fn z_score(&self, value: f64) -> f64 {
         (value - self.mean).abs() / self.std
     }
+
+    /// Past the first or the second is past the fences or three standard deviations:
+    /// the nearer of the two on each side.
+    fn bounds(&self) -> (f64, f64) {
+        (
+            self.lower_fence.max(self.mean - Z_THRESHOLD * self.std),
+            self.upper_fence.min(self.mean + Z_THRESHOLD * self.std),
+        )
+    }
 }
 
 const Z_THRESHOLD: f64 = 3.0;
+
+/// The bounds past which a value is an outlier, as Distribution counts them: the
+/// nearer of the IQR fences and three standard deviations on each side. `None` with
+/// too few values or none apart.
+pub(crate) fn outlier_bounds(values: &[f64]) -> Option<(f64, f64)> {
+    let floats = Float64Chunked::from_slice(PlSmallStr::EMPTY, values);
+    let quartiles = floats
+        .quantiles(&[0.25, 0.75], QuantileMethod::Nearest)
+        .ok()?;
+    OutlierTest::new(values, quartiles[0]?, quartiles[1]?).map(|test| test.bounds())
+}
 
 fn compute_categorical_stats(series: &Series) -> Result<CategoricalStatistics> {
     let min = if let Ok(str_series) = series.str() {
@@ -1245,10 +1270,14 @@ fn compute_outlier_analysis(values: &[f64], numeric_stats: &NumericStatistics) -
         percentage: 0.0,
         iqr_count: 0,
         zscore_count: 0,
+        bounds: None,
+        below: 0,
     };
     let Some(test) = OutlierTest::new(values, numeric_stats.q25, numeric_stats.q75) else {
         return analysis;
     };
+    let (low, _) = test.bounds();
+    analysis.bounds = Some(test.bounds());
 
     for &value in values {
         let beyond_fences = test.beyond_fences(value);
@@ -1259,6 +1288,7 @@ fn compute_outlier_analysis(values: &[f64], numeric_stats: &NumericStatistics) -
         analysis.total_count += 1;
         analysis.iqr_count += usize::from(beyond_fences);
         analysis.zscore_count += usize::from(beyond_z);
+        analysis.below += usize::from(value < low);
     }
 
     analysis.percentage = analysis.total_count as f64 / values.len() as f64 * 100.0;

@@ -325,7 +325,14 @@ fn analysis_control_keys(app: &crate::App) -> Vec<Hint> {
     let key = |keys| registry_hint(context, keys);
     let say = |keys, label| registry_hint_as(context, None, keys, label);
     match modal.view {
-        AnalysisView::DistributionDetail => return vec![key("↑ / ↓"), key("s"), key("Esc")],
+        AnalysisView::DistributionDetail => {
+            let mut keys = vec![key("↑ / ↓"), key("s")];
+            if has_outliers(modal) {
+                keys.push(key("o"));
+            }
+            keys.push(key("Esc"));
+            return keys;
+        }
         AnalysisView::CorrelationDetail => return vec![key("m"), key("Esc")],
         AnalysisView::Main => {}
     }
@@ -400,6 +407,9 @@ fn analysis_control_keys(app: &crate::App) -> Vec<Hint> {
         if detail {
             keys.push(say("Enter", "Detail"));
         }
+        if has_outliers(modal) {
+            keys.push(key("o"));
+        }
         if matches!(tool, AnalysisTool::CorrelationMatrix) {
             rest.push(key("m"));
         }
@@ -431,6 +441,13 @@ fn analysis_control_keys(app: &crate::App) -> Vec<Hint> {
     }
     keys.push(esc);
     keys
+}
+
+/// Whether the distribution row selected found outliers, for `o` to filter to.
+fn has_outliers(modal: &crate::analysis::analysis_modal::AnalysisModal) -> bool {
+    modal
+        .selected_outliers()
+        .is_some_and(|(_, outliers)| outliers.total_count > 0 && outliers.bounds.is_some())
 }
 
 /// The Data Quality pages' keys. Whatever owns the keys right now — a run in

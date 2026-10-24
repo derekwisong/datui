@@ -466,7 +466,7 @@ Where a dataset opens.
 | Key | Action |
 |---|---|
 | `x` | Line and Scatter: the plot takes the keys, and a crosshair reads out x and every series' value under the plot. ← / → (h/l) step to the next point or column, Home/End go to the ends; x, Tab or Esc hand the keys back to the panel. A click on the plot puts the crosshair there |
-| `y` | Scatter with a trend: copy the method, the chart's columns and notes, and for each fit its equation, slope, R squared with r and p, Spearman ρ, residual SD and the points used, as plain text |
+| `y` | Scatter with a trend: copy the method, the chart's columns and notes, and for each fit its equation, slope, R squared with r and p, Spearman ρ, residual SD and the points used, as plain text. While the fit runs, a note says it is still fitting |
 | `e` | Export the chart to PNG, SVG or PDF, with a title, notes and source. Needs the chart's shelves filled first |
 | `t` | While following a file, draw again with the rows that arrived since; the footer says how many |
 

@@ -171,7 +171,7 @@ Dates and datetimes are written as ISO 8601 with a space before the time:
 | **Smooth** | Line | Draw each point as the mean of the values in a window ending at it (a moving average), to show the trend through noisy readings: **off**, or a window, a length of time or a number of points. See [Smoothing](#smoothing) |
 | raw (under Smooth) | Line | Draw the raw line faintly behind the smoothed one: **auto** (with one series), **on** or **off** |
 | **Trend** | Scatter | A line fitted through the points: **off**, **linear**, **exponential**, **power**, **robust**, **local** or **y = x**. See [Trend lines](#trend-lines) |
-| over (under Trend) | Scatter | With a **Color**: one fit **per color**, or one **overall**, over every point |
+| over (under Trend) | Scatter | With a **Color**: one fit **per color**, or one over **all points** |
 | Order | Bar (under X) | By value, largest first, or by label: text A to Z, numbers ascending |
 | **Y from zero** | Line, Scatter | Start the Y axis at zero. Dimmed while Y is on a log scale, which has no zero |
 | **Log scale** | Line, Scatter | **Y**, and **X** on the line under it: a log axis. See [Log scale](#log-scale) |
@@ -292,72 +292,76 @@ than half the width, and the short hops under 200 miles separate.
 ### Trend lines
 
 A scatter shows how two columns move together; a trend line says how much.
-**Trend** fits a line through the points, draws it over them (the points fade
-behind it) and reads it in a sentence under the plot. Tab to **Trend** and step
-the method with <kbd>←</kbd> <kbd>→</kbd>.
+**Trend** fits a line through the points, draws it over them in its own color
+(the theme's `chart_trend`; the points fade behind it) and reads it in a
+sentence under the plot. Tab to **Trend** and step the method with
+<kbd>←</kbd> <kbd>→</kbd>.
 
 | Method | Use it when | What it fits |
 |---|---|---|
 | **linear** | Y changes by about the same amount for each step of X | Least squares: the line y = a + bx that makes the squared vertical distances smallest |
 | **exponential** | Y grows or shrinks by about the same share for each step of X: prices, counts that compound | Least squares of ln y on x, drawn as y = A·e^(bx). Points with y of 0 or less are left out and counted |
-| **power** | Each 1% more X gives about the same % more Y: sizes, areas, scaling laws | Least squares of ln y on ln x, drawn as y = A·x^k. Points with x or y of 0 or less are left out. Not on a date or time X. Draws a curve on an ordinary X and a straight line on a log X |
-| **robust** | A few wild points pull the linear line off the rest | Theil–Sen: the slope is the median of the slopes between every pair of points (pairs with the same X are skipped), the line through the median of what is left. Past a million pairs, a million drawn at random with the sample's seed |
-| **local** | The relation bends and no formula fits it | LOWESS: at each X, a line fitted to its nearest 2/3 of the points, the nearest weighted most, then refitted three times with outliers weighted down. A curve, with no equation |
+| **power** | Each 1% more X gives about the same % more Y: sizes, areas, scaling laws | Least squares of ln y on ln x, drawn as y = A·x^k. Points with x or y of 0 or less are left out. Not on a date or time X. Draws a curve; on log X and log Y it is a straight line |
+| **robust** | A few wild points pull the linear line off the rest | Theil–Sen: the slope is the median of the slopes between every pair of points (pairs with the same X are skipped), and the intercept is the median of y − slope·x, as SciPy's `theilslopes(method="joint")`. Past a million pairs, a million drawn at random with the sample's seed |
+| **local** | The relation bends and no formula fits it | LOWESS: at each X, a line fitted to its nearest 2/3 of the points, the nearest weighted most, then refitted three times with outliers weighted down. Fits within 1% of X's range of each other are joined by straight lines (statsmodels' `delta`). A curve, with no equation |
 | **y = x** | X and Y measure the same thing: a forecast and the actual, two runs of one test | Not fitted: the diagonal, to see which side the points fall on. Not on a date or time X |
 
-**robust** and **local** run in the background on a large chart: the plot says
-`Fitting trend...` until the line is drawn.
+Every fit runs in the background: the plot says `Fitting trend...` until the
+line is drawn, and a step to another method stops the fit under way.
 
 With a **Color**, the line under **Trend**, **over**, picks **per color** (a
-line per series, in its color) or **overall** (one line through every point, in
-`chart_trend`). Without a Color, each Y column gets its own line. **y = x** is
-one line always. **Other** is fitted only in an overall line, and a series of
-fewer than 10 points gets no line.
+line per series, in its color) or **all points** (one line through every point,
+in `chart_trend`). Without a Color, each Y column gets its own line. **y = x** is
+one line always. **Other** is fitted only in a line over all points, and a
+series of fewer than 10 points gets no line.
 
 #### Reading the line
 
-Under the plot, one sentence. With several lines it says how many (`3 fits`);
-the crosshair and the copy give each. Each method on the
-[example](#example-air-time-per-mile) below:
+Under the plot, one sentence. With several lines it says how many and their
+range (`3 fits · slopes −1.04 to −0.96 per unit of x`); the crosshair and the
+copy give each. Each method on the [example](#example-air-time-per-mile) below:
 
 | Method | Reads |
 |---|---|
-| linear | `+0.126 per distance · strong, R² 0.98 · typically ±12.8 off the line` |
-| exponential | `doubles every 857 distance · +0.081% per distance · strong, R² 0.86 · typically ±27% off the line` |
-| power | `y ~ x^0.822 · 1% more x, 0.822% more y · strong, R² 0.98 · typically ±11% off the line` |
-| robust | `+0.126 per distance · half the points within ±6.73 of it` (the spread varies a little with the pairs drawn) |
-| local | `local fit, each point of its nearest 2/3 · typically ±12.8 off the line` |
-| y = x | `y = x · 0% of points above · typically ±1104 off the line` (minutes against miles: no use here) |
+| linear | `+0.126 per unit of distance · strong, R² 0.98 · typically ±12.8 off the line` |
+| exponential | `doubles every 857 units of distance · +0.081% per unit of distance · strong, R² 0.86 · typically within ×1.27 of the line` |
+| power | `y ~ x^0.822 · 1% more distance, about 0.82% more air_time · strong, R² 0.98 · typically within ×1.11 of the line` |
+| robust | `+0.126 per unit of distance · half the points within ±6.74 of it` (the spread varies a little with the pairs drawn) |
+| local | `local curve, each point from its nearest 2/3 of the data · typically ±12.8 off the line` |
+| y = x | `0% of points above y = x · typically ±1104 off the line` (minutes against miles: no use here) |
 
 Term by term:
 
 | Term | Means |
 |---|---|
-| `+0.126 per distance` | The slope: how much Y changes for one unit of X, with Y's unit when it has one. Over a date or time X, per the largest length of time the data spans three of: `per day`, `per month` |
-| `doubles every 857 distance`, `+0.081% per distance` | An exponential's rate: the X it takes Y to double (or halve), and the change per unit of X |
-| `y ~ x^0.822` | A power's exponent k: 1% more X gives about k% more Y. Below 1, Y grows slower than X; above, faster |
-| `strong` | The strength of the relation, from Pearson's r of the points the line was fitted to (of ln y, or ln y and ln x, for exponential and power): **none** under 0.05, **weak** under 0.3, **moderate** under 0.7, then **strong**, as the [correlation matrix](analysis-features.md#correlation-matrix) says it |
-| `R² 0.98` | The share of Y's variation the line accounts for, 0 to 1 |
-| `typically ±12.8 off the line` | The residual standard deviation: how far a point usually sits from the line, in Y's units. For exponential and power, as a percentage of the line's value |
-| `half the points within ±6.73 of it` | robust's spread: the median distance of a point from its line |
-| `0% of points above` | y = x: the share of points with Y greater than X |
+| `+0.126 per unit of distance` | The slope: how much Y changes for one unit of X. With units from a format spec, in them: `+0.126 min per mi`. Over a date or time X, per the largest length of time the data spans three of: `per day`, `per month` |
+| `doubles every 857 units of distance`, `+0.081% per unit of distance` | An exponential's rate: the X it takes Y to double (or halve), and the change per unit of X. `flat` when Y does not change |
+| `1% more distance, about 0.82% more air_time` | A power's exponent k: 1% more X gives about k% more Y. Below 1, Y grows slower than X; above, faster |
+| `strong` | The strength of the relation from \|r\|, the size of Pearson's r of the points the line was fitted to (of ln y, or ln y and ln x, for exponential and power): `no clear trend` under 0.05, **weak** under 0.3, **moderate** under 0.7, then **strong**, as the [correlation matrix](analysis-features.md#correlation-matrix) says it |
+| `R² 0.98` | The share of Y's variation the line accounts for, 0 to 1; for exponential and power, of ln y |
+| `typically ±12.8 off the line` | The residual standard deviation: how far a point usually sits from the line, in Y's units |
+| `typically within ×1.27 of the line` | The same for exponential and power, as a factor: a point is usually between the line's value divided by 1.27 and times 1.27 |
+| `half the points within ±6.74 of it` | robust's spread: the median distance of a point from its line |
+| `0% of points above y = x` | y = x: the share of points with Y greater than X |
 
 When Pearson's r and Spearman's ρ differ by 0.2 or more, a linear reading ends
-with a mark in `warning`: `▲ r 0.57 vs ρ 0.90: try robust or local`. Spearman's ρ
-measures any relation that only rises or only falls, so a gap says the points
-follow a curve, or that a few points pull a straight line.
+with a mark in `warning`: `▲ r≠ρ: try robust`; with several lines it names the
+series: `▲ r≠ρ for curved: try robust`. Spearman's ρ measures any relation that only rises
+or only falls, so a gap says the points follow a curve, or that a few points
+pull a straight line. On a narrow plot the reading gives up its parts from the
+right; the mark stays. The copy gives both coefficients.
 
 The title row says what was fitted: `fit on 4,812 · 188 null` (rows without an
 X or Y are not fitted), `fit on 54 means` under an aggregate, the points a log
-left out (`12 with y of 0 or less left out`), series too small
+left out (`12 points with Y ≤ 0 left out`), series too small
 (`2 series under 10 points not fitted`), and a robust fit's pairs when drawn at
 random (`slopes of 989k of 53.6B pairs · seed 641911`; the seed is not repeated
 when the chart's sample already names it).
 
 | Where | What |
 |---|---|
-| Crosshair (<kbd>x</kbd>) | Each series' line value beside its own: `air_time: 659 · fit 646.9`, and with one line its equation: `fit: y = 0.126x + 18.5`. Over a date or time X, the slope alone. With several lines, each value has its slope |
-| <kbd>y</kbd> | Copies the fit as text: the method, the columns and notes, then for each line its equation, slope, R² with r and p, Spearman's ρ, residual SD, median distance from the line and the points used |
+| Crosshair (<kbd>x</kbd>) | Each series' line value beside its own: `air_time: 659 · fit 646.9`, and with one line its equation: `fit: y = 0.126x + 18.5`. Over a date or time X, the slope alone (`+13% per month` for an exponential). With several lines, each value has its slope |
+| <kbd>y</kbd> | Copies the fit as text: the method, the columns and notes, then for each line its equation, slope, R² with r and p, Spearman's ρ, residual SD, median distance from the line and the points used. Over a date or time X the equation is `y = 112 at 2024-01-01, +28.9 per month`. While the fit runs, the footer says `Still fitting the trend` |
 | Export | Draws the lines and puts the reading over the notes |
 | Saved view | Keeps **Trend** and **over** |
 
@@ -368,11 +372,13 @@ Things to keep in mind:
 | A line is not a cause | Two columns can move together because a third drives both |
 | One point can carry a line | A far point at the edge of X pulls least squares toward it; compare with **robust** |
 | A strong R² can hide a curve | Look at the points: a bend shows as runs of points above, then below, the line. The rank mark flags the plainest cases |
+| A fit over group means looks stronger than the rows | `fit on 54 means`: averaging removes the scatter, so R² overstates how well the line predicts a row |
 | The slope holds within the data | Past the X range the line is not drawn, and nothing says the relation goes on |
 | A sample's line is a sample's | A sampled chart fits the sample; **Every row** fits them all |
+| **robust** and **local** are slow on big charts | They take seconds on millions of points; the chart stays usable while they run |
 
-Not offered: on a **Cumulative** chart (each point holds the ones before it, so
-the points are not independent), and only on Scatter. With several Y columns,
+Trend is on Scatter only, and is off under **Cumulative** (each point holds the
+ones before it, so the points are not independent). With several Y columns,
 **over** reads `each Y column` and each is fitted on its own.
 
 #### Example: air time per mile
@@ -383,14 +389,16 @@ the type to **Scatter**, X to `distance` and Y to `air_time`, and **Rows** to
 row says `fit on 327,346 · 9,430 null` (cancelled flights have no air time),
 and under the plot:
 
-`+0.126 per distance · strong, R² 0.98 · typically ±12.8 off the line`
+`+0.126 per unit of distance · strong, R² 0.98 · typically ±12.8 off the line`
 
 Each mile adds 0.126 minutes in the air, about 476 miles an hour, and a flight
 is usually within 13 minutes of the line. Press <kbd>x</kbd> and <kbd>End</kbd>:
 the longest flight, 4,983 miles, reads `air_time: 659 · fit 646.9`, with
 `fit: y = 0.126x + 18.5`: 18.5 minutes of climbing and descending that no
-distance covers. Step to **power**: `y ~ x^0.822`, so a flight twice as long
-takes about 1.77 times as long in the air (2^0.822); long flights cruise faster.
+distance covers. Step to **power**: `1% more distance, about 0.82% more
+air_time`, so a flight twice as long takes about 1.77 times as long in the air
+(2^0.822); long flights cruise faster. Turn on **Log scale** Y and X: the power
+curve is a straight line.
 
 ## Axes, grid and legend
 

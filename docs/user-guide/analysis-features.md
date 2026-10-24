@@ -132,7 +132,7 @@ from a pair's detail.
 |---|---|
 | <kbd>m</kbd> | Method: Pearson r or Spearman ρ, named in the title |
 | <kbd>Enter</kbd> | The selected pair |
-| <kbd>c</kbd> | Chart the pair as a scatter with a [linear trend](charting.md#trend-lines), X the cell's column and Y its row; <kbd>Esc</kbd> comes back here |
+| <kbd>c</kbd> | Chart the pair as a scatter with a [linear trend](charting.md#trend-lines), X the cell's column and Y its row; <kbd>Esc</kbd> comes back here. The chart reads its own rows (a sample of 10,000 by default), so its r can differ a little from the matrix's |
 
 Spearman is Pearson's r computed on ranks: it finds any relation that only
 rises or only falls, while Pearson finds a straight line. Both use the rows

@@ -168,11 +168,83 @@ Dates and datetimes are written as ISO 8601 with a space before the time:
 | **Bins** | Histogram (under X), Heatmap | 5 to 100 bins for a histogram, 5 to 60 a side for a heatmap |
 | **Bandwidth** | KDE | A multiple of the usual bandwidth, 0.2x to 5.0x |
 | **Range** | Histogram, Box, KDE, Line, Scatter | So outliers do not squash the rest. A histogram, box or KDE takes **All** values or **p1-p99**, the 1st to 99th percentile, and counts the values it left out: `1,207 values outside p1-p99`. A line or scatter chart takes **All** or **outliers at edge**: it keeps every point, spans its Y axis over those that are not outliers (as [Distribution](analysis-features.md#distribution) counts them), and draws the outliers at the edge: `2 outliers at the edge`. The crosshair reads their true values |
+| **Smooth** | Line | Draw each point as the mean of the values in a window ending at it (a moving average), to show the trend through noisy readings: **off**, or a window, a length of time or a number of points. See [Smoothing](#smoothing) |
+| raw (under Smooth) | Line | Draw the raw line faintly behind the smoothed one: **auto** (with one series), **on** or **off** |
 | Order | Bar (under X) | By value, largest first, or by label: text A to Z, numbers ascending |
 | **Y from zero**, **Log scale** | Line, Scatter | Start the Y axis at zero; plot ln(1 + y), with the ticks labeled in y |
 | **Legend** | Line, Scatter, Bar, Histogram, KDE | **auto** or **off** |
 | **Grid** | Line, Scatter, Histogram, Box, KDE | Lines at the labeled ticks |
 | **Rows** | Charts that sample | **Sample** of a size, or **Every row**; an aggregate reads every row and says `all, exact`. See [Large tables](#large-tables) |
+
+### Smoothing
+
+Readings that jump around, such as frame times, sensor values or daily
+delays, can hide their trend. **Smooth** draws a moving average (trailing
+mean): each point is the mean of the values in a window that ends at it, so the
+trend shows through. The price is that a mean lags: a real change shows up late
+on the smoothed line, and a short spike is flattened. The lag is about half the
+window. A longer window gives a smoother line that lags more. The raw line,
+drawn faintly behind, keeps both in view.
+
+Focus **Smooth** with <kbd>Tab</kbd> and step the window with <kbd>←</kbd>
+<kbd>→</kbd>. Once a window is on, the row under it, **raw**, says whether the
+raw line is drawn.
+
+| Setting | Values |
+|---|---|
+| **Smooth** | **off**, or a window. Over a date, datetime, time or duration X, a length of time: `7d`, `1m` (a minute). Over any other X, a number of points: `20 points` |
+| raw | **auto** draws the raw line when the chart has one series and leaves it out with several, where it would crowd the plot. **on** always, **off** never. Each raw line is its series' color, faded |
+
+What the screen says:
+
+| Where | What |
+|---|---|
+| Title row, right | `mean of the trailing 7d`, with or without the raw line |
+| Crosshair (<kbd>x</kbd>) | Each series' smoothed value, then its raw value: `delay: 21.255 (raw 83.536921)`. The smoothed value is rounded to one decimal more than the raw value, up to three, since a mean's later digits are noise. A duration Y is written as usual |
+| Panel | `off · too few points` when no window would average more than one point; `off · steps too big` when every step of an envelope holds more rows than the longest window; `off · line only` on a Scatter chart |
+
+The windows offered fit the data: over time, those longer than the median gap
+between points and at most half the X span; over numbers, at most half the
+longest series, and on an envelope more rows than its biggest step holds. When
+fewer than three fit, up to three are offered, the shortest longer than that
+gap, none longer than the span.
+
+#### How it is worked out
+
+| Part | Rule |
+|---|---|
+| Mean | A trailing mean with no look-ahead. A point at X with a window of length w averages the values with X in (X − w, X], so points that share an X are all included. A window of N points averages the point and the N − 1 before it |
+| Start of a series | The first points average only the points so far, so they are noisier |
+| Nulls | Skipped. A window with no values draws no point (`∅` at the crosshair) |
+| Series | Each smoothed on its own, after any bucket, aggregate and cumulative |
+| Large tables | A line drawn as an envelope (see [Large tables](#large-tables)) averages the rows behind each step, not its lowest and highest value, and a window of N points is N rows, the oldest step counted in part, at its mean: `min and max of 192M rows in 5,000 steps · mean of the trailing 1m` |
+| Order | Smoothed, then **Range**, then **Log scale** |
+| Range | With **outliers at edge**: without the raw line, the Y axis spans the smoothed line less its outliers. With it, the axis spans both lines less their outliers, and each line's outliers are drawn at the edge and counted in the title row. With **All**, the axis spans the raw line too; hide it (**raw** off) or use **outliers at edge** to fit the smoothed line |
+
+Smoothing changes only the drawing, not the data. An export draws the smoothed
+line over the faded raw line as the screen does.
+
+#### Example: a week's mean of daily delays
+
+Open **NYC flights (2013)** from **Example datasets** on the home screen, press
+<kbd>:</kbd> and run the mean departure delay of each day (as in
+[Querying data](querying-data.md)):
+
+```sql,dataset=flights,network,rows=365
+SELECT DATE(CONCAT_WS('-', year, month, day)) AS flight_date,
+       AVG(dep_delay) AS delay
+FROM df
+GROUP BY flight_date
+ORDER BY flight_date
+```
+
+With the cursor on `flight_date`, press <kbd>c</kbd>: a line of `delay` per
+day. Tab to **Smooth** and press <kbd>→</kbd>. Daily points over a
+year offer `7d`, `30d` and `90d`, and the first step is `7d`. The title row
+says `mean of the trailing 7d`, and the raw line stays behind the smoothed one,
+as the chart has one series. Press <kbd>x</kbd> and move to 2013-03-08: the
+readout says `delay: 21.255 (raw 83.536921)`. That day stands out at 83.5
+minutes, but its week's mean is 21.3.
 
 ## Axes, grid and legend
 
@@ -321,7 +393,7 @@ from S3, GCS or Azure, since the envelope would download the whole file twice.
 | <kbd>1</kbd>–<kbd>7</kbd> | Switch the type directly, from anywhere: Line, Scatter, Bar, Histogram, Box, KDE, Heatmap (<kbd>[</kbd> <kbd>]</kbd> step) |
 | <kbd>↓</kbd> <kbd>↑</kbd> or <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move between the panel's rows |
 | <kbd>Space</kbd> <kbd>Enter</kbd> | Open a shelf's picker, or the Color values; toggle an option, or take its next value. The panel applies as it changes, so <kbd>Enter</kbd> acts as <kbd>Space</kbd> does |
-| <kbd>←</kbd> <kbd>→</kbd> | Step the type, the time bucket, the aggregate, cumulative, bins, range, order or sample size (<kbd>+</kbd> <kbd>-</kbd> too, <kbd>PgUp</kbd> <kbd>PgDn</kbd> for bigger steps on the sample size); on a shelf of one column or on Color, the previous or next column; flip a toggle |
+| <kbd>←</kbd> <kbd>→</kbd> | Step the type, the time bucket, the aggregate, cumulative, bins, range, order, smoothing window, raw line or sample size (<kbd>+</kbd> <kbd>-</kbd> too, <kbd>PgUp</kbd> <kbd>PgDn</kbd> for bigger steps on the sample size); on a shelf of one column or on Color, the previous or next column; flip a toggle |
 | <kbd>g</kbd> | Grid on or off |
 | <kbd>x</kbd> | The crosshair, on a line or scatter chart |
 | <kbd>e</kbd> | Export the chart |

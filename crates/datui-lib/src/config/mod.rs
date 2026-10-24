@@ -3335,6 +3335,31 @@ impl Theme {
         colors
     }
 
+    /// A series' `color` faded toward the chrome (`controls_bg`), for a line drawn
+    /// behind another of its color. Blended where the terminal shows any color or the
+    /// 256-color palette; on 16 colors, where a blend lands on the same color or none
+    /// is left, `dimmed`. A chart's marks take a color alone, no dim attribute.
+    pub fn faded(&self, color: Color) -> Color {
+        let mix = |a: u8, t: u8| (f32::from(a) * 0.4 + f32::from(t) * 0.6).round() as u8;
+        let toward = self.controls_bg();
+        let blend = || {
+            let ((r, g, b), (tr, tg, tb)) = (approx_rgb(color), approx_rgb(toward));
+            (mix(r, tr), mix(g, tg), mix(b, tb))
+        };
+        let faded = match (color, toward) {
+            (Color::Rgb(..), Color::Rgb(..)) => {
+                let (r, g, b) = blend();
+                Color::Rgb(r, g, b)
+            }
+            (Color::Indexed(_) | Color::Rgb(..), Color::Indexed(_) | Color::Rgb(..)) => {
+                let (r, g, b) = blend();
+                Color::Indexed(rgb_to_256_color(r, g, b))
+            }
+            _ => self.dimmed(),
+        };
+        if faded == color { self.dimmed() } else { faded }
+    }
+
     /// Style of the row or item the cursor is on: the theme's tint, or reversed video
     /// when `table_selected = "reversed"`.
     pub fn highlight_style(&self) -> ratatui::style::Style {
@@ -3502,6 +3527,29 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
+
+    /// A raw line's color is its series' color faded toward the chrome: a blend in
+    /// 24-bit and the 256-color palette, `dimmed` on 16 colors, where a blend has
+    /// nowhere to land; never the series' own color.
+    #[test]
+    fn a_faded_series_color_is_told_from_its_own() {
+        use ratatui::style::Color;
+        let mut theme = super::Theme {
+            colors: std::collections::HashMap::new(),
+        };
+        theme
+            .colors
+            .insert("controls_bg".into(), Color::Rgb(0, 0, 0));
+        theme.colors.insert("dimmed".into(), Color::DarkGray);
+        assert_eq!(theme.faded(Color::Rgb(200, 100, 0)), Color::Rgb(80, 40, 0));
+        theme
+            .colors
+            .insert("controls_bg".into(), Color::Indexed(16));
+        let faded = theme.faded(Color::Indexed(196));
+        assert!(matches!(faded, Color::Indexed(i) if i != 196), "{faded:?}");
+        theme.colors.insert("controls_bg".into(), Color::Black);
+        assert_eq!(theme.faded(Color::Cyan), Color::DarkGray);
+    }
 
     /// A path from the command line has been through the shell: only a leading `~`
     /// is left for datui to expand.

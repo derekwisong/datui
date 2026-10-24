@@ -323,6 +323,7 @@ impl ChartRequest {
             }
             Mark::Line | Mark::Scatter => {
                 let aggregate = encoding.y.aggregate;
+                let mut weights = None;
                 let grouped = if aggregate != Aggregate::None {
                     chart_data::prepare_aggregate_xy(
                         lf,
@@ -349,6 +350,7 @@ impl ChartRequest {
                         sampling,
                         self.envelope,
                     )?;
+                    weights = r.weights;
                     chart_data::GroupedSeries {
                         names: encoding.y.field.clone(),
                         series: r.series,
@@ -359,12 +361,15 @@ impl ChartRequest {
                     }
                 };
                 let rows = grouped.rows.total_rows;
-                PlotData::Lines(LinesData::new(
-                    grouped,
-                    (aggregate != Aggregate::None).then(|| {
-                        rows_note(rows, sampling.known_total == Some(rows), left_out && !other)
-                    }),
-                ))
+                PlotData::Lines(
+                    LinesData::new(
+                        grouped,
+                        (aggregate != Aggregate::None).then(|| {
+                            rows_note(rows, sampling.known_total == Some(rows), left_out && !other)
+                        }),
+                    )
+                    .weighed(weights),
+                )
             }
             Mark::Bar if encoding.y.aggregate != Aggregate::None => {
                 let mut data = chart_data::prepare_bar_aggregate(
@@ -633,12 +638,20 @@ impl App {
         self.chart.asked = Some((request.clone(), settle));
         if self.chart.cache.get(&request).is_some() {
             self.chart.cache.touch(&request, self.chart.modal.shown());
+            // The smoothing windows its X offers.
+            if let Some(PlotData::Lines(lines)) = self.chart.cache.prepared(&request) {
+                self.chart.modal.smooth_ladder = Some(lines.ladder.clone());
+                self.chart.modal.smooth_steps_too_big = lines.steps_too_big;
+            } else {
+                self.chart.modal.smooth_ladder = None;
+            }
             // A cached chart's colors were counted with it.
             if let Some(colors) = self.chart.cache.colors(&request.spec.encoding.color.field) {
                 self.chart.modal.color_counts = Some(colors.clone());
             }
             return;
         }
+        self.chart.modal.smooth_ladder = None;
         if self.jobs.running(is_chart_prep) || self.chart_settling() {
             return;
         }
@@ -835,11 +848,16 @@ impl App {
         middot: &str,
     ) -> Vec<String> {
         let mut notes = prepared.notes(middot);
-        // The range is drawn, not prepared: the points stay, at the edge.
+        // Smoothing and the range are drawn, not prepared: the points stay.
+        let shown = self.chart.modal.shown();
+        if let PlotData::Lines(lines) = prepared
+            && let Some(note) = lines.wanted(shown).smooth.note()
+        {
+            notes.push(note);
+        }
         if let PlotData::Lines(lines) = prepared
             && matches!(self.chart.modal.mark(), Mark::Line | Mark::Scatter)
-            && self.chart.modal.shown().clip
-            && let Some(clip) = lines.y_clip
+            && let Some(clip) = lines.clip_drawn(shown)
         {
             let noun = if clip.outside == 1 {
                 "outlier"

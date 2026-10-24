@@ -234,6 +234,84 @@ impl Cumulative {
     }
 }
 
+/// A line chart's smoothing: each point the mean of a trailing window of the
+/// series, a length of time over a time X or a number of points over any other.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Smooth {
+    #[default]
+    Off,
+    Seconds(u32),
+    Points(u32),
+}
+
+/// The windows a time X steps through, in seconds: 1s to 365d.
+pub const SMOOTH_SECONDS: [u32; 16] = [
+    1, 5, 10, 30, 60, 300, 900, 1_800, 3_600, 21_600, 43_200, 86_400, 604_800, 2_592_000,
+    7_776_000, 31_536_000,
+];
+
+/// The windows any other X steps through, in points.
+pub const SMOOTH_POINTS: [u32; 7] = [3, 5, 10, 20, 50, 100, 200];
+
+impl Smooth {
+    pub fn is_off(&self) -> bool {
+        *self == Self::Off
+    }
+
+    /// Every window for a time X (`time`) or any other.
+    pub fn every(time: bool) -> Vec<Self> {
+        if time {
+            SMOOTH_SECONDS.iter().map(|&s| Self::Seconds(s)).collect()
+        } else {
+            SMOOTH_POINTS.iter().map(|&n| Self::Points(n)).collect()
+        }
+    }
+
+    /// The window as the panel names it: `1m`, `20 points`, `off`.
+    pub fn label(self) -> String {
+        match self {
+            Self::Off => "off".to_string(),
+            Self::Seconds(s) => crate::exact::duration_text(
+                i64::from(s) * 1_000,
+                polars::prelude::TimeUnit::Milliseconds,
+            ),
+            Self::Points(n) => format!("{n} points"),
+        }
+    }
+
+    /// What the notes say the line is: `mean of the trailing 1m`.
+    pub fn note(self) -> Option<String> {
+        (!self.is_off()).then(|| format!("mean of the trailing {}", self.label()))
+    }
+}
+
+/// Whether a smoothed line draws its raw line behind it: `auto` with one series.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RawLine {
+    #[default]
+    Auto,
+    On,
+    Off,
+}
+
+impl RawLine {
+    pub const ALL: [Self; 3] = [Self::Auto, Self::On, Self::Off];
+
+    pub fn is_auto(&self) -> bool {
+        *self == Self::Auto
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::On => "on",
+            Self::Off => "off",
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct XEncoding {
@@ -382,6 +460,9 @@ pub enum ChartFocus {
     ColorValues,
     /// Options.
     Cumulative,
+    /// A line's trailing mean, and under it whether the raw line is drawn behind.
+    Smooth,
+    Raw,
     Bandwidth,
     Range,
     YStartsAtZero,
@@ -470,6 +551,17 @@ pub struct ChartModal {
     pub kde_bandwidth_factor: f64,
     /// Histogram, Box and KDE: which values are drawn.
     pub value_range: ValueRange,
+    /// A line chart's trailing mean.
+    pub smooth: Smooth,
+    /// Whether a smoothed line draws the raw one behind it.
+    pub raw: RawLine,
+    /// The windows the chart on screen offers, from its X's spacing and span (see
+    /// `chart_plot::smooth_ladder`): `None` before its series arrive, empty when no
+    /// window would do anything.
+    pub smooth_ladder: Option<Vec<Smooth>>,
+    /// The ladder is empty because each envelope step holds more rows than any
+    /// window, rather than for too few points.
+    pub smooth_steps_too_big: bool,
     pub bar_order: BarOrder,
     /// Rows a chart that samples reads: up to this many, spread across the table.
     /// None = every row. What the chart reads; the Rows row edits `rows_draft`.
@@ -602,6 +694,8 @@ impl ChartModal {
         self.grid = grid;
         self.share = false;
         self.value_range = ValueRange::All;
+        self.smooth = Smooth::Off;
+        self.raw = RawLine::Auto;
         self.row_limit = default_row_limit.and_then(|n| {
             if n == 0 {
                 None
@@ -629,6 +723,8 @@ impl ChartModal {
         self.heatmap_bins = saved.heatmap_bins.max(1);
         self.kde_bandwidth_factor = saved.bandwidth;
         self.value_range = saved.range;
+        self.smooth = saved.smooth;
+        self.raw = saved.raw;
         self.bar_order = saved.bar_order;
         self.share = saved.share;
         self.y_starts_at_zero = saved.y_starts_at_zero;
@@ -659,6 +755,8 @@ impl ChartModal {
             heatmap_bins: self.heatmap_bins,
             bandwidth: self.kde_bandwidth_factor,
             range: self.value_range,
+            smooth: self.smooth,
+            raw: self.raw,
             bar_order: self.bar_order,
             share: self.share,
             y_starts_at_zero: self.y_starts_at_zero,
@@ -910,6 +1008,12 @@ impl ChartModal {
             Mark::Line | Mark::Scatter => {
                 if self.aggregates() && self.aggregate().runs_cumulative() {
                     rows.push(Cumulative);
+                }
+                if self.smooth_use() == ShelfUse::Used {
+                    rows.push(Smooth);
+                    if !self.smooth_shown().is_off() {
+                        rows.push(Raw);
+                    }
                 }
                 rows.extend([YStartsAtZero, LogScale, Range, ShowLegend, Grid]);
             }
@@ -1330,12 +1434,88 @@ impl ChartModal {
         }
     }
 
-    /// How a line or scatter chart draws its Y values: the log scale, and the range.
+    /// How a line or scatter chart draws its Y values: smoothed, the range, and the
+    /// log scale.
     pub fn shown(&self) -> crate::chart::chart_plot::Shown {
         crate::chart::chart_plot::Shown {
             log: self.log_scale,
             clip: self.value_range == ValueRange::Percentile1To99,
+            smooth: self.smooth_shown(),
+            raw: self.raw,
         }
+    }
+
+    /// Whether X is a date, datetime, time or duration: a window is a length of time.
+    pub fn x_is_time(&self) -> bool {
+        self.x()
+            .is_some_and(|x| self.temporal_candidates.iter().any(|c| c == x))
+    }
+
+    /// Whether the Smooth row takes part: on a line whose X has room for a window.
+    pub fn smooth_use(&self) -> ShelfUse {
+        match self.spec.mark {
+            Mark::Line if self.smooth_ladder.as_ref().is_some_and(Vec::is_empty) => {
+                ShelfUse::Dimmed(if self.smooth_steps_too_big {
+                    "steps too big"
+                } else {
+                    "too few points"
+                })
+            }
+            Mark::Line => ShelfUse::Used,
+            _ => ShelfUse::Dimmed("line only"),
+        }
+    }
+
+    /// The smoothing the chart on screen draws: off but on a line with room for a
+    /// window, and off where the window chosen is not one the X takes (a length of
+    /// time over a number).
+    pub fn smooth_shown(&self) -> Smooth {
+        if self.smooth_use() != ShelfUse::Used {
+            return Smooth::Off;
+        }
+        match (self.smooth, self.x_is_time()) {
+            (Smooth::Seconds(_), true) | (Smooth::Points(_), false) => self.smooth,
+            _ => Smooth::Off,
+        }
+    }
+
+    /// What Smooth steps through: off, then the windows the chart on screen offers,
+    /// or every window for its X until its series arrive.
+    pub fn smooth_choices(&self) -> Vec<Smooth> {
+        let time = self.x_is_time();
+        let fits = |s: &Smooth| matches!(s, Smooth::Seconds(_)) == time;
+        let mut steps: Vec<Smooth> = match &self.smooth_ladder {
+            Some(ladder) => ladder.iter().copied().filter(fits).collect(),
+            None => Smooth::every(time),
+        };
+        steps.insert(0, Smooth::Off);
+        steps
+    }
+
+    /// Smooth stepped by `delta`: through its choices, wrapping; from a window that is
+    /// not among them (a view's, saved on other data), to the nearest one the way it
+    /// was stepped, or off past the ends.
+    fn step_smooth(&self, delta: i8) -> Smooth {
+        let choices = self.smooth_choices();
+        let current = self.smooth_shown();
+        if choices.contains(&current) {
+            return crate::app::form::step_value(&choices, current, delta);
+        }
+        let size = |s: &Smooth| match s {
+            Smooth::Off => 0,
+            Smooth::Seconds(n) | Smooth::Points(n) => *n,
+        };
+        let at = match self.smooth {
+            Smooth::Seconds(n) | Smooth::Points(n) => n,
+            Smooth::Off => 0,
+        };
+        let windows = choices.iter().skip(1);
+        let next = if delta > 0 {
+            windows.clone().find(|s| size(s) > at)
+        } else {
+            windows.clone().rfind(|s| size(s) < at)
+        };
+        next.copied().unwrap_or(Smooth::Off)
     }
 
     /// The spec to chart: the one chosen, with an open Picker's cursor previewed on
@@ -1421,6 +1601,10 @@ impl ChartModal {
             ChartFocus::Range => {
                 self.value_range =
                     crate::app::form::step_value(&ValueRange::ALL, self.value_range, delta);
+            }
+            ChartFocus::Smooth => self.smooth = self.step_smooth(delta),
+            ChartFocus::Raw => {
+                self.raw = crate::app::form::step_value(&RawLine::ALL, self.raw, delta);
             }
             ChartFocus::Bins => self.adjust_bins(delta.into()),
             ChartFocus::Bandwidth => {
@@ -1829,6 +2013,57 @@ mod tests {
     /// The panel's rows follow the type: a bucket under a date X, the order under
     /// a bar's X, the bins under a histogram's; the sample size only where the
     /// chart samples.
+    /// A view saved before smoothing loads with it off; one saved with it brings it
+    /// back, and the raw line's setting with it.
+    #[test]
+    fn smoothing_is_kept_with_a_view() {
+        let mut modal = open_on(Some(("date", &DataType::Date)));
+        let plain = serde_json::to_value(modal.saved(1, None)).unwrap();
+        assert!(plain.get("smooth").is_none() && plain.get("raw").is_none());
+        let old: crate::view::SavedChart = serde_json::from_value(plain).unwrap();
+        assert_eq!((old.smooth, old.raw), (Smooth::Off, RawLine::Auto));
+
+        modal.smooth = Smooth::Seconds(60);
+        modal.raw = RawLine::Off;
+        let saved = serde_json::to_value(modal.saved(1, None)).unwrap();
+        assert_eq!(saved["smooth"], serde_json::json!({ "seconds": 60 }));
+        let back: crate::view::SavedChart = serde_json::from_value(saved).unwrap();
+        let mut restored = ChartModal::new();
+        restored.restore(&back, 1);
+        assert_eq!(
+            (restored.smooth, restored.raw),
+            (Smooth::Seconds(60), RawLine::Off)
+        );
+    }
+
+    /// A window that is not on the chart's ladder (a view's, saved on other data)
+    /// steps to the nearest one the way it is stepped, not to off; with no window
+    /// that would do anything, Smooth is dimmed and off.
+    #[test]
+    fn smooth_steps_from_a_window_off_its_ladder() {
+        let mut modal = open_on(Some(("date", &DataType::Date)));
+        modal.smooth_ladder = Some(vec![Smooth::Seconds(300), Smooth::Seconds(900)]);
+        modal.smooth = Smooth::Seconds(60);
+        assert_eq!(modal.smooth_shown(), Smooth::Seconds(60), "drawn as saved");
+        modal.step(ChartFocus::Smooth, 1);
+        assert_eq!(modal.smooth, Smooth::Seconds(300));
+        modal.smooth = Smooth::Seconds(600);
+        modal.step(ChartFocus::Smooth, -1);
+        assert_eq!(modal.smooth, Smooth::Seconds(300));
+        modal.smooth = Smooth::Seconds(60);
+        modal.step(ChartFocus::Smooth, -1);
+        assert_eq!(modal.smooth, Smooth::Off, "nothing shorter");
+
+        modal.smooth = Smooth::Seconds(300);
+        modal.smooth_ladder = Some(Vec::new());
+        assert_eq!(modal.smooth_use(), ShelfUse::Dimmed("too few points"));
+        modal.smooth_steps_too_big = true;
+        assert_eq!(modal.smooth_use(), ShelfUse::Dimmed("steps too big"));
+        modal.smooth_steps_too_big = false;
+        assert_eq!(modal.smooth_shown(), Smooth::Off);
+        assert!(!modal.row_order().contains(&ChartFocus::Smooth));
+    }
+
     #[test]
     fn rows_follow_the_type() {
         use ChartFocus::*;
@@ -1842,6 +2077,7 @@ mod tests {
                 Y,
                 Aggregate,
                 Color,
+                Smooth,
                 YStartsAtZero,
                 LogScale,
                 Range,
@@ -1850,6 +2086,16 @@ mod tests {
                 LimitRows
             ]
         );
+        // Raw waits under Smooth while it is off; a date X steps lengths of time.
+        modal.step(Smooth, 1);
+        assert_eq!(modal.smooth, super::Smooth::Seconds(1));
+        assert!(modal.row_order().contains(&Raw));
+        modal.step(Smooth, -1);
+        assert!(!modal.row_order().contains(&Raw));
+        modal.set_mark(Mark::Scatter);
+        assert!(!modal.row_order().contains(&Smooth), "a line's alone");
+        assert_eq!(modal.smooth_use(), ShelfUse::Dimmed("line only"));
+        modal.set_mark(Mark::Line);
         modal.step(TimeUnit, 1);
         assert_eq!(modal.spec.encoding.x.time_unit, super::TimeUnit::Day);
         assert_eq!(

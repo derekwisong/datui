@@ -192,6 +192,17 @@ pub struct SavedChart {
     /// The KDE's bandwidth, as a factor of its rule of thumb.
     pub bandwidth: f64,
     pub range: crate::chart::chart_data::ValueRange,
+    /// A line chart's trailing mean, and whether its raw line is drawn behind.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::chart::chart_modal::Smooth::is_off"
+    )]
+    pub smooth: crate::chart::chart_modal::Smooth,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::chart::chart_modal::RawLine::is_auto"
+    )]
+    pub raw: crate::chart::chart_modal::RawLine,
     pub bar_order: crate::chart::chart_data::BarOrder,
     /// A histogram's bars as each group's share of its rows.
     pub share: bool,

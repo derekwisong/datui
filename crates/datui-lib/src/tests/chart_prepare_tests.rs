@@ -377,7 +377,7 @@ fn prepared_xy() -> PlotData {
 fn xy_entries_are_few_and_the_one_on_screen_stays() {
     let log = crate::chart::chart_plot::Shown {
         log: true,
-        clip: false,
+        ..Default::default()
     };
     let has_log = |cache: &ChartCache, request: &ChartRequest| {
         matches!(
@@ -396,7 +396,7 @@ fn xy_entries_are_few_and_the_one_on_screen_stays() {
     cache.touch(&a, log);
     assert!(matches!(
         cache.prepared(&a),
-        Some(PlotData::Lines(xy)) if xy.series_shown.as_ref().map(|(_, s)| &s[..]) == Some(&[vec![(0.0, 2f64.ln())]][..])
+        Some(PlotData::Lines(xy)) if xy.series_shown.as_ref().and_then(|kept| kept.series.as_deref()) == Some(&[vec![(0.0, 2f64.ln())]][..])
     ));
     assert!(!has_log(&cache, &b));
 
@@ -927,8 +927,8 @@ fn a_clipped_line_chart_draws_its_outliers_at_the_edge() {
     assert_eq!((clip.lo, clip.hi), (0.0, 199.0), "the trend's ends stay");
     assert_eq!(clip.outside, 1, "the spike alone");
     let clipped = Shown {
-        log: false,
         clip: true,
+        ..Shown::default()
     };
     assert_eq!(lines.shown_bounds(Shown::default()).unwrap()[3], 1e6);
     lines.keep_shown(clipped);
@@ -942,6 +942,7 @@ fn a_clipped_line_chart_draws_its_outliers_at_the_edge() {
     let both = Shown {
         log: true,
         clip: true,
+        ..Shown::default()
     };
     lines.keep_shown(both);
     assert_eq!(lines.shown_bounds(both).unwrap()[3], clip.hi.ln_1p());
@@ -958,4 +959,63 @@ fn a_clipped_line_chart_draws_its_outliers_at_the_edge() {
         None,
     );
     assert!(flat.y_clip.is_none());
+}
+
+/// A smoothed line chart draws each point's trailing mean, with the raw line behind
+/// its one series; the range spans both lines without their outliers, which go to
+/// its edge. The data stays.
+#[test]
+fn a_smoothed_line_chart_draws_its_trailing_mean() {
+    use crate::chart::chart_modal::{RawLine, Smooth};
+    use crate::chart::chart_plot::Shown;
+    let mut ys: Vec<f64> = (0..200).map(f64::from).collect();
+    ys[100] = 1e6;
+    let mut lines = LinesData::new(
+        chart::chart_data::GroupedSeries {
+            names: vec!["y".to_string()],
+            series: vec![ys.iter().enumerate().map(|(x, &y)| (x as f64, y)).collect()],
+            breaks: vec![Vec::new()],
+            x_axis_kind: chart::chart_data::XAxisTemporalKind::Numeric,
+            rows: chart::chart_data::RowsRead::default(),
+            other: false,
+        },
+        None,
+    );
+    let smooth = Shown {
+        smooth: Smooth::Points(2),
+        ..Shown::default()
+    };
+    lines.keep_shown(smooth);
+    let drawn = lines.drawn(smooth).next().unwrap();
+    assert_eq!(drawn.points[0], (0.0, 0.0), "the start takes what there is");
+    assert_eq!(drawn.points[1], (1.0, 0.5));
+    assert_eq!(drawn.points[2], (2.0, 1.5));
+    let raw = lines
+        .raw_drawn(smooth)
+        .next()
+        .expect("one series: raw behind");
+    assert_eq!(raw.points[1], (1.0, 1.0));
+
+    let clipped = Shown {
+        clip: true,
+        ..smooth
+    };
+    lines.keep_shown(clipped);
+    let clip = lines.clip_drawn(clipped).expect("the spike, smoothed");
+    assert_eq!((clip.lo, clip.hi), (0.0, 199.0), "both lines' ends");
+    assert_eq!(clip.outside, 3, "the spike and the two means it is in");
+    let [_, _, lo, hi] = lines.shown_bounds(clipped).unwrap();
+    assert_eq!(
+        (lo, hi),
+        (clip.lo, clip.hi),
+        "the raw line at the same edge"
+    );
+    assert_eq!(lines.series[0][100].1, 1e6, "the data stays");
+
+    let no_raw = Shown {
+        raw: RawLine::Off,
+        ..smooth
+    };
+    lines.keep_shown(no_raw);
+    assert_eq!(lines.raw_drawn(no_raw).count(), 0);
 }

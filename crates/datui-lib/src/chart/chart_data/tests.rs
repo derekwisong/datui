@@ -1894,3 +1894,62 @@ fn a_box_per_category() {
     assert_eq!(data.stats[1].median, 2.0);
     assert_eq!((data.y_min, data.y_max), (1.0, 20.0));
 }
+
+/// A smoothed envelope averages the rows behind it, not each step's low and high:
+/// frame times mostly 16.7ms with a spike in every twelve rows smooth to the rows'
+/// mean, where the steps' extremes would pull it toward the spikes. A window of
+/// points over an envelope is that many rows.
+#[test]
+fn a_smoothed_envelope_averages_its_rows() {
+    use crate::chart::chart_modal::Smooth;
+    use crate::chart::chart_plot::{LinesData, Shown};
+    let n = 60_000usize;
+    let x: Vec<f64> = (0..n).map(|i| i as f64 * 0.0167).collect();
+    let y: Vec<f64> = (0..n)
+        .map(|i| if i % 12 == 0 { 40.0 } else { 16.7 })
+        .collect();
+    let lf = df!("t" => &x, "ms" => &y).unwrap().lazy();
+    let schema = lf.clone().collect_schema().unwrap();
+    let sampling = ChartSampling::rows(Some(10_000));
+    let result =
+        prepare_chart_data(&lf, schema.as_ref(), "t", &["ms".into()], &sampling, true).unwrap();
+    assert_eq!(result.rows.envelope_steps, Some(5_000));
+    let weights = result.weights.clone().expect("an envelope's rows");
+    let rows: f64 = weights[0].iter().map(|&(_, n)| n).sum();
+    assert_eq!(rows, n as f64, "every row counted once");
+    // The last 200 rows' mean; an envelope step taken in part at its mean is a
+    // row or so off.
+    let mean = y[n - 200..].iter().sum::<f64>() / 200.0;
+    let lines = |result: ChartDataResult| {
+        LinesData::new(
+            crate::chart::chart_data::GroupedSeries {
+                names: vec!["ms".to_string()],
+                series: result.series,
+                breaks: result.breaks,
+                x_axis_kind: XAxisTemporalKind::Numeric,
+                rows: result.rows,
+                other: false,
+            },
+            None,
+        )
+        .weighed(result.weights)
+    };
+    let mut data = lines(result);
+    let shown = Shown {
+        smooth: Smooth::Points(200),
+        ..Shown::default()
+    };
+    data.keep_shown(shown);
+    let (smoothed, _) = data.values(shown);
+    let last = smoothed[0].last().unwrap().1;
+    assert!((last - mean).abs() < 0.2, "{last} vs the rows' {mean}");
+    // Both points of a step read the same.
+    let drawn = data.drawn(shown).next().unwrap();
+    let pairs: Vec<_> = drawn
+        .points
+        .windows(2)
+        .filter(|w| w[0].0 == w[1].0)
+        .collect();
+    assert!(!pairs.is_empty());
+    assert!(pairs.iter().all(|w| w[0].1 == w[1].1));
+}

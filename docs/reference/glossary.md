@@ -33,6 +33,8 @@ these docs, the command line, the config file and Python.
 | **Analysis** | statistics, Statistical Analysis | `a`: Describe, Distribution, Correlation, Data Quality |
 | **value counts** | count values, Value Count | `F`: how often each value of a column occurs |
 | **drill down** (verb), **drill-down** (noun) | drill into | Open the rows behind a group's row (`Enter`) |
+| **moving average** (trailing mean) | rolling mean, rolling average | A line chart's **Smooth**: each point drawn as the mean of the values in a window ending at it |
+| **raw line** | unsmoothed line | The line as it is before **Smooth**, drawn faded behind the smoothed one |
 | **row** | line | A row of the table; `:` and digits go to a row. *Line* only for raw text, as in `--skip-lines` |
 
 ## How a file is read

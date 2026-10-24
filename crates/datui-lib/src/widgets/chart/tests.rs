@@ -45,7 +45,8 @@ struct PlotNumbers {
 
 impl Draw<'_> {
     fn plot(self, modal: &ChartModal, ctx: &RenderContext) -> Option<Plot<'static>> {
-        use crate::chart::chart_plot::{LinesData, PlotContext, Shown};
+        use crate::chart::chart_modal::RawLine;
+        use crate::chart::chart_plot::{LinesData, PlotContext, Shown, ShownSeries, extent};
         // The data says what kind of chart it is, whatever the modal's type.
         let mut spec = modal.effective_spec();
         spec.mark = match &self {
@@ -73,14 +74,17 @@ impl Draw<'_> {
                     (Some(series), _) => Some(PlotData::Lines(LinesData {
                         names: names.to_vec(),
                         series: values.unwrap_or(series).clone(),
-                        series_shown: values.map(|_| {
-                            (
-                                Shown {
-                                    log: true,
-                                    clip: false,
-                                },
-                                series.clone(),
-                            )
+                        series_shown: values.map(|_| ShownSeries {
+                            shown: Shown {
+                                log: true,
+                                raw: RawLine::Off,
+                                ..Shown::default()
+                            },
+                            series: Some(series.clone()),
+                            smoothed: None,
+                            raw: None,
+                            clip: None,
+                            bounds: extent(series),
                         }),
                         breaks: breaks.cloned().unwrap_or_default(),
                         x_axis_kind,
@@ -2030,4 +2034,15 @@ fn a_tiny_area_never_panics() {
         data.bars[4].label = Some("a label longer than the whole canvas is".to_string());
         let _ = render_bars(&data, w, h);
     }
+}
+
+/// A smoothed value is written to one digit past its raw value's, at most three
+/// decimals, not to every digit a mean has.
+#[test]
+fn a_smoothed_value_reads_a_digit_past_its_raw_one() {
+    let y = Axis::default();
+    assert_eq!(smoothed_text(53.090889, Some("69.43"), &y), "53.091");
+    assert_eq!(smoothed_text(4.5, Some("9"), &y), "4.5");
+    assert_eq!(smoothed_text(21.2549754, Some("83.536921"), &y), "21.255");
+    assert_eq!(smoothed_text(4.25, None, &y), y.numbers.write(4.25));
 }

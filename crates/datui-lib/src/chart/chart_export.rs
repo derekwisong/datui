@@ -2245,6 +2245,34 @@ mod tests {
         roxmltree_ok(&svg);
     }
 
+    /// A legend below a scattered trend sits between the plot and the footer, the
+    /// reading under it.
+    #[test]
+    fn a_legend_below_sits_over_the_trend_reading() {
+        let mut figure = lines(&["AAPL", "MSFT"]);
+        figure.plot.scatter = true;
+        let reading = "2 fits · slopes +1.00 to +2.00 per unit of x";
+        figure.trend_reading = Some(reading.to_string());
+        let svg = svg(
+            &figure,
+            &ExportOptions {
+                legend: LegendPlace::Below,
+                ..options()
+            },
+        )
+        .unwrap();
+        roxmltree_ok(&svg);
+        let at = text_ys(&svg, reading);
+        assert_eq!(at.len(), 1, "{svg}");
+        for name in ["AAPL", "MSFT"] {
+            let y = text_ys(&svg, name);
+            assert!(
+                y.len() == 1 && y[0] < at[0],
+                "{name} over the reading: {svg}"
+            );
+        }
+    }
+
     /// Other is the legend's last entry, in the palette's neutral color and not a
     /// series color, and a scatter draws it under the rest.
     #[test]
@@ -2798,6 +2826,7 @@ mod tests {
                 plot,
                 chart_notes: Vec::new(),
                 grid: false,
+                trend_reading: None,
             };
             let with = |legend| {
                 svg(

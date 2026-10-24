@@ -755,3 +755,22 @@ fn a_stop_ends_theil_sen_and_lowess() {
     };
     assert!(super::fit_all(&[points], false, key, 1, stopped).is_none());
 }
+
+/// A catalog names units in the plural; a rate is per one of them.
+#[test]
+fn a_plural_unit_reads_as_one() {
+    for (unit, one) in [
+        ("miles", "mile"),
+        ("minutes", "minute"),
+        ("inches", "inch"),
+        ("calories", "calorie"),
+        ("bytes", "byte"),
+        ("mi", "mi"),
+        ("km/h", "km/h"),
+        ("deg F", "deg F"),
+        ("Celsius", "Celsius"),
+        ("hours", "hour"),
+    ] {
+        assert_eq!(super::one_of(unit), one, "{unit}");
+    }
+}

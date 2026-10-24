@@ -877,7 +877,7 @@ impl Words<'_> {
                 (name.to_string(), seconds * per)
             }
             None => match &self.x_unit {
-                Some(unit) => (unit.clone(), 1.0),
+                Some(unit) => (one_of(unit), 1.0),
                 None => (format!("unit of {}", self.x_name), 1.0),
             },
         }
@@ -1415,6 +1415,23 @@ pub fn points_of(aggregate: crate::chart::chart_modal::Aggregate) -> Option<&'st
         Aggregate::First => "first values",
         Aggregate::Last => "last values",
     })
+}
+
+/// A unit named in the plural, as a catalog's `miles`, read as one: `per mile`.
+/// Abbreviations and anything not a plain plural word stay as written.
+fn one_of(unit: &str) -> String {
+    let word = unit.len() > 3 && unit.chars().all(|c| c.is_ascii_alphabetic());
+    let lower = unit.to_ascii_lowercase();
+    if !word || lower.ends_with("ss") || lower.ends_with("us") || !lower.ends_with('s') {
+        return unit.to_string();
+    }
+    // Units are rarely -ies words (calories): only -ches, -shes and -xes lose `es`.
+    let cut = if ["ches", "shes", "xes"].iter().any(|e| lower.ends_with(e)) {
+        2
+    } else {
+        1
+    };
+    unit[..unit.len() - cut].to_string()
 }
 
 #[cfg(test)]

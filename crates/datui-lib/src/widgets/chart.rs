@@ -1632,15 +1632,20 @@ fn curve_datasets<'a>(
                 }
                 _ => style,
             };
-            segments(&curve.points, curve.breaks)
-                .into_iter()
-                .map(move |run| {
-                    Dataset::default()
-                        .marker(marker)
-                        .graph_type(graph_type)
-                        .style(style)
-                        .data(run)
-                })
+            // A scatter has no line to keep off a gap, so a series is one dataset: ratatui
+            // saves a whole canvas layer per dataset, and a run per gap in a sample with
+            // nulls made thousands of them each frame.
+            let runs = match graph_type {
+                GraphType::Scatter => vec![&curve.points[..]],
+                _ => segments(&curve.points, curve.breaks),
+            };
+            runs.into_iter().map(move |run| {
+                Dataset::default()
+                    .marker(marker)
+                    .graph_type(graph_type)
+                    .style(style)
+                    .data(run)
+            })
         })
         .collect()
 }

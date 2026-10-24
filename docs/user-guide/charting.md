@@ -47,8 +47,9 @@ Open **Palmer penguins** from **Example datasets**, as in the
 
 Use <kbd>↓</kbd> to move through the panel's rows and <kbd>Space</kbd> to
 open a shelf's picker. Type part of a name to narrow the list. On **Y**,
-<kbd>Space</kbd> toggles a column and <kbd>Enter</kbd> closes the picker, which
-leaves out the X column. The chart leaves out the two penguins with no
+<kbd>Space</kbd> toggles a column and <kbd>Enter</kbd> charts the ones picked;
+with none toggled, <kbd>Enter</kbd> takes the column under the cursor alone. The
+picker leaves out the X column. The chart leaves out the two penguins with no
 measurements.
 
 Points are drawn in X order, so a line runs left to right whatever order the

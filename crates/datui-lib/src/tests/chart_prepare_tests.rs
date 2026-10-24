@@ -365,6 +365,7 @@ fn prepared_xy() -> PlotData {
             x_axis_kind: chart::chart_data::XAxisTemporalKind::Numeric,
             rows: chart::chart_data::RowsRead::default(),
             other: false,
+            nulls: Vec::new(),
         },
         None,
     ))
@@ -920,6 +921,7 @@ fn a_clipped_line_chart_draws_its_outliers_at_the_edge() {
             x_axis_kind: chart::chart_data::XAxisTemporalKind::Numeric,
             rows: chart::chart_data::RowsRead::default(),
             other: false,
+            nulls: Vec::new(),
         },
         None,
     );
@@ -955,6 +957,7 @@ fn a_clipped_line_chart_draws_its_outliers_at_the_edge() {
             x_axis_kind: chart::chart_data::XAxisTemporalKind::Numeric,
             rows: chart::chart_data::RowsRead::default(),
             other: false,
+            nulls: Vec::new(),
         },
         None,
     );
@@ -978,6 +981,7 @@ fn a_smoothed_line_chart_draws_its_trailing_mean() {
             x_axis_kind: chart::chart_data::XAxisTemporalKind::Numeric,
             rows: chart::chart_data::RowsRead::default(),
             other: false,
+            nulls: Vec::new(),
         },
         None,
     );

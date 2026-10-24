@@ -1018,9 +1018,9 @@ pub const SCREENS: &[Screen] = &[
                     k("Space / Enter", "Act", "Open a shelf's picker, toggle, or step the row")
                     .also(&["Pick", "Toggle", "Read"])
                         .more("On X, Y or Color: open its picker. On the line under Color: pick the values that get a series, by rows. On an option: toggle it or take its next value. The panel applies as it changes, so Enter acts as Space does, except on Rows: Space switches between Sample and Every row, and Enter reads what the row says"),
-                    k("← / → (h/l)", "Change", "Step the type, bucket, aggregate, Smooth or option")
-                    .also(&["Type", "Bucket", "Aggregate", "Percentile", "Adjust", "Switch", "Order", "Range", "Cumulative", "Smooth", "Raw"])
-                        .more("Step the type, the time bucket (day, week, month, quarter, year), the aggregate (count, distinct, sum, mean, median, stdev, quantile, min, max, first, last) and a quantile's percentile, cumulative, bins, range or order; on Smooth, the window of a line's moving average (trailing mean), to show its trend through noisy readings (off, then lengths of time over a time X or numbers of points over any other, sized to the data); on raw under it, whether the raw line is drawn faintly behind (auto: with one series; on; off); on X under Log scale, a log axis for a number X; on Rows, switch between Sample and Every row (read on Enter); on a shelf that takes one column, or Color, the previous or next column (Color takes it alone); on the line under Color, turn Other (every value without a series) on or off; flip a toggle"),
+                    k("← / → (h/l)", "Change", "Step the type, bucket, aggregate, Smooth or Trend")
+                    .also(&["Type", "Bucket", "Aggregate", "Percentile", "Adjust", "Switch", "Order", "Range", "Cumulative", "Smooth", "Raw", "Trend", "Over"])
+                        .more("Step the type, the time bucket (day, week, month, quarter, year), the aggregate (count, distinct, sum, mean, median, stdev, quantile, min, max, first, last) and a quantile's percentile, cumulative, bins, range or order; on Smooth, the window of a line's moving average (trailing mean), to show its trend through noisy readings (off, then lengths of time over a time X or numbers of points over any other, sized to the data); on raw under it, whether the raw line is drawn faintly behind (auto: with one series; on; off); on a scatter's Trend, the line fitted through the points (off, linear, exponential, power, robust, local, y = x; a time X offers neither power nor y = x); on over under it, one fit per color or one over every point; on X under Log scale, a log axis for a number X; on Rows, switch between Sample and Every row (read on Enter); on a shelf that takes one column, or Color, the previous or next column (Color takes it alone); on the line under Color, turn Other (every value without a series) on or off; flip a toggle"),
                     k("+ / -", "Adjust", "Bins or bandwidth"),
                     k("0-9", "Size", "On Rows: type a sample size, like 50k or 2m")
                         .more("On Rows: type a sample size, like 50000, 50,000, 50k, 250k or 2m. Backspace edits, Enter reads it, Esc puts the row back as it was. A size of at least the table's rows is Every row. Nothing is read until Enter or focus leaves the row")
@@ -1037,6 +1037,8 @@ pub const SCREENS: &[Screen] = &[
                 keys: &[
                     k("x", "Crosshair", "Line, Scatter: a crosshair reads out the values")
                         .more("Line and Scatter: the plot takes the keys, and a crosshair reads out x and every series' value under the plot. ← / → (h/l) step to the next point or column, Home/End go to the ends; x, Tab or Esc hand the keys back to the panel. A click on the plot puts the crosshair there"),
+                    k("y", "Copy fit", "Scatter: copy the trend's fit")
+                        .more("Scatter with a trend: copy the method, the chart's columns and notes, and for each fit its equation, slope, R squared with r and p, Spearman ρ, residual SD and the points used, as plain text"),
                     k("e", "Export", "Export the chart to PNG, SVG or PDF")
                         .more("Export the chart to PNG, SVG or PDF, with a title, notes and source. Needs the chart's shelves filled first"),
                     k("t", "New rows", "Draw again with the rows that arrived")
@@ -1176,6 +1178,8 @@ pub const SCREENS: &[Screen] = &[
                     k("Enter", "Detail", "The pair's detail (not on the diagonal)")
                     .also(&["Open"])
                         .more("On a cell, open the pair's detail; in the sidebar, open a tool. Does nothing on a diagonal cell"),
+                    k("c", "Chart", "Scatter the pair with a linear trend")
+                        .more("On a cell off the diagonal, chart the pair as a scatter (X the cell's column, Y its row) with a linear trend; Esc from the chart comes back here"),
                     k("m", "Method", "Pearson or Spearman, named in the title")
                         .more("Method: Pearson r or Spearman ρ, named in the title (one run computes both, so switching reads nothing)"),
                     k("Esc", "Back", "Cancel a run; the tools; then close")
@@ -1197,6 +1201,7 @@ pub const SCREENS: &[Screen] = &[
             name: "Detail",
             keys: &[
                 k("m", "Method", "Pearson or Spearman"),
+                k("c", "Chart", "Scatter the pair with a linear trend"),
                 k("Esc", "Back", "Back to the correlation matrix")
                     .more("Return to the correlation matrix. Resampling (r) works from the matrix, not from inside this detail"),
             ],

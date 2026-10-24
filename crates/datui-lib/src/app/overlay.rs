@@ -117,6 +117,11 @@ impl App {
             Overlay::Chart => {
                 self.chart.modal.close();
                 self.reset_chart_state();
+                // The analysis view was left as it was, under the chart.
+                if std::mem::take(&mut self.chart.returns_to_analysis) {
+                    self.overlay = Overlay::Analysis;
+                    return;
+                }
             }
             Overlay::ChartExport => self.chart.export_modal.close(),
             Overlay::Analysis => self.analysis_modal.close(),

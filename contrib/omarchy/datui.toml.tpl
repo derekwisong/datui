@@ -102,6 +102,8 @@ chart_9  = "{{ mix magenta foreground 45% }}"
 chart_10 = "{{ mix yellow foreground 45% }}"
 # The grid sits a shade under muted, so it never competes with a series.
 chart_grid = "{{ mix background foreground 30% }}"
+# A trend line over every point, and y = x: the text color, over any series.
+chart_trend = "{{ foreground }}"
 
 # --- Hex view --------------------------------------------------------------
 # Bytes by class, as hexyl colors them.

@@ -306,6 +306,7 @@ fn test_theme_with_custom_colors() {
         chart_9: "bright_magenta".to_string(),
         chart_10: "bright_yellow".to_string(),
         chart_grid: "dark_gray".to_string(),
+        chart_trend: "white".to_string(),
         accent: "cyan".to_string(),
         accent_bright: "bright_cyan".to_string(),
         gradient_start: "blue".to_string(),

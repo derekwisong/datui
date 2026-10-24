@@ -413,6 +413,8 @@ struct SeriesBuilder {
     series: Vec<Vec<(f64, f64)>>,
     breaks: Vec<Vec<usize>>,
     gap: Vec<bool>,
+    /// Per series, the rows it had without a value.
+    nulls: Vec<usize>,
 }
 
 impl SeriesBuilder {
@@ -421,6 +423,7 @@ impl SeriesBuilder {
             series: vec![Vec::new(); n],
             breaks: vec![Vec::new(); n],
             gap: vec![false; n],
+            nulls: vec![0; n],
         }
     }
 
@@ -433,7 +436,10 @@ impl SeriesBuilder {
                 self.gap[s] = false;
                 self.series[s].push((x, y));
             }
-            None => self.gap[s] = true,
+            None => {
+                self.gap[s] = true;
+                self.nulls[s] += 1;
+            }
         }
     }
 }
@@ -531,6 +537,8 @@ pub struct ChartDataResult {
     /// Y column each step's least value above 0 and its greatest, a step with none
     /// left out, and where each line breaks. Read always, so a log Y only redraws.
     pub log_y_steps: Option<LogYSteps>,
+    /// Per series, the rows read without an X or a Y: what a trend says it left out.
+    pub nulls: Vec<usize>,
 }
 
 /// A series split at its breaks: the runs a line joins.
@@ -735,6 +743,7 @@ pub fn prepare_chart_data(
             x_left_out: 0,
             y_left_out: 0,
             log_y_steps: None,
+            nulls: Vec::new(),
         });
     }
 
@@ -760,6 +769,7 @@ pub fn prepare_chart_data(
                 log_y_steps,
             } => {
                 return Ok(ChartDataResult {
+                    nulls: vec![0; series.len()],
                     series,
                     breaks,
                     weights: Some(weights),
@@ -803,6 +813,11 @@ pub fn prepare_chart_data(
             built.push(s, x, ys[i]);
         }
     }
+    // A row without an X is in no series: each counts it.
+    let no_x = df.height() - order.len();
+    for nulls in &mut built.nulls {
+        *nulls += no_x;
+    }
 
     Ok(ChartDataResult {
         series: built.series,
@@ -813,6 +828,7 @@ pub fn prepare_chart_data(
         x_left_out: 0,
         y_left_out: 0,
         log_y_steps: None,
+        nulls: built.nulls,
     })
 }
 
@@ -2361,6 +2377,8 @@ pub struct GroupedSeries {
     pub rows: RowsRead,
     /// The last series is Other: every value of the color without a series of its own.
     pub other: bool,
+    /// Per series, the rows read without an X or a Y; none for an aggregate's.
+    pub nulls: Vec<usize>,
 }
 
 /// A line or scatter chart of `y` split by `color`, from the rows a chart samples:
@@ -2380,9 +2398,18 @@ pub fn prepare_xy_by(
     let ys = f64_values(&df, y)?;
     let groups = row_groups(&df, color)?;
     let mut built = SeriesBuilder::new(color.series());
-    for (x, i) in x_order(&df, x, x_dtype)? {
+    let order = x_order(&df, x, x_dtype)?;
+    let mut has_x = vec![false; df.height()];
+    for &(x, i) in &order {
+        has_x[i] = true;
         if let Some(g) = groups[i] {
             built.push(g, x, ys[i]);
+        }
+    }
+    // A row without an X is in no series: its group counts it.
+    for (i, _) in has_x.iter().enumerate().filter(|(_, has)| !**has) {
+        if let Some(g) = groups[i] {
+            built.nulls[g] += 1;
         }
     }
     Ok(GroupedSeries {
@@ -2392,6 +2419,7 @@ pub fn prepare_xy_by(
         x_axis_kind: x_axis_temporal_kind(x_dtype),
         rows,
         other: color.other,
+        nulls: built.nulls,
     })
 }
 
@@ -2671,6 +2699,7 @@ pub fn prepare_aggregate_xy(
         x_axis_kind: x_axis_temporal_kind(x_dtype),
         rows: RowsRead::every(counts.iter().sum::<u64>() as usize),
         other: spec.color.is_some_and(|c| c.other),
+        nulls: Vec::new(),
     })
 }
 

@@ -1995,6 +1995,7 @@ fn a_smoothed_envelope_averages_its_rows() {
                 x_axis_kind: XAxisTemporalKind::Numeric,
                 rows: result.rows,
                 other: false,
+                nulls: Vec::new(),
             },
             None,
         )

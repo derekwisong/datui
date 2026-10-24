@@ -363,6 +363,8 @@ pub struct Palette {
     pub series: Vec<Rgb>,
     /// Other: the rows of every value of a color without a series of its own.
     pub other: Rgb,
+    /// A scatter's trend line over every point, and y = x.
+    pub trend: Rgb,
     /// A heatmap's cells, from the fewest rows to the most.
     pub ramp: [Rgb; 7],
     /// Whether the background is dark: the ramp then starts dark.
@@ -411,6 +413,7 @@ impl Palette {
             grid: Rgb(0xe3, 0xe5, 0xea),
             series: LIGHT_SERIES.to_vec(),
             other: Rgb(0xa8, 0xad, 0xb8),
+            trend: Rgb(0x1f, 0x24, 0x30),
             ramp: BLUE_RAMP,
             dark: false,
         }
@@ -463,6 +466,7 @@ impl Palette {
             grid: get(&colors.chart_grid, Rgb(0x3d, 0x47, 0x85)),
             series,
             other: get(&colors.dimmed, Rgb(0x56, 0x5f, 0x89)),
+            trend: get(&colors.chart_trend, Rgb(0xc0, 0xca, 0xf5)),
             ramp,
             dark: true,
         }
@@ -546,6 +550,8 @@ pub struct Figure {
     pub plot: Plot<'static>,
     pub chart_notes: Vec<String>,
     pub grid: bool,
+    /// A scatter's trend, read as the screen reads it under the plot.
+    pub trend_reading: Option<String>,
 }
 
 /// The figure in `format`, as the bytes of the file.
@@ -791,6 +797,9 @@ fn wrap(text: &str, size: f64, width: f64) -> Vec<String> {
 
 /// How opaque a smoothed line's raw line is drawn behind it.
 const RAW_OPACITY: f64 = 0.35;
+
+/// How much of their opacity a scatter's points keep under a trend.
+const TRENDED_OPACITY: f64 = 0.5;
 
 /// The SVG being written, with the sizes it is set in.
 struct Canvas<'a> {
@@ -1068,6 +1077,11 @@ pub fn svg(figure: &Figure, options: &ExportOptions) -> Result<String> {
     // Footer, from the bottom up: the source and byline, notes, what the chart
     // says about its rows.
     let mut footer: Vec<(String, Rgb)> = Vec::new();
+    if let Some(reading) = &figure.trend_reading {
+        for line in wrap(reading, small, text_width_max) {
+            footer.push((line, palette.text));
+        }
+    }
     if !figure.chart_notes.is_empty() {
         footer.push((figure.chart_notes.join(" · "), palette.text_secondary));
     }
@@ -1245,9 +1259,16 @@ fn draw_plot(
                 _ => (1.5 * c.pt, false),
             };
             let radius = options.point_size.pt() * c.pt;
+            let trend = figure.plot.trend_curves();
+            // Under a trend the points step back, as on screen.
             let opacity = options
                 .point_opacity
-                .of(curves.iter().map(|curve| curve.points.len()).sum());
+                .of(curves.iter().map(|curve| curve.points.len()).sum())
+                * if trend.is_empty() {
+                    1.0
+                } else {
+                    TRENDED_OPACITY
+                };
             // A smoothed line's raw line, faded, under the smoothed one.
             for curve in figure.plot.raw_curves() {
                 let to_page = |&(px, py): &(f64, f64)| (sx.at(px), sy.at(py));
@@ -1274,6 +1295,19 @@ fn draw_plot(
                 if let Some(end) = curve.points.last() {
                     let (px, py) = to_page(end);
                     ends.push((py, px, curve.slot));
+                }
+            }
+            // The trend over the points, in its series' color, or its own over every
+            // point.
+            for (series, curve) in &trend {
+                let color = match series {
+                    Some(_) => c.color(curve.slot),
+                    None => c.palette.trend,
+                };
+                let to_page = |&(px, py): &(f64, f64)| (sx.at(px), sy.at(py));
+                for run in segments(&curve.points, curve.breaks) {
+                    let pts: Vec<(f64, f64)> = run.iter().map(to_page).collect();
+                    c.polyline(&pts, color, width.max(1.5 * c.pt));
                 }
             }
             if legend == LegendPlace::LineEnds {
@@ -2089,6 +2123,7 @@ mod tests {
             },
             chart_notes: Vec::new(),
             grid: true,
+            trend_reading: None,
         }
     }
 
@@ -2104,9 +2139,11 @@ mod tests {
         Figure {
             plot: Plot {
                 data: Cow::Owned(PlotData::Lines(LinesData {
-                    series: (0..names.len())
-                        .map(|i| (0..10).map(|x| (x as f64, (x * (i + 1)) as f64)).collect())
-                        .collect(),
+                    series: std::sync::Arc::new(
+                        (0..names.len())
+                            .map(|i| (0..10).map(|x| (x as f64, (x * (i + 1)) as f64)).collect())
+                            .collect(),
+                    ),
                     names: names.iter().map(|n| n.to_string()).collect(),
                     other: names.last() == Some(&OTHER),
                     ..LinesData::default()
@@ -2124,6 +2161,7 @@ mod tests {
             },
             chart_notes: vec!["sample of 1,000 of 50k rows".to_string()],
             grid: true,
+            trend_reading: None,
         }
     }
 
@@ -2149,7 +2187,8 @@ mod tests {
             (0..10)
                 .map(|x| (f64::from(x), f64::from(x % 2) * 10.0))
                 .collect(),
-        ];
+        ]
+        .into();
         figure.plot.y.smooth = Smooth::Points(2);
         let shown = figure.plot.shown();
         lines_of(&mut figure).keep_shown(shown);
@@ -2188,6 +2227,21 @@ mod tests {
         }
         assert!(svg.contains("fill=\"#2a78d6\""), "light palette: {svg}");
         assert!(svg.contains("fill=\"#ffffff\""), "a white background");
+        roxmltree_ok(&svg);
+    }
+
+    /// A scatter's trend reading sits in the footer, over the notes, as it sits under
+    /// the plot on screen.
+    #[test]
+    fn the_svg_carries_the_trend_reading() {
+        let mut figure = lines(&["AAPL"]);
+        figure.plot.scatter = true;
+        let reading = "+3.00 per x · strong, R² 1.00 · typically ±3.22 off the line";
+        figure.trend_reading = Some(reading.to_string());
+        let svg = svg(&figure, &options()).unwrap();
+        let at = svg.find("+3.00 per x").unwrap_or_else(|| panic!("{svg}"));
+        let notes = svg.find("sample of 1,000").unwrap();
+        assert!(at < notes, "the reading first: {svg}");
         roxmltree_ok(&svg);
     }
 
@@ -2508,6 +2562,7 @@ mod tests {
                 plot,
                 chart_notes: Vec::new(),
                 grid: true,
+                trend_reading: None,
             };
             let options = ExportOptions {
                 width: w,
@@ -2882,7 +2937,8 @@ mod tests {
 
         // Y from zero: a line of 100 to 109 takes in 0 only when asked.
         let mut high = lines(&["AAPL"]);
-        lines_of(&mut high).series[0] = (0..10).map(|x| (x as f64, 100.0 + x as f64)).collect();
+        std::sync::Arc::make_mut(&mut lines_of(&mut high).series)[0] =
+            (0..10).map(|x| (x as f64, 100.0 + x as f64)).collect();
         let y_zero = "text-anchor=\"end\" fill=\"#5b6170\">0</text>";
         let off = svg(&high, &options()).unwrap();
         assert!(!off.contains(y_zero), "{off}");
@@ -2931,7 +2987,7 @@ mod tests {
 
         let mut figure = lines(&["a"]);
         let lines = lines_of(&mut figure);
-        lines.series = vec![vec![(0.0, 1.0), (1.0, 2.0), (10.0, 3.0), (100.0, 4.0)]];
+        lines.series = vec![vec![(0.0, 1.0), (1.0, 2.0), (10.0, 3.0), (100.0, 4.0)]].into();
         lines.bounds = crate::chart::chart_plot::extent(&lines.series);
         figure.plot.x.log = true;
         let shown = figure.plot.shown();
@@ -2973,7 +3029,7 @@ mod tests {
 
         let mut figure = lines(&["a"]);
         let lines = lines_of(&mut figure);
-        lines.series = vec![vec![(1.0, 0.0), (2.0, 10.0), (3.0, 100.0), (4.0, 1000.0)]];
+        lines.series = vec![vec![(1.0, 0.0), (2.0, 10.0), (3.0, 100.0), (4.0, 1000.0)]].into();
         lines.bounds = crate::chart::chart_plot::extent(&lines.series);
         figure.plot.y.log = true;
         let shown = figure.plot.shown();

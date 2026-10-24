@@ -60,6 +60,10 @@ pub struct Glyphs {
     pub rho: &'static str,
     /// At most, in a chart's notes: `3 points with Y ≤ 0 left out`.
     pub at_most: &'static str,
+    /// Plus or minus, before how far points typically fall from a chart's trend.
+    pub plus_minus: &'static str,
+    /// Not equal, in a trend's mark that Pearson's r and Spearman's ρ disagree.
+    pub not_equal: &'static str,
     /// Spinner frames, cycled while something is loading. Every frame must be the
     /// same display width, or the text beside it jitters.
     pub spinner: &'static [&'static str],
@@ -321,6 +325,8 @@ const UNICODE: Glyphs = Glyphs {
     r_squared: "R²",
     rho: "ρ",
     at_most: "≤",
+    plus_minus: "±",
+    not_equal: "≠",
     spinner: &["⣷", "⣯", "⣟", "⡿", "⢿", "⣻", "⣽", "⣾"],
     // Plain Unicode from blocks the common coding fonts cover, checked per codepoint
     // (`fc-list "<font>:charset=<hex>"`) against JetBrainsMono Nerd Font, Liberation Mono
@@ -412,6 +418,8 @@ const ASCII: Glyphs = Glyphs {
     r_squared: "R^2",
     rho: "rho",
     at_most: "<=",
+    plus_minus: "+/-",
+    not_equal: "!=",
     spinner: &["|", "/", "-", "\\"],
     here: ".",
     in_memory: "*",
@@ -538,6 +546,8 @@ macro_rules! with_string_slots {
             r_squared,
             rho,
             at_most,
+            plus_minus,
+            not_equal,
             here,
             in_memory,
             over_network,

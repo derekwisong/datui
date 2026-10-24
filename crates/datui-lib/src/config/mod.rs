@@ -1608,6 +1608,8 @@ pub struct ColorConfig {
     pub chart_10: String,
     /// The chart grid, a shade dimmer than `dimmed`.
     pub chart_grid: String,
+    /// A scatter's trend line over every point, apart from the series' colors.
+    pub chart_trend: String,
     /// The one color meaning "this is the thing": focused titles, key chips, the selection
     /// rail.
     pub accent: String,
@@ -1958,6 +1960,8 @@ impl ColorConfig {
             chart_10: "#f4ef8a".to_string(),
             // Dimmer than `dimmed`, but blue rather than black (the background) on 16 colors.
             chart_grid: "#3d4785".to_string(),
+            // The text's light grey: no series' color, white on 16 colors.
+            chart_trend: "#c0caf5".to_string(),
             accent: "#7dcfff".to_string(),
             accent_bright: "#a4daff".to_string(),
             gradient_start: "#7aa2f7".to_string(),
@@ -2027,6 +2031,8 @@ impl ColorConfig {
             chart_10: "#24357a".to_string(),
             // The cyan halfway to the background: a lighter grey is white on 16 colors.
             chart_grid: "#70aabf".to_string(),
+            // The text's dark slate: no series' color, black on 16 colors.
+            chart_trend: "#343b58".to_string(),
             accent: "#2e7de9".to_string(),
             accent_bright: "#1a6cd0".to_string(),
             gradient_start: "#2e7de9".to_string(),
@@ -3245,6 +3251,7 @@ color_slots!(
     background,
     chart_1,
     chart_grid,
+    chart_trend,
     chip_key,
     chip_label,
     controls_bg,
@@ -3337,8 +3344,8 @@ impl Theme {
 
     /// A series' `color` faded toward the chrome (`controls_bg`), for a line drawn
     /// behind another of its color. Blended where the terminal shows any color or the
-    /// 256-color palette; on 16 colors, where a blend lands on the same color or none
-    /// is left, `dimmed`. A chart's marks take a color alone, no dim attribute.
+    /// 256-color palette; on 16 colors a grey on the background's side; where a blend
+    /// lands on the same color, `dimmed`. A chart's marks take a color alone, no dim attribute.
     pub fn faded(&self, color: Color) -> Color {
         let mix = |a: u8, t: u8| (f32::from(a) * 0.4 + f32::from(t) * 0.6).round() as u8;
         let toward = self.controls_bg();
@@ -3355,7 +3362,15 @@ impl Theme {
                 let (r, g, b) = blend();
                 Color::Indexed(rgb_to_256_color(r, g, b))
             }
-            _ => self.dimmed(),
+            // No color at all (`NO_COLOR`): as the rest of the chrome.
+            (Color::Reset, _) | (_, Color::Reset) => self.dimmed(),
+            // 16 colors: the grey on the background's side, under any series' color
+            // and the trend line over it; `dimmed` may map to a bright color there.
+            _ => {
+                let (r, g, b) = approx_rgb(toward);
+                let dark = u16::from(r) + u16::from(g) + u16::from(b) < 3 * 128;
+                if dark { Color::DarkGray } else { Color::Gray }
+            }
         };
         if faded == color { self.dimmed() } else { faded }
     }
@@ -3529,8 +3544,8 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     /// A raw line's color is its series' color faded toward the chrome: a blend in
-    /// 24-bit and the 256-color palette, `dimmed` on 16 colors, where a blend has
-    /// nowhere to land; never the series' own color.
+    /// 24-bit and the 256-color palette, a grey on the background's side on 16 colors
+    /// (`dimmed` may be bright there), `dimmed` without color; never the series' own.
     #[test]
     fn a_faded_series_color_is_told_from_its_own() {
         use ratatui::style::Color;
@@ -3548,7 +3563,12 @@ mod tests {
         let faded = theme.faded(Color::Indexed(196));
         assert!(matches!(faded, Color::Indexed(i) if i != 196), "{faded:?}");
         theme.colors.insert("controls_bg".into(), Color::Black);
+        theme.colors.insert("dimmed".into(), Color::White);
         assert_eq!(theme.faded(Color::Cyan), Color::DarkGray);
+        theme.colors.insert("controls_bg".into(), Color::White);
+        assert_eq!(theme.faded(Color::Blue), Color::Gray);
+        theme.colors.insert("controls_bg".into(), Color::Reset);
+        assert_eq!(theme.faded(Color::Blue), Color::White);
     }
 
     /// A path from the command line has been through the shell: only a leading `~`

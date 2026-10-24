@@ -6,13 +6,14 @@ use crate::app::feedback::Confirm;
 use crate::app::form::FormKey;
 use crate::chart::chart_export::{ChartExportFormat, ChartExportRequest};
 use crate::chart::chart_export_modal::{ChartExportFocus, ExportDefaults};
-use crate::chart::chart_modal::{ChartFocus, Mark};
+use crate::chart::chart_modal::{ChartColumns, ChartFocus, Mark};
 use crate::chart::chart_plot::PlotData;
 use crate::export::output_file::Overwrite;
 use crate::logging::LogFailure;
 use crate::widgets::crosshair::{self, Move};
 use crate::{App, AppEvent, Overlay, home};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use polars::prelude::DataType;
 
 impl App {
     /// Keys in the chart view.
@@ -57,7 +58,7 @@ impl App {
                     self.chart.modal.plot_focus = false;
                     return None;
                 }
-                KeyCode::Char('1'..='7' | '[' | ']' | 'g' | 'e' | 't' | '?') => {}
+                KeyCode::Char('1'..='7' | '[' | ']' | 'g' | 'e' | 't' | 'y' | '?') => {}
                 _ => return None,
             }
         }
@@ -116,6 +117,9 @@ impl App {
                 self.chart.cache.clear();
             }
 
+            KeyCode::Char('y') if self.chart.modal.mark() == Mark::Scatter => {
+                self.copy_chart_fit();
+            }
             KeyCode::Char('?') => self.open_help_overlay(),
             KeyCode::Char('+') | KeyCode::Char('=') => self.chart.modal.adjust_number_row(1),
             KeyCode::Char('-') => self.chart.modal.adjust_number_row(-1),
@@ -166,6 +170,95 @@ impl App {
         } else {
             self.chart.modal.step(focus, 1);
         }
+    }
+
+    /// Open the chart view on the table's dataset, chosen from the cursor column's
+    /// type, or as it was left.
+    pub(crate) fn open_chart(&mut self) {
+        let Some(state) = &self.data_table_state else {
+            return;
+        };
+        let numeric_columns: Vec<String> = state
+            .schema()
+            .iter()
+            .filter(|(_, dtype)| dtype.is_numeric())
+            .map(|(name, _)| name.to_string())
+            .collect();
+        let datetime_columns: Vec<String> = state
+            .schema()
+            .iter()
+            .filter(|(_, dtype)| {
+                matches!(
+                    dtype,
+                    DataType::Datetime(_, _)
+                        | DataType::Date
+                        | DataType::Time
+                        | DataType::Duration(_)
+                )
+            })
+            .map(|(name, _)| name.to_string())
+            .collect();
+        let category_columns: Vec<String> = state
+            .schema()
+            .iter()
+            .filter(|(_, dtype)| crate::chart::chart_data::is_category_dtype(dtype))
+            .map(|(name, _)| name.to_string())
+            .collect();
+        // Show Me: the chart starts from the cursor column's type.
+        let cursor = state.current_column().and_then(|name| {
+            let dtype = state.schema().get(name)?.clone();
+            Some((name.to_string(), dtype))
+        });
+        // Dates and datetimes take a time bucket; a time of day does not.
+        let bucketable_columns: Vec<String> = state
+            .schema()
+            .iter()
+            .filter(|(_, dtype)| matches!(dtype, DataType::Datetime(_, _) | DataType::Date))
+            .map(|(name, _)| name.to_string())
+            .collect();
+        let duration_columns: Vec<String> = state
+            .schema()
+            .iter()
+            .filter(|(_, dtype)| matches!(dtype, DataType::Duration(_)))
+            .map(|(name, _)| name.to_string())
+            .collect();
+        self.chart.modal.series_cap = Some(self.theme.series_colors().len());
+        self.chart.modal.row_order = self.view_state().sort;
+        let sampled = state.sampled().is_some();
+        self.chart.modal.open(
+            ChartColumns {
+                numeric: &numeric_columns,
+                datetime: &datetime_columns,
+                bucketable: &bucketable_columns,
+                duration: &duration_columns,
+                category: &category_columns,
+            },
+            cursor.as_ref().map(|(name, dtype)| (name.as_str(), dtype)),
+            Some(self.app_config.analysis.chart_rows),
+            self.app_config.analysis.chart_grid,
+            self.dataset_generation,
+        );
+        // A view's sample is read whole: the chart has no sample of its own.
+        if sampled {
+            self.chart.modal.row_limit = None;
+        } else if self.chart.modal.view_sampled {
+            self.chart.modal.row_limit = Some(self.chart.modal.sample_rows);
+        }
+        self.chart.modal.view_sampled = sampled;
+        self.chart.cache.clear();
+        self.chart.returns_to_analysis = false;
+        self.open_overlay(Overlay::Chart);
+    }
+
+    /// `c` on a pair of the correlation matrix: the pair as a scatter, X its column
+    /// and Y its row, with a linear trend. Esc goes back to the matrix.
+    pub(crate) fn open_chart_pair(&mut self, x: &str, y: &str) {
+        self.open_chart();
+        if self.overlay != Overlay::Chart {
+            return;
+        }
+        self.chart.modal.chart_pair(x, y);
+        self.chart.returns_to_analysis = true;
     }
 
     /// Open the export dialog, its text started from the chart: how it was made and

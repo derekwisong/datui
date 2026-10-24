@@ -29,6 +29,8 @@ pub struct Charts {
     /// A chart export that asked for data still being prepared. The preparation's end
     /// picks it up; `busy` stays set until then.
     pub(crate) export_waiting: Option<ChartExportRequest>,
+    /// Opened from a pair of the correlation matrix: closing goes back to it.
+    pub(crate) returns_to_analysis: bool,
 }
 
 /// Chart preparation outcomes by request, least recently used first. Failures are kept
@@ -136,6 +138,21 @@ impl ChartCache {
                 true
             }
         });
+    }
+
+    /// Take a trend a job fitted for `request`, if it is still held; whether it was.
+    pub(crate) fn take_fits(
+        &mut self,
+        request: &ChartRequest,
+        fits: crate::chart::chart_trend::TrendFits,
+    ) -> bool {
+        match self.entries.iter_mut().find(|(r, _)| r == request) {
+            Some((_, Ok(PlotData::Lines(lines)))) => {
+                lines.take_fits(fits);
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Mark `request` as the selection on screen: last to be evicted, and the only one with
@@ -367,6 +384,7 @@ impl ChartRequest {
                         x_axis_kind: r.x_axis_kind,
                         rows: r.rows,
                         other: false,
+                        nulls: r.nulls,
                     }
                 };
                 let rows = grouped.rows.total_rows;
@@ -547,6 +565,7 @@ impl App {
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
         self.jobs.supersede(is_chart_prep);
+        self.jobs.supersede(is_trend_fit);
         // A failed export reopens its modal; it must not follow the user to the next
         // dataset.
         if self.overlay == Overlay::ChartExport {
@@ -660,6 +679,7 @@ impl App {
             if let Some(colors) = self.chart.cache.colors(&request.spec.encoding.color.field) {
                 self.chart.modal.color_counts = Some(colors.clone());
             }
+            self.ensure_trend_fit(&request);
             return;
         }
         self.chart.modal.smooth_ladder = None;
@@ -700,6 +720,89 @@ impl App {
                 .map(|prepared| Answer::ChartPrepared(Box::new(prepared)))
                 .map_err(|e| crate::error_display::user_message_from_report(&e, None))
         });
+    }
+
+    /// Fit the trend the chart on screen asks for off the event thread, once it is
+    /// not yet fitted. One at a time: a fit no longer wanted is superseded, which stops
+    /// it at its next check, and the next is started once it has ended (the event
+    /// that ends it asks again).
+    fn ensure_trend_fit(&mut self, request: &ChartRequest) {
+        let shown = self.chart.modal.shown();
+        let Some(PlotData::Lines(lines)) = self.chart.cache.prepared(request) else {
+            self.jobs.supersede(is_trend_fit);
+            return;
+        };
+        let wanted = lines.trend_wanted(shown);
+        let fitting = match self.jobs.current(is_trend_fit) {
+            Some((_, Job::ChartTrend(fit))) => Some((fit.request == *request, fit.key)),
+            _ => None,
+        };
+        match (wanted, fitting) {
+            (Some(key), Some((true, fitting))) if key == fitting => return,
+            (_, Some(_)) => {
+                self.jobs.supersede(is_trend_fit);
+            }
+            (_, None) => {}
+        }
+        let Some(key) = wanted else {
+            return;
+        };
+        if self.jobs.running(is_trend_fit) {
+            return;
+        }
+        let series = std::sync::Arc::clone(&lines.series);
+        let other = lines.other;
+        // The chart's own sample's seed, so the note names one seed.
+        let seed = lines.rows.seed.unwrap_or(self.analysis_modal.sample.seed);
+        let job = crate::app::jobs::ChartTrendFit {
+            request: request.clone(),
+            key,
+        };
+        self.spawn_job(Job::ChartTrend(Box::new(job)), None, move |_| {
+            crate::chart::chart_trend::fit_all(
+                &series,
+                other,
+                key,
+                seed,
+                &crate::app::jobs::superseded,
+            )
+            .map(|fits| Answer::ChartTrended(Box::new(fits)))
+            .ok_or_else(|| "stopped".to_string())
+        });
+    }
+
+    /// A trend job ended with `fits`: kept with its chart while that is held, and drawn
+    /// if it is the one on screen.
+    pub(crate) fn chart_trended(
+        &mut self,
+        fit: crate::app::jobs::ChartTrendFit,
+        current: bool,
+        fits: crate::chart::chart_trend::TrendFits,
+    ) {
+        if !current || fits.key != fit.key {
+            return;
+        }
+        if self.chart.cache.take_fits(&fit.request, fits)
+            && ChartRequest::from_modal(&self.chart.modal).as_ref() == Some(&fit.request)
+        {
+            self.chart
+                .cache
+                .touch(&fit.request, self.chart.modal.shown());
+        }
+    }
+
+    /// Whether the chart on screen waits on a trend a job is fitting.
+    pub fn chart_trend_pending(&self) -> bool {
+        if !self.overlay.shows(&Overlay::Chart) {
+            return false;
+        }
+        let Some(request) = ChartRequest::from_modal(&self.chart.modal) else {
+            return false;
+        };
+        match self.chart.cache.prepared(&request) {
+            Some(PlotData::Lines(lines)) => lines.trend_wanted(self.chart.modal.shown()).is_some(),
+            _ => false,
+        }
     }
 
     /// A chart preparation ended with `outcome`. It is installed only while the job is
@@ -780,12 +883,19 @@ impl App {
         {
             plot.y.title = format!("{} {}", y.aggregate_name(), plot.y.title);
         }
+        // The file has every glyph, whatever the terminal shows.
+        let unicode = crate::glyphs::unicode();
+        let trend_reading = plot.trend_reading(modal, unicode).map(|(mut parts, mark)| {
+            parts.extend(mark);
+            parts.join(" · ")
+        });
         Ok(Some(Figure {
             plot,
             // The file always has the middle dot; the terminal may be ASCII.
             // A file is always written in Unicode.
             chart_notes: self.chart_notes_of(prepared, crate::glyphs::unicode()),
             grid: modal.grid,
+            trend_reading,
         }))
     }
 
@@ -855,6 +965,54 @@ impl App {
         }
     }
 
+    /// The trend on screen as text to copy: what was charted, the notes it was drawn
+    /// with (the sample and its seed among them), then each fit. `None` with no fit
+    /// drawn.
+    pub(crate) fn chart_fit_text(&self) -> Option<String> {
+        let state = self.data_table_state.as_ref()?;
+        let modal = &self.chart.modal;
+        let request = ChartRequest::from_modal(modal)?;
+        let prepared = self.chart.cache.prepared(&request)?;
+        let PlotData::Lines(lines) = prepared else {
+            return None;
+        };
+        let context = PlotContext {
+            modal,
+            spec: &request.spec,
+            numbers: &self.display.number_format,
+            schema: Some(state.schema().as_ref()),
+        };
+        let plot = plot(Some(prepared), &context)?;
+        let fits = plot.trend_fits().filter(|fits| !fits.fits.is_empty())?;
+        let mut header = vec![format!("x: {}, y: {}", plot.x.title, plot.y.title)];
+        let how = modal.how();
+        if !how.is_empty() {
+            header.push(format!("chart: {how}"));
+        }
+        let notes = self.chart_notes_of(prepared, crate::glyphs::unicode());
+        if !notes.is_empty() {
+            header.push(format!("notes: {}", notes.join(" · ")));
+        }
+        Some(crate::chart::chart_trend::copy_text(
+            fits,
+            &lines.names,
+            &plot.trend_words(modal),
+            &header,
+        ))
+    }
+
+    /// `y` in the chart: copy the trend's fit.
+    pub(crate) fn copy_chart_fit(&mut self) {
+        if self.chart_trend_pending() {
+            self.flash_note("Still fitting the trend".to_string());
+            return;
+        }
+        match self.chart_fit_text() {
+            Some(text) => self.copy_string(text, "Copied the trend's fit".to_string()),
+            None => self.flash_note("No trend to copy: pick one under Trend".to_string()),
+        }
+    }
+
     /// What a chart says under its plot about the rows it drew. A view with a sample
     /// is charted from all of it: the note says which sample, with its seed, so the
     /// chart can be drawn again. `g` writes them: the screen's glyphs, or a file's.
@@ -883,6 +1041,21 @@ impl App {
             for name in lines.emptied(shown) {
                 notes.push(format!("{name}: every point left out"));
             }
+        }
+        // What the trend was fitted on.
+        if let PlotData::Lines(lines) = prepared
+            && let Some(fits) = lines.fits(shown)
+        {
+            let points = crate::chart::chart_trend::points_of(self.chart.modal.aggregate());
+            // The chart's sample note names the seed its pairs were drawn with.
+            let seed_said = fits.seed.is_some() && fits.seed == lines.rows.seed;
+            notes.extend(
+                crate::chart::chart_trend::notes(fits, lines.nulls_of(fits), points, seed_said, g)
+                    .into_iter()
+                    // A log axis already counts the same points in the same words.
+                    .filter(|note| !notes.contains(note))
+                    .collect::<Vec<_>>(),
+            );
         }
         if let PlotData::Lines(lines) = prepared
             && matches!(self.chart.modal.mark(), Mark::Line | Mark::Scatter)
@@ -916,4 +1089,9 @@ impl App {
 /// A chart preparation's job.
 fn is_chart_prep(job: &Job) -> bool {
     matches!(job, Job::ChartPrepare(_))
+}
+
+/// A trend fit's job.
+fn is_trend_fit(job: &Job) -> bool {
+    matches!(job, Job::ChartTrend(_))
 }

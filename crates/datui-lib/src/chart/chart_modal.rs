@@ -11,6 +11,7 @@
 //! value rows are edited through the one shared Picker.
 
 use crate::chart::chart_data::{BarOrder, ValueRange};
+pub use crate::chart::chart_trend::{Trend, TrendOver};
 use crate::widgets::ui::PickerState;
 use polars::prelude::DataType;
 use serde::{Deserialize, Serialize};
@@ -463,6 +464,10 @@ pub enum ChartFocus {
     /// A line's trailing mean, and under it whether the raw line is drawn behind.
     Smooth,
     Raw,
+    /// A scatter's trend, and under it whether it is fitted per Color series or over
+    /// every point.
+    Trend,
+    TrendOver,
     Bandwidth,
     Range,
     YStartsAtZero,
@@ -566,6 +571,9 @@ pub struct ChartModal {
     /// The ladder is empty because each envelope step holds more rows than any
     /// window, rather than for too few points.
     pub smooth_steps_too_big: bool,
+    /// A scatter's trend, and whether a colored one is fitted per series or overall.
+    pub trend: Trend,
+    pub trend_over: TrendOver,
     pub bar_order: BarOrder,
     /// Rows a chart that samples reads: up to this many, spread across the table.
     /// None = every row. What the chart reads; the Rows row edits `rows_draft`.
@@ -701,6 +709,8 @@ impl ChartModal {
         self.value_range = ValueRange::All;
         self.smooth = Smooth::Off;
         self.raw = RawLine::Auto;
+        self.trend = Trend::Off;
+        self.trend_over = TrendOver::Color;
         self.row_limit = default_row_limit.and_then(|n| {
             if n == 0 {
                 None
@@ -730,6 +740,8 @@ impl ChartModal {
         self.value_range = saved.range;
         self.smooth = saved.smooth;
         self.raw = saved.raw;
+        self.trend = saved.trend;
+        self.trend_over = saved.trend_over;
         self.bar_order = saved.bar_order;
         self.share = saved.share;
         self.y_starts_at_zero = saved.y_starts_at_zero;
@@ -763,6 +775,8 @@ impl ChartModal {
             range: self.value_range,
             smooth: self.smooth,
             raw: self.raw,
+            trend: self.trend,
+            trend_over: self.trend_over,
             bar_order: self.bar_order,
             share: self.share,
             y_starts_at_zero: self.y_starts_at_zero,
@@ -1022,6 +1036,12 @@ impl ChartModal {
                         rows.push(Raw);
                     }
                 }
+                if self.trend_use() == ShelfUse::Used {
+                    rows.push(Trend);
+                    if self.over_use() == ShelfUse::Used {
+                        rows.push(TrendOver);
+                    }
+                }
                 // A log Y has no zero to start from.
                 if !self.log_scale {
                     rows.push(YStartsAtZero);
@@ -1122,6 +1142,28 @@ impl ChartModal {
         if !self.row_order().contains(&self.focus) {
             self.focus = ChartFocus::Type;
         }
+    }
+
+    /// A pair of columns as a scatter, `x` against `y`, with a linear trend: the
+    /// correlation matrix's `c`. The next `c` at the table chooses afresh.
+    pub fn chart_pair(&mut self, x: &str, y: &str) {
+        self.close_picker();
+        self.spec = ChartSpec::default();
+        self.spec.mark = Mark::Scatter;
+        self.spec.encoding.x.field = Some(x.to_string());
+        self.spec.encoding.y.field = vec![y.to_string()];
+        self.spec.encoding.y.aggregate = Aggregate::None;
+        self.suggested = None;
+        self.color_counts = None;
+        self.cursor_x = None;
+        self.log_scale = false;
+        self.log_x = false;
+        self.value_range = ValueRange::All;
+        self.trend = Trend::Linear;
+        self.trend_over = TrendOver::Color;
+        self.opened_on = None;
+        self.settle();
+        self.focus = ChartFocus::Trend;
     }
 
     /// Keep the spec within what the chart on screen takes.
@@ -1458,6 +1500,8 @@ impl ChartModal {
             clip: self.value_range == ValueRange::Percentile1To99,
             smooth: self.smooth_shown(),
             raw: self.raw,
+            trend: self.trend_shown(),
+            over: self.over_shown(),
         }
     }
 
@@ -1554,6 +1598,64 @@ impl ChartModal {
         next.copied().unwrap_or(Smooth::Off)
     }
 
+    /// Whether the Trend row takes part: on a scatter, but for a running total, whose
+    /// points each hold the ones before.
+    pub fn trend_use(&self) -> ShelfUse {
+        match self.spec.mark {
+            Mark::Scatter if self.spec.encoding.y.cumulative != Cumulative::Off => {
+                ShelfUse::Dimmed("cumulative")
+            }
+            Mark::Scatter => ShelfUse::Used,
+            _ => ShelfUse::Dimmed("scatter only"),
+        }
+    }
+
+    /// What Trend steps through: every method, but over a time X neither power (the
+    /// log of a date) nor y = x (a date against a number).
+    pub fn trend_choices(&self) -> Vec<Trend> {
+        let time = self.x_is_time();
+        Trend::ALL
+            .into_iter()
+            .filter(|t| !time || t.takes_time())
+            .collect()
+    }
+
+    /// The trend the chart on screen draws: off where the row takes no part, or for a
+    /// method its X does not take.
+    pub fn trend_shown(&self) -> Trend {
+        if self.trend_use() != ShelfUse::Used || !self.trend_choices().contains(&self.trend) {
+            return Trend::Off;
+        }
+        self.trend
+    }
+
+    /// Whether Over takes part: with a Color, for a method fitted per series. Dimmed,
+    /// what is fitted instead (`all points`), or nothing to say for off and y = x.
+    pub fn over_use(&self) -> ShelfUse {
+        if !self.colored() {
+            return ShelfUse::Dimmed(if self.y().len() > 1 {
+                "each Y column"
+            } else {
+                "all points"
+            });
+        }
+        if self.trend_shown().takes_over() {
+            ShelfUse::Used
+        } else {
+            ShelfUse::Dimmed("")
+        }
+    }
+
+    /// Per color or overall, as the chart on screen fits: per series without a Color,
+    /// as several Y columns are.
+    pub fn over_shown(&self) -> TrendOver {
+        if self.colored() && self.trend_shown().takes_over() {
+            self.trend_over
+        } else {
+            TrendOver::Color
+        }
+    }
+
     /// The spec to chart: the one chosen, with an open Picker's cursor previewed on
     /// the Y shelf (and on X, except for a line or scatter, whose X re-reads
     /// everything). Color stays as its picker found it until the picker closes.
@@ -1641,6 +1743,14 @@ impl ChartModal {
             ChartFocus::Smooth => self.smooth = self.step_smooth(delta),
             ChartFocus::Raw => {
                 self.raw = crate::app::form::step_value(&RawLine::ALL, self.raw, delta);
+            }
+            ChartFocus::Trend => {
+                let choices = self.trend_choices();
+                self.trend = crate::app::form::step_value(&choices, self.trend_shown(), delta);
+            }
+            ChartFocus::TrendOver => {
+                self.trend_over =
+                    crate::app::form::step_value(&TrendOver::ALL, self.trend_over, delta);
             }
             ChartFocus::Bins => self.adjust_bins(delta.into()),
             ChartFocus::Bandwidth => {
@@ -2213,6 +2323,78 @@ mod tests {
         assert!(modal.row_order().contains(&Order));
         modal.set_mark(Mark::Histogram);
         assert!(modal.row_order().contains(&Bins));
+    }
+
+    #[test]
+    fn trend_rows_follow_the_scatter() {
+        use ChartFocus::*;
+        let mut modal = open_on(Some(("distance", &DataType::Float64)));
+        modal.chart_pair("distance", "delay");
+        assert_eq!(modal.mark(), Mark::Scatter);
+        assert_eq!(modal.x().map(String::as_str), Some("distance"));
+        assert_eq!(modal.y(), ["delay"]);
+        assert_eq!(
+            (modal.trend_shown(), modal.focus),
+            (super::Trend::Linear, Trend)
+        );
+        // Over waits for a Color: one series is fitted over all its points.
+        let rows = modal.row_order();
+        assert!(rows.contains(&Trend) && !rows.contains(&TrendOver));
+        assert_eq!(modal.over_use(), ShelfUse::Dimmed("all points"));
+        modal.spec.encoding.color.field = vec!["carrier".to_string()];
+        let rows = modal.row_order();
+        let at = rows.iter().position(|r| *r == Trend).unwrap();
+        assert_eq!(rows.get(at + 1), Some(&TrendOver));
+        modal.step(TrendOver, 1);
+        assert_eq!(modal.over_shown(), super::TrendOver::Overall);
+        // y = x is one line whatever the colors.
+        modal.trend = super::Trend::Identity;
+        assert_eq!(modal.over_use(), ShelfUse::Dimmed(""));
+        assert!(!modal.row_order().contains(&TrendOver));
+
+        // A date X takes neither power nor y = x.
+        modal.spec.encoding.x.field = Some("date".to_string());
+        assert!(!modal.trend_choices().contains(&super::Trend::Power));
+        assert!(!modal.trend_choices().contains(&super::Trend::Identity));
+        assert_eq!(modal.trend_shown(), super::Trend::Off);
+        modal.step(Trend, 1);
+        assert_eq!(modal.trend, super::Trend::Linear);
+
+        // A running total's points hold the ones before: nothing to fit.
+        modal.spec.encoding.y.cumulative = super::Cumulative::Sum;
+        assert_eq!(modal.trend_use(), ShelfUse::Dimmed("cumulative"));
+        assert_eq!(modal.trend_shown(), super::Trend::Off);
+        modal.spec.encoding.y.cumulative = super::Cumulative::Off;
+        modal.set_mark(Mark::Line);
+        assert_eq!(modal.trend_use(), ShelfUse::Dimmed("scatter only"));
+        assert!(!modal.row_order().contains(&Trend));
+    }
+
+    #[test]
+    fn a_saved_view_keeps_the_trend() {
+        let mut modal = open_on(None);
+        modal.chart_pair("distance", "delay");
+        modal.trend = super::Trend::Robust;
+        modal.trend_over = TrendOver::Overall;
+        let saved = modal.saved(7, None);
+        let json = serde_json::to_string(&saved).unwrap();
+        assert!(json.contains(r#""trend":"robust""#), "{json}");
+        assert!(json.contains(r#""trend_over":"overall""#), "{json}");
+        let back: crate::view::SavedChart = serde_json::from_str(&json).unwrap();
+        let mut other = open_on(None);
+        other.restore(&back, 1);
+        assert_eq!(
+            (other.trend, other.trend_over),
+            (super::Trend::Robust, TrendOver::Overall)
+        );
+        // Off and per color are the defaults, left out of the file.
+        modal.trend = super::Trend::Off;
+        modal.trend_over = TrendOver::Color;
+        let json = serde_json::to_string(&modal.saved(7, None)).unwrap();
+        assert!(!json.contains("trend"), "{json}");
+        modal.trend = super::Trend::Identity;
+        let json = serde_json::to_string(&modal.saved(7, None)).unwrap();
+        assert!(json.contains(r#""trend":"y=x""#), "{json}");
     }
 
     /// Step the aggregate row by one until it reads `to`.

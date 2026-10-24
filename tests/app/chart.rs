@@ -1525,3 +1525,223 @@ fn keys_typed_fast_turn_on_a_log_x() {
     assert_eq!(pump.app.chart.modal.focus, ChartFocus::LogX);
     assert!(pump.app.chart.modal.log_x, "Space turned it on");
 }
+
+/// Until the chart's trend has been fitted, and the chart drawn.
+fn pump_until_trended(app: &mut App, rx: &mpsc::Receiver<AppEvent>, tx: &mpsc::Sender<AppEvent>) {
+    pump_until(app, rx, tx, |app| {
+        app.chart_data_ready() && !app.chart_trend_pending()
+    });
+}
+
+/// A scatter of `x` against `y` from `csv`, every row read.
+fn open_trend_scatter(
+    name: &str,
+    csv: &str,
+) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
+    use datui::chart::chart_modal::Mark;
+    let path = common::fixture_dir().join(name);
+    std::fs::write(&path, csv).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    press(&mut app, KeyCode::Char('c'));
+    app.chart.modal.set_mark(Mark::Scatter);
+    app.chart.modal.spec.encoding.x.field = Some("x".to_string());
+    app.chart.modal.spec.encoding.y.field = vec!["y".to_string()];
+    app.chart.modal.row_limit = None;
+    app.event(AppEvent::Wake);
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    (app, rx, tx)
+}
+
+fn trend_csv(rows: i64) -> String {
+    let mut csv = "x,y,g\n".to_string();
+    for i in 0..rows {
+        let y = if i % 10 == 5 && i < 35 {
+            String::new()
+        } else {
+            (3 * i + 10 + (i * 37) % 11 - 5).to_string()
+        };
+        csv.push_str(&format!("{i},{y},{}\n", if i % 2 == 0 { "a" } else { "b" }));
+    }
+    csv
+}
+
+fn draw_at(app: &mut App, width: u16, height: u16) -> String {
+    let area = Rect::new(0, 0, width, height);
+    let mut buf = Buffer::empty(area);
+    Widget::render(app, area, &mut buf);
+    common::buffer_text(&buf)
+}
+
+/// A scatter's trend: Trend steps the method, the reading sits under the plot and
+/// the notes say what was fitted; the crosshair reads the line, `y` copies the fit,
+/// and Over fits per color or over every point.
+#[test]
+fn a_scatter_draws_reads_and_copies_its_trend() {
+    use datui::chart::chart_modal::{ChartFocus, Trend, TrendOver};
+    let (mut app, rx, tx) = open_trend_scatter("chart_trend.csv", &trend_csv(100));
+    let copies: Copies = Default::default();
+    app.set_clipboard_destination(Box::new(KeptCopies(copies.clone())));
+    let draw = |app: &mut App| draw_at(app, 160, 34);
+    let text = draw(&mut app);
+    assert!(text.contains("Trend") && text.contains("off"), "{text}");
+    // Nothing to copy yet.
+    press_and_send(&mut app, &tx, KeyCode::Char('y'));
+    assert!(copies.lock().unwrap().is_empty());
+
+    app.chart.modal.focus = ChartFocus::Trend;
+    press(&mut app, KeyCode::Right);
+    assert_eq!(app.chart.modal.trend, Trend::Linear);
+    // Every fit is a job.
+    assert!(app.chart_trend_pending());
+    pump_until_trended(&mut app, &rx, &tx);
+    let text = draw(&mut app);
+    assert!(
+        text.contains("+3.00 per unit of x · strong, R² 1.00 · typically ±3.22 off the line"),
+        "{text}"
+    );
+    assert!(text.contains("fit on 97 · 3 null"), "{text}");
+
+    press(&mut app, KeyCode::Char('x'));
+    let text = draw(&mut app);
+    assert!(
+        text.contains("fit "),
+        "the line's value at the crosshair: {text}"
+    );
+    press(&mut app, KeyCode::Esc);
+
+    press_and_send(&mut app, &tx, KeyCode::Char('y'));
+    pump_until_idle(&mut app, &rx, &tx);
+    let copied = copies.lock().unwrap().last().cloned().unwrap();
+    assert!(
+        copied.starts_with("Trend: linear (least squares)\n"),
+        "{copied}"
+    );
+    assert!(copied.contains("x: x, y: y"), "{copied}");
+    assert!(copied.contains("  points: 97 used"), "{copied}");
+
+    // While a fit runs, `y` says so rather than copying the last.
+    for _ in 0..3 {
+        press(&mut app, KeyCode::Right);
+    }
+    assert_eq!(app.chart.modal.trend, Trend::Robust);
+    let copied = copies.lock().unwrap().len();
+    press(&mut app, KeyCode::Char('y'));
+    assert_eq!(copies.lock().unwrap().len(), copied);
+    assert!(draw(&mut app).contains("Still fitting the trend"));
+    pump_until_trended(&mut app, &rx, &tx);
+    let text = draw(&mut app);
+    assert!(text.contains("half the points within"), "{text}");
+
+    // A Color: one line per series, read as a range, or one over every point.
+    app.chart.modal.spec.encoding.color.field = vec!["g".to_string()];
+    app.chart.modal.trend = Trend::Linear;
+    // Set by hand: an event has the chart asked for.
+    app.event(AppEvent::Wake);
+    pump_until_trended(&mut app, &rx, &tx);
+    let text = draw(&mut app);
+    assert!(text.contains("2 fits · slopes +"), "{text}");
+    assert!(text.contains("over per color"), "{text}");
+    app.chart.modal.focus = ChartFocus::TrendOver;
+    press(&mut app, KeyCode::Right);
+    assert_eq!(app.chart.modal.trend_over, TrendOver::Overall);
+    pump_until_trended(&mut app, &rx, &tx);
+    let text = draw(&mut app);
+    assert!(text.contains("over all points"), "{text}");
+    assert!(
+        !text.contains("2 fits") && text.contains("strong"),
+        "{text}"
+    );
+
+    // The export draws the line too.
+    let dir = tempfile::tempdir().unwrap();
+    let svg = dir.path().join("trend.svg");
+    let next = app.event(AppEvent::Applied(datui::Applied::ChartExport(
+        chart_export_request(&svg, datui::chart::chart_export::ChartExportFormat::Svg),
+    )));
+    if let Some(next) = next {
+        app.event(next);
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+    // Its words are outlines here; `chart_export`'s tests read them as text.
+    let svg = std::fs::read_to_string(&svg).unwrap();
+    assert!(svg.starts_with("<svg"), "{svg}");
+}
+
+/// One fit at a time: a fit no longer wanted is stopped, its answer dropped, and the
+/// one wanted now lands once it has ended.
+#[test]
+fn a_trend_asked_for_mid_fit_lands_after_the_one_running() {
+    use datui::chart::chart_modal::{ChartFocus, Trend};
+    let (mut app, rx, tx) = open_trend_scatter("chart_trend_queue.csv", &trend_csv(3_000));
+    app.chart.modal.focus = ChartFocus::Trend;
+    for _ in 0..4 {
+        press(&mut app, KeyCode::Right);
+    }
+    assert_eq!(app.chart.modal.trend, Trend::Robust);
+    assert!(app.chart_trend_pending());
+    // Local before robust has answered.
+    press(&mut app, KeyCode::Right);
+    assert_eq!(app.chart.modal.trend, Trend::Local);
+    pump_until_trended(&mut app, &rx, &tx);
+    let text = draw_at(&mut app, 160, 34);
+    assert!(text.contains("local curve"), "{text}");
+    assert!(
+        !text.contains("half the points"),
+        "robust's answer dropped: {text}"
+    );
+    // Back to robust: fitted again, for the chart on screen.
+    press(&mut app, KeyCode::Left);
+    pump_until_trended(&mut app, &rx, &tx);
+    assert!(draw_at(&mut app, 160, 34).contains("half the points within"));
+}
+
+/// Theil–Sen's pairs are drawn with the chart's own sample's seed, named once.
+#[test]
+fn a_robust_fit_names_its_seed_once() {
+    use datui::chart::chart_modal::{ChartFocus, Trend};
+    let (mut app, rx, tx) = open_trend_scatter("chart_trend_seed.csv", &trend_csv(3_000));
+    app.chart.modal.row_limit = Some(2_000);
+    app.chart.modal.focus = ChartFocus::Trend;
+    for _ in 0..4 {
+        press(&mut app, KeyCode::Right);
+    }
+    assert_eq!(app.chart.modal.trend, Trend::Robust);
+    pump_until_trended(&mut app, &rx, &tx);
+    let text = draw_at(&mut app, 220, 34);
+    let title = text.lines().next().unwrap();
+    assert!(
+        title.contains("sample of 2,000 of 3,000 rows · seed "),
+        "{title}"
+    );
+    assert!(title.contains("pairs"), "{title}");
+    assert_eq!(title.matches("seed ").count(), 1, "{title}");
+    // Every row: no sample, so the pairs name theirs.
+    app.chart.modal.row_limit = None;
+    app.event(AppEvent::Wake);
+    pump_until_trended(&mut app, &rx, &tx);
+    let text = draw_at(&mut app, 220, 34);
+    let title = text.lines().next().unwrap();
+    assert!(title.contains("pairs · seed "), "{title}");
+}
+
+/// On a narrow terminal the panel's Trend lines stay inside its border.
+#[test]
+fn the_trend_rows_fit_a_narrow_panel() {
+    use datui::chart::chart_modal::{ChartFocus, Trend};
+    let (mut app, rx, tx) = open_trend_scatter("chart_trend_narrow.csv", &trend_csv(100));
+    app.chart.modal.spec.encoding.color.field = vec!["g".to_string()];
+    app.chart.modal.trend = Trend::Linear;
+    app.chart.modal.focus = ChartFocus::TrendOver;
+    press(&mut app, KeyCode::Right);
+    pump_until_trended(&mut app, &rx, &tx);
+    let text = draw_at(&mut app, 60, 24);
+    let over = text
+        .lines()
+        .find(|l| l.contains("all points"))
+        .unwrap_or_else(|| panic!("{text}"));
+    let (panel, _) = over.split_once('│').unwrap_or_else(|| panic!("{over}"));
+    assert!(panel.ends_with(' '), "a gap before the border: {over:?}");
+}

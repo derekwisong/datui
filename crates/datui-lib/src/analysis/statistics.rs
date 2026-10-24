@@ -1665,17 +1665,17 @@ impl Shift {
 /// spreads about the pairs' own means follow exactly whatever the shift; a shift
 /// near the mean keeps them clear of rounding.
 #[derive(Clone, Copy, Default)]
-struct PairSums {
-    count: usize,
-    x: f64,
-    y: f64,
-    xx: f64,
-    yy: f64,
-    xy: f64,
+pub(crate) struct PairSums {
+    pub(crate) count: usize,
+    pub(crate) x: f64,
+    pub(crate) y: f64,
+    pub(crate) xx: f64,
+    pub(crate) yy: f64,
+    pub(crate) xy: f64,
 }
 
 impl PairSums {
-    fn add(&mut self, v1: f64, v2: f64) {
+    pub(crate) fn add(&mut self, v1: f64, v2: f64) {
         self.count += 1;
         self.x += v1;
         self.y += v2;
@@ -1699,7 +1699,7 @@ impl PairSums {
     }
 
     /// The sums of squares and of products about the pairs' means.
-    fn spreads(&self) -> (f64, f64, f64) {
+    pub(crate) fn spreads(&self) -> (f64, f64, f64) {
         let n = self.count as f64;
         (
             self.xx - self.x * self.x / n,
@@ -1709,7 +1709,7 @@ impl PairSums {
     }
 
     /// NaN for fewer than two pairs or a column of one value.
-    fn correlation(&self) -> f64 {
+    pub(crate) fn correlation(&self) -> f64 {
         let (sxx, syy, sxy) = self.spreads();
         // Measured against the sums of squares: what a column with one value leaves
         // behind is rounding, not spread.
@@ -1724,7 +1724,7 @@ impl PairSums {
 /// degrees of freedom. With `t² = r²·df / (1 - r²)`, both tails together are
 /// `I_x(df/2, 1/2)` at `x = df / (df + t²) = 1 - r²`, taken directly so that a small p
 /// is not lost to `1 - cdf`.
-fn compute_correlation_p_value(correlation: f64, n: usize) -> f64 {
+pub(crate) fn compute_correlation_p_value(correlation: f64, n: usize) -> f64 {
     if n < 3 || correlation.is_nan() {
         return 1.0;
     }

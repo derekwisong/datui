@@ -13,6 +13,7 @@ use crate::chart::chart_data::{
 use crate::chart::chart_modal::{
     Aggregate, ChartModal, ChartSpec, Mark, RawLine, SMOOTH_POINTS, SMOOTH_SECONDS, Smooth,
 };
+use crate::chart::chart_trend::{self, Trend, TrendFits, TrendKey, TrendOver};
 use crate::numfmt;
 use crate::widgets::axis_numbers::AxisNumbers;
 
@@ -41,7 +42,8 @@ pub type PointsRef<'a> = &'a [Vec<(f64, f64)>];
 pub struct LinesData {
     /// One per series: its Y column, or its color group.
     pub names: Vec<String>,
-    pub series: Points,
+    /// Shared, so a trend's job reads them where they are.
+    pub series: std::sync::Arc<Points>,
     /// The series as smoothing, a clipped range or a log scale draws them. Only the
     /// chart on screen keeps one (`ChartCache::touch`): it is as large as the series.
     /// Boxed: most charts on hand are not the one on screen.
@@ -78,12 +80,16 @@ pub struct LinesData {
     pub ladder: Vec<Smooth>,
     /// `ladder` is empty because every window is within one envelope step's rows.
     pub steps_too_big: bool,
+    /// Per series, the rows read without an X or a Y.
+    pub nulls: Vec<usize>,
+    /// The trend fitted through the series by a job, for the key it names.
+    pub trend_fits: Option<Box<TrendFits>>,
 }
 
 /// How a line or scatter chart draws its values: smoothed, clipped to the range
 /// of the values that are not outliers, on a log scale, in that order; with the raw
-/// line behind a smoothed one. On a log scale the points at 0 or less on it are left
-/// out once smoothed, before the clip.
+/// line behind a smoothed one, and a scatter's trend over its points. On a log
+/// scale the points at 0 or less on it are left out once smoothed, before the clip.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Shown {
     /// Y as `log10(y)`.
@@ -93,6 +99,18 @@ pub struct Shown {
     pub clip: bool,
     pub smooth: Smooth,
     pub raw: RawLine,
+    pub trend: Trend,
+    pub over: TrendOver,
+}
+
+impl Shown {
+    /// The fits a trend draws, when one is on.
+    pub fn trend_key(&self) -> Option<TrendKey> {
+        (!self.trend.is_off()).then_some(TrendKey {
+            trend: self.trend,
+            over: self.over,
+        })
+    }
 }
 
 /// The series drawn as they are.
@@ -102,6 +120,8 @@ const PLAIN: Shown = Shown {
     clip: false,
     smooth: Smooth::Off,
     raw: RawLine::Off,
+    trend: Trend::Off,
+    over: TrendOver::Color,
 };
 
 /// The series as a [`Shown`] draws them, kept with the chart on screen. A copy is
@@ -134,7 +154,23 @@ pub struct ShownSeries {
     /// Where the crosshair stands when a log scale left points out: the Xs of the
     /// points drawn, in order, each once.
     pub stops: Option<Vec<f64>>,
+    /// The trend's lines as drawn, cut at the points' Y range.
+    pub trend: Vec<TrendCurve>,
+    /// Whether the trend's fits were in hand when this was made: a job's land later.
+    pub fitted: bool,
 }
+
+/// One trend line as drawn: of a series (its index) or of every point, in the units
+/// drawn, starting again where it left the Y range.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrendCurve {
+    pub series: Option<usize>,
+    pub points: Vec<(f64, f64)>,
+    pub breaks: Vec<usize>,
+}
+
+/// Points a formula's trend line is drawn through, across its X range.
+const TREND_STEPS: usize = 160;
 
 /// The Y range of the points that are not outliers, and how many are: a clipped
 /// chart draws those at its edge.
@@ -200,6 +236,8 @@ impl LinesData {
         let longest = grouped.series.iter().map(Vec::len).max().unwrap_or(0);
         Self {
             series_shown: None,
+            trend_fits: None,
+            nulls: grouped.nulls,
             y_clip: YClip::of(&grouped.series),
             ladder: smooth_ladder(&xs, longest, 1.0, grouped.x_axis_kind),
             steps_too_big: false,
@@ -210,7 +248,7 @@ impl LinesData {
             xs,
             bounds: extent(&grouped.series),
             names: grouped.names,
-            series: grouped.series,
+            series: std::sync::Arc::new(grouped.series),
             breaks: grouped.breaks,
             x_axis_kind: grouped.x_axis_kind,
             rows: grouped.rows,
@@ -283,6 +321,13 @@ impl LinesData {
             (_, raw) => raw,
         };
         let log_x = shown.log_x && self.x_axis_kind == XAxisTemporalKind::Numeric;
+        // Power and y = x read X as a number.
+        let time = self.x_axis_kind != XAxisTemporalKind::Numeric;
+        let trend = if time && !shown.trend.takes_time() {
+            Trend::Off
+        } else {
+            shown.trend
+        };
         Shown {
             log: shown.log,
             log_x,
@@ -291,15 +336,64 @@ impl LinesData {
             clip: shown.clip && (!smooth.is_off() || log_x || shown.log || self.y_clip.is_some()),
             smooth,
             raw,
+            trend,
+            over: if trend.takes_over() {
+                shown.over
+            } else {
+                TrendOver::Color
+            },
         }
     }
 
-    /// The copy kept as `shown` draws the series, when one is.
+    /// The copy kept as `shown` draws the series, when one is: made with the fits in
+    /// hand now.
     fn kept(&self, shown: Shown) -> Option<&ShownSeries> {
         let wanted = self.wanted(shown);
+        let fitted = self.fits_for(wanted).is_some();
         self.series_shown
             .as_deref()
-            .filter(|kept| kept.shown == wanted)
+            .filter(|kept| kept.shown == wanted && kept.fitted == fitted)
+    }
+
+    /// The fits `wanted` (settled) draws, once fitted.
+    fn fits_for(&self, wanted: Shown) -> Option<&TrendFits> {
+        let key = wanted.trend_key()?;
+        self.trend_fits.as_deref().filter(|fits| fits.key == key)
+    }
+
+    /// The trend `shown` draws, once fitted.
+    pub fn fits(&self, shown: Shown) -> Option<&TrendFits> {
+        self.fits_for(self.wanted(shown))
+    }
+
+    /// The fits `shown` asks for that a job has still to make.
+    pub fn trend_wanted(&self, shown: Shown) -> Option<TrendKey> {
+        let wanted = self.wanted(shown);
+        let key = wanted.trend_key()?;
+        (self.fits_for(wanted).is_none()).then_some(key)
+    }
+
+    /// Take fits a job made; the copy as drawn is made again with them.
+    pub fn take_fits(&mut self, fits: TrendFits) {
+        self.trend_fits = Some(Box::new(fits));
+        self.series_shown = None;
+    }
+
+    /// The rows without an X or a Y in the series `fits` were fitted on.
+    pub fn nulls_of(&self, fits: &TrendFits) -> usize {
+        if fits.key.over == TrendOver::Overall || fits.key.trend == Trend::Identity {
+            return self.nulls.iter().sum();
+        }
+        fits.fits
+            .iter()
+            .filter_map(|f| f.series)
+            .filter_map(|s| self.nulls.get(s))
+            .sum()
+    }
+
+    /// The trend lines as drawn.
+    pub fn trend_curves(&self, shown: Shown) -> &[TrendCurve] {
+        self.kept(shown).map_or(&[], |kept| kept.trend.as_slice())
     }
 
     /// What the series are drawn as now: as `shown` asks once a copy of them is kept,
@@ -309,7 +403,7 @@ impl LinesData {
     }
 
     /// Keep a copy of the series as `shown` draws them when that differs from the
-    /// series, and none otherwise.
+    /// series, and none otherwise. A trend is fitted by a job ([`Self::trend_wanted`]).
     pub fn keep_shown(&mut self, shown: Shown) {
         let wanted = self.wanted(shown);
         if wanted == PLAIN {
@@ -356,7 +450,7 @@ impl LinesData {
         });
         let (series_clip, series, smoothed_drawn) = match &kept {
             Some((clip, series, _, smoothed)) => (*clip, series, smoothed.as_ref().map(|(s, _)| s)),
-            None => (self.y_clip, &self.series, smoothed.as_ref()),
+            None => (self.y_clip, &*self.series, smoothed.as_ref()),
         };
         let clip = if wanted.clip {
             clip_of(smoothed_drawn, series, series_clip, raw_drawn, wanted.log)
@@ -412,6 +506,28 @@ impl LinesData {
             Some((_, _, positive, None)) => (positive.left_out, None, Some(positive.breaks), None),
             None => (LeftOut::default(), None, None, None),
         };
+        let fits = self.fits_for(wanted);
+        let trend = match (fits, bounds) {
+            (Some(fits), Some([x0, _, y0, y1])) => fits
+                .fits
+                .iter()
+                .map(|fit| {
+                    // On a log X, from the least X drawn: the line has no value at 0.
+                    let from = wanted.log_x.then(|| 10f64.powf(x0));
+                    let line: Vec<(f64, f64)> = trend_line(fit, from)
+                        .into_iter()
+                        .map(|(x, y)| (shown_x(x), shown_y(y, wanted.log, None)))
+                        .collect();
+                    let (points, breaks) = cut_to(&line, y0, y1);
+                    TrendCurve {
+                        series: fit.series,
+                        points,
+                        breaks,
+                    }
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
         ShownSeries {
             shown: wanted,
             smoothed,
@@ -424,6 +540,8 @@ impl LinesData {
             breaks,
             raw_breaks,
             stops,
+            trend,
+            fitted: fits.is_some(),
         }
     }
 
@@ -585,6 +703,94 @@ impl LinesData {
             })
     }
 }
+
+/// A fit's line in data units across its X range (from `from` when it is later):
+/// LOWESS's own points, or a formula's at even steps, in log X on a log X.
+fn trend_line(fit: &chart_trend::Fit, from: Option<f64>) -> Vec<(f64, f64)> {
+    let [lo, hi] = fit.x_range;
+    let lo = from.map_or(lo, |from| lo.max(from));
+    if let chart_trend::Model::Curve(points) = &fit.model {
+        return points
+            .iter()
+            .copied()
+            .filter(|&(x, _)| x >= lo && x <= hi)
+            .collect();
+    }
+    if hi < lo {
+        return Vec::new();
+    }
+    let log = from.is_some() && lo > 0.0;
+    let (a, b) = if log {
+        (lo.log10(), hi.log10())
+    } else {
+        (lo, hi)
+    };
+    (0..=TREND_STEPS)
+        .map(|i| {
+            let t = a + (b - a) * i as f64 / TREND_STEPS as f64;
+            let x = if log { 10f64.powf(t) } else { t };
+            (x, fit.model.at(x))
+        })
+        .collect()
+}
+
+/// `line` within Y of `lo..=hi`: cut where it leaves the range, at the edge, and
+/// started again where it comes back, so a curve never draws past the points'
+/// range or squeezes them. Returns the points and where each run after the first
+/// starts.
+fn cut_to(line: &[(f64, f64)], lo: f64, hi: f64) -> (Points1, Vec<usize>) {
+    let mut points = Vec::with_capacity(line.len());
+    let mut breaks = Vec::new();
+    let inside = |y: f64| (lo..=hi).contains(&y);
+    let edge = |y: f64| if y < lo { lo } else { hi };
+    let cross = |(x0, y0): (f64, f64), (x1, y1): (f64, f64), at: f64| {
+        (x0 + (x1 - x0) * (at - y0) / (y1 - y0), at)
+    };
+    // Whether the last point pushed continues to the next.
+    let mut open = false;
+    let start = |points: &mut Points1, breaks: &mut Vec<usize>, p: (f64, f64)| {
+        if !points.is_empty() {
+            breaks.push(points.len());
+        }
+        points.push(p);
+    };
+    let mut prev: Option<(f64, f64)> = None;
+    for &(x, y) in line {
+        if !y.is_finite() || !x.is_finite() {
+            prev = None;
+            open = false;
+            continue;
+        }
+        let here = (x, y);
+        match prev {
+            _ if inside(y) && open => points.push(here),
+            Some(p) if inside(y) => {
+                start(&mut points, &mut breaks, cross(p, here, edge(p.1)));
+                points.push(here);
+                open = true;
+            }
+            None if inside(y) => {
+                start(&mut points, &mut breaks, here);
+                open = true;
+            }
+            Some(p) if open => {
+                points.push(cross(p, here, edge(y)));
+                open = false;
+            }
+            // From below the range to above it, or back: through it.
+            Some(p) if (p.1 < lo && y > hi) || (p.1 > hi && y < lo) => {
+                start(&mut points, &mut breaks, cross(p, here, edge(p.1)));
+                points.push(cross(p, here, edge(y)));
+            }
+            _ => {}
+        }
+        prev = Some(here);
+    }
+    (points, breaks)
+}
+
+/// One series' points.
+type Points1 = Vec<(f64, f64)>;
 
 /// Where the range clips: `series`' outliers (`series_clip`); a smoothed line's own
 /// outliers; with the raw line behind it, the span of both lines without their
@@ -1043,6 +1249,9 @@ pub struct Axis {
     /// Values are a trailing mean, with the raw line behind as this says.
     pub smooth: Smooth,
     pub raw: RawLine,
+    /// A scatter's trend over the points, per series or overall.
+    pub trend: Trend,
+    pub over: TrendOver,
 }
 
 /// A chart as the screen and every export draw it: its data, borrowed from the chart
@@ -1074,6 +1283,87 @@ impl Plot<'_> {
             clip: self.y.clip,
             smooth: self.y.smooth,
             raw: self.y.raw,
+            trend: self.y.trend,
+            over: self.y.over,
+        }
+    }
+
+    /// A scatter's trend lines, drawn after the points; none otherwise.
+    pub fn trend_curves(&self) -> Vec<(Option<usize>, Curve<'_>)> {
+        let PlotData::Lines(lines) = &*self.data else {
+            return Vec::new();
+        };
+        let slots: Vec<usize> = self.drawn().map(|d| d.index).collect();
+        lines
+            .trend_curves(self.shown())
+            .iter()
+            .map(|t| {
+                let index = t.series.unwrap_or(0);
+                // In a file a series is colored by its place in the legend.
+                let slot = slots.iter().position(|&i| i == index).unwrap_or(0);
+                let curve = Curve {
+                    index,
+                    slot,
+                    points: Cow::Borrowed(&t.points),
+                    breaks: &t.breaks,
+                    other: false,
+                };
+                (t.series, curve)
+            })
+            .collect()
+    }
+
+    /// What a trend's reading says of this plot's axes: X's unit or name, Y's unit,
+    /// and what a point is under an aggregate.
+    pub fn trend_words(&self, modal: &ChartModal) -> chart_trend::Words<'_> {
+        let unit = |column: &str| {
+            modal
+                .units
+                .iter()
+                .find(|(name, _)| name == column)
+                .map(|(_, unit)| unit.clone())
+        };
+        let x = modal.x().cloned().unwrap_or_default();
+        let aggregate = modal.aggregate();
+        let y_unit = match modal.y() {
+            [y] if !aggregate.is_count() => unit(y),
+            _ => None,
+        };
+        let y_name = match modal.y() {
+            [y] => y.clone(),
+            _ => "y".to_string(),
+        };
+        chart_trend::Words {
+            x: &self.x,
+            y: &self.y,
+            x_unit: unit(&x),
+            x_name: x,
+            y_name,
+            y_unit,
+            points: chart_trend::points_of(aggregate),
+        }
+    }
+
+    /// The trend's plain reading, and the mark when Pearson and Spearman disagree.
+    pub fn trend_reading(
+        &self,
+        modal: &ChartModal,
+        g: &crate::glyphs::Glyphs,
+    ) -> Option<(Vec<String>, Option<String>)> {
+        let fits = self.trend_fits()?;
+        let parts = chart_trend::reading(fits, &self.trend_words(modal), g)?;
+        let names = match &*self.data {
+            PlotData::Lines(lines) => lines.names.as_slice(),
+            _ => &[],
+        };
+        Some((parts, chart_trend::rank_mark(fits, names, g)))
+    }
+
+    /// The trend fitted for the plot, once fitted.
+    pub fn trend_fits(&self) -> Option<&TrendFits> {
+        match &*self.data {
+            PlotData::Lines(lines) => lines.fits(self.shown()),
+            _ => None,
         }
     }
 
@@ -1368,6 +1658,8 @@ fn lines<'a>(data: Option<&'a PlotData>, context: &PlotContext<'_>) -> Plot<'a> 
             clip: shown.clip,
             smooth: shown.smooth,
             raw: shown.raw,
+            trend: shown.trend,
+            over: shown.over,
         },
         scatter: spec.mark == Mark::Scatter,
         y_from_zero: modal.y_from_zero_shown(),

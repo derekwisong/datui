@@ -2695,6 +2695,8 @@ fn every_registry_key_is_taken_where_it_is_listed() {
         (Context::Chart, "x"),
         (Context::Chart, "e"),
         (Context::Chart, "t"),
+        // A scatter with a trend.
+        (Context::Chart, "y"),
         // A saved view.
         (Context::Views, "↑ / ↓ (j/k)"),
         (Context::Views, "Enter"),

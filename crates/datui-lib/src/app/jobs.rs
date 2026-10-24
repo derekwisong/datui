@@ -66,6 +66,7 @@ pub enum JobKind {
     FileFacts,
     ChartExport,
     ChartPrepare,
+    ChartTrend,
     Find,
     ValueCounts,
     HexOpen,
@@ -157,6 +158,9 @@ pub(crate) enum Job {
     /// A chart's data for the selection on screen; judged by itself (see
     /// [`ChartPrep`]).
     ChartPrepare(Box<ChartPrep>),
+    /// A scatter's trend fitted off the event thread (Theil–Sen, LOWESS), for the
+    /// chart and method it names; judged by those.
+    ChartTrend(Box<ChartTrendFit>),
     /// A find reading the view for its next match.
     Find(crate::find::FindRun),
     /// Counting a column's values for the Value Counts screen.
@@ -208,6 +212,14 @@ pub(crate) struct ChartPrep {
     /// Set when the selection or its view moves on. A streamed count or group-by stops
     /// at its next batch; a sampled read runs out.
     pub(crate) cancel: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// A trend being fitted for the chart `request` names, by `key`. One at a time: the
+/// next is fitted once it ends, if still wanted.
+#[derive(Debug, Clone)]
+pub(crate) struct ChartTrendFit {
+    pub(crate) request: crate::ChartRequest,
+    pub(crate) key: crate::chart::chart_trend::TrendKey,
 }
 
 /// A view's sample being drawn. Judged by its rows, not the generation: paging,
@@ -280,6 +292,7 @@ impl Job {
             Job::FileFacts { .. } => JobKind::FileFacts,
             Job::ChartExport { .. } => JobKind::ChartExport,
             Job::ChartPrepare(_) => JobKind::ChartPrepare,
+            Job::ChartTrend(_) => JobKind::ChartTrend,
             Job::Find(_) => JobKind::Find,
             Job::ValueCounts => JobKind::ValueCounts,
             Job::HexOpen { .. } => JobKind::HexOpen,
@@ -326,6 +339,7 @@ impl Job {
             | Job::QualityReport
             | Job::FileFacts { .. }
             | Job::ChartExport { .. }
+            | Job::ChartTrend(_)
             | Job::HexOpen { .. }
             | Job::HexFind(_)
             | Job::UnfitCount { .. }
@@ -366,6 +380,7 @@ impl Job {
                 | Job::IndexLines { .. }
                 | Job::ReshapePreview { .. }
                 | Job::ChartPrepare(_)
+                | Job::ChartTrend(_)
         )
     }
 
@@ -383,6 +398,7 @@ impl Job {
                 | Job::IndexLines { .. }
                 | Job::ChartExport { .. }
                 | Job::ChartPrepare(_)
+                | Job::ChartTrend(_)
                 | Job::OwedRows { .. }
                 | Job::ReshapePreview { .. }
         )
@@ -488,6 +504,8 @@ pub(crate) enum Answer {
             Option<crate::chart::chart_modal::ColorCounts>,
         )>,
     ),
+    /// [`Job::ChartTrend`]: the fits.
+    ChartTrended(Box<crate::chart::chart_trend::TrendFits>),
     /// [`Job::FileFacts`]: what the file is.
     FileFacts(crate::widgets::info::FileFacts),
     /// [`Job::Find`]: the cell found, or `None` when nothing in the view matches.

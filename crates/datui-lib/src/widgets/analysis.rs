@@ -497,25 +497,31 @@ fn format_coefficient(r: f64, decimals: usize) -> String {
 /// A short reading of a coefficient, using the same 0.05/0.3 boundaries as the
 /// matrix's colors so the word never disagrees with the color.
 fn describe_correlation(r: f64) -> &'static str {
+    let positive = r > 0.0;
+    match correlation_strength(r) {
+        "none" => "none",
+        "weak" if positive => "weak positive",
+        "weak" => "weak negative",
+        "moderate" if positive => "moderate positive",
+        "moderate" => "moderate negative",
+        _ if positive => "strong positive",
+        _ => "strong negative",
+    }
+}
+
+/// How strong a coefficient is, whatever its sign: none, weak, moderate or strong at
+/// the matrix's 0.05/0.3/0.7 boundaries. A chart's trend reads its fit with it, so
+/// the two never disagree.
+pub(crate) fn correlation_strength(r: f64) -> &'static str {
     let strength = r.abs();
     if strength < 0.05 {
         "none"
     } else if strength < 0.3 {
-        if r > 0.0 {
-            "weak positive"
-        } else {
-            "weak negative"
-        }
+        "weak"
     } else if strength < 0.7 {
-        if r > 0.0 {
-            "moderate positive"
-        } else {
-            "moderate negative"
-        }
-    } else if r > 0.0 {
-        "strong positive"
+        "moderate"
     } else {
-        "strong negative"
+        "strong"
     }
 }
 

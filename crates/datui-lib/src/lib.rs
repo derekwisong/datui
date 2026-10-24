@@ -61,7 +61,6 @@ use app::background::{CacheWrites, InflightCollect, LenCount, OwedCount};
 use chart::chart_export::ChartExportRequest;
 use chart::chart_export_modal::ChartExportModal;
 use chart::chart_jobs::ChartRequest;
-use chart::chart_modal::ChartColumns;
 
 pub use analysis::quality_memory::{KeptQualitySample, QUALITY_MEMORY_BUDGET, RetainedCopy};
 use app::feedback::Confirm;
@@ -2033,6 +2032,7 @@ impl App {
             // The clock beside "source read finishing" keeps time until it has.
             || (self.overlay == Overlay::Analysis && self.cancelled_analysis_running().is_some())
             || self.chart_preparing()
+            || self.chart_trend_pending()
             || self.value_counts_computing()
             || (self.input_mode == InputMode::Home
                 && (self.home.listing_in_flight
@@ -3529,80 +3529,8 @@ impl App {
                 None
             }
             KeyCode::Char('c') => {
-                if let Some(state) = &self.data_table_state
-                    && self.at_table()
-                {
-                    let numeric_columns: Vec<String> = state
-                        .schema()
-                        .iter()
-                        .filter(|(_, dtype)| dtype.is_numeric())
-                        .map(|(name, _)| name.to_string())
-                        .collect();
-                    let datetime_columns: Vec<String> = state
-                        .schema()
-                        .iter()
-                        .filter(|(_, dtype)| {
-                            matches!(
-                                dtype,
-                                DataType::Datetime(_, _)
-                                    | DataType::Date
-                                    | DataType::Time
-                                    | DataType::Duration(_)
-                            )
-                        })
-                        .map(|(name, _)| name.to_string())
-                        .collect();
-                    let category_columns: Vec<String> = state
-                        .schema()
-                        .iter()
-                        .filter(|(_, dtype)| chart::chart_data::is_category_dtype(dtype))
-                        .map(|(name, _)| name.to_string())
-                        .collect();
-                    // Show Me: the chart starts from the cursor column's type.
-                    let cursor = state.current_column().and_then(|name| {
-                        let dtype = state.schema().get(name)?.clone();
-                        Some((name.to_string(), dtype))
-                    });
-                    // Dates and datetimes take a time bucket; a time of day does not.
-                    let bucketable_columns: Vec<String> = state
-                        .schema()
-                        .iter()
-                        .filter(|(_, dtype)| {
-                            matches!(dtype, DataType::Datetime(_, _) | DataType::Date)
-                        })
-                        .map(|(name, _)| name.to_string())
-                        .collect();
-                    let duration_columns: Vec<String> = state
-                        .schema()
-                        .iter()
-                        .filter(|(_, dtype)| matches!(dtype, DataType::Duration(_)))
-                        .map(|(name, _)| name.to_string())
-                        .collect();
-                    self.chart.modal.series_cap = Some(self.theme.series_colors().len());
-                    self.chart.modal.row_order = self.view_state().sort;
-                    let sampled = state.sampled().is_some();
-                    self.chart.modal.open(
-                        ChartColumns {
-                            numeric: &numeric_columns,
-                            datetime: &datetime_columns,
-                            bucketable: &bucketable_columns,
-                            duration: &duration_columns,
-                            category: &category_columns,
-                        },
-                        cursor.as_ref().map(|(name, dtype)| (name.as_str(), dtype)),
-                        Some(self.app_config.analysis.chart_rows),
-                        self.app_config.analysis.chart_grid,
-                        self.dataset_generation,
-                    );
-                    // A view's sample is read whole: the chart has no sample of its own.
-                    if sampled {
-                        self.chart.modal.row_limit = None;
-                    } else if self.chart.modal.view_sampled {
-                        self.chart.modal.row_limit = Some(self.chart.modal.sample_rows);
-                    }
-                    self.chart.modal.view_sampled = sampled;
-                    self.chart.cache.clear();
-                    self.open_overlay(Overlay::Chart);
+                if self.at_table() {
+                    self.open_chart();
                 }
                 None
             }
@@ -4793,6 +4721,10 @@ impl App {
                 self.chart_prepared(*prep, current, Ok(*prepared));
                 None
             }
+            (Job::ChartTrend(fit), Answer::ChartTrended(fits)) => {
+                self.chart_trended(*fit, current, *fits);
+                None
+            }
             (Job::ChartExport { path, format }, Answer::ChartExported) => {
                 // Leaving the chart's dataset supersedes the write, so a late finish does not
                 // reopen its modal over home.
@@ -4879,6 +4811,7 @@ impl App {
                 | Answer::Indented(_)
                 | Answer::Unpacked(_)
                 | Answer::ChartPrepared(_)
+                | Answer::ChartTrended(_)
                 | Answer::ChartExported
                 | Answer::FileFacts(_)
                 | Answer::UnfitCounted(_)
@@ -4949,6 +4882,16 @@ impl App {
                     message.to_string()
                 };
                 self.chart_prepared(*prep.clone(), current, Err(message));
+            }
+            // Kept as a fit that failed, so it is not fitted again; the reading says why.
+            Job::ChartTrend(fit) => {
+                let why = if panicked {
+                    "see the log".to_string()
+                } else {
+                    message.to_string()
+                };
+                let fits = crate::chart::chart_trend::TrendFits::failed(fit.key, why);
+                self.chart_trended(*fit.clone(), current, fits);
             }
             Job::Rows(_) | Job::OwedRows { .. } => {
                 self.rows_failed(current, waited, message, None);

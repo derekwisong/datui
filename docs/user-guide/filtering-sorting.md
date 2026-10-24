@@ -247,12 +247,14 @@ operator the same way, then type the value. <kbd>Enter</kbd> saves the row;
 | `=` `!=` | equal, not equal |
 | `<` `>` `<=` `>=` | less, greater, or equal |
 | `outside` | below the first value or above the second, written `LOW..HIGH`: `outside -5..60` keeps `-7` and `75` |
+| `between` | from the first value to the second, both included: `between -5..60` keeps `-5`, `0` and `60`, what `outside -5..60` leaves out but nulls |
 | `contains` `!contains` | text contains, or does not contain, the value |
 | `is null` `not null` | the value is null, or is not; these take no value |
 
 The operator list offers what the column's type takes: a number, date or time
-has no `contains`, text no `outside`, and a flag only `=`, `!=` and the null tests.
-<kbd>o</kbd> in [Analysis](analysis-features.md#distribution) adds one for you.
+has no `contains`, text no `outside` or `between`, and a flag only `=`, `!=` and
+the null tests. <kbd>o</kbd> and <kbd>O</kbd> in
+[Analysis](analysis-features.md#distribution) add one for you.
 
 The value is read as the column's type, so `> 1000` on a number column is a
 numeric comparison and `>= 2024-01-01` on a date column compares dates:

@@ -339,6 +339,9 @@ pub struct OutlierAnalysis {
     pub bounds: Option<(f64, f64)>,
     /// The outliers below the bounds; the rest are above.
     pub below: usize,
+    /// The values the counts leave out that lie past the bounds anyway: -inf below,
+    /// and +inf and NaN (which sorts above every number) above.
+    pub non_finite: (usize, usize),
 }
 
 #[derive(Clone)]
@@ -1235,7 +1238,17 @@ fn distribution_analysis(
         })
         .collect();
 
-    let outliers = compute_outlier_analysis(&column.finite, numeric_stats);
+    let mut outliers = compute_outlier_analysis(&column.finite, numeric_stats);
+    outliers.non_finite =
+        column
+            .floats
+            .iter()
+            .flatten()
+            .fold((0, 0), |(below, above), v| match v {
+                f64::NEG_INFINITY => (below + 1, above),
+                v if !v.is_finite() => (below, above + 1),
+                _ => (below, above),
+            });
 
     let percentiles = PercentileBreakdown {
         p25: numeric_stats.q25,
@@ -1272,6 +1285,7 @@ fn compute_outlier_analysis(values: &[f64], numeric_stats: &NumericStatistics) -
         zscore_count: 0,
         bounds: None,
         below: 0,
+        non_finite: (0, 0),
     };
     let Some(test) = OutlierTest::new(values, numeric_stats.q25, numeric_stats.q75) else {
         return analysis;

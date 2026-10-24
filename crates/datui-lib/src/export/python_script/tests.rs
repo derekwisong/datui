@@ -809,3 +809,103 @@ fn outside_keeps_the_values_past_either_end() {
         "~pl.col(\"n\").is_between(-5, 60)"
     );
 }
+
+/// `between` keeps its ends and what lies between them: with the same ends,
+/// [`FilterStatement::within`] keeps every value [`FilterStatement::past`] leaves out
+/// but nulls. A NaN sorts above every number, so it is past the high end; an infinity
+/// is past an end.
+#[test]
+fn between_keeps_what_outside_leaves_out() {
+    let frame = df!(
+        "n" => &[Some(-7i64), Some(-5), Some(0), Some(60), Some(75), None],
+        "u" => &[Some(0u32), Some(3), Some(9), None, None, None],
+        "x" => &[Some(-0.5), Some(0.25), Some(f64::NAN), Some(f64::INFINITY), Some(f64::NEG_INFINITY), None],
+        "m" => &[Some("1.50"), Some("2.00"), Some("3.25"), Some("9.99"), None, None],
+    )
+    .unwrap()
+    .lazy()
+    .with_column(col("m").cast(DataType::Decimal(10, 2)))
+    .collect()
+    .unwrap();
+    let schema = frame.schema().clone();
+    let kept = |statement: &FilterStatement| {
+        let dtype = schema.get(&statement.column);
+        assert_eq!(SidebarFilter::problem(statement, dtype), None);
+        frame
+            .clone()
+            .lazy()
+            .filter(filters_expr(&[SidebarFilter::typed(statement, dtype)]).unwrap())
+            .collect()
+            .unwrap()
+            .column(&statement.column)
+            .unwrap()
+            .as_materialized_series()
+            .cast(&DataType::Float64)
+            .unwrap()
+            .f64()
+            .unwrap()
+            .into_no_null_iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        kept(&statement("n", FilterOperator::Between, "-5..60")),
+        ["-5", "0", "60"],
+        "both ends are kept"
+    );
+    let cases: [(&str, Option<f64>, Option<f64>); 7] = [
+        ("n", Some(-5.5), Some(60.5)),
+        ("n", Some(-5.5), None),
+        ("n", None, Some(60.5)),
+        ("u", Some(-2.0), Some(8.0)),
+        ("x", Some(0.0), Some(1.0)),
+        ("x", Some(0.0), None),
+        ("m", Some(1.505), Some(3.2549)),
+    ];
+    for (column, low, high) in cases {
+        let dtype = schema.get(column).unwrap();
+        let past = FilterStatement::past(column, dtype, low, high).unwrap();
+        let within = FilterStatement::within(column, dtype, low, high).unwrap();
+        let (past, within) = (kept(&past), kept(&within));
+        let mut both: Vec<String> = past.iter().chain(&within).cloned().collect();
+        both.sort();
+        let mut all = kept(&statement(column, FilterOperator::IsNotNull, ""));
+        all.sort();
+        assert_eq!(
+            both, all,
+            "{column} {low:?}..{high:?}: {past:?} | {within:?}"
+        );
+    }
+    let x = schema.get("x").unwrap();
+    let past = FilterStatement::past("x", x, Some(0.0), Some(1.0)).unwrap();
+    let within = FilterStatement::within("x", x, Some(0.0), Some(1.0)).unwrap();
+    assert_eq!(within.describe(), "x between 0.0..1.0");
+    assert_eq!(kept(&past), ["-0.5", "NaN", "inf", "-inf"]);
+    assert_eq!(kept(&within), ["0.25"]);
+    let n = schema.get("n").unwrap();
+    assert_eq!(
+        FilterStatement::within("n", n, Some(-5.5), None)
+            .unwrap()
+            .describe(),
+        "n >= -5"
+    );
+    assert_eq!(
+        FilterStatement::within("n", n, None, Some(60.5))
+            .unwrap()
+            .describe(),
+        "n <= 60"
+    );
+    assert_eq!(
+        SidebarFilter::problem(&statement("n", FilterOperator::Between, "60..-5"), Some(n))
+            .as_deref(),
+        Some("n: LOW is above HIGH")
+    );
+    assert_eq!(
+        SidebarFilter::problem(&statement("n", FilterOperator::Between, "60"), Some(n)).as_deref(),
+        Some("n: write the range as LOW..HIGH")
+    );
+    assert_eq!(
+        SidebarFilter::typed(&statement("n", FilterOperator::Between, "-5..60"), Some(n)).python(),
+        "pl.col(\"n\").is_between(-5, 60)"
+    );
+}

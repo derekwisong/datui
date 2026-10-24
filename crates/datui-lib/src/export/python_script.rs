@@ -193,7 +193,9 @@ impl SidebarFilter {
                 .map(FilterValue::Typed)
                 .unwrap_or_else(|_| FilterValue::Str(text.to_string())),
         };
-        let bounds = (statement.operator == FilterOperator::Outside)
+        let bounds = statement
+            .operator
+            .is_range()
             .then(|| FilterOperator::bounds(&statement.value))
             .flatten()
             .map(|(low, high)| (typed(low), typed(high)));
@@ -237,7 +239,7 @@ impl SidebarFilter {
                 statement.operator,
                 FilterOperator::Contains | FilterOperator::NotContains
             );
-        if statement.operator == FilterOperator::Outside {
+        if statement.operator.is_range() {
             let Some((low, high)) = FilterOperator::bounds(&statement.value) else {
                 return Some(format!(
                     "{}: write the range as LOW..HIGH",
@@ -278,6 +280,13 @@ impl SidebarFilter {
                 Some((low, high)) => column.clone().lt(low.lit()).or(column.gt(high.lit())),
                 None => lit(false),
             },
+            FilterOperator::Between => match &self.bounds {
+                Some((low, high)) => column
+                    .clone()
+                    .gt_eq(low.lit())
+                    .and(column.lt_eq(high.lit())),
+                None => lit(false),
+            },
             FilterOperator::Contains => contains(),
             FilterOperator::NotContains => contains().not(),
             FilterOperator::IsNull => column.is_null(),
@@ -306,11 +315,18 @@ impl SidebarFilter {
             FilterOperator::Lt => "<",
             FilterOperator::GtEq => ">=",
             FilterOperator::LtEq => "<=",
-            FilterOperator::Outside => {
+            FilterOperator::Outside | FilterOperator::Between => {
+                let not = if self.operator == FilterOperator::Outside {
+                    "~"
+                } else {
+                    ""
+                };
                 return match &self.bounds {
-                    Some((low, high)) => {
-                        format!("~{column}.is_between({}, {})", low.python(), high.python())
-                    }
+                    Some((low, high)) => format!(
+                        "{not}{column}.is_between({}, {})",
+                        low.python(),
+                        high.python()
+                    ),
                     None => "pl.lit(False)".to_string(),
                 };
             }

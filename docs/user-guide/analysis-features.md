@@ -77,16 +77,28 @@ another family to compare with, which does not change the verdict.
 <kbd>s</kbd> toggles the histogram between linear and log scale, and
 <kbd>Esc</kbd> returns to the table.
 
-<kbd>o</kbd>, on a column in the list or in its detail, closes Analysis and
+<kbd>o</kbd>, on a column in the list or in its detail, closes Analysis,
 filters the table to that column's outliers and moves the column cursor to
-it. It adds a filter beside the filters in effect, which the
-[Sort & Filter sidebar](filtering-sorting.md) edits and removes:
-`COLUMN outside LOW..HIGH`, or `COLUMN > HIGH` (`COLUMN < LOW`) when the sample
-found outliers on one side only. Each end is the nearer of the IQR fence and
-three standard deviations, from the sample, rounded outward to four significant
-digits of the range between them. The table counts
-the rows past them in the whole view, so its count can differ from the
-sample's.
+it; <kbd>O</kbd> filters to the rest. Each adds a filter beside the filters in
+effect, which the [Sort & Filter sidebar](filtering-sorting.md) edits and
+removes:
+
+| Key | Filter | One side only |
+|---|---|---|
+| <kbd>o</kbd> | `COLUMN outside LOW..HIGH` | `COLUMN < LOW` or `COLUMN > HIGH` |
+| <kbd>O</kbd> | `COLUMN between LOW..HIGH` | `COLUMN >= LOW` or `COLUMN <= HIGH` |
+
+A filter is one-sided when the sample found outliers on one side only. Each end
+is the nearer of the IQR fence and three standard deviations, from the sample,
+rounded outward to four significant digits of the range between them. The table
+counts the rows past them in the whole view, so its count can differ from the
+sample's. Infinities and NaN, which sorts above every number, are past the
+ends; nulls are in neither filter.
+
+Pressed again on the same column while its filter is unedited, <kbd>o</kbd> or
+<kbd>O</kbd> replaces that filter, by the same ends rather than the sample of
+the filtered rows: the two flip between the outliers and the rest. A filter
+edited in the sidebar is an ordinary one, and a later press adds another.
 
 | Detail | Shows |
 |---|---|

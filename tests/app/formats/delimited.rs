@@ -89,9 +89,9 @@ fn a_log_opens_by_its_magic_with_units_metadata_and_a_utc_time() {
             .map(|n| n.as_str())
             .collect::<Vec<_>>(),
         [
-            "time", "Lcl Date", "Lcl Time", "UTCOfst", "Latitude", "volts", "cht1"
+            "Lcl Date", "Lcl Time", "UTCOfst", "time", "Latitude", "volts", "cht1"
         ],
-        "the derived column comes before its first source"
+        "the derived column comes after its last source"
     );
     assert_eq!(df.height(), 6, "the header lines are never data");
     let time = df.column("time").unwrap();
@@ -1100,6 +1100,23 @@ fn the_mangohud_spec_reads_a_folder_of_logs_and_their_names() {
     open(&mut app, &rx, logs, OpenOptions::default());
     let df = collected(&app);
     assert_eq!(df.height(), 2);
+    assert_eq!(
+        df.get_column_names()
+            .iter()
+            .map(|n| n.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "game",
+            "start",
+            "fps",
+            "frametime",
+            "cpu_load",
+            "gpu_load",
+            "elapsed",
+            "wall"
+        ],
+        "wall goes after elapsed, the last column it is made from"
+    );
     let notes = app.data_table_state.as_ref().unwrap().notes();
     assert!(
         notes.iter().any(|n| n

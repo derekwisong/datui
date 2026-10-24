@@ -381,9 +381,10 @@ pub const Q_SUMMARY: &[(&str, &str)] = &[
     ),
 ];
 
-/// `o` on Distribution and its detail: the selected column's outliers.
-const OUTLIERS_KEY: Key = k("o", "Outliers", "Filter the table to the column's outliers")
-    .more("Filter the table to the selected column's outliers, and move the column cursor to it: a filter column outside LOW..HIGH in the Sort & Filter sidebar, beside the filters in effect, or column > HIGH (column < LOW) when the sample found outliers on one side only. LOW and HIGH are the nearer of the IQR fences and three standard deviations on each side, from the sample, rounded outward to four significant digits of the range");
+/// `o` and `O` on Distribution and its detail: the selected column's outliers, or the
+/// rest.
+const OUTLIERS_KEY: Key = k("o / O", "Outliers", "Filter to the outliers (o) or the rest (O)")
+    .more("Filter the table to the selected column's outliers (o) or to the rest (O), and move the column cursor to it. o adds column outside LOW..HIGH in the Sort & Filter sidebar, beside the filters in effect; O adds column between LOW..HIGH. When the sample found outliers on one side only, the filter is one-sided: column < LOW or column >= LOW (column > HIGH or column <= HIGH). LOW and HIGH are the nearer of the IQR fences and three standard deviations on each side, from the sample, rounded outward to four significant digits of the range. Pressed again on the column while its filter is unedited, o or O replaces that filter by the same LOW and HIGH, so the two flip between the halves. Infinities and NaN, which sorts above every number, count as past the ends; nulls are in neither half");
 
 /// The analysis tools' sample keys, the same on each.
 const SAMPLE_KEYS: &[Key] = &[
@@ -1495,7 +1496,7 @@ pub const SCREENS: &[Screen] = &[
                 k("Space", "Pick", "Pick a column, or step the kind"),
                 k("← / →", "Change", "Step the kind: datetime, date or time"),
                 k("Enter", "Make", "Make the column")
-                    .more("Make the column, placed before the first column it is made from, as a format spec's derived column is. A date, a time and a UTC offset make a datetime in UTC"),
+                    .more("Make the column, placed after the last column it is made from, as a format spec's derived column is. A date, a time and a UTC offset make a datetime in UTC"),
                 k("Esc", "Cancel", "Cancel"),
             ],
         },

@@ -876,8 +876,8 @@ Between the results and the tools
 \fBEnter\fR
 Open the selected column's detail, a Q-Q plot and a histogram; with the sidebar focused, open a tool
 .TP
-\fBo\fR
-Filter the table to the selected column's outliers, and move the column cursor to it: a filter column outside LOW..HIGH in the Sort & Filter sidebar, beside the filters in effect, or column > HIGH (column < LOW) when the sample found outliers on one side only. LOW and HIGH are the nearer of the IQR fences and three standard deviations on each side, from the sample, rounded outward to four significant digits of the range
+\fBo / O\fR
+Filter the table to the selected column's outliers (o) or to the rest (O), and move the column cursor to it. o adds column outside LOW..HIGH in the Sort & Filter sidebar, beside the filters in effect; O adds column between LOW..HIGH. When the sample found outliers on one side only, the filter is one-sided: column < LOW or column >= LOW (column > HIGH or column <= HIGH). LOW and HIGH are the nearer of the IQR fences and three standard deviations on each side, from the sample, rounded outward to four significant digits of the range. Pressed again on the column while its filter is unedited, o or O replaces that filter by the same LOW and HIGH, so the two flip between the halves. Infinities and NaN, which sorts above every number, count as past the ends; nulls are in neither half
 .TP
 \fBEsc\fR
 Cancel a run in progress; otherwise from the results back to the tools, and from the tools close the analysis view
@@ -912,8 +912,8 @@ The first or last family
 \fBs\fR
 Histogram scale: linear or log
 .TP
-\fBo\fR
-Filter the table to the selected column's outliers, and move the column cursor to it: a filter column outside LOW..HIGH in the Sort & Filter sidebar, beside the filters in effect, or column > HIGH (column < LOW) when the sample found outliers on one side only. LOW and HIGH are the nearer of the IQR fences and three standard deviations on each side, from the sample, rounded outward to four significant digits of the range
+\fBo / O\fR
+Filter the table to the selected column's outliers (o) or to the rest (O), and move the column cursor to it. o adds column outside LOW..HIGH in the Sort & Filter sidebar, beside the filters in effect; O adds column between LOW..HIGH. When the sample found outliers on one side only, the filter is one-sided: column < LOW or column >= LOW (column > HIGH or column <= HIGH). LOW and HIGH are the nearer of the IQR fences and three standard deviations on each side, from the sample, rounded outward to four significant digits of the range. Pressed again on the column while its filter is unedited, o or O replaces that filter by the same LOW and HIGH, so the two flip between the halves. Infinities and NaN, which sorts above every number, count as past the ends; nulls are in neither half
 .TP
 \fBEsc\fR
 Back to the distribution table
@@ -1309,7 +1309,7 @@ Pick a column, or step the kind
 Step the kind: datetime, date or time
 .TP
 \fBEnter\fR
-Make the column, placed before the first column it is made from, as a format spec's derived column is. A date, a time and a UTC offset make a datetime in UTC
+Make the column, placed after the last column it is made from, as a format spec's derived column is. A date, a time and a UTC offset make a datetime in UTC
 .TP
 \fBEsc\fR
 Cancel

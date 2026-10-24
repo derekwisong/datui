@@ -84,6 +84,34 @@ impl DataTableState {
         &self.view.filters
     }
 
+    /// The split `o` or `O` filtered `column` by, and where its half is among the view's
+    /// filters, while that half is in effect as it was written: an edited one is an
+    /// ordinary filter.
+    pub fn outlier_split(
+        &self,
+        column: &str,
+    ) -> Option<(usize, &crate::app::modals::filter_modal::OutlierSplit)> {
+        self.outlier_splits
+            .iter()
+            .rev()
+            .filter(|split| split.past.column == column)
+            .find_map(|split| {
+                let at = self.view.filters.iter().position(|f| split.holds(f))?;
+                Some((at, split))
+            })
+    }
+
+    /// Keep `split`, in place of any split no longer in effect.
+    pub fn remember_outlier_split(
+        &mut self,
+        split: crate::app::modals::filter_modal::OutlierSplit,
+    ) {
+        let filters = &self.view.filters;
+        self.outlier_splits
+            .retain(|kept| filters.iter().any(|f| kept.holds(f)));
+        self.outlier_splits.push(split);
+    }
+
     pub fn view_sort_columns(&self) -> &[String] {
         &self.view.sort_columns
     }

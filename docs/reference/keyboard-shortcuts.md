@@ -536,7 +536,7 @@ Distribution in the Analysis sidebar.
 | `PgUp / PgDn` | A page |
 | `Tab / Shift+Tab` | Between the results and the tools |
 | `Enter` | Open the selected column's detail, a Q-Q plot and a histogram; with the sidebar focused, open a tool |
-| `o` | Filter the table to the selected column's outliers, and move the column cursor to it: a filter column outside LOW..HIGH in the Sort & Filter sidebar, beside the filters in effect, or column &gt; HIGH (column &lt; LOW) when the sample found outliers on one side only. LOW and HIGH are the nearer of the IQR fences and three standard deviations on each side, from the sample, rounded outward to four significant digits of the range |
+| `o / O` | Filter the table to the selected column's outliers (o) or to the rest (O), and move the column cursor to it. o adds column outside LOW..HIGH in the Sort & Filter sidebar, beside the filters in effect; O adds column between LOW..HIGH. When the sample found outliers on one side only, the filter is one-sided: column &lt; LOW or column &gt;= LOW (column &gt; HIGH or column &lt;= HIGH). LOW and HIGH are the nearer of the IQR fences and three standard deviations on each side, from the sample, rounded outward to four significant digits of the range. Pressed again on the column while its filter is unedited, o or O replaces that filter by the same LOW and HIGH, so the two flip between the halves. Infinities and NaN, which sorts above every number, count as past the ends; nulls are in neither half |
 | `Esc` | Cancel a run in progress; otherwise from the results back to the tools, and from the tools close the analysis view |
 
 ### Analysis: Distribution · Sample
@@ -560,7 +560,7 @@ Distribution in the Analysis sidebar.
 | `↑ / ↓ (j/k)` | Compare the values with another family |
 | `Home / End` | The first or last family |
 | `s` | Histogram scale: linear or log |
-| `o` | Filter the table to the selected column's outliers, and move the column cursor to it: a filter column outside LOW..HIGH in the Sort & Filter sidebar, beside the filters in effect, or column &gt; HIGH (column &lt; LOW) when the sample found outliers on one side only. LOW and HIGH are the nearer of the IQR fences and three standard deviations on each side, from the sample, rounded outward to four significant digits of the range |
+| `o / O` | Filter the table to the selected column's outliers (o) or to the rest (O), and move the column cursor to it. o adds column outside LOW..HIGH in the Sort & Filter sidebar, beside the filters in effect; O adds column between LOW..HIGH. When the sample found outliers on one side only, the filter is one-sided: column &lt; LOW or column &gt;= LOW (column &gt; HIGH or column &lt;= HIGH). LOW and HIGH are the nearer of the IQR fences and three standard deviations on each side, from the sample, rounded outward to four significant digits of the range. Pressed again on the column while its filter is unedited, o or O replaces that filter by the same LOW and HIGH, so the two flip between the halves. Infinities and NaN, which sorts above every number, count as past the ends; nulls are in neither half |
 | `Esc` | Back to the distribution table |
 
 ## Analysis: Correlation
@@ -813,7 +813,7 @@ Combine into datetime in the cell menu, on a text, date or time column.
 | `Tab / Shift+Tab (↑ / ↓)` | Next or previous field |
 | `Space` | Pick a column, or step the kind |
 | `← / →` | Step the kind: datetime, date or time |
-| `Enter` | Make the column, placed before the first column it is made from, as a format spec's derived column is. A date, a time and a UTC offset make a datetime in UTC |
+| `Enter` | Make the column, placed after the last column it is made from, as a format spec's derived column is. A date, a time and a UTC offset make a datetime in UTC |
 | `Esc` | Cancel |
 
 ### Combine into datetime · Picker

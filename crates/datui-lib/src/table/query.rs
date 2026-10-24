@@ -642,7 +642,7 @@ impl DataTableState {
     }
 
     /// The schema of the data as loaded with the column changes, and the column order to
-    /// match: a made column gone leaves it, a new one goes before its first source.
+    /// match: a made column gone leaves it, a new one goes after its last source.
     pub(super) fn show_column_changes(&mut self) {
         let (mut changed, _) =
             self.with_column_changes(self.view.base_lf.clone(), &self.view.base_schema);
@@ -655,19 +655,23 @@ impl DataTableState {
             if self.view.column_order.iter().any(|c| c == name.as_str()) {
                 continue;
             }
-            let first = self
+            let from = self
                 .view
                 .column_changes
                 .iter()
                 .find_map(|c| match &c.change {
                     crate::formats::column_types::Change::Made { from, .. } if c.name == *name => {
-                        from.first()
+                        Some(from.as_slice())
                     }
                     _ => None,
-                });
-            let at = first
-                .and_then(|f| self.view.column_order.iter().position(|c| c == f))
-                .unwrap_or(self.view.column_order.len());
+                })
+                .unwrap_or_default();
+            let at = self
+                .view
+                .column_order
+                .iter()
+                .rposition(|c| from.contains(c))
+                .map_or(self.view.column_order.len(), |last| last + 1);
             self.view.column_order.insert(at, name.to_string());
         }
         self.widths.relearn();

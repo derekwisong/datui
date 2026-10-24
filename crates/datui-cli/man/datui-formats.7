@@ -915,7 +915,7 @@ A column of the file takes \fBdescription\fR and \fBunit\fR alone (\fBbus1volts 
 .PP
 A source the spec types is read as its type before a column is made from it, so a duration's numbers are a length of time to add. A source from [\fB[files]\fR](#columns-from-file-names) can be one.
 .PP
-\fBformat = "%Y\-%m\-%d %H:%M:%S"\fR gives the strftime format of the text, a date and a time joined with a space; without it the format is inferred. A value that does not parse is null. The derived column goes before the first column it is made from, which is kept. A derived column named after one of its source columns replaces that column and its unit. There is no expression language: anything more is a query.
+\fBformat = "%Y\-%m\-%d %H:%M:%S"\fR gives the strftime format of the text, a date and a time joined with a space; without it the format is inferred. A value that does not parse is null. The derived column goes right after the last column it is made from, which is kept; the order of the \fB[columns]\fR entries does not set the column order. A derived column named after one of its source columns replaces that column and its unit. There is no expression language: anything more is a query.
 .PP
 \fBMatching\fR
 .PP

@@ -1638,33 +1638,29 @@ impl App {
     /// for its section's directory. Tables inside files, cloud sources and non-place
     /// rows have none.
     fn home_row_for_catalog(&self) -> Option<(PathBuf, String)> {
-        match self.home.selected_row()? {
-            home::Row::Place { path, .. } => {
-                let name = home::display_path(&path);
-                Some((path, name))
-            }
-            home::Row::Door { entry, .. } => {
-                // A local door's trailing slash goes; a URL keeps its `//`, which `components`
-                // would fold.
-                let path: PathBuf = if matches!(
-                    source::input_source(&entry.path),
-                    source::InputSource::Local(_)
-                ) {
-                    entry.path.components().collect()
+        // A local place's trailing slash goes, or the row would draw its name with two; a URL
+        // keeps its `//`, which `components` would fold.
+        let named = |path: &Path| {
+            let path: PathBuf =
+                if matches!(source::input_source(path), source::InputSource::Local(_)) {
+                    path.components().collect()
                 } else {
-                    entry.path.clone()
+                    path.to_path_buf()
                 };
-                Some((path.clone(), home::display_path(&path)))
-            }
+            let name = home::display_path(&path);
+            (path, name)
+        };
+        match self.home.selected_row()? {
+            home::Row::Place { path, .. } => Some(named(&path)),
+            home::Row::Door { entry, .. } => Some(named(&entry.path)),
             // A table inside a file is listed with its `table`: no stat asks it again, as
             // this is asked every frame for the footer.
             home::Row::Entry { entry, .. } => (entry.table.is_none()
                 && !home::is_cloud_place(&entry.path))
             .then(|| (entry.path.clone(), entry.name.clone())),
             home::Row::Header { section, .. } => {
-                let root = self.home.sections.get(section)?.root.clone()?;
-                let name = home::display_path(&root);
-                Some((root, name))
+                let root = self.home.sections.get(section)?.root.as_deref()?;
+                Some(named(root))
             }
             home::Row::More { .. } | home::Row::Hidden { .. } | home::Row::Up { .. } => None,
         }

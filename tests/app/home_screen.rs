@@ -893,6 +893,58 @@ fn test_ctrl_d_adds_to_the_catalog_and_forgets() {
     assert!(listed(&recents[2]), "the catalog keeps it");
 }
 
+/// A directory typed at `~` with its trailing slash is added under a name without one:
+/// the row adds a directory's slash, and `sets//` was drawn.
+#[test]
+fn test_ctrl_d_on_a_typed_directory_names_it_without_its_slash() {
+    common::isolate_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = datui::canonical::canonicalize(tmp.path()).unwrap();
+    let sets = root.join("sets");
+    std::fs::create_dir_all(&sets).unwrap();
+    std::fs::write(sets.join("a.csv"), "x\n1\n").unwrap();
+    let config = root.join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    app.use_catalog_dir(&config).unwrap();
+    app.enter_home();
+
+    app.event(key(KeyCode::Char('~')));
+    for c in format!("{}/", sets.display()).chars() {
+        app.event(key(KeyCode::Char(c)));
+    }
+    if let Some(next) = app.event(key(KeyCode::Enter)) {
+        tx.send(next).unwrap();
+    }
+    let header = |app: &App| {
+        app.home.visible().iter().position(|r| {
+            matches!(r, datui::home::Row::Header { section, .. }
+                if app.home.browsing.is_some()
+                    && app.home.sections[*section].root.as_ref() == app.home.browsing.as_ref())
+        })
+    };
+    assert!(
+        common::handle_until(&mut app, &rx, std::time::Duration::from_secs(30), |app| {
+            header(app).is_some()
+        }),
+        "the typed directory is listed"
+    );
+    let header = header(&app).unwrap();
+    app.home.select(header);
+    app.event(ctrl('d'));
+
+    let catalog = datui::home::catalog::read(
+        &config.join("catalog.toml"),
+        "mine",
+        datui::home::catalog::Origin::Mine,
+    )
+    .unwrap()
+    .expect("catalog.toml written");
+    let added = catalog.dataset_at(&sets).expect("the directory is added");
+    assert_eq!(added.name, datui::home::display_path(&sets));
+}
+
 /// The places Ctrl+D kept in the cache before catalogs move into catalog.toml the
 /// first time the home screen is listed, and the cache's list goes.
 #[test]

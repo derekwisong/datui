@@ -968,7 +968,7 @@ mod read {
             // A find kept as a filter matches cells as datui writes them.
             if !filter.operator.takes_value()
                 || filter.operator.is_find()
-                || filter.operator == FilterOperator::Outside
+                || filter.operator.is_range()
             {
                 return None;
             }
@@ -1017,7 +1017,9 @@ mod read {
                 FilterOperator::Has | FilterOperator::HasRegex | FilterOperator::HasFuzzy => {
                     unreachable!("a kept find is not pushed down")
                 }
-                FilterOperator::Outside => unreachable!("a range is not pushed down"),
+                FilterOperator::Outside | FilterOperator::Between => {
+                    unreachable!("a range is not pushed down")
+                }
             }
         }
 

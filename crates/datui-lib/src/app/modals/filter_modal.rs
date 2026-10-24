@@ -15,6 +15,9 @@ pub enum FilterOperator {
     /// Below the first value or above the second, written `LOW..HIGH`: the rows a
     /// range leaves out.
     Outside,
+    /// From the first value to the second, both included, written `LOW..HIGH`: the
+    /// rows `outside` leaves out, but for nulls.
+    Between,
     Contains,
     NotContains,
     IsNull,
@@ -45,6 +48,7 @@ impl FilterOperator {
             FilterOperator::GtEq => ">=",
             FilterOperator::LtEq => "<=",
             FilterOperator::Outside => "outside",
+            FilterOperator::Between => "between",
             FilterOperator::Contains => "contains",
             FilterOperator::NotContains => "!contains",
             FilterOperator::IsNull => "is null",
@@ -64,10 +68,15 @@ impl FilterOperator {
         )
     }
 
-    /// An `outside` value's two ends, `LOW..HIGH`.
+    /// A range's two ends, `LOW..HIGH`.
     pub fn bounds(value: &str) -> Option<(&str, &str)> {
         let (low, high) = value.split_once("..")?;
         Some((low.trim(), high.trim()))
+    }
+
+    /// `outside` and `between`: a value of two ends, `LOW..HIGH`.
+    pub fn is_range(&self) -> bool {
+        matches!(self, FilterOperator::Outside | FilterOperator::Between)
     }
 
     /// Whether the statement compares with a value; the null tests take none.
@@ -84,6 +93,7 @@ impl FilterOperator {
             FilterOperator::GtEq,
             FilterOperator::LtEq,
             FilterOperator::Outside,
+            FilterOperator::Between,
             FilterOperator::Contains,
             FilterOperator::NotContains,
             FilterOperator::IsNull,
@@ -127,7 +137,7 @@ impl Operand {
     pub fn offers(self, op: FilterOperator) -> bool {
         use FilterOperator::*;
         match self {
-            Self::Text => op != Outside,
+            Self::Text => !op.is_range(),
             Self::Any => true,
             Self::Ordered => !matches!(op, Contains | NotContains | Has | HasRegex | HasFuzzy),
             Self::Boolean => matches!(op, Eq | NotEq | IsNull | IsNotNull),
@@ -182,6 +192,50 @@ impl FilterStatement {
         low: Option<f64>,
         high: Option<f64>,
     ) -> Option<Self> {
+        let (operator, value) = match Self::ends(dtype, low, high)? {
+            (Some(low), Some(high)) => (FilterOperator::Outside, format!("{low}..{high}")),
+            (Some(low), None) => (FilterOperator::Lt, low),
+            (None, Some(high)) => (FilterOperator::Gt, high),
+            (None, None) => return None,
+        };
+        Some(Self::on(column, operator, value))
+    }
+
+    /// The rows [`Self::past`] leaves out but for nulls, by the same ends:
+    /// `between LOW..HIGH`, `>= LOW` or `<= HIGH`.
+    pub fn within(
+        column: &str,
+        dtype: &polars::prelude::DataType,
+        low: Option<f64>,
+        high: Option<f64>,
+    ) -> Option<Self> {
+        let (operator, value) = match Self::ends(dtype, low, high)? {
+            (Some(low), Some(high)) => (FilterOperator::Between, format!("{low}..{high}")),
+            (Some(low), None) => (FilterOperator::GtEq, low),
+            (None, Some(high)) => (FilterOperator::LtEq, high),
+            (None, None) => return None,
+        };
+        Some(Self::on(column, operator, value))
+    }
+
+    fn on(column: &str, operator: FilterOperator, value: String) -> Self {
+        Self {
+            columns: Vec::new(),
+            column: column.to_string(),
+            operator,
+            value,
+            logical_op: LogicalOperator::And,
+        }
+    }
+
+    /// `low` and `high` written for a column of `dtype`, as [`Self::past`] and
+    /// [`Self::within`] write them. `None` for a column that is not a number, or an end
+    /// that is not finite.
+    fn ends(
+        dtype: &polars::prelude::DataType,
+        low: Option<f64>,
+        high: Option<f64>,
+    ) -> Option<(Option<String>, Option<String>)> {
         use polars::prelude::DataType;
         // The places an end is written to: below `low` is below the next value up,
         // above `high` above the next one down.
@@ -216,22 +270,15 @@ impl FilterStatement {
                 low
             }
         });
-        let (operator, value) = match (low, high) {
-            (Some(low), Some(high)) => (
-                FilterOperator::Outside,
-                format!("{}..{}", write(low, true)?, write(high, false)?),
-            ),
-            (Some(low), None) => (FilterOperator::Lt, write(low, true)?),
-            (None, Some(high)) => (FilterOperator::Gt, write(high, false)?),
-            (None, None) => return None,
+        let low = match low {
+            Some(low) => Some(write(low, true)?),
+            None => None,
         };
-        Some(Self {
-            columns: Vec::new(),
-            column: column.to_string(),
-            operator,
-            value,
-            logical_op: LogicalOperator::And,
-        })
+        let high = match high {
+            Some(high) => Some(write(high, false)?),
+            None => None,
+        };
+        Some((low, high))
     }
 
     /// How the statement reads in a line of text: `prcp > 0`, `name has "smith"`,
@@ -255,6 +302,39 @@ impl FilterStatement {
         } else {
             format!("{} {op}{value}", self.column)
         }
+    }
+}
+
+/// One column's rows split at its outlier bounds: past them (`o`) and within them
+/// (`O`), written from the same ends so the two halves hold every value but nulls.
+/// Kept by the table while a half is a filter in effect, so `o` and `O` flip it in
+/// place by these ends rather than a sample of the rows it left.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OutlierSplit {
+    pub past: FilterStatement,
+    pub within: FilterStatement,
+}
+
+impl OutlierSplit {
+    /// `None` for a column that is not a number, or with no end.
+    pub fn new(
+        column: &str,
+        dtype: &polars::prelude::DataType,
+        low: Option<f64>,
+        high: Option<f64>,
+    ) -> Option<Self> {
+        Some(Self {
+            past: FilterStatement::past(column, dtype, low, high)?,
+            within: FilterStatement::within(column, dtype, low, high)?,
+        })
+    }
+
+    pub fn half(&self, past: bool) -> &FilterStatement {
+        if past { &self.past } else { &self.within }
+    }
+
+    pub fn holds(&self, statement: &FilterStatement) -> bool {
+        *statement == self.past || *statement == self.within
     }
 }
 

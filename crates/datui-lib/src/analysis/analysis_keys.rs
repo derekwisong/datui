@@ -2,6 +2,7 @@
 
 use crate::app::feedback::Confirm;
 use crate::app::form::ListMove;
+use crate::app::modals::filter_modal::OutlierSplit;
 use crate::{
     ANALYSIS_READ_WAITS, App, AppEvent, analysis::analysis_modal, analysis::sample_modal,
     analysis::sampling,
@@ -206,11 +207,11 @@ impl App {
                         }
                     }
                 }
-                KeyCode::Char('o')
+                KeyCode::Char(key @ ('o' | 'O'))
                     if self.analysis_modal.view == analysis_modal::AnalysisView::DistributionDetail
                         || self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main =>
                 {
-                    return self.keep_outliers();
+                    return self.filter_by_outliers(key == 'o');
                 }
                 KeyCode::Char('s')
                     // Toggle histogram scale (linear/log) in distribution detail view
@@ -277,37 +278,47 @@ impl App {
         None
     }
 
-    /// `o` on Distribution: the table filtered to the selected column's outliers, past
-    /// the bounds the sample set, rounded outward a little so they read, and only on
-    /// the sides it found any. The column cursor goes to the column.
-    fn keep_outliers(&mut self) -> Option<AppEvent> {
+    /// `o` on Distribution (`past`), or `O`: the table filtered to the selected
+    /// column's outliers, or to the rest, by the bounds the sample set, rounded outward
+    /// a little so they read, and only on the sides it found any. A split `o` or `O`
+    /// filtered the column by is flipped in place, by its own ends: the sample now
+    /// reads the half on screen. The column cursor goes to the column.
+    fn filter_by_outliers(&mut self, past: bool) -> Option<AppEvent> {
         let (column, outliers) = self.analysis_modal.selected_outliers()?;
         let column = column.to_string();
-        let Some((low, high)) = outliers.bounds.filter(|_| outliers.total_count > 0) else {
-            self.flash_note(format!("No outliers in {column}"));
-            return None;
-        };
-        let (low, high) = round_outward(low, high);
-        let below = outliers.below > 0;
-        let above = outliers.total_count > outliers.below;
+        let (bounds, total, below, (neg_inf, above_nan)) = (
+            outliers.bounds,
+            outliers.total_count,
+            outliers.below,
+            outliers.non_finite,
+        );
         let state = self.data_table_state.as_mut()?;
-        let statement = state.schema().get(&column).and_then(|dtype| {
-            crate::app::modals::filter_modal::FilterStatement::past(
-                &column,
-                dtype,
-                below.then_some(low),
-                above.then_some(high),
-            )
-        });
-        let Some(statement) = statement else {
-            self.flash_note(format!("{column} cannot be filtered by its outliers"));
-            return None;
-        };
-        state.set_current_column(&column);
         let mut statements = state.view_filters().to_vec();
-        if !statements.contains(&statement) {
-            statements.push(statement);
+        if let Some((at, split)) = state.outlier_split(&column) {
+            statements[at] = split.half(past).clone();
+        } else {
+            let Some((low, high)) = bounds.filter(|_| total + neg_inf + above_nan > 0) else {
+                self.flash_note(format!("No outliers in {column}"));
+                return None;
+            };
+            let (low, high) = round_outward(low, high);
+            // An infinity or NaN is past the bounds though the count leaves it out.
+            let above = total > below || above_nan > 0;
+            let below = below > 0 || neg_inf > 0;
+            let split = state.schema().get(&column).and_then(|dtype| {
+                OutlierSplit::new(&column, dtype, below.then_some(low), above.then_some(high))
+            });
+            let Some(split) = split else {
+                self.flash_note(format!("{column} cannot be filtered by its outliers"));
+                return None;
+            };
+            let half = split.half(past).clone();
+            state.remember_outlier_split(split);
+            if !statements.contains(&half) {
+                statements.push(half);
+            }
         }
+        state.set_current_column(&column);
         self.close_overlay();
         Some(AppEvent::Applied(crate::Applied::Filter(statements)))
     }

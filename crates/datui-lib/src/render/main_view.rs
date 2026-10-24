@@ -327,8 +327,8 @@ fn analysis_control_keys(app: &crate::App) -> Vec<Hint> {
     match modal.view {
         AnalysisView::DistributionDetail => {
             let mut keys = vec![key("↑ / ↓"), key("s")];
-            if has_outliers(modal) {
-                keys.push(key("o"));
+            if has_outliers(app) {
+                keys.push(key("o / O"));
             }
             keys.push(key("Esc"));
             return keys;
@@ -407,8 +407,8 @@ fn analysis_control_keys(app: &crate::App) -> Vec<Hint> {
         if detail {
             keys.push(say("Enter", "Detail"));
         }
-        if has_outliers(modal) {
-            keys.push(key("o"));
+        if has_outliers(app) {
+            keys.push(key("o / O"));
         }
         if matches!(tool, AnalysisTool::CorrelationMatrix) {
             rest.push(key("m"));
@@ -443,11 +443,19 @@ fn analysis_control_keys(app: &crate::App) -> Vec<Hint> {
     keys
 }
 
-/// Whether the distribution row selected found outliers, for `o` to filter to.
-fn has_outliers(modal: &crate::analysis::analysis_modal::AnalysisModal) -> bool {
-    modal
+/// Whether the distribution row selected found outliers, or its column is filtered by
+/// a split `o` or `O` made, for them to filter by.
+fn has_outliers(app: &crate::App) -> bool {
+    app.analysis_modal
         .selected_outliers()
-        .is_some_and(|(_, outliers)| outliers.total_count > 0 && outliers.bounds.is_some())
+        .is_some_and(|(column, outliers)| {
+            let (below, above) = outliers.non_finite;
+            (outliers.total_count + below + above > 0 && outliers.bounds.is_some())
+                || app
+                    .data_table_state
+                    .as_ref()
+                    .is_some_and(|state| state.outlier_split(column).is_some())
+        })
 }
 
 /// The Data Quality pages' keys. Whatever owns the keys right now — a run in

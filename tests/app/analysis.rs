@@ -1056,7 +1056,7 @@ fn test_o_on_distribution_filters_to_the_columns_outliers() {
         .distribution_table_state
         .select(Some(amount));
     let screen = counts_screen(&mut app, 100, 30);
-    assert!(screen.contains("o Outliers"), "{screen}");
+    assert!(screen.contains("o/O Outliers"), "{screen}");
     press_and_send(&mut app, &tx, KeyCode::Char('o'));
     pump_until_idle(&mut app, &rx, &tx);
     painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 30));
@@ -1069,4 +1069,148 @@ fn test_o_on_distribution_filters_to_the_columns_outliers() {
         app.data_table_state.as_ref().unwrap().current_column(),
         Some("amount")
     );
+}
+
+/// 200 values and one far out on each side.
+fn two_tails_csv() -> String {
+    std::iter::once("id,amount\n".to_string())
+        .chain((1..=200).map(|i| format!("{i},{i}\n")))
+        .chain(["201,1000000\n".to_string(), "202,-1000000\n".to_string()])
+        .collect()
+}
+
+/// Analysis open on Distribution, run over the view as it is, with `column` selected.
+fn distribution_on(
+    app: &mut App,
+    rx: &mpsc::Receiver<AppEvent>,
+    tx: &mpsc::Sender<AppEvent>,
+    column: &str,
+) {
+    press_and_send(app, tx, KeyCode::Char('a'));
+    app.analysis_modal.sidebar_state.select(Some(1));
+    press_and_send(app, tx, KeyCode::Enter);
+    // Once a sample has run, a tool runs again at once over the view as it now is;
+    // before that, its Sample form waits for Enter.
+    if !app.is_busy() && app.analysis_modal.distribution_results.is_none() {
+        press_and_send(app, tx, KeyCode::Enter);
+    }
+    pump_until_idle(app, rx, tx);
+    let at = app
+        .analysis_modal
+        .distribution_results
+        .as_ref()
+        .unwrap()
+        .distribution_analyses
+        .iter()
+        .position(|d| d.column_name == column)
+        .unwrap();
+    app.analysis_modal.distribution_table_state.select(Some(at));
+}
+
+fn outlier_press(
+    app: &mut App,
+    rx: &mpsc::Receiver<AppEvent>,
+    tx: &mpsc::Sender<AppEvent>,
+    key: char,
+) -> Vec<datui::app::modals::filter_modal::FilterStatement> {
+    distribution_on(app, rx, tx, "amount");
+    press_and_send(app, tx, KeyCode::Char(key));
+    pump_until_idle(app, rx, tx);
+    painted(app, rx, tx, Rect::new(0, 0, 100, 30));
+    assert!(app.at_table(), "{key} closes Analysis");
+    app.data_table_state
+        .as_ref()
+        .unwrap()
+        .view_filters()
+        .to_vec()
+}
+
+/// `O` keeps the rows `o` leaves out, by the same ends; pressed again, either replaces
+/// its own filter by those ends rather than adding one or trimming the rest further.
+#[test]
+fn test_capital_o_keeps_the_rest_and_o_and_o_flip() {
+    use datui::app::modals::filter_modal::FilterOperator;
+    let (mut app, rx, tx) = open_csv_with(
+        "distribution_inliers.csv",
+        &two_tails_csv(),
+        OpenOptions::default(),
+    );
+    let filters = outlier_press(&mut app, &rx, &tx, 'O');
+    assert_eq!(filters.len(), 1);
+    assert_eq!(filters[0].operator, FilterOperator::Between);
+    assert_eq!(current_rows(&app), 200);
+    let within = filters[0].clone();
+
+    let filters = outlier_press(&mut app, &rx, &tx, 'O');
+    assert_eq!(
+        filters,
+        std::slice::from_ref(&within),
+        "O again keeps the same ends"
+    );
+    assert_eq!(current_rows(&app), 200);
+
+    let filters = outlier_press(&mut app, &rx, &tx, 'o');
+    assert_eq!(filters.len(), 1, "o replaces O's filter: {filters:?}");
+    assert_eq!(filters[0].operator, FilterOperator::Outside);
+    assert_eq!(filters[0].value, within.value, "by the same ends");
+    let mut ids = on_screen(&app, "id");
+    ids.sort();
+    assert_eq!(ids, ["201", "202"]);
+
+    let filters = outlier_press(&mut app, &rx, &tx, 'O');
+    assert_eq!(filters, [within]);
+    assert_eq!(current_rows(&app), 200);
+}
+
+/// Infinities and NaN are past the bounds though the count leaves them out: `o` keeps
+/// them and `O` drops them, so a column with some has both sides bounded even where
+/// its finite outliers are all on one.
+#[test]
+fn test_o_keeps_infinities_and_nan_and_capital_o_drops_them() {
+    use datui::app::modals::filter_modal::FilterOperator;
+    let ids: Vec<i64> = (1..=203).collect();
+    let amounts: Vec<f64> = (1..=200)
+        .map(f64::from)
+        .chain([-1_000_000.0, f64::INFINITY, f64::NAN])
+        .collect();
+    let mut df = df!("id" => ids, "amount" => amounts).unwrap();
+    let path = common::fixture_dir().join("distribution_non_finite.parquet");
+    ParquetWriter::new(std::fs::File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    let filters = outlier_press(&mut app, &rx, &tx, 'O');
+    assert_eq!(filters[0].operator, FilterOperator::Between, "{filters:?}");
+    assert_eq!(current_rows(&app), 200);
+    let filters = outlier_press(&mut app, &rx, &tx, 'o');
+    assert_eq!(filters[0].operator, FilterOperator::Outside, "{filters:?}");
+    let mut ids = on_screen(&app, "id");
+    ids.sort();
+    assert_eq!(ids, ["201", "202", "203"]);
+}
+
+/// A filter `o` or `O` added and then edited is an ordinary filter: a later press adds
+/// its own beside it.
+#[test]
+fn test_an_edited_outlier_filter_is_not_replaced() {
+    let (mut app, rx, tx) = open_csv_with(
+        "distribution_edited.csv",
+        &two_tails_csv(),
+        OpenOptions::default(),
+    );
+    let mut filters = outlier_press(&mut app, &rx, &tx, 'O');
+    filters[0].value = "-2000000..2000000".to_string();
+    tx.send(AppEvent::Applied(datui::Applied::Filter(filters.clone())))
+        .unwrap();
+    pump_until_idle(&mut app, &rx, &tx);
+    painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 30));
+    assert_eq!(current_rows(&app), 202);
+
+    let after = outlier_press(&mut app, &rx, &tx, 'O');
+    assert_eq!(after.len(), 2, "{after:?}");
+    assert_eq!(after[0], filters[0], "the edited filter stays as edited");
+    assert_eq!(current_rows(&app), 200);
 }

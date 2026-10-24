@@ -158,6 +158,8 @@ pub struct DataTableState {
     column_moves: Vec<WaitingMove>,
     /// The pages `]` went, from and to, so `[` straight after goes back exactly.
     page_trail: Vec<(usize, usize)>,
+    /// The splits `o` and `O` filtered by: see [`Self::outlier_split`].
+    outlier_splits: Vec<crate::app::modals::filter_modal::OutlierSplit>,
     /// Which columns the last draw showed, while some are off screen.
     pub(crate) on_screen: Option<OnScreen>,
     /// Where the last frame drew the rows and columns, for a click.
@@ -609,6 +611,7 @@ impl DataTableState {
             scroll_room: None,
             column_moves: Vec::new(),
             page_trail: Vec::new(),
+            outlier_splits: Vec::new(),
             on_screen: None,
             drawn: None,
             page_cells: Default::default(),

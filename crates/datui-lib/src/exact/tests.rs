@@ -272,9 +272,11 @@ fn str_value_never_panics_on_a_date_past_the_calendar() {
         TimeUnit::Microseconds,
         TimeUnit::Nanoseconds,
     ] {
+        // The longest durations, in the table's own form.
         for v in [i64::MIN, i64::MIN + 1, i64::MAX] {
-            let value = AnyValue::Duration(v, unit);
-            assert_eq!(str_value(&value), value.str_value());
+            let text = str_value(&AnyValue::Duration(v, unit));
+            assert_eq!(text.starts_with('-'), v < 0, "{text}");
+            assert!(text.contains("d ") && text.ends_with('s'), "{text}");
         }
     }
 
@@ -515,4 +517,29 @@ fn a_list_previews_ten_items_and_counts_the_rest() {
         text.len()
     );
     assert!(text.starts_with("[xxx") && text.ends_with("..."));
+}
+
+/// A duration reads in its units, exactly: whole days, hours and minutes, seconds with
+/// their fraction, and under a second the largest unit that is at least one.
+#[test]
+fn durations_read_in_their_units_exactly() {
+    let ns = |v| duration_text(v, TimeUnit::Nanoseconds);
+    assert_eq!(ns(16_666_700), "16.6667ms");
+    assert_eq!(ns(6_930_000), "6.93ms");
+    assert_eq!(ns(1_500), "1.5µs");
+    assert_eq!(ns(999), "999ns");
+    assert_eq!(ns(0), "0ns");
+    assert_eq!(ns(100_000_000), "100ms");
+    assert_eq!(ns(83_500_000_000), "1m 23.5s");
+    assert_eq!(ns(60_000_000_001), "1m 0.000000001s");
+    assert_eq!(ns(100_800_000_000_000), "1d 4h");
+    assert_eq!(ns(-90_000_000_000), "-1m 30s");
+    assert_eq!(
+        duration_text(i64::MIN, TimeUnit::Milliseconds),
+        "-106751991167d 7h 12m 55.808s"
+    );
+    assert_eq!(
+        str_value(&AnyValue::Duration(1_500, TimeUnit::Microseconds)),
+        "1.5ms"
+    );
 }

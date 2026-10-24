@@ -262,7 +262,7 @@ numeric comparison and `>= 2024-01-01` on a date column compares dates:
 | Date | `2024-01-01` |
 | Date and time | `2024-01-01` (its midnight), `2024-01-01 05:30`, `2024-01-01T05:30:00.25`; a column with a time zone reads the clock there, and an offset (`+01:00`, `Z`) names the instant instead |
 | Time | `05:30`, `05:30:00`, `05:30:00.25` |
-| Duration | `1d 2h 30m`, `90s`, `1500ms`, `-5m`: whole numbers of `d` `h` `m` `s` `ms` `us` `ns` |
+| Duration | `1d 2h 30m`, `90s`, `16.5ms`, `-1m 30s`, as the table shows them: numbers of `d` `h` `m` `s` `ms` `us` `ns`, a fraction to the nanosecond, and a sign in front for the whole |
 | Decimal | `1.5`, read at the column's scale, so it is `1.50` |
 
 If the column cannot read a value, the sidebar stays open and the line above

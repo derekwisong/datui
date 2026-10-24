@@ -385,19 +385,35 @@ fn utc_of(v: i64, unit: TimeUnit) -> Option<NaiveDateTime> {
     Some(at.naive_utc())
 }
 
-/// A duration as Polars writes one (`1d 2h 3m 4s 5µs`, `-1m -30s`, `1500ms`): parts
-/// of a whole number and a unit, `d h m s ms us µs ns`, each signed on its own, as
-/// nanoseconds.
+/// A duration as Polars writes one (`1d 2h 3m 4s 5µs`, `-1m -30s`, `1500ms`) or as
+/// the table does (`1m 23.5s`, `16.6667ms`, `-1m 30s`): parts of a number and a unit,
+/// `d h m s ms us µs ns`, as nanoseconds. A sign on the first part alone signs them
+/// all; a fraction finer than a nanosecond does not read.
 fn parse_duration(text: &str) -> Option<i128> {
     let mut total: i128 = 0;
     let mut parts = 0;
+    let mut signed_each = false;
+    let mut negative = false;
     for part in text.split_whitespace() {
         let digits_end = part
             .char_indices()
-            .find(|(i, c)| !(c.is_ascii_digit() || (*i == 0 && *c == '-')))
+            .find(|(i, c)| !(c.is_ascii_digit() || *c == '.' || (*i == 0 && *c == '-')))
             .map(|(i, _)| i)?;
         let (number, suffix) = part.split_at(digits_end);
-        let number: i128 = number.parse().ok()?;
+        let (minus, number) = match number.strip_prefix('-') {
+            Some(n) => (true, n),
+            None => (false, number),
+        };
+        if parts == 0 {
+            negative = minus;
+        } else if minus {
+            signed_each = true;
+        }
+        let (whole, fraction) = number.split_once('.').unwrap_or((number, ""));
+        if whole.is_empty() || whole.contains('.') || fraction.contains('.') {
+            return None;
+        }
+        let whole: i128 = whole.parse().ok()?;
         let per: i128 = match suffix {
             "d" => 86_400_000_000_000,
             "h" => 3_600_000_000_000,
@@ -408,7 +424,26 @@ fn parse_duration(text: &str) -> Option<i128> {
             "ns" => 1,
             _ => return None,
         };
-        total = total.checked_add(number.checked_mul(per)?)?;
+        let digits = u32::try_from(fraction.len()).ok()?;
+        let scale = 10i128.checked_pow(digits)?;
+        let fraction: i128 = if fraction.is_empty() {
+            0
+        } else {
+            fraction.parse().ok()?
+        };
+        if (fraction * per) % scale != 0 {
+            return None;
+        }
+        let ns = whole
+            .checked_mul(per)?
+            .checked_add(fraction * per / scale)?;
+        // Polars signs each part; the table signs the whole.
+        let ns = if minus || (negative && !signed_each) {
+            -ns
+        } else {
+            ns
+        };
+        total = total.checked_add(ns)?;
         parts += 1;
     }
     (parts > 0).then_some(total)

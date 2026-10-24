@@ -164,7 +164,7 @@ fn text_of(name: &str, dtype: &DataType) -> Option<Expr> {
     })
 }
 
-/// A duration column as the text the table shows for it, such as `1d 2h`.
+/// A duration column as the text the table shows for it, such as `1d 2h` or `16.5ms`.
 fn duration_text(column: Expr, unit: TimeUnit) -> Expr {
     column.map_with_fmt_str(
         move |c| {
@@ -173,8 +173,7 @@ fn duration_text(column: Expr, unit: TimeUnit) -> Expr {
                 .to_physical_repr()
                 .i64()?
                 .apply_into_string_amortized(|v, out| {
-                    use std::fmt::Write;
-                    let _ = write!(out, "{}", AnyValue::Duration(v, unit));
+                    out.push_str(&crate::exact::duration_text(v, unit));
                 });
             Ok(text.with_name(c.name().clone()).into_column())
         },

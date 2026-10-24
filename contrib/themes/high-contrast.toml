@@ -64,6 +64,7 @@ chart_8 = "#00ffaf"
 chart_9 = "#ff5fd7"
 chart_10 = "#ffff87"
 chart_grid = "#4e4e4e"
+chart_trend = "#ffffff"
 
 find_match = "#ffd75f"
 hex_null = "#a8a8a8"

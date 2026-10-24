@@ -102,6 +102,7 @@ fn lines(series: Points, kind: XAxisTemporalKind) -> LinesData {
             x_axis_kind: kind,
             rows: RowsRead::default(),
             other: false,
+            nulls: Vec::new(),
         },
         None,
     )
@@ -746,4 +747,115 @@ fn an_envelope_on_a_log_y_stands_on_its_least_value_above_zero() {
     assert_eq!(drawn[0].points[0], (1.0, 1.0));
     // Linear, the steps as read.
     assert_eq!(data.drawn(Shown::default()).next().unwrap().points.len(), 5);
+}
+
+fn trended(trend: Trend, over: TrendOver) -> Shown {
+    Shown {
+        trend,
+        over,
+        ..Shown::default()
+    }
+}
+
+/// A line through 21 points: `y = 2x + 1`, and a second series a little off it.
+fn on_a_line() -> LinesData {
+    let mut data = lines(
+        vec![
+            (0..=20).map(|x| (x as f64, 2.0 * x as f64 + 1.0)).collect(),
+            (0..=20)
+                .map(|x| (x as f64, 10.0 + if x % 2 == 0 { 1.0 } else { -1.0 }))
+                .collect(),
+        ],
+        XAxisTemporalKind::Numeric,
+    );
+    data.nulls = vec![2, 3];
+    data
+}
+
+/// What a trend's job hands back: `shown`'s fits over `data`'s series.
+fn fit(data: &mut LinesData, shown: Shown) {
+    let key = data.trend_wanted(shown).expect("a trend to fit");
+    let fits = chart_trend::fit_all(&data.series, data.other, key, 1, &|| false).unwrap();
+    data.take_fits(fits);
+    data.keep_shown(shown);
+}
+
+/// A trend waits on its job, then is drawn across each series' X range.
+#[test]
+fn a_trend_is_drawn_over_each_series_once_fitted() {
+    let mut data = on_a_line();
+    let shown = trended(Trend::Linear, TrendOver::Color);
+    data.keep_shown(shown);
+    assert!(
+        data.trend_curves(shown).is_empty(),
+        "nothing fitted on the event thread"
+    );
+    fit(&mut data, shown);
+    assert_eq!(data.trend_wanted(shown), None);
+    let curves = data.trend_curves(shown);
+    assert_eq!(curves.len(), 2);
+    let first = &curves[0];
+    assert_eq!(first.series, Some(0));
+    assert_eq!(first.points.first(), Some(&(0.0, 1.0)));
+    let &(x, y) = first.points.last().unwrap();
+    assert!(
+        (x - 20.0).abs() < 1e-9 && (y - 41.0).abs() < 1e-9,
+        "{x} {y}"
+    );
+    assert!(first.breaks.is_empty());
+    let fits = data.fits(shown).unwrap();
+    assert_eq!(data.nulls_of(fits), 5, "both series' nulls");
+
+    // Overall: one line through every point, every null counted.
+    let overall = trended(Trend::Linear, TrendOver::Overall);
+    data.keep_shown(overall);
+    assert!(data.trend_wanted(overall).is_some(), "fits of another key");
+    fit(&mut data, overall);
+    let curves = data.trend_curves(overall);
+    assert_eq!(curves.len(), 1);
+    assert_eq!(curves[0].series, None);
+    assert_eq!(data.nulls_of(data.fits(overall).unwrap()), 5);
+}
+
+/// A fit that is stopped hands back nothing.
+#[test]
+fn a_stopped_fit_answers_nothing() {
+    let data = on_a_line();
+    let key = chart_trend::TrendKey {
+        trend: Trend::Local,
+        over: TrendOver::Color,
+    };
+    assert!(chart_trend::fit_all(&data.series, false, key, 1, &|| true).is_none());
+}
+
+/// A time X takes neither power nor y = x.
+#[test]
+fn a_time_x_drops_the_number_only_trends() {
+    let dates = lines(vec![vec![(1.0, 1.0)]], XAxisTemporalKind::Date);
+    let wanted = dates.wanted(trended(Trend::Power, TrendOver::Color));
+    assert_eq!(wanted.trend, Trend::Off);
+    let wanted = dates.wanted(trended(Trend::Linear, TrendOver::Overall));
+    assert_eq!(
+        (wanted.trend, wanted.over),
+        (Trend::Linear, TrendOver::Overall)
+    );
+    // y = x is one line: Over settles.
+    let numbers = lines(vec![vec![(1.0, 1.0)]], XAxisTemporalKind::Numeric);
+    let wanted = numbers.wanted(trended(Trend::Identity, TrendOver::Overall));
+    assert_eq!(wanted.over, TrendOver::Color);
+}
+
+/// A curve is cut where it leaves the points' Y range, at the edge, and starts
+/// again where it comes back.
+#[test]
+fn a_trend_is_cut_at_the_points_range() {
+    let (points, breaks) = cut_to(&[(0.0, 0.0), (1.0, 10.0), (2.0, 0.0)], 0.0, 5.0);
+    assert_eq!(points, [(0.0, 0.0), (0.5, 5.0), (1.5, 5.0), (2.0, 0.0)]);
+    assert_eq!(breaks, [2]);
+    // Through the range from below to above.
+    let (points, breaks) = cut_to(&[(0.0, -10.0), (1.0, 10.0)], 0.0, 5.0);
+    assert_eq!(points, [(0.5, 0.0), (0.75, 5.0)]);
+    assert!(breaks.is_empty());
+    // Never inside: nothing.
+    assert!(cut_to(&[(0.0, 9.0), (1.0, 8.0)], 0.0, 5.0).0.is_empty());
 }

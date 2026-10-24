@@ -75,6 +75,8 @@ pub fn render(
     } else {
         "Computing chart..."
     };
+    // A trend a job fits is marked over the chart until it lands.
+    let fitting = !computing && app.chart_trend_pending();
     widgets::chart::render_chart_view(
         chart_area,
         buf,
@@ -85,8 +87,12 @@ pub fn render(
             plot,
             notes,
             error,
-            working: computing.then_some(Working {
-                text: working_text,
+            working: (computing || fitting).then_some(Working {
+                text: if computing {
+                    working_text
+                } else {
+                    "Fitting trend..."
+                },
                 frame: app.throbber_frame as usize,
             }),
             schema,

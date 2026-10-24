@@ -365,6 +365,7 @@ fn prepared_xy() -> PlotData {
             x_axis_kind: chart::chart_data::XAxisTemporalKind::Numeric,
             rows: chart::chart_data::RowsRead::default(),
             other: false,
+            nulls: Vec::new(),
         },
         None,
     ))
@@ -920,6 +921,7 @@ fn a_clipped_line_chart_draws_its_outliers_at_the_edge() {
             x_axis_kind: chart::chart_data::XAxisTemporalKind::Numeric,
             rows: chart::chart_data::RowsRead::default(),
             other: false,
+            nulls: Vec::new(),
         },
         None,
     );
@@ -955,6 +957,7 @@ fn a_clipped_line_chart_draws_its_outliers_at_the_edge() {
             x_axis_kind: chart::chart_data::XAxisTemporalKind::Numeric,
             rows: chart::chart_data::RowsRead::default(),
             other: false,
+            nulls: Vec::new(),
         },
         None,
     );
@@ -978,6 +981,7 @@ fn a_smoothed_line_chart_draws_its_trailing_mean() {
             x_axis_kind: chart::chart_data::XAxisTemporalKind::Numeric,
             rows: chart::chart_data::RowsRead::default(),
             other: false,
+            nulls: Vec::new(),
         },
         None,
     );
@@ -1018,4 +1022,48 @@ fn a_smoothed_line_chart_draws_its_trailing_mean() {
     };
     lines.keep_shown(no_raw);
     assert_eq!(lines.raw_drawn(no_raw).count(), 0);
+}
+
+/// A trend is taken only by the rows it was fitted from: a chart prepared again
+/// under the same request (`t`, a new sample) holds other rows and refuses it, and
+/// changing the rows stops the fit.
+#[test]
+fn a_trend_fitted_from_old_rows_is_not_taken_by_new_ones() {
+    use crate::chart::chart_modal::{Trend, TrendOver};
+    use crate::chart::chart_trend::{TrendFits, TrendKey};
+    let key = TrendKey {
+        trend: Trend::Robust,
+        over: TrendOver::Color,
+    };
+    let series = |cache: &ChartCache, request: &ChartRequest| match cache.prepared(request) {
+        Some(PlotData::Lines(lines)) => Arc::clone(&lines.series),
+        _ => panic!("prepared"),
+    };
+    let mut cache = ChartCache::default();
+    let request = xy_request("a");
+    cache.insert(request.clone(), Ok(prepared_xy()));
+    let old = series(&cache, &request);
+    cache.clear();
+    cache.insert(request.clone(), Ok(prepared_xy()));
+    let new = series(&cache, &request);
+    let fits = || TrendFits::failed(key, "test".to_string());
+    assert!(!cache.take_fits(&request, &old, fits()));
+    assert!(cache.take_fits(&request, &new, fits()));
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, crate::tests::test_runtime());
+    let fit = app::jobs::ChartTrendFit {
+        request,
+        key,
+        series: new,
+    };
+    let _started = app.job_for_tests(Job::ChartTrend(Box::new(fit)), None);
+    let fitting = |app: &App| {
+        app.jobs
+            .current(|job| matches!(job, Job::ChartTrend(_)))
+            .is_some()
+    };
+    assert!(fitting(&app));
+    app.sample_changed();
+    assert!(!fitting(&app), "the rows changed under it");
 }

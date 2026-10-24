@@ -86,6 +86,12 @@ impl App {
                     self.analysis_modal.correlation_method =
                         self.analysis_modal.correlation_method.toggled();
                 }
+                // The pair under the cursor as a scatter with its line.
+                KeyCode::Char('c') => {
+                    if let Some((x, y)) = self.analysis_modal.correlation_pair() {
+                        self.open_chart_pair(&x, &y);
+                    }
+                }
                 // Another sample, or every row: only where results are a sample, and only on the
                 // main view, not inside a detail.
                 KeyCode::Char('r') if self.analysis_results_are_sampled() => {

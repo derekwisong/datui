@@ -251,7 +251,7 @@ impl App {
     /// chart's, and in-flight pages.
     pub(crate) fn sample_changed(&mut self) {
         self.forget_the_rows_read();
-        self.chart.cache.clear();
+        self.clear_chart_cache();
         let modal = &mut self.analysis_modal;
         modal.describe_results = None;
         modal.distribution_results = None;

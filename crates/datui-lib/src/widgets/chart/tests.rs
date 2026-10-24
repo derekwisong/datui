@@ -73,7 +73,7 @@ impl Draw<'_> {
                     // `series` as drawn; `values` before the log, when it differs.
                     (Some(series), _) => Some(PlotData::Lines(LinesData {
                         names: names.to_vec(),
-                        series: values.unwrap_or(series).clone(),
+                        series: std::sync::Arc::new(values.unwrap_or(series).clone()),
                         series_shown: values.map(|_| {
                             Box::new(ShownSeries {
                                 shown: Shown {
@@ -91,6 +91,8 @@ impl Draw<'_> {
                                 left_out: Default::default(),
                                 smoothed_left_out: None,
                                 stops: None,
+                                trend: Vec::new(),
+                                fitted: false,
                             })
                         }),
                         breaks: breaks.cloned().unwrap_or_default(),
@@ -2244,4 +2246,47 @@ fn a_flat_log_y_ticks_its_value() {
         line.is_some_and(|l| l + 3 < floor),
         "off the floor: {rows:#?}"
     );
+}
+
+/// The reading under the plot keeps the mark: whole parts give way from the right,
+/// and nothing is cut inside a part.
+#[test]
+fn the_reading_keeps_its_mark_and_drops_whole_parts() {
+    let theme = crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
+    let g = crate::glyphs::unicode();
+    let parts = vec![
+        "+0.126 min per unit of distance".to_string(),
+        "strong, R² 0.38".to_string(),
+        "typically ±12.8 min off the line".to_string(),
+    ];
+    let mark = Some("▲ r≠ρ: try robust".to_string());
+    let text = |width: usize| {
+        let line = reading_line(parts.clone(), mark.clone(), &theme, width, g);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.width() <= width, "{width}: {text}");
+        text
+    };
+    assert_eq!(
+        text(120),
+        "+0.126 min per unit of distance · strong, R² 0.38 · typically ±12.8 min off the line · \
+         ▲ r≠ρ: try robust"
+    );
+    assert_eq!(
+        text(80),
+        "+0.126 min per unit of distance · strong, R² 0.38 · ▲ r≠ρ: try robust"
+    );
+    assert_eq!(
+        text(60),
+        "+0.126 min per unit of distance · ▲ r≠ρ: try robust"
+    );
+    assert_eq!(text(30), "▲ r≠ρ: try robust");
+    // The mark in the warning color.
+    let line = reading_line(parts.clone(), mark.clone(), &theme, 60, g);
+    assert_eq!(line.spans.last().unwrap().style.fg, Some(theme.warning()));
+    // Without a mark, the parts that fit; a first part too long is cut.
+    let line = reading_line(parts.clone(), None, &theme, 60, g);
+    let plain: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+    assert_eq!(plain, "+0.126 min per unit of distance · strong, R² 0.38");
+    let line = reading_line(parts, None, &theme, 12, g);
+    assert_eq!(line.spans[0].content.as_ref().width(), 12);
 }

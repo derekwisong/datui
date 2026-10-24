@@ -160,6 +160,87 @@ fn m_switches_the_correlation_matrix_between_pearson_and_spearman() {
     );
 }
 
+/// `c` on a pair of the correlation matrix charts it as a scatter, X its column
+/// and Y its row, with a linear trend; Esc from the chart comes back to the matrix.
+#[test]
+fn c_charts_a_correlation_pair_with_its_line() {
+    use datui::analysis::analysis_modal::AnalysisTool;
+    use datui::chart::chart_modal::{Mark, Trend};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("pairs.csv");
+    let mut csv = "x,y\n".to_string();
+    for x in 1..=30i64 {
+        csv.push_str(&format!("{x},{}\n", 2 * x + x % 3));
+    }
+    std::fs::write(&path, csv).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+
+    app.event(key(KeyCode::Char('a')));
+    app.analysis_modal.sidebar_state.select(Some(2));
+    show_sample_form(&mut app);
+    let next = app.event(key(KeyCode::Enter));
+    app.event(next.unwrap());
+    drain_events(&mut app, &rx);
+    assert_eq!(
+        app.analysis_modal.selected_tool,
+        Some(AnalysisTool::CorrelationMatrix)
+    );
+    // The diagonal is no pair.
+    app.analysis_modal.selected_correlation = Some((0, 0));
+    app.event(key(KeyCode::Char('c')));
+    assert_eq!(app.overlay, Overlay::Analysis);
+
+    app.analysis_modal.selected_correlation = Some((0, 1));
+    app.event(key(KeyCode::Char('c')));
+    assert_eq!(app.overlay, Overlay::Chart);
+    let modal = &app.chart.modal;
+    assert_eq!(modal.mark(), Mark::Scatter);
+    assert_eq!(modal.x().map(String::as_str), Some("y"));
+    assert_eq!(modal.y(), ["x"]);
+    assert_eq!(modal.trend_shown(), Trend::Linear);
+    pump_until(&mut app, &rx, &tx, |app| {
+        app.chart_data_ready() && !app.chart_trend_pending()
+    });
+    let screen = rows_at(&mut app, 120, 30).join("\n");
+    assert!(screen.contains("linear"), "{screen}");
+    assert!(screen.contains("strong"), "{screen}");
+
+    app.event(key(KeyCode::Esc));
+    assert_eq!(app.overlay, Overlay::Analysis);
+    assert_eq!(
+        app.analysis_modal.selected_tool,
+        Some(AnalysisTool::CorrelationMatrix)
+    );
+    assert!(app.analysis_modal.correlation_results.is_some());
+    // From the pair's detail, and back to it.
+    app.analysis_modal.focus = datui::analysis::analysis_modal::AnalysisFocus::Main;
+    app.analysis_modal.open_correlation_detail();
+    assert_eq!(
+        app.analysis_modal.view,
+        datui::analysis::analysis_modal::AnalysisView::CorrelationDetail
+    );
+    app.event(key(KeyCode::Char('c')));
+    assert_eq!(app.overlay, Overlay::Chart);
+    app.event(key(KeyCode::Esc));
+    assert_eq!(app.overlay, Overlay::Analysis);
+    assert_eq!(
+        app.analysis_modal.view,
+        datui::analysis::analysis_modal::AnalysisView::CorrelationDetail
+    );
+    app.event(key(KeyCode::Esc));
+    // A chart opened from the table goes back to the table.
+    app.event(key(KeyCode::Esc));
+    app.event(key(KeyCode::Esc));
+    assert!(app.at_table());
+    app.event(key(KeyCode::Char('c')));
+    assert_eq!(app.overlay, Overlay::Chart);
+    app.event(key(KeyCode::Esc));
+    assert!(app.at_table());
+}
+
 /// Enter on a tool always takes the cursor into its pane, whether it shows the
 /// Sample form, starts a run or shows a result; Tab and Shift+Tab cross between
 /// the pane and the tools, Esc steps back one level, and the results outlive a

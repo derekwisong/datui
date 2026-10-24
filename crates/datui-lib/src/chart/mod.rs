@@ -10,3 +10,4 @@ pub mod chart_modal;
 pub(crate) mod chart_pdf;
 pub mod chart_plot;
 pub(crate) mod chart_recipe;
+pub mod chart_trend;

@@ -103,7 +103,12 @@ fn columns_spans(
 
 /// The panel's lines for the chart on screen: every shelf, dimmed where the type
 /// does not use it, each with the line under it, then the options.
-fn panel_lines(modal: &ChartModal, schema: Option<&Schema>, ctx: &RenderContext) -> Vec<PanelLine> {
+fn panel_lines(
+    modal: &ChartModal,
+    schema: Option<&Schema>,
+    ctx: &RenderContext,
+    width: u16,
+) -> Vec<PanelLine> {
     let g = crate::glyphs::get();
     let spec = &modal.spec;
     let mark = spec.mark;
@@ -306,9 +311,32 @@ fn panel_lines(modal: &ChartModal, schema: Option<&Schema>, ctx: &RenderContext)
                 ));
                 continue;
             }
-            // A line's Smooth stays in its place, dimmed, where it takes no part.
+            ChartFocus::Trend => {
+                lines.push(row(
+                    "Trend",
+                    vec![plain(modal.trend_shown().label(), ctx)],
+                    Some(field),
+                    false,
+                ));
+                lines.push(over_line(modal, ctx, width));
+                continue;
+            }
+            // A line's Smooth, or a scatter's Trend, stays in its place, dimmed, where it
+            // takes no part.
             ChartFocus::YStartsAtZero => {
-                if !rows.contains(&ChartFocus::Smooth)
+                if mark == Mark::Scatter {
+                    if !rows.contains(&ChartFocus::Trend)
+                        && let ShelfUse::Dimmed(why) = modal.trend_use()
+                    {
+                        lines.push(row(
+                            "Trend",
+                            vec![quiet(format!("off {} {why}", g.middot), ctx)],
+                            None,
+                            true,
+                        ));
+                        lines.push(over_line(modal, ctx, width));
+                    }
+                } else if !rows.contains(&ChartFocus::Smooth)
                     && let ShelfUse::Dimmed(why) = modal.smooth_use()
                 {
                     lines.push(row(
@@ -374,6 +402,36 @@ fn panel_lines(modal: &ChartModal, schema: Option<&Schema>, ctx: &RenderContext)
         lines.push(row("Rows", vec![quiet("all, exact", ctx)], None, false));
     }
     lines
+}
+
+/// The line under Trend: per color or overall with a Color; dimmed, what is fitted
+/// without one (`all points`), or as set while the trend is off or y = x. `over `
+/// goes first when the panel is too narrow to keep a cell before its border.
+fn over_line(modal: &ChartModal, ctx: &RenderContext, width: u16) -> PanelLine {
+    let room = width.saturating_sub(2 + LABEL_WIDTH) as usize;
+    let what = match modal.over_use() {
+        ShelfUse::Dimmed(why) if !why.is_empty() => why,
+        _ => modal.trend_over.label(),
+    };
+    let over = if "over ".len() + what.width() < room {
+        "over "
+    } else {
+        ""
+    };
+    let (value, field, dimmed) = match modal.over_use() {
+        ShelfUse::Used => (
+            vec![quiet(over, ctx), plain(what, ctx)],
+            Some(ChartFocus::TrendOver),
+            false,
+        ),
+        ShelfUse::Dimmed(_) => (vec![quiet(format!("{over}{what}"), ctx)], None, true),
+    };
+    PanelLine::Row {
+        label: "",
+        value,
+        field,
+        dimmed,
+    }
 }
 
 /// The Rows option: how many rows a chart that samples reads, `Sample 10,000` or
@@ -470,7 +528,7 @@ fn render_sidebar(
     if area.height == 0 || area.width < 4 {
         return None;
     }
-    let mut lines = panel_lines(modal, schema, ctx);
+    let mut lines = panel_lines(modal, schema, ctx, area.width);
     if lines.len() > area.height as usize {
         lines.retain(|l| !matches!(l, PanelLine::Blank));
     }
@@ -1182,10 +1240,38 @@ fn render_xy_chart(
     // A series is drawn as its runs between gaps, so a line never bridges a missing
     // value. Other first, so the series drawn over it keep their colors.
     // A smoothed line's raw line first, faded, so the smoothed one is drawn over it.
+    // A trend's lines last, over the points, which it fades.
     let raw_curves = plot.raw_curves();
     let curves = plot.curves();
-    let mut datasets = curve_datasets(&raw_curves, theme, marker, graph_type, true);
-    datasets.extend(curve_datasets(&curves, theme, marker, graph_type, false));
+    let trend_curves = plot.trend_curves();
+    // Per color, points that would all fade to one grey keep their colors: the lines
+    // over them are in the same colors, so which is which still shows.
+    let trend_fade = if trend_curves.is_empty() {
+        Fade::None
+    } else if trend_curves.iter().any(|(series, _)| series.is_none()) {
+        Fade::All
+    } else {
+        Fade::Hued
+    };
+    let mut datasets = curve_datasets(&raw_curves, theme, marker, graph_type, Fade::All);
+    datasets.extend(curve_datasets(
+        &curves, theme, marker, graph_type, trend_fade,
+    ));
+    for (series, curve) in &trend_curves {
+        let style = match series {
+            Some(i) => series_style(theme, *i, None),
+            None => Style::default().fg(theme.chart_trend()),
+        };
+        for run in segments(&curve.points, curve.breaks) {
+            datasets.push(
+                Dataset::default()
+                    .marker(g.plot.line)
+                    .graph_type(GraphType::Line)
+                    .style(style)
+                    .data(run),
+            );
+        }
+    }
 
     let y_min_bounds = if plot.y_from_zero {
         0.0_f64.min(all_y_min)
@@ -1250,10 +1336,12 @@ fn render_xy_chart(
                 crosshair::nearest(stops, cursor)
             }
         });
+    let fits = plot.trend_fits();
+    let words = plot.trend_words(modal);
     let readout = cursor
         .map(|at| {
             let written = crosshair::format_x(at, x.kind, &x.numbers);
-            let entries = readout_entries(
+            let mut entries = readout_entries(
                 theme,
                 g,
                 (at, &x.title, written),
@@ -1262,10 +1350,22 @@ fn render_xy_chart(
                 &lines.names,
                 (other_at, area.width as usize),
             );
+            if let Some(fits) = fits {
+                trend_entries(&mut entries, theme, (fits, &words), at, y, g);
+            }
             crosshair::readout_lines(&entries, area.width as usize, g)
         })
         .unwrap_or_default();
-    let rows = (readout.len() as u16).min(area.height / 3);
+    // The trend's reading under the plot, where the readout goes while it reads.
+    let reading = plot
+        .trend_reading(modal, g)
+        .filter(|_| readout.is_empty())
+        .map(|(text, mark)| reading_line(text, mark, theme, area.width as usize, g));
+    let rows = if readout.is_empty() {
+        u16::from(reading.is_some() && area.height > 6)
+    } else {
+        (readout.len() as u16).min(area.height / 3)
+    };
     let [plot_area, readout_area] =
         Layout::vertical([Constraint::Fill(1), Constraint::Length(rows)]).areas(area);
     let frame = axes.render(Chart::new(datasets), plot_area, buf, g);
@@ -1279,8 +1379,124 @@ fn render_xy_chart(
         let style = Style::default().fg(theme.accent());
         crosshair::draw(buf, &place, at, style, g);
         Paragraph::new(readout).render(readout_area, buf);
+    } else if let Some(reading) = reading {
+        Paragraph::new(reading).render(readout_area, buf);
     }
     Some(place)
+}
+
+/// The trend's reading as its line under the plot: its parts, then the mark when
+/// Pearson and Spearman disagree, in `warning`. A narrow line drops whole parts from
+/// the right, down to the first (the slope, the most telling) beside the mark; with
+/// no room for both, the mark alone; without a mark, the parts that fit, then the
+/// first cut.
+fn reading_line(
+    parts: Vec<String>,
+    mark: Option<String>,
+    theme: &Theme,
+    width: usize,
+    g: &Glyphs,
+) -> Line<'static> {
+    let gap = format!(" {} ", g.middot);
+    let text_style = Style::default().fg(theme.text_secondary());
+    let joined = |n: usize| parts[..n].join(&gap);
+    let fits = |n: usize, mark: Option<&String>| {
+        let text = joined(n).width();
+        let mark = mark.map_or(0, |m| m.width() + if n > 0 { gap.width() } else { 0 });
+        text + mark <= width
+    };
+    let line = |n: usize, mark: Option<String>| {
+        let mut spans = Vec::new();
+        if n > 0 {
+            spans.push(Span::styled(joined(n), text_style));
+        }
+        if let Some(mark) = mark {
+            if n > 0 {
+                spans.push(Span::styled(
+                    gap.clone(),
+                    Style::default().fg(theme.dimmed()),
+                ));
+            }
+            spans.push(Span::styled(mark, Style::default().fg(theme.warning())));
+        }
+        Line::from(spans)
+    };
+    if let Some(mark) = mark {
+        if let Some(n) = (1..=parts.len()).rev().find(|&n| fits(n, Some(&mark))) {
+            return line(n, Some(mark));
+        }
+        if mark.width() <= width {
+            return line(0, Some(mark));
+        }
+    }
+    match (1..=parts.len()).rev().find(|&n| fits(n, None)) {
+        Some(n) => line(n, None),
+        None => Line::from(Span::styled(
+            cut(parts.first().map_or("", String::as_str), width, g),
+            text_style,
+        )),
+    }
+}
+
+/// The trend at the crosshair's `x`: each fitted series' line value beside its own,
+/// with its slope when there are several; a lone fit's or an overall fit's equation as
+/// an entry of its own.
+fn trend_entries(
+    entries: &mut Vec<crosshair::Entry>,
+    theme: &Theme,
+    (fits, words): (
+        &crate::chart::chart_trend::TrendFits,
+        &crate::chart::chart_trend::Words<'_>,
+    ),
+    x: f64,
+    y: &Axis,
+    g: &Glyphs,
+) {
+    use crate::chart::chart_trend::{equation, significant, slope_text};
+    let several = fits.fits.len() > 1;
+    let within =
+        |fit: &crate::chart::chart_trend::Fit| (fit.x_range[0]..=fit.x_range[1]).contains(&x);
+    let value_at = |fit: &crate::chart::chart_trend::Fit| {
+        let v = fit.model.at(x);
+        // A fitted value's digits past four are noise.
+        (within(fit) && v.is_finite()).then(|| match y.kind {
+            XAxisTemporalKind::Numeric => significant(v, 4, &y.numbers),
+            kind => crosshair::format_x(v, kind, &y.numbers),
+        })
+    };
+    for fit in &fits.fits {
+        let Some(series) = fit.series else {
+            // Over every point: an entry of its own, in the trend's color.
+            let mut value = value_at(fit).unwrap_or_else(|| g.null.to_string());
+            if let Some(eq) = equation(fit, words) {
+                value.push_str(&format!(" {} {eq}", g.middot));
+            }
+            entries.push(crosshair::Entry {
+                name: "fit".to_string(),
+                name_style: Style::default().fg(theme.chart_trend()),
+                value,
+                value_style: Style::default().fg(theme.text_primary()),
+            });
+            continue;
+        };
+        // Entry 0 is X; series follow in order.
+        if let Some(entry) = entries.get_mut(series + 1)
+            && let Some(v) = value_at(fit)
+        {
+            entry.value.push_str(&format!(" {} fit {v}", g.middot));
+            if several && let Some(slope) = slope_text(fit, words) {
+                entry.value.push_str(&format!(", {slope}"));
+            }
+        }
+        if !several && let Some(eq) = equation(fit, words) {
+            entries.push(crosshair::Entry {
+                name: "fit".to_string(),
+                name_style: series_style(theme, series, None),
+                value: eq,
+                value_style: Style::default().fg(theme.text_primary()),
+            });
+        }
+    }
 }
 
 /// The readout at the crosshair's `x`: x under its title as `written`, then each
@@ -1386,22 +1602,34 @@ fn legend<'a>(show: bool, entries: impl Iterator<Item = (&'a str, Style)>) -> Op
     (show && entries.len() > 1).then_some(Legend { entries })
 }
 
+/// Whether curves are drawn faded behind what is drawn over them.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Fade {
+    None,
+    /// Each in its color faded, as a raw line behind its smoothed one.
+    All,
+    /// Only where fading keeps the color's hue (not on 16 colors).
+    Hued,
+}
+
 /// A dataset per run of each curve, in the order they come: Other first, so the
-/// series drawn over it keep their colors. `faded`: each in its color faded, as a
-/// raw line behind its smoothed one.
+/// series drawn over it keep their colors, each faded as `fade` says.
 fn curve_datasets<'a>(
     curves: &'a [Curve<'_>],
     theme: &Theme,
     marker: ratatui::symbols::Marker,
     graph_type: GraphType,
-    faded: bool,
+    fade: Fade,
 ) -> Vec<Dataset<'a>> {
     curves
         .iter()
         .flat_map(|curve| {
             let style = series_style(theme, curve.index, curve.other.then_some(curve.index));
-            let style = match (faded, style.fg) {
-                (true, Some(color)) => style.fg(theme.faded(color)),
+            let style = match (fade, style.fg) {
+                (Fade::All, Some(color)) => style.fg(theme.faded(color)),
+                (Fade::Hued, Some(color)) if !theme.fades_to_grey(color) => {
+                    style.fg(theme.faded(color))
+                }
                 _ => style,
             };
             segments(&curve.points, curve.breaks)
@@ -1515,7 +1743,7 @@ fn render_histogram_chart(
     );
     if !data.groups.is_empty() {
         let other = other_at(data.other, data.groups.len());
-        let datasets = curve_datasets(curves, theme, marker, GraphType::Line, false);
+        let datasets = curve_datasets(curves, theme, marker, GraphType::Line, Fade::None);
         axes.legend = legend(
             look.legend,
             data.groups
@@ -1582,7 +1810,7 @@ fn render_kde_chart(
     }
 
     let other = other_at(data.other, data.series.len());
-    let datasets = curve_datasets(curves, theme, g.plot.line, GraphType::Line, false);
+    let datasets = curve_datasets(curves, theme, g.plot.line, GraphType::Line, Fade::None);
 
     let mut axes = plot_axes(
         theme,

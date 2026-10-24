@@ -973,6 +973,8 @@ fn chart_hints(app: &crate::App) -> Vec<Hint> {
                 ChartFocus::Cumulative => "Cumulative",
                 ChartFocus::Smooth => "Smooth",
                 ChartFocus::Raw => "Raw",
+                ChartFocus::Trend => "Trend",
+                ChartFocus::TrendOver => "Over",
                 _ => "Change",
             },
         )

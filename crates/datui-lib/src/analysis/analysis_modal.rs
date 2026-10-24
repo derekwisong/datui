@@ -781,6 +781,24 @@ impl AnalysisModal {
         Some((&analysis.column_name, &analysis.outliers))
     }
 
+    /// The correlation matrix's pair under the cursor, as (its column, its row): the
+    /// matrix's or its detail's, never a diagonal cell.
+    pub fn correlation_pair(&self) -> Option<(String, String)> {
+        if self.selected_tool != Some(AnalysisTool::CorrelationMatrix)
+            || (self.view == AnalysisView::Main && self.focus != AnalysisFocus::Main)
+        {
+            return None;
+        }
+        let (row, col) = self.selected_correlation.filter(|(row, col)| row != col)?;
+        let columns = &self
+            .correlation_results
+            .as_ref()?
+            .correlation_matrix
+            .as_ref()?
+            .columns;
+        Some((columns.get(col)?.clone(), columns.get(row)?.clone()))
+    }
+
     pub fn open_correlation_detail(&mut self) {
         if self.focus == AnalysisFocus::Main
             && self.selected_tool == Some(AnalysisTool::CorrelationMatrix)

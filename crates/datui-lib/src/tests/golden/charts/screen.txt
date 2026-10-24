@@ -22,7 +22,7 @@
                                         │    0         100         200
                                         │                                      t
 ────────────────────────────────────────────────────────────────────────────────
-== scatter_by_color styles 4ad7979ca2539c70
+== scatter_by_color styles bf8bfb62c6dcee55
  Chart ─────────────────────────────────│ colored by g
 ▎ Type         Scatter                  │ b
   X            a                        │   │ █ p
@@ -31,8 +31,8 @@
   Color        g                        │   │ █ s   ⡀⠒⢂⢀    ⢀⠂⢂⡀    ⡀⠒⢂⡀    ⡀ ⠐
                all 4                    │ 40┤   ⠈ ⠁ ⠄  ⠄ ⠉⠁ ⠤ ⠠⠄ ⠁⠁⠠⠠  ⠄ ⠁⠉ ⠄  ⠠
  Options ───────────────────────────────│   │  ⢀ ⠂ ⡀   ⢀⠄⠂⠂⣀   ⠠⠄⠒⠂⢀   ⠠⠄⠐⠂⠠⡀
-  Smooth       off · line only          │   │
-               raw auto                 │ 30┤
+  Trend        off                      │   │
+               over per color           │ 30┤
   Y from zero  off                      │   │   ⠐⠈⠂     ⠐⠃⠁     ⠐⠁⠃⠂    ⠐⠋⠉
   Log scale    Y off                    │   │   ⠠ ⠄ ⠐⠂⠂ ⠠⠠⠠ ⠂ ⠐  ⠄⠄ ⠐ ⠂ ⠠⠄⠠  ⠂
                X off                    │ 20┤
@@ -70,7 +70,7 @@
                                         │           2          4          6
                                         │                                      n
 ────────────────────────────────────────────────────────────────────────────────
-== scatter_log_x styles 2f29a144e9ab142e
+== scatter_log_x styles 0a250509d3dbccd8
  Chart ─────────────────────────────────│            1 point with X ≤ 0 left out
                                         │ b
 ▎ Type         Scatter                  │   │
@@ -84,8 +84,8 @@
                                         │   │             ⠐    ⠁  ⠁ ⠂ ⠂⠁⠑⠐⠈⠑⠊⠓⠙⠋
  Options ───────────────────────────────│   │         ⠐       ⠄   ⠠ ⠐⠐⠠ ⠄⠒⠄⠔⠢⠔⠴⠆
                                         │ 20┤
-  Smooth       off · line only          │   │                  ⠠  ⠄    ⠄⠄ ⠠⠄⠠⠄⠤⠤
-               raw auto                 │   │        ⠈     ⠐ ⢀     ⡐⠈⠈⢂ ⢐⠉⡂⡊⡃⡚⣘⡃
+  Trend        off                      │   │                  ⠠  ⠄    ⠄⠄ ⠠⠄⠠⠄⠤⠤
+               over all points          │   │        ⠈     ⠐ ⢀     ⡐⠈⠈⢂ ⢐⠉⡂⡊⡃⡚⣘⡃
   Y from zero  off                      │ 10┤            ⠠  ⢀      ⢀⠄ ⢄ ⢠⠠⡀⡠⡄⡤⣠⡄
   Log scale    Y off                    │   │      ⠈           ⠠  ⠄ ⠈⠈ ⠄⠄⠉⠠⠌⠡⠌⠌⠡
                X on                     │   │    ⠄            ⠈   ⠈  ⠤ ⠁⠁⠤⠁⠡⠌⠡⠩⠅

@@ -203,6 +203,17 @@ pub struct SavedChart {
         skip_serializing_if = "crate::chart::chart_modal::RawLine::is_auto"
     )]
     pub raw: crate::chart::chart_modal::RawLine,
+    /// A scatter's trend, and whether a colored one is fitted per series or overall.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::chart::chart_trend::Trend::is_off"
+    )]
+    pub trend: crate::chart::chart_trend::Trend,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::chart::chart_trend::TrendOver::is_color"
+    )]
+    pub trend_over: crate::chart::chart_trend::TrendOver,
     pub bar_order: crate::chart::chart_data::BarOrder,
     /// A histogram's bars as each group's share of its rows.
     pub share: bool,

@@ -381,6 +381,10 @@ pub const Q_SUMMARY: &[(&str, &str)] = &[
     ),
 ];
 
+/// `o` on Distribution and its detail: the selected column's outliers.
+const OUTLIERS_KEY: Key = k("o", "Outliers", "Filter the table to the column's outliers")
+    .more("Filter the table to the selected column's outliers: a filter column outside LOW..HIGH in the Sort & Filter sidebar, beside the filters in effect. LOW and HIGH are the nearer of the IQR fences and three standard deviations on each side, from the sample, rounded outward to four significant digits of the range");
+
 /// The analysis tools' sample keys, the same on each.
 const SAMPLE_KEYS: &[Key] = &[
     k("s", "Sample", "Choose the sample every tool reads").more(
@@ -859,9 +863,9 @@ pub const SCREENS: &[Screen] = &[
                     k("Home / End", "First, last", "First and last row"),
                     k("← / → (h/l)", "Column", "The previous or next column")
                         .more("The previous or next column; the table's column cursor moves with it"),
-                    k("Enter", "Drill", "The rows holding the value")
-                    .also(&["Rows"])
-                        .more("The rows holding the value, as a drill-down; Esc there comes back here"),
+                    k("Enter", "Drill", "The value's rows; a histogram's values outside it")
+                    .also(&["Rows", "Outside"])
+                        .more("The rows holding the value, as a drill-down; Esc there comes back here. On a histogram that bins only the 1st to 99th percentile, filter the table to the values outside it: a filter column outside LOW..HIGH in the Sort & Filter sidebar"),
                     k("s", "Sort", "Sort by count or by value"),
                     k("c", "Histogram", "A number's histogram, or the list of its values")
                     .also(&["List"])
@@ -1124,6 +1128,7 @@ pub const SCREENS: &[Screen] = &[
                     k("Enter", "Detail", "Q-Q plot and histogram for the column")
                     .also(&["Open"])
                         .more("Open the selected column's detail, a Q-Q plot and a histogram; with the sidebar focused, open a tool"),
+                    OUTLIERS_KEY,
                     k("Esc", "Back", "Cancel a run; the tools; then close")
                     .also(&["Cancel", "Tools", "Close"])
                         .more("Cancel a run in progress; otherwise from the results back to the tools, and from the tools close the analysis view"),
@@ -1145,6 +1150,7 @@ pub const SCREENS: &[Screen] = &[
                 k("↑ / ↓ (j/k)", "Distribution", "Compare the values with another family"),
                 k("Home / End", "First, last", "The first or last family"),
                 k("s", "Scale", "Histogram scale: linear or log"),
+                OUTLIERS_KEY,
                 k("Esc", "Back", "Back to the distribution table"),
             ],
         }],

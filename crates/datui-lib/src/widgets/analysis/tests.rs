@@ -33,6 +33,7 @@ fn analysis(mean: f64, std_dev: f64, sorted: Vec<f64>) -> DistributionAnalysis {
             percentage: 0.0,
             iqr_count: 0,
             zscore_count: 0,
+            bounds: None,
         },
         percentiles: PercentileBreakdown {
             p25: 0.0,

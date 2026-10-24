@@ -12,6 +12,9 @@ pub enum FilterOperator {
     Lt,
     GtEq,
     LtEq,
+    /// Below the first value or above the second, written `LOW..HIGH`: the rows a
+    /// range leaves out.
+    Outside,
     Contains,
     NotContains,
     IsNull,
@@ -41,6 +44,7 @@ impl FilterOperator {
             FilterOperator::Lt => "<",
             FilterOperator::GtEq => ">=",
             FilterOperator::LtEq => "<=",
+            FilterOperator::Outside => "outside",
             FilterOperator::Contains => "contains",
             FilterOperator::NotContains => "!contains",
             FilterOperator::IsNull => "is null",
@@ -60,6 +64,12 @@ impl FilterOperator {
         )
     }
 
+    /// An `outside` value's two ends, `LOW..HIGH`.
+    pub fn bounds(value: &str) -> Option<(&str, &str)> {
+        let (low, high) = value.split_once("..")?;
+        Some((low.trim(), high.trim()))
+    }
+
     /// Whether the statement compares with a value; the null tests take none.
     pub fn takes_value(&self) -> bool {
         !matches!(self, FilterOperator::IsNull | FilterOperator::IsNotNull)
@@ -73,6 +83,7 @@ impl FilterOperator {
             FilterOperator::Lt,
             FilterOperator::GtEq,
             FilterOperator::LtEq,
+            FilterOperator::Outside,
             FilterOperator::Contains,
             FilterOperator::NotContains,
             FilterOperator::IsNull,
@@ -116,7 +127,8 @@ impl Operand {
     pub fn offers(self, op: FilterOperator) -> bool {
         use FilterOperator::*;
         match self {
-            Self::Text | Self::Any => true,
+            Self::Text => op != Outside,
+            Self::Any => true,
             Self::Ordered => !matches!(op, Contains | NotContains | Has | HasRegex | HasFuzzy),
             Self::Boolean => matches!(op, Eq | NotEq | IsNull | IsNotNull),
         }
@@ -160,6 +172,41 @@ pub struct FilterStatement {
 }
 
 impl FilterStatement {
+    /// The rows of `column` below `low` or above `high`, the ends written in the
+    /// column's type: an integer column's at the whole numbers past which the same
+    /// rows fall. `None` for a column that is not a number.
+    pub fn outside(
+        column: &str,
+        dtype: &polars::prelude::DataType,
+        low: f64,
+        high: f64,
+    ) -> Option<Self> {
+        if !dtype.is_primitive_numeric() || !low.is_finite() || !high.is_finite() {
+            return None;
+        }
+        let (low, high) = if dtype.is_integer() {
+            // Below 0 an unsigned column has no rows, and -1 is no value of it.
+            let low = if dtype.is_unsigned_integer() {
+                low.max(0.0)
+            } else {
+                low
+            };
+            (
+                format!("{}", low.ceil() as i128),
+                format!("{}", high.floor() as i128),
+            )
+        } else {
+            (crate::exact::f64_text(low), crate::exact::f64_text(high))
+        };
+        Some(Self {
+            columns: Vec::new(),
+            column: column.to_string(),
+            operator: FilterOperator::Outside,
+            value: format!("{low}..{high}"),
+            logical_op: LogicalOperator::And,
+        })
+    }
+
     /// How the statement reads in a line of text: `prcp > 0`, `name has "smith"`,
     /// `has /^US/` for a find kept over every column.
     pub fn describe(&self) -> String {

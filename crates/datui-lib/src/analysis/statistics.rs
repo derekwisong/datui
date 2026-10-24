@@ -334,6 +334,9 @@ pub struct OutlierAnalysis {
     pub percentage: f64,
     pub iqr_count: usize,
     pub zscore_count: usize,
+    /// A value below the first or above the second is an outlier by one test or
+    /// both; `None` where neither test applies.
+    pub bounds: Option<(f64, f64)>,
 }
 
 #[derive(Clone)]
@@ -1002,6 +1005,15 @@ impl OutlierTest {
     fn z_score(&self, value: f64) -> f64 {
         (value - self.mean).abs() / self.std
     }
+
+    /// Past the first or the second is past the fences or three standard deviations:
+    /// the nearer of the two on each side.
+    fn bounds(&self) -> (f64, f64) {
+        (
+            self.lower_fence.max(self.mean - Z_THRESHOLD * self.std),
+            self.upper_fence.min(self.mean + Z_THRESHOLD * self.std),
+        )
+    }
 }
 
 const Z_THRESHOLD: f64 = 3.0;
@@ -1245,10 +1257,12 @@ fn compute_outlier_analysis(values: &[f64], numeric_stats: &NumericStatistics) -
         percentage: 0.0,
         iqr_count: 0,
         zscore_count: 0,
+        bounds: None,
     };
     let Some(test) = OutlierTest::new(values, numeric_stats.q25, numeric_stats.q75) else {
         return analysis;
     };
+    analysis.bounds = Some(test.bounds());
 
     for &value in values {
         let beyond_fences = test.beyond_fences(value);

@@ -1009,3 +1009,97 @@ fn test_value_counts_count_the_column_cursors_column() {
     press_and_send(&mut app, &tx, KeyCode::Esc);
     assert_eq!(current(&app).as_deref(), Some("pay"));
 }
+
+/// `id` 1 to 201 and `amount` the same but for a spike of a million in the last row.
+fn tails_csv() -> String {
+    std::iter::once("id,amount\n".to_string())
+        .chain((1..=200).map(|i| format!("{i},{i}\n")))
+        .chain(std::iter::once("201,1000000\n".to_string()))
+        .collect()
+}
+
+/// Enter on a histogram that binned only p1-p99 filters the table to the values its
+/// note counted outside, with an `outside` filter beside the ones in effect.
+#[test]
+fn test_value_counts_enter_on_a_clipped_histogram_filters_to_its_tails() {
+    use datui::app::modals::filter_modal::FilterOperator;
+    let (mut app, rx, tx) = open_csv_with(
+        "value_counts_tails.csv",
+        &tails_csv(),
+        OpenOptions::default(),
+    );
+    counts_key(&mut app, &rx, &tx, KeyCode::Char('F'));
+    assert_eq!(app.value_counts.column(), Some("id"));
+    let screen = counts_screen(&mut app, 80, 24);
+    assert!(!screen.contains("Outside"), "no tails, no key: {screen}");
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    assert_eq!(app.overlay, Overlay::ValueCounts, "Enter does nothing");
+
+    counts_key(&mut app, &rx, &tx, KeyCode::Right);
+    assert_eq!(app.value_counts.column(), Some("amount"));
+    assert!(app.value_counts.shows_histogram());
+    let counts = app.value_counts.current().unwrap();
+    let outside = counts.histogram.as_ref().unwrap().clipped.unwrap().outside;
+    assert_eq!(counts.binned, Some((3.0, 199.0)));
+    let screen = counts_screen(&mut app, 80, 24);
+    assert!(screen.contains("Enter Outside"), "{screen}");
+
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    pump_until_idle(&mut app, &rx, &tx);
+    painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 30));
+    assert!(app.at_table());
+    let filters = app.data_table_state.as_ref().unwrap().view_filters();
+    assert_eq!(filters.len(), 1);
+    assert_eq!(filters[0].operator, FilterOperator::Outside);
+    assert_eq!(filters[0].value, "3..199");
+    assert_eq!(on_screen(&app, "id"), ["1", "2", "200", "201"]);
+    assert_eq!(on_screen(&app, "id").len(), outside);
+}
+
+/// `o` on Distribution filters the table to the selected column's outliers, the
+/// values past the bounds its count used, and a column without any says so.
+#[test]
+fn test_o_on_distribution_filters_to_the_columns_outliers() {
+    use datui::app::modals::filter_modal::FilterOperator;
+    let (mut app, rx, tx) = open_csv_with(
+        "distribution_outliers.csv",
+        &tails_csv(),
+        OpenOptions::default(),
+    );
+    press_and_send(&mut app, &tx, KeyCode::Char('a'));
+    app.analysis_modal.sidebar_state.select(Some(1));
+    show_sample_form(&mut app);
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    pump_until_idle(&mut app, &rx, &tx);
+    let at = |app: &App, column: &str| {
+        app.analysis_modal
+            .distribution_results
+            .as_ref()
+            .unwrap()
+            .distribution_analyses
+            .iter()
+            .position(|d| d.column_name == column)
+            .unwrap()
+    };
+
+    let id = at(&app, "id");
+    app.analysis_modal.distribution_table_state.select(Some(id));
+    press_and_send(&mut app, &tx, KeyCode::Char('o'));
+    assert_eq!(app.flash_message(), Some("No outliers in id"));
+    assert_eq!(app.overlay, Overlay::Analysis);
+
+    let amount = at(&app, "amount");
+    app.analysis_modal
+        .distribution_table_state
+        .select(Some(amount));
+    let screen = counts_screen(&mut app, 100, 30);
+    assert!(screen.contains("o Outliers"), "{screen}");
+    press_and_send(&mut app, &tx, KeyCode::Char('o'));
+    pump_until_idle(&mut app, &rx, &tx);
+    painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 30));
+    assert!(app.at_table());
+    let filters = app.data_table_state.as_ref().unwrap().view_filters();
+    assert_eq!(filters.len(), 1);
+    assert_eq!(filters[0].operator, FilterOperator::Outside);
+    assert_eq!(on_screen(&app, "id"), ["201"]);
+}

@@ -154,6 +154,7 @@ impl App {
                 }
             }
             KeyCode::Enter if listing => self.drill_into_counted_value(),
+            KeyCode::Enter => return self.keep_unbinned(),
             KeyCode::Char('y') => self.copy_value_counts(),
             KeyCode::Char('e') => self.export_value_counts(),
             // The counts keep the rows they were read of; `t` counts the new ones too.
@@ -218,6 +219,17 @@ impl App {
                 crate::error_display::user_message_from_report(&e, None)
             )),
         }
+    }
+
+    /// Enter on a histogram that left values out of its bins: the table filtered to
+    /// those values.
+    fn keep_unbinned(&mut self) -> Option<AppEvent> {
+        let column = self.value_counts.column()?.to_string();
+        let (low, high) = self.value_counts.current()?.binned?;
+        self.keep_outside(&column, low, high, |app| {
+            app.stop_value_count();
+            app.close_overlay();
+        })
     }
 
     /// `y` on Value Counts: every value with its count and percentages, as TSV.

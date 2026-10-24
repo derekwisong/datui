@@ -709,3 +709,79 @@ fn a_kept_find_searches_the_shown_text_columns() {
     );
     assert!(script.contains("pl.any_horizontal"), "{script}");
 }
+
+/// `outside` keeps what lies below its first end or above its second, in the column's
+/// type, says when the range is not written `LOW..HIGH`, and reads back in Python.
+#[test]
+fn outside_keeps_the_values_past_either_end() {
+    let frame = df!(
+        "n" => &[Some(-7i64), Some(-5), Some(0), Some(60), Some(75), None],
+        "u" => &[Some(0u32), Some(3), Some(9), None, None, None],
+        "x" => &[Some(-0.5), Some(0.25), Some(1.0), Some(1.5), None, None],
+    )
+    .unwrap();
+    let schema = frame.schema().clone();
+    let kept = |statement: FilterStatement| {
+        let dtype = schema.get(&statement.column);
+        assert_eq!(SidebarFilter::problem(&statement, dtype), None);
+        frame
+            .clone()
+            .lazy()
+            .filter(filters_expr(&[SidebarFilter::typed(&statement, dtype)]).unwrap())
+            .collect()
+            .unwrap()
+            .column(&statement.column)
+            .unwrap()
+            .as_materialized_series()
+            .cast(&DataType::Float64)
+            .unwrap()
+            .f64()
+            .unwrap()
+            .into_no_null_iter()
+            .collect::<Vec<_>>()
+    };
+    let outside = |column: &str, low, high| {
+        FilterStatement::outside(column, schema.get(column).unwrap(), low, high).unwrap()
+    };
+    // The ends are kept out: past them is strictly past.
+    assert_eq!(
+        kept(statement("n", FilterOperator::Outside, "-5..60")),
+        [-7.0, 75.0]
+    );
+    // An integer column's ends are the whole numbers past which the same rows fall,
+    // and an unsigned column's never below 0.
+    let ends = outside("n", -5.5, 60.5);
+    assert_eq!(ends.value, "-5..60");
+    assert_eq!(ends.describe(), "n outside -5..60");
+    assert_eq!(kept(ends), [-7.0, 75.0]);
+    assert_eq!(outside("u", -2.0, 8.0).value, "0..8");
+    assert_eq!(kept(outside("u", -2.0, 8.0)), [9.0]);
+    assert_eq!(kept(outside("x", 0.25, 1.0)), [-0.5, 1.5]);
+    assert_eq!(
+        FilterStatement::outside("s", &DataType::String, 0.0, 1.0),
+        None
+    );
+    assert_eq!(
+        SidebarFilter::problem(
+            &statement("n", FilterOperator::Outside, "60"),
+            schema.get("n")
+        )
+        .as_deref(),
+        Some("n: write the range as LOW..HIGH")
+    );
+    assert!(
+        SidebarFilter::problem(
+            &statement("n", FilterOperator::Outside, "a..9"),
+            schema.get("n")
+        )
+        .is_some()
+    );
+    assert_eq!(
+        SidebarFilter::typed(
+            &statement("n", FilterOperator::Outside, "-5..60"),
+            schema.get("n")
+        )
+        .python(),
+        "~pl.col(\"n\").is_between(-5, 60)"
+    );
+}

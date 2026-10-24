@@ -46,8 +46,11 @@ A number column's counts show as a histogram: 40 bins from the least value to
 the greatest, or a bin per value when an integer column spans fewer than 40.
 When the full range is more than ten times as wide as the 1st to 99th
 percentile, the bins span that narrower range instead, and the values outside
-it are counted: `1,207 values outside p1-p99`. The bins are built from the
-counts, so they are exact whenever the counts are. <kbd>c</kbd> shows the list.
+it are counted: `1,207 values outside p1-p99`. <kbd>Enter</kbd> then filters
+the table to those values: it adds a filter `COLUMN outside LOW..HIGH` beside
+the filters in effect, where LOW and HIGH are the 1st and 99th percentile, values
+of the column. The bins are built from the counts, so they are exact whenever the
+counts are. <kbd>c</kbd> shows the list.
 Another column opens in the form that suits its type.
 
 ## What the screen shows

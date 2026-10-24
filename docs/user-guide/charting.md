@@ -318,15 +318,16 @@ series of fewer than 10 points gets no line.
 #### Reading the line
 
 Under the plot, one sentence. With several lines it says how many and their
-range (`3 fits · slopes −1.04 to −0.96 per unit of x`); the crosshair and the
-copy give each. Each method on the [example](#example-air-time-per-mile) below:
+range: the [example](#example-air-time-per-mile) with **Color** `carrier` reads
+`4 fits · slopes +0.125 to +0.135 per unit of distance`; the crosshair and the
+copy give each. Each method on the example:
 
 | Method | Reads |
 |---|---|
 | linear | `+0.126 per unit of distance · strong, R² 0.98 · typically ±12.8 off the line` |
 | exponential | `doubles every 857 units of distance · +0.081% per unit of distance · strong, R² 0.86 · typically within ×1.27 of the line` |
 | power | `y ~ x^0.822 · 1% more distance, about 0.82% more air_time · strong, R² 0.98 · typically within ×1.11 of the line` |
-| robust | `+0.126 per unit of distance · half the points within ±6.74 of it` (the spread varies a little with the pairs drawn) |
+| robust | `+0.126 per unit of distance · half the points within ±6.73 of it` (past a million pairs the spread varies a little with the sample's seed) |
 | local | `local curve, each point from its nearest 2/3 of the data · typically ±12.8 off the line` |
 | y = x | `0% of points above y = x · typically ±1104 off the line` (minutes against miles: no use here) |
 
@@ -341,22 +342,27 @@ Term by term:
 | `R² 0.98` | The share of Y's variation the line accounts for, 0 to 1; for exponential and power, of ln y |
 | `typically ±12.8 off the line` | The residual standard deviation: how far a point usually sits from the line, in Y's units |
 | `typically within ×1.27 of the line` | The same for exponential and power, as a factor: a point is usually between the line's value divided by 1.27 and times 1.27 |
-| `half the points within ±6.74 of it` | robust's spread: the median distance of a point from its line |
+| `half the points within ±6.73 of it` | robust's spread: the median distance of a point from its line |
 | `0% of points above y = x` | y = x: the share of points with Y greater than X |
 
 When Pearson's r and Spearman's ρ differ by 0.2 or more, a linear reading ends
-with a mark in `warning`: `▲ r≠ρ: try robust`; with several lines it names the
-series: `▲ r≠ρ for curved: try robust`. Spearman's ρ measures any relation that only rises
+with a mark in `warning`. On the example, X `dep_delay` and Y `arr_delay` read
+`+1.02 per unit of dep_delay · strong, R² 0.84 · typically ±18.0 off the line ·
+▲ r≠ρ: try robust`; with **Color** `carrier` the mark names the series:
+`▲ r≠ρ for UA: try robust`. Spearman's ρ measures any relation that only rises
 or only falls, so a gap says the points follow a curve, or that a few points
 pull a straight line. On a narrow plot the reading gives up its parts from the
-right; the mark stays. The copy gives both coefficients.
+right, down to the slope beside the mark, then the mark alone. The copy gives
+both coefficients.
 
-The title row says what was fitted: `fit on 4,812 · 188 null` (rows without an
-X or Y are not fitted), `fit on 54 means` under an aggregate, the points a log
-left out (`12 points with Y ≤ 0 left out`), series too small
-(`2 series under 10 points not fitted`), and a robust fit's pairs when drawn at
-random (`slopes of 989k of 53.6B pairs · seed 641911`; the seed is not repeated
-when the chart's sample already names it).
+The title row says what was fitted, here on the example: `fit on 327,346 ·
+9,430 null` (rows without an X or Y are not fitted); `fit on 213 means` with
+**Aggregate** mean (one point per distance); the points an exponential or power
+fit leaves out (`200,089 points with Y ≤ 0 left out` with Y `dep_delay`), in
+the words a log scale uses, and said once when both leave out the same points;
+series too small (`<N> series under 10 points not fitted`); and a robust fit's
+pairs when drawn at random (`slopes of 988k of 53.6B pairs · seed 163027`; the
+seed is not repeated when the chart's sample already names it).
 
 | Where | What |
 |---|---|
@@ -372,10 +378,10 @@ Things to keep in mind:
 | A line is not a cause | Two columns can move together because a third drives both |
 | One point can carry a line | A far point at the edge of X pulls least squares toward it; compare with **robust** |
 | A strong R² can hide a curve | Look at the points: a bend shows as runs of points above, then below, the line. The rank mark flags the plainest cases |
-| A fit over group means looks stronger than the rows | `fit on 54 means`: averaging removes the scatter, so R² overstates how well the line predicts a row |
+| A fit over group means looks stronger than the rows | `fit on 213 means`: averaging removes the scatter, so R² overstates how well the line predicts a row (on the example R² 0.99 over the means, 0.98 over the rows) |
 | The slope holds within the data | Past the X range the line is not drawn, and nothing says the relation goes on |
 | A sample's line is a sample's | A sampled chart fits the sample; **Every row** fits them all |
-| **robust** and **local** are slow on big charts | They take seconds on millions of points; the chart stays usable while they run |
+| **robust** and **local** are slow on big charts | They take seconds on millions of points, and **local** holds about three copies of the points while it runs; the chart stays usable meanwhile |
 
 Trend is on Scatter only, and is off under **Cumulative** (each point holds the
 ones before it, so the points are not independent). With several Y columns,

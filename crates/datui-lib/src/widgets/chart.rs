@@ -17,7 +17,7 @@ use crate::chart::chart_data::{
 use crate::chart::chart_modal::{
     Aggregate, ChartFocus, ChartModal, Cumulative, Mark, PickerFor, ShelfUse, TimeUnit,
 };
-use crate::chart::chart_plot::{Axis, Curve, LinesData, Plot, PlotData};
+use crate::chart::chart_plot::{Axis, Curve, LinesData, Plot, PlotData, PointsRef};
 use crate::config::Theme;
 use crate::glyphs::Glyphs;
 use crate::render::context::RenderContext;
@@ -277,6 +277,45 @@ fn panel_lines(modal: &ChartModal, schema: Option<&Schema>, ctx: &RenderContext)
                 "Bandwidth",
                 plain(format!("{:.1}x", modal.kde_bandwidth_factor), ctx),
             ),
+            ChartFocus::Smooth => {
+                let smooth = modal.smooth_shown();
+                lines.push(row(
+                    "Smooth",
+                    vec![plain(smooth.label(), ctx)],
+                    Some(field),
+                    false,
+                ));
+                // Whether the raw line is drawn behind: nothing to say while off.
+                let on = !smooth.is_off();
+                let value = if on {
+                    plain(modal.raw.label(), ctx)
+                } else {
+                    quiet(modal.raw.label(), ctx)
+                };
+                lines.push(sub(
+                    vec![quiet("raw ", ctx), value],
+                    on.then_some(ChartFocus::Raw),
+                    !on,
+                ));
+                continue;
+            }
+            // A line's Smooth stays in its place, dimmed, where it takes no part.
+            ChartFocus::YStartsAtZero if !rows.contains(&ChartFocus::Smooth) => {
+                if let ShelfUse::Dimmed(why) = modal.smooth_use() {
+                    lines.push(row(
+                        "Smooth",
+                        vec![quiet(format!("off {} {why}", g.middot), ctx)],
+                        None,
+                        true,
+                    ));
+                    lines.push(sub(
+                        vec![quiet(format!("raw {}", modal.raw.label()), ctx)],
+                        None,
+                        true,
+                    ));
+                }
+                ("Y from zero", on_off(modal.y_starts_at_zero))
+            }
             ChartFocus::Range => ("Range", plain(modal.range_label(), ctx)),
             ChartFocus::YStartsAtZero => ("Y from zero", on_off(modal.y_starts_at_zero)),
             ChartFocus::LogScale => ("Log scale", on_off(modal.log_scale)),
@@ -1092,8 +1131,11 @@ fn render_xy_chart(
 
     // A series is drawn as its runs between gaps, so a line never bridges a missing
     // value. Other first, so the series drawn over it keep their colors.
+    // A smoothed line's raw line first, faded, so the smoothed one is drawn over it.
+    let raw_curves = plot.raw_curves();
     let curves = plot.curves();
-    let datasets = curve_datasets(&curves, theme, marker, graph_type);
+    let mut datasets = curve_datasets(&raw_curves, theme, marker, graph_type, true);
+    datasets.extend(curve_datasets(&curves, theme, marker, graph_type, false));
 
     let y_min_bounds = if plot.y_from_zero {
         0.0_f64.min(all_y_min)
@@ -1141,8 +1183,8 @@ fn render_xy_chart(
     let x_bounds = [x_min_bounds, x_max_bounds];
     let sub = resolution(marker).0;
     // The crosshair's readout takes the rows under the plot while the plot has the keys;
-    // it reads values before any log scaling.
-    let values = &lines.series[..];
+    // it reads values before any clip or log scaling: a smoothed line's, and its raw.
+    let (values, raw) = lines.values(plot.shown());
     let cursor = modal
         .cursor_x
         .filter(|_| modal.plot_focus)
@@ -1161,9 +1203,9 @@ fn render_xy_chart(
                 g,
                 (at, &x.title, written),
                 y,
-                values,
+                (values, raw),
                 &lines.names,
-                other_at,
+                (other_at, area.width as usize),
             );
             crosshair::readout_lines(&entries, area.width as usize, g)
         })
@@ -1186,16 +1228,21 @@ fn render_xy_chart(
 }
 
 /// The readout at the crosshair's `x`: x under its title as `written`, then each
-/// series' value there under its name in its color, `∅` where it has a gap.
+/// series' value there under its name in its color, `∅` where it has a gap; a
+/// smoothed series' with its raw value beside it, `58.2 (raw 41.0)`.
 fn readout_entries(
     theme: &Theme,
     g: &Glyphs,
     (x, x_title, written): (f64, &str, String),
     y: &Axis,
-    series: &[Vec<(f64, f64)>],
+    (series, raw): (PointsRef<'_>, Option<PointsRef<'_>>),
     names: &[String],
-    other_at: Option<usize>,
+    (other_at, width): (Option<usize>, usize),
 ) -> Vec<crosshair::Entry> {
+    let raw = raw.map(|raw| crosshair::values_at(raw, x));
+    // Names cut to leave room for the values, each still told apart.
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let names = crate::widgets::axes::fit_names(&names, (width / 3).max(12), g);
     let value_style = Style::default().fg(theme.text_primary());
     let x_title = if x_title.is_empty() { "x" } else { x_title };
     let mut entries = vec![crosshair::Entry {
@@ -1209,10 +1256,15 @@ fn readout_entries(
         .zip(names)
         .enumerate()
     {
-        let (value, value_style) = match value {
-            Some(v) => (crosshair::format_x(v, y.kind, &y.numbers), value_style),
+        let raw = raw.as_ref().and_then(|raw| raw.get(i).copied().flatten());
+        let raw = raw.map(|r| crosshair::format_x(r, y.kind, &y.numbers));
+        let (mut value, value_style) = match value.filter(|v| !v.is_nan()) {
+            Some(v) => (smoothed_text(v, raw.as_deref(), y), value_style),
             None => (g.null.to_string(), Style::default().fg(theme.dimmed())),
         };
+        if let Some(raw) = raw {
+            value.push_str(&format!(" (raw {raw})"));
+        }
         entries.push(crosshair::Entry {
             name: name.clone(),
             name_style: series_style(theme, i, other_at),
@@ -1221,6 +1273,27 @@ fn readout_entries(
         });
     }
     entries
+}
+
+/// A value as the readout writes it: a smoothed one beside its `raw` value as
+/// written, to one digit past the raw value's and at most three decimals; a
+/// mean's digits past those are noise.
+fn smoothed_text(v: f64, raw: Option<&str>, y: &Axis) -> String {
+    let Some(raw) = raw.filter(|_| y.kind == XAxisTemporalKind::Numeric) else {
+        return crosshair::format_x(v, y.kind, &y.numbers);
+    };
+    let sep = y.numbers.format.decimal_sep;
+    let places = raw.rsplit_once(sep).map_or(0, |(_, fraction)| {
+        fraction.chars().take_while(char::is_ascii_digit).count()
+    });
+    let numbers = AxisNumbers {
+        format: crate::numfmt::NumberFormat {
+            float_precision: Some(u8::try_from((places + 1).min(3)).unwrap_or(3)),
+            ..y.numbers.format.clone()
+        },
+        whole: false,
+    };
+    numbers.write(v)
 }
 
 /// Axes drawn in the theme's primary text color, ticked for series drawn with
@@ -1258,17 +1331,23 @@ fn legend<'a>(show: bool, entries: impl Iterator<Item = (&'a str, Style)>) -> Op
 }
 
 /// A dataset per run of each curve, in the order they come: Other first, so the
-/// series drawn over it keep their colors.
+/// series drawn over it keep their colors. `faded`: each in its color faded, as a
+/// raw line behind its smoothed one.
 fn curve_datasets<'a>(
     curves: &'a [Curve<'_>],
     theme: &Theme,
     marker: ratatui::symbols::Marker,
     graph_type: GraphType,
+    faded: bool,
 ) -> Vec<Dataset<'a>> {
     curves
         .iter()
         .flat_map(|curve| {
             let style = series_style(theme, curve.index, curve.other.then_some(curve.index));
+            let style = match (faded, style.fg) {
+                (true, Some(color)) => style.fg(theme.faded(color)),
+                _ => style,
+            };
             segments(&curve.points, curve.breaks)
                 .into_iter()
                 .map(move |run| {
@@ -1380,7 +1459,7 @@ fn render_histogram_chart(
     );
     if !data.groups.is_empty() {
         let other = other_at(data.other, data.groups.len());
-        let datasets = curve_datasets(curves, theme, marker, GraphType::Line);
+        let datasets = curve_datasets(curves, theme, marker, GraphType::Line, false);
         axes.legend = legend(
             look.legend,
             data.groups
@@ -1447,7 +1526,7 @@ fn render_kde_chart(
     }
 
     let other = other_at(data.other, data.series.len());
-    let datasets = curve_datasets(curves, theme, g.plot.line, GraphType::Line);
+    let datasets = curve_datasets(curves, theme, g.plot.line, GraphType::Line, false);
 
     let mut axes = plot_axes(
         theme,

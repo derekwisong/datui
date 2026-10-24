@@ -514,6 +514,10 @@ pub struct ChartDataResult {
     pub breaks: Vec<Vec<usize>>,
     pub x_axis_kind: XAxisTemporalKind,
     pub rows: RowsRead,
+    /// Per series and point, the sum and count of the rows it stands for, when a
+    /// point is not one row: an envelope's step puts them on its low point and none
+    /// on its high one, so a mean over the points is a mean over the rows.
+    pub weights: Option<Vec<Vec<(f64, f64)>>>,
 }
 
 /// A series split at its breaks: the runs a line joins.
@@ -712,6 +716,7 @@ pub fn prepare_chart_data(
             breaks: Vec::new(),
             x_axis_kind: XAxisTemporalKind::Numeric,
             rows: RowsRead::default(),
+            weights: None,
         });
     }
 
@@ -728,12 +733,14 @@ pub fn prepare_chart_data(
             Envelope::Drawn {
                 series,
                 breaks,
+                weights,
                 rows,
                 steps,
             } => {
                 return Ok(ChartDataResult {
                     series,
                     breaks,
+                    weights: Some(weights),
                     x_axis_kind,
                     rows: RowsRead {
                         total_rows: rows,
@@ -777,16 +784,18 @@ pub fn prepare_chart_data(
         breaks: built.breaks,
         x_axis_kind,
         rows,
+        weights: None,
     })
 }
 
 /// What [`envelope_series`] found.
 enum Envelope {
-    /// Per Y column, its points and where its line breaks, from `rows` rows in
-    /// `steps` steps.
+    /// Per Y column, its points, where its line breaks and each point's rows' sum
+    /// and count (see [`ChartDataResult::weights`]), from `rows` rows in `steps` steps.
     Drawn {
         series: Vec<Vec<(f64, f64)>>,
         breaks: Vec<Vec<usize>>,
+        weights: Vec<Vec<(f64, f64)>>,
         rows: usize,
         steps: usize,
     },
@@ -869,15 +878,20 @@ fn envelope_series(
     }
     let steps = (limit / 2).max(1);
     let n = y_columns.len();
-    let drawn = |series, breaks| Envelope::Drawn {
+    let drawn = |series, breaks, weights| Envelope::Drawn {
         series,
         breaks,
+        weights,
         rows,
         steps,
     };
     let bound = |name: &str| -> Result<Option<f64>> { Ok(bounds.column(name)?.f64()?.get(0)) };
     let (Some(lo), Some(hi)) = (bound("lo")?, bound("hi")?) else {
-        return Ok(drawn(vec![Vec::new(); n], vec![Vec::new(); n]));
+        return Ok(drawn(
+            vec![Vec::new(); n],
+            vec![Vec::new(); n],
+            vec![Vec::new(); n],
+        ));
     };
     let per_x = if hi > lo {
         steps as f64 / (hi - lo)
@@ -905,7 +919,10 @@ fn envelope_series(
     for i in 0..n {
         let y = col(format!("__y{i}"));
         aggs.push(y.clone().min().alias(format!("__lo{i}")));
-        aggs.push(y.max().alias(format!("__hi{i}")));
+        aggs.push(y.clone().max().alias(format!("__hi{i}")));
+        // What a smoothed line averages: the step's rows, not its low and high.
+        aggs.push(y.clone().sum().alias(format!("__sum{i}")));
+        aggs.push(y.count().alias(format!("__n{i}")));
     }
     let df = envelope_pass(
         lf.group_by([step])
@@ -916,13 +933,26 @@ fn envelope_series(
     let xs = df.column("__x")?.f64()?.clone();
     let mut series = Vec::with_capacity(n);
     let mut breaks = Vec::with_capacity(n);
+    let mut weights = Vec::with_capacity(n);
     for i in 0..n {
         let lows = df.column(&format!("__lo{i}"))?.f64()?.clone();
         let highs = df.column(&format!("__hi{i}"))?.f64()?.clone();
+        let sums = df
+            .column(&format!("__sum{i}"))?
+            .cast(&DataType::Float64)?
+            .f64()?
+            .clone();
+        let counts = counts_of(&df, &format!("__n{i}"))?;
         let mut points = Vec::with_capacity(xs.len() * 2);
+        let mut weighed = Vec::with_capacity(xs.len() * 2);
         let mut starts = Vec::new();
         let mut gap = false;
-        for ((x, low), high) in xs.iter().zip(lows.iter()).zip(highs.iter()) {
+        for (((x, low), high), (sum, count)) in xs
+            .iter()
+            .zip(lows.iter())
+            .zip(highs.iter())
+            .zip(sums.iter().zip(counts.iter()))
+        {
             let (Some(x), Some(low), Some(high)) = (x, low, high) else {
                 gap = true;
                 continue;
@@ -932,14 +962,17 @@ fn envelope_series(
             }
             gap = false;
             points.push((x, low));
+            weighed.push((sum.unwrap_or(0.0), *count as f64));
             if high != low {
                 points.push((x, high));
+                weighed.push((0.0, 0.0));
             }
         }
         series.push(points);
         breaks.push(starts);
+        weights.push(weighed);
     }
-    Ok(drawn(series, breaks))
+    Ok(drawn(series, breaks, weights))
 }
 
 /// Each column's finite values, read in one pass; nulls are dropped per column.

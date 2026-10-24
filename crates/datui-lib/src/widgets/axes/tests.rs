@@ -439,6 +439,68 @@ fn the_legend_avoids_a_dense_corner() {
     );
 }
 
+/// Legend names of several Color columns differ at their ends: a wide plot draws
+/// them whole, past the small plot's cap, and a narrow one cuts them from the
+/// middle, so they still read apart.
+#[test]
+fn long_legend_names_grow_with_the_plot_and_keep_their_ends() {
+    let g = crate::glyphs::unicode();
+    let names = [
+        "FlightSimulator2024 · 2026-10-18T09:00:00",
+        "FlightSimulator2024 · 2026-10-18T21:30:00",
+        "FlightSimulator2024 · 2026-10-19T08:15:00",
+    ];
+    let drawn = |width: u16| -> Vec<String> {
+        let mut axes = axes(false);
+        axes.legend = Some(Legend {
+            entries: names
+                .iter()
+                .map(|n| (n.to_string(), Style::default()))
+                .collect(),
+        });
+        let chart = Chart::new(vec![Dataset::default().data(&[])]);
+        let area = Rect::new(0, 0, width, 24);
+        let mut buf = Buffer::empty(area);
+        axes.render(chart, area, &mut buf, g);
+        let lines = crate::tests::buffer_lines(&buf);
+        lines
+            .iter()
+            .filter_map(|line| {
+                let at = line.find(g.bar_eighths[7])?;
+                Some(line[at + g.bar_eighths[7].len()..].trim().to_string())
+            })
+            .collect()
+    };
+    assert_eq!(drawn(200), names, "whole on a wide plot");
+    let narrow = drawn(60);
+    assert_eq!(narrow.len(), 3, "{narrow:?}");
+    for (cut, name) in narrow.iter().zip(names) {
+        assert!(cut.width() < name.width(), "{cut}");
+        assert!(cut.contains(g.ellipsis), "{cut}");
+        assert!(name.ends_with(&cut[cut.rfind(g.ellipsis).unwrap() + g.ellipsis.len()..]));
+    }
+    let mut distinct = narrow.clone();
+    distinct.dedup();
+    assert_eq!(distinct.len(), 3, "{narrow:?}");
+}
+
+/// Names are cut at the end while that keeps them apart, and from the middle only
+/// when it would not, in the glyph set given.
+#[test]
+fn names_are_cut_where_they_stay_apart() {
+    let g = crate::glyphs::ascii();
+    assert_eq!(
+        fit_names(&["Cyberpunk 2077", "Doom Eternal"], 8, g),
+        ["Cyber...", "Doom ..."]
+    );
+    assert_eq!(
+        fit_names(&["game · 2026-10-18", "game · 2026-10-19"], 12, g),
+        ["game ...0-18", "game ...0-19"]
+    );
+    // Names alike to begin with are left as an end cut would leave them.
+    assert_eq!(fit_names(&["same", "same"], 3, g), ["...", "..."]);
+}
+
 /// On a narrow plot of 0 to 7 the x row reads `0 2 4 6`: more labels when they
 /// fit, rather than the two of the step nearest the spacing.
 #[test]

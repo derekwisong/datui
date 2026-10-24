@@ -745,7 +745,7 @@ Next or previous row of the panel, wrapping (j/k too). A shelf the type does not
 On X, Y or Color: open its picker. On the line under Color: pick the values that get a series, by rows. On an option: toggle it or take its next value. The panel applies as it changes, so Enter acts as Space does, except on Rows: Space switches between Sample and Every row, and Enter reads what the row says
 .TP
 \fB\(<- / \(-> (h/l)\fR
-Step the type, the time bucket (day, week, month, quarter, year), the aggregate (count, distinct, sum, mean, median, stdev, quantile, min, max, first, last) and a quantile's percentile, cumulative, bins, range or order; on Rows, switch between Sample and Every row (read on Enter); on a shelf that takes one column, or Color, the previous or next column (Color takes it alone); on the line under Color, turn Other (every value without a series) on or off; flip a toggle
+Step the type, the time bucket (day, week, month, quarter, year), the aggregate (count, distinct, sum, mean, median, stdev, quantile, min, max, first, last) and a quantile's percentile, cumulative, bins, range or order; on Smooth, the window of a line's moving average (trailing mean), to show its trend through noisy readings (off, then lengths of time over a time X or numbers of points over any other, sized to the data); on raw under it, whether the raw line is drawn faintly behind (auto: with one series; on; off); on Rows, switch between Sample and Every row (read on Enter); on a shelf that takes one column, or Color, the previous or next column (Color takes it alone); on the line under Color, turn Other (every value without a series) on or off; flip a toggle
 .TP
 \fB+ / \-\fR
 Bins or bandwidth

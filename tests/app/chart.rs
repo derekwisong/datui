@@ -1151,3 +1151,64 @@ fn a_line_charts_range_clips_its_y_axis_to_the_percentiles() {
         "{text}"
     );
 }
+
+/// Smooth on a line over time steps lengths of time the X's spacing and span
+/// offer; the panel echoes the window, the notes say the line is a trailing mean,
+/// and the crosshair reads the smoothed value with the raw one beside it.
+#[test]
+fn a_line_charts_smooth_steps_lengths_of_time() {
+    use datui::chart::chart_modal::{ChartFocus, Mark, Smooth};
+    let path = common::fixture_dir().join("chart_smooth.parquet");
+    // A reading a second for an hour.
+    let mut df = df!(
+        "t" => (0..3_600i64).map(|s| 1_700_000_000_000 + s * 1_000).collect::<Vec<i64>>(),
+        "y" => (0..3_600i64).map(|s| s % 10).collect::<Vec<i64>>()
+    )
+    .unwrap();
+    df.apply("t", |c| {
+        c.cast(&DataType::Datetime(TimeUnit::Milliseconds, None))
+            .unwrap()
+    })
+    .unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+
+    press(&mut app, KeyCode::Char('c'));
+    app.chart.modal.set_mark(Mark::Line);
+    app.chart.modal.spec.encoding.x.field = Some("t".to_string());
+    app.chart.modal.spec.encoding.y.field = vec!["y".to_string()];
+    app.chart.modal.row_limit = None;
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    let area = Rect::new(0, 0, 160, 34);
+    let draw = |app: &mut App| {
+        let mut buf = Buffer::empty(area);
+        Widget::render(app, area, &mut buf);
+        common::buffer_text(&buf)
+    };
+    let text = draw(&mut app);
+    assert!(
+        text.contains("Smooth") && !text.contains("trailing"),
+        "{text}"
+    );
+
+    app.chart.modal.focus = ChartFocus::Smooth;
+    // 5s 10s 30s 1m: wider than a second, at most half the hour.
+    for _ in 0..4 {
+        press(&mut app, KeyCode::Right);
+    }
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    assert_eq!(app.chart.modal.smooth, Smooth::Seconds(60));
+    let text = draw(&mut app);
+    assert!(text.contains("1m"), "{text}");
+    assert!(text.contains("raw auto"), "{text}");
+    assert!(text.contains("mean of the trailing 1m"), "{text}");
+
+    press(&mut app, KeyCode::Char('x'));
+    let text = draw(&mut app);
+    assert!(text.contains("(raw "), "{text}");
+}

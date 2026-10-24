@@ -785,6 +785,9 @@ fn wrap(text: &str, size: f64, width: f64) -> Vec<String> {
     lines
 }
 
+/// How opaque a smoothed line's raw line is drawn behind it.
+const RAW_OPACITY: f64 = 0.35;
+
 /// The SVG being written, with the sizes it is set in.
 struct Canvas<'a> {
     out: String,
@@ -837,19 +840,29 @@ impl Canvas<'_> {
     }
 
     fn polyline(&mut self, points: &[(f64, f64)], color: Rgb, width: f64) {
+        self.polyline_faded(points, color, width, 1.0);
+    }
+
+    /// [`Self::polyline`] at `opacity`.
+    fn polyline_faded(&mut self, points: &[(f64, f64)], color: Rgb, width: f64, opacity: f64) {
         if points.len() < 2 {
             if let Some(&(x, y)) = points.first() {
-                self.dot(x, y, width, color, 1.0);
+                self.dot(x, y, width, color, opacity);
             }
             return;
         }
+        let faded = if opacity < 1.0 {
+            format!(" stroke-opacity=\"{opacity:.2}\"")
+        } else {
+            String::new()
+        };
         let pts: Vec<String> = points
             .iter()
             .map(|(x, y)| format!("{x:.1},{y:.1}"))
             .collect();
         self.out.push_str(&format!(
             "<polyline points=\"{}\" fill=\"none\" stroke=\"{}\" stroke-width=\"{width:.2}\" \
-             stroke-linejoin=\"round\" stroke-linecap=\"round\"/>\n",
+             stroke-linejoin=\"round\" stroke-linecap=\"round\"{faded}/>\n",
             pts.join(" "),
             color.hex()
         ));
@@ -1201,6 +1214,14 @@ fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame
             let opacity = options
                 .point_opacity
                 .of(curves.iter().map(|curve| curve.points.len()).sum());
+            // A smoothed line's raw line, faded, under the smoothed one.
+            for curve in figure.plot.raw_curves() {
+                let to_page = |&(px, py): &(f64, f64)| (sx.at(px), sy.at(py));
+                for run in segments(&curve.points, curve.breaks) {
+                    let pts: Vec<(f64, f64)> = run.iter().map(to_page).collect();
+                    c.polyline_faded(&pts, c.color(curve.slot), width, RAW_OPACITY);
+                }
+            }
             let mut ends = Vec::new();
             for curve in &curves {
                 let color = c.color(curve.slot);
@@ -1841,6 +1862,38 @@ mod tests {
             byline: "Chart: datui".to_string(),
             ..Default::default()
         }
+    }
+
+    /// A smoothed line exports as the screen draws it: its raw line first, faded in
+    /// its color, then the smoothed line over it, solid.
+    #[test]
+    fn a_smoothed_line_exports_its_raw_line_faded_beneath() {
+        use crate::chart::chart_modal::Smooth;
+        let mut figure = lines(&["AAPL"]);
+        // A zigzag, so the smoothed line differs from the raw one.
+        lines_of(&mut figure).series = vec![
+            (0..10)
+                .map(|x| (f64::from(x), f64::from(x % 2) * 10.0))
+                .collect(),
+        ];
+        figure.plot.y.smooth = Smooth::Points(2);
+        let shown = figure.plot.shown();
+        lines_of(&mut figure).keep_shown(shown);
+        let svg = svg(&figure, &options()).unwrap();
+        let polylines: Vec<&str> = svg.lines().filter(|l| l.starts_with("<polyline")).collect();
+        assert_eq!(polylines.len(), 2, "{svg}");
+        let (raw, smoothed) = (polylines[0], polylines[1]);
+        let color = format!("stroke=\"{}\"", Palette::light().series[0].hex());
+        assert!(
+            raw.contains(&color) && raw.contains("stroke-opacity=\"0.35\""),
+            "{raw}"
+        );
+        assert!(
+            smoothed.contains(&color) && !smoothed.contains("stroke-opacity"),
+            "{smoothed}"
+        );
+        let points = |line: &str| line.split('"').nth(1).unwrap().to_string();
+        assert_ne!(points(raw), points(smoothed), "the smoothed values");
     }
 
     /// Every word of the dialog lands in the file, and lines are named at their ends

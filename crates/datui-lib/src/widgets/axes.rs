@@ -668,8 +668,9 @@ pub struct Legend {
     pub entries: Vec<(String, Style)>,
 }
 
-/// The widest a legend name is drawn before it is cut.
-const LEGEND_NAME_MAX: usize = 24;
+/// The widest a legend name is drawn before it is cut, on a small plot; a wide one
+/// gives names up to a third of its width.
+const LEGEND_NAME_MIN_CAP: usize = 24;
 
 impl Legend {
     /// The cells it covers for names `name_width` wide: a cell of air each side, the
@@ -883,8 +884,9 @@ fn place_legend(
         .map(|(name, _)| name.width())
         .max()
         .unwrap_or(0);
+    let cap = LEGEND_NAME_MIN_CAP.max(usize::from(graph.width) / 3);
     let name_width = widest
-        .min(LEGEND_NAME_MAX)
+        .min(cap)
         .min((graph.width / 2).saturating_sub(4) as usize);
     let (w, h) = legend.size(name_width);
     if legend.entries.is_empty()
@@ -946,9 +948,10 @@ fn draw_legend(buf: &mut Buffer, legend: &Legend, place: LegendPlace, text: Styl
             buf[(x, y)].reset();
         }
     }
-    for ((name, style), y) in legend.entries.iter().zip(area.top()..) {
+    let names: Vec<&str> = legend.entries.iter().map(|(n, _)| n.as_str()).collect();
+    let names = fit_names(&names, place.name_width, g);
+    for (((_, style), name), y) in legend.entries.iter().zip(names).zip(area.top()..) {
         buf.set_string(area.x + 1, y, g.bar_eighths[7], *style);
-        let name = cut(name, place.name_width, g);
         buf.set_string(area.x + 3, y, name, text);
     }
 }
@@ -1155,6 +1158,26 @@ pub fn fit_x_labels(axis: &AxisSpec<'_>, span: (u16, u16), track: Track) -> Plac
         bounds: axis.bounds,
         ..Placed::default()
     }
+}
+
+/// `names`, each in at most `width` cells: cut at the end while that keeps them
+/// apart, otherwise from the middle, so names of several Color columns, which
+/// differ at their ends, still read apart.
+pub fn fit_names(names: &[&str], width: usize, g: &Glyphs) -> Vec<String> {
+    let apart = |names: &[String]| {
+        let mut sorted: Vec<&String> = names.iter().collect();
+        sorted.sort();
+        sorted.windows(2).all(|w| w[0] != w[1])
+    };
+    let ends: Vec<String> = names.iter().map(|n| cut(n, width, g)).collect();
+    let whole: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+    if apart(&ends) || !apart(&whole) {
+        return ends;
+    }
+    names
+        .iter()
+        .map(|n| crate::glyphs::fit_middle_with(n, width, g.ellipsis))
+        .collect()
 }
 
 /// `text` in at most `width` cells, cut with the ellipsis when longer.

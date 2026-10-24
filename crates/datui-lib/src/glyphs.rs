@@ -1103,10 +1103,14 @@ pub fn fit_start(text: &str, width: usize) -> String {
 
 /// `text` in `width` columns, cut from the middle: `weather/…/daily`.
 pub fn fit_middle(text: &str, width: usize) -> String {
+    fit_middle_with(text, width, get().ellipsis)
+}
+
+/// [`fit_middle`] with `mark` between the ends.
+pub fn fit_middle_with(text: &str, width: usize, mark: &str) -> String {
     if display_width(text) <= width {
         return text.to_string();
     }
-    let mark = get().ellipsis;
     let mark_w = display_width(mark);
     if width <= mark_w {
         return take_columns(mark, width).to_string();

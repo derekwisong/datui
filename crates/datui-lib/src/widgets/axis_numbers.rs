@@ -186,6 +186,23 @@ impl AxisFormat {
         }
     }
 
+    /// The format for a true log axis ticked at `ticks`, each 1, 2 or 5 times a power
+    /// of ten: as [`Self::log`] writes them, and `2e-7` for one too small to write in
+    /// the places an axis takes.
+    pub fn powers(ticks: &[f64], numbers: &AxisNumbers) -> Self {
+        let least = ticks
+            .iter()
+            .map(|v| v.abs())
+            .filter(|v| *v > 0.0)
+            .fold(f64::INFINITY, f64::min);
+        let mut format = Self::log(ticks, numbers);
+        if least < 10f64.powi(-MAX_AXIS_PLACES) * (1.0 - 1e-9) {
+            format.full = Notation::Scientific { places: 0 };
+            format.short = None;
+        }
+        format
+    }
+
     /// The format for an axis from `lo` to `hi` ticked at its ends and halfway, as
     /// [`crate::widgets::axes::AxisSpec::ends_and_middle`] ticks it.
     pub fn ends_and_middle([lo, hi]: [f64; 2], numbers: &AxisNumbers) -> Self {

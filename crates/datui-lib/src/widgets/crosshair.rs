@@ -26,11 +26,14 @@ pub struct PlotPlace {
     pub x_bounds: [f64; 2],
     /// Dots across a cell.
     pub sub: u16,
+    /// X is drawn as `log10(x)`: the cursor still stands on a value of X.
+    pub log_x: bool,
 }
 
 impl PlotPlace {
     /// The column `x` is drawn in, as the series' points are.
     pub fn column(&self, x: f64) -> u16 {
+        let x = if self.log_x { x.log10() } else { x };
         let [lo, hi] = self.x_bounds;
         let f = if hi > lo { (x - lo) / (hi - lo) } else { 0.0 };
         Track {

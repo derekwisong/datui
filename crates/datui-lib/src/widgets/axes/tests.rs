@@ -537,3 +537,85 @@ fn a_long_title_is_cut_to_its_row() {
     assert_eq!(cut("a long title", 6, crate::glyphs::ascii()), "a l...");
     assert_eq!(cut("short", 6, crate::glyphs::ascii()), "short");
 }
+
+/// A label of a log axis as a number: `2,000`, `5k`, `1e-9`.
+fn log_label(label: &str) -> f64 {
+    let plain = label.replace(',', "");
+    let (digits, unit) = match plain.chars().last() {
+        Some('k') => (&plain[..plain.len() - 1], 1e3),
+        Some('M') => (&plain[..plain.len() - 1], 1e6),
+        _ => (&plain[..], 1.0),
+    };
+    digits.parse::<f64>().unwrap() * unit
+}
+
+/// 1, 2 or 5 times a power of ten.
+fn is_one_two_five(v: f64) -> bool {
+    let mantissa = v / 10f64.powf((v.log10() + 1e-9).floor());
+    [1.0, 2.0, 5.0].iter().any(|m| (mantissa - m).abs() < 1e-6)
+}
+
+/// A log X across several decades ticks at powers of ten, with 2 and 5 between
+/// when the width has room for them, every tick inside the data, and labels about
+/// fifteen columns apart that never touch.
+#[test]
+fn a_log_x_ticks_decades_and_one_two_five() {
+    let (low, high) = (3.0_f64, 70_000.0_f64);
+    let axis = AxisSpec::x_log([low.log10(), high.log10()], &AxisNumbers::default(), "");
+    for width in [30u16, 60, 120, 240] {
+        let fit = fit_x_labels(&axis, (0, width), track(width));
+        let values: Vec<f64> = fit.labels.iter().map(|(_, l)| log_label(l)).collect();
+        assert!(values.len() >= 2, "{width}: {:?}", fit.labels);
+        assert!(values.len() as f64 <= f64::from(width) / 6.0, "{width}");
+        for v in &values {
+            assert!(is_one_two_five(*v), "{width}: {v} in {:?}", fit.labels);
+            assert!((low..=high).contains(v), "{width}: {v} outside");
+        }
+        for pair in fit.labels.windows(2) {
+            let (x, label) = &pair[0];
+            assert!(x + label.width() as u16 + LABEL_GAP <= pair[1].0, "{width}");
+        }
+    }
+    // Wide: 2 and 5 between the powers. Narrow: the powers alone.
+    let wide: Vec<f64> = labels_on(&axis, 240).iter().map(|l| log_label(l)).collect();
+    assert!(wide.contains(&20.0) && wide.contains(&50.0), "{wide:?}");
+    let narrow: Vec<f64> = labels_on(&axis, 60).iter().map(|l| log_label(l)).collect();
+    assert!(
+        narrow
+            .iter()
+            .all(|v| (v.log10() - v.log10().round()).abs() < 1e-9),
+        "{narrow:?}"
+    );
+    // Equal ratios sit equal distances apart.
+    let fit = fit_x_labels(&axis, (0, 60), track(60));
+    let at: Vec<u16> = fit.majors.clone();
+    let gaps: Vec<i32> = at
+        .windows(2)
+        .map(|w| i32::from(w[1]) - i32::from(w[0]))
+        .collect();
+    assert!(gaps.iter().all(|g| (g - gaps[0]).abs() <= 1), "{at:?}");
+}
+
+/// Within a decade the log axis takes round steps, as a number axis does; far
+/// under one it writes powers as `1e-9`.
+#[test]
+fn a_log_x_within_a_decade_and_far_under_one() {
+    let axis = AxisSpec::x_log(
+        [150f64.log10(), 900f64.log10()],
+        &AxisNumbers::default(),
+        "",
+    );
+    let labels = labels_on(&axis, 80);
+    assert!(labels.len() >= 3, "{labels:?}");
+    let values: Vec<f64> = labels.iter().map(|l| log_label(l)).collect();
+    assert!(
+        values.iter().all(|v| (150.0..=900.0).contains(v)),
+        "{labels:?}"
+    );
+    assert!(values.iter().all(|v| v % 50.0 == 0.0), "{labels:?}");
+
+    let tiny = AxisSpec::x_log([-9.0, -3.0], &AxisNumbers::default(), "");
+    let labels = labels_on(&tiny, 120);
+    assert!(labels.contains(&"1e-9".to_string()), "{labels:?}");
+    assert!(labels.iter().all(|l| l.contains('e')), "{labels:?}");
+}

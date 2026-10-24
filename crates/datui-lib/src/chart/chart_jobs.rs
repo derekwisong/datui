@@ -855,6 +855,16 @@ impl App {
         {
             notes.push(note);
         }
+        if let PlotData::Lines(lines) = prepared {
+            let left_out = lines.left_out(shown);
+            if left_out > 0 {
+                let noun = if left_out == 1 { "point" } else { "points" };
+                notes.push(format!(
+                    "{} {noun} with X of 0 or less left out",
+                    crate::numfmt::group_chrome(left_out)
+                ));
+            }
+        }
         if let PlotData::Lines(lines) = prepared
             && matches!(self.chart.modal.mark(), Mark::Line | Mark::Scatter)
             && let Some(clip) = lines.clip_drawn(shown)

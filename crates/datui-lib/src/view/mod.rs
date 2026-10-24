@@ -208,6 +208,9 @@ pub struct SavedChart {
     pub share: bool,
     pub y_starts_at_zero: bool,
     pub log_scale: bool,
+    /// A line or scatter chart's X on a log scale.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub log_x: bool,
     pub legend: bool,
     pub grid: bool,
     /// Rows the chart reads when the view has no sample of its own: up to this many,

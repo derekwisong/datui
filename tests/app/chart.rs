@@ -1212,3 +1212,85 @@ fn a_line_charts_smooth_steps_lengths_of_time() {
     let text = draw(&mut app);
     assert!(text.contains("(raw "), "{text}");
 }
+
+/// X's log scale on a scatter of a number X: Space on the line under Log scale
+/// turns it on, the axis ticks the powers of ten, and the notes count the points
+/// at X of 0 or less it leaves out. Over a date X the line is dimmed and Tab skips it.
+#[test]
+fn a_scatter_takes_a_log_x() {
+    use datui::chart::chart_modal::{ChartFocus, Mark};
+    let path = common::fixture_dir().join("chart_log_x.parquet");
+    // Sizes from 1 to 100,000, three of them 0 or less.
+    let mut size: Vec<f64> = (0..=50).map(|i| 10f64.powf(f64::from(i) / 10.0)).collect();
+    size.extend([0.0, -1.0, 0.0]);
+    let n = size.len() as i64;
+    let mut df = df!(
+        "size" => size,
+        "ms" => (0..n).map(|i| (i * 7 % 13) as f64).collect::<Vec<f64>>(),
+        "day" => (0..n as i32).map(|d| 19_700 + d).collect::<Vec<i32>>()
+    )
+    .unwrap();
+    df.apply("day", |c| c.cast(&DataType::Date).unwrap())
+        .unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+
+    press(&mut app, KeyCode::Char('c'));
+    app.chart.modal.set_mark(Mark::Scatter);
+    app.chart.modal.spec.encoding.x.field = Some("day".to_string());
+    app.chart.modal.spec.encoding.y.field = vec!["ms".to_string()];
+    app.chart.modal.row_limit = None;
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    let area = Rect::new(0, 0, 160, 34);
+    let draw = |app: &mut App| {
+        let mut buf = Buffer::empty(area);
+        Widget::render(app, area, &mut buf);
+        common::buffer_text(&buf)
+    };
+    let text = draw(&mut app);
+    assert!(text.contains("x numbers only"), "{text}");
+    app.chart.modal.focus = ChartFocus::LogScale;
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.chart.modal.focus, ChartFocus::Range, "Tab skips it");
+
+    // ←/→ on X steps its column.
+    app.chart.modal.focus = ChartFocus::X;
+    for _ in 0..3 {
+        if app.chart.modal.x().map(String::as_str) == Some("size") {
+            break;
+        }
+        press(&mut app, KeyCode::Right);
+    }
+    assert_eq!(app.chart.modal.x().map(String::as_str), Some("size"));
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    app.chart.modal.focus = ChartFocus::LogScale;
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.chart.modal.focus, ChartFocus::LogX);
+    press(&mut app, KeyCode::Char(' '));
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    assert!(app.chart.modal.log_x);
+    let text = draw(&mut app);
+    assert!(text.contains("y off") && text.contains("x on"), "{text}");
+    assert!(
+        text.contains("3 points with X of 0 or less left out"),
+        "{text}"
+    );
+    let labels = text
+        .lines()
+        .find(|l| l.contains(" 10 ") && l.contains(" 100 "))
+        .unwrap_or_else(|| panic!("powers of ten under the plot: {text}"));
+    assert!(
+        labels.contains("1,000") || labels.contains("1000"),
+        "{labels}"
+    );
+
+    // The crosshair stands on X's values, never on one left out.
+    press(&mut app, KeyCode::Char('x'));
+    press(&mut app, KeyCode::Home);
+    assert_eq!(app.chart.modal.cursor_x, Some(1.0));
+}

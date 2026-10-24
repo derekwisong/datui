@@ -171,7 +171,8 @@ Dates and datetimes are written as ISO 8601 with a space before the time:
 | **Smooth** | Line | Draw each point as the mean of the values in a window ending at it (a moving average), to show the trend through noisy readings: **off**, or a window, a length of time or a number of points. See [Smoothing](#smoothing) |
 | raw (under Smooth) | Line | Draw the raw line faintly behind the smoothed one: **auto** (with one series), **on** or **off** |
 | Order | Bar (under X) | By value, largest first, or by label: text A to Z, numbers ascending |
-| **Y from zero**, **Log scale** | Line, Scatter | Start the Y axis at zero; plot ln(1 + y), with the ticks labeled in y |
+| **Y from zero** | Line, Scatter | Start the Y axis at zero |
+| **Log scale** | Line, Scatter | **y**: plot ln(1 + y), with the ticks labeled in y. **x** (the line under it): a log axis for a number X. See [Log scale](#log-scale) |
 | **Legend** | Line, Scatter, Bar, Histogram, KDE | **auto** or **off** |
 | **Grid** | Line, Scatter, Histogram, Box, KDE | Lines at the labeled ticks |
 | **Rows** | Charts that sample | **Sample** of a size, or **Every row**; an aggregate reads every row and says `all, exact`. See [Large tables](#large-tables) |
@@ -218,7 +219,7 @@ gap, none longer than the span.
 | Nulls | Skipped. A window with no values draws no point (`∅` at the crosshair) |
 | Series | Each smoothed on its own, after any bucket, aggregate and cumulative |
 | Large tables | A line drawn as an envelope (see [Large tables](#large-tables)) averages the rows behind each step, not its lowest and highest value, and a window of N points is N rows, the oldest step counted in part, at its mean: `min and max of 192M rows in 5,000 steps · mean of the trailing 1m` |
-| Order | Smoothed, then **Range**, then **Log scale** |
+| Order | Smoothed, then (on a log X) the points at X of 0 or less left out, then **Range**, then **Log scale** |
 | Range | With **outliers at edge**: without the raw line, the Y axis spans the smoothed line less its outliers. With it, the axis spans both lines less their outliers, and each line's outliers are drawn at the edge and counted in the title row. With **All**, the axis spans the raw line too; hide it (**raw** off) or use **outliers at edge** to fit the smoothed line |
 
 Smoothing changes only the drawing, not the data. An export draws the smoothed
@@ -246,6 +247,42 @@ as the chart has one series. Press <kbd>x</kbd> and move to 2013-03-08: the
 readout says `delay: 21.255 (raw 83.536921)`. That day stands out at 83.5
 minutes, but its week's mean is 21.3.
 
+### Log scale
+
+Some values span many orders of magnitude: file sizes, city populations,
+response times. On an ordinary axis the largest few take the whole width and the
+rest crowd into a strip at zero. A log axis gives each power of ten the same
+room, so 1 to 10 is as wide as 1,000 to 10,000. Equal steps along it are equal
+ratios, not equal differences: doubling looks the same anywhere on the axis.
+
+**Log scale** has two lines. Its own row is Y's, and the line under it, **x**,
+is X's. Focus either with <kbd>Tab</kbd> and toggle it with <kbd>Space</kbd>.
+
+| Setting | What it draws |
+|---|---|
+| **y** | ln(1 + y), so 0 stays on the axis; negative values are drawn at 0. Ticks at 0, 1, 10, 100 and on |
+| **x** | log10 of X. Only for a number X: over a date, time or duration X the line reads `numbers only`, dimmed, and <kbd>Tab</kbd> skips it |
+
+How the X axis works:
+
+| Part | Rule |
+|---|---|
+| Values of 0 or less | A log has no place for them, so they are left out and counted in the title row: `3 points with X of 0 or less left out`. A line breaks where points were left out, as it does at a gap |
+| Ticks | Powers of ten (1, 10, 100), with 2 and 5 between when there is room, or every second or third power when there is less. An axis spanning less than a power of ten ticks at round steps (200, 400, 600). The axis ends where the data does; labels are written as on any number axis, `1e-9` far below one |
+| Crosshair | Moves point to point in the log spacing and reads X's own value: `size: 100`, not 2 |
+| Smooth | A window of N points is the same N points: smoothing reads the data in X order, the points left out included, and only the drawing is logged |
+| **Range** | Fits the Y axis to the points drawn, not those left out |
+| Export | Draws the same axis |
+
+#### Example: flight distances
+
+Open **NYC flights (2013)** from **Example datasets**, press <kbd>c</kbd>, set
+the type to **Scatter**, X to `distance` and Y to `air_time`. Distances run
+from 17 to 4,983 miles, and most flights are under 1,000, so on an ordinary
+axis they crowd the left fifth of the plot. Tab to **x** under **Log scale**
+and press <kbd>Space</kbd>: the flights under 1,000 miles now take about the
+left two-thirds, and the short hops, 17 to 200 miles, are told apart.
+
 ## Axes, grid and legend
 
 Ticks fall on round values, steps of 1, 2 or 5 times a power of ten (or 25,
@@ -258,7 +295,7 @@ labels where there is room.
 |---|---|
 | Numbers | One notation and precision per axis, in the table's digit grouping and decimal separator ([number format](configuration.md#number-formatting)). Counts and integer columns tick in whole numbers |
 | Dates and times | Calendar boundaries: years, months, days, hours, minutes. A label names the unit that turns there: `2026` at a new year, `Apr` at a new month, `Mar 5` at a new day among hours, otherwise `12` or `06:00`. The first label also names the year |
-| Log scale | 1, 10, 100 and on, with 2 and 5 between when there is room, and 0 where the data starts there; one format, shortened to `1k`, `10k`, `1M` when narrow |
+| Log scale | Y: 1, 10, 100 and on, with 2 and 5 between when there is room, and 0 where the data starts there; one format, shortened to `1k`, `10k`, `1M` when narrow. X: the same powers inside the data's range, round steps within a power of ten |
 | Crowded | Fewer ticks first, then shorter labels (`12.3k`, `12,3k`). A crowded time axis labels only its ends and middle. An axis that would get only two labels takes a finer step when it fits: `0 2 4 6`, not `0 5` |
 
 | Feature | What it does |

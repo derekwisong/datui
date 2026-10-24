@@ -24,6 +24,7 @@ fn place(width: u16) -> PlotPlace {
         graph: Rect::new(10, 0, width, 10),
         x_bounds: [0.0, 100.0],
         sub: 1,
+        log_x: false,
     }
 }
 
@@ -140,6 +141,7 @@ fn the_cursor_line_keeps_the_series_marks() {
             graph: Rect::new(2, 0, 18, 5),
             x_bounds: [0.0, 17.0],
             sub: 1,
+            log_x: false,
         };
         for x in 0..20 {
             buf[(x, 5)].set_symbol(g.plot.axis.horizontal);
@@ -150,4 +152,22 @@ fn the_cursor_line_keeps_the_series_marks() {
         let v = g.plot.axis.vertical;
         assert_eq!(column, format!("{v}{v}x{v}{v}{}", g.plot.tick_x));
     }
+}
+
+/// On a log X the cursor stands on a value of X and is drawn where its log falls:
+/// 1, 10, 100 and 1000 evenly across, stepped one by one, a click landing on each.
+#[test]
+fn on_a_log_x_the_cursor_moves_in_log_space() {
+    let p = PlotPlace {
+        graph: Rect::new(10, 0, 31, 10),
+        x_bounds: [0.0, 3.0],
+        sub: 1,
+        log_x: true,
+    };
+    let stops = [1.0, 10.0, 100.0, 1000.0];
+    let columns: Vec<u16> = stops.iter().map(|&x| p.column(x)).collect();
+    assert_eq!(columns, [10, 20, 30, 40]);
+    assert_eq!(step(&stops, &p, 1.0, Move::Right), Some(10.0));
+    assert_eq!(step(&stops, &p, 100.0, Move::Left), Some(10.0));
+    assert_eq!(at_column(&stops, &p, 29), Some(100.0));
 }

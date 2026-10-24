@@ -521,6 +521,28 @@ mod tests {
         assert_eq!(modal.fields().len(), FIELDS.len() - 2);
     }
 
+    /// The legend steps from line ends to below, then the corners; a view keeps
+    /// `below`, and one saved before it still reads.
+    #[test]
+    fn the_legend_steps_through_below_and_a_view_keeps_it() {
+        let mut modal = opened();
+        modal.legend = LegendPlace::LineEnds;
+        modal.step(ChartExportFocus::Legend, 1);
+        assert_eq!(modal.legend, LegendPlace::Below);
+        assert_eq!(modal.legend.label(), "Below");
+        modal.step(ChartExportFocus::Legend, 1);
+        assert_eq!(modal.legend, LegendPlace::TopRight);
+        modal.step(ChartExportFocus::Legend, -1);
+        let saved = serde_json::to_string(&modal.saved()).unwrap();
+        assert!(saved.contains("\"legend\":\"below\""), "{saved}");
+        let mut reopened = opened();
+        reopened.put_back(serde_json::from_str(&saved).unwrap());
+        assert_eq!(reopened.legend, LegendPlace::Below);
+        let old = saved.replace("\"below\"", "\"line_ends\"");
+        reopened.put_back(serde_json::from_str(&old).unwrap());
+        assert_eq!(reopened.legend, LegendPlace::LineEnds);
+    }
+
     /// A text field has an input and no choice; every other field, a choice.
     #[test]
     fn a_field_is_text_or_a_choice() {

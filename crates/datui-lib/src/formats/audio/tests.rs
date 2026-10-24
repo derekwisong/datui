@@ -488,6 +488,7 @@ fn a_waveform_charts_as_its_envelope_over_seconds() {
         &["ch1".into()],
         &crate::chart::chart_data::ChartSampling::rows(Some(1_000)),
         true,
+        false,
     )
     .unwrap();
     assert_eq!(result.rows.total_rows, 20_000);

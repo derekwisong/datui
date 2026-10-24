@@ -313,7 +313,7 @@ impl App {
     fn chart_xs(&self) -> Option<&[f64]> {
         let request = ChartRequest::from_modal(&self.chart.modal)?;
         match self.chart.cache.prepared(&request)? {
-            PlotData::Lines(xy) => Some(&xy.xs),
+            PlotData::Lines(xy) => Some(xy.stops(self.chart.modal.shown())),
             _ => None,
         }
     }

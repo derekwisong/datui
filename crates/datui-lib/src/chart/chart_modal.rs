@@ -466,7 +466,9 @@ pub enum ChartFocus {
     Bandwidth,
     Range,
     YStartsAtZero,
+    /// Y's log scale, and under it X's: a number X only.
     LogScale,
+    LogX,
     ShowLegend,
     Grid,
     /// Sample size, for charts that sample.
@@ -541,6 +543,8 @@ pub struct ChartModal {
     pub suggested: Option<String>,
     pub y_starts_at_zero: bool,
     pub log_scale: bool,
+    /// A line or scatter chart's X on a log scale: a number X only.
+    pub log_x: bool,
     pub show_legend: bool,
     /// The grid at the major ticks, on the kinds with axes (`g`).
     pub grid: bool,
@@ -690,6 +694,7 @@ impl ChartModal {
         self.suggested = None;
         self.y_starts_at_zero = false;
         self.log_scale = false;
+        self.log_x = false;
         self.show_legend = true;
         self.grid = grid;
         self.share = false;
@@ -729,6 +734,7 @@ impl ChartModal {
         self.share = saved.share;
         self.y_starts_at_zero = saved.y_starts_at_zero;
         self.log_scale = saved.log_scale;
+        self.log_x = saved.log_x;
         self.show_legend = saved.legend;
         self.grid = saved.grid;
         self.row_limit = saved.rows;
@@ -761,6 +767,7 @@ impl ChartModal {
             share: self.share,
             y_starts_at_zero: self.y_starts_at_zero,
             log_scale: self.log_scale,
+            log_x: self.log_x,
             legend: self.show_legend,
             grid: self.grid,
             rows: if self.view_sampled {
@@ -1015,7 +1022,11 @@ impl ChartModal {
                         rows.push(Raw);
                     }
                 }
-                rows.extend([YStartsAtZero, LogScale, Range, ShowLegend, Grid]);
+                rows.extend([YStartsAtZero, LogScale]);
+                if self.x_takes_log() {
+                    rows.push(LogX);
+                }
+                rows.extend([Range, ShowLegend, Grid]);
             }
             Mark::Bar => rows.push(ShowLegend),
             Mark::Histogram => rows.extend([Range, ShowLegend, Grid]),
@@ -1439,10 +1450,26 @@ impl ChartModal {
     pub fn shown(&self) -> crate::chart::chart_plot::Shown {
         crate::chart::chart_plot::Shown {
             log: self.log_scale,
+            log_x: self.log_x_shown(),
             clip: self.value_range == ValueRange::Percentile1To99,
             smooth: self.smooth_shown(),
             raw: self.raw,
         }
+    }
+
+    /// Whether X can take a log scale: a number, not a date, time or duration.
+    pub fn x_takes_log(&self) -> bool {
+        matches!(self.spec.mark, Mark::Line | Mark::Scatter)
+            && !self.x_is_time()
+            && self
+                .x()
+                .is_some_and(|x| self.numeric_candidates.iter().any(|c| c == x))
+    }
+
+    /// Whether the chart on screen draws X on a log scale: chosen, and an X that
+    /// takes it.
+    pub fn log_x_shown(&self) -> bool {
+        self.log_x && self.x_takes_log()
     }
 
     /// Whether X is a date, datetime, time or duration: a window is a length of time.
@@ -1613,6 +1640,7 @@ impl ChartModal {
             ChartFocus::LimitRows => self.toggle_rows(),
             ChartFocus::YStartsAtZero => self.y_starts_at_zero = !self.y_starts_at_zero,
             ChartFocus::LogScale => self.log_scale = !self.log_scale,
+            ChartFocus::LogX => self.log_x = !self.log_x,
             ChartFocus::ShowLegend => self.show_legend = !self.show_legend,
             ChartFocus::Grid => self.grid = !self.grid,
             // The values line: Space picks them, ←/→ turn Other on or off.
@@ -1636,6 +1664,7 @@ impl ChartModal {
             focus,
             ChartFocus::YStartsAtZero
                 | ChartFocus::LogScale
+                | ChartFocus::LogX
                 | ChartFocus::ShowLegend
                 | ChartFocus::Grid
         )
@@ -2013,6 +2042,44 @@ mod tests {
     /// The panel's rows follow the type: a bucket under a date X, the order under
     /// a bar's X, the bins under a histogram's; the sample size only where the
     /// chart samples.
+    /// X's log scale takes a number X on a line or scatter: a date X, or a bar
+    /// chart, keeps the choice and draws without it.
+    #[test]
+    fn log_x_waits_for_a_number_x() {
+        let mut modal = open_on(Some(("date", &DataType::Date)));
+        modal.log_x = true;
+        assert!(!modal.x_takes_log() && !modal.shown().log_x);
+        modal.spec.encoding.x.field = Some("distance".to_string());
+        assert!(modal.x_takes_log() && modal.shown().log_x);
+        modal.step(ChartFocus::LogX, 1);
+        assert!(!modal.log_x);
+        assert!(modal.is_toggle_row(ChartFocus::LogX));
+        modal.log_x = true;
+        modal.set_mark(Mark::Scatter);
+        assert!(modal.shown().log_x);
+        modal.set_mark(Mark::Bar);
+        assert!(!modal.x_takes_log());
+    }
+
+    /// A view saved before X's log scale loads with it off; one saved with it on
+    /// brings it back.
+    #[test]
+    fn log_x_is_kept_with_a_view() {
+        let mut modal = open_on(Some(("distance", &DataType::Float64)));
+        let plain = serde_json::to_value(modal.saved(1, None)).unwrap();
+        assert!(plain.get("log_x").is_none());
+        let old: crate::view::SavedChart = serde_json::from_value(plain).unwrap();
+        assert!(!old.log_x);
+
+        modal.log_x = true;
+        let saved = serde_json::to_value(modal.saved(1, None)).unwrap();
+        assert_eq!(saved["log_x"], serde_json::json!(true));
+        let back: crate::view::SavedChart = serde_json::from_value(saved).unwrap();
+        let mut restored = ChartModal::new();
+        restored.restore(&back, 1);
+        assert!(restored.log_x);
+    }
+
     /// A view saved before smoothing loads with it off; one saved with it brings it
     /// back, and the raw line's setting with it.
     #[test]
@@ -2105,6 +2172,14 @@ mod tests {
         );
         let rows = modal.row_order();
         assert!(rows.contains(&Cumulative) && !rows.contains(&LimitRows));
+
+        // X's log scale waits under Y's for a number X.
+        assert!(!modal.row_order().contains(&LogX));
+        modal.spec.encoding.x.field = Some("distance".to_string());
+        modal.spec.encoding.x.time_unit = super::TimeUnit::None;
+        let rows = modal.row_order();
+        let at = rows.iter().position(|r| *r == LogScale).unwrap();
+        assert_eq!(rows.get(at + 1), Some(&LogX));
 
         modal.set_mark(Mark::Bar);
         assert_eq!(modal.spec.encoding.x.time_unit, super::TimeUnit::None);

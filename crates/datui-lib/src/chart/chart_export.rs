@@ -939,7 +939,8 @@ fn axis_ticks(
 ) -> ([f64; 2], Vec<(f64, String)>) {
     let bounds = [lo, hi];
     let spec = match (axis.log, across) {
-        (true, _) => AxisSpec::y_log(bounds, &axis.numbers, ""),
+        (true, true) => AxisSpec::x_log(bounds, &axis.numbers.clone().fractional(), ""),
+        (true, false) => AxisSpec::y_log(bounds, &axis.numbers, ""),
         (false, true) => AxisSpec::calendar(bounds, axis.kind, &axis.numbers, ""),
         (false, false) if axis.kind == XAxisTemporalKind::Duration => {
             AxisSpec::calendar(bounds, axis.kind, &axis.numbers, "")
@@ -2329,6 +2330,48 @@ mod tests {
         let labels: Vec<&str> = ticks.iter().map(|(_, l)| l.as_str()).collect();
         assert!(labels.contains(&"2025"), "{labels:?}");
         assert!(ticks.len() <= 6);
+    }
+
+    /// A log X exports as the screen draws it: powers of ten evenly across, the
+    /// points at X of 0 or less left out.
+    #[test]
+    fn a_log_x_exports_its_decades() {
+        let axis = Axis {
+            log: true,
+            ..Default::default()
+        };
+        let (bounds, ticks) = axis_ticks((0.0, 3.0), &axis, 400.0, 12.0, true);
+        assert_eq!(bounds, [0.0, 3.0], "an X is not widened");
+        let at = |label: &str| ticks.iter().find(|(_, l)| l == label).map(|(v, _)| *v);
+        assert_eq!(
+            (at("1"), at("10"), at("100")),
+            (Some(0.0), Some(1.0), Some(2.0)),
+            "{ticks:?}"
+        );
+
+        let mut figure = lines(&["a"]);
+        let lines = lines_of(&mut figure);
+        lines.series = vec![vec![(0.0, 1.0), (1.0, 2.0), (10.0, 3.0), (100.0, 4.0)]];
+        lines.bounds = crate::chart::chart_plot::extent(&lines.series);
+        figure.plot.x.log = true;
+        let shown = figure.plot.shown();
+        lines_of(&mut figure).keep_shown(shown);
+        let svg = svg(&figure, &options()).unwrap();
+        for label in [">1<", ">10<", ">100<"] {
+            assert!(svg.contains(label), "{label}: {svg}");
+        }
+        let points = svg
+            .split("<polyline points=\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .unwrap();
+        let xs: Vec<f64> = points
+            .split(' ')
+            .map(|p| p.split(',').next().unwrap().parse().unwrap())
+            .collect();
+        assert_eq!(xs.len(), 3, "{points}");
+        assert!(((xs[1] - xs[0]) - (xs[2] - xs[1])).abs() < 0.2, "{points}");
+        roxmltree_ok(&svg);
     }
 
     #[test]

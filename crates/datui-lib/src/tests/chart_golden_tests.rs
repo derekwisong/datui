@@ -42,6 +42,13 @@ const SCENARIOS: &[Scenario] = &[
         },
     },
     Scenario {
+        name: "scatter_log_x",
+        set: |m| {
+            columns(m, Mark::Scatter, "t", &["b"]);
+            m.log_x = true;
+        },
+    },
+    Scenario {
         name: "histogram",
         set: |m| {
             columns(m, Mark::Histogram, "a", &[]);
@@ -153,6 +160,7 @@ fn charts_draw_and_export_as_their_goldens() {
         let modal = &mut app.chart.modal;
         modal.spec = crate::chart::chart_modal::ChartSpec::default();
         modal.log_scale = false;
+        modal.log_x = false;
         modal.hist_bins = crate::chart::chart_modal::HISTOGRAM_DEFAULT_BINS;
         (scenario.set)(&mut app.chart.modal);
         app.chart.modal.row_limit = None;

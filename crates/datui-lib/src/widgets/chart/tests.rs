@@ -74,17 +74,21 @@ impl Draw<'_> {
                     (Some(series), _) => Some(PlotData::Lines(LinesData {
                         names: names.to_vec(),
                         series: values.unwrap_or(series).clone(),
-                        series_shown: values.map(|_| ShownSeries {
-                            shown: Shown {
-                                log: true,
-                                raw: RawLine::Off,
-                                ..Shown::default()
-                            },
-                            series: Some(series.clone()),
-                            smoothed: None,
-                            raw: None,
-                            clip: None,
-                            bounds: extent(series),
+                        series_shown: values.map(|_| {
+                            Box::new(ShownSeries {
+                                shown: Shown {
+                                    log: true,
+                                    raw: RawLine::Off,
+                                    ..Shown::default()
+                                },
+                                series: Some(series.clone()),
+                                smoothed: None,
+                                raw: None,
+                                clip: None,
+                                bounds: extent(series),
+                                breaks: None,
+                                left_out: 0,
+                            })
                         }),
                         breaks: breaks.cloned().unwrap_or_default(),
                         x_axis_kind,
@@ -2045,4 +2049,82 @@ fn a_smoothed_value_reads_a_digit_past_its_raw_one() {
     assert_eq!(smoothed_text(4.5, Some("9"), &y), "4.5");
     assert_eq!(smoothed_text(21.2549754, Some("83.536921"), &y), "21.255");
     assert_eq!(smoothed_text(4.25, None, &y), y.numbers.write(4.25));
+}
+
+/// A log X: the panel says so under Y's log scale (dimmed with why for a date X),
+/// the axis ticks the powers of ten evenly, and the crosshair reads X's value.
+#[test]
+fn a_log_x_ticks_its_decades_and_reads_values() {
+    let g = crate::glyphs::unicode();
+    let mut modal = open_modal();
+    modal.spec.encoding.x.field = Some("date".to_string());
+    modal.spec.encoding.y.field = vec!["volume".to_string()];
+    let under_log = |rows: &[String]| {
+        let at = rows.iter().position(|r| r.contains("Log scale")).unwrap();
+        (rows[at].clone(), rows[at + 1].clone())
+    };
+    let (log, x) = under_log(&render_rows(&mut modal, 100, 30));
+    assert!(log.contains("Y off"), "{log}");
+    assert!(x.contains("X numbers only"), "{x}");
+    modal.spec.encoding.x.field = Some("price".to_string());
+    modal.log_x = true;
+    let (_, x) = under_log(&render_rows(&mut modal, 100, 30));
+    assert!(x.contains(" X on "), "{x}");
+
+    // 1 to 10,000, and a point at 0 the axis leaves out.
+    let mut points: Vec<(f64, f64)> = (0..=40)
+        .map(|i| (10f64.powf(f64::from(i) / 10.0), f64::from(i)))
+        .collect();
+    points.insert(0, (0.0, -1.0));
+    let series = vec![points];
+    let theme = crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
+    let ctx = RenderContext::for_test();
+    let draw = |modal: &ChartModal| {
+        let area = Rect::new(0, 0, 70, 20);
+        let mut buf = Buffer::empty(area);
+        let data = Draw::XY {
+            series: Some(&series),
+            breaks: None,
+            values: None,
+            names: names(),
+            x_axis_kind: XAxisTemporalKind::Numeric,
+            x_bounds: None,
+            other: false,
+            numbers: PlotNumbers::default(),
+        };
+        let place = render_plot(area, &mut buf, modal, &theme, &ctx, data, g);
+        (crate::tests::buffer_lines(&buf), place.unwrap())
+    };
+    let (rows, place) = draw(&modal);
+    let powers: Vec<&str> = vec!["1", "10", "100", "1000", "10000"];
+    let labels = rows
+        .iter()
+        .find(|r| {
+            r.split_whitespace()
+                .collect::<Vec<_>>()
+                .starts_with(&powers[..2])
+        })
+        .unwrap_or_else(|| panic!("{rows:#?}"));
+    let labels: Vec<&str> = labels.split_whitespace().collect();
+    assert!(labels.len() >= 3, "{rows:#?}");
+    assert!(labels.iter().all(|l| powers.contains(l)), "{rows:#?}");
+    let columns: Vec<u16> = [1.0, 10.0, 100.0, 1000.0, 10_000.0]
+        .iter()
+        .map(|&x| place.column(x))
+        .collect();
+    let gaps: Vec<i32> = columns
+        .windows(2)
+        .map(|w| i32::from(w[1]) - i32::from(w[0]))
+        .collect();
+    assert!(gaps.iter().all(|d| (d - gaps[0]).abs() <= 1), "{columns:?}");
+
+    modal.plot_focus = true;
+    modal.cursor_x = Some(100.0);
+    let (rows, _) = draw(&modal);
+    // The test's first series is named `price` too.
+    assert_eq!(
+        rows.last().unwrap().trim_end(),
+        "price: 100   price: 20",
+        "{rows:#?}"
+    );
 }

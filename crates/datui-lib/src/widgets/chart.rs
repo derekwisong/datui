@@ -318,7 +318,23 @@ fn panel_lines(modal: &ChartModal, schema: Option<&Schema>, ctx: &RenderContext)
             }
             ChartFocus::Range => ("Range", plain(modal.range_label(), ctx)),
             ChartFocus::YStartsAtZero => ("Y from zero", on_off(modal.y_starts_at_zero)),
-            ChartFocus::LogScale => ("Log scale", on_off(modal.log_scale)),
+            ChartFocus::LogScale => {
+                // Y's, then under it X's: a number X only, dimmed with why otherwise.
+                lines.push(row(
+                    "Log scale",
+                    vec![quiet("Y ", ctx), on_off(modal.log_scale)],
+                    Some(field),
+                    false,
+                ));
+                let x = if modal.x_takes_log() {
+                    vec![quiet("X ", ctx), on_off(modal.log_x)]
+                } else {
+                    vec![quiet("X numbers only", ctx)]
+                };
+                let takes = modal.x_takes_log();
+                lines.push(sub(x, takes.then_some(ChartFocus::LogX), !takes));
+                continue;
+            }
             ChartFocus::ShowLegend => (
                 "Legend",
                 plain(if modal.show_legend { "auto" } else { "off" }, ctx),
@@ -1091,8 +1107,15 @@ fn render_xy_chart(
     let drawn: Vec<_> = plot.drawn().collect();
 
     if drawn.is_empty() {
-        if modal.x().is_none() {
-            Paragraph::new(missing(modal))
+        // Points, none of them where a log X can put them.
+        let all_left_out = x.log && lines.series.iter().any(|s| !s.is_empty());
+        if modal.x().is_none() || all_left_out {
+            let why = if all_left_out {
+                "No X above 0 to draw on a log scale"
+            } else {
+                missing(modal)
+            };
+            Paragraph::new(why)
                 .style(Style::default().fg(text_secondary))
                 .centered()
                 .render(area, buf);
@@ -1167,13 +1190,14 @@ fn render_xy_chart(
     } else {
         AxisSpec::y_numbers(y_bounds, &y_numbers, &y.title)
     };
-    let mut axes = plot_axes(
-        theme,
-        x_axis([x_min_bounds, x_max_bounds], x.kind, &x.numbers, &x.title),
-        y_spec,
-        marker,
-        modal.grid,
-    );
+    // On a log X, as on a log Y, a tick names its value before the log.
+    let x_spec = if x.log {
+        let numbers = x.numbers.clone().fractional();
+        AxisSpec::x_log([x_min_bounds, x_max_bounds], &numbers, &x.title)
+    } else {
+        x_axis([x_min_bounds, x_max_bounds], x.kind, &x.numbers, &x.title)
+    };
+    let mut axes = plot_axes(theme, x_spec, y_spec, marker, modal.grid);
     axes.legend = legend(
         modal.show_legend,
         drawn
@@ -1185,14 +1209,19 @@ fn render_xy_chart(
     // The crosshair's readout takes the rows under the plot while the plot has the keys;
     // it reads values before any clip or log scaling: a smoothed line's, and its raw.
     let (values, raw) = lines.values(plot.shown());
+    let stops = lines.stops(plot.shown());
     let cursor = modal
         .cursor_x
         .filter(|_| modal.plot_focus)
         .and_then(|cursor| {
             if lines.xs.is_empty() {
-                crosshair::nearest(&crosshair::xs(values), cursor)
+                let mut xs = crosshair::xs(values);
+                if x.log {
+                    xs.retain(|&x| x > 0.0);
+                }
+                crosshair::nearest(&xs, cursor)
             } else {
-                crosshair::nearest(&lines.xs, cursor)
+                crosshair::nearest(stops, cursor)
             }
         });
     let readout = cursor
@@ -1218,6 +1247,7 @@ fn render_xy_chart(
         graph: frame.graph,
         x_bounds,
         sub,
+        log_x: x.log,
     };
     if let Some(at) = cursor {
         let style = Style::default().fg(theme.accent());

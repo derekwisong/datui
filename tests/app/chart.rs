@@ -1212,3 +1212,173 @@ fn a_line_charts_smooth_steps_lengths_of_time() {
     let text = draw(&mut app);
     assert!(text.contains("(raw "), "{text}");
 }
+
+/// Sizes from 1 to 100,000, three of them 0 or less and two not finite (dropped
+/// before any axis sees them, as a null X is), with a
+/// date and a number beside them, written to `name`.
+fn log_x_fixture(name: &str) -> PathBuf {
+    let path = common::fixture_dir().join(name);
+    let mut size: Vec<f64> = (0..=50).map(|i| 10f64.powf(f64::from(i) / 10.0)).collect();
+    size.extend([0.0, -1.0, 0.0, f64::NAN, f64::INFINITY]);
+    let n = size.len() as i64;
+    let mut df = df!(
+        "size" => size,
+        "ms" => (0..n).map(|i| (i * 7 % 13) as f64).collect::<Vec<f64>>(),
+        "day" => (0..n as i32).map(|d| 19_700 + d).collect::<Vec<i32>>(),
+        "neg" => (0..n).map(|i| -(i as f64)).collect::<Vec<f64>>()
+    )
+    .unwrap();
+    df.apply("day", |c| c.cast(&DataType::Date).unwrap())
+        .unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    path
+}
+
+/// X's log scale on a scatter of a number X: Space on the line under Log scale
+/// turns it on, the axis ticks the powers of ten, and the notes count the points
+/// it leaves out. Over a date X the line is dimmed and Tab skips it.
+#[test]
+fn a_scatter_takes_a_log_x() {
+    use datui::chart::chart_modal::{ChartFocus, Mark};
+    let path = log_x_fixture("chart_log_x.parquet");
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+
+    press(&mut app, KeyCode::Char('c'));
+    app.chart.modal.set_mark(Mark::Scatter);
+    app.chart.modal.spec.encoding.x.field = Some("day".to_string());
+    app.chart.modal.spec.encoding.y.field = vec!["ms".to_string()];
+    app.chart.modal.row_limit = None;
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    let area = Rect::new(0, 0, 160, 34);
+    let draw = |app: &mut App| {
+        let mut buf = Buffer::empty(area);
+        Widget::render(app, area, &mut buf);
+        common::buffer_text(&buf)
+    };
+    let text = draw(&mut app);
+    assert!(text.contains("X numbers only"), "{text}");
+    app.chart.modal.focus = ChartFocus::LogScale;
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.chart.modal.focus, ChartFocus::Range, "Tab skips it");
+
+    // ←/→ on X steps its column.
+    app.chart.modal.focus = ChartFocus::X;
+    for _ in 0..3 {
+        if app.chart.modal.x().map(String::as_str) == Some("size") {
+            break;
+        }
+        press(&mut app, KeyCode::Right);
+    }
+    assert_eq!(app.chart.modal.x().map(String::as_str), Some("size"));
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    app.chart.modal.focus = ChartFocus::LogScale;
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.chart.modal.focus, ChartFocus::LogX);
+    press(&mut app, KeyCode::Char(' '));
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    assert!(app.chart.modal.log_x);
+    let text = draw(&mut app);
+    assert!(text.contains("Y off") && text.contains("X on"), "{text}");
+    assert!(
+        text.contains("3 points with X of 0 or less left out"),
+        "{text}"
+    );
+    let labels = text
+        .lines()
+        .find(|l| l.contains(" 10 ") && l.contains(" 100 "))
+        .unwrap_or_else(|| panic!("powers of ten under the plot: {text}"));
+    // Five powers of ten: the short form, 1 to 100k.
+    assert!(
+        labels.contains(" 1k ") && labels.contains("100k"),
+        "{labels}"
+    );
+
+    // The crosshair stands on X's values, never on one left out.
+    press(&mut app, KeyCode::Char('x'));
+    press(&mut app, KeyCode::Home);
+    assert_eq!(app.chart.modal.cursor_x, Some(1.0));
+    press(&mut app, KeyCode::End);
+    assert_eq!(app.chart.modal.cursor_x, Some(100_000.0));
+    press(&mut app, KeyCode::Char('x'));
+
+    // The export draws the same axis and says the same.
+    let dir = tempfile::tempdir().unwrap();
+    let svg = dir.path().join("chart.svg");
+    let next = app.event(AppEvent::Applied(datui::Applied::ChartExport(
+        chart_export_request(&svg, datui::chart::chart_export::ChartExportFormat::Svg),
+    )));
+    if let Some(next) = next {
+        app.event(next);
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+    // Its axis and notes are the chart golden's `scatter_log_x`.
+    assert!(std::fs::read_to_string(&svg).unwrap().starts_with("<svg"));
+
+    // With every X at 0 or less, the plot says why it is empty.
+    app.chart.modal.spec.encoding.x.field = Some("neg".to_string());
+    app.chart.modal.spec.encoding.y.field = vec!["size".to_string()];
+    app.event(AppEvent::Wake);
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    assert_eq!(app.chart.modal.x().map(String::as_str), Some("neg"));
+    let text = draw(&mut app);
+    assert!(
+        text.contains("No X above 0 to draw on a log scale"),
+        "{text}"
+    );
+    assert!(text.contains("size: every point left out"), "{text}");
+}
+
+/// Keys typed back to back through the pump, as a fast typist sends them, right
+/// after X changes the panel's rows: the Tabs reach X's log scale and Space turns
+/// it on, however the chart's preparation falls between them.
+#[test]
+fn keys_typed_fast_turn_on_a_log_x() {
+    use datui::chart::chart_modal::{ChartFocus, Mark};
+    let path = log_x_fixture("chart_log_x_fast.parquet");
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    press(&mut app, KeyCode::Char('c'));
+    app.chart.modal.set_mark(Mark::Scatter);
+    app.chart.modal.spec.encoding.x.field = Some("day".to_string());
+    app.chart.modal.spec.encoding.y.field = vec!["ms".to_string()];
+    app.chart.modal.row_limit = None;
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    app.chart.modal.focus = ChartFocus::X;
+
+    let mut pump = EventPump::new(app, tx, rx);
+    let key = |pump: &mut EventPump, code| {
+        pump.terminal_key(KeyEvent::new(code, KeyModifiers::NONE))
+            .unwrap();
+    };
+    // ←/→ on X steps its column: from the date to a number, which brings the line.
+    let mut steps = 0;
+    while pump.app.chart.modal.x().map(String::as_str) != Some("size") {
+        key(&mut pump, KeyCode::Right);
+        while pump.replay_one().unwrap() {}
+        steps += 1;
+        assert!(steps < 4, "X reaches size");
+    }
+    let rows = pump.app.chart.modal.row_order();
+    let at = |f: ChartFocus| rows.iter().position(|r| *r == f).unwrap();
+    for _ in at(ChartFocus::X)..at(ChartFocus::LogX) {
+        key(&mut pump, KeyCode::Tab);
+    }
+    key(&mut pump, KeyCode::Char(' '));
+    for _ in ticks() {
+        while pump.replay_one().unwrap() {}
+        if pump.held_keys().count() == 0 && !pump.app.is_busy() && pump.app.chart_data_ready() {
+            break;
+        }
+        pump.wait_and_drain(std::time::Duration::from_millis(50))
+            .unwrap();
+    }
+    assert_eq!(pump.app.chart.modal.focus, ChartFocus::LogX);
+    assert!(pump.app.chart.modal.log_x, "Space turned it on");
+}

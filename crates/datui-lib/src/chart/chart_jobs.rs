@@ -172,6 +172,9 @@ pub(crate) struct ChartRequest {
     /// A line is drawn from each step's lowest and highest value rather than a
     /// sample: see [`chart_data::prepare_chart_data`].
     pub(crate) envelope: bool,
+    /// An envelope's steps are even along a log X. Only an envelope reads it: anything
+    /// else draws a log X from the points it has.
+    pub(crate) log_x: bool,
     /// Only an X is picked: its range gives the empty axes their bounds.
     pub(crate) x_only: bool,
     /// Most series drawn: one per distinct series color on this terminal.
@@ -266,6 +269,7 @@ impl ChartRequest {
             share: mark == Mark::Histogram && modal.share,
             row_limit: if aggregates { None } else { modal.row_limit },
             envelope: mark == Mark::Line && !aggregates && !colored,
+            log_x: mark == Mark::Line && !aggregates && !colored && modal.log_x_shown(),
             x_only,
             sorted: aggregates
                 && spec.encoding.y.aggregate.follows_row_order()
@@ -324,6 +328,7 @@ impl ChartRequest {
             Mark::Line | Mark::Scatter => {
                 let aggregate = encoding.y.aggregate;
                 let mut weights = None;
+                let mut left_out_rows = 0;
                 let grouped = if aggregate != Aggregate::None {
                     chart_data::prepare_aggregate_xy(
                         lf,
@@ -349,8 +354,10 @@ impl ChartRequest {
                         &encoding.y.field,
                         sampling,
                         self.envelope,
+                        self.log_x,
                     )?;
                     weights = r.weights;
+                    left_out_rows = r.x_left_out;
                     chart_data::GroupedSeries {
                         names: encoding.y.field.clone(),
                         series: r.series,
@@ -368,7 +375,8 @@ impl ChartRequest {
                             rows_note(rows, sampling.known_total == Some(rows), left_out && !other)
                         }),
                     )
-                    .weighed(weights),
+                    .weighed(weights)
+                    .leaving_out(left_out_rows),
                 )
             }
             Mark::Bar if encoding.y.aggregate != Aggregate::None => {
@@ -754,7 +762,11 @@ impl App {
         };
         // A single X column has nothing to export.
         let plot = plot(Some(prepared), &context)
-            .filter(|plot| !plot.data.is_empty())
+            // Nor does a line or scatter chart a log X left nothing of.
+            .filter(|plot| {
+                !plot.data.is_empty()
+                    && (!matches!(*plot.data, PlotData::Lines(_)) || plot.drawn().next().is_some())
+            })
             .ok_or_else(|| color_eyre::eyre::eyre!("No valid data points to export"))?;
         let mut plot = plot.into_owned();
         // The screen's title row says how the rows were made; a file has none, so
@@ -854,6 +866,25 @@ impl App {
             && let Some(note) = lines.wanted(shown).smooth.note()
         {
             notes.push(note);
+        }
+        if let PlotData::Lines(lines) = prepared {
+            let (left_out, rows) = lines.left_out(shown);
+            if left_out > 0 {
+                let noun = match (rows, left_out == 1) {
+                    (true, true) => "row",
+                    (true, false) => "rows",
+                    (false, true) => "point",
+                    (false, false) => "points",
+                };
+                notes.push(format!(
+                    "{} {noun} with X of 0 or less left out",
+                    crate::numfmt::group_chrome(left_out)
+                ));
+            }
+            // A series left with nothing drawn is not in the legend: named here.
+            for name in lines.emptied(shown) {
+                notes.push(format!("{name}: every point left out"));
+            }
         }
         if let PlotData::Lines(lines) = prepared
             && matches!(self.chart.modal.mark(), Mark::Line | Mark::Scatter)

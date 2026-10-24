@@ -8,7 +8,7 @@ fn all_rows() -> ChartSampling {
 fn xy(lf: &LazyFrame, x: &str, ys: &[&str], sampling: &ChartSampling) -> ChartDataResult {
     let schema = lf.clone().collect_schema().unwrap();
     let ys: Vec<String> = ys.iter().map(|s| s.to_string()).collect();
-    prepare_chart_data(lf, schema.as_ref(), x, &ys, sampling, false).unwrap()
+    prepare_chart_data(lf, schema.as_ref(), x, &ys, sampling, false, false).unwrap()
 }
 
 /// A line over more rows than its sample size draws each step's lowest and
@@ -27,8 +27,16 @@ fn a_long_line_is_drawn_as_its_envelope() {
     let lf = df!("x" => &x, "y" => &y).unwrap().lazy();
     let schema = lf.clone().collect_schema().unwrap();
     let sampling = ChartSampling::rows(Some(1_000));
-    let result =
-        prepare_chart_data(&lf, schema.as_ref(), "x", &["y".into()], &sampling, true).unwrap();
+    let result = prepare_chart_data(
+        &lf,
+        schema.as_ref(),
+        "x",
+        &["y".into()],
+        &sampling,
+        true,
+        false,
+    )
+    .unwrap();
     assert_eq!(
         result.rows,
         RowsRead {
@@ -52,8 +60,16 @@ fn a_long_line_is_drawn_as_its_envelope() {
 
     // Under the sample size, every row is drawn as it was.
     let sampling = ChartSampling::rows(Some(200_000));
-    let result =
-        prepare_chart_data(&lf, schema.as_ref(), "x", &["y".into()], &sampling, true).unwrap();
+    let result = prepare_chart_data(
+        &lf,
+        schema.as_ref(),
+        "x",
+        &["y".into()],
+        &sampling,
+        true,
+        false,
+    )
+    .unwrap();
     assert_eq!(result.rows.envelope_steps, None);
     assert_eq!(result.series[0].len(), n);
 }
@@ -72,16 +88,32 @@ fn an_envelope_is_sampled_instead_where_full_reads_cost_and_stops_when_cancelled
         full_passes: false,
         ..ChartSampling::rows(Some(100))
     };
-    let result =
-        prepare_chart_data(&lf, schema.as_ref(), "x", &["y".into()], &remote, true).unwrap();
+    let result = prepare_chart_data(
+        &lf,
+        schema.as_ref(),
+        "x",
+        &["y".into()],
+        &remote,
+        true,
+        false,
+    )
+    .unwrap();
     assert_eq!(result.rows.envelope_steps, None);
     assert_eq!(result.rows.sample_size, Some(100));
 
     let cancelled = ChartSampling::rows(Some(100));
     cancelled.cancel.store(true, Ordering::Relaxed);
-    let err = prepare_chart_data(&lf, schema.as_ref(), "x", &["y".into()], &cancelled, true)
-        .err()
-        .expect("a cancelled envelope is not drawn");
+    let err = prepare_chart_data(
+        &lf,
+        schema.as_ref(),
+        "x",
+        &["y".into()],
+        &cancelled,
+        true,
+        false,
+    )
+    .err()
+    .expect("a cancelled envelope is not drawn");
     assert_eq!(err.to_string(), "chart cancelled");
 }
 
@@ -101,6 +133,7 @@ fn an_envelope_places_temporal_x_by_its_ordinal() {
         &["y".into()],
         &ChartSampling::rows(Some(100)),
         true,
+        false,
     )
     .unwrap();
     assert_eq!(result.rows.envelope_steps, Some(50));
@@ -123,8 +156,16 @@ fn an_envelope_breaks_where_a_series_has_no_values() {
     let lf = df!("x" => &x, "y" => &y).unwrap().lazy();
     let schema = lf.clone().collect_schema().unwrap();
     let sampling = ChartSampling::rows(Some(20));
-    let result =
-        prepare_chart_data(&lf, schema.as_ref(), "x", &["y".into()], &sampling, true).unwrap();
+    let result = prepare_chart_data(
+        &lf,
+        schema.as_ref(),
+        "x",
+        &["y".into()],
+        &sampling,
+        true,
+        false,
+    )
+    .unwrap();
     assert_eq!(result.rows.envelope_steps, Some(10));
     assert_eq!(result.breaks[0].len(), 1, "one gap: {:?}", result.series[0]);
 }
@@ -139,8 +180,16 @@ fn an_envelope_leaves_out_rows_with_no_x() {
     let lf = df!("x" => &x, "y" => &y).unwrap().lazy();
     let schema = lf.clone().collect_schema().unwrap();
     let sampling = ChartSampling::rows(Some(20));
-    let result =
-        prepare_chart_data(&lf, schema.as_ref(), "x", &["y".into()], &sampling, true).unwrap();
+    let result = prepare_chart_data(
+        &lf,
+        schema.as_ref(),
+        "x",
+        &["y".into()],
+        &sampling,
+        true,
+        false,
+    )
+    .unwrap();
     let ys: Vec<f64> = result.series[0].iter().map(|p| p.1).collect();
     assert!(!ys.contains(&0.0) && !ys.contains(&50.0), "{ys:?}");
     assert_eq!(ys.iter().cloned().fold(f64::MIN, f64::max), 99.0);
@@ -399,7 +448,15 @@ fn a_missing_x_or_y_column_is_an_error() {
     let lf = df!("x" => &[1.0_f64], "y" => &[2.0_f64]).unwrap().lazy();
     let schema = lf.clone().collect_schema().unwrap();
     for (x, y) in [("missing", "y"), ("x", "gone")] {
-        let result = prepare_chart_data(&lf, schema.as_ref(), x, &[y.into()], &all_rows(), false);
+        let result = prepare_chart_data(
+            &lf,
+            schema.as_ref(),
+            x,
+            &[y.into()],
+            &all_rows(),
+            false,
+            false,
+        );
         assert!(result.is_err(), "{x} {y}");
     }
 }
@@ -484,6 +541,7 @@ fn a_duration_x_is_in_seconds() {
         &["y".into()],
         &ChartSampling::rows(Some(100)),
         true,
+        false,
     )
     .unwrap();
     assert_eq!(result.rows.envelope_steps, Some(50));
@@ -1911,8 +1969,16 @@ fn a_smoothed_envelope_averages_its_rows() {
     let lf = df!("t" => &x, "ms" => &y).unwrap().lazy();
     let schema = lf.clone().collect_schema().unwrap();
     let sampling = ChartSampling::rows(Some(10_000));
-    let result =
-        prepare_chart_data(&lf, schema.as_ref(), "t", &["ms".into()], &sampling, true).unwrap();
+    let result = prepare_chart_data(
+        &lf,
+        schema.as_ref(),
+        "t",
+        &["ms".into()],
+        &sampling,
+        true,
+        false,
+    )
+    .unwrap();
     assert_eq!(result.rows.envelope_steps, Some(5_000));
     let weights = result.weights.clone().expect("an envelope's rows");
     let rows: f64 = weights[0].iter().map(|&(_, n)| n).sum();
@@ -1952,4 +2018,57 @@ fn a_smoothed_envelope_averages_its_rows() {
         .collect();
     assert!(!pairs.is_empty());
     assert!(pairs.iter().all(|w| w[0].1 == w[1].1));
+}
+
+/// On a log X an envelope steps evenly along log10(x): each power of ten gets its
+/// share of the steps, where linear steps would put every size under 100k in the
+/// first. Rows at X of 0 or less are left out and counted, and each step's rows
+/// still weigh what smoothing averages.
+#[test]
+fn an_envelope_on_a_log_x_steps_by_powers_of_ten() {
+    // Sizes log-uniform from 1 to 1e6, and 7 at 0 or less.
+    let n = 20_000usize;
+    let mut size: Vec<f64> = (0..n)
+        .map(|i| 10f64.powf(6.0 * i as f64 / (n - 1) as f64))
+        .collect();
+    size.extend([0.0; 4]);
+    size.extend([-1.0; 3]);
+    let y: Vec<f64> = (0..size.len()).map(|i| (i % 10) as f64).collect();
+    let lf = df!("size" => &size, "y" => &y).unwrap().lazy();
+    let schema = lf.clone().collect_schema().unwrap();
+    let envelope = |log_x| {
+        prepare_chart_data(
+            &lf,
+            schema.as_ref(),
+            "size",
+            &["y".into()],
+            &ChartSampling::rows(Some(600)),
+            true,
+            log_x,
+        )
+        .unwrap()
+    };
+    let logged = envelope(true);
+    assert_eq!(logged.rows.envelope_steps, Some(300));
+    assert_eq!(logged.x_left_out, 7);
+    let points = &logged.series[0];
+    assert!(points.iter().all(|p| p.0 > 0.0), "only X above 0");
+    // Steps, not points: an envelope step draws one or two.
+    let steps_under = |series: &[(f64, f64)], x: f64| {
+        let mut xs: Vec<f64> = series.iter().map(|p| p.0).filter(|&v| v < x).collect();
+        xs.dedup();
+        xs.len()
+    };
+    // A sixth of the powers of ten, about a sixth of the 300 steps.
+    let first = steps_under(points, 10.0);
+    assert!((40..=60).contains(&first), "{first} steps under 10");
+    let linear = envelope(false);
+    assert_eq!(linear.x_left_out, 0);
+    assert!(
+        steps_under(&linear.series[0], 1e5) < 40,
+        "linear crowds them"
+    );
+    // Every row above 0 is weighed once: what a smoothed line averages.
+    let rows: f64 = logged.weights.unwrap()[0].iter().map(|&(_, n)| n).sum();
+    assert_eq!(rows as usize, n);
 }

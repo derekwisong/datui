@@ -114,7 +114,7 @@ impl App {
             // The chart keeps the rows it was drawn from; `t` draws the new ones too.
             KeyCode::Char('t') if self.follow_rows_waiting() => {
                 self.take_follow_rows(false);
-                self.chart.cache.clear();
+                self.clear_chart_cache();
             }
 
             KeyCode::Char('y') if self.chart.modal.mark() == Mark::Scatter => {
@@ -245,7 +245,7 @@ impl App {
             self.chart.modal.row_limit = Some(self.chart.modal.sample_rows);
         }
         self.chart.modal.view_sampled = sampled;
-        self.chart.cache.clear();
+        self.clear_chart_cache();
         self.chart.returns_to_analysis = false;
         self.open_overlay(Overlay::Chart);
     }

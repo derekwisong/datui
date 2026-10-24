@@ -1,7 +1,10 @@
 //! A scatter chart's trend: a line fitted through its points, and a plain reading of
 //! it. The fit reads the points as prepared, in the data's own units, whatever Log
-//! scale or Range draws: only the line drawn follows those. Every fit runs as a job,
-//! reading the series in place (shared, never copied) and stopping when superseded.
+//! scale or Range draws: only the line drawn follows those. Every fit runs as a job
+//! on the chart's own series (shared, not cloned) and stops when superseded. Least
+//! squares reads them in one pass; Spearman's ranks copy up to [`RANKED_MAX`] points,
+//! robust's residuals and local's sorted points and buffers about three times the
+//! points, so local's peak is the largest.
 
 use serde::{Deserialize, Serialize};
 
@@ -683,11 +686,16 @@ pub fn lowess(
         let (mut i, mut last): (usize, Option<usize>) = (0, None);
         let (mut left, mut right) = (0, k);
         fitted.iter_mut().for_each(|f| *f = 0.0);
-        let mut fits = 0usize;
+        // Counted by the window's points each fit reads: a window holds 2/3 of the
+        // points, so a pass of a few hundred fits is still billions of steps.
+        let mut work = 0usize;
         loop {
-            fits += 1;
-            if fits.is_multiple_of(STOP_EVERY) && stop() {
-                return None;
+            work += k;
+            if work >= STOP_EVERY {
+                work = 0;
+                if stop() {
+                    return None;
+                }
             }
             let at = x(i);
             // The nearest k points, as the window slides along X.

@@ -220,6 +220,9 @@ pub(crate) struct ChartPrep {
 pub(crate) struct ChartTrendFit {
     pub(crate) request: crate::ChartRequest,
     pub(crate) key: crate::chart::chart_trend::TrendKey,
+    /// The rows it fits: a chart prepared again under the same request (`t`, a new
+    /// sample) holds others, and takes no fit of these.
+    pub(crate) series: std::sync::Arc<crate::chart::chart_plot::Points>,
 }
 
 /// A view's sample being drawn. Judged by its rows, not the generation: paging,

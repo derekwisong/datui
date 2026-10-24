@@ -140,14 +140,18 @@ impl ChartCache {
         });
     }
 
-    /// Take a trend a job fitted for `request`, if it is still held; whether it was.
+    /// Take a trend a job fitted for `request` from `series`, if those rows are still
+    /// held; whether they were.
     pub(crate) fn take_fits(
         &mut self,
         request: &ChartRequest,
+        series: &std::sync::Arc<crate::chart::chart_plot::Points>,
         fits: crate::chart::chart_trend::TrendFits,
     ) -> bool {
         match self.entries.iter_mut().find(|(r, _)| r == request) {
-            Some((_, Ok(PlotData::Lines(lines)))) => {
+            Some((_, Ok(PlotData::Lines(lines))))
+                if std::sync::Arc::ptr_eq(&lines.series, series) =>
+            {
                 lines.take_fits(fits);
                 true
             }
@@ -553,19 +557,25 @@ impl App {
             .is_some_and(|request| self.chart.cache.get(&request).is_none())
     }
 
+    /// Forget every chart read from the rows, which have changed: a trend being fitted
+    /// from them is no longer wanted either.
+    pub(crate) fn clear_chart_cache(&mut self) {
+        self.chart.cache.clear();
+        self.jobs.supersede(is_trend_fit);
+    }
+
     /// Forget chart state belonging to the outgoing view or dataset: the cache, a parked
     /// export, and a running export write (its result ignored, `busy` released). A running
     /// preparation is superseded and its answer dropped. Called when the chart view closes,
     /// the dataset changes, or home is entered.
     pub(crate) fn reset_chart_state(&mut self) {
-        self.chart.cache.clear();
+        self.clear_chart_cache();
         self.chart.asked = None;
         if let Some(prep) = self.chart_prep() {
             prep.cancel
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
         self.jobs.supersede(is_chart_prep);
-        self.jobs.supersede(is_trend_fit);
         // A failed export reopens its modal; it must not follow the user to the next
         // dataset.
         if self.overlay == Overlay::ChartExport {
@@ -734,7 +744,10 @@ impl App {
         };
         let wanted = lines.trend_wanted(shown);
         let fitting = match self.jobs.current(is_trend_fit) {
-            Some((_, Job::ChartTrend(fit))) => Some((fit.request == *request, fit.key)),
+            Some((_, Job::ChartTrend(fit))) => Some((
+                fit.request == *request && std::sync::Arc::ptr_eq(&fit.series, &lines.series),
+                fit.key,
+            )),
             _ => None,
         };
         match (wanted, fitting) {
@@ -752,11 +765,13 @@ impl App {
         }
         let series = std::sync::Arc::clone(&lines.series);
         let other = lines.other;
+        let fitted = std::sync::Arc::clone(&series);
         // The chart's own sample's seed, so the note names one seed.
         let seed = lines.rows.seed.unwrap_or(self.analysis_modal.sample.seed);
         let job = crate::app::jobs::ChartTrendFit {
             request: request.clone(),
             key,
+            series: fitted,
         };
         self.spawn_job(Job::ChartTrend(Box::new(job)), None, move |_| {
             crate::chart::chart_trend::fit_all(
@@ -782,12 +797,20 @@ impl App {
         if !current || fits.key != fit.key {
             return;
         }
-        if self.chart.cache.take_fits(&fit.request, fits)
+        if self.chart.cache.take_fits(&fit.request, &fit.series, fits)
             && ChartRequest::from_modal(&self.chart.modal).as_ref() == Some(&fit.request)
         {
             self.chart
                 .cache
                 .touch(&fit.request, self.chart.modal.shown());
+        }
+    }
+
+    /// The method a job is fitting now and is still wanted, if any.
+    pub fn chart_trend_fitting(&self) -> Option<crate::chart::chart_modal::Trend> {
+        match self.jobs.current(is_trend_fit) {
+            Some((_, Job::ChartTrend(fit))) => Some(fit.key.trend),
+            _ => None,
         }
     }
 
@@ -1009,8 +1032,36 @@ impl App {
         }
         match self.chart_fit_text() {
             Some(text) => self.copy_string(text, "Copied the trend's fit".to_string()),
-            None => self.flash_note("No trend to copy: pick one under Trend".to_string()),
+            None => {
+                let note = match self.chart_unfitted() {
+                    Some(why) => format!("No trend fitted: {why}"),
+                    None => "No trend to copy: pick one under Trend".to_string(),
+                };
+                self.flash_note(note);
+            }
         }
+    }
+
+    /// Why the trend picked has no line, when a job tried and fitted none.
+    fn chart_unfitted(&self) -> Option<String> {
+        let request = ChartRequest::from_modal(&self.chart.modal)?;
+        let Some(PlotData::Lines(lines)) = self.chart.cache.prepared(&request) else {
+            return None;
+        };
+        let fits = lines.fits(self.chart.modal.shown())?;
+        if !fits.fits.is_empty() {
+            return None;
+        }
+        Some(match &fits.failed {
+            Some(why) => why.clone(),
+            None if fits.too_few > 0 => {
+                format!(
+                    "too few points (under {})",
+                    crate::chart::chart_trend::MIN_POINTS
+                )
+            }
+            None => "no points it can fit".to_string(),
+        })
     }
 
     /// What a chart says under its plot about the rows it drew. A view with a sample

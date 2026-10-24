@@ -1244,9 +1244,19 @@ fn render_xy_chart(
     let raw_curves = plot.raw_curves();
     let curves = plot.curves();
     let trend_curves = plot.trend_curves();
-    let trended = !trend_curves.is_empty();
-    let mut datasets = curve_datasets(&raw_curves, theme, marker, graph_type, true);
-    datasets.extend(curve_datasets(&curves, theme, marker, graph_type, trended));
+    // Per color, points that would all fade to one grey keep their colors: the lines
+    // over them are in the same colors, so which is which still shows.
+    let trend_fade = if trend_curves.is_empty() {
+        Fade::None
+    } else if trend_curves.iter().any(|(series, _)| series.is_none()) {
+        Fade::All
+    } else {
+        Fade::Hued
+    };
+    let mut datasets = curve_datasets(&raw_curves, theme, marker, graph_type, Fade::All);
+    datasets.extend(curve_datasets(
+        &curves, theme, marker, graph_type, trend_fade,
+    ));
     for (series, curve) in &trend_curves {
         let style = match series {
             Some(i) => series_style(theme, *i, None),
@@ -1377,8 +1387,9 @@ fn render_xy_chart(
 
 /// The trend's reading as its line under the plot: its parts, then the mark when
 /// Pearson and Spearman disagree, in `warning`. A narrow line drops whole parts from
-/// the right before the mark; with no room for the mark beside the first part, the
-/// parts alone, then the first cut.
+/// the right, down to the first (the slope, the most telling) beside the mark; with
+/// no room for both, the mark alone; without a mark, the parts that fit, then the
+/// first cut.
 fn reading_line(
     parts: Vec<String>,
     mark: Option<String>,
@@ -1591,22 +1602,34 @@ fn legend<'a>(show: bool, entries: impl Iterator<Item = (&'a str, Style)>) -> Op
     (show && entries.len() > 1).then_some(Legend { entries })
 }
 
+/// Whether curves are drawn faded behind what is drawn over them.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Fade {
+    None,
+    /// Each in its color faded, as a raw line behind its smoothed one.
+    All,
+    /// Only where fading keeps the color's hue (not on 16 colors).
+    Hued,
+}
+
 /// A dataset per run of each curve, in the order they come: Other first, so the
-/// series drawn over it keep their colors. `faded`: each in its color faded, as a
-/// raw line behind its smoothed one.
+/// series drawn over it keep their colors, each faded as `fade` says.
 fn curve_datasets<'a>(
     curves: &'a [Curve<'_>],
     theme: &Theme,
     marker: ratatui::symbols::Marker,
     graph_type: GraphType,
-    faded: bool,
+    fade: Fade,
 ) -> Vec<Dataset<'a>> {
     curves
         .iter()
         .flat_map(|curve| {
             let style = series_style(theme, curve.index, curve.other.then_some(curve.index));
-            let style = match (faded, style.fg) {
-                (true, Some(color)) => style.fg(theme.faded(color)),
+            let style = match (fade, style.fg) {
+                (Fade::All, Some(color)) => style.fg(theme.faded(color)),
+                (Fade::Hued, Some(color)) if !theme.fades_to_grey(color) => {
+                    style.fg(theme.faded(color))
+                }
                 _ => style,
             };
             segments(&curve.points, curve.breaks)
@@ -1720,7 +1743,7 @@ fn render_histogram_chart(
     );
     if !data.groups.is_empty() {
         let other = other_at(data.other, data.groups.len());
-        let datasets = curve_datasets(curves, theme, marker, GraphType::Line, false);
+        let datasets = curve_datasets(curves, theme, marker, GraphType::Line, Fade::None);
         axes.legend = legend(
             look.legend,
             data.groups
@@ -1787,7 +1810,7 @@ fn render_kde_chart(
     }
 
     let other = other_at(data.other, data.series.len());
-    let datasets = curve_datasets(curves, theme, g.plot.line, GraphType::Line, false);
+    let datasets = curve_datasets(curves, theme, g.plot.line, GraphType::Line, Fade::None);
 
     let mut axes = plot_axes(
         theme,

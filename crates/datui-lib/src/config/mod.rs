@@ -3375,6 +3375,18 @@ impl Theme {
         if faded == color { self.dimmed() } else { faded }
     }
 
+    /// Whether [`Self::faded`] loses `color`'s hue: on 16 colors every series fades to
+    /// the one grey, and without color to `dimmed`.
+    pub fn fades_to_grey(&self, color: Color) -> bool {
+        !matches!(
+            (color, self.controls_bg()),
+            (
+                Color::Indexed(_) | Color::Rgb(..),
+                Color::Indexed(_) | Color::Rgb(..)
+            )
+        )
+    }
+
     /// Style of the row or item the cursor is on: the theme's tint, or reversed video
     /// when `table_selected = "reversed"`.
     pub fn highlight_style(&self) -> ratatui::style::Style {
@@ -3557,6 +3569,7 @@ mod tests {
             .insert("controls_bg".into(), Color::Rgb(0, 0, 0));
         theme.colors.insert("dimmed".into(), Color::DarkGray);
         assert_eq!(theme.faded(Color::Rgb(200, 100, 0)), Color::Rgb(80, 40, 0));
+        assert!(!theme.fades_to_grey(Color::Rgb(200, 100, 0)));
         theme
             .colors
             .insert("controls_bg".into(), Color::Indexed(16));
@@ -3565,6 +3578,7 @@ mod tests {
         theme.colors.insert("controls_bg".into(), Color::Black);
         theme.colors.insert("dimmed".into(), Color::White);
         assert_eq!(theme.faded(Color::Cyan), Color::DarkGray);
+        assert!(theme.fades_to_grey(Color::Cyan), "16 colors: one grey");
         theme.colors.insert("controls_bg".into(), Color::White);
         assert_eq!(theme.faded(Color::Blue), Color::Gray);
         theme.colors.insert("controls_bg".into(), Color::Reset);

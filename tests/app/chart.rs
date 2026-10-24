@@ -1670,32 +1670,37 @@ fn a_scatter_draws_reads_and_copies_its_trend() {
     assert!(svg.starts_with("<svg"), "{svg}");
 }
 
-/// One fit at a time: a fit no longer wanted is stopped, its answer dropped, and the
-/// one wanted now lands once it has ended.
+/// One fit at a time: a fit no longer wanted is stopped, its answer dropped, and
+/// the one wanted now lands once it has ended. A fit is kept per method, so stepping
+/// back draws it without fitting again.
 #[test]
 fn a_trend_asked_for_mid_fit_lands_after_the_one_running() {
     use datui::chart::chart_modal::{ChartFocus, Trend};
     let (mut app, rx, tx) = open_trend_scatter("chart_trend_queue.csv", &trend_csv(3_000));
     app.chart.modal.focus = ChartFocus::Trend;
-    for _ in 0..4 {
-        press(&mut app, KeyCode::Right);
-    }
-    assert_eq!(app.chart.modal.trend, Trend::Robust);
-    assert!(app.chart_trend_pending());
-    // Local before robust has answered.
+    // Straight to robust: set by hand, an event has it fitted.
+    app.chart.modal.trend = Trend::Robust;
+    app.event(AppEvent::Wake);
+    assert_eq!(app.chart_trend_fitting(), Some(Trend::Robust));
+    // Local before robust's answer is handled.
     press(&mut app, KeyCode::Right);
     assert_eq!(app.chart.modal.trend, Trend::Local);
+    assert_ne!(app.chart_trend_fitting(), Some(Trend::Robust));
     pump_until_trended(&mut app, &rx, &tx);
     let text = draw_at(&mut app, 160, 34);
     assert!(text.contains("local curve"), "{text}");
-    assert!(
-        !text.contains("half the points"),
-        "robust's answer dropped: {text}"
-    );
-    // Back to robust: fitted again, for the chart on screen.
+    // Robust's answer was dropped: back to it, it is fitted again.
     press(&mut app, KeyCode::Left);
+    assert!(
+        app.chart_trend_pending(),
+        "robust's stopped fit was not kept"
+    );
     pump_until_trended(&mut app, &rx, &tx);
     assert!(draw_at(&mut app, 160, 34).contains("half the points within"));
+    // Local was kept.
+    press(&mut app, KeyCode::Right);
+    assert!(!app.chart_trend_pending(), "local is drawn again unfitted");
+    assert!(draw_at(&mut app, 160, 34).contains("local curve"));
 }
 
 /// Theil–Sen's pairs are drawn with the chart's own sample's seed, named once.
@@ -1744,4 +1749,23 @@ fn the_trend_rows_fit_a_narrow_panel() {
         .unwrap_or_else(|| panic!("{text}"));
     let (panel, _) = over.split_once('│').unwrap_or_else(|| panic!("{over}"));
     assert!(panel.ends_with(' '), "a gap before the border: {over:?}");
+}
+
+/// `y` with a trend picked that fitted nothing says why.
+#[test]
+fn copying_a_trend_that_fitted_nothing_says_why() {
+    use datui::chart::chart_modal::Trend;
+    let (mut app, rx, tx) = open_trend_scatter("chart_trend_few.csv", &trend_csv(6));
+    let copies: Copies = Default::default();
+    app.set_clipboard_destination(Box::new(KeptCopies(copies.clone())));
+    app.chart.modal.trend = Trend::Linear;
+    app.event(AppEvent::Wake);
+    pump_until_trended(&mut app, &rx, &tx);
+    press(&mut app, KeyCode::Char('y'));
+    assert!(copies.lock().unwrap().is_empty());
+    let text = draw_at(&mut app, 160, 34);
+    assert!(
+        text.contains("No trend fitted: too few points (under 10)"),
+        "{text}"
+    );
 }

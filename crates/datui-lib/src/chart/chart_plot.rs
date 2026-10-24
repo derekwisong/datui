@@ -82,9 +82,13 @@ pub struct LinesData {
     pub steps_too_big: bool,
     /// Per series, the rows read without an X or a Y.
     pub nulls: Vec<usize>,
-    /// The trend fitted through the series by a job, for the key it names.
-    pub trend_fits: Option<Box<TrendFits>>,
+    /// The trends fitted through the series by jobs, each for the key it names, the
+    /// latest last: stepping back to a method fitted before draws it again unfitted.
+    pub trend_fits: Vec<TrendFits>,
 }
+
+/// Trends kept per chart: each method once, over per color and all points.
+const FITS_KEPT: usize = 12;
 
 /// How a line or scatter chart draws its values: smoothed, clipped to the range
 /// of the values that are not outliers, on a log scale, in that order; with the raw
@@ -236,7 +240,7 @@ impl LinesData {
         let longest = grouped.series.iter().map(Vec::len).max().unwrap_or(0);
         Self {
             series_shown: None,
-            trend_fits: None,
+            trend_fits: Vec::new(),
             nulls: grouped.nulls,
             y_clip: YClip::of(&grouped.series),
             ladder: smooth_ladder(&xs, longest, 1.0, grouped.x_axis_kind),
@@ -358,7 +362,7 @@ impl LinesData {
     /// The fits `wanted` (settled) draws, once fitted.
     fn fits_for(&self, wanted: Shown) -> Option<&TrendFits> {
         let key = wanted.trend_key()?;
-        self.trend_fits.as_deref().filter(|fits| fits.key == key)
+        self.trend_fits.iter().find(|fits| fits.key == key)
     }
 
     /// The trend `shown` draws, once fitted.
@@ -375,7 +379,11 @@ impl LinesData {
 
     /// Take fits a job made; the copy as drawn is made again with them.
     pub fn take_fits(&mut self, fits: TrendFits) {
-        self.trend_fits = Some(Box::new(fits));
+        self.trend_fits.retain(|kept| kept.key != fits.key);
+        if self.trend_fits.len() == FITS_KEPT {
+            self.trend_fits.remove(0);
+        }
+        self.trend_fits.push(fits);
         self.series_shown = None;
     }
 

@@ -1995,6 +1995,26 @@ fn a_scatter_picks_its_marker_by_density() {
     );
 }
 
+/// A scatter's series is one dataset whatever its gaps; a line's is a run per gap.
+#[test]
+fn a_scatter_series_is_one_dataset_over_its_gaps() {
+    let theme = crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
+    let points: Vec<(f64, f64)> = (0..1000).map(|i| (f64::from(i), f64::from(i))).collect();
+    let breaks: Vec<usize> = (1..500).map(|i| i * 2).collect();
+    let curves = [Curve {
+        index: 0,
+        slot: 0,
+        points: std::borrow::Cow::Borrowed(&points),
+        breaks: &breaks,
+        other: false,
+    }];
+    let marker = ratatui::symbols::Marker::Braille;
+    let scatter = curve_datasets(&curves, &theme, marker, GraphType::Scatter, Fade::None);
+    assert_eq!(scatter.len(), 1);
+    let line = curve_datasets(&curves, &theme, marker, GraphType::Line, Fade::None);
+    assert_eq!(line.len(), 500);
+}
+
 /// A histogram's bins fill their columns, with a column of air between bins wide
 /// enough to spare one.
 #[test]

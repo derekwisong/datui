@@ -599,6 +599,8 @@ pub struct ChartModal {
     /// The Color as its picker found it: what is charted while Space toggles columns,
     /// so each toggle does not count the view again.
     pub color_opened: Option<ColorEncoding>,
+    /// Y's columns as its picker found them: Enter keeps them only once Space changed them.
+    pub y_opened: Option<Vec<String>>,
     pub numeric_candidates: Vec<String>,
     pub temporal_candidates: Vec<String>,
     /// Dates and datetimes: the X columns a time bucket truncates.
@@ -835,6 +837,7 @@ impl ChartModal {
         self.picker_for = None;
         self.picker_details.clear();
         self.color_opened = None;
+        self.y_opened = None;
     }
 
     /// Whether the crosshair can take the keys: a line or scatter plot with points
@@ -1300,6 +1303,7 @@ impl ChartModal {
         self.picker_for = Some(which);
         self.picker_details = details;
         self.color_opened = (which == PickerFor::Color).then(|| self.spec.encoding.color.clone());
+        self.y_opened = (which == PickerFor::Y).then(|| self.spec.encoding.y.field.clone());
     }
 
     /// Whether the value picker has values to list: the chart has counted the
@@ -1337,9 +1341,8 @@ impl ChartModal {
     }
 
     /// Enter in the Picker: a pick-one row takes the cursor's item; a row of
-    /// several keeps its toggles, or adopts the cursor's item when none are
-    /// toggled, so Enter on a fresh list still charts something (on Color, when none
-    /// were toggled since it opened: the cursor's column alone, or `none`). The Picker
+    /// several keeps its toggles, or takes the cursor's item alone when none were
+    /// toggled since it opened (on Color, the cursor's column or `none`). The Picker
     /// closes.
     pub fn picker_choose(&mut self) {
         let (Some(which), Some(i)) = (self.picker_for, self.picker_cursor()) else {
@@ -1350,17 +1353,18 @@ impl ChartModal {
         let toggled = self
             .color_opened
             .as_ref()
-            .is_some_and(|c| *c != self.spec.encoding.color);
+            .is_some_and(|c| *c != self.spec.encoding.color)
+            || self
+                .y_opened
+                .as_ref()
+                .is_some_and(|y| *y != self.spec.encoding.y.field);
         self.close_picker();
         let Some(item) = item else {
             return;
         };
         match which {
-            PickerFor::Y if self.y_is_multi() => {
-                if self.spec.encoding.y.field.is_empty() {
-                    self.spec.encoding.y.field.push(item);
-                }
-            }
+            // Columns toggled stay, unless every one was toggled off.
+            PickerFor::Y if toggled && !self.spec.encoding.y.field.is_empty() => {}
             PickerFor::ColorValues => {
                 if self.spec.encoding.color.values.is_empty()
                     && let Some(value) = self.color_value_at(i)
@@ -1368,7 +1372,6 @@ impl ChartModal {
                     self.spec.encoding.color.values.push(value);
                 }
             }
-            // Columns toggled stay; with none toggled, Enter takes the cursor's alone.
             PickerFor::Color if toggled => {}
             _ => self.choose(which, &item, i),
         }
@@ -2717,6 +2720,23 @@ mod tests {
             ["distance"],
             "Enter on a fresh list takes the cursor"
         );
+
+        // A Y already chosen gives way to the cursor's column when nothing was toggled.
+        modal.open_picker();
+        modal.picker.as_mut().unwrap().select_original(1);
+        modal.picker_choose();
+        assert_eq!(
+            modal.y(),
+            ["year"],
+            "Enter takes the cursor over a filled Y"
+        );
+
+        // Toggled columns stay.
+        modal.open_picker();
+        modal.picker.as_mut().unwrap().select_original(0);
+        modal.picker_toggle();
+        modal.picker_choose();
+        assert_eq!(modal.y(), ["year", "distance"]);
     }
 
     #[test]

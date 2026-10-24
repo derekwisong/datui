@@ -1403,7 +1403,8 @@ fn entry_line<'a>(
         entry.name.clone()
     };
     // Nothing is there to go inside of, whatever the path looks like.
-    if shows_as_a_place(entry) && notes.place_kind != Some("missing") {
+    // A hand-written name may end in its own slash.
+    if shows_as_a_place(entry) && notes.place_kind != Some("missing") && !name.ends_with('/') {
         name.push('/');
     }
     let label = crate::home::describe(

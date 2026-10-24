@@ -167,7 +167,7 @@ Dates and datetimes are written as ISO 8601 with a space before the time:
 |---|---|---|
 | **Bins** | Histogram (under X), Heatmap | 5 to 100 bins for a histogram, 5 to 60 a side for a heatmap |
 | **Bandwidth** | KDE | A multiple of the usual bandwidth, 0.2x to 5.0x |
-| **Range** | Histogram, Box, KDE | **All** values, or **p1-p99** (the 1st to 99th percentile) to leave out outliers that squash the rest; the chart counts what it left out |
+| **Range** | Histogram, Box, KDE, Line, Scatter | **All** values, or **p1-p99** (the 1st to 99th percentile) so outliers do not squash the rest. A histogram, box or KDE leaves the values outside out; a line or scatter chart keeps every point and spans its Y axis from the 1st to the 99th percentile, drawing the points past it at the edge. The chart counts them: `1,207 values outside p1-p99`, `14 points outside p1-p99 drawn at the edge` |
 | Order | Bar (under X) | By value, largest first, or by label: text A to Z, numbers ascending |
 | **Y from zero**, **Log scale** | Line, Scatter | Start the Y axis at zero; plot ln(1 + y), with the ticks labeled in y |
 | **Legend** | Line, Scatter, Bar, Histogram, KDE | **auto** or **off** |

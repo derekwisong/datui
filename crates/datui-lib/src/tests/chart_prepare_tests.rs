@@ -375,10 +375,14 @@ fn prepared_xy() -> PlotData {
 /// only the one on screen carries a log-scale copy.
 #[test]
 fn xy_entries_are_few_and_the_one_on_screen_stays() {
+    let log = crate::chart::chart_plot::Shown {
+        log: true,
+        clip: false,
+    };
     let has_log = |cache: &ChartCache, request: &ChartRequest| {
         matches!(
             cache.prepared(request),
-            Some(PlotData::Lines(xy)) if xy.series_log.is_some()
+            Some(PlotData::Lines(xy)) if xy.series_shown.is_some()
         )
     };
     let mut cache = ChartCache::default();
@@ -389,10 +393,10 @@ fn xy_entries_are_few_and_the_one_on_screen_stays() {
         !has_log(&cache, &a) && !has_log(&cache, &b),
         "made when wanted"
     );
-    cache.touch(&a, true);
+    cache.touch(&a, log);
     assert!(matches!(
         cache.prepared(&a),
-        Some(PlotData::Lines(xy)) if xy.series_log.as_deref() == Some(&[vec![(0.0, 2f64.ln())]][..])
+        Some(PlotData::Lines(xy)) if xy.series_shown.as_ref().map(|(_, s)| &s[..]) == Some(&[vec![(0.0, 2f64.ln())]][..])
     ));
     assert!(!has_log(&cache, &b));
 
@@ -406,13 +410,13 @@ fn xy_entries_are_few_and_the_one_on_screen_stays() {
     cache.insert(histogram_request("h"), Ok(prepared_histogram("h")));
     assert_eq!(cache.entries.len(), 3);
 
-    cache.touch(&c, true);
+    cache.touch(&c, log);
     assert!(has_log(&cache, &c));
     assert!(
         !has_log(&cache, &a),
         "only the one on screen keeps its log copy"
     );
-    cache.touch(&c, false);
+    cache.touch(&c, Default::default());
     assert!(!has_log(&cache, &c), "a linear scale keeps none");
 }
 
@@ -898,4 +902,60 @@ fn a_reselection_behind_a_stale_worker_counts_as_preparing() {
     );
     pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
     assert!(!app.chart_preparing());
+}
+
+/// A line chart's p1-p99 range spans the Y axis from the 1st to the 99th percentile
+/// and draws the points past it at the edge, on a log scale too; with no point past
+/// them there is nothing to clip.
+#[test]
+fn a_clipped_line_chart_draws_its_outliers_at_the_edge() {
+    use crate::chart::chart_plot::Shown;
+    let mut ys: Vec<f64> = (0..200).map(f64::from).collect();
+    ys[100] = 1e6;
+    let mut lines = LinesData::new(
+        chart::chart_data::GroupedSeries {
+            names: vec!["y".to_string()],
+            series: vec![ys.iter().enumerate().map(|(x, &y)| (x as f64, y)).collect()],
+            breaks: vec![Vec::new()],
+            x_axis_kind: chart::chart_data::XAxisTemporalKind::Numeric,
+            rows: chart::chart_data::RowsRead::default(),
+            other: false,
+        },
+        None,
+    );
+    let clip = lines.y_clip.expect("a point past p99");
+    assert!(clip.hi < 1e6 && clip.hi > 190.0, "{clip:?}");
+    assert_eq!(clip.outside, 4, "the spike and the ends past p1 and p99");
+    let clipped = Shown {
+        log: false,
+        clip: true,
+    };
+    assert_eq!(lines.shown_bounds(Shown::default()).unwrap()[3], 1e6);
+    lines.keep_shown(clipped);
+    let [_, _, lo, hi] = lines.shown_bounds(clipped).unwrap();
+    assert_eq!((lo, hi), (clip.lo, clip.hi));
+    let drawn = lines.drawn(clipped).next().unwrap();
+    assert_eq!(drawn.points.len(), 200, "every point is drawn");
+    assert_eq!(drawn.points[100], (100.0, clip.hi), "at the edge");
+    assert_eq!(lines.series[0][100].1, 1e6, "the data stays");
+
+    let both = Shown {
+        log: true,
+        clip: true,
+    };
+    lines.keep_shown(both);
+    assert_eq!(lines.shown_bounds(both).unwrap()[3], clip.hi.ln_1p());
+
+    let flat = LinesData::new(
+        chart::chart_data::GroupedSeries {
+            names: vec!["y".to_string()],
+            series: vec![vec![(0.0, 1.0), (1.0, 1.0)]],
+            breaks: vec![Vec::new()],
+            x_axis_kind: chart::chart_data::XAxisTemporalKind::Numeric,
+            rows: chart::chart_data::RowsRead::default(),
+            other: false,
+        },
+        None,
+    );
+    assert!(flat.y_clip.is_none());
 }

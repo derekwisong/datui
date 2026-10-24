@@ -45,7 +45,7 @@ struct PlotNumbers {
 
 impl Draw<'_> {
     fn plot(self, modal: &ChartModal, ctx: &RenderContext) -> Option<Plot<'static>> {
-        use crate::chart::chart_plot::{LinesData, PlotContext};
+        use crate::chart::chart_plot::{LinesData, PlotContext, Shown};
         // The data says what kind of chart it is, whatever the modal's type.
         let mut spec = modal.effective_spec();
         spec.mark = match &self {
@@ -73,7 +73,15 @@ impl Draw<'_> {
                     (Some(series), _) => Some(PlotData::Lines(LinesData {
                         names: names.to_vec(),
                         series: values.unwrap_or(series).clone(),
-                        series_log: values.map(|_| series.clone()),
+                        series_shown: values.map(|_| {
+                            (
+                                Shown {
+                                    log: true,
+                                    clip: false,
+                                },
+                                series.clone(),
+                            )
+                        }),
                         breaks: breaks.cloned().unwrap_or_default(),
                         x_axis_kind,
                         other,

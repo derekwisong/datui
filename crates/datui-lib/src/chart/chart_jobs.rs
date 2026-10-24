@@ -139,9 +139,9 @@ impl ChartCache {
     }
 
     /// Mark `request` as the selection on screen: last to be evicted, and the only one with
-    /// a log copy (made here if `log_scale`). An in-memory map over held points, fine on
-    /// the event thread, never in render.
-    pub(crate) fn touch(&mut self, request: &ChartRequest, log_scale: bool) {
+    /// a copy of its series as `shown` draws them (made here). An in-memory map over held
+    /// points, fine on the event thread, never in render.
+    pub(crate) fn touch(&mut self, request: &ChartRequest, shown: crate::chart::chart_plot::Shown) {
         let Some(i) = self.entries.iter().position(|(r, _)| r == request) else {
             return;
         };
@@ -150,7 +150,7 @@ impl ChartCache {
         let last = self.entries.len() - 1;
         for (i, (_, outcome)) in self.entries.iter_mut().enumerate() {
             if let Ok(PlotData::Lines(lines)) = outcome {
-                lines.keep_log(i == last && log_scale);
+                lines.keep_shown(if i == last { shown } else { Default::default() });
             }
         }
     }
@@ -632,7 +632,7 @@ impl App {
         };
         self.chart.asked = Some((request.clone(), settle));
         if self.chart.cache.get(&request).is_some() {
-            self.chart.cache.touch(&request, self.chart.modal.log_scale);
+            self.chart.cache.touch(&request, self.chart.modal.shown());
             // A cached chart's colors were counted with it.
             if let Some(colors) = self.chart.cache.colors(&request.spec.encoding.color.field) {
                 self.chart.modal.color_counts = Some(colors.clone());
@@ -835,6 +835,19 @@ impl App {
         middot: &str,
     ) -> Vec<String> {
         let mut notes = prepared.notes(middot);
+        // The range is drawn, not prepared: the points stay, at the edge.
+        if let PlotData::Lines(lines) = prepared
+            && matches!(self.chart.modal.mark(), Mark::Line | Mark::Scatter)
+            && self.chart.modal.shown().clip
+            && let Some(clip) = lines.y_clip
+        {
+            let noun = if clip.outside == 1 { "point" } else { "points" };
+            notes.push(format!(
+                "{} {noun} outside {} drawn at the edge",
+                crate::numfmt::group_chrome(clip.outside),
+                ValueRange::Percentile1To99.label()
+            ));
+        }
         let sampled = self.data_table_state.as_ref().and_then(|s| s.sampled());
         if let Some(sampled) = sampled {
             let mut note = sampled.label();

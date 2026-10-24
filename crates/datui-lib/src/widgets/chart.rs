@@ -1077,7 +1077,7 @@ fn render_xy_chart(
 
     // Kept with the prepared series; worked out here only for series made here.
     let [all_x_min, all_x_max, all_y_min, all_y_max] =
-        lines.shown_bounds(y.log).unwrap_or([0.0; 4]);
+        lines.shown_bounds(plot.shown()).unwrap_or([0.0; 4]);
 
     // A scatter of few points marks each with a dot a cell wide; past one point per
     // four cells, the line's finer marks keep them apart.

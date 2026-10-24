@@ -561,7 +561,7 @@ fn is_one_two_five(v: f64) -> bool {
 #[test]
 fn a_log_x_ticks_decades_and_one_two_five() {
     let (low, high) = (3.0_f64, 70_000.0_f64);
-    let axis = AxisSpec::x_log([low.log10(), high.log10()], &AxisNumbers::default(), "");
+    let axis = AxisSpec::log([low.log10(), high.log10()], &AxisNumbers::default(), "");
     for width in [30u16, 60, 120, 240] {
         let fit = fit_x_labels(&axis, (0, width), track(width));
         let values: Vec<f64> = fit.labels.iter().map(|(_, l)| log_label(l)).collect();
@@ -600,7 +600,7 @@ fn a_log_x_ticks_decades_and_one_two_five() {
 /// under one it writes powers as `1e-9`.
 #[test]
 fn a_log_x_within_a_decade_and_far_under_one() {
-    let axis = AxisSpec::x_log(
+    let axis = AxisSpec::log(
         [150f64.log10(), 900f64.log10()],
         &AxisNumbers::default(),
         "",
@@ -614,7 +614,7 @@ fn a_log_x_within_a_decade_and_far_under_one() {
     );
     assert!(values.iter().all(|v| v % 50.0 == 0.0), "{labels:?}");
 
-    let tiny = AxisSpec::x_log([-9.0, -3.0], &AxisNumbers::default(), "");
+    let tiny = AxisSpec::log([-9.0, -3.0], &AxisNumbers::default(), "");
     let labels = labels_on(&tiny, 120);
     assert!(labels.contains(&"1e-9".to_string()), "{labels:?}");
     assert!(labels.iter().all(|l| l.contains('e')), "{labels:?}");
@@ -625,7 +625,7 @@ fn a_log_x_within_a_decade_and_far_under_one() {
 #[test]
 fn log_x_labels_take_the_digits_they_need() {
     let labels = |lo: f64, hi: f64, width: u16| {
-        let axis = AxisSpec::x_log([lo.log10(), hi.log10()], &AxisNumbers::default(), "");
+        let axis = AxisSpec::log([lo.log10(), hi.log10()], &AxisNumbers::default(), "");
         labels_on(&axis, width).join(" ")
     };
     for (lo, hi, width, want) in [

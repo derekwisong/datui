@@ -353,7 +353,7 @@ fn a_log_x_draws_log10_and_leaves_out_zero_and_below() {
         drawn,
         [vec![(0.0, 7.0), (1.0, 8.0), (3.0, 9.0)], vec![(2.0, 2.0)]]
     );
-    assert_eq!(data.left_out(shown).0, 3);
+    assert_eq!(data.left_out(shown).x, 3);
     assert_eq!(data.shown_bounds(shown).unwrap(), [0.0, 3.0, 2.0, 9.0]);
     assert_eq!(data.stops(shown), [1.0, 10.0, 100.0, 1000.0]);
     let (values, _) = data.values(shown);
@@ -362,7 +362,7 @@ fn a_log_x_draws_log10_and_leaves_out_zero_and_below() {
         [Some(8.0), None]
     );
     // Off, every point and every X again.
-    assert_eq!(data.left_out(Shown::default()).0, 0);
+    assert_eq!(data.left_out(Shown::default()).x, 0);
     assert_eq!(data.stops(Shown::default()).len(), 6);
     // A time X never takes it.
     let dates = lines(vec![vec![(1.0, 1.0)]], XAxisTemporalKind::Date);
@@ -381,12 +381,17 @@ fn points_left_out_break_the_line() {
         (4.0, 4.0),
         (5.0, 5.0),
     ]];
-    let positive = PositiveX::of(&series, &[vec![4]]);
+    let positive = Drawable::of(&series, &[vec![4]], true, false);
     assert_eq!(positive.kept, [vec![0, 1, 3, 4, 5]]);
     assert_eq!(positive.breaks, [vec![2, 3]]);
-    assert_eq!(positive.left_out, 1);
+    assert_eq!(positive.left_out.x, 1);
     // Left out at the start, as a sorted X leaves them: no break.
-    let start = PositiveX::of(&[vec![(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)]], &[vec![]]);
+    let start = Drawable::of(
+        &[vec![(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)]],
+        &[vec![]],
+        true,
+        false,
+    );
     assert_eq!((start.kept[0].len(), start.breaks[0].len()), (2, 0));
 }
 
@@ -407,7 +412,7 @@ fn a_log_x_smooths_in_data_x_and_clips_what_it_draws() {
     data.keep_shown(shown);
     let drawn: Vec<f64> = data.drawn(shown).flat_map(|s| ys(s.points)).collect();
     assert_eq!(drawn, [50.0, 0.0]);
-    assert_eq!(data.left_out(shown).0, 1);
+    assert_eq!(data.left_out(shown).x, 1);
 
     // An outlier at X = 0 is left out, so the drawn points have none.
     let mut ys_only: Vec<(f64, f64)> = (1..=40)
@@ -423,4 +428,214 @@ fn a_log_x_smooths_in_data_x_and_clips_what_it_draws() {
     };
     data.keep_shown(clipped);
     assert_eq!(data.clip_drawn(clipped), None);
+}
+
+fn log_y() -> Shown {
+    Shown {
+        log: true,
+        ..Shown::default()
+    }
+}
+
+/// A log Y draws `log10(y)`, leaves out the points at Y of 0 or less and counts
+/// them, breaks the line where they were, and the crosshair stands only where a
+/// point is drawn, reading the data's values.
+#[test]
+fn a_log_y_draws_log10_and_leaves_out_zero_and_below() {
+    let mut data = lines(
+        vec![vec![
+            (1.0, 10.0),
+            (2.0, 0.0),
+            (3.0, 100.0),
+            (4.0, -5.0),
+            (5.0, 1000.0),
+        ]],
+        XAxisTemporalKind::Numeric,
+    );
+    let shown = log_y();
+    data.keep_shown(shown);
+    let drawn: Vec<_> = data.drawn(shown).collect();
+    assert_eq!(drawn[0].points, [(1.0, 1.0), (3.0, 2.0), (5.0, 3.0)]);
+    assert_eq!(
+        drawn[0].breaks,
+        [1, 2],
+        "each point left out breaks the line"
+    );
+    assert_eq!(
+        data.left_out(shown),
+        LeftOut {
+            y: 2,
+            ..LeftOut::default()
+        }
+    );
+    assert_eq!(data.shown_bounds(shown).unwrap(), [1.0, 5.0, 1.0, 3.0]);
+    assert_eq!(data.stops(shown), [1.0, 3.0, 5.0]);
+    let (values, _) = data.values(shown);
+    assert_eq!(
+        crate::widgets::crosshair::values_at(values, 3.0),
+        [Some(100.0)]
+    );
+    assert_eq!(data.left_out(Shown::default()), LeftOut::default());
+    assert_eq!(data.stops(Shown::default()).len(), 5);
+
+    // A series with nothing above 0 is named; one with some is drawn.
+    let mut two = lines(
+        vec![vec![(1.0, 0.0), (2.0, -1.0)], vec![(1.0, 5.0)]],
+        XAxisTemporalKind::Numeric,
+    );
+    two.names = vec!["a".to_string(), "b".to_string()];
+    two.keep_shown(shown);
+    assert_eq!(two.emptied(shown), ["a"]);
+}
+
+/// On both log axes a point is left out once, by X first: the counts stay apart
+/// and the note says them as one.
+#[test]
+fn both_log_axes_count_each_point_once() {
+    let mut data = lines(
+        vec![vec![(0.0, 0.0), (-1.0, 5.0), (1.0, 0.0), (10.0, 10.0)]],
+        XAxisTemporalKind::Numeric,
+    );
+    let shown = Shown {
+        log: true,
+        log_x: true,
+        ..Shown::default()
+    };
+    data.keep_shown(shown);
+    let left_out = data.left_out(shown);
+    assert_eq!((left_out.x, left_out.y), (2, 1));
+    assert_eq!(
+        left_out.notes(),
+        ["3 points with X or Y of 0 or less left out"]
+    );
+    let drawn: Vec<_> = data.drawn(shown).flat_map(|s| s.points.to_vec()).collect();
+    assert_eq!(drawn, [(1.0, 1.0)]);
+}
+
+/// The note names the axis and what was counted: points, an envelope's rows, or
+/// its values over several Y columns.
+#[test]
+fn left_out_notes_name_the_axis_and_the_unit() {
+    let note = |x, y, rows, columns| {
+        LeftOut {
+            x,
+            y,
+            rows,
+            columns,
+        }
+        .notes()
+    };
+    assert!(note(0, 0, false, 1).is_empty());
+    assert_eq!(
+        note(1, 0, false, 1),
+        ["1 point with X of 0 or less left out"]
+    );
+    assert_eq!(
+        note(0, 1200, false, 1),
+        ["1,200 points with Y of 0 or less left out"]
+    );
+    assert_eq!(note(0, 3, true, 1), ["3 rows with Y of 0 or less left out"]);
+    assert_eq!(
+        note(2, 3, true, 1),
+        ["5 rows with X or Y of 0 or less left out"]
+    );
+    assert_eq!(
+        note(2, 3, true, 2),
+        [
+            "2 rows with X of 0 or less left out",
+            "3 values with Y of 0 or less left out"
+        ]
+    );
+}
+
+/// Smoothing reads every point, those at 0 or less included: a mean above 0 is
+/// drawn where the raw value is not. The raw line behind keeps its own points,
+/// and the note counts the data's.
+#[test]
+fn a_log_y_smooths_the_data_and_each_line_keeps_its_own_points() {
+    let mut data = lines(
+        vec![vec![(1.0, 4.0), (2.0, 0.0), (3.0, -2.0), (4.0, 8.0)]],
+        XAxisTemporalKind::Numeric,
+    );
+    let shown = Shown {
+        log: true,
+        smooth: Smooth::Points(2),
+        raw: RawLine::On,
+        ..Shown::default()
+    };
+    data.keep_shown(shown);
+    // Means: 4, 2, -1, 3; the -1 is left out of the smoothed line.
+    let line: Vec<_> = data.drawn(shown).collect();
+    let expect = [
+        (1.0, 4f64.log10()),
+        (2.0, 2f64.log10()),
+        (4.0, 3f64.log10()),
+    ];
+    assert_eq!(line[0].points, expect);
+    assert_eq!(line[0].breaks, [2]);
+    let raw: Vec<_> = data.raw_drawn(shown).collect();
+    assert_eq!(raw[0].points, [(1.0, 4f64.log10()), (4.0, 8f64.log10())]);
+    assert_eq!(raw[0].breaks, [1]);
+    assert_eq!(data.left_out(shown).y, 2, "the data's points");
+    // The crosshair stands where either line draws.
+    assert_eq!(data.stops(shown), [1.0, 2.0, 4.0]);
+}
+
+/// On a log Y the range is found among the points drawn: a 0 among them is no
+/// outlier to clip to.
+#[test]
+fn a_log_y_clips_what_it_draws() {
+    let mut ys_only: Vec<(f64, f64)> = (1..=40)
+        .map(|i| (f64::from(i), 10.0 + f64::from(i % 3)))
+        .collect();
+    ys_only.push((41.0, 0.0));
+    let mut data = lines(vec![ys_only.clone()], XAxisTemporalKind::Numeric);
+    assert!(
+        data.y_clip.is_some(),
+        "the 0 is an outlier among every point"
+    );
+    let clipped = Shown {
+        log: true,
+        clip: true,
+        ..Shown::default()
+    };
+    data.keep_shown(clipped);
+    assert_eq!(data.clip_drawn(clipped), None);
+
+    // An outlier above 0 is clipped, and drawn at the edge on the log.
+    ys_only.push((42.0, 1e6));
+    let mut data = lines(vec![ys_only], XAxisTemporalKind::Numeric);
+    data.keep_shown(clipped);
+    let clip = data.clip_drawn(clipped).unwrap();
+    assert_eq!(clip.outside, 1);
+    let top = data.shown_bounds(clipped).unwrap()[3];
+    assert_eq!(top, clip.hi.log10());
+}
+
+/// An envelope's points stand for rows: what a log scale leaves out of it is what
+/// it counted as it read, said in rows.
+#[test]
+fn an_envelope_leaves_out_rows() {
+    let data = lines(
+        vec![vec![(1.0, 0.0), (10.0, 5.0)]],
+        XAxisTemporalKind::Numeric,
+    )
+    .weighed(Some(vec![vec![(0.0, 4.0), (5.0, 1.0)]]))
+    .leaving_out(2, 3);
+    let both = Shown {
+        log: true,
+        log_x: true,
+        ..Shown::default()
+    };
+    assert_eq!(
+        data.left_out(both),
+        LeftOut {
+            x: 2,
+            y: 3,
+            rows: true,
+            columns: 1
+        }
+    );
+    assert_eq!(data.left_out(log_y()).x, 0, "X counts only on a log X");
+    assert_eq!(data.left_out(Shown::default()), LeftOut::default());
 }

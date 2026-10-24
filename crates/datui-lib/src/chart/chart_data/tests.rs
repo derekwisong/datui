@@ -2023,7 +2023,8 @@ fn a_smoothed_envelope_averages_its_rows() {
 /// On a log X an envelope steps evenly along log10(x): each power of ten gets its
 /// share of the steps, where linear steps would put every size under 100k in the
 /// first. Rows at X of 0 or less are left out and counted, and each step's rows
-/// still weigh what smoothing averages.
+/// still weigh what smoothing averages. Its Ys of 0 or less are counted among the
+/// rows it places, for a log Y.
 #[test]
 fn an_envelope_on_a_log_x_steps_by_powers_of_ten() {
     // Sizes log-uniform from 1 to 1e6, and 7 at 0 or less.
@@ -2051,6 +2052,8 @@ fn an_envelope_on_a_log_x_steps_by_powers_of_ten() {
     let logged = envelope(true);
     assert_eq!(logged.rows.envelope_steps, Some(300));
     assert_eq!(logged.x_left_out, 7);
+    // y is 0 on every tenth row: 2,000 of the rows above 0.
+    assert_eq!(logged.y_left_out, 2_000);
     let points = &logged.series[0];
     assert!(points.iter().all(|p| p.0 > 0.0), "only X above 0");
     // Steps, not points: an envelope step draws one or two.
@@ -2064,6 +2067,7 @@ fn an_envelope_on_a_log_x_steps_by_powers_of_ten() {
     assert!((40..=60).contains(&first), "{first} steps under 10");
     let linear = envelope(false);
     assert_eq!(linear.x_left_out, 0);
+    assert_eq!(linear.y_left_out, 2_001, "the row at X of 0 is placed");
     assert!(
         steps_under(&linear.series[0], 1e5) < 40,
         "linear crowds them"

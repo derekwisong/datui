@@ -1022,7 +1022,11 @@ impl ChartModal {
                         rows.push(Raw);
                     }
                 }
-                rows.extend([YStartsAtZero, LogScale]);
+                // A log Y has no zero to start from.
+                if !self.log_scale {
+                    rows.push(YStartsAtZero);
+                }
+                rows.push(LogScale);
                 if self.x_takes_log() {
                     rows.push(LogX);
                 }
@@ -1455,6 +1459,11 @@ impl ChartModal {
             smooth: self.smooth_shown(),
             raw: self.raw,
         }
+    }
+
+    /// Whether the Y axis starts at zero: chosen, and not on a log scale.
+    pub fn y_from_zero_shown(&self) -> bool {
+        self.y_starts_at_zero && !self.log_scale
     }
 
     /// Whether X can take a log scale: a number, not a date, time or duration.

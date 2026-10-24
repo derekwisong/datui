@@ -186,6 +186,7 @@ impl App {
                 legend: self.chart.modal.show_legend,
                 mark: self.chart.modal.mark(),
                 y_from_zero: self.chart.modal.y_starts_at_zero,
+                log_y: self.chart.modal.log_scale,
             },
         );
         self.open_overlay(Overlay::ChartExport);

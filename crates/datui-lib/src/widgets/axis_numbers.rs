@@ -165,34 +165,7 @@ impl AxisFormat {
         }
     }
 
-    /// The format for a log axis ticked at `ticks`, values before the log: places
-    /// enough to write every tick exactly, the 0.1 and 0.25 of a short axis included,
-    /// rather than enough to tell the closest two apart, which on a log axis are the
-    /// small ones. A 1, 2 or 5 a power of ten up reads `1e18`; the short form names
-    /// each tick's own k, M, G or T: `1  10  100  1k  10k`.
-    pub fn log(ticks: &[f64], numbers: &AxisNumbers) -> Self {
-        let ticks: Vec<f64> = ticks.iter().copied().filter(|v| v.is_finite()).collect();
-        let top = ticks.iter().fold(0.0_f64, |top, v| top.max(v.abs()));
-        let full = if top >= SCIENTIFIC_FROM {
-            Notation::Scientific { places: 0 }
-        } else {
-            Notation::Fixed {
-                places: fewest_places(&ticks, 1.0, 0, MAX_AXIS_PLACES),
-                unit: 1.0,
-                suffix: "",
-            }
-        };
-        Self {
-            format: numbers.format.clone(),
-            full,
-            short: (1e3..SCIENTIFIC_FROM)
-                .contains(&top)
-                .then_some(Notation::Prefixed),
-            zero_below: 0.0,
-        }
-    }
-
-    /// The format for a true log axis ticked at `ticks`, each 1, 2 or 5 times a power
+    /// The format for a log axis ticked at `ticks`, each 1, 2 or 5 times a power
     /// of ten: each with the places it needs and no more, `0.01  1  100`, since its
     /// ticks differ in size far more than a linear axis's. Past four powers of ten, or
     /// a label longer than six cells, every tick in a short form: `1  10  1k  1M` from

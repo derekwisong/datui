@@ -66,6 +66,9 @@ pub struct LinesData {
     /// Rows an envelope stepped on a log X left out (X of 0 or less), which its points
     /// no longer hold.
     pub left_out_rows: usize,
+    /// Values of 0 or less an envelope read, over every Y column, among the rows it
+    /// placed: what a log Y leaves out of it.
+    pub y_left_out_rows: usize,
     /// The smoothing windows these series offer (see [`smooth_ladder`]); empty when
     /// none does anything.
     pub ladder: Vec<Smooth>,
@@ -75,10 +78,11 @@ pub struct LinesData {
 
 /// How a line or scatter chart draws its values: smoothed, clipped to the range
 /// of the values that are not outliers, on a log scale, in that order; with the raw
-/// line behind a smoothed one. On a log X the points at X of 0 or less are left out
-/// once smoothed, before the clip.
+/// line behind a smoothed one. On a log scale the points at 0 or less on it are left
+/// out once smoothed, before the clip.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Shown {
+    /// Y as `log10(y)`.
     pub log: bool,
     /// X as `log10(x)`.
     pub log_x: bool,
@@ -114,10 +118,16 @@ pub struct ShownSeries {
     pub clip: Option<YClip>,
     /// The least and greatest X and Y drawn, the raw line's included.
     pub bounds: Option<[f64; 4]>,
-    /// Per series, where its line starts again, when a log X left points out.
+    /// Per series, where its line starts again, when a log scale left points out.
     pub breaks: Option<Vec<Vec<usize>>>,
-    /// The points a log X left out: those at X of 0 or less.
-    pub left_out: usize,
+    /// The same for the raw line behind a smoothed one: a log Y leaves out other
+    /// points of it.
+    pub raw_breaks: Option<Vec<Vec<usize>>>,
+    /// The points of the series a log scale left out.
+    pub left_out: LeftOut,
+    /// Where the crosshair stands when a log scale left points out: the Xs of the
+    /// points drawn, in order, each once.
+    pub stops: Option<Vec<f64>>,
 }
 
 /// The Y range of the points that are not outliers, and how many are: a clipped
@@ -181,6 +191,7 @@ impl LinesData {
             steps_too_big: false,
             weights: None,
             left_out_rows: 0,
+            y_left_out_rows: 0,
             xs,
             bounds: extent(&grouped.series),
             names: grouped.names,
@@ -215,9 +226,11 @@ impl LinesData {
         self
     }
 
-    /// With the rows an envelope on a log X left out.
-    pub fn leaving_out(mut self, rows: usize) -> Self {
-        self.left_out_rows = rows;
+    /// With what an envelope leaves out on a log scale: rows at X of 0 or less, and
+    /// values at Y of 0 or less.
+    pub fn leaving_out(mut self, x_rows: usize, y_values: usize) -> Self {
+        self.left_out_rows = x_rows;
+        self.y_left_out_rows = y_values;
         self
     }
 
@@ -253,8 +266,8 @@ impl LinesData {
             log: shown.log,
             log_x,
             // The outliers of a smoothed line are found once it is smoothed, and on a
-            // log X among the points drawn.
-            clip: shown.clip && (!smooth.is_off() || log_x || self.y_clip.is_some()),
+            // log scale among the points drawn.
+            clip: shown.clip && (!smooth.is_off() || log_x || shown.log || self.y_clip.is_some()),
             smooth,
             raw,
         }
@@ -285,9 +298,10 @@ impl LinesData {
         }
     }
 
-    /// The series as `wanted` draws them: smoothed, then on a log X without the
-    /// points at X of 0 or less, then clipped (see [`clip_of`]), then logged.
-    /// A smoothing window reads every point, the ones a log X leaves out included.
+    /// The series as `wanted` draws them: smoothed, then on a log scale without the
+    /// points at 0 or less on it, then clipped (see [`clip_of`]), then logged.
+    /// A smoothing window reads every point, the ones a log scale leaves out included;
+    /// a smoothed line keeps its own points above 0 on a log Y, the raw line its own.
     fn made(&self, wanted: Shown) -> ShownSeries {
         let smoothed: Option<Points> = self.window(wanted.smooth).map(|window| {
             self.series
@@ -300,17 +314,21 @@ impl LinesData {
                 .collect()
         });
         let raw_drawn = wanted.raw == RawLine::On;
-        let positive = wanted
-            .log_x
-            .then(|| PositiveX::of(&self.series, &self.breaks));
-        // On a log X, the points drawn: the series' and the smoothed line's.
-        let kept = positive.as_ref().map(|positive| {
+        let logged = wanted.log_x || wanted.log;
+        let drawable =
+            |series: &Points| Drawable::of(series, &self.breaks, wanted.log_x, wanted.log);
+        // On a log scale, the points drawn: the series' and the smoothed line's.
+        let kept = logged.then(|| {
+            let positive = drawable(&self.series);
             let series = positive.of_series(&self.series);
-            let smoothed = smoothed.as_ref().map(|s| positive.of_series(s));
-            (YClip::of(&series), series, smoothed)
+            let smoothed = smoothed.as_ref().map(|s| {
+                let positive = drawable(s);
+                (positive.of_series(s), positive)
+            });
+            (YClip::of(&series), series, positive, smoothed)
         });
         let (series_clip, series, smoothed_drawn) = match &kept {
-            Some((clip, series, smoothed)) => (*clip, series, smoothed.as_ref()),
+            Some((clip, series, _, smoothed)) => (*clip, series, smoothed.as_ref().map(|(s, _)| s)),
             None => (self.y_clip, &self.series, smoothed.as_ref()),
         };
         let clip = if wanted.clip {
@@ -318,7 +336,7 @@ impl LinesData {
         } else {
             None
         };
-        let changed = wanted.log || wanted.log_x || clip.is_some();
+        let changed = logged || clip.is_some();
         let shown_x = |x: f64| if wanted.log_x { x.log10() } else { x };
         let draw = |series: &Points| -> Option<Points> {
             changed.then(|| {
@@ -344,6 +362,25 @@ impl LinesData {
             }
             (drawn, raw) => drawn.or(raw),
         };
+        // The crosshair stands on what is drawn: the line, and the raw line behind it.
+        let stops = kept.as_ref().map(|_| {
+            let mut xs = crate::widgets::crosshair::xs(line);
+            if raw_drawn {
+                xs.extend(crate::widgets::crosshair::xs(series));
+                xs.sort_by(f64::total_cmp);
+                xs.dedup();
+            }
+            xs
+        });
+        let (left_out, breaks, raw_breaks) = match kept {
+            Some((_, _, positive, Some((_, smoothed)))) => (
+                positive.left_out,
+                Some(smoothed.breaks),
+                Some(positive.breaks),
+            ),
+            Some((_, _, positive, None)) => (positive.left_out, Some(positive.breaks), None),
+            None => (LeftOut::default(), None, None),
+        };
         ShownSeries {
             shown: wanted,
             smoothed,
@@ -351,8 +388,10 @@ impl LinesData {
             raw,
             clip,
             bounds,
-            left_out: positive.as_ref().map_or(0, |positive| positive.left_out),
-            breaks: positive.map(|positive| positive.breaks),
+            left_out,
+            breaks,
+            raw_breaks,
+            stops,
         }
     }
 
@@ -385,7 +424,7 @@ impl LinesData {
         }
         match self.kept(shown) {
             Some(kept) => kept.clip,
-            None if wanted.smooth.is_off() && !wanted.log_x => self.y_clip,
+            None if wanted.smooth.is_off() && !wanted.log_x && !wanted.log => self.y_clip,
             None => None,
         }
     }
@@ -403,28 +442,37 @@ impl LinesData {
         self.drawn_of(self.shown(shown), self.breaks_drawn(shown))
     }
 
-    /// Per series, where its line starts again as drawn: fewer points on a log X.
+    /// Per series, where its line starts again as drawn: fewer points on a log scale.
     fn breaks_drawn(&self, shown: Shown) -> &[Vec<usize>] {
         self.kept(shown)
             .and_then(|kept| kept.breaks.as_deref())
             .unwrap_or(&self.breaks)
     }
 
-    /// What a log X leaves out (X of 0 or less), and whether those are rows an
-    /// envelope left out rather than points.
-    pub fn left_out(&self, shown: Shown) -> (usize, bool) {
-        if !self.wanted(shown).log_x {
-            return (0, false);
+    /// What a log scale leaves out: the points (or an envelope's rows) at 0 or less
+    /// on it.
+    pub fn left_out(&self, shown: Shown) -> LeftOut {
+        let wanted = self.wanted(shown);
+        if !wanted.log_x && !wanted.log {
+            return LeftOut::default();
         }
-        if self.left_out_rows > 0 {
-            return (self.left_out_rows, true);
+        if self.weights.is_some() {
+            // An envelope's points stand for rows: it counted them as it read.
+            return LeftOut {
+                x: if wanted.log_x { self.left_out_rows } else { 0 },
+                y: if wanted.log { self.y_left_out_rows } else { 0 },
+                rows: true,
+                columns: self.series.len(),
+            };
         }
-        (self.kept(shown).map_or(0, |kept| kept.left_out), false)
+        self.kept(shown)
+            .map_or_else(LeftOut::default, |kept| kept.left_out)
     }
 
-    /// The series with points that a log X left none of.
+    /// The series with points that a log scale left none of.
     pub fn emptied(&self, shown: Shown) -> Vec<&str> {
-        if !self.wanted(shown).log_x {
+        let wanted = self.wanted(shown);
+        if !wanted.log_x && !wanted.log {
             return Vec::new();
         }
         let drawn: Vec<usize> = self.drawn(shown).map(|s| s.index).collect();
@@ -437,8 +485,11 @@ impl LinesData {
             .collect()
     }
 
-    /// The Xs the crosshair stands on: on a log X, those above zero.
+    /// The Xs the crosshair stands on: on a log scale, those of the points drawn.
     pub fn stops(&self, shown: Shown) -> &[f64] {
+        if let Some(stops) = self.kept(shown).and_then(|kept| kept.stops.as_deref()) {
+            return stops;
+        }
         if self.wanted(shown).log_x {
             &self.xs[self.xs.partition_point(|&x| x <= 0.0)..]
         } else {
@@ -454,7 +505,11 @@ impl LinesData {
             }
             _ => &[],
         };
-        self.drawn_of(raw, self.breaks_drawn(shown))
+        let breaks = self
+            .kept(shown)
+            .and_then(|kept| kept.raw_breaks.as_deref())
+            .unwrap_or(&self.breaks);
+        self.drawn_of(raw, breaks)
     }
 
     fn drawn_of<'a>(
@@ -513,41 +568,90 @@ fn clip_of(
     (outside > 0 && hi > lo).then_some(YClip { lo, hi, outside })
 }
 
-/// Which points a log X draws: per series, those with X above zero, and where its
-/// line starts again without the rest. A run left out breaks the line, as a gap does.
+/// What a log scale left out: the points at 0 or less on a log axis, or an
+/// envelope's rows there.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LeftOut {
+    /// At X of 0 or less, on a log X.
+    pub x: usize,
+    /// At Y of 0 or less, on a log Y, among those a log X kept.
+    pub y: usize,
+    /// An envelope's rows rather than points: of X, rows; of Y, values over `columns`.
+    pub rows: bool,
+    /// The Y columns an envelope read.
+    pub columns: usize,
+}
+
+impl LeftOut {
+    /// What the title row says: `3 points with X of 0 or less left out`; one line
+    /// for both axes when they count alike, `5 points with X or Y of 0 or less`.
+    pub fn notes(&self) -> Vec<String> {
+        let x_noun = if self.rows { "row" } else { "point" };
+        let y_noun = match (self.rows, self.columns > 1) {
+            (false, _) => "point",
+            (true, false) => "row",
+            (true, true) => "value",
+        };
+        let note = |n: usize, noun: &str, axis: &str| {
+            let s = if n == 1 { "" } else { "s" };
+            format!(
+                "{} {noun}{s} with {axis} of 0 or less left out",
+                crate::numfmt::group_chrome(n)
+            )
+        };
+        match (self.x, self.y) {
+            (0, 0) => Vec::new(),
+            (x, 0) => vec![note(x, x_noun, "X")],
+            (0, y) => vec![note(y, y_noun, "Y")],
+            (x, y) if x_noun == y_noun => vec![note(x + y, x_noun, "X or Y")],
+            (x, y) => vec![note(x, x_noun, "X"), note(y, y_noun, "Y")],
+        }
+    }
+}
+
+/// Which points a log scale draws: per series, those above zero on each log axis,
+/// and where its line starts again without the rest. A run left out breaks the line,
+/// as a gap does.
 #[derive(Debug, Clone, PartialEq)]
-pub struct PositiveX {
+pub struct Drawable {
     /// Per series, the indexes of the points kept.
     pub kept: Vec<Vec<usize>>,
     /// Per series, where its line starts again, as indexes into the points kept.
     pub breaks: Vec<Vec<usize>>,
-    /// Points left out over every series.
-    pub left_out: usize,
+    /// Points left out over every series: by X first, then by Y.
+    pub left_out: LeftOut,
 }
 
-impl PositiveX {
-    pub fn of(series: &[Vec<(f64, f64)>], breaks: &[Vec<usize>]) -> Self {
+impl Drawable {
+    pub fn of(series: &[Vec<(f64, f64)>], breaks: &[Vec<usize>], log_x: bool, log_y: bool) -> Self {
         let mut out = Self {
             kept: Vec::with_capacity(series.len()),
             breaks: Vec::with_capacity(series.len()),
-            left_out: 0,
+            left_out: LeftOut::default(),
         };
+        let positive = |v: f64| v > 0.0 && v.is_finite();
         for (s, points) in series.iter().enumerate() {
             let starts = breaks.get(s).map_or(&[][..], Vec::as_slice);
             let (mut kept, mut again) = (Vec::new(), Vec::new());
             // A gap, or a point left out, since the last point kept.
             let mut gap = false;
-            for (i, &(x, _)) in points.iter().enumerate() {
+            for (i, &(x, y)) in points.iter().enumerate() {
                 gap |= starts.binary_search(&i).is_ok();
-                if x > 0.0 && x.is_finite() {
+                if log_x && !positive(x) {
+                    out.left_out.x += 1;
+                    gap = true;
+                } else if log_y && !positive(y) {
+                    // An empty window's mean is no point, not one left out.
+                    if !y.is_nan() {
+                        out.left_out.y += 1;
+                    }
+                    gap = true;
+                } else {
                     if gap && !kept.is_empty() {
                         again.push(kept.len());
                     }
                     gap = false;
                     kept.push(i);
-                } else {
-                    out.left_out += 1;
-                    gap = true;
                 }
             }
             out.kept.push(kept);
@@ -791,15 +895,11 @@ pub fn extent(series: &[Vec<(f64, f64)>]) -> Option<[f64; 4]> {
     ))
 }
 
-/// A Y as the log scale draws it: `ln(1 + y)`, negatives at zero.
-fn log_y(y: f64) -> f64 {
-    y.max(0.0).ln_1p()
-}
-
-/// A Y as drawn: at the edge of `clip` past it, then on the log scale.
+/// A Y as drawn: at the edge of `clip` past it, then on the log scale as `log10(y)`
+/// (only points above 0 reach it there).
 fn shown_y(y: f64, log: bool, clip: Option<YClip>) -> f64 {
     let y = clip.map_or(y, |clip| y.clamp(clip.lo, clip.hi));
-    if log { log_y(y) } else { y }
+    if log { y.log10() } else { y }
 }
 
 impl PlotData {
@@ -873,7 +973,7 @@ pub struct Axis {
     pub title: String,
     pub numbers: AxisNumbers,
     pub kind: XAxisTemporalKind,
-    /// A log scale: Y's values are `ln(1 + y)`, X's `log10(x)`; ticks name the value.
+    /// A log scale: values are drawn as their `log10`; ticks name the value.
     pub log: bool,
     /// Outliers are drawn at the edge.
     pub clip: bool,
@@ -1192,7 +1292,7 @@ fn lines<'a>(data: Option<&'a PlotData>, context: &PlotContext<'_>) -> Plot<'a> 
             raw: shown.raw,
         },
         scatter: spec.mark == Mark::Scatter,
-        y_from_zero: modal.y_starts_at_zero,
+        y_from_zero: modal.y_from_zero_shown(),
     }
 }
 

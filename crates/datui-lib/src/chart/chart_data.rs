@@ -520,6 +520,9 @@ pub struct ChartDataResult {
     pub weights: Option<Vec<Vec<(f64, f64)>>>,
     /// Rows an envelope stepped on a log X left out: those with X of 0 or less.
     pub x_left_out: usize,
+    /// Values of 0 or less an envelope read, over every Y column, in the rows it
+    /// placed: what a log Y leaves out.
+    pub y_left_out: usize,
 }
 
 /// A series split at its breaks: the runs a line joins.
@@ -722,6 +725,7 @@ pub fn prepare_chart_data(
             rows: RowsRead::default(),
             weights: None,
             x_left_out: 0,
+            y_left_out: 0,
         });
     }
 
@@ -743,12 +747,14 @@ pub fn prepare_chart_data(
                 rows,
                 steps,
                 left_out,
+                y_left_out,
             } => {
                 return Ok(ChartDataResult {
                     series,
                     breaks,
                     weights: Some(weights),
                     x_left_out: left_out,
+                    y_left_out,
                     x_axis_kind,
                     rows: RowsRead {
                         total_rows: rows,
@@ -794,6 +800,7 @@ pub fn prepare_chart_data(
         rows,
         weights: None,
         x_left_out: 0,
+        y_left_out: 0,
     })
 }
 
@@ -809,6 +816,8 @@ enum Envelope {
         steps: usize,
         /// Rows a log X left out: those with X of 0 or less.
         left_out: usize,
+        /// Values of 0 or less over every Y column, in the rows placed.
+        y_left_out: usize,
     },
     /// The view is no more rows than the sample size, this many: no envelope.
     Fits(usize),
@@ -846,7 +855,7 @@ fn envelope_pass(lf: LazyFrame, cancel: &Arc<AtomicBool>) -> Result<DataFrame> {
 /// step's lowest X, in X order: two streamed passes (rows and X bounds, then a group per
 /// step). Rows without X are dropped; a step without a series' value breaks its line.
 /// With `log_x` the steps are even along `log10(x)`, and the rows with X of 0 or less
-/// are left out and counted.
+/// are left out and counted. The Y values of 0 or less are counted too, for a log Y.
 fn envelope_series(
     lf: &LazyFrame,
     schema: &Schema,
@@ -910,13 +919,14 @@ fn envelope_series(
     }
     let steps = (limit / 2).max(1);
     let n = y_columns.len();
-    let drawn = |series, breaks, weights| Envelope::Drawn {
+    let drawn = |series, breaks, weights, y_left_out| Envelope::Drawn {
         series,
         breaks,
         weights,
         rows,
         steps,
         left_out,
+        y_left_out,
     };
     let bound = |name: &str| -> Result<Option<f64>> { Ok(bounds.column(name)?.f64()?.get(0)) };
     let (Some(lo), Some(hi)) = (bound("lo")?, bound("hi")?) else {
@@ -924,6 +934,7 @@ fn envelope_series(
             vec![Vec::new(); n],
             vec![Vec::new(); n],
             vec![Vec::new(); n],
+            0,
         ));
     };
     let per_x = if hi > lo {
@@ -955,6 +966,14 @@ fn envelope_series(
         aggs.push(y.clone().max().alias(format!("__hi{i}")));
         // What a smoothed line averages: the step's rows, not its low and high.
         aggs.push(y.clone().sum().alias(format!("__sum{i}")));
+        // What a log Y leaves out, counted in the pass that reads Y anyway.
+        aggs.push(
+            y.clone()
+                .lt_eq(lit(0.0))
+                .cast(DataType::UInt64)
+                .sum()
+                .alias(format!("__nonpositive{i}")),
+        );
         aggs.push(y.count().alias(format!("__n{i}")));
     }
     let df = envelope_pass(
@@ -967,7 +986,11 @@ fn envelope_series(
     let mut series = Vec::with_capacity(n);
     let mut breaks = Vec::with_capacity(n);
     let mut weights = Vec::with_capacity(n);
+    let mut y_left_out = 0;
     for i in 0..n {
+        y_left_out += counts_of(&df, &format!("__nonpositive{i}"))?
+            .iter()
+            .sum::<u64>() as usize;
         let lows = df.column(&format!("__lo{i}"))?.f64()?.clone();
         let highs = df.column(&format!("__hi{i}"))?.f64()?.clone();
         let sums = df
@@ -1007,7 +1030,7 @@ fn envelope_series(
         breaks.push(starts);
         weights.push(weighed);
     }
-    Ok(drawn(series, breaks, weights))
+    Ok(drawn(series, breaks, weights, y_left_out))
 }
 
 /// Each column's finite values, read in one pass; nulls are dropped per column.

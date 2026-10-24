@@ -328,7 +328,7 @@ impl ChartRequest {
             Mark::Line | Mark::Scatter => {
                 let aggregate = encoding.y.aggregate;
                 let mut weights = None;
-                let mut left_out_rows = 0;
+                let mut log_left_out = (0, 0);
                 let grouped = if aggregate != Aggregate::None {
                     chart_data::prepare_aggregate_xy(
                         lf,
@@ -357,7 +357,7 @@ impl ChartRequest {
                         self.log_x,
                     )?;
                     weights = r.weights;
-                    left_out_rows = r.x_left_out;
+                    log_left_out = (r.x_left_out, r.y_left_out);
                     chart_data::GroupedSeries {
                         names: encoding.y.field.clone(),
                         series: r.series,
@@ -376,7 +376,7 @@ impl ChartRequest {
                         }),
                     )
                     .weighed(weights)
-                    .leaving_out(left_out_rows),
+                    .leaving_out(log_left_out.0, log_left_out.1),
                 )
             }
             Mark::Bar if encoding.y.aggregate != Aggregate::None => {
@@ -868,19 +868,7 @@ impl App {
             notes.push(note);
         }
         if let PlotData::Lines(lines) = prepared {
-            let (left_out, rows) = lines.left_out(shown);
-            if left_out > 0 {
-                let noun = match (rows, left_out == 1) {
-                    (true, true) => "row",
-                    (true, false) => "rows",
-                    (false, true) => "point",
-                    (false, false) => "points",
-                };
-                notes.push(format!(
-                    "{} {noun} with X of 0 or less left out",
-                    crate::numfmt::group_chrome(left_out)
-                ));
-            }
+            notes.extend(lines.left_out(shown).notes());
             // A series left with nothing drawn is not in the legend: named here.
             for name in lines.emptied(shown) {
                 notes.push(format!("{name}: every point left out"));

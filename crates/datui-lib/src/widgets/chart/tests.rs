@@ -87,7 +87,9 @@ impl Draw<'_> {
                                 clip: None,
                                 bounds: extent(series),
                                 breaks: None,
-                                left_out: 0,
+                                raw_breaks: None,
+                                left_out: Default::default(),
+                                stops: None,
                             })
                         }),
                         breaks: breaks.cloned().unwrap_or_default(),
@@ -1808,8 +1810,8 @@ fn the_light_grid_survives_sixteen_colors() {
     assert!(cells.iter().all(|c| c.fg == grid));
 }
 
-/// A log scale ticks at the powers of ten, and 2 and 5 between when there is
-/// room, every label in one format; the short form names each tick's own k or M.
+/// A log Y ticks at the powers of ten, and 2 and 5 between when there is room,
+/// inside the data's range, as a log X does. The point at 0 is left out.
 #[test]
 fn log_scale_ticks_fall_on_the_decades() {
     let g = crate::glyphs::unicode();
@@ -1817,25 +1819,21 @@ fn log_scale_ticks_fall_on_the_decades() {
     modal.spec.encoding.x.field = Some("x".to_string());
     modal.spec.encoding.y.field = vec!["count".to_string()];
     modal.log_scale = true;
-    // 0 to 300,000, as the view has it: ln(1 + y).
-    let linear: Vec<Vec<(f64, f64)>> = vec![
+    // 0 to 300,000.
+    let series: Vec<Vec<(f64, f64)>> = vec![
         (0..=300)
             .map(|i| (f64::from(i), f64::from(i).powi(2) * 3.333))
             .collect(),
     ];
-    let logged: Vec<Vec<(f64, f64)>> = linear
-        .iter()
-        .map(|points| points.iter().map(|&(x, y)| (x, y.ln_1p())).collect())
-        .collect();
     let theme = crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
     let ctx = RenderContext::for_test();
     let y_labels = |height: u16| {
         let area = Rect::new(0, 0, 60, height);
         let mut buf = Buffer::empty(area);
         let data = Draw::XY {
-            series: Some(&logged),
+            series: Some(&series),
             breaks: None,
-            values: Some(&linear),
+            values: None,
             names: names(),
             x_axis_kind: XAxisTemporalKind::Numeric,
             x_bounds: None,
@@ -1854,26 +1852,33 @@ fn log_scale_ticks_fall_on_the_decades() {
             .collect();
         (labels, rows)
     };
-    // Top down: falling, each a 1, 2 or 5 a power of ten up, or zero.
+    let value = |label: &str| -> f64 {
+        match label.strip_suffix('k') {
+            Some(n) => n.parse::<f64>().unwrap() * 1e3,
+            None => label.parse().unwrap(),
+        }
+    };
+    // Top down: falling, each a 1, 2 or 5 a power of ten up.
     let nice = |labels: &[String]| {
-        let values: Vec<f64> = labels.iter().map(|l| l.parse().unwrap()).collect();
+        let values: Vec<f64> = labels.iter().map(|l| value(l)).collect();
         values.windows(2).all(|w| w[0] > w[1])
             && values.iter().all(|&v| {
-                let decade = 10f64.powf(v.log10().floor());
-                v == 0.0 || [1.0, 2.0, 5.0].contains(&(v / decade))
+                let decade = 10f64.powf((v.log10() + 1e-9).floor());
+                [1.0, 2.0, 5.0].contains(&(v / decade))
             })
     };
     let (tall, rows) = y_labels(40);
     assert!(nice(&tall), "{rows:#?}");
-    // Every power of ten up to the top, which the axis widens to.
-    for decade in ["0", "10", "100", "1000", "10000", "100000", "1000000"] {
-        assert!(tall.contains(&decade.to_string()), "{decade}: {rows:#?}");
+    // Every power of ten inside the data, 3.3 to 300,000; nothing at 0.
+    let values: Vec<f64> = tall.iter().map(|l| value(l)).collect();
+    for decade in [10.0, 100.0, 1e3, 1e4, 1e5] {
+        assert!(values.contains(&decade), "{decade}: {rows:#?}");
     }
-    assert_eq!(tall[0], "1000000", "{rows:#?}");
-    assert_eq!(tall.last().unwrap(), "0", "{rows:#?}");
+    assert!(!tall.contains(&"0".to_string()), "{rows:#?}");
+    assert!(value(&tall[0]) <= 300_000.0, "not widened: {rows:#?}");
     let (short, rows) = y_labels(12);
     assert!(nice(&short), "{rows:#?}");
-    assert!(short.len() >= 3 && short.len() < tall.len(), "{rows:#?}");
+    assert!(short.len() >= 2 && short.len() < tall.len(), "{rows:#?}");
 }
 
 /// With the plot focused the crosshair stands on a point: a line down its column
@@ -2125,6 +2130,71 @@ fn a_log_x_ticks_its_decades_and_reads_values() {
     assert_eq!(
         rows.last().unwrap().trim_end(),
         "price: 100   price: 20",
+        "{rows:#?}"
+    );
+}
+
+/// A log Y: Y from zero stays in its place, dimmed with why, and Tab passes it;
+/// the crosshair steps over a point left out; with nothing above 0 the plot says so.
+#[test]
+fn a_log_y_dims_y_from_zero_and_draws_only_above_zero() {
+    let g = crate::glyphs::unicode();
+    let mut modal = open_modal();
+    modal.spec.encoding.x.field = Some("price".to_string());
+    modal.spec.encoding.y.field = vec!["volume".to_string()];
+    modal.y_starts_at_zero = true;
+    modal.log_scale = true;
+    let rows = render_rows(&mut modal, 100, 30);
+    let row = rows.iter().find(|r| r.contains("Y from zero")).unwrap();
+    assert!(row.contains("off · log scale"), "{row}");
+    assert!(!modal.row_order().contains(&ChartFocus::YStartsAtZero));
+    assert!(!modal.y_from_zero_shown());
+    let at = |rows: &[String], what: &str| rows.iter().position(|r| r.contains(what));
+    assert!(
+        at(&rows, "Y from zero") < at(&rows, "Log scale"),
+        "{rows:#?}"
+    );
+
+    let theme = crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
+    let ctx = RenderContext::for_test();
+    let draw = |modal: &ChartModal, series: &Vec<Vec<(f64, f64)>>| {
+        let area = Rect::new(0, 0, 70, 20);
+        let mut buf = Buffer::empty(area);
+        let data = Draw::XY {
+            series: Some(series),
+            breaks: None,
+            values: None,
+            names: names(),
+            x_axis_kind: XAxisTemporalKind::Numeric,
+            x_bounds: None,
+            other: false,
+            numbers: PlotNumbers::default(),
+        };
+        render_plot(area, &mut buf, modal, &theme, &ctx, data, g);
+        crate::tests::buffer_lines(&buf)
+    };
+    let series = vec![vec![(1.0, 10.0), (2.0, 0.0), (3.0, 100.0)]];
+    modal.plot_focus = true;
+    modal.cursor_x = Some(2.2);
+    let rows = draw(&modal, &series);
+    assert_eq!(
+        rows.last().unwrap().trim_end(),
+        "price: 3   price: 100",
+        "{rows:#?}"
+    );
+
+    modal.plot_focus = false;
+    let rows = draw(&modal, &vec![vec![(1.0, 0.0), (2.0, -3.0)]]);
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("No Y above 0 to draw on a log scale")),
+        "{rows:#?}"
+    );
+    modal.log_x = true;
+    let rows = draw(&modal, &vec![vec![(0.0, 5.0), (2.0, -3.0)]]);
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("No point with X and Y above 0 to draw on a log scale")),
         "{rows:#?}"
     );
 }

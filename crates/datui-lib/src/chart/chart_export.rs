@@ -939,8 +939,7 @@ fn axis_ticks(
 ) -> ([f64; 2], Vec<(f64, String)>) {
     let bounds = [lo, hi];
     let spec = match (axis.log, across) {
-        (true, true) => AxisSpec::x_log(bounds, &axis.numbers.clone().fractional(), ""),
-        (true, false) => AxisSpec::y_log(bounds, &axis.numbers, ""),
+        (true, _) => AxisSpec::log(bounds, &axis.numbers.clone().fractional(), ""),
         (false, true) => AxisSpec::calendar(bounds, axis.kind, &axis.numbers, ""),
         (false, false) if axis.kind == XAxisTemporalKind::Duration => {
             AxisSpec::calendar(bounds, axis.kind, &axis.numbers, "")
@@ -1176,7 +1175,8 @@ fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame
                             f64::INFINITY,
                             f64::NEG_INFINITY,
                         ]);
-                    if options.y_from_zero.unwrap_or(*y_from_zero) {
+                    // A log Y has no zero to start from.
+                    if options.y_from_zero.unwrap_or(*y_from_zero) && !y.log {
                         y_lo = y_lo.min(0.0);
                         y_hi = y_hi.max(0.0);
                     }
@@ -2371,6 +2371,48 @@ mod tests {
             .collect();
         assert_eq!(xs.len(), 3, "{points}");
         assert!(((xs[1] - xs[0]) - (xs[2] - xs[1])).abs() < 0.2, "{points}");
+        roxmltree_ok(&svg);
+    }
+
+    /// A log Y exports as the screen draws it: powers of ten evenly up, the points
+    /// at Y of 0 or less left out, the axis not widened.
+    #[test]
+    fn a_log_y_exports_its_decades() {
+        let axis = Axis {
+            log: true,
+            ..Default::default()
+        };
+        let (bounds, ticks) = axis_ticks((1.0, 3.0), &axis, 300.0, 12.0, false);
+        assert_eq!(bounds, [1.0, 3.0], "a log Y is not widened");
+        let at = |label: &str| ticks.iter().find(|(_, l)| l == label).map(|(v, _)| *v);
+        assert_eq!(
+            (at("10"), at("100"), at("1000")),
+            (Some(1.0), Some(2.0), Some(3.0)),
+            "{ticks:?}"
+        );
+
+        let mut figure = lines(&["a"]);
+        let lines = lines_of(&mut figure);
+        lines.series = vec![vec![(1.0, 0.0), (2.0, 10.0), (3.0, 100.0), (4.0, 1000.0)]];
+        lines.bounds = crate::chart::chart_plot::extent(&lines.series);
+        figure.plot.y.log = true;
+        let shown = figure.plot.shown();
+        lines_of(&mut figure).keep_shown(shown);
+        let svg = svg(&figure, &options()).unwrap();
+        for label in [">10<", ">100<", ">1000<"] {
+            assert!(svg.contains(label), "{label}: {svg}");
+        }
+        let points = svg
+            .split("<polyline points=\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .unwrap();
+        let ys: Vec<f64> = points
+            .split(' ')
+            .map(|p| p.split(',').nth(1).unwrap().parse().unwrap())
+            .collect();
+        assert_eq!(ys.len(), 3, "{points}");
+        assert!(((ys[0] - ys[1]) - (ys[1] - ys[2])).abs() < 0.2, "{points}");
         roxmltree_ok(&svg);
     }
 

@@ -1333,6 +1333,78 @@ fn a_scatter_takes_a_log_x() {
     assert!(text.contains("size: every point left out"), "{text}");
 }
 
+/// Y's log scale on a line: Space on Log scale turns it on, Y from zero dims, the
+/// notes count the points at Y of 0 or less it leaves out, the crosshair passes
+/// them, and with nothing above 0 the plot says why it is empty.
+#[test]
+fn a_line_takes_a_log_y() {
+    use datui::chart::chart_modal::{ChartFocus, Mark};
+    let path = log_x_fixture("chart_log_y.parquet");
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+
+    press(&mut app, KeyCode::Char('c'));
+    app.chart.modal.set_mark(Mark::Line);
+    app.chart.modal.spec.encoding.x.field = Some("day".to_string());
+    // 0 on every thirteenth row: five of them.
+    app.chart.modal.spec.encoding.y.field = vec!["ms".to_string()];
+    app.chart.modal.row_limit = None;
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    let area = Rect::new(0, 0, 160, 34);
+    let draw = |app: &mut App| {
+        let mut buf = Buffer::empty(area);
+        Widget::render(app, area, &mut buf);
+        common::buffer_text(&buf)
+    };
+    app.chart.modal.focus = ChartFocus::LogScale;
+    press(&mut app, KeyCode::Char(' '));
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    assert!(app.chart.modal.log_scale);
+    let text = draw(&mut app);
+    assert!(text.contains("Y on"), "{text}");
+    assert!(text.contains("off · log scale"), "{text}");
+    assert!(
+        text.contains("5 points with Y of 0 or less left out"),
+        "{text}"
+    );
+    press(&mut app, KeyCode::BackTab);
+    assert_ne!(
+        app.chart.modal.focus,
+        ChartFocus::YStartsAtZero,
+        "Tab passes Y from zero"
+    );
+
+    // The crosshair never stands on a point left out: the first row's is 0.
+    press(&mut app, KeyCode::Char('x'));
+    press(&mut app, KeyCode::Home);
+    assert_eq!(app.chart.modal.cursor_x, Some(19_701.0));
+    press(&mut app, KeyCode::Char('x'));
+
+    let dir = tempfile::tempdir().unwrap();
+    let svg = dir.path().join("chart.svg");
+    let next = app.event(AppEvent::Applied(datui::Applied::ChartExport(
+        chart_export_request(&svg, datui::chart::chart_export::ChartExportFormat::Svg),
+    )));
+    if let Some(next) = next {
+        app.event(next);
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+    // The file's axis and points are `a_log_y_exports_its_decades`'.
+    assert!(std::fs::read_to_string(&svg).unwrap().starts_with("<svg"));
+
+    app.chart.modal.spec.encoding.y.field = vec!["neg".to_string()];
+    app.event(AppEvent::Wake);
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    let text = draw(&mut app);
+    assert!(
+        text.contains("No Y above 0 to draw on a log scale"),
+        "{text}"
+    );
+    assert!(text.contains("neg: every point left out"), "{text}");
+}
+
 /// Keys typed back to back through the pump, as a fast typist sends them, right
 /// after X changes the panel's rows: the Tabs reach X's log scale and Space turns
 /// it on, however the chart's preparation falls between them.

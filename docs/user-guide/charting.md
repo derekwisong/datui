@@ -192,7 +192,7 @@ labels where there is room.
 | Feature | What it does |
 |---|---|
 | **Grid** | Dotted lines at the labeled ticks, under the series, in `chart_grid`. <kbd>g</kbd> or the **Grid** row toggles it; `chart_grid` in the [`[analysis]` section](../reference/settings.md#analysis) sets whether a new chart starts with it (default off) |
-| **Legend** | Names the series when there are two or more: a swatch and a name per series, with no frame, placed where it covers the fewest points (a corner, or the middle of an edge). The **Legend** row hides it |
+| **Legend** | Names the series when there are two or more: a swatch and a name per series, with no frame, placed where it covers the fewest points (a corner, or the middle of an edge). A long name is cut at the end, or from the middle where that keeps names apart. The **Legend** row hides it |
 | **Crosshair** | Line and Scatter: <kbd>x</kbd> passes the keys to the plot. <kbd>←</kbd> <kbd>→</kbd> move a vertical line from point to point (a column at a time where they crowd), <kbd>Home</kbd> <kbd>End</kbd> go to the ends, and under the plot a readout gives x and each series' value there: `date: 2020-04-30   high_temp: 67.2`. A series with no value there reads `∅`. <kbd>x</kbd>, <kbd>Tab</kbd> or <kbd>Esc</kbd> hand the keys back to the panel. A click on the plot puts the crosshair there |
 | Marks | Lines in braille. A scatter marks each point with a dot, or in braille when there is more than one point per four cells. Histogram bars fill their bins |
 

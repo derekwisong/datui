@@ -1122,18 +1122,22 @@ fn render_xy_chart(
         GraphType::Line
     };
     let (x, y) = (&plot.x, &plot.y);
-    let drawn: Vec<_> = plot.drawn().collect();
+    // Every series a line is drawn for: the smoothed one, or only its raw line.
+    let drawn = plot.named();
 
     if drawn.is_empty() {
         // Points, none of them where a log scale can put them.
         let all_left_out = (x.log || y.log) && lines.series.iter().any(|s| !s.is_empty());
         if modal.x().is_none() || all_left_out {
-            let left_out = lines.left_out(plot.shown());
+            let (by_x, by_y) = lines
+                .left_out(plot.shown())
+                .iter()
+                .fold((0, 0), |(x, y), l| (x + l.x, y + l.y));
             let why = if !all_left_out {
                 missing(modal)
-            } else if left_out.x > 0 && left_out.y > 0 {
+            } else if by_x > 0 && by_y > 0 {
                 "No point with X and Y above 0 to draw on a log scale"
-            } else if left_out.y > 0 || (left_out.x == 0 && y.log) {
+            } else if by_y > 0 || (by_x == 0 && y.log) {
                 "No Y above 0 to draw on a log scale"
             } else {
                 "No X above 0 to draw on a log scale"
@@ -1188,10 +1192,13 @@ fn render_xy_chart(
     } else {
         all_y_min
     };
-    let y_max_bounds = if all_y_max > y_min_bounds {
-        all_y_max
+    let (y_min_bounds, y_max_bounds) = if all_y_max > y_min_bounds {
+        (y_min_bounds, all_y_max)
+    } else if y.log {
+        // Half a power of ten each side, so the value has a tick of its own.
+        (y_min_bounds - 0.5, y_min_bounds + 0.5)
     } else {
-        y_min_bounds + 1.0
+        (y_min_bounds, y_min_bounds + 1.0)
     };
     let (x_min_bounds, x_max_bounds) = if all_x_max > all_x_min {
         (all_x_min, all_x_max)
@@ -1201,7 +1208,9 @@ fn render_xy_chart(
 
     let y_bounds = [y_min_bounds, y_max_bounds];
     // On a log scale a tick names its value before the log, X and Y alike.
-    let y_spec = if y.log {
+    let y_spec = if y.log && y.kind == XAxisTemporalKind::Duration {
+        AxisSpec::log(y_bounds, &y.numbers, &y.title).durations()
+    } else if y.log {
         AxisSpec::log(y_bounds, &y.numbers.clone().fractional(), &y.title)
     } else if y.kind == XAxisTemporalKind::Duration {
         AxisSpec::calendar(y_bounds, y.kind, &y.numbers, &y.title)

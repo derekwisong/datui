@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="480" height="320" viewBox="0 0 480 320" font-family="IBM Plex Sans">
 <rect x="0.00" y="0.00" width="480.00" height="320.00" fill="#ffffff" fill-opacity="1.00"/>
 <text x="31.1" y="53.7" font-size="22.6" font-weight="600" text-anchor="start" fill="#1f2430">Golden</text>
-<text x="31.1" y="285.1" font-size="12.8" font-weight="400" text-anchor="start" fill="#5b6170">1 point with X of 0 or less left out</text>
+<text x="31.1" y="285.1" font-size="12.8" font-weight="400" text-anchor="start" fill="#5b6170">1 point with X ≤ 0 left out</text>
 <text x="52.7" y="220.7" font-size="14.0" font-weight="400" text-anchor="end" fill="#5b6170">0</text>
 <text x="52.7" y="183.5" font-size="14.0" font-weight="400" text-anchor="end" fill="#5b6170">20</text>
 <text x="52.7" y="146.2" font-size="14.0" font-weight="400" text-anchor="end" fill="#5b6170">40</text>

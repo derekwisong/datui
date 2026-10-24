@@ -53,7 +53,11 @@ enum Scale<'a> {
     },
     /// A log scale, where position `v` stands for `10^v`, over the axis as given:
     /// ticks at powers of ten with 2 and 5 between, or round steps within a decade.
-    Log10 { numbers: AxisNumbers },
+    Log10 {
+        numbers: AxisNumbers,
+        /// Values are seconds, labeled as lengths of time: `10ms`, `1s`, `1m40s`.
+        durations: bool,
+    },
     /// Ticks given in advance: evenly spaced ones thin out keeping both ends.
     Fixed {
         ticks: Vec<f64>,
@@ -173,10 +177,20 @@ impl<'a> AxisSpec<'a> {
             bounds,
             scale: Scale::Log10 {
                 numbers: numbers.clone(),
+                durations: false,
             },
             title,
             pad: 0,
         }
+    }
+
+    /// The same log axis over seconds, labeled as lengths of time; any other axis
+    /// as it is.
+    pub fn durations(mut self) -> Self {
+        if let Scale::Log10 { durations, .. } = &mut self.scale {
+            *durations = true;
+        }
+        self
     }
 
     /// The same axis, its labels right-aligned in at least `width` cells.
@@ -224,9 +238,10 @@ impl<'a> AxisSpec<'a> {
                     minor_gap,
                 )]
             }
-            Scale::Log10 { numbers } => vec![log10_sets(
+            Scale::Log10 { numbers, durations } => vec![log10_sets(
                 self.bounds,
                 numbers,
+                *durations,
                 length,
                 spacing,
                 least,
@@ -414,6 +429,7 @@ type LogTicks = (Vec<f64>, Vec<f64>, bool);
 fn log10_sets(
     bounds: [f64; 2],
     numbers: &AxisNumbers,
+    durations: bool,
     length: f64,
     spacing: f64,
     least: f64,
@@ -425,11 +441,17 @@ fn log10_sets(
         || length <= 0.0
         || !(low > 0.0 && high.is_finite())
     {
-        let format = AxisFormat::powers(&[low], numbers);
+        let label = if durations {
+            ticks::elapsed_tick(low, low)
+        } else {
+            AxisFormat::powers(&[low], numbers)
+                .label(low, 0)
+                .unwrap_or_default()
+        };
         return vec![TickSet {
             ticks: vec![lo],
             minor: Vec::new(),
-            levels: vec![vec![format.label(low, 0).unwrap_or_default()]],
+            levels: vec![vec![label]],
             bounds,
         }];
     }
@@ -503,9 +525,14 @@ fn log10_sets(
             } else {
                 AxisFormat::new(&values, numbers)
             };
-            let levels = (0..2)
-                .map_while(|level| values.iter().map(|&v| format.label(v, level)).collect())
-                .collect();
+            // A length of time each to the unit it needs: `10ms`, `1s`, `1m40s`.
+            let levels = if durations {
+                vec![values.iter().map(|&v| ticks::elapsed_tick(v, v)).collect()]
+            } else {
+                (0..2)
+                    .map_while(|level| values.iter().map(|&v| format.label(v, level)).collect())
+                    .collect()
+            };
             let at: Vec<f64> = values.iter().map(|v| v.log10()).collect();
             // Minor ticks only where every one keeps its distance from the next.
             let minor: Vec<f64> = minor.iter().map(|v| v.log10()).collect();

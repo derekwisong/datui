@@ -939,6 +939,9 @@ fn axis_ticks(
 ) -> ([f64; 2], Vec<(f64, String)>) {
     let bounds = [lo, hi];
     let spec = match (axis.log, across) {
+        (true, false) if axis.kind == XAxisTemporalKind::Duration => {
+            AxisSpec::log(bounds, &axis.numbers, "").durations()
+        }
         (true, _) => AxisSpec::log(bounds, &axis.numbers.clone().fractional(), ""),
         (false, true) => AxisSpec::calendar(bounds, axis.kind, &axis.numbers, ""),
         (false, false) if axis.kind == XAxisTemporalKind::Duration => {

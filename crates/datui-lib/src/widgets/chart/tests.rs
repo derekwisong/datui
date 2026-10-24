@@ -89,6 +89,7 @@ impl Draw<'_> {
                                 breaks: None,
                                 raw_breaks: None,
                                 left_out: Default::default(),
+                                smoothed_left_out: None,
                                 stops: None,
                             })
                         }),
@@ -2196,5 +2197,51 @@ fn a_log_y_dims_y_from_zero_and_draws_only_above_zero() {
         rows.iter()
             .any(|r| r.contains("No point with X and Y above 0 to draw on a log scale")),
         "{rows:#?}"
+    );
+}
+
+/// A log Y over one value spans half a power of ten each side, as a log X does:
+/// the line runs through the middle, ticked around it, not along the floor.
+#[test]
+fn a_flat_log_y_ticks_its_value() {
+    let g = crate::glyphs::unicode();
+    let mut modal = open_modal();
+    modal.spec.encoding.x.field = Some("price".to_string());
+    modal.spec.encoding.y.field = vec!["volume".to_string()];
+    modal.log_scale = true;
+    let series = vec![(0..10).map(|i| (f64::from(i), 42.0)).collect::<Vec<_>>()];
+    let theme = crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
+    let ctx = RenderContext::for_test();
+    let area = Rect::new(0, 0, 60, 20);
+    let mut buf = Buffer::empty(area);
+    let data = Draw::XY {
+        series: Some(&series),
+        breaks: None,
+        values: None,
+        names: names(),
+        x_axis_kind: XAxisTemporalKind::Numeric,
+        x_bounds: None,
+        other: false,
+        numbers: PlotNumbers::default(),
+    };
+    render_plot(area, &mut buf, &modal, &theme, &ctx, data, g);
+    let rows = crate::tests::buffer_lines(&buf);
+    let labels: Vec<&str> = rows
+        .iter()
+        .filter_map(|r| r.split_once(g.plot.tick_y).map(|(l, _)| l.trim()))
+        .filter(|l| !l.is_empty())
+        .collect();
+    // Ticks around it, a power of ten wide.
+    assert!(
+        labels.contains(&"20") && labels.contains(&"100"),
+        "{rows:#?}"
+    );
+    let line = rows
+        .iter()
+        .position(|r| r.contains('⠤') || r.contains('⣀') || r.contains('⠉'));
+    let floor = rows.iter().position(|r| r.contains('└')).unwrap();
+    assert!(
+        line.is_some_and(|l| l + 3 < floor),
+        "off the floor: {rows:#?}"
     );
 }

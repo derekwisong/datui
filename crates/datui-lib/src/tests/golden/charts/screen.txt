@@ -70,8 +70,8 @@
                                         │           2          4          6
                                         │                                      n
 ────────────────────────────────────────────────────────────────────────────────
-== scatter_log_x styles e2873a71ed4f992d
- Chart ─────────────────────────────────│   1 point with X of 0 or less left out
+== scatter_log_x styles 2f29a144e9ab142e
+ Chart ─────────────────────────────────│            1 point with X ≤ 0 left out
                                         │ b
 ▎ Type         Scatter                  │   │
                                         │ 50┤            ⡀      ⠁⠈  ⡀ ⡀⠉ ⣀⠈⢀⡈⣀⢁⡈

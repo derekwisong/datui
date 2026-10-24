@@ -264,14 +264,15 @@ Both axes follow the same rules:
 
 | Part | Rule |
 |---|---|
-| Values of 0 or less | A log has no place for them, so they are left out and counted in the title row: `3 points with Y of 0 or less left out`, or `with X or Y` when both axes are logged. A line breaks where they were. A series with none left is named there too: `size: every point left out`. With nothing left at all, the plot says so |
-| Ticks | Powers of ten (1, 10, 100), with 2 and 5 between when there is room, or every second or third power when there is less. An axis spanning less than a power of ten ticks at round steps (200, 400, 600). The axis ends where the data does |
+| Values of 0 or less | A log has no place for them, so they are left out and counted in the title row: `3 points with Y ≤ 0 left out`, or `with X or Y` when both axes are logged (`<=` in ASCII). A line breaks where they were. A series with none left is named there too: `size: every point left out`. With nothing left at all, the plot says so |
+| Ticks | Powers of ten (1, 10, 100), with 2 and 5 between when there is room, or every second or third power when there is less. An axis spanning less than a power of ten ticks at round steps (200, 400, 600). The axis ends where the data does; one value alone gets half a power of ten each side |
 | Labels | Each with the digits it needs: `0.01  1  100`. Past four powers of ten, or a label longer than six characters, all in a short form: `1  1k  1M` from one up, `1e-9  1e-3  1  1e3` below it. Round steps within a power of ten share one precision: `0.5  1.0  1.5` |
-| Crosshair | Moves from point to point drawn, skipping those left out, and reads the data's own values: `size: 100`, not 2 |
-| Smooth | Smoothing works on the data as it is: a window of N points counts the points left out too, so a smoothed line can be drawn where the values themselves are 0. Then only what is above 0 is drawn, the raw line's and the smoothed line's each |
-| **Range** | Fits the Y axis to the points drawn, not those left out |
+| Crosshair | Steps between the points drawn, skipping those left out, and reads the data's own values: `size: 100`, not 2 |
+| Smooth | A window averages every point, including those left out, so the smoothed line can run above 0 where the data is 0. Each line then draws only its own points above 0. The note counts the smoothed line's: `4 smoothed points with Y ≤ 0 left out`, and the raw line's too when it is drawn |
+| **Range** | Fits the Y axis to the points drawn, not those left out. On a log Y the outliers are found on the log scale, so a steady climb through powers of ten has none |
+| Duration Y | Ticks named as lengths of time: `10ms`, `1s`, `1m40s` |
 | **Y from zero** | Dimmed while Y is logged |
-| Large tables | A line drawn as an envelope (see [Large tables](#large-tables)) steps evenly along a log X, so each power of ten gets its share of the steps, and counts the rows left out: `12 rows with X of 0 or less left out`. Turning **X** on or off reads such a line again; anything else only redraws |
+| Large tables | A line drawn as an envelope (see [Large tables](#large-tables)) steps evenly along a log X, so each power of ten gets its share of the steps, and counts the rows left out: `12 rows with X ≤ 0 left out`. Turning **X** on or off reads such a line again. On a log Y each step stands on its least value above 0, and the rows with Y of 0 or less are counted (values, with several Y columns): `9,355 rows with Y ≤ 0 left out`. Turning **Y** on or off only redraws |
 | Export | Draws the same axes and notes |
 
 Before 0.4.14, **Y** drew ln(1 + y), which kept 0 on the axis. A saved view

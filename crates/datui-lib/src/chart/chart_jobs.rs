@@ -329,6 +329,7 @@ impl ChartRequest {
                 let aggregate = encoding.y.aggregate;
                 let mut weights = None;
                 let mut log_left_out = (0, 0);
+                let mut log_y_steps = None;
                 let grouped = if aggregate != Aggregate::None {
                     chart_data::prepare_aggregate_xy(
                         lf,
@@ -358,6 +359,7 @@ impl ChartRequest {
                     )?;
                     weights = r.weights;
                     log_left_out = (r.x_left_out, r.y_left_out);
+                    log_y_steps = r.log_y_steps;
                     chart_data::GroupedSeries {
                         names: encoding.y.field.clone(),
                         series: r.series,
@@ -376,7 +378,8 @@ impl ChartRequest {
                         }),
                     )
                     .weighed(weights)
-                    .leaving_out(log_left_out.0, log_left_out.1),
+                    .leaving_out(log_left_out.0, log_left_out.1)
+                    .with_log_y_steps(log_y_steps),
                 )
             }
             Mark::Bar if encoding.y.aggregate != Aggregate::None => {
@@ -780,7 +783,8 @@ impl App {
         Ok(Some(Figure {
             plot,
             // The file always has the middle dot; the terminal may be ASCII.
-            chart_notes: self.chart_notes_of(prepared, "·"),
+            // A file is always written in Unicode.
+            chart_notes: self.chart_notes_of(prepared, crate::glyphs::unicode()),
             grid: modal.grid,
         }))
     }
@@ -853,12 +857,13 @@ impl App {
 
     /// What a chart says under its plot about the rows it drew. A view with a sample
     /// is charted from all of it: the note says which sample, with its seed, so the
-    /// chart can be drawn again.
+    /// chart can be drawn again. `g` writes them: the screen's glyphs, or a file's.
     pub(crate) fn chart_notes_of(
         &self,
         prepared: &crate::chart::chart_jobs::PlotData,
-        middot: &str,
+        g: &crate::glyphs::Glyphs,
     ) -> Vec<String> {
+        let middot = g.middot;
         let mut notes = prepared.notes(middot);
         // Smoothing and the range are drawn, not prepared: the points stay.
         let shown = self.chart.modal.shown();
@@ -868,7 +873,12 @@ impl App {
             notes.push(note);
         }
         if let PlotData::Lines(lines) = prepared {
-            notes.extend(lines.left_out(shown).notes());
+            notes.extend(
+                lines
+                    .left_out(shown)
+                    .iter()
+                    .flat_map(|l| l.notes(g.at_most)),
+            );
             // A series left with nothing drawn is not in the legend: named here.
             for name in lines.emptied(shown) {
                 notes.push(format!("{name}: every point left out"));

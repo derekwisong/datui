@@ -69,6 +69,10 @@ pub struct LinesData {
     /// Values of 0 or less an envelope read, over every Y column, among the rows it
     /// placed: what a log Y leaves out of it.
     pub y_left_out_rows: usize,
+    /// An envelope's steps as a log Y draws them, with where each series' line breaks:
+    /// each step's least value above 0 and its greatest, a step with none left out.
+    /// `None` when no value is 0 or less, or for points that are not an envelope's.
+    pub log_y_steps: Option<Box<chart_data::LogYSteps>>,
     /// The smoothing windows these series offer (see [`smooth_ladder`]); empty when
     /// none does anything.
     pub ladder: Vec<Smooth>,
@@ -125,6 +129,8 @@ pub struct ShownSeries {
     pub raw_breaks: Option<Vec<Vec<usize>>>,
     /// The points of the series a log scale left out.
     pub left_out: LeftOut,
+    /// The points of the smoothed line a log scale left out, when it is smoothed.
+    pub smoothed_left_out: Option<LeftOut>,
     /// Where the crosshair stands when a log scale left points out: the Xs of the
     /// points drawn, in order, each once.
     pub stops: Option<Vec<f64>>,
@@ -143,14 +149,22 @@ impl YClip {
     /// The range of `series`'s Y values that are not outliers, as Distribution counts
     /// them; `None` when none is.
     fn of(series: &[Vec<(f64, f64)>]) -> Option<Self> {
+        Self::on(series, false)
+    }
+
+    /// As [`Self::of`], with the outliers found on the scale the Y axis draws: on a
+    /// log scale among the `log10` of the values above 0, so a decade is a decade.
+    fn on(series: &[Vec<(f64, f64)>], log: bool) -> Option<Self> {
         let ys: Vec<f64> = series
             .iter()
             .flatten()
             .map(|&(_, y)| y)
-            .filter(|y| y.is_finite())
+            .filter(|&y| y.is_finite() && (!log || y > 0.0))
             .collect();
-        let (low, high) = crate::analysis::statistics::outlier_bounds(&ys)?;
-        let inside = |y: &&f64| (low..=high).contains(*y);
+        let scaled = |y: f64| if log { y.log10() } else { y };
+        let keys: Vec<f64> = ys.iter().map(|&y| scaled(y)).collect();
+        let (low, high) = crate::analysis::statistics::outlier_bounds(&keys)?;
+        let inside = |y: &&f64| (low..=high).contains(&scaled(**y));
         let lo = ys
             .iter()
             .filter(inside)
@@ -192,6 +206,7 @@ impl LinesData {
             weights: None,
             left_out_rows: 0,
             y_left_out_rows: 0,
+            log_y_steps: None,
             xs,
             bounds: extent(&grouped.series),
             names: grouped.names,
@@ -231,6 +246,12 @@ impl LinesData {
     pub fn leaving_out(mut self, x_rows: usize, y_values: usize) -> Self {
         self.left_out_rows = x_rows;
         self.y_left_out_rows = y_values;
+        self
+    }
+
+    /// With an envelope's steps as a log Y draws them (see [`Self::log_y_steps`]).
+    pub fn with_log_y_steps(mut self, steps: Option<chart_data::LogYSteps>) -> Self {
+        self.log_y_steps = steps.map(Box::new);
         self
     }
 
@@ -315,24 +336,30 @@ impl LinesData {
         });
         let raw_drawn = wanted.raw == RawLine::On;
         let logged = wanted.log_x || wanted.log;
-        let drawable =
-            |series: &Points| Drawable::of(series, &self.breaks, wanted.log_x, wanted.log);
+        // An envelope's steps on a log Y stand on their least value above 0.
+        let (base, base_breaks): (&Points, &[Vec<usize>]) = match &self.log_y_steps {
+            Some(steps) if wanted.log => (&steps.0, &steps.1),
+            _ => (&self.series, &self.breaks),
+        };
+        let drawable = |series: &Points, breaks: &[Vec<usize>]| {
+            Drawable::of(series, breaks, wanted.log_x, wanted.log)
+        };
         // On a log scale, the points drawn: the series' and the smoothed line's.
         let kept = logged.then(|| {
-            let positive = drawable(&self.series);
-            let series = positive.of_series(&self.series);
+            let positive = drawable(base, base_breaks);
+            let series = positive.of_series(base);
             let smoothed = smoothed.as_ref().map(|s| {
-                let positive = drawable(s);
+                let positive = drawable(s, &self.breaks);
                 (positive.of_series(s), positive)
             });
-            (YClip::of(&series), series, positive, smoothed)
+            (YClip::on(&series, wanted.log), series, positive, smoothed)
         });
         let (series_clip, series, smoothed_drawn) = match &kept {
             Some((clip, series, _, smoothed)) => (*clip, series, smoothed.as_ref().map(|(s, _)| s)),
             None => (self.y_clip, &self.series, smoothed.as_ref()),
         };
         let clip = if wanted.clip {
-            clip_of(smoothed_drawn, series, series_clip, raw_drawn)
+            clip_of(smoothed_drawn, series, series_clip, raw_drawn, wanted.log)
         } else {
             None
         };
@@ -372,14 +399,18 @@ impl LinesData {
             }
             xs
         });
-        let (left_out, breaks, raw_breaks) = match kept {
+        let (left_out, smoothed_left_out, breaks, raw_breaks) = match kept {
             Some((_, _, positive, Some((_, smoothed)))) => (
                 positive.left_out,
+                Some(LeftOut {
+                    counted: Counted::Smoothed,
+                    ..smoothed.left_out
+                }),
                 Some(smoothed.breaks),
                 Some(positive.breaks),
             ),
-            Some((_, _, positive, None)) => (positive.left_out, Some(positive.breaks), None),
-            None => (LeftOut::default(), None, None),
+            Some((_, _, positive, None)) => (positive.left_out, None, Some(positive.breaks), None),
+            None => (LeftOut::default(), None, None, None),
         };
         ShownSeries {
             shown: wanted,
@@ -389,6 +420,7 @@ impl LinesData {
             clip,
             bounds,
             left_out,
+            smoothed_left_out,
             breaks,
             raw_breaks,
             stops,
@@ -449,24 +481,45 @@ impl LinesData {
             .unwrap_or(&self.breaks)
     }
 
-    /// What a log scale leaves out: the points (or an envelope's rows) at 0 or less
-    /// on it.
-    pub fn left_out(&self, shown: Shown) -> LeftOut {
+    /// What a log scale leaves out of each line drawn: the series' points (or an
+    /// envelope's rows) at 0 or less on it, or a smoothed line's own, or both when
+    /// the raw line is drawn behind the smoothed one.
+    pub fn left_out(&self, shown: Shown) -> Vec<LeftOut> {
         let wanted = self.wanted(shown);
         if !wanted.log_x && !wanted.log {
-            return LeftOut::default();
+            return Vec::new();
         }
-        if self.weights.is_some() {
+        let kept = self.kept(shown);
+        let data = if self.weights.is_some() {
             // An envelope's points stand for rows: it counted them as it read.
-            return LeftOut {
+            LeftOut {
                 x: if wanted.log_x { self.left_out_rows } else { 0 },
                 y: if wanted.log { self.y_left_out_rows } else { 0 },
-                rows: true,
-                columns: self.series.len(),
-            };
+                counted: Counted::Rows {
+                    columns: self.series.len(),
+                },
+            }
+        } else {
+            kept.map_or_else(LeftOut::default, |kept| kept.left_out)
+        };
+        match kept.and_then(|kept| kept.smoothed_left_out) {
+            Some(smoothed) if wanted.raw == RawLine::On => vec![data, smoothed],
+            Some(smoothed) => vec![smoothed],
+            None => vec![data],
         }
-        self.kept(shown)
-            .map_or_else(LeftOut::default, |kept| kept.left_out)
+    }
+
+    /// The series a line is drawn for, the smoothed line or the raw one behind it, by
+    /// their place among every series: what a legend names.
+    pub fn named(&self, shown: Shown) -> Vec<Drawn<'_>> {
+        let mut named: Vec<Drawn<'_>> = self.drawn(shown).collect();
+        for raw in self.raw_drawn(shown) {
+            if !named.iter().any(|d| d.index == raw.index) {
+                named.push(raw);
+            }
+        }
+        named.sort_by_key(|d| d.index);
+        named
     }
 
     /// The series with points that a log scale left none of.
@@ -475,7 +528,7 @@ impl LinesData {
         if !wanted.log_x && !wanted.log {
             return Vec::new();
         }
-        let drawn: Vec<usize> = self.drawn(shown).map(|s| s.index).collect();
+        let drawn: Vec<usize> = self.named(shown).iter().map(|s| s.index).collect();
         self.series
             .iter()
             .zip(&self.names)
@@ -541,19 +594,20 @@ fn clip_of(
     series: &Points,
     series_clip: Option<YClip>,
     raw_drawn: bool,
+    log: bool,
 ) -> Option<YClip> {
     let Some(smoothed) = smoothed else {
         return series_clip;
     };
     if !raw_drawn {
-        return YClip::of(smoothed);
+        return YClip::on(smoothed, log);
     }
     let range = |clip: Option<YClip>, series: &Points| {
         clip.map(|c| (c.lo, c.hi))
             .or_else(|| extent(series).map(|[_, _, lo, hi]| (lo, hi)))
     };
     let (Some((a, b)), Some((c, d))) = (
-        range(YClip::of(smoothed), smoothed),
+        range(YClip::on(smoothed, log), smoothed),
         range(series_clip, series),
     ) else {
         return None;
@@ -568,34 +622,43 @@ fn clip_of(
     (outside > 0 && hi > lo).then_some(YClip { lo, hi, outside })
 }
 
-/// What a log scale left out: the points at 0 or less on a log axis, or an
-/// envelope's rows there.
+/// What a log scale left out of a line: the points at 0 or less on a log axis.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LeftOut {
     /// At X of 0 or less, on a log X.
     pub x: usize,
     /// At Y of 0 or less, on a log Y, among those a log X kept.
     pub y: usize,
-    /// An envelope's rows rather than points: of X, rows; of Y, values over `columns`.
-    pub rows: bool,
-    /// The Y columns an envelope read.
-    pub columns: usize,
+    pub counted: Counted,
+}
+
+/// What a [`LeftOut`] counts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Counted {
+    /// The series' points.
+    #[default]
+    Points,
+    /// A smoothed line's points: means, not values.
+    Smoothed,
+    /// An envelope's rows: of X, rows; of Y, values over `columns` Y columns.
+    Rows { columns: usize },
 }
 
 impl LeftOut {
-    /// What the title row says: `3 points with X of 0 or less left out`; one line
-    /// for both axes when they count alike, `5 points with X or Y of 0 or less`.
-    pub fn notes(&self) -> Vec<String> {
-        let x_noun = if self.rows { "row" } else { "point" };
-        let y_noun = match (self.rows, self.columns > 1) {
-            (false, _) => "point",
-            (true, false) => "row",
-            (true, true) => "value",
+    /// What the title row says, `at_most` the glyph set's `≤`: `3 points with X ≤ 0
+    /// left out`; one line for both axes when they count alike, `5 points with X or
+    /// Y ≤ 0 left out`.
+    pub fn notes(&self, at_most: &str) -> Vec<String> {
+        let (x_noun, y_noun) = match self.counted {
+            Counted::Points => ("point", "point"),
+            Counted::Smoothed => ("smoothed point", "smoothed point"),
+            Counted::Rows { columns } if columns > 1 => ("row", "value"),
+            Counted::Rows { .. } => ("row", "row"),
         };
         let note = |n: usize, noun: &str, axis: &str| {
             let s = if n == 1 { "" } else { "s" };
             format!(
-                "{} {noun}{s} with {axis} of 0 or less left out",
+                "{} {noun}{s} with {axis} {at_most} 0 left out",
                 crate::numfmt::group_chrome(n)
             )
         };
@@ -1020,17 +1083,32 @@ impl Plot<'_> {
         let PlotData::Lines(lines) = &*self.data else {
             return Vec::new();
         };
+        let slot = self.slots();
         lines
             .raw_drawn(self.shown())
-            .enumerate()
-            .map(|(slot, s)| Curve {
+            .map(|s| Curve {
                 index: s.index,
-                slot,
+                slot: slot(s.index),
                 points: Cow::Borrowed(s.points),
                 breaks: s.breaks,
                 other: s.other,
             })
             .collect()
+    }
+
+    /// A line or scatter chart's series a line is drawn for, smoothed or raw, in
+    /// legend order (see [`LinesData::named`]).
+    pub fn named(&self) -> Vec<Drawn<'_>> {
+        match &*self.data {
+            PlotData::Lines(lines) => lines.named(self.shown()),
+            _ => Vec::new(),
+        }
+    }
+
+    /// A series' place in the legend, from its place among every series.
+    fn slots(&self) -> impl Fn(usize) -> usize + '_ {
+        let named: Vec<usize> = self.named().iter().map(|d| d.index).collect();
+        move |index| named.iter().position(|&i| i == index).unwrap_or(0)
     }
 
     /// A line or scatter chart's series, as the Y axis draws them.
@@ -1046,13 +1124,13 @@ impl Plot<'_> {
     /// scatter chart's series with points, the density curves, or a histogram's
     /// groups as the outlines of their bars.
     pub fn curves(&self) -> Vec<Curve<'_>> {
+        let slot = self.slots();
         let curves: Vec<Curve<'_>> = match &*self.data {
             PlotData::Lines(_) => self
                 .drawn()
-                .enumerate()
-                .map(|(slot, s)| Curve {
+                .map(|s| Curve {
                     index: s.index,
-                    slot,
+                    slot: slot(s.index),
                     points: Cow::Borrowed(s.points),
                     breaks: s.breaks,
                     other: s.other,
@@ -1094,7 +1172,7 @@ impl Plot<'_> {
     /// The names a legend lists, in order: a series, a color group or a curve each.
     pub fn legend(&self) -> Vec<&str> {
         match &*self.data {
-            PlotData::Lines(_) => self.drawn().map(|s| s.name).collect(),
+            PlotData::Lines(_) => self.named().iter().map(|s| s.name).collect(),
             PlotData::Bars(data) => data.groups.iter().map(String::as_str).collect(),
             PlotData::Histogram(data) => data.groups.iter().map(|g| g.name.as_str()).collect(),
             PlotData::Kde(data) => data.series.iter().map(|s| s.name.as_str()).collect(),
@@ -1105,7 +1183,7 @@ impl Plot<'_> {
     /// Where Other is in the legend: last, when it has one.
     pub fn other_at(&self) -> Option<usize> {
         match &*self.data {
-            PlotData::Lines(_) => self.drawn().position(|s| s.other),
+            PlotData::Lines(_) => self.named().iter().position(|s| s.other),
             PlotData::Bars(data) => chart_data::other_at(data.other, data.groups.len()),
             _ => self.curves().iter().find(|c| c.other).map(|c| c.slot),
         }

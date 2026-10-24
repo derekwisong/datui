@@ -2070,6 +2070,24 @@ mod tests {
         assert!(!modal.x_takes_log());
     }
 
+    /// Y's log scale is kept with a view under its old name, and Y from zero with
+    /// it: dimmed while the log is on, back when it is off.
+    #[test]
+    fn log_y_is_kept_with_a_view() {
+        let mut modal = open_on(Some(("distance", &DataType::Float64)));
+        modal.log_scale = true;
+        modal.y_starts_at_zero = true;
+        let saved = serde_json::to_value(modal.saved(1, None)).unwrap();
+        assert_eq!(saved["log_scale"], serde_json::json!(true));
+        let back: crate::view::SavedChart = serde_json::from_value(saved).unwrap();
+        let mut restored = ChartModal::new();
+        restored.restore(&back, 1);
+        assert!(restored.log_scale && restored.y_starts_at_zero);
+        assert!(!restored.y_from_zero_shown());
+        restored.log_scale = false;
+        assert!(restored.y_from_zero_shown());
+    }
+
     /// A view saved before X's log scale loads with it off; one saved with it on
     /// brings it back.
     #[test]

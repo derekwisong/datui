@@ -646,3 +646,18 @@ fn log_x_labels_take_the_digits_they_need() {
         assert_eq!(labels(lo, hi, width), want, "{lo}..{hi} at {width}");
     }
 }
+
+/// A log axis over seconds names its ticks as lengths of time, so the unit shows.
+#[test]
+fn a_log_axis_of_durations_names_lengths_of_time() {
+    let axis = AxisSpec::log([-2.0, 2.0], &AxisNumbers::default(), "").durations();
+    let labels = labels_on(&axis, 80);
+    for want in ["10ms", "100ms", "1s", "10s", "1m40s"] {
+        assert!(labels.iter().any(|l| l == want), "{want}: {labels:?}");
+    }
+    // A number axis is not changed by it.
+    let plain = AxisSpec::log([0.0, 2.0], &AxisNumbers::default(), "").durations();
+    assert!(labels_on(&plain, 80).iter().any(|l| l.ends_with('s')));
+    let numbers = AxisSpec::log([0.0, 2.0], &AxisNumbers::default(), "");
+    assert!(labels_on(&numbers, 80).iter().all(|l| !l.ends_with('s')));
+}

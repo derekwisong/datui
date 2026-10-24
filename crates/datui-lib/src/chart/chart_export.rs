@@ -144,6 +144,8 @@ pub enum LegendPlace {
     /// Each line named at its right end; a chart without lines takes a box at the
     /// top right.
     LineEnds,
+    /// Under the plot, in rows across its width: the plot keeps its width.
+    Below,
     TopRight,
     TopLeft,
     BottomRight,
@@ -152,8 +154,9 @@ pub enum LegendPlace {
 }
 
 impl LegendPlace {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::LineEnds,
+        Self::Below,
         Self::TopRight,
         Self::TopLeft,
         Self::BottomRight,
@@ -164,6 +167,7 @@ impl LegendPlace {
     pub fn label(self) -> &'static str {
         match self {
             Self::LineEnds => "Line ends",
+            Self::Below => "Below",
             Self::TopRight => "Top right",
             Self::TopLeft => "Top left",
             Self::BottomRight => "Bottom right",
@@ -1011,6 +1015,7 @@ fn span(lo: f64, hi: f64) -> (f64, f64) {
 
 /// The SVG for `figure`, before its text is set.
 pub fn svg(figure: &Figure, options: &ExportOptions) -> Result<String> {
+    forget_shaped();
     let (w, h) = (f64::from(options.width), f64::from(options.height));
     if options.width == 0 || options.height == 0 {
         return Err(color_eyre::eyre::eyre!(
@@ -1105,7 +1110,7 @@ pub fn svg(figure: &Figure, options: &ExportOptions) -> Result<String> {
             options.height
         ));
     }
-    draw_plot(&mut c, figure, options, frame);
+    draw_plot(&mut c, figure, options, frame)?;
     Ok(format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{h}\" \
          viewBox=\"0 0 {w} {h}\" font-family=\"{FONT_FAMILY}\">\n{}</svg>\n",
@@ -1114,7 +1119,12 @@ pub fn svg(figure: &Figure, options: &ExportOptions) -> Result<String> {
 }
 
 /// The plot in `frame`: axes, grid, marks, and the legend.
-fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame: Area) {
+fn draw_plot(
+    c: &mut Canvas<'_>,
+    figure: &Figure,
+    options: &ExportOptions,
+    frame: Area,
+) -> Result<()> {
     let names: Vec<String> = figure
         .plot
         .legend()
@@ -1140,13 +1150,33 @@ fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame
     };
     let tick = c.body * 0.9;
     let mut frame = frame;
+    let page_right = frame.right;
     if legend == LegendPlace::LineEnds {
+        // As the labels draw: bold.
         let widest = names
             .iter()
-            .map(|n| text_width(n, tick))
+            .map(|n| drawn_width(n, tick, 600))
             .fold(0.0, f64::max);
         frame.right -= (widest + tick).min(frame.width() / 3.0);
     }
+    // What a line-end label may take: the width given up, less its gap.
+    let end_room = page_right - frame.right - tick * 0.5;
+    // Below: the plot keeps its width and gives the legend its rows' height.
+    let below = if legend == LegendPlace::Below {
+        let below = Below::of(&names, frame.width(), legend_text(c.body));
+        if frame.height() - below.height < c.body * 4.0 {
+            return Err(color_eyre::eyre::eyre!(
+                "the legend below does not fit at {}x{}: make the chart larger or put \
+                 the legend elsewhere",
+                options.width,
+                options.height
+            ));
+        }
+        frame.bottom -= below.height;
+        below
+    } else {
+        Below::default()
+    };
     let Plot {
         x,
         y,
@@ -1247,7 +1277,7 @@ fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame
                 }
             }
             if legend == LegendPlace::LineEnds {
-                line_end_labels(c, &names, ends, plot);
+                line_end_labels(c, &names, ends, (plot, end_room));
             }
         }
         PlotData::Box(data) => {
@@ -1334,12 +1364,267 @@ fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame
     }
     match legend {
         LegendPlace::Off | LegendPlace::LineEnds => {}
+        LegendPlace::Below => legend_below(c, &below, frame, is_lines),
         // Above the plot, on the axis title's row, where it covers nothing.
         LegendPlace::TopRight | LegendPlace::TopLeft => {
             legend_row(c, &names, legend, frame, axis_title(figure), is_lines)
         }
         LegendPlace::BottomRight | LegendPlace::BottomLeft => {
             legend_box(c, &names, legend, frame, is_lines)
+        }
+    }
+    Ok(())
+}
+
+/// The size a legend's names are set at, for a body text of `body` px.
+fn legend_text(body: f64) -> f64 {
+    body * 0.85
+}
+
+/// A legend entry's swatch from `x`, `width` wide, centered on `middle`: a stroke
+/// for a line, a block otherwise.
+fn legend_swatch(c: &mut Canvas<'_>, (x, middle): (f64, f64), width: f64, i: usize, lines: bool) {
+    let tick = legend_text(c.body);
+    let color = c.color(i);
+    if lines {
+        c.line((x, middle), (x + width, middle), color, c.swatch_stroke);
+    } else {
+        c.rect(x, middle - tick * 0.35, width, tick * 0.7, color, 1.0);
+    }
+}
+
+/// The legend under the plot, laid out: its entries in rows, left to right.
+#[derive(Debug, Default)]
+struct Below {
+    /// Each row's entries: the series, its name as drawn, and where its swatch
+    /// starts from the plot's left edge.
+    rows: Vec<Vec<(usize, String, f64)>>,
+    /// The height it takes under the plot, the gap over it included.
+    height: f64,
+}
+
+impl Below {
+    /// `names` set at `tick` in rows `width` wide. A name wider than a row is cut
+    /// in the middle, which keeps both its ends.
+    /// Entries stand in columns as wide as the widest, so the eye can scan down
+    /// them; when only one such column fits, each row takes as many as fit.
+    fn of(names: &[String], width: f64, tick: f64) -> Self {
+        let (swatch, after, gap) = (tick * 1.2, tick * 0.4, tick * 1.2);
+        let room = (width - swatch - after).max(0.0);
+        let entries: Vec<(String, f64)> = names
+            .iter()
+            .map(|name| {
+                let name = fit_width(name, (tick, 400), room);
+                let w = swatch + after + drawn_width(&name, tick, 400);
+                (name, w)
+            })
+            .collect();
+        let column = entries.iter().map(|e| e.1).fold(0.0, f64::max) + gap;
+        let columns = ((width + gap) / column) as usize;
+        let mut rows: Vec<Vec<(usize, String, f64)>> = Vec::new();
+        if columns >= 2 {
+            for (i, (name, _)) in entries.into_iter().enumerate() {
+                let x = (i % columns) as f64 * column;
+                if i % columns == 0 {
+                    rows.push(Vec::new());
+                }
+                if let Some(row) = rows.last_mut() {
+                    row.push((i, name, x));
+                }
+            }
+        } else {
+            let mut x = 0.0;
+            for (i, (name, w)) in entries.into_iter().enumerate() {
+                match rows.last_mut() {
+                    Some(row) if x + w <= width => row.push((i, name, x)),
+                    _ => {
+                        x = 0.0;
+                        rows.push(vec![(i, name, x)]);
+                    }
+                }
+                x += w + gap;
+            }
+        }
+        let height = if rows.is_empty() {
+            0.0
+        } else {
+            tick * 0.8 + rows.len() as f64 * tick * 1.4
+        };
+        Self { rows, height }
+    }
+}
+
+/// A line of text as the export sets it: where its glyphs end, and where each glyph
+/// starts by the byte of the text it sets. No starts when the glyphs do not read
+/// back as the text in order (whitespace the SVG collapses, a right-to-left
+/// script, a cluster of several glyphs).
+#[derive(Debug)]
+struct Shaped {
+    right: f64,
+    starts: Option<Vec<(usize, f64)>>,
+}
+
+type ShapedKey = (String, u64, u16);
+
+thread_local! {
+    /// Text set during this export, by text, size and weight. A name is measured
+    /// several times (the legend's rows, its cut); setting one in a font the bundle
+    /// lacks searches every system font, so each is set once.
+    static SHAPED: std::cell::RefCell<std::collections::HashMap<ShapedKey, std::rc::Rc<Shaped>>> =
+        std::cell::RefCell::default();
+    /// How many layouts this thread has run, for the tests that bound them.
+    static LAYOUTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Forget what [`shaped`] set: each export starts afresh.
+fn forget_shaped() {
+    SHAPED.with(|m| m.borrow_mut().clear());
+}
+
+/// `text` set at `size` in `weight` in the fonts the file is drawn with, at the
+/// size the file writes (to a tenth of a pixel).
+fn shaped(text: &str, size: f64, weight: u16) -> std::rc::Rc<Shaped> {
+    let size = (size * 10.0).round() / 10.0;
+    let key = (text.to_string(), size.to_bits(), weight);
+    if let Some(found) = SHAPED.with(|m| m.borrow().get(&key).cloned()) {
+        return found;
+    }
+    let set = std::rc::Rc::new(lay_out(text, size, weight));
+    SHAPED.with(|m| m.borrow_mut().insert(key, set.clone()));
+    set
+}
+
+fn lay_out(text: &str, size: f64, weight: u16) -> Shaped {
+    if text.trim().is_empty() {
+        return Shaped {
+            right: 0.0,
+            starts: None,
+        };
+    }
+    LAYOUTS.with(|n| n.set(n.get() + 1));
+    let svg = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\">\
+         <text x=\"0\" y=\"{size}\" font-size=\"{size}\" font-weight=\"{weight}\">{}</text></svg>",
+        esc(text)
+    );
+    let Ok(tree) = tree(&svg) else {
+        return Shaped {
+            right: text_width(text, size),
+            starts: None,
+        };
+    };
+    let right = f64::from(tree.root().abs_bounding_box().right());
+    let mut starts = Vec::new();
+    let mut at = 0;
+    for node in tree.root().children() {
+        if let usvg::Node::Text(t) = node {
+            for span in t.layouted() {
+                for glyph in &span.positioned_glyphs {
+                    starts.push((at, f64::from(glyph.transform().tx)));
+                    at += glyph.text.len();
+                }
+            }
+        }
+    }
+    let in_order = starts.windows(2).all(|w| w[0].1 <= w[1].1);
+    let read_back = at == text.len() && in_order;
+    Shaped {
+        right,
+        starts: read_back.then_some(starts),
+    }
+}
+
+/// How wide `text` draws at `size` in `weight`: its glyphs' right edge from where
+/// it starts. [`text_width`] guesses from an average advance, which is too wide for
+/// some names and too narrow for bold.
+fn drawn_width(text: &str, size: f64, weight: u16) -> f64 {
+    shaped(text, size, weight).right
+}
+
+/// `text` cut in the middle until it draws no wider than `width` at `size` in
+/// `weight`. The cut is read off one layout of the whole text, then set once to
+/// check; only text whose glyphs do not read back searches by setting each cut.
+fn fit_width(text: &str, (size, weight): (f64, u16), width: f64) -> String {
+    use crate::glyphs::{display_width, fit_middle_with, take_columns, take_columns_end};
+    const MARK: &str = "…";
+    let whole = shaped(text, size, weight);
+    if whole.right <= width {
+        return text.to_string();
+    }
+    let cut = |n: usize| fit_middle_with(text, n, MARK);
+    let fits = |n: usize| drawn_width(&cut(n), size, weight) <= width;
+    let columns = display_width(text);
+    let mut n = match &whole.starts {
+        Some(starts) => {
+            let mark = drawn_width(MARK, size, weight);
+            // Where a glyph starts at or after byte `b`, or the end.
+            let from = |b: usize| {
+                starts
+                    .iter()
+                    .find(|(at, _)| *at >= b)
+                    .map_or(whole.right, |s| s.1)
+            };
+            // The head up to its last glyph, the mark, and the tail from its
+            // first, as the whole text set them.
+            let estimate = |n: usize| {
+                if n <= display_width(MARK) {
+                    return mark;
+                }
+                let room = n - display_width(MARK);
+                let head = take_columns(text, room.div_ceil(2));
+                let tail = take_columns_end(text, room - display_width(head));
+                let tail_w = if tail.is_empty() {
+                    0.0
+                } else {
+                    whole.right - from(text.len() - tail.len())
+                };
+                from(head.len()) + mark + tail_w
+            };
+            (0..columns)
+                .rev()
+                .find(|&n| estimate(n) <= width)
+                .unwrap_or(0)
+        }
+        None => columns,
+    };
+    // Kerning at the joins can make the cut a little wider than read: step down.
+    for _ in 0..3 {
+        if n == 0 || fits(n) {
+            return cut(n);
+        }
+        n -= 1;
+    }
+    let (mut lo, mut hi) = (0, n);
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        if fits(mid) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    cut(lo)
+}
+
+/// The legend under the plot, from the foot of `frame` (under the X title), from
+/// its left edge, where the Y title, the words over the chart and the notes under
+/// it start too.
+fn legend_below(c: &mut Canvas<'_>, below: &Below, frame: Area, lines: bool) {
+    let tick = legend_text(c.body);
+    let (swatch, after, row) = (tick * 1.2, tick * 0.4, tick * 1.4);
+    let top = frame.bottom + tick * 0.8;
+    for (r, entries) in below.rows.iter().enumerate() {
+        let middle = top + row * (r as f64 + 0.5);
+        for (i, name, x) in entries {
+            let x = frame.left + x;
+            legend_swatch(c, (x, middle), swatch, *i, lines);
+            c.text(
+                (x + swatch + after, middle + tick * 0.35),
+                tick,
+                c.palette.text,
+                ("start", 400),
+                name,
+            );
         }
     }
 }
@@ -1363,7 +1648,7 @@ fn legend_row(
     title: &str,
     lines: bool,
 ) {
-    let tick = c.body * 0.85;
+    let tick = legend_text(c.body);
     let swatch = tick * 1.2;
     let gap = tick * 1.2;
     let item = |name: &str| swatch + tick * 0.4 + text_width(name, tick);
@@ -1376,12 +1661,7 @@ fn legend_row(
     let baseline = frame.top + c.body * 0.9;
     let middle = baseline - tick * 0.35;
     for (i, name) in names.iter().enumerate() {
-        let color = c.color(i);
-        if lines {
-            c.line((x, middle), (x + swatch, middle), color, c.swatch_stroke);
-        } else {
-            c.rect(x, middle - tick * 0.35, swatch, tick * 0.7, color, 1.0);
-        }
+        legend_swatch(c, (x, middle), swatch, i, lines);
         c.text(
             (x + swatch + tick * 0.4, baseline),
             tick,
@@ -1583,12 +1863,12 @@ fn category_axes(
 }
 
 /// Each line named at its right end, in its color, nudged apart so no two names
-/// overlap.
+/// overlap, and cut in the middle to the `room` beside the plot.
 fn line_end_labels(
     c: &mut Canvas<'_>,
     names: &[String],
     mut ends: Vec<(f64, f64, usize)>,
-    plot: Area,
+    (plot, room): (Area, f64),
 ) {
     let tick = c.body * 0.9;
     ends.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -1613,7 +1893,7 @@ fn line_end_labels(
             tick,
             c.color(i),
             ("start", 600),
-            &names[i],
+            &fit_width(&names[i], (tick, 600), room),
         );
     }
 }
@@ -1621,7 +1901,7 @@ fn line_end_labels(
 /// A legend box in a corner of the plot: a swatch and a name per series, on the
 /// background so marks under it do not show through.
 fn legend_box(c: &mut Canvas<'_>, names: &[String], place: LegendPlace, frame: Area, lines: bool) {
-    let tick = c.body * 0.85;
+    let tick = legend_text(c.body);
     let row = tick * 1.4;
     let swatch = tick * 1.2;
     let width = names
@@ -1645,17 +1925,7 @@ fn legend_box(c: &mut Canvas<'_>, names: &[String], place: LegendPlace, frame: A
     }
     for (i, name) in names.iter().enumerate() {
         let cy = y + tick * 0.3 + row * (i as f64 + 0.5);
-        let color = c.color(i);
-        if lines {
-            c.line(
-                (x + pad, cy),
-                (x + pad + swatch, cy),
-                color,
-                c.swatch_stroke,
-            );
-        } else {
-            c.rect(x + pad, cy - tick * 0.35, swatch, tick * 0.7, color, 1.0);
-        }
+        legend_swatch(c, (x + pad, cy), swatch, i, lines);
         c.text(
             (x + pad + swatch + tick * 0.5, cy + tick * 0.35),
             tick,
@@ -2110,9 +2380,9 @@ mod tests {
         assert_eq!(SizePreset::Custom.size(), None);
     }
 
-    /// Every plot draws into a valid SVG, at the smallest preset too.
-    #[test]
-    fn every_plot_draws() {
+    /// A plot of each kind: bars, a histogram, a box, a heatmap, a KDE, lines and a
+    /// scatter, those with a legend naming two or more.
+    fn every_kind() -> Vec<Plot<'static>> {
         let rows = RowsRead::default();
         let bars = BarData {
             category: "carrier".to_string(),
@@ -2192,7 +2462,27 @@ mod tests {
             max_count: 4.0,
             rows,
         };
-        let plots = [
+        let kde = crate::chart::chart_data::KdeData {
+            series: ["a", "b"]
+                .iter()
+                .enumerate()
+                .map(|(i, name)| crate::chart::chart_data::KdeSeries {
+                    name: name.to_string(),
+                    points: (0..=10)
+                        .map(|x| (f64::from(x), f64::from(x) / (i as f64 + 1.0)))
+                        .collect(),
+                })
+                .collect(),
+            other: false,
+            x_min: 0.0,
+            x_max: 10.0,
+            y_max: 10.0,
+            rows,
+            clipped: None,
+        };
+        let mut scatter = lines(&["AAPL", "MSFT"]).plot;
+        scatter.scatter = true;
+        vec![
             figure_of(PlotData::Bars(bars)).plot,
             figure_of(PlotData::Histogram(histogram)).plot,
             Plot {
@@ -2203,9 +2493,17 @@ mod tests {
                 ..figure_of(PlotData::Box(boxes)).plot
             },
             figure_of(PlotData::Heatmap(heatmap)).plot,
-        ];
+            figure_of(PlotData::Kde(kde)).plot,
+            lines(&["AAPL", "MSFT"]).plot,
+            scatter,
+        ]
+    }
+
+    /// Every plot draws into a valid SVG, at the smallest preset too.
+    #[test]
+    fn every_plot_draws() {
         let (w, h) = SizePreset::SingleColumn.size().unwrap();
-        for plot in plots {
+        for plot in every_kind() {
             let figure = Figure {
                 plot,
                 chart_notes: Vec::new(),
@@ -2220,6 +2518,285 @@ mod tests {
             let svg = svg(&figure, &options).unwrap();
             roxmltree_ok(&svg);
         }
+    }
+
+    /// The X axis's baseline in `svg`: where the plot ends at the right, and its
+    /// height. The one long level line in the secondary text color.
+    fn baseline(svg: &str) -> (f64, f64) {
+        let stroke = format!("stroke=\"{}\"", Palette::light().text_secondary.hex());
+        let attr = |line: &str, name: &str| -> f64 {
+            let at = line.find(&format!(" {name}=\"")).unwrap() + name.len() + 3;
+            line[at..].split('"').next().unwrap().parse().unwrap()
+        };
+        svg.lines()
+            .filter(|l| l.starts_with("<line") && l.contains(&stroke))
+            .map(|l| (attr(l, "x1"), attr(l, "x2"), attr(l, "y1"), attr(l, "y2")))
+            .filter(|(x1, x2, y1, y2)| y1 == y2 && x2 - x1 > 100.0)
+            .map(|(_, x2, y, _)| (x2, y))
+            .next()
+            .unwrap_or_else(|| panic!("no baseline: {svg}"))
+    }
+
+    /// The baseline height of each `<text>` whose content is `text`.
+    fn text_ys(svg: &str, text: &str) -> Vec<f64> {
+        svg.lines()
+            .filter(|l| l.starts_with("<text") && l.contains(&format!(">{}<", esc(text))))
+            .map(|l| {
+                let at = l.find(" y=\"").unwrap() + 4;
+                l[at..].split('"').next().unwrap().parse().unwrap()
+            })
+            .collect()
+    }
+
+    /// Long names below: the plot keeps the width line ends give up, gives up only
+    /// the legend's height, and every name is drawn once, under the X axis.
+    #[test]
+    fn a_legend_below_keeps_the_plot_width() {
+        let names = [
+            "FlightSimulator2024 · 2026-10-18 21:33:07",
+            "FlightSimulator2024 · 2026-10-19 08:02:51",
+            "Cyberpunk2077 · 2026-10-20 19:45:12",
+        ];
+        let figure = lines(&names);
+        let with = |legend| {
+            svg(
+                &figure,
+                &ExportOptions {
+                    legend,
+                    ..options()
+                },
+            )
+            .unwrap()
+        };
+        let (off, ends, below) = (
+            with(LegendPlace::Off),
+            with(LegendPlace::LineEnds),
+            with(LegendPlace::Below),
+        );
+        let (off_right, off_y) = baseline(&off);
+        let (ends_right, _) = baseline(&ends);
+        let (below_right, below_y) = baseline(&below);
+        assert!(ends_right < off_right - 200.0, "line ends take width");
+        assert_eq!(below_right, off_right, "below keeps the width");
+        assert!(below_y < off_y, "below takes height");
+        for name in names {
+            let ys = text_ys(&below, name);
+            assert_eq!(ys.len(), 1, "{name} once: {below}");
+            assert!(ys[0] > below_y, "{name} under the axis");
+        }
+        roxmltree_ok(&below);
+    }
+
+    /// Entries fill a row left to right and wrap to the next; the height grows by a
+    /// row per row, and a name wider than a row is cut in the middle.
+    #[test]
+    fn a_legend_below_wraps_and_cuts_in_the_middle() {
+        let tick = 10.0;
+        let names: Vec<String> = (0..6).map(|i| format!("series {i}")).collect();
+        let one = Below::of(&names, 2000.0, tick);
+        assert_eq!(one.rows.len(), 1);
+        let narrow = Below::of(&names, 150.0, tick);
+        assert!(narrow.rows.len() > 1, "{narrow:?}");
+        assert!(narrow.height > one.height);
+        assert_eq!(
+            narrow.height - one.height,
+            (narrow.rows.len() - 1) as f64 * tick * 1.4
+        );
+        let drawn: Vec<usize> = narrow.rows.iter().flatten().map(|e| e.0).collect();
+        assert_eq!(drawn, (0..6).collect::<Vec<_>>(), "every entry, in order");
+        for row in &narrow.rows {
+            assert_eq!(row[0].2, 0.0, "a row starts at the left edge");
+            let (_, name, x) = row.last().unwrap();
+            assert!(
+                x + tick * 1.6 + drawn_width(name, tick, 400) <= 150.0,
+                "{row:?}"
+            );
+        }
+        let long = "FlightSimulator2024 · 2026-10-18 21:33:07".to_string();
+        let cut = Below::of(std::slice::from_ref(&long), 150.0, tick);
+        let (_, name, _) = &cut.rows[0][0];
+        assert!(name.starts_with("Fli") && name.ends_with(":07"), "{name}");
+        assert!(name.contains('…'), "{name}");
+        assert!(tick * 1.6 + drawn_width(name, tick, 400) <= 150.0, "{name}");
+        assert!(Below::of(&[], 150.0, tick).height == 0.0);
+    }
+
+    /// Entries of different widths stand in equal columns, the same in every row,
+    /// in order across then down; when a single column is all that fits, rows fill
+    /// as they can.
+    #[test]
+    fn a_legend_below_lines_its_entries_up_in_columns() {
+        let tick = 10.0;
+        let names: Vec<String> = ["a", "a much longer name", "mid name", "b", "c", "dd"]
+            .iter()
+            .map(|n| n.to_string())
+            .collect();
+        let grid = Below::of(&names, 400.0, tick);
+        assert!(grid.rows.len() > 1 && grid.rows[0].len() > 1, "{grid:?}");
+        let xs = |row: &Vec<(usize, String, f64)>| row.iter().map(|e| e.2).collect::<Vec<_>>();
+        let first = xs(&grid.rows[0]);
+        for row in &grid.rows[1..] {
+            let these = xs(row);
+            assert_eq!(these, first[..these.len()], "{grid:?}");
+        }
+        let order: Vec<usize> = grid.rows.iter().flatten().map(|e| e.0).collect();
+        assert_eq!(order, (0..names.len()).collect::<Vec<_>>());
+        // One name takes more than half the width: no two columns fit, so the
+        // short names share rows where they fit.
+        let mut wide = names.clone();
+        wide[1] = "a name so long that it takes nearly all of the row, and then more".to_string();
+        let flow = Below::of(&wide, 400.0, tick);
+        assert!(flow.rows.iter().any(|r| r.len() > 1), "{flow:?}");
+        assert_ne!(flow.rows[1][1].2, flow.rows[0][1].2, "no columns: {flow:?}");
+    }
+
+    /// Line-end names that fit inside the page's margin are drawn whole; one that
+    /// would cross it is cut in the middle to end inside it.
+    #[test]
+    fn a_line_end_name_is_cut_only_past_the_margin() {
+        let names = [
+            "Cyberpunk2077 · 2026-10-20 19:45:12",
+            "BaldursGate3 · 2026-10-22 18:00:03",
+        ];
+        let long = "an extraordinarily long series name that is wider than the room the \
+                    line ends may take, 2026-10-23";
+        let o = options();
+        // The title starts at the margin; the right one is as wide.
+        let title = svg(&lines(&names), &o).unwrap();
+        let margin = title
+            .lines()
+            .find(|l| l.contains(">Cumulative return by symbol<"))
+            .map(|l| attr_of(l, "x"))
+            .unwrap();
+        let edge = f64::from(o.width) - margin;
+        let labels = |svg: &str| -> Vec<(String, f64)> {
+            svg.lines()
+                .filter(|l| l.starts_with("<text") && l.contains("font-weight=\"600\""))
+                .filter(|l| !l.contains(">value<") && !l.contains(">x<"))
+                .filter(|l| !l.contains(">Cumulative return by symbol<"))
+                .map(|l| {
+                    let text = unescape(l.split('>').nth(1).unwrap().trim_end_matches("</text"));
+                    let right = attr_of(l, "x") + drawn_width(&text, attr_of(l, "font-size"), 600);
+                    (text, right)
+                })
+                .collect()
+        };
+        let whole = labels(&title);
+        assert_eq!(whole.len(), 2, "{title}");
+        for (text, right) in &whole {
+            assert!(names.contains(&text.as_str()), "{text} whole");
+            assert!(*right <= edge + 0.1, "{text} ends at {right}, past {edge}");
+        }
+        let cut = svg(&lines(&[names[0], long]), &o).unwrap();
+        let drawn = labels(&cut);
+        assert!(drawn.iter().any(|(t, _)| t == names[0]), "{drawn:?}");
+        let (text, right) = drawn.iter().find(|(t, _)| t.contains('…')).unwrap();
+        assert!(
+            text.starts_with("an extra") && text.ends_with("10-23"),
+            "{text}"
+        );
+        assert!(*right <= edge + 0.1, "{text} ends at {right}, past {edge}");
+    }
+
+    /// A name is cut from one layout of it and one of the cut, not a layout per
+    /// step of a search; the cut is the longest that fits; and a second cut of the
+    /// same name sets nothing again.
+    #[test]
+    fn a_cut_name_takes_a_bounded_number_of_layouts() {
+        let layouts = || LAYOUTS.with(std::cell::Cell::get);
+        forget_shaped();
+        let name = (0..8)
+            .map(|i| format!("FlightSimulator2024 · 2026-10-18 21:33:0{i}"))
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let before = layouts();
+        let cut = fit_width(&name, (10.0, 600), 300.0);
+        let used = layouts() - before;
+        assert!(cut.contains('…'), "{cut}");
+        assert!(drawn_width(&cut, 10.0, 600) <= 300.0, "{cut}");
+        // The whole name, the mark, the cut, and at most a step or two down.
+        assert!(used <= 6, "{used} layouts");
+        let longer =
+            crate::glyphs::fit_middle_with(&name, crate::glyphs::display_width(&cut) + 1, "…");
+        assert!(
+            drawn_width(&longer, 10.0, 600) > 300.0,
+            "{cut} is the longest"
+        );
+        let before = layouts();
+        assert_eq!(fit_width(&name, (10.0, 600), 300.0), cut);
+        assert_eq!(layouts(), before, "memoized");
+    }
+
+    /// The value of `name` on an SVG element's line.
+    fn attr_of(line: &str, name: &str) -> f64 {
+        let at = line.find(&format!(" {name}=\"")).unwrap() + name.len() + 3;
+        line[at..].split('"').next().unwrap().parse().unwrap()
+    }
+
+    /// Each kind with a legend draws it below with every name once; a kind without
+    /// one (box, heatmap) draws none and keeps its height.
+    #[test]
+    fn every_kind_draws_its_legend_below() {
+        for plot in every_kind() {
+            let names: Vec<String> = plot.legend().into_iter().map(str::to_string).collect();
+            let figure = Figure {
+                plot,
+                chart_notes: Vec::new(),
+                grid: false,
+            };
+            let with = |legend| {
+                svg(
+                    &figure,
+                    &ExportOptions {
+                        legend,
+                        ..options()
+                    },
+                )
+                .unwrap()
+            };
+            let (off, below) = (with(LegendPlace::Off), with(LegendPlace::Below));
+            roxmltree_ok(&below);
+            if names.len() < 2 {
+                assert_eq!(off, below, "no legend, nothing changes");
+                continue;
+            }
+            // Bars draw no baseline; the legend's names are the last text.
+            let last_text = below.lines().rfind(|l| l.starts_with("<text")).unwrap();
+            for name in &names {
+                assert_eq!(text_ys(&below, name).len(), 1, "{name}: {below}");
+                assert!(text_ys(&off, name).is_empty(), "{name} off: {off}");
+            }
+            assert!(
+                names
+                    .iter()
+                    .any(|n| last_text.contains(&format!(">{}<", esc(n)))),
+                "{last_text}"
+            );
+            assert_ne!(off, below);
+        }
+    }
+
+    /// A legend below with no room left for the plot says so, as a page too small
+    /// does.
+    #[test]
+    fn a_legend_below_that_does_not_fit_says_so() {
+        // A row each.
+        let names: Vec<String> = (0..11)
+            .map(|i| format!("FlightSimulator2024 · 2026-10-18 21:33:{i:02}"))
+            .collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let err = svg(
+            &lines(&refs),
+            &ExportOptions {
+                width: 300,
+                height: 260,
+                dpi: 96.0,
+                legend: LegendPlace::Below,
+                ..options()
+            },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("legend below"), "{err}");
     }
 
     #[test]

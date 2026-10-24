@@ -56,7 +56,9 @@ zstd = "0.14"
 # (usvg, which sets text with harfrust and skrifa), then written out as SVG,
 # rasterized for PNG (resvg), or written as PDF from the same outlines
 # (chart/chart_pdf.rs). Pure Rust, so no system font library is needed at run time.
-resvg = { version = "0.48.1", default-features = false, features = ["text", "system-fonts"] }
+# memmap-fonts maps system fonts rather than reading each whole file, which text the
+# bundled font lacks would otherwise do for every font on the system.
+resvg = { version = "0.48.1", default-features = false, features = ["text", "system-fonts", "memmap-fonts"] }
 calamine = { version = "0.36", features = ["chrono"] }
 orc-rust = "0.9"
 arrow = "59"

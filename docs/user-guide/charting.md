@@ -466,7 +466,7 @@ write, keeps the dialog open with the reason under the fields.
 | **Format** | **PNG**, **SVG** or **PDF**; SVG and PDF are vector, their text set as outlines |
 | **Style** | **Light**: white, with colors that stay apart for color-blind readers and in print. **Dark**: the terminal theme's colors. **Transparent**: Light with no background |
 | **Size** | A preset, below; typing **Width** or **Height** makes it **Custom** |
-| **Legend** | **Line ends** names each line at its right end, the default for line and KDE charts; other charts default to a legend at the top right. **Below** lists the names in rows under the chart, so long names cost height rather than width; a name wider than the chart is shortened in the middle. Or a corner, or **Off**. A chart whose legend is off exports with it off |
+| **Legend** | **Line ends** names each line at its right end, shortened in the middle if it would run past the page's margin, the default for line and KDE charts; other charts default to a legend at the top right. **Below** lists the names in rows under the chart, so long names cost height rather than width; a name wider than the chart is shortened in the middle. Or a corner, or **Off**. A chart whose legend is off exports with it off |
 | **Opacity** | Scatter: **Auto** (the default) draws points opaque up to 1,000 and fainter as there are more, down to 15% from 100,000, so a dense cloud shows where it is densest; or **100%**, **50%**, **20%** |
 | **Point size** | Scatter: **Small**, **Medium** (the default) or **Large**, 1.6, 2.4 or 3.6 pt |
 | **Line width** | Line, colored or not: **Thin**, **Normal** (the default) or **Bold**, 1, 1.5 or 2.5 pt; the legend's swatches follow |

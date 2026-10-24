@@ -1015,6 +1015,7 @@ fn span(lo: f64, hi: f64) -> (f64, f64) {
 
 /// The SVG for `figure`, before its text is set.
 pub fn svg(figure: &Figure, options: &ExportOptions) -> Result<String> {
+    forget_shaped();
     let (w, h) = (f64::from(options.width), f64::from(options.height));
     if options.width == 0 || options.height == 0 {
         return Err(color_eyre::eyre::eyre!(
@@ -1404,7 +1405,7 @@ struct Below {
 
 impl Below {
     /// `names` set at `tick` in rows `width` wide. A name wider than a row is cut
-    /// in the middle, where names joined from several Color columns differ least.
+    /// in the middle, which keeps both its ends.
     /// Entries stand in columns as wide as the widest, so the eye can scan down
     /// them; when only one such column fits, each row takes as many as fit.
     fn of(names: &[String], width: f64, tick: f64) -> Self {
@@ -1453,46 +1454,156 @@ impl Below {
     }
 }
 
-/// How wide `text` draws at `size` in `weight`: its glyphs' right edge from where
-/// it starts, set in the fonts the file is drawn with. [`text_width`] guesses from
-/// an average advance, which is too wide for some names and too narrow for bold.
-fn drawn_width(text: &str, size: f64, weight: u16) -> f64 {
-    if text.trim().is_empty() {
-        return 0.0;
+/// A line of text as the export sets it: where its glyphs end, and where each glyph
+/// starts by the byte of the text it sets. No starts when the glyphs do not read
+/// back as the text in order (whitespace the SVG collapses, a right-to-left
+/// script, a cluster of several glyphs).
+#[derive(Debug)]
+struct Shaped {
+    right: f64,
+    starts: Option<Vec<(usize, f64)>>,
+}
+
+type ShapedKey = (String, u64, u16);
+
+thread_local! {
+    /// Text set during this export, by text, size and weight. A name is measured
+    /// several times (the legend's rows, its cut); setting one in a font the bundle
+    /// lacks searches every system font, so each is set once.
+    static SHAPED: std::cell::RefCell<std::collections::HashMap<ShapedKey, std::rc::Rc<Shaped>>> =
+        std::cell::RefCell::default();
+    /// How many layouts this thread has run, for the tests that bound them.
+    static LAYOUTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Forget what [`shaped`] set: each export starts afresh.
+fn forget_shaped() {
+    SHAPED.with(|m| m.borrow_mut().clear());
+}
+
+/// `text` set at `size` in `weight` in the fonts the file is drawn with, at the
+/// size the file writes (to a tenth of a pixel).
+fn shaped(text: &str, size: f64, weight: u16) -> std::rc::Rc<Shaped> {
+    let size = (size * 10.0).round() / 10.0;
+    let key = (text.to_string(), size.to_bits(), weight);
+    if let Some(found) = SHAPED.with(|m| m.borrow().get(&key).cloned()) {
+        return found;
     }
+    let set = std::rc::Rc::new(lay_out(text, size, weight));
+    SHAPED.with(|m| m.borrow_mut().insert(key, set.clone()));
+    set
+}
+
+fn lay_out(text: &str, size: f64, weight: u16) -> Shaped {
+    if text.trim().is_empty() {
+        return Shaped {
+            right: 0.0,
+            starts: None,
+        };
+    }
+    LAYOUTS.with(|n| n.set(n.get() + 1));
     let svg = format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\">\
          <text x=\"0\" y=\"{size}\" font-size=\"{size}\" font-weight=\"{weight}\">{}</text></svg>",
         esc(text)
     );
-    tree(&svg).map_or_else(
-        |_| text_width(text, size),
-        |t| f64::from(t.root().abs_bounding_box().right()),
-    )
+    let Ok(tree) = tree(&svg) else {
+        return Shaped {
+            right: text_width(text, size),
+            starts: None,
+        };
+    };
+    let right = f64::from(tree.root().abs_bounding_box().right());
+    let mut starts = Vec::new();
+    let mut at = 0;
+    for node in tree.root().children() {
+        if let usvg::Node::Text(t) = node {
+            for span in t.layouted() {
+                for glyph in &span.positioned_glyphs {
+                    starts.push((at, f64::from(glyph.transform().tx)));
+                    at += glyph.text.len();
+                }
+            }
+        }
+    }
+    let in_order = starts.windows(2).all(|w| w[0].1 <= w[1].1);
+    let read_back = at == text.len() && in_order;
+    Shaped {
+        right,
+        starts: read_back.then_some(starts),
+    }
+}
+
+/// How wide `text` draws at `size` in `weight`: its glyphs' right edge from where
+/// it starts. [`text_width`] guesses from an average advance, which is too wide for
+/// some names and too narrow for bold.
+fn drawn_width(text: &str, size: f64, weight: u16) -> f64 {
+    shaped(text, size, weight).right
 }
 
 /// `text` cut in the middle until it draws no wider than `width` at `size` in
-/// `weight`.
+/// `weight`. The cut is read off one layout of the whole text, then set once to
+/// check; only text whose glyphs do not read back searches by setting each cut.
 fn fit_width(text: &str, (size, weight): (f64, u16), width: f64) -> String {
-    if drawn_width(text, size, weight) <= width {
+    use crate::glyphs::{display_width, fit_middle_with, take_columns, take_columns_end};
+    const MARK: &str = "…";
+    let whole = shaped(text, size, weight);
+    if whole.right <= width {
         return text.to_string();
     }
-    // The most columns whose cut still fits.
-    let (mut lo, mut hi) = (0, crate::glyphs::display_width(text));
+    let cut = |n: usize| fit_middle_with(text, n, MARK);
+    let fits = |n: usize| drawn_width(&cut(n), size, weight) <= width;
+    let columns = display_width(text);
+    let mut n = match &whole.starts {
+        Some(starts) => {
+            let mark = drawn_width(MARK, size, weight);
+            // Where a glyph starts at or after byte `b`, or the end.
+            let from = |b: usize| {
+                starts
+                    .iter()
+                    .find(|(at, _)| *at >= b)
+                    .map_or(whole.right, |s| s.1)
+            };
+            // The head up to its last glyph, the mark, and the tail from its
+            // first, as the whole text set them.
+            let estimate = |n: usize| {
+                if n <= display_width(MARK) {
+                    return mark;
+                }
+                let room = n - display_width(MARK);
+                let head = take_columns(text, room.div_ceil(2));
+                let tail = take_columns_end(text, room - display_width(head));
+                let tail_w = if tail.is_empty() {
+                    0.0
+                } else {
+                    whole.right - from(text.len() - tail.len())
+                };
+                from(head.len()) + mark + tail_w
+            };
+            (0..columns)
+                .rev()
+                .find(|&n| estimate(n) <= width)
+                .unwrap_or(0)
+        }
+        None => columns,
+    };
+    // Kerning at the joins can make the cut a little wider than read: step down.
+    for _ in 0..3 {
+        if n == 0 || fits(n) {
+            return cut(n);
+        }
+        n -= 1;
+    }
+    let (mut lo, mut hi) = (0, n);
     while lo < hi {
         let mid = (lo + hi).div_ceil(2);
-        if drawn_width(
-            &crate::glyphs::fit_middle_with(text, mid, "…"),
-            size,
-            weight,
-        ) <= width
-        {
+        if fits(mid) {
             lo = mid;
         } else {
             hi = mid - 1;
         }
     }
-    crate::glyphs::fit_middle_with(text, lo, "…")
+    cut(lo)
 }
 
 /// The legend under the plot, from the foot of `frame` (under the X title), from
@@ -2574,7 +2685,7 @@ mod tests {
         assert_eq!(whole.len(), 2, "{title}");
         for (text, right) in &whole {
             assert!(names.contains(&text.as_str()), "{text} whole");
-            assert!(*right <= edge + 0.5, "{text} ends at {right}, past {edge}");
+            assert!(*right <= edge + 0.1, "{text} ends at {right}, past {edge}");
         }
         let cut = svg(&lines(&[names[0], long]), &o).unwrap();
         let drawn = labels(&cut);
@@ -2584,7 +2695,36 @@ mod tests {
             text.starts_with("an extra") && text.ends_with("10-23"),
             "{text}"
         );
-        assert!(*right <= edge + 0.5, "{text} ends at {right}, past {edge}");
+        assert!(*right <= edge + 0.1, "{text} ends at {right}, past {edge}");
+    }
+
+    /// A name is cut from one layout of it and one of the cut, not a layout per
+    /// step of a search; the cut is the longest that fits; and a second cut of the
+    /// same name sets nothing again.
+    #[test]
+    fn a_cut_name_takes_a_bounded_number_of_layouts() {
+        let layouts = || LAYOUTS.with(std::cell::Cell::get);
+        forget_shaped();
+        let name = (0..8)
+            .map(|i| format!("FlightSimulator2024 · 2026-10-18 21:33:0{i}"))
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let before = layouts();
+        let cut = fit_width(&name, (10.0, 600), 300.0);
+        let used = layouts() - before;
+        assert!(cut.contains('…'), "{cut}");
+        assert!(drawn_width(&cut, 10.0, 600) <= 300.0, "{cut}");
+        // The whole name, the mark, the cut, and at most a step or two down.
+        assert!(used <= 6, "{used} layouts");
+        let longer =
+            crate::glyphs::fit_middle_with(&name, crate::glyphs::display_width(&cut) + 1, "…");
+        assert!(
+            drawn_width(&longer, 10.0, 600) > 300.0,
+            "{cut} is the longest"
+        );
+        let before = layouts();
+        assert_eq!(fit_width(&name, (10.0, 600), 300.0), cut);
+        assert_eq!(layouts(), before, "memoized");
     }
 
     /// The value of `name` on an SVG element's line.

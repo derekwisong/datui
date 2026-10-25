@@ -70,9 +70,10 @@ impl App {
     pub(crate) fn apply(&mut self, applied: Applied) -> Option<AppEvent> {
         match applied {
             Applied::GoToLine(n) => {
-                // Past the lines indexed so far: gone to once they all are.
+                // Past the lines indexed so far: gone to once they all are. Asked of the
+                // dataset, not the lines: they say done before the count reaches it.
                 if let Some(state) = self.data_table_state.as_ref()
-                    && state.indexing().is_some()
+                    && state.lines_to_index().is_some()
                     && (n >= state.num_rows()
                         || state.changes_rows()
                         || !state.view_sort_columns().is_empty()

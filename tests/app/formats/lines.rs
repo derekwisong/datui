@@ -487,20 +487,69 @@ fn go_to_a_row_waits_for_the_lines_to_be_indexed() {
         let text = screen(&mut app);
         assert!(text.contains("lines ") && text.contains("read "), "{text}");
     }
-    // The indexing is no work the drain waits on, so draw and drain until the jump
-    // lands; a slow runner indexes past one drain.
+    // The indexing is no work the drain waits on; a slow runner indexes past one drain.
+    lands_on(&mut app, &rx, 1_400_001);
+    let _ = screen(&mut app);
+    drain_events(&mut app, &rx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.selected_display_row(), Some(1_400_001));
+    let numbers = state.row_numbers_from(state.start_row(), state.visible_rows.max(1));
+    assert!(numbers.contains(&1_400_001), "{numbers:?}");
+}
+
+/// Opens a large log and returns once its lines say they are all indexed, with the
+/// events since, the indexing's answer among them, held back unhandled: the moment a
+/// key can come between the lines finishing and the dataset hearing of it. `None` when
+/// the open itself took the answer, and there is no such moment.
+fn indexed_but_not_heard(
+    lines: usize,
+) -> Option<(
+    tempfile::TempDir,
+    App,
+    mpsc::Receiver<AppEvent>,
+    Vec<AppEvent>,
+)> {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, rx) = open_first_rows(large_log(dir.path(), lines));
+    let _ = screen(&mut app);
+    let state = app.data_table_state.as_ref().unwrap();
+    state.lines_to_index()?;
+    // The answer is sent after the lines say done, so it is in hand once they do.
+    let mut held = Vec::new();
+    while state.indexing().is_some() {
+        held.push(
+            rx.recv_timeout(common::HANG_GUARD)
+                .expect("the indexing answers"),
+        );
+    }
+    Some((dir, app, rx, held))
+}
+
+/// Handle `held`, then whatever follows until nothing does.
+fn hear(app: &mut App, rx: &mpsc::Receiver<AppEvent>, held: Vec<AppEvent>) {
+    for event in held {
+        let mut next = Some(event);
+        while let Some(event) = next {
+            next = app.event(event);
+        }
+    }
+    drain_events(app, rx);
+}
+
+/// Draw and drain until the cursor is on display row `row`: a jump lands over frames.
+fn lands_on(app: &mut App, rx: &mpsc::Receiver<AppEvent>, row: usize) {
     let landed = |app: &App| {
         app.data_table_state
             .as_ref()
             .unwrap()
             .selected_display_row()
-            == Some(1_400_001)
+            == Some(row)
     };
     let deadline = Instant::now() + common::HANG_GUARD;
-    while !landed(&app) {
+    while !landed(app) {
         assert!(Instant::now() < deadline, "the jump never landed");
-        drain_events(&mut app, &rx);
-        let _ = screen(&mut app);
+        drain_events(app, rx);
+        let _ = screen(app);
         if let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
             let mut next = Some(event);
             while let Some(event) = next {
@@ -508,12 +557,36 @@ fn go_to_a_row_waits_for_the_lines_to_be_indexed() {
             }
         }
     }
-    let _ = screen(&mut app);
-    drain_events(&mut app, &rx);
+}
+
+/// `:N` between the lines finishing and the dataset hearing of it waits for the count,
+/// rather than stopping at the last line the dataset has counted so far.
+#[test]
+fn go_to_a_row_as_the_indexing_ends_waits_for_the_count() {
+    let Some((_dir, mut app, rx, held)) = indexed_but_not_heard(1_500_000) else {
+        return;
+    };
+    let mut next = app.event(AppEvent::Applied(datui::Applied::GoToLine(1_400_000)));
+    while let Some(event) = next {
+        next = app.event(event);
+    }
+    hear(&mut app, &rx, held);
+    lands_on(&mut app, &rx, 1_400_001);
+}
+
+/// End between the lines finishing and the dataset hearing of it goes to the last line.
+#[test]
+fn end_as_the_indexing_ends_goes_to_the_last_line() {
+    let Some((_dir, mut app, rx, held)) = indexed_but_not_heard(1_500_000) else {
+        return;
+    };
+    let mut next = press(&mut app, KeyCode::End);
+    while let Some(event) = next {
+        next = app.event(event);
+    }
+    hear(&mut app, &rx, held);
     let state = app.data_table_state.as_ref().unwrap();
-    assert_eq!(state.selected_display_row(), Some(1_400_001));
-    let numbers = state.row_numbers_from(state.start_row(), state.visible_rows.max(1));
-    assert!(numbers.contains(&1_400_001), "{numbers:?}");
+    assert_eq!(state.selected_display_row(), Some(1_500_000));
 }
 
 /// `:N` typed once the lines are indexed but before the first page is read whole: the

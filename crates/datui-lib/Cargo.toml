@@ -59,7 +59,7 @@ zstd = "0.14"
 # memmap-fonts maps system fonts rather than reading each whole file, which text the
 # bundled font lacks would otherwise do for every font on the system.
 resvg = { version = "0.48.1", default-features = false, features = ["text", "system-fonts", "memmap-fonts"] }
-calamine = { version = "0.36", features = ["chrono"] }
+calamine = { version = "0.37", features = ["chrono"] }
 orc-rust = "0.9"
 arrow = "59"
 tempfile = "3.14"

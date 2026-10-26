@@ -155,7 +155,7 @@ jobs:
       # RUSTUP_TOOLCHAIN: rust-toolchain.toml outranks `rustup default`, and
       # rust-cache keys the entry on the rustc it finds.
       - name: Cache cargo dependencies
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         env:
           RUSTUP_TOOLCHAIN: ${{ steps.msrv.outputs.version }}
         with:

@@ -217,7 +217,7 @@ sha2 = "0.11"
 criterion = "0.8"
 # A terminal screen model: app/draw.rs checks a scroll moved by the terminal leaves
 # the screen a full redraw would. Nothing in the tree parses escapes into a screen.
-vt100 = "0.16"
+vt100 = "0.18"
 
 [[bench]]
 name = "numfmt"

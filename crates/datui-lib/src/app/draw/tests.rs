@@ -29,6 +29,16 @@ impl Tape {
 
 type Out = Terminal<CrosstermBackend<Tape>>;
 
+/// A side of the screen; vt100 takes sizes as `NonZeroU16`.
+fn side(n: u16) -> std::num::NonZeroU16 {
+    std::num::NonZeroU16::new(n).expect("a screen side is at least 1")
+}
+
+/// A screen of `rows` by `cols` with no scrollback.
+fn vt(rows: u16, cols: u16) -> vt100::Parser {
+    vt100::Parser::new(side(rows), side(cols), 0)
+}
+
 fn in_memory(width: u16, height: u16) -> (Out, Tape) {
     let tape = Tape::default();
     let backend = CrosstermBackend::new(tape.clone());
@@ -53,7 +63,7 @@ impl Emulated {
             terminal,
             tape,
             drawer: Drawer::new(scroll),
-            screen: vt100::Parser::new(LINES, COLS, 0),
+            screen: vt(LINES, COLS),
         }
     }
 
@@ -381,7 +391,7 @@ fn redraw_of(frame: &Buffer) -> Vec<String> {
             f.buffer_mut().content.clone_from_slice(&frame.content)
         })
         .unwrap();
-    let mut screen = vt100::Parser::new(height, width, 0);
+    let mut screen = vt(height, width);
     screen.process(&tape.take());
     cells_of(&screen)
 }
@@ -390,6 +400,7 @@ fn redraw_of(frame: &Buffer) -> Vec<String> {
 fn cells_of(parser: &vt100::Parser) -> Vec<String> {
     let screen = parser.screen();
     let (height, width) = screen.size();
+    let (height, width) = (height.get(), width.get());
     (0..height)
         .map(|y| {
             (0..width)
@@ -414,7 +425,7 @@ fn a_new_size_is_drawn_whole() {
     };
     let mut terminal = Terminal::new(backend).unwrap();
     let mut drawer = Drawer::new(true);
-    let mut screen = vt100::Parser::new(6, 20, 0);
+    let mut screen = vt(6, 20);
     let mut draw =
         |terminal: &mut Terminal<Resizable>, screen: &mut vt100::Parser, frame: &Buffer| {
             drawer
@@ -428,7 +439,7 @@ fn a_new_size_is_drawn_whole() {
     draw(&mut terminal, &mut screen, &numbered(20, 6, 1));
     // The window grows a line and narrows; the terminal keeps what it showed.
     size.set(ratatui::layout::Size::new(16, 7));
-    screen.screen_mut().set_size(7, 16);
+    screen.screen_mut().set_size(side(7), side(16));
     let frame = numbered(16, 7, 2);
     draw(&mut terminal, &mut screen, &frame);
     assert_eq!(cells_of(&screen), redraw_of(&frame));
@@ -462,7 +473,7 @@ fn an_unchanged_frame_writes_nothing() {
 fn a_repaint_draws_over_what_drifted() {
     let (mut terminal, tape) = in_memory(20, 6);
     let mut drawer = Drawer::new(true);
-    let mut screen = vt100::Parser::new(6, 20, 0);
+    let mut screen = vt(6, 20);
     let mut draw = |drawer: &mut Drawer, screen: &mut vt100::Parser, frame: &Buffer| {
         drawer
             .draw(&mut terminal, |f| {
@@ -550,7 +561,7 @@ fn random_frames(terminal: Honors, seeds: u64) -> (usize, usize, usize) {
     for seed in 1..=seeds {
         let (mut term, tape) = in_memory(W, H);
         let mut drawer = Drawer::new(true);
-        let mut screen = vt100::Parser::new(H, W, 0);
+        let mut screen = vt(H, W);
         let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
         let mut lines: Vec<u64> = (0..H).map(|_| rng.below(24)).collect();
         for _ in 0..60 {

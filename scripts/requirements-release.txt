@@ -3,6 +3,6 @@
 # Ubuntu 20.04 and RHEL 8 whatever the runner's glibc is. Exact versions: the
 # release gate checks the result, and a moving linker is one more thing it could
 # be blaming.
-cargo-zigbuild==0.23.4
+cargo-zigbuild==0.24.0
 ziglang==0.17.0
 maturin==1.15.0

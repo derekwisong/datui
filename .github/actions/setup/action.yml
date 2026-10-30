@@ -107,7 +107,7 @@ runs:
     # finds, CARGO*/RUST* env and the lockfile; ci.yml has the cache policy.
     - name: Cache cargo dependencies
       if: inputs.cache-key != ''
-      uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       with:
         shared-key: ${{ inputs.cache-key }}
         workspaces: ${{ inputs.cache-workspaces }}
@@ -118,7 +118,7 @@ runs:
     - name: Set up Python
       id: python
       if: inputs.python == 'true' || inputs.pip-cache != '' || inputs.venv != '' || inputs.fixtures == 'true'
-      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
       with:
         # Not '3.x': the fixture pins have to install on it, and on 3.15 pyarrow
         # 25 has no wheel and polars 1.43 fails building a Series. Move this with

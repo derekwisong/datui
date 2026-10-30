@@ -46,20 +46,23 @@ ignore = [
     { id = "RUSTSEC-2026-0194", reason = "quick-xml DoS; xlsx path fixed by calamine 0.36, remaining copy is object_store S3/GCS XML, pinned by polars" },
     { id = "RUSTSEC-2026-0195", reason = "quick-xml DoS; xlsx path fixed by calamine 0.36, remaining copy is object_store S3/GCS XML, pinned by polars" },
 
-    # zip 8.6, three extraction bugs: SUID/SGID bits kept, symlinks whose
-    # targets leave the destination, and permissions applied through symlinks.
-    # Patched in 9.0.
+    # zstd 0.13.3 / zstd-safe 7.3.0, pinned by polars 0.55 and arrow 59 (datui's
+    # own zstd is 0.14). Fixed only in zstd 0.14.3 and zstd-safe 8.2.0; there is
+    # no 0.13 backport.
     #
-    # All three live in `ZipArchive::extract` and `ZipStreamReader::extract`.
-    # The only copy of 8.6 is calamine 0.36's, which reads an .xlsx's parts by
-    # name and never extracts. datui's own zip use (Excel sniffing, .npz) is
-    # already on 9.0.
-    #
-    # No upgrade is available: calamine 0.36.1 is the latest and requires zip 8.
-    # Clears when: calamine moves to zip 9.
-    { id = "RUSTSEC-2026-0367", reason = "zip 8 extract keeps SUID bits; only copy is calamine's, which never extracts" },
-    { id = "RUSTSEC-2026-0368", reason = "zip 8 extract follows symlinks out; only copy is calamine's, which never extracts" },
-    { id = "RUSTSEC-2026-0369", reason = "zip 8 extract chmods through symlinks; only copy is calamine's, which never extracts" },
+    # 0391: `Decoder::with_context` keeps what an abandoned stream left in the
+    # context. polars-parquet reuses one DCtx per column, but a page that fails
+    # mid-stream already fails the read. The advisory's harm is one user's data
+    # reaching another's on a shared context; datui is one user in one process.
+    # 0398: `Seekable::decompress`; the `seekable` feature is not compiled in.
+    # 0403: uninitialized bytes when a legacy (pre-0.8) frame fails to stream-
+    # decode. `legacy` is a zstd default that polars enables, so it is reachable
+    # with a corrupt legacy .zst file; the bytes are datui's own memory, shown to
+    # the same user, after a read that errors.
+    # Clears when: polars and arrow move to zstd 0.14.3 / zstd-safe 8.2.0.
+    { id = "RUSTSEC-2026-0391", reason = "zstd with_context leak across streams; one user, one process; pinned by polars/arrow" },
+    { id = "RUSTSEC-2026-0398", reason = "zstd-safe Seekable::decompress; seekable feature not compiled in" },
+    { id = "RUSTSEC-2026-0403", reason = "zstd-safe legacy-frame uninit bytes on failed decode; own memory, same user; pinned by polars/arrow" },
 
     # --- Unmaintained, no known vulnerability ---
 

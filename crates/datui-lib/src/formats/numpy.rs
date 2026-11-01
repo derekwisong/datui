@@ -838,6 +838,8 @@ pub fn plan(header: &Header, name: &str) -> std::result::Result<Plan, String> {
         (Dtype::Simple(_), [rows, cols]) => {
             let (rows, cols) = (*rows, *cols);
             let mut columns = Vec::new();
+            // The element count fits, but a row's bytes need not.
+            let row = itemsize.checked_mul(cols).ok_or("a row is too large")?;
             if cols > MAX_GRID {
                 if header.fortran {
                     return Err(format!(
@@ -849,7 +851,7 @@ pub fn plan(header: &Header, name: &str) -> std::result::Result<Plan, String> {
                 leaves(&header.dtype, "values", 0, itemsize, &mut leaf, 0)?;
                 let mut column = leaf.remove(0);
                 column.count = column.count.checked_mul(cols).ok_or("a row is too large")?;
-                column.stride = itemsize.checked_mul(cols).ok_or("a row is too large")?;
+                column.stride = row;
                 columns.push(column);
             } else {
                 for c in 0..cols {
@@ -865,7 +867,7 @@ pub fn plan(header: &Header, name: &str) -> std::result::Result<Plan, String> {
                         column.stride = itemsize;
                     } else {
                         column.start = c * itemsize;
-                        column.stride = itemsize * cols;
+                        column.stride = row;
                     }
                     columns.push(column);
                 }
@@ -1449,6 +1451,15 @@ mod tests {
     #[test]
     fn a_fortran_array_too_large_to_address_is_refused() {
         let bytes = npy("'<f4'", true, "(4000000000000000100, 4)", &[]);
+        let len = bytes.len();
+        assert!(open_in(Arc::new(Bytes::Owned(bytes)), 0, len, "a").is_err());
+    }
+
+    /// Found by fuzzing: the elements of a C-order array fit a `usize`, the
+    /// bytes of one of its rows do not.
+    #[test]
+    fn an_array_whose_row_is_too_large_to_address_is_refused() {
+        let bytes = npy("'<U2502000000000000000'", false, "(718, 5)", &[]);
         let len = bytes.len();
         assert!(open_in(Arc::new(Bytes::Owned(bytes)), 0, len, "a").is_err());
     }

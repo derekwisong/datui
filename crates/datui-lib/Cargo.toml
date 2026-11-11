@@ -59,7 +59,7 @@ zstd = "0.14"
 # memmap-fonts maps system fonts rather than reading each whole file, which text the
 # bundled font lacks would otherwise do for every font on the system.
 resvg = { version = "0.48.1", default-features = false, features = ["text", "system-fonts", "memmap-fonts"] }
-calamine = { version = "0.37", features = ["chrono"] }
+calamine = { version = "0.38", features = ["chrono"] }
 orc-rust = "0.9"
 arrow = "59"
 tempfile = "3.14"
@@ -101,7 +101,7 @@ brotli = { version = "8.0", default-features = false, features = ["std"] }
 # SQLite databases, read only. `bundled` compiles SQLite into the binary, so no
 # platform needs a system library; `hooks` lets a stopped open interrupt a statement.
 # Default features off, which leaves extension loading out.
-rusqlite = { version = "0.40", optional = true, default-features = false, features = ["bundled", "hooks"] }
+rusqlite = { version = "0.42", optional = true, default-features = false, features = ["bundled", "hooks"] }
 # NumPy archives (.npz) are zip files. Already in the tree through calamine, with
 # the same features.
 zip = { version = "9.0", default-features = false, features = ["deflate"] }

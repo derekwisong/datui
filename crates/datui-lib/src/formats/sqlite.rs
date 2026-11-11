@@ -645,7 +645,6 @@ mod read {
         let mut seen = std::collections::HashSet::new();
         let names = stmt
             .column_names()
-            .iter()
             .enumerate()
             .map(|(i, name)| {
                 let base = if name.is_empty() {
@@ -678,7 +677,7 @@ mod read {
 
     /// A connection that gives up when `stop` is set or `deadline` passes.
     fn stoppable(
-        conn: &Connection,
+        conn: &mut Connection,
         stop: Arc<AtomicBool>,
         deadline: Option<Instant>,
     ) -> rusqlite::Result<()> {
@@ -826,9 +825,9 @@ mod read {
 
     impl Source {
         fn open(file: &Path, display: &Path, table: &Table) -> Result<Self> {
-            let conn = open(file)?;
+            let mut conn = open(file)?;
             let stop = Arc::new(AtomicBool::new(false));
-            stoppable(&conn, stop.clone(), Some(Instant::now() + SAMPLE_TIME))?;
+            stoppable(&mut conn, stop.clone(), Some(Instant::now() + SAMPLE_TIME))?;
             let key = key_of(&conn, table);
             let star = format!("SELECT * FROM main.{}", quoted(&table.name));
             let stmt = conn.prepare(&star).map_err(|e| named(e.into(), display))?;
@@ -915,10 +914,10 @@ mod read {
 
         /// A connection for one statement, stopped with the source.
         fn connect(&self) -> PolarsResult<Connection> {
-            let conn = open(&self.file).map_err(|e| {
+            let mut conn = open(&self.file).map_err(|e| {
                 polars_err!(ComputeError: "{}", crate::error_display::user_message_from_report(&e, Some(&self.display)))
             })?;
-            stoppable(&conn, self.stop.clone(), None).map_err(|e| self.failed(e))?;
+            stoppable(&mut conn, self.stop.clone(), None).map_err(|e| self.failed(e))?;
             Ok(conn)
         }
 
@@ -1858,9 +1857,9 @@ mod read {
         table: &Table,
     ) -> Option<crate::home::discover::SchemaPreview> {
         const SAMPLE: usize = 100;
-        let conn = open(path).ok()?;
+        let mut conn = open(path).ok()?;
         let stop = Arc::new(AtomicBool::new(false));
-        stoppable(&conn, stop, Some(Instant::now() + PREVIEW_TIME)).ok()?;
+        stoppable(&mut conn, stop, Some(Instant::now() + PREVIEW_TIME)).ok()?;
         let sql = format!("SELECT * FROM main.{} LIMIT {SAMPLE}", quoted(&table.name));
         let mut stmt = conn.prepare(&sql).ok()?;
         let (names, affinities) = described(&stmt, table);

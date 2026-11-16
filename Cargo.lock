@@ -1402,7 +1402,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "snap",
- "sqlparser",
+ "sqlparser 0.64.0",
  "supports-color",
  "sysinfo",
  "tempfile",
@@ -4109,7 +4109,7 @@ dependencies = [
  "polars-utils",
  "regex",
  "serde",
- "sqlparser",
+ "sqlparser 0.62.0",
 ]
 
 [[package]]
@@ -5232,7 +5232,18 @@ checksum = "13c6d1b651dc4edf07eead2a0c6c78016ce971bc2c10da5266861b13f25e7cec"
 dependencies = [
  "log",
  "recursive",
- "sqlparser_derive",
+ "sqlparser_derive 0.5.0",
+]
+
+[[package]]
+name = "sqlparser"
+version = "0.64.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92e0d273b4f8ddd14a35ed36862acbc9cc96cec578e36ee1881a9d42e0e0f2c8"
+dependencies = [
+ "log",
+ "recursive",
+ "sqlparser_derive 0.7.0",
 ]
 
 [[package]]
@@ -5244,6 +5255,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "sqlparser_derive"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fa4939c717eaef717f244768d35a5f93c62e1d440865097d2edef7d86ddb7e0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.5",
 ]
 
 [[package]]

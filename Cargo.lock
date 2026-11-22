@@ -1380,6 +1380,7 @@ dependencies = [
  "libc",
  "log",
  "lz4",
+ "mavlink-tlog",
  "memchr",
  "memmap2",
  "object 0.37.3",
@@ -2787,6 +2788,12 @@ dependencies = [
  "nix 0.29.0",
  "winapi",
 ]
+
+[[package]]
+name = "mavlink-tlog"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c46169136e460779b8c0532a0dfa898b2175888b49aa4ffe96fca3b0abcf683"
 
 [[package]]
 name = "md-5"

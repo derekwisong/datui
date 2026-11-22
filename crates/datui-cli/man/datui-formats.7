@@ -5,7 +5,7 @@
 .SH NAME
 datui\-formats \- the formats datui reads, and format specs
 .SH DESCRIPTION
-datui reads 27 formats: Parquet, CSV, TSV, PSV, JSON, NDJSON, Arrow IPC, Avro, ORC, Excel, SafeTensors, GGUF, NMEA, GPX, WAV/AIFF audio, MIDI, SQLite, VCD, FIX, SDF, NumPy, ELF, ULog, DataFlash, candump, plain text, systemd journal, and binary formats you describe in a format spec.
+datui reads 28 formats: Parquet, CSV, TSV, PSV, JSON, NDJSON, Arrow IPC, Avro, ORC, Excel, SafeTensors, GGUF, NMEA, GPX, WAV/AIFF audio, MIDI, SQLite, VCD, FIX, SDF, NumPy, ELF, ULog, DataFlash, candump, MAVLink tlog, plain text, systemd journal, and binary formats you describe in a format spec.
 .PP
 The extension says the format; \fB\-\-format\fR names it when the extension does not, and text piped in is detected by content.
 .PP
@@ -383,6 +383,21 @@ candump
 Extensions: none: by content
 .br
 Read: lazy scan
+.br
+Compressed: no
+.br
+HTTP(S): downloaded
+.br
+In a bucket: downloaded
+.br
+Bucket prefix: no
+.TP
+MAVLink tlog
+\-\-format: \fBtlog\fR
+.br
+Extensions: \fB.tlog\fR
+.br
+Read: in memory
 .br
 Compressed: no
 .br

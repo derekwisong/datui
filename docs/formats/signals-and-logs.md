@@ -355,8 +355,16 @@ reading the log again.
 | Units | From `FMTU` and `UNIT`, on the Info panel's Schema tab; an integer field with a multiplier (`MULT`) in `FMTU` is scaled by it |
 | Info tab | Message types and their record counts, formats and lengths |
 
+| MAVLink tlog (`.tlog`) | |
+|---|---|
+| A row per frame | `time`, `sys`, `comp`, `seq`, `msg_id`, `message` (the name, from MAVLink's `all.xml`), `payload` |
+| Info tab | Frames and senders, and each sender's frames and lost frames |
+
 - A ULog file is known by its first bytes. A DataFlash log is known by its first
   record, an `FMT` record that defines `FMT`, whatever the file is called.
+- A tlog (QGroundControl, Mission Planner, MAVProxy) is known by its `.tlog` name
+  and read with [mavlink-tlog](https://crates.io/crates/mavlink-tlog): a frame
+  whose checksum is wrong is passed over and its bytes counted.
 - A damaged stretch is passed over to the next ULog sync marker or DataFlash
   record header; a log cut off mid-message keeps what it holds. The Notes tab
   says how many bytes were passed over.

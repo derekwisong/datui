@@ -206,7 +206,7 @@ A file that is not read with a lazy scan says how it is read, dimmed beside its 
 |---|---|
 | `decompresses` | Decompresses it whole into a temporary file, then scans that: compressed text |
 | `converts` | Converts it whole into a temporary Arrow file, then scans that: an Arrow stream, NMEA, GPX, VCD, FIX, SDF |
-| `in memory` | Reads it whole into memory: JSON, NDJSON, systemd journal, Avro, ORC, Excel, MIDI, ELF; SafeTensors and GGUF read only their header |
+| `in memory` | Reads it whole into memory: JSON, NDJSON, systemd journal, Avro, ORC, Excel, MIDI, ELF, MAVLink tlog; SafeTensors and GGUF read only their header |
 | `downloads` | Downloads it first |
 
 The `… files with no reader` row, or <kbd>Ctrl</kbd>+<kbd>A</kbd>, shows the files

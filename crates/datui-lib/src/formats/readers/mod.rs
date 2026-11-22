@@ -297,6 +297,7 @@ pub(crate) fn of(format: FileFormat) -> &'static Reader {
         FileFormat::Ulog => &crate::formats::ulog::READER,
         FileFormat::Dataflash => &crate::formats::dataflash::READER,
         FileFormat::Candump => &crate::formats::candump::READER,
+        FileFormat::Tlog => &crate::formats::tlog::READER,
         FileFormat::Text => &crate::formats::lines::READER,
         FileFormat::Journal => &crate::formats::journal::READER,
     }

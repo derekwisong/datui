@@ -153,6 +153,7 @@ file with no extension):
 | ULog | `df = ...` |
 | DataFlash | `df = ...` |
 | candump | `df = ...` |
+| MAVLink tlog | `df = ...` |
 | text | `pl.LazyFrame` |
 | systemd journal | `pl.scan_ndjson` |
 

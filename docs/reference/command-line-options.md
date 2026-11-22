@@ -18,7 +18,7 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 
 | Option | Description |
 |---|---|
-| `-F, --format <FMT>` | File format, when the extension does not say: parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel, safetensors, gguf, nmea, gpx, audio, midi, sqlite, vcd, fix, sdf, numpy, elf, ulog, dataflash, candump, text, journal. Or a format spec: its name (`datui formats` lists them), its file (a path with a / or ending .toml), or its http(s), s3, gs or az URL (at most 1 MiB) |
+| `-F, --format <FMT>` | File format, when the extension does not say: parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel, safetensors, gguf, nmea, gpx, audio, midi, sqlite, vcd, fix, sdf, numpy, elf, ulog, dataflash, candump, tlog, text, journal. Or a format spec: its name (`datui formats` lists them), its file (a path with a / or ending .toml), or its http(s), s3, gs or az URL (at most 1 MiB) |
 | `-t, --table <NAME>` | Table to open from a file that holds several. Excel: a worksheet by name, or by 0-based index when no worksheet has that name. NMEA: fixes (default), GGA, RMC, VTG, GSA, GSV, GLL, ZDA or sentences. SQLite: a table or view by name. NumPy: an array of an archive (.npz) by name. ELF: symbols (default) or sections. ULog: a topic. DataFlash: a message type. candump: frames (default), signals, or a message a dictionary names. Hugging Face cache and DatasetDict directories: a split (default train) |
 | `--hive` | Read a glob as one partitioned table, or force partition columns on a directory whose layout does not say so. Ignored for a single file |
 | `--compression <C>` | Compression, when the extension does not say: gzip, zstd, bzip2 or xz |

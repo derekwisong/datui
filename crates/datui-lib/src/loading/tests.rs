@@ -50,6 +50,7 @@ fn remote_files_are_routed_as_their_format_says() {
         "npy",
         "elf",
         "ulg",
+        "tlog",
     ] {
         let format = FileFormat::from_extension(ext).expect(ext);
         seen.push(format);

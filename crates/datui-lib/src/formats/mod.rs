@@ -41,6 +41,7 @@ pub(crate) mod segments;
 pub(crate) mod spec_union;
 pub mod sqlite;
 pub mod text_formats;
+pub mod tlog;
 pub mod ulog;
 pub mod vcd;
 

@@ -1,7 +1,7 @@
 # Formats
 
 <!-- generated: format-count -->
-datui reads 27 formats: Parquet, CSV, TSV, PSV, JSON, NDJSON, Arrow IPC, Avro, ORC, Excel, SafeTensors, GGUF, NMEA, GPX, WAV/AIFF audio, MIDI, SQLite, VCD, FIX, SDF, NumPy, ELF, ULog, DataFlash, candump, plain text, systemd journal, and binary formats you describe in a format spec.
+datui reads 28 formats: Parquet, CSV, TSV, PSV, JSON, NDJSON, Arrow IPC, Avro, ORC, Excel, SafeTensors, GGUF, NMEA, GPX, WAV/AIFF audio, MIDI, SQLite, VCD, FIX, SDF, NumPy, ELF, ULog, DataFlash, candump, MAVLink tlog, plain text, systemd journal, and binary formats you describe in a format spec.
 <!-- end generated: format-count -->
 
 The extension says the format; `--format` names it when the extension does
@@ -42,6 +42,7 @@ datui --format csv export.txt
 | [ULog](signals-and-logs.md#flight-logs) | `ulog` | `.ulg` | lazy scan | no | downloaded | downloaded | no |
 | [DataFlash](signals-and-logs.md#flight-logs) | `dataflash` | none: by content | lazy scan | no | downloaded | downloaded | no |
 | [candump](signals-and-logs.md#can-logs) | `candump` | none: by content | lazy scan | no | downloaded | downloaded | no |
+| [MAVLink tlog](signals-and-logs.md#flight-logs) | `tlog` | `.tlog` | in memory | no | downloaded | downloaded | no |
 | [Text](delimited-text.md#text-and-logs) | `text` | `.log`, `.txt` | lazy scan | decompressed copy | downloaded | downloaded | no |
 | [systemd journal](signals-and-logs.md#systemd-journal) | `journal` | none: by content | in memory | no | downloaded | downloaded | no |
 | [Arrow IPC stream](columnar-and-json.md#arrow-ipc) | `arrow` | as Arrow IPC | converted to Arrow | no | downloaded | downloaded | downloaded |

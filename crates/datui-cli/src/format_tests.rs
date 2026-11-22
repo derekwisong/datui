@@ -33,6 +33,7 @@ fn every_format_is_listed() {
             | FileFormat::Ulog
             | FileFormat::Dataflash
             | FileFormat::Candump
+            | FileFormat::Tlog
             | FileFormat::Text
             | FileFormat::Journal => FileFormat::ALL.contains(&f),
         }
@@ -76,6 +77,7 @@ fn every_format_is_listed() {
             "ulog",
             "dataflash",
             "candump",
+            "tlog",
             "text",
             "journal"
         ]

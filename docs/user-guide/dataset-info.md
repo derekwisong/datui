@@ -90,6 +90,7 @@ remember it.
 | ULog | **ULog** | tables |
 | DataFlash | **DataFlash** | tables |
 | candump | **CAN** | tables |
+| MAVLink tlog | **MAVLink** | no |
 | systemd journal | **Journal** | no |
 | text | none | no |
 
@@ -188,6 +189,7 @@ VCD tab; for every other format the tab sits beside Schema.
 | ULog | Version, topic tables, dropouts | Info and parameters: each info message, and each parameter's starting value |
 | DataFlash | Message types with records and defined; records; whether the log has units | Messages: each type's records, format characters and length |
 | CAN | Frames, interfaces, whether timestamps are wall-clock; each dictionary read and what it matches; frames no dictionary names | Messages: each one's id, frames, signals and comment |
+| MAVLink | Frames and senders; damaged bytes passed over | Senders: each one's frames and lost frames |
 
 A list of more than 10,000 entries shows the first 10,000 and how many more there are.
 

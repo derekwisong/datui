@@ -46,6 +46,7 @@ pub enum FileFormat {
     Ulog,
     Dataflash,
     Candump,
+    Tlog,
     Text,
     Journal,
 }
@@ -506,6 +507,15 @@ const CANDUMP: Descriptor = Descriptor {
     ..BASE
 };
 
+// A MAVLink telemetry log, read into memory as a row per frame.
+const TLOG: Descriptor = Descriptor {
+    name: "tlog",
+    title: "MAVLink tlog",
+    extensions: &["tlog"],
+    summary: Summary::Tab("MAVLink"),
+    ..BASE
+};
+
 // Text read as it stands: a row per line. Indexed in one pass and read from a map of
 // the file where it is shown; what nothing else claims.
 const TEXT: Descriptor = Descriptor {
@@ -539,7 +549,7 @@ impl FileFormat {
     /// format missing here would cost is bounded: `from_name` answers `None` for it,
     /// and every caller reads `None` as "not Parquet", which leaves counts off a
     /// directory rather than giving it another format's.
-    pub const ALL: [Self; 27] = [
+    pub const ALL: [Self; 28] = [
         Self::Parquet,
         Self::Csv,
         Self::Tsv,
@@ -565,6 +575,7 @@ impl FileFormat {
         Self::Ulog,
         Self::Dataflash,
         Self::Candump,
+        Self::Tlog,
         Self::Text,
         Self::Journal,
     ];
@@ -601,6 +612,7 @@ impl FileFormat {
             Self::Ulog => &ULOG,
             Self::Dataflash => &DATAFLASH,
             Self::Candump => &CANDUMP,
+            Self::Tlog => &TLOG,
             Self::Text => &TEXT,
             Self::Journal => &JOURNAL,
         }

@@ -296,7 +296,7 @@ pub fn format_page(format: FileFormat) -> &'static str {
         Midi => "signals-and-logs.md#midi",
         Vcd => "signals-and-logs.md#vcd",
         Nmea | Gpx => "signals-and-logs.md#gps-logs",
-        Ulog | Dataflash => "signals-and-logs.md#flight-logs",
+        Ulog | Dataflash | Tlog => "signals-and-logs.md#flight-logs",
         Candump => "signals-and-logs.md#can-logs",
         Fix => "signals-and-logs.md#fix-logs",
         Sdf => "signals-and-logs.md#sdf",

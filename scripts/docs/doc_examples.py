@@ -56,7 +56,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
+import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -460,6 +462,27 @@ def run_block(b: Block, work: Path, real: str | None, timeout: float) -> str | N
     return None
 
 
+def download(url: str, to: Path, attempts: int = 4) -> None:
+    """Download `url` to `to`, retrying what a host's hiccup causes (a reset, a
+    timeout, a 5xx or 429) with backoff. Nightly failed on one reset (#988)."""
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=60) as r, open(to, "wb") as out:
+                shutil.copyfileobj(r, out)
+            return
+        except urllib.error.HTTPError as e:
+            if attempt == attempts or (e.code < 500 and e.code != 429):
+                raise
+            err: OSError = e
+        except OSError as e:
+            if attempt == attempts:
+                raise
+            err = e
+        wait = 5 * 3 ** (attempt - 1)
+        print(f"  {err}; retrying in {wait}s")
+        time.sleep(wait)
+
+
 def fetch_datasets(dest: Path, blocks: list[Block]) -> int:
     names = tomllib.loads(DATASETS.read_text(encoding="utf-8"))
     wanted = {b.values["dataset"] for b in blocks if "dataset" in b.values}
@@ -472,7 +495,7 @@ def fetch_datasets(dest: Path, blocks: list[Block]) -> int:
         if not target.exists():
             print(f"  downloading {url}")
             part = target.with_suffix(target.suffix + ".part")
-            urllib.request.urlretrieve(url, part)
+            download(url, part)
             part.rename(target)
     return 0
 

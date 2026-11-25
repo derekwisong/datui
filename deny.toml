@@ -46,24 +46,6 @@ ignore = [
     { id = "RUSTSEC-2026-0194", reason = "quick-xml DoS; xlsx path fixed by calamine 0.36, remaining copy is object_store S3/GCS XML, pinned by polars" },
     { id = "RUSTSEC-2026-0195", reason = "quick-xml DoS; xlsx path fixed by calamine 0.36, remaining copy is object_store S3/GCS XML, pinned by polars" },
 
-    # zstd 0.13.3 / zstd-safe 7.3.0, pinned by polars 0.55 and arrow 59 (datui's
-    # own zstd is 0.14). Fixed only in zstd 0.14.3 and zstd-safe 8.2.0; there is
-    # no 0.13 backport.
-    #
-    # 0391: `Decoder::with_context` keeps what an abandoned stream left in the
-    # context. polars-parquet reuses one DCtx per column, but a page that fails
-    # mid-stream already fails the read. The advisory's harm is one user's data
-    # reaching another's on a shared context; datui is one user in one process.
-    # 0398: `Seekable::decompress`; the `seekable` feature is not compiled in.
-    # 0403: uninitialized bytes when a legacy (pre-0.8) frame fails to stream-
-    # decode. `legacy` is a zstd default that polars enables, so it is reachable
-    # with a corrupt legacy .zst file; the bytes are datui's own memory, shown to
-    # the same user, after a read that errors.
-    # Clears when: polars and arrow move to zstd 0.14.3 / zstd-safe 8.2.0.
-    { id = "RUSTSEC-2026-0391", reason = "zstd with_context leak across streams; one user, one process; pinned by polars/arrow" },
-    { id = "RUSTSEC-2026-0398", reason = "zstd-safe Seekable::decompress; seekable feature not compiled in" },
-    { id = "RUSTSEC-2026-0403", reason = "zstd-safe legacy-frame uninit bytes on failed decode; own memory, same user; pinned by polars/arrow" },
-
     # --- Unmaintained, no known vulnerability ---
 
     # bincode 2, via polars-utils. Unmaintained, no advisory against the code.
@@ -71,6 +53,15 @@ ignore = [
     # that is tracked as a trust-boundary question, not as this advisory.
     # Clears when: polars moves off bincode, or bincode finds a maintainer.
     { id = "RUSTSEC-2025-0141", reason = "bincode unmaintained; transitive via polars-utils" },
+
+    # chrono, chrono-tz and humantime (which wraps chrono), declared unmaintained
+    # together; no advisory against the code. polars, arrow, object_store, calamine
+    # and orc-rust all build on chrono, and datui's own date handling matches
+    # theirs, so moving datui alone to jiff or time would still leave chrono in.
+    # Clears when: polars and arrow move off chrono, or chrono finds a maintainer.
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained; the date type of polars, arrow and object_store" },
+    { id = "RUSTSEC-2026-0555", reason = "chrono-tz unmaintained; via polars and arrow" },
+    { id = "RUSTSEC-2026-0542", reason = "humantime unmaintained; via object_store" },
 ]
 
 [licenses]

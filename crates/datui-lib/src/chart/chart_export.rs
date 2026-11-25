@@ -1547,7 +1547,11 @@ fn lay_out(text: &str, size: f64, weight: u16) -> Shaped {
             starts: None,
         };
     };
-    let right = f64::from(tree.root().abs_bounding_box().right());
+    // An empty text has no bounding box.
+    let right = tree
+        .root()
+        .abs_bounding_box()
+        .map_or(0.0, |b| f64::from(b.right()));
     let mut starts = Vec::new();
     let mut at = 0;
     for node in tree.root().children() {
